@@ -438,6 +438,11 @@ namespace
     }
 } // namespace
 
+bool ValidateMeshPassPacketStream(const MeshPassPacketStream& stream)
+{
+    return ValidatePreparedStream(stream);
+}
+
 RenderFramePlanCompileResult CompileRenderFrameExecutionPlan(
     const RenderPolicyResolution& resolution,
     const SceneMeshPassPreparation& preparation)

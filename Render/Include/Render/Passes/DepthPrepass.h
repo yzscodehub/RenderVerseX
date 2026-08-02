@@ -28,16 +28,11 @@ namespace RVX
         uint32 directDrawCount = 0;
         uint32 gpuDrivenIndirectBatchCount = 0;
         uint32 gpuDrivenIndirectDrawCount = 0;
-        uint32 skippedInvalidObjectCount = 0;
-        uint32 skippedMissingMeshCount = 0;
-        uint32 skippedInvalidSubmeshCount = 0;
         bool gpuDrivenRequested = false;
         bool gpuDrivenEligible = false;
         bool planRequested = false;
         bool planValidated = false;
         bool directPacketPathUsed = false;
-        bool dualBuildCompared = false;
-        bool dualBuildMatched = false;
         uint32 plannedPacketCount = 0;
         uint32 compiledPacketCount = 0;
         uint32 executedPacketCount = 0;
@@ -165,7 +160,9 @@ namespace RVX
         RGBufferHandle m_gpuDrivenIndirectHandle;
         RGBufferHandle m_gpuDrivenDrawCountHandle;
         DepthPrepassDrawStats m_drawStats;
-        bool m_gpuDrivenDepthIndirectEnabled = true;
+        // Standalone, no-plan GPU submission is a compatibility path only.
+        // SceneRenderer opts in explicitly after it has published frame policy.
+        bool m_gpuDrivenDepthIndirectEnabled = false;
     };
 
 } // namespace RVX

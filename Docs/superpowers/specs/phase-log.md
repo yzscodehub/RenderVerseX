@@ -44109,6 +44109,134 @@ VulkanValidation.exe
 
 ---
 
+### R-SP329 Render-policy Task 6C legacy consumer removal and M1 exit
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Implementation agents:** primary agent with bounded
+`task6c_legacy_inventory` and interrupted mechanical implementation/test
+assistance
+**Independent code review agent:** `task6c_independent_review` (`terra_worker`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Section: Task 6C
+- Contract: published frame plans and prepared packet streams are authoritative;
+  unplanned work fails closed and never replays Direct commands.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP328 Render-policy Task 6B Direct Opaque packet execution.
+- Evidence: commits `94ece7c7` and `6d8efaa9`, reviewed Direct Depth/Opaque
+  packet execution, and synthetic plus Porsche DX12 parity.
+
+**Approved scope:**
+
+- Remove the replaced Depth/Opaque legacy value oracles, no-plan Direct command
+  loops, and Opaque pass-local indirect batching implementation.
+- Make no-plan GPU compatibility explicit opt-in and prevent disabled paths
+  from beginning a render pass or mutating targets.
+- Validate Task 5 whole-pass GPU packet ranges against the canonical frame plan
+  and exact prepared stream before recording.
+- Retain draw-list and pass-injection adapters still consumed by GPUCulling,
+  Transparent, Shadow, ObjectVelocity, and diagnostics, with Tasks 7-9 as their
+  explicit removal owners.
+
+**Out of scope:**
+
+- Hybrid packet identity and exactly-once partitioning, visibility providers,
+  frame-owned pass contexts, and formal backend submission strategies; Tasks
+  7-13.
+- Repairing the existing Vulkan descriptor/shader-extension validation or
+  OpenGL ToneMapping SPIRV-Cross layout gates; Tasks 12 and 14.
+- Metal runtime validation on the configured Windows host; Task 13 platform
+  coverage remains open.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Include/Render/Passes/DirectDrawPacketBatch.h`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/Policy/RenderFramePlanCompiler.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/DirectDrawPacketBatch.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Policy/RenderFramePlanCompiler.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target `
+  RenderPassValidation GPUDrivenValidation ModelViewer VulkanValidation
+
+RenderPassValidation.exe --gtest_brief=1
+GPUDrivenValidation.exe --gtest_brief=1
+VulkanValidation.exe --gtest_brief=1
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "RenderPolicyValidation|GPUDrivenValidation|RenderSceneValidation|MeshPassProcessorValidation|RenderPassValidation|RenderPassStatusValidation|SceneRendererDiagnosticsValidation|SceneRendererExternalTargetValidation|RenderPostProcessStackValidation"
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+```
+
+**Validation result:**
+
+- Focused builds: PASS, including DX11, DX12, Vulkan, and OpenGL backend
+  libraries plus ModelViewer.
+- Standalone suites: PASS 153/153 RenderPass and 24/24 GPUDriven.
+- Adjacent renderer contract CTest gate: PASS 220/220.
+- Synthetic and external Porsche DX12 Direct/GPU smoke and pixel parity: PASS
+  6/6.
+- DX11 ModelViewer Direct smoke: PASS 1/1.
+- VulkanValidation: PASS 25/25, with existing signaled-fence and placed-buffer
+  device-address VUID output. Vulkan ModelViewer completes its smoke process but
+  still fails PipelineCache initialization before Opaque because of the existing
+  DefaultLit set-0 binding-4 type mismatch and unsupported SPIR-V extension
+  declarations.
+- OpenGL smoke was executed: 0/2 because the existing ToneMapping SPIRV-Cross
+  buffer layout failure prevents PipelineCache initialization; the second test
+  also lacks its optional cooked fixture in this build tree.
+- Metal: unavailable on the configured Windows host and recorded as an open
+  Task 13 coverage gate.
+- `git diff --check`: PASS; only expected CRLF conversion warnings.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for two P1 issues: planned GPU branches did
+  not validate plan/preparation correspondence, and disabled no-plan paths still
+  cleared attachments.
+- Primary accepted both findings. A shared whole-pass GPU range validator now
+  checks the canonical plan, prepared stream, partition/group counts, sorted
+  candidate references, ordinals, and skipped references before recording.
+  Disabled no-plan paths return before resource or attachment mutation.
+- Final verdict: APPROVE; no remaining P0-P2 findings. New tests cover both
+  disabled defaults, a corrupt Depth GPU plan, and stale Opaque preparation.
+
+**Primary review result:**
+
+- Verdict: PASS. The reviewer findings are valid and fully resolved; production
+  paths fail closed before `BeginRenderPass`, planned Direct/GPU consumers both
+  validate their authoritative inputs, and no legacy Direct command consumer or
+  pass-local indirect batching implementation remains.
+- Adapter retention is intentional and assigned to Tasks 7-9. No Transparent,
+  Shadow, ObjectVelocity, or diagnostic consumer was removed prematurely.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 7A stable packet IDs and exactly-once partition accounting.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged; they are unrelated local artifacts.
+- Carry Vulkan, Metal, and OpenGL runtime gates into Tasks 12-14 without
+  reclassifying them as Task 6C regressions.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

@@ -5790,12 +5790,41 @@ TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMateri
     EXPECT_EQ(stats.skippedMissingUVCount, 0u);
     EXPECT_EQ(stats.skippedMaterialBindingCount, 0u);
 }
-TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndDrawsBothGroups)
+TEST_F(RenderPassValidationFixture, DepthPrepassNoPlanDefaultDoesNotMutateTarget)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
+    std::vector<RenderDrawItem> opaqueItems = {
+        MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.beginRenderPassCount);
+    EXPECT_EQ(0u, ctx.endRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
+    EXPECT_FALSE(pass.GetDrawStats().gpuDrivenRequested);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassNoPlanDefaultDoesNotMutateTarget)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    std::vector<RenderDrawItem> opaqueItems = {
+        MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
 
     OpaquePass pass;
     ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
@@ -5805,10 +5834,11 @@ TEST_F(RenderPassValidationFixture, OpaquePassBindsOpaqueThenMaskedPipelinesAndD
     RecordingCommandContext ctx;
     pass.Execute(ctx, view);
 
-    ASSERT_EQ(static_cast<size_t>(2), ctx.pipelineSequence.size());
-    EXPECT_EQ(pipelineCache.GetOpaquePipeline(), ctx.pipelineSequence[0]);
-    EXPECT_EQ(pipelineCache.GetMaskedPipeline(), ctx.pipelineSequence[1]);
-    EXPECT_EQ(2u, ctx.drawIndexedCount);
+    EXPECT_EQ(0u, ctx.beginRenderPassCount);
+    EXPECT_EQ(0u, ctx.endRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
+    EXPECT_FALSE(pass.GetDrawStats().gpuDrivenRequested);
 }
 
 TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams)
@@ -5877,6 +5907,7 @@ TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndire
     pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
     pass.SetDepthTarget(depthView.Get());
     pass.SetGPUDrivenCullingSource(&culling);
+    pass.SetGPUDrivenDepthIndirectEnabled(true);
 
     RecordingCommandContext ctx;
     pass.Execute(ctx, view);
@@ -5897,6 +5928,114 @@ TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndire
     EXPECT_EQ(0u, stats.directDrawCount);
     EXPECT_EQ(2u, stats.gpuDrivenIndirectBatchCount);
     EXPECT_EQ(2u, stats.gpuDrivenIndirectDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DepthPrepassRejectsCorruptPublishedGPUPlanBeforeRecording)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).entityId = 69;
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.packet = MakeDepthPacket(
+        scene, 0, 0, buffers, item.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+    SceneMeshPassPreparation preparation = PrepareDepthPackets(
+        opaqueItems, maskedItems);
+    RenderFramePlanCompileResult compiled =
+        CompileForcedGPUPlan(preparation, 599);
+    ASSERT_TRUE(compiled.succeeded);
+    const auto depthPlan = std::find_if(
+        compiled.plan.passes.begin(),
+        compiled.plan.passes.end(),
+        [](const RenderPassExecutionPlan& passPlan)
+        {
+            return passPlan.pass == RenderPassKind::Depth;
+        });
+    ASSERT_NE(depthPlan, compiled.plan.passes.end());
+    ASSERT_GT(depthPlan->gpuEligiblePackets.count, 0u);
+    compiled.plan.packetReferences[
+        depthPlan->gpuEligiblePackets.first].sourceOrdinal++;
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+    view.viewCache = &viewCache;
+    view.renderFrameExecutionPlan = &compiled.plan;
+    view.meshPassPreparation = &preparation;
+    view.renderFrameExecutionReport = &report;
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+    pass.SetGPUDrivenDepthIndirectEnabled(true);
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.beginRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
+    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+              pass.GetDrawStats().failureReason);
+    ASSERT_FALSE(report.passes.empty());
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              report.passes.front().gpuDrivenLane.status);
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassRejectsStaleGPUPreparationBeforeRecording)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).entityId = 70;
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.packet = MakeOpaquePacket(
+        scene, 0, 0, buffers, item.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+    SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        opaqueItems, maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedGPUPlan(preparation, 600);
+    ASSERT_TRUE(compiled.succeeded);
+    preparation.opaque.packets.front().sourceOrdinal++;
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+    view.viewCache = &viewCache;
+    view.renderFrameExecutionPlan = &compiled.plan;
+    view.meshPassPreparation = &preparation;
+    view.renderFrameExecutionReport = &report;
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetGPUDrivenOpaqueIndirectEnabled(true);
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.beginRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
+    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+              pass.GetDrawStats().failureReason);
+    const RenderPassExecutionReport* opaqueReport =
+        FindPassExecutionReport(report, RenderPassKind::Opaque);
+    ASSERT_NE(opaqueReport, nullptr);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              opaqueReport->gpuDrivenLane.status);
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -5967,8 +6106,6 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_TRUE(stats.planRequested);
     EXPECT_TRUE(stats.planValidated);
     EXPECT_TRUE(stats.directPacketPathUsed);
-    EXPECT_TRUE(stats.dualBuildCompared);
-    EXPECT_TRUE(stats.dualBuildMatched);
     EXPECT_EQ(2u, stats.plannedPacketCount);
     EXPECT_EQ(2u, stats.executedPacketCount);
 
@@ -6040,7 +6177,7 @@ TEST_F(RenderPassValidationFixture,
 
     EXPECT_EQ(1u, ctx.beginRenderPassCount);
     EXPECT_EQ(1u, ctx.drawIndexedCount);
-    EXPECT_TRUE(pass.GetDrawStats().dualBuildMatched);
+    EXPECT_TRUE(pass.GetDrawStats().planValidated);
     EXPECT_EQ(1u, pass.GetDrawStats().executedPacketCount);
 }
 
@@ -6224,6 +6361,7 @@ TEST_F(RenderPassValidationFixture,
     pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
     pass.SetDepthTarget(depthView.Get());
     pass.SetGPUDrivenCullingSource(&culling);
+    pass.SetGPUDrivenDepthIndirectEnabled(true);
     RecordingCommandContext ctx;
     pass.Execute(ctx, view);
 
@@ -6244,7 +6382,7 @@ TEST_F(RenderPassValidationFixture,
 }
 
 TEST_F(RenderPassValidationFixture,
-       DepthPrepassRejectsDualBuildDriftBeforeRecording)
+       DepthPrepassUsesPublishedPacketsAfterDrawItemDrift)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -6284,10 +6422,12 @@ TEST_F(RenderPassValidationFixture,
     RecordingCommandContext ctx;
     pass.Execute(ctx, view);
 
-    EXPECT_EQ(0u, ctx.beginRenderPassCount);
-    EXPECT_TRUE(pass.GetDrawStats().dualBuildCompared);
-    EXPECT_FALSE(pass.GetDrawStats().dualBuildMatched);
-    EXPECT_EQ(RenderPolicyReason::UnexpectedRecordingFailure,
+    EXPECT_EQ(1u, ctx.beginRenderPassCount);
+    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_TRUE(pass.GetDrawStats().planValidated);
+    EXPECT_TRUE(pass.GetDrawStats().directPacketPathUsed);
+    EXPECT_EQ(RenderPolicyReason::None,
               pass.GetDrawStats().failureReason);
 }
 
@@ -6327,7 +6467,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(1u, ctx.endRenderPassCount);
     EXPECT_EQ(0u, ctx.drawIndexedCount);
     EXPECT_TRUE(pass.GetDrawStats().directPacketPathUsed);
-    EXPECT_TRUE(pass.GetDrawStats().dualBuildMatched);
+    EXPECT_TRUE(pass.GetDrawStats().planValidated);
     EXPECT_EQ(RenderExecutionStatus::Completed,
               report.passes.front().directLane.status);
 }
@@ -6394,8 +6534,6 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_TRUE(stats.planRequested);
     EXPECT_TRUE(stats.planValidated);
     EXPECT_TRUE(stats.directPacketPathUsed);
-    EXPECT_TRUE(stats.dualBuildCompared);
-    EXPECT_TRUE(stats.dualBuildMatched);
     EXPECT_EQ(2u, stats.plannedPacketCount);
     EXPECT_EQ(2u, stats.executedPacketCount);
     EXPECT_EQ(2u, stats.directDrawCount);
@@ -6655,7 +6793,7 @@ TEST_F(RenderPassValidationFixture,
 }
 
 TEST_F(RenderPassValidationFixture,
-       OpaquePassRejectsPlannedDualBuildDriftBeforeRecording)
+       OpaquePassUsesPublishedPacketsAfterDrawItemDrift)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -6687,10 +6825,12 @@ TEST_F(RenderPassValidationFixture,
     RecordingCommandContext ctx;
     pass.Execute(ctx, view);
 
-    EXPECT_EQ(0u, ctx.beginRenderPassCount);
-    EXPECT_TRUE(pass.GetDrawStats().dualBuildCompared);
-    EXPECT_FALSE(pass.GetDrawStats().dualBuildMatched);
-    EXPECT_EQ(RenderPolicyReason::UnexpectedRecordingFailure,
+    EXPECT_EQ(1u, ctx.beginRenderPassCount);
+    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_TRUE(pass.GetDrawStats().planValidated);
+    EXPECT_TRUE(pass.GetDrawStats().directPacketPathUsed);
+    EXPECT_EQ(RenderPolicyReason::None,
               pass.GetDrawStats().failureReason);
 }
 
@@ -6723,7 +6863,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(1u, ctx.endRenderPassCount);
     EXPECT_EQ(0u, ctx.drawIndexedCount);
     EXPECT_TRUE(pass.GetDrawStats().directPacketPathUsed);
-    EXPECT_TRUE(pass.GetDrawStats().dualBuildMatched);
+    EXPECT_TRUE(pass.GetDrawStats().planValidated);
     const RenderPassExecutionReport* opaqueReport =
         FindPassExecutionReport(report, RenderPassKind::Opaque);
     ASSERT_NE(opaqueReport, nullptr);
@@ -6797,6 +6937,7 @@ TEST_F(RenderPassValidationFixture,
     pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
     pass.SetRenderTargets(colorView.Get(), nullptr);
     pass.SetGPUDrivenCullingSource(&culling);
+    pass.SetGPUDrivenOpaqueIndirectEnabled(true);
     RecordingCommandContext ctx;
     pass.Execute(ctx, view);
 
@@ -6817,7 +6958,7 @@ TEST_F(RenderPassValidationFixture,
               opaqueReport->directLane.status);
 }
 
-TEST_F(RenderPassValidationFixture, OpaquePassFallsBackToDirectDrawWhenGPUDrivenPipelineFails)
+TEST_F(RenderPassValidationFixture, OpaquePassDoesNotReplayDirectWhenNoPlanGPUPipelineFails)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -6861,11 +7002,12 @@ TEST_F(RenderPassValidationFixture, OpaquePassFallsBackToDirectDrawWhenGPUDriven
     pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
     pass.SetRenderTargets(colorView.Get(), nullptr);
     pass.SetGPUDrivenCullingSource(&culling);
+    pass.SetGPUDrivenOpaqueIndirectEnabled(true);
 
     RecordingCommandContext ctx;
     pass.Execute(ctx, view);
 
-    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
     EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
 
     const OpaquePassDrawStats& stats = pass.GetDrawStats();
@@ -6874,12 +7016,12 @@ TEST_F(RenderPassValidationFixture, OpaquePassFallsBackToDirectDrawWhenGPUDriven
     EXPECT_FALSE(stats.gpuDrivenPipelineReady);
     EXPECT_FALSE(stats.gpuDrivenEligible);
     EXPECT_FALSE(stats.gpuDrivenSubmitted);
-    EXPECT_EQ(1u, stats.directDrawCount);
+    EXPECT_EQ(0u, stats.directDrawCount);
     EXPECT_EQ(stats.gpuDrivenFallbackReason,
               GPUDrivenDrawFallbackReason::PipelineUnavailable);
 }
 
-TEST_F(RenderPassValidationFixture, OpaquePassFallsBackWholePassForMixedGPUAndDirectOnlyItems)
+TEST_F(RenderPassValidationFixture, OpaquePassFailsClosedForIncompleteNoPlanGPUGroupCoverage)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -6950,14 +7092,13 @@ TEST_F(RenderPassValidationFixture, OpaquePassFallsBackWholePassForMixedGPUAndDi
     pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
     pass.SetRenderTargets(colorView.Get(), nullptr);
     pass.SetGPUDrivenCullingSource(&culling);
+    pass.SetGPUDrivenOpaqueIndirectEnabled(true);
 
     RecordingCommandContext ctx;
     pass.Execute(ctx, view);
 
-    // The source list has two items but the prepared GPU groups contain only
-    // one candidate, so the OpaquePass must submit both items through Direct.
-    EXPECT_EQ(2u, ctx.drawIndexedCount);
-    EXPECT_EQ((std::vector<uint32>{0u, 3u}), ctx.drawIndexedFirstIndices);
+    // Incomplete no-plan GPU groups fail closed and never replay Direct work.
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
     EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
 
     const OpaquePassDrawStats& stats = pass.GetDrawStats();
@@ -6967,12 +7108,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassFallsBackWholePassForMixedGPUAndDi
     EXPECT_FALSE(stats.gpuDrivenSubmitted);
     EXPECT_EQ(GPUDrivenDrawFallbackReason::DrawGroupsUnavailable,
               stats.gpuDrivenFallbackReason);
-    EXPECT_EQ(2u, stats.directDrawCount);
-    EXPECT_EQ(0u, stats.indirectBatchCount);
-    EXPECT_EQ(0u, stats.indirectDrawCount);
-    EXPECT_EQ(0u, stats.skippedInvalidObjectCount);
-    EXPECT_EQ(0u, stats.skippedMissingMeshCount);
-    EXPECT_EQ(0u, stats.skippedInvalidSubmeshCount);
+    EXPECT_EQ(0u, stats.directDrawCount);
     EXPECT_EQ(0u, stats.skippedMaterialBindingCount);
 }
 
@@ -7032,6 +7168,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIn
     pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
     pass.SetRenderTargets(colorView.Get(), nullptr);
     pass.SetGPUDrivenCullingSource(&culling);
+    pass.SetGPUDrivenOpaqueIndirectEnabled(true);
 
     // No-plan execution keeps the established compatibility behavior: the
     // identity object upload is advisory for the GPU-driven instance path.
@@ -7063,133 +7200,8 @@ TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIn
     EXPECT_TRUE(stats.gpuDrivenSubmitted);
     EXPECT_EQ(stats.gpuDrivenFallbackReason, GPUDrivenDrawFallbackReason::None);
     EXPECT_EQ(0u, stats.directDrawCount);
-    EXPECT_EQ(0u, stats.indirectBatchCount);
     EXPECT_EQ(2u, stats.gpuDrivenIndirectBatchCount);
     EXPECT_EQ(2u, stats.gpuDrivenIndirectDrawCount);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassBatchesSameObjectSubmeshesWithIndirectDraw)
-{
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
-
-    auto twoSubmeshResource = CreateTwoSubmeshMeshResource(1401);
-    gpuResources.UploadImmediate(twoSubmeshResource.get());
-    ASSERT_TRUE(gpuResources.IsGPUReady(twoSubmeshResource->GetId()));
-
-    scene.Clear();
-    scene.AddObject(MakeRenderObject(*twoSubmeshResource, gpuResources));
-
-    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
-    firstItem.mesh = gpuResources.GetHandle(twoSubmeshResource->GetId());
-    firstItem.submeshIndex = 0;
-
-    RenderDrawItem secondItem = firstItem;
-    secondItem.submeshIndex = 1;
-
-    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
-    std::vector<RenderDrawItem> maskedItems;
-
-    view.viewCache = &viewCache;
-    view.viewportWidth = 64;
-    view.viewportHeight = 64;
-
-    OpaquePass pass;
-    pass.OnAdd(&device);
-    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(0u, ctx.drawIndexedCount);
-    EXPECT_EQ(1u, ctx.drawIndexedIndirectCount);
-    EXPECT_EQ(0u, ctx.lastIndirectOffset);
-    EXPECT_EQ(2u, ctx.lastIndirectDrawCount);
-    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectStride);
-    ASSERT_NE(ctx.lastIndirectBuffer, nullptr);
-
-    const auto* indirectBuffer = dynamic_cast<const FakeBuffer*>(ctx.lastIndirectBuffer);
-    ASSERT_NE(indirectBuffer, nullptr);
-    ASSERT_GE(indirectBuffer->GetStorage().size(), sizeof(IndirectDrawIndexedCommand) * 2);
-
-    std::array<IndirectDrawIndexedCommand, 2> commands;
-    std::memcpy(commands.data(), indirectBuffer->GetStorage().data(), sizeof(commands));
-    EXPECT_EQ(3u, commands[0].indexCount);
-    EXPECT_EQ(1u, commands[0].instanceCount);
-    EXPECT_EQ(0u, commands[0].firstIndex);
-    EXPECT_EQ(0, commands[0].vertexOffset);
-    EXPECT_EQ(0u, commands[0].firstInstance);
-    EXPECT_EQ(3u, commands[1].indexCount);
-    EXPECT_EQ(1u, commands[1].instanceCount);
-    EXPECT_EQ(3u, commands[1].firstIndex);
-    EXPECT_EQ(0, commands[1].vertexOffset);
-    EXPECT_EQ(0u, commands[1].firstInstance);
-
-    const OpaquePassDrawStats& stats = pass.GetDrawStats();
-    EXPECT_EQ(0u, stats.directDrawCount);
-    EXPECT_EQ(1u, stats.indirectBatchCount);
-    EXPECT_EQ(2u, stats.indirectDrawCount);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassDoesNotIndirectBatchResolvedMaterialMismatch)
-{
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
-
-    auto twoSubmeshResource = CreateTwoSubmeshMeshResource(1402);
-    gpuResources.UploadImmediate(twoSubmeshResource.get());
-    ASSERT_TRUE(gpuResources.IsGPUReady(twoSubmeshResource->GetId()));
-
-    Resource::MaterialResource firstMaterial;
-    firstMaterial.SetId(701);
-    firstMaterial.SetName("FirstSubmeshMaterial");
-    firstMaterial.SetMaterialData(std::make_shared<Material>());
-
-    Resource::MaterialResource secondMaterial;
-    secondMaterial.SetId(702);
-    secondMaterial.SetName("SecondSubmeshMaterial");
-    secondMaterial.SetMaterialData(std::make_shared<Material>());
-    ASSERT_TRUE(gpuResources.UploadImmediate(&firstMaterial));
-    ASSERT_TRUE(gpuResources.UploadImmediate(&secondMaterial));
-
-    RenderObject object = MakeRenderObject(*twoSubmeshResource, gpuResources);
-    object.material = gpuResources.GetHandle(firstMaterial.GetId());
-
-    scene.Clear();
-    scene.AddObject(object);
-
-    RenderDrawItem firstItem = MakeDrawItem(MaterialRenderMode::Opaque);
-    firstItem.mesh = gpuResources.GetHandle(twoSubmeshResource->GetId());
-    firstItem.submeshIndex = 0;
-    firstItem.material = gpuResources.GetHandle(firstMaterial.GetId());
-
-    RenderDrawItem secondItem = firstItem;
-    secondItem.submeshIndex = 1;
-    secondItem.material = gpuResources.GetHandle(secondMaterial.GetId());
-
-    std::vector<RenderDrawItem> opaqueItems = {firstItem, secondItem};
-    std::vector<RenderDrawItem> maskedItems;
-
-    view.viewCache = &viewCache;
-    view.viewportWidth = 64;
-    view.viewportHeight = 64;
-
-    OpaquePass pass;
-    pass.OnAdd(&device);
-    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(2u, ctx.drawIndexedCount);
-    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
-
-    const OpaquePassDrawStats& stats = pass.GetDrawStats();
-    EXPECT_EQ(2u, stats.directDrawCount);
-    EXPECT_EQ(0u, stats.indirectBatchCount);
-    EXPECT_EQ(0u, stats.indirectDrawCount);
 }
 
 TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTangentBasis)
@@ -7203,7 +7215,7 @@ TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTang
     EXPECT_NE(opaquePass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
     EXPECT_NE(opaquePass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
               std::string::npos);
-    EXPECT_NE(opaquePass.find("item.material, view.viewCache, materialOptions"),
+    EXPECT_NE(opaquePass.find("packet.materialKey.material, view.viewCache, materialOptions"),
               std::string::npos);
 
     EXPECT_NE(transparentPass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
@@ -7235,7 +7247,7 @@ TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassBindFrameLightResour
               std::string::npos);
     EXPECT_NE(opaquePass.find("lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();"),
               std::string::npos);
-    EXPECT_NE(opaquePass.find("obj.receivesShadow,"), std::string::npos);
+    EXPECT_NE(opaquePass.find("planned.object.receivesShadow,"), std::string::npos);
     EXPECT_NE(opaquePass.find("m_pipelineCache->UpdateFrameLightResources(lightResources);"), std::string::npos);
 
     EXPECT_NE(transparentPass.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
@@ -7316,6 +7328,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView
     ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
     pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
     pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetGPUDrivenOpaqueIndirectEnabled(true);
 
     pass.AddToGraph(graph, view);
     graph.Compile();
@@ -7375,6 +7388,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     opaquePass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
     opaquePass.SetRenderTargets(colorView.Get(), nullptr);
     opaquePass.SetDirectionalShadowSource(&shadowPass);
+    opaquePass.SetGPUDrivenOpaqueIndirectEnabled(true);
 
     shadowPass.AddToGraph(graph, view);
     opaquePass.AddToGraph(graph, view);
@@ -7484,6 +7498,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequest
     opaquePass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
     opaquePass.SetRenderTargets(colorView.Get(), nullptr);
     opaquePass.SetDirectionalShadowSource(&shadowPass);
+    opaquePass.SetGPUDrivenOpaqueIndirectEnabled(true);
 
     shadowPass.AddToGraph(graph, view);
     opaquePass.AddToGraph(graph, view);
@@ -7514,52 +7529,6 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequest
     EXPECT_FLOAT_EQ(uploaded.directionalShadowCascadeFadeDistances.y, 0.0f);
 }
 
-TEST_F(RenderPassValidationFixture, OpaquePassSkipsMaskedItemsWhenMaskedPipelineIsMissing)
-{
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
-
-    ASSERT_TRUE(pipelineCache.GetMaskedPipeline());
-    pipelineCache.m_maskedPipeline.Reset();
-
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
-
-    OpaquePass pass;
-    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
-    EXPECT_EQ(pipelineCache.GetOpaquePipeline(), ctx.pipelineSequence[0]);
-    EXPECT_EQ(1u, ctx.drawIndexedCount);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassSkipsOpaqueItemsWhenOpaquePipelineIsMissing)
-{
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
-
-    ASSERT_TRUE(pipelineCache.GetOpaquePipeline());
-    pipelineCache.m_opaquePipeline.Reset();
-
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems = {MakeDrawItem(MaterialRenderMode::Masked)};
-
-    OpaquePass pass;
-    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
-    EXPECT_EQ(pipelineCache.GetMaskedPipeline(), ctx.pipelineSequence[0]);
-    EXPECT_EQ(1u, ctx.drawIndexedCount);
-}
-
 TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
@@ -7580,56 +7549,6 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
     EXPECT_FALSE(pipelineCache.GetLastDirectionalShadowFrameBindingResult().shadowSamplingEnabled);
     EXPECT_EQ(pipelineCache.GetLastDirectionalShadowFrameBindingResult().fallbackReason,
               DirectionalShadowFallbackReason::DisabledNoDirectionalLight);
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassSkipsDrawWhenMaterialBindingErrors)
-{
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
-
-    std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
-    std::vector<RenderDrawItem> maskedItems;
-
-    OpaquePass pass;
-    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(0u, ctx.drawIndexedCount);
-    EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
-    EXPECT_FALSE(materialSystem.GetLastBindingResult().IsDrawable());
-    EXPECT_FALSE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
-                             [](uint32 set) { return set == 2; }));
-}
-
-TEST_F(RenderPassValidationFixture, OpaquePassDrawsWhenMaterialBindingUsesFallback)
-{
-    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
-
-    Resource::TextureHandle missingTexture = CreateTextureResource(502);
-    Resource::MaterialResource materialResource;
-    ConfigureMaterialWithAlbedo(materialResource, missingTexture);
-
-    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
-    item.material = gpuResources.ResolveOrUpload(&materialResource);
-    std::vector<RenderDrawItem> opaqueItems = {item};
-    std::vector<RenderDrawItem> maskedItems;
-
-    OpaquePass pass;
-    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
-
-    EXPECT_EQ(1u, ctx.drawIndexedCount);
-    EXPECT_EQ(MaterialBindingStatus::Fallback, materialSystem.GetLastBindingResult().status);
-    EXPECT_TRUE(materialSystem.GetLastBindingResult().IsDrawable());
-    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
-                            [](uint32 set) { return set == 2; }));
 }
 
 TEST_F(RenderPassValidationFixture, TransparentPassSkipsDrawWhenMaterialBindingErrors)

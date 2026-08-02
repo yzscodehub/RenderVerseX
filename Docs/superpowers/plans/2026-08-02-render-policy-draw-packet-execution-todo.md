@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-5 and Tasks 6A-6B complete; Task 6C legacy-consumer
-removal and M1 exit validation is the next implementation stage
+**Status:** Tasks 0-6 complete; Task 7A stable packet identity and exactly-once
+partition accounting is the next implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -177,17 +177,26 @@ qualification policy branch.
 
 #### 6C. Remove temporary legacy consumers
 
-- [ ] Review dual-build evidence and remove only the replaced Depth/Opaque
+- [x] Review dual-build evidence and remove only the replaced Depth/Opaque
   command consumers.
-- [ ] Retain adapters still required by Transparent, Shadow, ObjectVelocity, or
+- [x] Retain adapters still required by Transparent, Shadow, ObjectVelocity, or
   diagnostics and mark their removal owner explicitly.
-- [ ] Confirm no pass reclassifies material/pass eligibility while recording.
-- [ ] Run M1 exit suite across DX12 Direct, Vulkan/Metal Direct on the configured
+- [x] Confirm no pass reclassifies material/pass eligibility while recording.
+- [x] Run M1 exit suite across DX12 Direct, Vulkan/Metal Direct on the configured
   platform matrix, plus DX11 Direct and OpenGL compile/smoke coverage. Record an
   unavailable platform as an open milestone coverage gate rather than silently
   skipping it.
-- [ ] Record M1 exit evidence and commit Depth and Opaque migrations as separate
+- [x] Record M1 exit evidence and commit Depth and Opaque migrations as separate
   reversible commits.
+
+Retained-adapter removal owners are explicit: Task 7 replaces whole-pass
+GPU completeness gates, Task 8 replaces draw-list/source-ordinal candidate
+mapping, and Task 9 replaces persistent pass setters plus captured
+Transparent, Shadow, ObjectVelocity, and diagnostics execution inputs.
+Windows DX12 and DX11 Direct gates pass. Vulkan and OpenGL were executed and
+retain their pre-existing pipeline/shader validation gates for Tasks 12 and 14;
+Metal is unavailable on the configured Windows host and remains a Task 13
+platform gate.
 
 **M1 exit gate:** Depth and Opaque render through DrawPackets on the Direct path
 with exact/documented parity and no legacy duplicate submission.

@@ -1,4 +1,5 @@
 #include "Render/Passes/DirectDrawPacketBatch.h"
+#include "Render/Policy/RenderFramePlanCompiler.h"
 
 #include <array>
 #include <cstdint>
@@ -183,5 +184,85 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
     result.reason = RenderPolicyReason::None;
     result.batch = std::move(batch);
     return result;
+}
+
+bool ValidateWholePassGPUDrivenPacketRange(
+    const RenderFrameExecutionPlan& plan,
+    RenderPassKind pass,
+    const MeshPassPacketStream& stream)
+{
+    if (!IsCanonicalPass(pass) || !IsCanonicalPlan(plan) ||
+        !ValidateRenderFrameExecutionPlan(plan) ||
+        !ValidateMeshPassPacketStream(stream))
+    {
+        return false;
+    }
+
+    const RenderPassExecutionPlan* passPlan = FindPassPlan(plan, pass);
+    if (passPlan == nullptr ||
+        passPlan->preferredSubmission == RenderSubmissionMode::Direct ||
+        passPlan->visibility == RenderVisibilityMode::Cpu ||
+        passPlan->partition.inputPacketCount != stream.stats.inputPacketCount ||
+        passPlan->partition.relevantPacketCount !=
+            stream.stats.relevantPacketCount ||
+        passPlan->partition.candidatePacketCount !=
+            stream.stats.gpuCandidatePacketCount ||
+        passPlan->partition.gpuDrivenPacketCount !=
+            stream.stats.gpuCandidatePacketCount ||
+        passPlan->partition.directPacketCount != 0 ||
+        passPlan->partition.skippedPacketCount !=
+            stream.stats.skippedPacketCount ||
+        passPlan->partition.drawGroupCount != stream.groups.size() ||
+        passPlan->gpuEligiblePackets.count !=
+            stream.sortedGPUCandidatePacketIndices.size() ||
+        !IsRangeInBounds(passPlan->gpuEligiblePackets,
+                         plan.packetReferences.size()) ||
+        !IsRangeInBounds(passPlan->skippedPackets,
+                         plan.packetReferences.size()))
+    {
+        return false;
+    }
+
+    for (uint32 offset = 0;
+         offset < passPlan->gpuEligiblePackets.count;
+         ++offset)
+    {
+        const uint32 sourceIndex =
+            stream.sortedGPUCandidatePacketIndices[offset];
+        const RenderDrawPacketReference& reference =
+            plan.packetReferences[
+                static_cast<size_t>(passPlan->gpuEligiblePackets.first) +
+                offset];
+        if (sourceIndex >= stream.packets.size() ||
+            reference.pass != pass ||
+            reference.sourcePacketIndex != sourceIndex ||
+            reference.sourceOrdinal !=
+                stream.packets[sourceIndex].sourceOrdinal ||
+            !stream.packets[sourceIndex].IsGPUCandidate())
+        {
+            return false;
+        }
+    }
+
+    for (uint32 offset = 0; offset < passPlan->skippedPackets.count; ++offset)
+    {
+        const RenderDrawPacketReference& reference =
+            plan.packetReferences[
+                static_cast<size_t>(passPlan->skippedPackets.first) + offset];
+        if (reference.pass != pass ||
+            reference.sourcePacketIndex >= stream.packets.size())
+        {
+            return false;
+        }
+        const MeshPassProcessorResult& source =
+            stream.packets[reference.sourcePacketIndex];
+        if (source.disposition != MeshPassDisposition::Skip ||
+            reference.sourceOrdinal != source.sourceOrdinal)
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 } // namespace RVX

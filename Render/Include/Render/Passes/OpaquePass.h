@@ -45,8 +45,6 @@ namespace RVX
     struct OpaquePassDrawStats
     {
         uint32 directDrawCount = 0;
-        uint32 indirectBatchCount = 0;
-        uint32 indirectDrawCount = 0;
         bool gpuDrivenRequested = false;
         bool gpuDrivenCullingReady = false;
         bool gpuDrivenPipelineReady = false;
@@ -56,15 +54,10 @@ namespace RVX
         uint32 gpuDrivenIndirectDrawCount = 0;
         GPUDrivenDrawFallbackReason gpuDrivenFallbackReason =
             GPUDrivenDrawFallbackReason::Disabled;
-        uint32 skippedInvalidObjectCount = 0;
-        uint32 skippedMissingMeshCount = 0;
-        uint32 skippedInvalidSubmeshCount = 0;
         uint32 skippedMaterialBindingCount = 0;
         bool planRequested = false;
         bool planValidated = false;
         bool directPacketPathUsed = false;
-        bool dualBuildCompared = false;
-        bool dualBuildMatched = false;
         uint32 plannedPacketCount = 0;
         uint32 executedPacketCount = 0;
         RenderPolicyReason failureReason =
@@ -130,7 +123,6 @@ namespace RVX
                                               RGBufferHandle drawCountBuffer);
         const OpaquePassShadowStats& GetShadowStats() const { return m_shadowStats; }
         const OpaquePassDrawStats& GetDrawStats() const { return m_drawStats; }
-        void SetIndirectBatchingEnabled(bool enabled) { m_indirectBatchingEnabled = enabled; }
         void SetGPUDrivenOpaqueIndirectEnabled(bool enabled) { m_gpuDrivenOpaqueIndirectEnabled = enabled; }
 
         // =====================================================================
@@ -173,18 +165,10 @@ namespace RVX
         RHITextureView* m_colorTargetView = nullptr;
         RHITextureView* m_depthTargetView = nullptr;
 
-        // Device reference
-        IRHIDevice* m_device = nullptr;
-
-        bool m_indirectBatchingEnabled = true;
-        bool m_gpuDrivenOpaqueIndirectEnabled = true;
-        RHIBufferRef m_indirectDrawBuffer;
-        uint32 m_indirectDrawBufferCapacity = 0;
-        std::vector<IndirectDrawIndexedCommand> m_indirectDrawCommands;
-
-        uint32 FindIndirectBatchLength(const std::vector<RenderDrawItem>& drawItems,
-                                       size_t startIndex) const;
-        bool EnsureIndirectDrawCapacity(uint32 commandCount);
+        // The no-plan GPU submission path is intentionally opt-in.  It exists
+        // only for compatibility validation and must never become a Direct
+        // rendering fallback when the frame policy was not published.
+        bool m_gpuDrivenOpaqueIndirectEnabled = false;
         bool AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) const;
         bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                                       const ViewData& view,

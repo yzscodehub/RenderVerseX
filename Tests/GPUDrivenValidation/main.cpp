@@ -1169,15 +1169,12 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     ASSERT_FALSE(modelViewer.empty());
     ASSERT_FALSE(testsCMake.empty());
 
-    const size_t ensureIndirectCapacity = opaqueSource.find("bool OpaquePass::EnsureIndirectDrawCapacity");
-    ASSERT_NE(ensureIndirectCapacity, std::string::npos);
-    const size_t setupFunction = opaqueSource.find("void OpaquePass::Setup", ensureIndirectCapacity);
-    ASSERT_NE(setupFunction, std::string::npos);
-    const std::string ensureIndirectBody =
-        opaqueSource.substr(ensureIndirectCapacity, setupFunction - ensureIndirectCapacity);
-    EXPECT_NE(ensureIndirectBody.find("RHIBufferUsage::IndirectArgs | RHIBufferUsage::CopyDst"),
+    EXPECT_EQ(opaqueSource.find("EnsureIndirectDrawCapacity"),
               std::string::npos);
-    EXPECT_EQ(ensureIndirectBody.find("RHIBufferUsage::Structured"), std::string::npos);
+    EXPECT_EQ(opaqueSource.find("OpaquePass.IndirectDrawBuffer"),
+              std::string::npos);
+    EXPECT_EQ(opaqueHeader.find("SetIndirectBatchingEnabled"),
+              std::string::npos);
 
     EXPECT_NE(defaultLit.find("StructuredBuffer<GPUInstanceData> GPUDrivenInstances"), std::string::npos);
     EXPECT_NE(defaultLit.find("PSInput VSMainGPUDriven"), std::string::npos);

@@ -151,128 +151,6 @@ namespace
         return true;
     }
 
-    struct LegacyOpaqueTraceEntry
-    {
-        RenderDrawPacket packet;
-        RenderSubmissionLayout layout;
-        uint32 objectFlags = 0;
-        uint32 skinningMatrixCount = 0;
-        bool allowNormalMap = false;
-        bool previousWorldMatrixValid = false;
-        bool previousWorldViewProjectionValid = false;
-
-        bool operator==(const LegacyOpaqueTraceEntry&) const noexcept = default;
-    };
-
-    bool BuildLegacyOpaquePacket(const RenderScene& scene,
-                                 const RenderResourceRegistry& registry,
-                                 const ViewData& view,
-                                 const RenderDrawItem& item,
-                                 LegacyOpaqueTraceEntry& outEntry) noexcept
-    {
-        if (item.objectIndex >= scene.GetObjectCount() ||
-            !item.mesh.IsValid())
-        {
-            return false;
-        }
-
-        const RenderObject& object = scene.GetObject(item.objectIndex);
-        if (object.mesh != item.mesh || object.entityId == 0 ||
-            object.skinningMatrices.size() > std::numeric_limits<uint32>::max())
-        {
-            return false;
-        }
-
-        const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(&registry, item.mesh);
-        if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
-        {
-            return false;
-        }
-
-        const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-        RenderDrawPacket packet = item.packet;
-        packet.objectId = object.entityId;
-        packet.primitiveData = item.objectIndex;
-        packet.submeshIndex = item.submeshIndex;
-        packet.pass = RenderPassKind::Opaque;
-        packet.pipelineKey.materialVariant =
-            GetPipelineVariantForRenderMode(item.renderMode);
-        packet.pipelineKey.topology = MeshUploadPrimitiveTopology::Triangles;
-        packet.pipelineKey.skinned = object.HasSkinningData();
-        packet.geometryKey.mesh = item.mesh;
-        packet.geometryKey.submeshIndex = item.submeshIndex;
-        packet.geometryKey.indexType = MeshUploadIndexType::UInt32;
-        packet.materialKey.material = item.material;
-        packet.materialKey.materialMode = item.renderMode;
-        packet.arguments.indexCount = submesh.indexCount;
-        packet.arguments.instanceCount = 1;
-        packet.arguments.firstIndex = submesh.indexOffset;
-        packet.arguments.vertexOffset = submesh.baseVertex;
-        packet.arguments.firstInstance = 0;
-        packet.flags = RenderDrawFlags::None;
-        if (packet.pipelineKey.skinned)
-        {
-            packet.flags = packet.flags | RenderDrawFlags::Skinned;
-        }
-        if (item.renderMode == MaterialRenderMode::Masked)
-        {
-            packet.flags = packet.flags | RenderDrawFlags::Masked;
-        }
-        if (object.castsShadow)
-        {
-            packet.flags = packet.flags | RenderDrawFlags::CastsShadow;
-        }
-        if (object.receivesShadow)
-        {
-            packet.flags = packet.flags | RenderDrawFlags::ReceivesShadow;
-        }
-        if (!item.material.IsValid())
-        {
-            packet.flags = packet.flags | RenderDrawFlags::MissingMaterial;
-        }
-
-        outEntry.packet = packet;
-        outEntry.layout = MakeExpectedDirectLayout(packet);
-        outEntry.objectFlags = object.flags;
-        outEntry.skinningMatrixCount =
-            static_cast<uint32>(object.skinningMatrices.size());
-        outEntry.allowNormalMap = buffers.HasNormalMapTangentBasis();
-        outEntry.previousWorldMatrixValid = object.previousWorldMatrixValid != 0;
-        outEntry.previousWorldViewProjectionValid =
-            outEntry.previousWorldMatrixValid &&
-            view.previousViewProjectionValid != 0 &&
-            !view.resetTemporalHistory;
-        return true;
-    }
-
-    bool BuildLegacyOpaqueTrace(const RenderScene& scene,
-                                const RenderResourceRegistry& registry,
-                                const ViewData& view,
-                                const std::vector<RenderDrawItem>* opaque,
-                                const std::vector<RenderDrawItem>* masked,
-                                std::vector<LegacyOpaqueTraceEntry>& outTrace) noexcept
-    {
-        outTrace.clear();
-        const auto append = [&](const std::vector<RenderDrawItem>* items)
-        {
-            if (items == nullptr)
-            {
-                return true;
-            }
-            for (const RenderDrawItem& item : *items)
-            {
-                LegacyOpaqueTraceEntry entry;
-                if (!BuildLegacyOpaquePacket(scene, registry, view, item, entry))
-                {
-                    return false;
-                }
-                outTrace.push_back(std::move(entry));
-            }
-            return true;
-        };
-        return append(opaque) && append(masked);
-    }
-
 } // namespace
 
 struct OpaquePass::PlannedOpaqueDraw
@@ -286,27 +164,20 @@ struct OpaquePass::PlannedOpaqueDraw
     RHIDescriptorSet* objectSet = nullptr;
     std::array<uint32, 1> objectDynamicOffsets{};
     MaterialBindingResult materialBinding;
-    uint32 objectFlags = 0;
-    uint32 skinningMatrixCount = 0;
     bool allowNormalMap = false;
-    bool previousWorldMatrixValid = false;
     bool previousWorldViewProjectionValid = false;
     bool skinned = false;
 };
 
 void OpaquePass::OnAdd(IRHIDevice* device)
 {
-    m_device = device;
+    (void)device;
     RVX_CORE_DEBUG("OpaquePass added");
 }
 
 void OpaquePass::OnRemove()
 {
     RVX_CORE_DEBUG("OpaquePass removed");
-    m_indirectDrawBuffer.Reset();
-    m_indirectDrawBufferCapacity = 0;
-    m_indirectDrawCommands.clear();
-    m_device = nullptr;
     m_pipelineCache = nullptr;
     m_materialSystem = nullptr;
     m_lightManager = nullptr;
@@ -369,61 +240,6 @@ void OpaquePass::SetRenderTargets(RHITextureView* colorTargetView, RHITextureVie
 {
     m_colorTargetView = colorTargetView;
     m_depthTargetView = depthTargetView;
-}
-
-uint32 OpaquePass::FindIndirectBatchLength(const std::vector<RenderDrawItem>& drawItems,
-                                           size_t startIndex) const
-{
-    if (startIndex >= drawItems.size())
-    {
-        return 0;
-    }
-
-    const RenderDrawItem& first = drawItems[startIndex];
-    uint32 count = 1;
-    for (size_t i = startIndex + 1; i < drawItems.size(); ++i)
-    {
-        const RenderDrawItem& item = drawItems[i];
-        if (item.objectIndex != first.objectIndex ||
-            item.mesh != first.mesh ||
-            item.material != first.material)
-        {
-            break;
-        }
-
-        ++count;
-    }
-
-    return count;
-}
-
-bool OpaquePass::EnsureIndirectDrawCapacity(uint32 commandCount)
-{
-    if (commandCount == 0)
-    {
-        return true;
-    }
-
-    if (m_indirectDrawBuffer && m_indirectDrawBufferCapacity >= commandCount)
-    {
-        return true;
-    }
-
-    if (!m_device)
-    {
-        return false;
-    }
-
-    RHIBufferDesc desc;
-    desc.size = static_cast<uint64>(commandCount) * sizeof(IndirectDrawIndexedCommand);
-    desc.usage = RHIBufferUsage::IndirectArgs | RHIBufferUsage::CopyDst;
-    desc.memoryType = RHIMemoryType::Upload;
-    desc.stride = sizeof(IndirectDrawIndexedCommand);
-    desc.debugName = "OpaquePass.IndirectDrawBuffer";
-
-    m_indirectDrawBuffer = m_device->CreateBuffer(desc);
-    m_indirectDrawBufferCapacity = m_indirectDrawBuffer ? commandCount : 0;
-    return m_indirectDrawBuffer != nullptr;
 }
 
 void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
@@ -808,32 +624,10 @@ bool OpaquePass::BuildPlannedDirectBatch(
     m_drawStats.planValidated = true;
     m_drawStats.plannedPacketCount =
         static_cast<uint32>(built.batch.packets.size());
-    m_drawStats.dualBuildCompared = true;
-    m_drawStats.dualBuildMatched = false;
-
-    std::vector<LegacyOpaqueTraceEntry> legacyTrace;
-    if (!BuildLegacyOpaqueTrace(*m_renderScene,
-                                *m_resourceRegistry,
-                                view,
-                                m_opaqueDrawItems,
-                                m_maskedDrawItems,
-                                legacyTrace) ||
-        legacyTrace.size() != built.batch.packets.size())
-    {
-        return false;
-    }
 
     outPlannedDraws.reserve(built.batch.packets.size());
-    for (size_t index = 0; index < built.batch.packets.size(); ++index)
+    for (const DirectDrawPacket& draw : built.batch.packets)
     {
-        const DirectDrawPacket& draw = built.batch.packets[index];
-        const LegacyOpaqueTraceEntry& trace = legacyTrace[index];
-        if (draw.packet != trace.packet || draw.layout != trace.layout)
-        {
-            outPlannedDraws.clear();
-            return false;
-        }
-
         const RenderDrawPacket& packet = draw.packet;
         if (packet.pass != RenderPassKind::Opaque ||
             packet.primitiveData == RVX_INVALID_PRIMITIVE_DATA_INDEX ||
@@ -854,7 +648,6 @@ bool OpaquePass::BuildPlannedDirectBatch(
                                  packet.primitiveData,
                                  object) ||
             object.mesh != packet.geometryKey.mesh ||
-            object.flags != trace.objectFlags ||
             object.skinningMatrices.size() > std::numeric_limits<uint32>::max())
         {
             outPlannedDraws.clear();
@@ -866,14 +659,10 @@ bool OpaquePass::BuildPlannedDirectBatch(
         const bool missingMaterial =
             HasDrawFlag(packet.flags, RenderDrawFlags::MissingMaterial) ||
             !packet.materialKey.material.IsValid();
-        const bool previousWorldMatrixValid =
-            object.previousWorldMatrixValid != 0;
         const bool previousWorldViewProjectionValid =
-            previousWorldMatrixValid &&
+            object.previousWorldMatrixValid != 0 &&
             view.previousViewProjectionValid != 0 &&
             !view.resetTemporalHistory;
-        const uint32 skinningMatrixCount =
-            static_cast<uint32>(object.skinningMatrices.size());
         const RenderSubmissionLayout expectedLayout =
             MakeExpectedDirectLayout(packet);
         if (draw.layout != expectedLayout ||
@@ -896,11 +685,7 @@ bool OpaquePass::BuildPlannedDirectBatch(
             HasDrawFlag(packet.flags, RenderDrawFlags::CastsShadow) !=
                 object.castsShadow ||
             HasDrawFlag(packet.flags, RenderDrawFlags::ReceivesShadow) !=
-                object.receivesShadow ||
-            skinningMatrixCount != trace.skinningMatrixCount ||
-            previousWorldMatrixValid != trace.previousWorldMatrixValid ||
-            previousWorldViewProjectionValid !=
-                trace.previousWorldViewProjectionValid)
+                object.receivesShadow)
         {
             outPlannedDraws.clear();
             return false;
@@ -932,9 +717,8 @@ bool OpaquePass::BuildPlannedDirectBatch(
         }
 
         const bool allowNormalMap = buffers.HasNormalMapTangentBasis();
-        if (allowNormalMap != trace.allowNormalMap ||
-            (skinned &&
-             (!object.HasSkinningData() || !buffers.HasSkinningVertexData())))
+        if (skinned &&
+            (!object.HasSkinningData() || !buffers.HasSkinningVertexData()))
         {
             outPlannedDraws.clear();
             return false;
@@ -988,10 +772,7 @@ bool OpaquePass::BuildPlannedDirectBatch(
         planned.frameSet = m_pipelineCache->GetFrameDescriptorSet();
         planned.objectSet = m_pipelineCache->GetObjectDescriptorSet();
         planned.materialBinding = std::move(materialBinding);
-        planned.objectFlags = trace.objectFlags;
-        planned.skinningMatrixCount = skinningMatrixCount;
         planned.allowNormalMap = allowNormalMap;
-        planned.previousWorldMatrixValid = previousWorldMatrixValid;
         planned.previousWorldViewProjectionValid =
             previousWorldViewProjectionValid;
         planned.skinned = skinned;
@@ -1019,7 +800,6 @@ bool OpaquePass::BuildPlannedDirectBatch(
         outPlannedDraws.push_back(std::move(planned));
     }
 
-    m_drawStats.dualBuildMatched = true;
     return true;
 }
 
@@ -1160,7 +940,13 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     if (hasPublishedPlan &&
         (opaquePlan == nullptr || view.meshPassPreparation == nullptr))
     {
-        reportPlannedFailure(false);
+        m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
+        updatePlanReport(RenderExecutionStatus::Failed,
+                         m_drawStats.failureReason,
+                         0,
+                         false,
+                         opaquePlan ? opaquePlan->visibility
+                                    : RenderVisibilityMode::Cpu);
         return;
     }
 
@@ -1204,7 +990,13 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    if (!hasPublishedPlan && m_materialSystem && m_renderScene)
+    if (!hasPublishedPlan && !m_gpuDrivenOpaqueIndirectEnabled)
+    {
+        return;
+    }
+
+    if (!hasPublishedPlan && m_gpuDrivenOpaqueIndirectEnabled &&
+        m_materialSystem && m_renderScene)
     {
         if (m_opaqueDrawItems)
             TransitionVisibleMaterialTextures(*m_opaqueDrawItems,
@@ -1350,6 +1142,19 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     {
         const bool plannedGPU =
             opaquePlan->partition.gpuDrivenPacketCount != 0;
+        if (plannedGPU && !ValidateWholePassGPUDrivenPacketRange(
+                              *view.renderFrameExecutionPlan,
+                              RenderPassKind::Opaque,
+                              view.meshPassPreparation->opaque))
+        {
+            m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
+            updatePlanReport(RenderExecutionStatus::Failed,
+                             m_drawStats.failureReason,
+                             0,
+                             true,
+                             opaquePlan->visibility);
+            return;
+        }
         if (!plannedGPU)
         {
             std::vector<PlannedOpaqueDraw> plannedDraws;
@@ -1468,296 +1273,30 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    // 1. Begin render pass using builder pattern
+    // Standalone compatibility path: no frame plan is available. The
+    // GPU-driven path is explicit opt-in and never replays Direct work.
     RHIRenderPassDesc rpDesc;
     rpDesc.AddColorAttachment(colorTargetView,
                               RHILoadOp::Clear,
                               RHIStoreOp::Store,
                               RVX_SCENE_COLOR_CLEAR_VALUE);
-
     if (m_depthTargetView)
     {
-        const float clearDepth = m_pipelineCache ? m_pipelineCache->GetDepthClearValue()
-                                                 : PipelineCache::GetDepthClearValue(false);
-        rpDesc.SetDepthStencil(m_depthTargetView, RHILoadOp::Clear, RHIStoreOp::Store,
-                               clearDepth, 0);
+        rpDesc.SetDepthStencil(m_depthTargetView,
+                               RHILoadOp::Clear,
+                               RHIStoreOp::Store,
+                               m_pipelineCache->GetDepthClearValue(),
+                               0);
     }
 
     ctx.BeginRenderPass(rpDesc);
-
-    // 2. Set viewport and scissor
-    ctx.SetViewport(view.GetRHIViewport());
-    ctx.SetScissor(view.GetRHIScissor());
-
-    // 3. Cache frame constants descriptor set. DX12 needs descriptor sets bound after the pipeline root signature.
-    RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet();
-
-    // 4. Draw each visible object group with its material variant pipeline.
-    if (m_renderScene && m_resourceRegistry != nullptr)
-    {
-        if (TryDrawGPUDrivenIndirect(
-                ctx, view, colorTargetFormat, frameSet, false))
-        {
-            ctx.EndRenderPass();
-            return;
-        }
-
-        const auto drawGroup = [&](const std::vector<RenderDrawItem>* drawItems,
-                                   MaterialPipelineVariant variant,
-                                   const char* groupName)
-        {
-            if (!drawItems || drawItems->empty())
-                return;
-
-            RHIPipeline* pipeline = m_pipelineCache->GetPipelineForVariant(variant, colorTargetFormat);
-            if (!pipeline)
-            {
-                RVX_CORE_WARN("OpaquePass: Missing {} pipeline; skipping {} draw items",
-                              groupName, drawItems->size());
-                return;
-            }
-
-            ctx.SetPipeline(pipeline);
-            if (frameSet)
-            {
-                ctx.SetDescriptorSet(0, frameSet);
-            }
-
-            const auto drawDirectItem = [&](const RenderDrawItem& item)
-            {
-                if (item.objectIndex >= m_renderScene->GetObjectCount())
-                {
-                    ++m_drawStats.skippedInvalidObjectCount;
-                    return;
-                }
-
-                const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
-
-                // Get GPU buffers for this mesh
-                MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-                    m_resourceRegistry,
-                    obj.mesh);
-                if (!buffers.IsValid())
-                {
-                    ++m_drawStats.skippedMissingMeshCount;
-                    return;  // Mesh not uploaded yet
-                }
-
-                // Update per-object constants
-                m_pipelineCache->UpdateObjectConstants(obj.worldMatrix,
-                                                       obj.normalMatrix,
-                                                       obj.previousWorldMatrix,
-                                                       view.previousViewProjectionMatrix,
-                                                       obj.previousWorldMatrixValid != 0 &&
-                                                           view.previousViewProjectionValid != 0 &&
-                                                           !view.resetTemporalHistory,
-                                                       obj.receivesShadow,
-                                                       ResolveSkinningMatrices(obj, buffers));
-                RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
-                if (objectSet)
-                {
-                    const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
-                    ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
-                }
-
-                // Bind SEPARATE vertex buffers to different slots
-                ctx.SetVertexBuffer(0, buffers.positionBuffer);  // Slot 0: Position
-
-                if (buffers.normalBuffer)
-                {
-                    ctx.SetVertexBuffer(1, buffers.normalBuffer);  // Slot 1: Normal
-                }
-
-                if (buffers.uvBuffer)
-                {
-                    ctx.SetVertexBuffer(2, buffers.uvBuffer);  // Slot 2: UV
-                }
-
-                if (buffers.tangentBuffer)
-                {
-                    ctx.SetVertexBuffer(3, buffers.tangentBuffer);  // Slot 3: Tangent
-                }
-                if (buffers.boneIndicesBuffer)
-                {
-                    ctx.SetVertexBuffer(4, buffers.boneIndicesBuffer);  // Slot 4: Bone indices
-                }
-                if (buffers.boneWeightsBuffer)
-                {
-                    ctx.SetVertexBuffer(5, buffers.boneWeightsBuffer);  // Slot 5: Bone weights
-                }
-
-                // Bind index buffer
-                ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
-
-                if (item.submeshIndex >= buffers.submeshes.size())
-                {
-                    ++m_drawStats.skippedInvalidSubmeshCount;
-                    return;
-                }
-
-                const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-                MaterialBindingOptions materialOptions;
-                materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
-                const MaterialBindingResult materialBinding =
-                    m_materialSystem->PrepareMaterialBinding(
-                        item.material, view.viewCache, materialOptions);
-                if (!materialBinding.IsDrawable())
-                {
-                    ++m_drawStats.skippedMaterialBindingCount;
-                    RVX_CORE_WARN("OpaquePass: Skipping {} draw item because material binding failed: {}",
-                                  groupName,
-                                  materialBinding.message);
-                    return;
-                }
-
-                ctx.SetDescriptorSet(2, materialBinding.descriptorSet, materialBinding.dynamicOffsets);
-
-                ctx.DrawIndexed(submesh.indexCount, 1,
-                                submesh.indexOffset, submesh.baseVertex, 0);
-                ++m_drawStats.directDrawCount;
-            };
-
-            const auto tryDrawIndirectBatch = [&](size_t startIndex, uint32 batchLength) -> bool
-            {
-                if (batchLength < 2 || !EnsureIndirectDrawCapacity(batchLength))
-                {
-                    return false;
-                }
-
-                const RenderDrawItem& firstItem = (*drawItems)[startIndex];
-                if (firstItem.objectIndex >= m_renderScene->GetObjectCount())
-                {
-                    return false;
-                }
-
-                const RenderObject& obj = m_renderScene->GetObject(firstItem.objectIndex);
-                MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-                    m_resourceRegistry,
-                    obj.mesh);
-                if (!buffers.IsValid())
-                {
-                    return false;
-                }
-
-                m_indirectDrawCommands.clear();
-                m_indirectDrawCommands.reserve(batchLength);
-                RenderResourceHandle batchMaterial;
-                for (uint32 i = 0; i < batchLength; ++i)
-                {
-                    const RenderDrawItem& item = (*drawItems)[startIndex + i];
-                    if (item.objectIndex != firstItem.objectIndex ||
-                        item.submeshIndex >= buffers.submeshes.size())
-                    {
-                        return false;
-                    }
-
-                    if (i == 0)
-                    {
-                        batchMaterial = item.material;
-                    }
-                    else if (item.material != batchMaterial)
-                    {
-                        return false;
-                    }
-
-                    const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-                    IndirectDrawIndexedCommand command = {};
-                    command.indexCount = submesh.indexCount;
-                    command.instanceCount = 1;
-                    command.firstIndex = submesh.indexOffset;
-                    command.vertexOffset = submesh.baseVertex;
-                    command.firstInstance = 0;
-                    m_indirectDrawCommands.push_back(command);
-                }
-
-                MaterialBindingOptions materialOptions;
-                materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
-                const MaterialBindingResult materialBinding =
-                    m_materialSystem->PrepareMaterialBinding(
-                        batchMaterial, view.viewCache, materialOptions);
-                if (!materialBinding.IsDrawable())
-                {
-                    return false;
-                }
-
-                m_pipelineCache->UpdateObjectConstants(obj.worldMatrix, obj.normalMatrix,
-                                                       obj.previousWorldMatrix,
-                                                       view.previousViewProjectionMatrix,
-                                                       obj.previousWorldMatrixValid != 0 &&
-                                                       view.previousViewProjectionValid != 0 &&
-                                                       !view.resetTemporalHistory,
-                                                       obj.receivesShadow,
-                                                       ResolveSkinningMatrices(obj, buffers));
-                RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
-                if (objectSet)
-                {
-                    const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
-                    ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
-                }
-
-                ctx.SetVertexBuffer(0, buffers.positionBuffer);
-                if (buffers.normalBuffer)
-                {
-                    ctx.SetVertexBuffer(1, buffers.normalBuffer);
-                }
-                if (buffers.uvBuffer)
-                {
-                    ctx.SetVertexBuffer(2, buffers.uvBuffer);
-                }
-                if (buffers.tangentBuffer)
-                {
-                    ctx.SetVertexBuffer(3, buffers.tangentBuffer);
-                }
-                if (buffers.boneIndicesBuffer)
-                {
-                    ctx.SetVertexBuffer(4, buffers.boneIndicesBuffer);
-                }
-                if (buffers.boneWeightsBuffer)
-                {
-                    ctx.SetVertexBuffer(5, buffers.boneWeightsBuffer);
-                }
-                ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
-                ctx.SetDescriptorSet(2, materialBinding.descriptorSet, materialBinding.dynamicOffsets);
-
-                m_indirectDrawBuffer->Upload(m_indirectDrawCommands.data(), m_indirectDrawCommands.size());
-                ctx.DrawIndexedIndirect(m_indirectDrawBuffer.Get(),
-                                        0,
-                                        static_cast<uint32>(m_indirectDrawCommands.size()),
-                                        sizeof(IndirectDrawIndexedCommand));
-                ++m_drawStats.indirectBatchCount;
-                m_drawStats.indirectDrawCount += static_cast<uint32>(m_indirectDrawCommands.size());
-                return true;
-            };
-
-            for (size_t drawIndex = 0; drawIndex < drawItems->size();)
-            {
-                const uint32 batchLength = m_indirectBatchingEnabled
-                    ? FindIndirectBatchLength(*drawItems, drawIndex)
-                    : 1;
-                if (tryDrawIndirectBatch(drawIndex, batchLength))
-                {
-                    drawIndex += batchLength;
-                    continue;
-                }
-
-                drawDirectItem((*drawItems)[drawIndex]);
-                ++drawIndex;
-            }
-        };
-
-        drawGroup(m_opaqueDrawItems, MaterialPipelineVariant::Opaque, "opaque");
-        drawGroup(m_maskedDrawItems, MaterialPipelineVariant::Masked, "masked");
-    }
-    else
-    {
-        // Log why we're not drawing
-        if (!m_renderScene) RVX_CORE_DEBUG("OpaquePass: No render scene");
-        if (!m_opaqueDrawItems && !m_maskedDrawItems) RVX_CORE_DEBUG("OpaquePass: No draw items");
-        if (m_resourceRegistry == nullptr)
-            RVX_CORE_DEBUG("OpaquePass: No GPU resources");
-    }
-
-    // 6. End render pass
+    ctx.SetViewport(drawView.GetRHIViewport());
+    ctx.SetScissor(drawView.GetRHIScissor());
+    TryDrawGPUDrivenIndirect(ctx,
+                             drawView,
+                             colorTargetFormat,
+                             m_pipelineCache->GetFrameDescriptorSet(),
+                             false);
     ctx.EndRenderPass();
 }
 

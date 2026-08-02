@@ -49,8 +49,7 @@ namespace
     }
 
     RenderSubmissionLayout MakeExpectedDirectLayout(
-        const RenderDrawPacket& packet,
-        const RenderObject& object) noexcept
+        const RenderDrawPacket& packet) noexcept
     {
         RenderSubmissionLayout layout;
         layout.vertexStreams = MeshPassVertexStreams::Position;
@@ -74,7 +73,6 @@ namespace
                 : MeshPassBindingRequirements::Material;
         }
         layout.primitiveDataBinding = PrimitiveDataBinding::PerDrawConstants;
-        (void)object;
         return layout;
     }
 
@@ -118,114 +116,6 @@ namespace
         return true;
     }
 
-    struct LegacyDepthTraceEntry
-    {
-        RenderDrawPacket packet;
-        RenderSubmissionLayout layout;
-
-        bool operator==(const LegacyDepthTraceEntry&) const noexcept = default;
-    };
-
-    bool BuildLegacyDepthPacket(const RenderScene& scene,
-                                const RenderResourceRegistry& registry,
-                                const RenderDrawItem& item,
-                                RenderDrawPacket& outPacket,
-                                RenderSubmissionLayout& outLayout) noexcept
-    {
-        if (item.objectIndex >= scene.GetObjectCount() ||
-            !item.mesh.IsValid())
-        {
-            return false;
-        }
-
-        const RenderObject& object = scene.GetObject(item.objectIndex);
-        if (object.mesh != item.mesh || object.entityId == 0)
-        {
-            return false;
-        }
-        const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(&registry, item.mesh);
-        if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
-        {
-            return false;
-        }
-
-        const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-        RenderDrawPacket packet = item.packet;
-        packet.objectId = object.entityId;
-        packet.primitiveData = item.objectIndex;
-        packet.submeshIndex = item.submeshIndex;
-        packet.pass = RenderPassKind::Depth;
-        packet.pipelineKey.materialVariant =
-            GetPipelineVariantForRenderMode(item.renderMode);
-        packet.pipelineKey.topology = MeshUploadPrimitiveTopology::Triangles;
-        packet.pipelineKey.skinned = object.HasSkinningData();
-        packet.geometryKey.mesh = item.mesh;
-        packet.geometryKey.submeshIndex = item.submeshIndex;
-        packet.geometryKey.indexType = MeshUploadIndexType::UInt32;
-        packet.materialKey.material = item.material;
-        packet.materialKey.materialMode = item.renderMode;
-        packet.arguments.indexCount = submesh.indexCount;
-        packet.arguments.instanceCount = 1;
-        packet.arguments.firstIndex = submesh.indexOffset;
-        packet.arguments.vertexOffset = submesh.baseVertex;
-        packet.arguments.firstInstance = 0;
-        packet.flags = RenderDrawFlags::None;
-        if (packet.pipelineKey.skinned)
-        {
-            packet.flags = packet.flags | RenderDrawFlags::Skinned;
-        }
-        if (item.renderMode == MaterialRenderMode::Masked)
-        {
-            packet.flags = packet.flags | RenderDrawFlags::Masked;
-        }
-        if (object.castsShadow)
-        {
-            packet.flags = packet.flags | RenderDrawFlags::CastsShadow;
-        }
-        if (object.receivesShadow)
-        {
-            packet.flags = packet.flags | RenderDrawFlags::ReceivesShadow;
-        }
-        if (!item.material.IsValid())
-        {
-            packet.flags = packet.flags | RenderDrawFlags::MissingMaterial;
-        }
-
-        outPacket = packet;
-        outLayout = MakeExpectedDirectLayout(packet, object);
-        return true;
-    }
-
-    bool BuildLegacyDepthTrace(const RenderScene& scene,
-                               const RenderResourceRegistry& registry,
-                               const std::vector<RenderDrawItem>* opaque,
-                               const std::vector<RenderDrawItem>* masked,
-                               std::vector<LegacyDepthTraceEntry>& outTrace) noexcept
-    {
-        outTrace.clear();
-        const auto append = [&](const std::vector<RenderDrawItem>* items)
-        {
-            if (items == nullptr)
-            {
-                return true;
-            }
-            for (const RenderDrawItem& item : *items)
-            {
-                LegacyDepthTraceEntry entry;
-                if (!BuildLegacyDepthPacket(scene,
-                                            registry,
-                                            item,
-                                            entry.packet,
-                                            entry.layout))
-                {
-                    return false;
-                }
-                outTrace.push_back(std::move(entry));
-            }
-            return true;
-        };
-        return append(opaque) && append(masked);
-    }
 } // namespace
 
 struct DepthPrepass::PlannedDepthDraw
@@ -493,33 +383,9 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             ? 0
             : static_cast<uint32>(built.batch.packets.size());
     m_drawStats.compiledPacketCount = m_drawStats.plannedPacketCount;
-    m_drawStats.dualBuildCompared = true;
-    m_drawStats.dualBuildMatched = false;
-
-    std::vector<LegacyDepthTraceEntry> legacyTrace;
-    if (!BuildLegacyDepthTrace(*m_renderScene,
-                               *m_resourceRegistry,
-                               m_opaqueDrawItems,
-                               m_maskedDrawItems,
-                               legacyTrace) ||
-        legacyTrace.size() != built.batch.packets.size())
-    {
-        m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
-        return false;
-    }
-
     outPlannedDraws.reserve(built.batch.packets.size());
-    for (size_t index = 0; index < built.batch.packets.size(); ++index)
+    for (const DirectDrawPacket& draw : built.batch.packets)
     {
-        const DirectDrawPacket& draw = built.batch.packets[index];
-        const LegacyDepthTraceEntry& trace = legacyTrace[index];
-        if (draw.packet != trace.packet || draw.layout != trace.layout)
-        {
-            m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
-            outPlannedDraws.clear();
-            return false;
-        }
-
         const RenderDrawPacket& packet = draw.packet;
         if (packet.pass != RenderPassKind::Depth ||
             packet.primitiveData == RVX_INVALID_PRIMITIVE_DATA_INDEX ||
@@ -548,7 +414,7 @@ bool DepthPrepass::BuildPlannedDirectBatch(
         }
 
         const RenderSubmissionLayout expectedLayout =
-            MakeExpectedDirectLayout(packet, object);
+            MakeExpectedDirectLayout(packet);
         if (draw.layout != expectedLayout ||
             draw.layout.primitiveDataBinding != PrimitiveDataBinding::PerDrawConstants ||
             (static_cast<uint32>(draw.layout.vertexStreams) &
@@ -689,7 +555,6 @@ bool DepthPrepass::BuildPlannedDirectBatch(
         outPlannedDraws.push_back(std::move(planned));
     }
 
-    m_drawStats.dualBuildMatched = true;
     return true;
 }
 
@@ -755,7 +620,7 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
         }
     }
 
-    if (!m_pipelineCache || !m_renderScene || (!m_opaqueDrawItems && !m_maskedDrawItems) || !depthTargetView)
+    if (!m_pipelineCache || !m_renderScene || !depthTargetView)
     {
         return;
     }
@@ -800,6 +665,19 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
                 : 0;
     };
 
+    if (view.renderFrameExecutionPlan != nullptr &&
+        view.meshPassPreparation == nullptr)
+    {
+        m_drawStats.planRequested = true;
+        m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
+        updatePlanReport(RenderExecutionStatus::Failed,
+                         m_drawStats.failureReason,
+                         0,
+                         false,
+                         RenderVisibilityMode::Cpu);
+        return;
+    }
+
     // A published plan is authoritative.  Build and preflight the entire
     // Direct lane before beginning the render pass, and never replay Direct
     // work when a planned GPU lane fails at recording time.
@@ -830,6 +708,19 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
 
         const bool plannedGPU =
             depthPlan->partition.gpuDrivenPacketCount != 0;
+        if (plannedGPU && !ValidateWholePassGPUDrivenPacketRange(
+                              *view.renderFrameExecutionPlan,
+                              RenderPassKind::Depth,
+                              view.meshPassPreparation->depth))
+        {
+            m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
+            updatePlanReport(RenderExecutionStatus::Failed,
+                             m_drawStats.failureReason,
+                             0,
+                             true,
+                             depthPlan->visibility);
+            return;
+        }
         if (!plannedGPU)
         {
             std::vector<PlannedDepthDraw> plannedDraws;
@@ -925,15 +816,13 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    // Standalone compatibility path: no frame plan is available, so retain
-    // the historical opaque/masked draw-item execution for isolated tests.
-    RHIPipeline* depthPipeline = m_pipelineCache->GetDepthOnlyPipeline();
-    if (!depthPipeline)
+    if (!m_gpuDrivenDepthIndirectEnabled)
     {
         return;
     }
 
-    // Begin render pass with depth-only attachment (no color)
+    // Standalone compatibility path: no frame plan is available.  The
+    // GPU-driven path is explicit opt-in and has no Direct replay fallback.
     RHIRenderPassDesc rpDesc;
     rpDesc.SetDepthStencil(depthTargetView,
                            RHILoadOp::Clear,
@@ -943,140 +832,9 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
 
     ctx.BeginRenderPass(rpDesc);
 
-    // Set viewport and scissor
     ctx.SetViewport(view.GetRHIViewport());
     ctx.SetScissor(view.GetRHIScissor());
-
-    if (TryDrawGPUDrivenIndirect(ctx, view))
-    {
-        ctx.EndRenderPass();
-        return;
-    }
-
-    // Draw all visible opaque/masked objects with their exact depth pipeline.
-    if (m_resourceRegistry != nullptr)
-    {
-        const auto drawItem = [&](const RenderDrawItem& item)
-        {
-            if (item.objectIndex >= m_renderScene->GetObjectCount())
-            {
-                ++m_drawStats.skippedInvalidObjectCount;
-                return;
-            }
-
-            const RenderObject& obj = m_renderScene->GetObject(item.objectIndex);
-
-            // Get GPU buffers for this mesh
-            MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-                m_resourceRegistry,
-                obj.mesh);
-            if (!buffers.IsValid())
-            {
-                ++m_drawStats.skippedMissingMeshCount;
-                return;  // Mesh not uploaded yet
-            }
-
-            const bool masked = item.renderMode == MaterialRenderMode::Masked;
-            RHIPipeline* pipeline = depthPipeline;
-            MaterialBindingResult materialBinding;
-            if (masked)
-            {
-                if (m_materialSystem == nullptr ||
-                    buffers.uvBuffer == nullptr || !buffers.hasUVs)
-                {
-                    ++m_drawStats.skippedMissingUVCount;
-                    return;
-                }
-                pipeline = m_pipelineCache->GetMaskedDepthOnlyPipeline();
-                if (pipeline == nullptr)
-                {
-                    ++m_drawStats.skippedMaterialBindingCount;
-                    return;
-                }
-                MaterialBindingOptions options;
-                options.allowNormalMap = false;
-                materialBinding = m_materialSystem->PrepareMaterialBinding(
-                    item.material, view.viewCache, options);
-                if (!materialBinding.IsDrawable())
-                {
-                    ++m_drawStats.skippedMaterialBindingCount;
-                    return;
-                }
-            }
-
-            // Update per-object constants
-            m_pipelineCache->UpdateObjectConstants(obj.worldMatrix,
-                                                   obj.normalMatrix,
-                                                   obj.previousWorldMatrix,
-                                                   view.previousViewProjectionMatrix,
-                                                   obj.previousWorldMatrixValid != 0 &&
-                                                       view.previousViewProjectionValid != 0 &&
-                                                       !view.resetTemporalHistory,
-                                                   ResolveSkinningMatrices(obj, buffers));
-
-            ctx.SetPipeline(pipeline);
-            if (RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet())
-            {
-                ctx.SetDescriptorSet(0, frameSet);
-            }
-
-            if (RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet())
-            {
-                const auto objectDynamicOffsets =
-                    m_pipelineCache->GetCurrentObjectDynamicOffset();
-                ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
-            }
-
-            // Bind vertex buffers - only position is needed for depth
-            ctx.SetVertexBuffer(0, buffers.positionBuffer);  // Slot 0: Position
-            if (masked)
-            {
-                ctx.SetVertexBuffer(2, buffers.uvBuffer);
-                ctx.SetDescriptorSet(2,
-                                     materialBinding.descriptorSet,
-                                     materialBinding.dynamicOffsets);
-            }
-            if (buffers.boneIndicesBuffer)
-            {
-                ctx.SetVertexBuffer(4, buffers.boneIndicesBuffer);
-            }
-            if (buffers.boneWeightsBuffer)
-            {
-                ctx.SetVertexBuffer(5, buffers.boneWeightsBuffer);
-            }
-
-            // Bind index buffer
-            ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
-
-            if (item.submeshIndex >= buffers.submeshes.size())
-            {
-                ++m_drawStats.skippedInvalidSubmeshCount;
-                return;
-            }
-
-            const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-            ctx.DrawIndexed(submesh.indexCount, 1,
-                            submesh.indexOffset, submesh.baseVertex, 0);
-            ++m_drawStats.directDrawCount;
-        };
-
-        if (m_opaqueDrawItems)
-        {
-            for (const RenderDrawItem& item : *m_opaqueDrawItems)
-            {
-                drawItem(item);
-            }
-        }
-
-        if (m_maskedDrawItems)
-        {
-            for (const RenderDrawItem& item : *m_maskedDrawItems)
-            {
-                drawItem(item);
-            }
-        }
-    }
-
+    TryDrawGPUDrivenIndirect(ctx, view);
     ctx.EndRenderPass();
 }
 

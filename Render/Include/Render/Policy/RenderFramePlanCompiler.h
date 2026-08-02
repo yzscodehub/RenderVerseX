@@ -20,6 +20,10 @@ namespace RVX
         bool operator==(const RenderFramePlanCompileResult&) const = default;
     };
 
+    /** @brief Validate one prepared stream before plan consumption. */
+    [[nodiscard]] bool ValidateMeshPassPacketStream(
+        const MeshPassPacketStream& stream);
+
     /**
      * @brief Compile one owned per-view plan from resolver output and prepared streams.
      *
