@@ -1,9 +1,12 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-4 complete; Task 5 not started
+**Status:** Tasks 0-4 complete; Task 5 ready to start
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
+
+**Execution checklist:**
+`Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
 
 ## 1. Objective
 
@@ -827,6 +830,11 @@ Acceptance:
 **Purpose:** Make `Auto` choose a path that is both correct and economically
 useful.
 
+**Execution dependency:** Complete the Task 16A qualification schema and
+machine-evidence ingestion slice before Task 15 so benefit logic consumes a
+versioned backend/path/strategy qualification snapshot rather than the earlier
+backend-wide projection. This slice does not promote a backend or change Auto.
+
 Inputs:
 
 - qualified backend/path revision;
@@ -860,6 +868,12 @@ Acceptance:
 ### Task 16 - Upgrade qualification, diagnostics, and Samples
 
 **Purpose:** Close the production workflow after the architecture is stable.
+
+**Execution split:** Task 16A (qualification schema, evidence ingestion, and
+hermetic evidence) runs after Task 14 and before Task 15. Task 16B (final
+diagnostics, Sample cleanup, adapter matrix, and promotion) runs after Task 15.
+The task number remains unchanged because both slices own one qualification
+workflow.
 
 Work:
 
@@ -1063,8 +1077,9 @@ same visible/material contract through a Metal-native submission strategy.
 ### Milestone M6 - Shipping policy and qualification
 
 Contains Tasks 14-16. Exit condition: compatibility backends remain functional,
+Task 16A establishes path/strategy qualification before Task 15 consumes it,
 Auto has measured benefit logic and hysteresis, diagnostics are complete, and
-each modern backend is promoted only by its own reviewed evidence.
+each modern backend is promoted only by its own reviewed evidence in Task 16B.
 
 ## 12. Explicit Sequencing Constraints
 
