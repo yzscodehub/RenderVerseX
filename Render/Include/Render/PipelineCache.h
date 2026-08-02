@@ -293,6 +293,11 @@ namespace RVX
          * @return Depth-only pipeline or nullptr if not available
          */
         RHIPipeline* GetDepthOnlyPipeline() const { return m_depthOnlyPipeline.Get(); }
+        /** @brief Get the alpha-masked depth-only pipeline. */
+        RHIPipeline* GetMaskedDepthOnlyPipeline() const
+        {
+            return m_maskedDepthOnlyPipeline.Get();
+        }
         RHIPipeline* GetGPUDrivenDepthOnlyPipeline();
 
         /**
@@ -587,13 +592,15 @@ namespace RVX
 
         /**
          * @brief Update per-object constants without previous-frame motion data.
+         * @return True when a new constant slot was uploaded successfully.
          */
-        void UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix);
+        bool UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix);
 
         /**
          * @brief Update per-object constants with previous-frame motion data.
+         * @return True when a new constant slot was uploaded successfully.
          */
-        void UpdateObjectConstants(const Mat4& worldMatrix,
+        bool UpdateObjectConstants(const Mat4& worldMatrix,
                                    const Mat4& normalMatrix,
                                    const Mat4& previousWorldMatrix,
                                    const Mat4& previousViewProjectionMatrix,
@@ -602,8 +609,9 @@ namespace RVX
 
         /**
          * @brief Update per-object constants with previous-frame motion and render flags.
+         * @return True when a new constant slot was uploaded successfully.
          */
-        void UpdateObjectConstants(const Mat4& worldMatrix,
+        bool UpdateObjectConstants(const Mat4& worldMatrix,
                                    const Mat4& normalMatrix,
                                    const Mat4& previousWorldMatrix,
                                    const Mat4& previousViewProjectionMatrix,
@@ -686,6 +694,7 @@ namespace RVX
                                                               const RHIBlendState& blendState,
                                                               RHIFormat renderTargetFormat);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateMaskedDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateGPUDrivenDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateShadowDepthPipeline(const ShadowDepthBiasState& biasState);
         RHIPipelineRef GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
@@ -717,6 +726,7 @@ namespace RVX
                                                                      const RHIBlendState& blendState,
                                                                      RHIFormat renderTargetFormat) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildMaskedDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildGPUDrivenDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildShadowDepthPipelineDesc(const ShadowDepthBiasState& biasState) const;
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
@@ -773,6 +783,8 @@ namespace RVX
         RHIShaderRef m_gpuDrivenVertexShader;
         RHIShaderRef m_pixelShader;
         RHIShaderRef m_depthOnlyVertexShader;
+        RHIShaderRef m_maskedDepthOnlyVertexShader;
+        RHIShaderRef m_maskedDepthOnlyPixelShader;
         RHIShaderRef m_gpuDrivenDepthOnlyVertexShader;
         RHIShaderRef m_skyboxVertexShader;
         RHIShaderRef m_skyboxPixelShader;
@@ -815,6 +827,8 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_gpuDrivenVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuDrivenDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_skyboxVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_skyboxPsCompileResult;
@@ -875,6 +889,7 @@ namespace RVX
         RHIPipelineRef m_maskedPipeline;
         RHIPipelineRef m_transparentPipeline;
         RHIPipelineRef m_depthOnlyPipeline;
+        RHIPipelineRef m_maskedDepthOnlyPipeline;
         RHIPipelineRef m_gpuDrivenDepthOnlyPipeline;
         RHIPipelineRef m_skyboxPipeline;
         RHIPipelineRef m_toneMappingPipeline;

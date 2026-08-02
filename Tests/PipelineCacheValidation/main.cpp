@@ -6261,8 +6261,8 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
     EXPECT_NE(firstCache.GetStats().fxaaPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().skyboxPipelineHash, firstCache.GetStats().toneMappingPipelineHash);
     EXPECT_NE(firstCache.GetStats().uiPipelineHash, firstCache.GetStats().bloomPipelineHash);
-    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 16u);
-    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 16u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 17u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 17u);
 }
 
 TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
@@ -6493,7 +6493,7 @@ TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAn
     EXPECT_EQ(cache.GetPostProcessIntermediateFormat(), RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(cache.GetToneMappingOutputFormat(), RVX::RHIFormat::BGRA8_UNORM);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 16u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 17u);
     EXPECT_EQ(device.capturedGraphicsPipelines[0].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[1].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[2].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
@@ -6669,7 +6669,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(RVX::PipelineCache::GetDefaultDepthStencilFormat(), RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(cache.GetDepthClearValue(), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 16u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 17u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
     const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
@@ -6685,6 +6685,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     const auto& colorGradingDesc = device.capturedGraphicsPipelines[13];
     const auto& chromaticAberrationDesc = device.capturedGraphicsPipelines[14];
     const auto& uiDesc = device.capturedGraphicsPipelines[15];
+    const auto& maskedDepthOnlyDesc = device.capturedGraphicsPipelines[16];
 
     EXPECT_EQ(opaqueDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
@@ -6711,6 +6712,21 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_STREQ(depthOnlyDesc.inputLayout.elements[2].semanticName, "BLENDWEIGHT");
     EXPECT_EQ(depthOnlyDesc.inputLayout.elements[2].format, RVX::RHIFormat::RGBA32_FLOAT);
     EXPECT_EQ(depthOnlyDesc.inputLayout.elements[2].inputSlot, 5u);
+
+    ASSERT_NE(cache.GetMaskedDepthOnlyPipeline(), nullptr);
+    EXPECT_STREQ(maskedDepthOnlyDesc.debugName, "MaskedDepthOnlyPipeline");
+    EXPECT_EQ(maskedDepthOnlyDesc.numRenderTargets, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.depthStencilFormat,
+              RVX::RHIFormat::D32_FLOAT);
+    EXPECT_TRUE(maskedDepthOnlyDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(maskedDepthOnlyDesc.vertexShader, nullptr);
+    EXPECT_NE(maskedDepthOnlyDesc.pixelShader, nullptr);
+    ASSERT_EQ(maskedDepthOnlyDesc.inputLayout.elements.size(),
+              static_cast<size_t>(4));
+    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[3].semanticName,
+                 "TEXCOORD");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].inputSlot, 2u);
 
     ASSERT_NE(cache.GetSkyboxPipeline(), nullptr);
     EXPECT_EQ(skyboxDesc.numRenderTargets, 1u);
@@ -7920,4 +7936,21 @@ TEST_F(PipelineCacheValidationFixture, UIPipelineCreationFailureIsVisible)
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("UI pipeline"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       MaskedDepthOnlyPipelineCreationFailureIsVisible)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.failPipelineCreationAtIndex = 17;
+    PipelineCacheForValidation cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
+    EXPECT_NE(cache.GetLastError().find("masked depth-only pipeline"),
+              std::string::npos);
 }

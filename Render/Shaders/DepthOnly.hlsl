@@ -11,6 +11,7 @@
 //   Slot 4: Bone indices buffer (uint4)
 //   Slot 5: Bone weights buffer (float4)
 //   Slot 6: GPU-driven global instance index buffer (uint)
+//   Slot 2: Masked-depth UVs (float2)
 // =============================================================================
 
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
@@ -74,6 +75,38 @@ struct VSOutput
     float4 Position : SV_POSITION;
 };
 
+struct MaskedVSInput
+{
+    float3 Position : POSITION;
+    float2 TexCoord : TEXCOORD0;
+    uint4 BoneIndices : BLENDINDICES;
+    float4 BoneWeights : BLENDWEIGHT;
+};
+
+struct MaskedVSOutput
+{
+    float4 Position : SV_POSITION;
+    float2 TexCoord : TEXCOORD0;
+};
+
+cbuffer MaterialConstants : register(b0, space2)
+{
+    float4 BaseColorFactor;
+    float MetallicFactor;
+    float RoughnessFactor;
+    float NormalScale;
+    float OcclusionStrength;
+    float4 EmissiveColor_Strength;
+    uint TextureFlags;
+    uint AlphaMode;
+    float AlphaCutoff;
+    uint Workflow;
+    uint4 DoubleSided_MaterialPaddingBits;
+};
+
+Texture2D BaseColorTexture : register(t1, space2);
+SamplerState MaterialSampler : register(s6, space2);
+
 float4 ResolveSkinningPosition(float3 position, uint4 boneIndices, float4 boneWeights)
 {
     if (SkinningParams.x <= 0.5f || SkinningParams.y <= 0.5f)
@@ -114,4 +147,25 @@ VSOutput VSMainGPUDriven(
     float4 worldPosition = mul(world, float4(input.Position, 1.0));
     output.Position = mul(ViewProjection, worldPosition);
     return output;
+}
+
+MaskedVSOutput VSMainMasked(MaskedVSInput input)
+{
+    MaskedVSOutput output;
+    float4 worldPosition = mul(
+        World,
+        ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights));
+    output.Position = mul(ViewProjection, worldPosition);
+    output.TexCoord = input.TexCoord;
+    return output;
+}
+
+void PSMainMasked(MaskedVSOutput input)
+{
+    float alpha = BaseColorFactor.a;
+    if ((TextureFlags & 0x01u) != 0u)
+    {
+        alpha *= BaseColorTexture.Sample(MaterialSampler, input.TexCoord).a;
+    }
+    clip(alpha - AlphaCutoff);
 }

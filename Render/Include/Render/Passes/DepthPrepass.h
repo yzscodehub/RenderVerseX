@@ -9,14 +9,19 @@
  */
 
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderDrawItem.h"
+
+#include <span>
+#include <vector>
 
 namespace RVX
 {
     class RenderResourceRegistry;
     class GPUCulling;
     class RenderScene;
+    class MaterialSystem;
 
     struct DepthPrepassDrawStats
     {
@@ -28,6 +33,17 @@ namespace RVX
         uint32 skippedInvalidSubmeshCount = 0;
         bool gpuDrivenRequested = false;
         bool gpuDrivenEligible = false;
+        bool planRequested = false;
+        bool planValidated = false;
+        bool directPacketPathUsed = false;
+        bool dualBuildCompared = false;
+        bool dualBuildMatched = false;
+        uint32 plannedPacketCount = 0;
+        uint32 compiledPacketCount = 0;
+        uint32 executedPacketCount = 0;
+        uint32 skippedMissingUVCount = 0;
+        uint32 skippedMaterialBindingCount = 0;
+        RenderPolicyReason failureReason = RenderPolicyReason::ConservativeDefault;
     };
 
     /**
@@ -67,6 +83,10 @@ namespace RVX
 
         /** @brief Set the pipeline dependency before rendering. */
         void SetResources(PipelineCache* pipelineCache);
+        void SetMaterialSystem(MaterialSystem* materialSystem)
+        {
+            m_materialSystem = materialSystem;
+        }
         void SetResourceRegistry(const RenderResourceRegistry* registry)
         {
             m_resourceRegistry = registry;
@@ -116,13 +136,24 @@ namespace RVX
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
     private:
+        struct PlannedDepthDraw;
+
         bool AreGPUDrivenDepthGroupsDrawable(uint32& outDrawItemCount) const;
         bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx, const ViewData& view);
+        bool TryDrawPlannedDirect(
+            RHICommandContext& ctx,
+            const ViewData& view,
+            RHITextureView* depthTargetView,
+            std::span<const PlannedDepthDraw> plannedDraws);
+        bool BuildPlannedDirectBatch(
+            const ViewData& view,
+            std::vector<PlannedDepthDraw>& outPlannedDraws);
 
         bool m_enabled = false;  // Disabled by default until depth-only pipeline is ready
         std::string m_unsupportedReason = "Depth-only pipeline is not available";
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
+        MaterialSystem* m_materialSystem = nullptr;
         const RenderScene* m_renderScene = nullptr;
         const GPUCulling* m_gpuCulling = nullptr;
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;

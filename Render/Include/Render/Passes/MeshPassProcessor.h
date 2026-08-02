@@ -236,6 +236,10 @@ namespace RVX
             MeshPassEligibilityReason::PassIrrelevant;
         RenderDrawPacket packet;
         RenderDrawGroupKey groupKey;
+        /// Direct-recording layout captured before GPU-only instance inputs
+        /// are appended to a candidate.  This remains valid when a Task5
+        /// whole-pass fallback selects a candidate for Direct submission.
+        RenderSubmissionLayout directLayout;
         uint32 sourceOrdinal = 0;
         float32 viewDepth = 0.0f;
 

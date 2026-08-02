@@ -43844,6 +43844,134 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
 
 ---
 
+### R-SP327 Render-policy Task 6A Direct Depth packet execution
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Implementation agents:** primary agent with bounded `task5c_compiler_impl`
+assistance
+**Independent code review agent:** `task5c_independent_review`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Section: Task 6A
+- Contract: Task 5 canonical frame plan and packet-source mapping
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP326 Render-policy Task 5C per-view frame-plan integration
+- Evidence: commit `95076f92`, canonical value plan compilation, complete
+  source/range validation, and Direct/GPU visual parity.
+
+**Approved scope:**
+
+- Materialize a value-owned Direct Depth batch from the authoritative Task 5
+  plan using `sourcePacketIndex` as identity and `sourceOrdinal` only as an
+  ordering consistency check.
+- Preflight the complete Direct lane before `BeginRenderPass`, including exact
+  packet/layout parity, unique object resolution, geometry/submesh arguments,
+  pipelines, descriptors, masked material/UV requirements, skinning streams,
+  object-constant upload, and cached dynamic offsets.
+- Record opaque and masked Depth packets without reclassification or a second
+  legacy submission; preserve the legacy construction only as a temporary
+  value oracle for dual-build comparison.
+- Add the masked Depth shader/pipeline and bind alpha-test material state for
+  the Depth pass.
+- Report Direct/GPU lane completion or failure without same-frame replay after
+  a planned GPU recording failure.
+
+**Out of scope:**
+
+- Opaque packet-range recording and material/tangent-basis parity; Task 6B.
+- Removal of the temporary Depth/Opaque legacy construction or adapters still
+  used by other passes; Task 6C.
+- Persistent packet identity, mixed-lane execution, visibility separation, or
+  backend submission strategies; Tasks 7-13.
+
+**Files changed:**
+
+- `Render/CMakeLists.txt`
+- `Render/Include/Render/Passes/DirectDrawPacketBatch.h`
+- `Render/Private/Passes/DirectDrawPacketBatch.cpp`
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Include/Render/Passes/MeshPassProcessor.h`
+- `Render/Private/Passes/DepthMeshPassProcessor.cpp`
+- `Render/Private/Passes/MeshPassProcessor.cpp`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Policy/RenderFramePlanCompiler.cpp`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Tests/MeshPassProcessorValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderPolicyValidation/main.cpp`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target `
+  PipelineCacheValidation RenderPassValidation ModelViewer
+
+PipelineCacheValidation.exe
+RenderPassValidation.exe
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "(RenderPolicyValidation|GPUDrivenValidation|RenderPassValidation|RenderSceneValidation|MeshPassProcessorValidation)"
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+```
+
+**Validation result:**
+
+- Focused builds: PASS for PipelineCacheValidation, RenderPassValidation, and
+  ModelViewer, including DX11, DX12, Vulkan, and OpenGL backend libraries.
+- Standalone suites: PASS 127/127 PipelineCache and 149/149 RenderPass.
+- Adjacent renderer contract CTest gate: PASS 189/189 across RenderPolicy,
+  MeshPassProcessor, GPUDriven, RenderScene, and RenderPass.
+- Synthetic and external Porsche Direct/GPU smoke plus pixel parity: PASS 6/6
+  on the configured DX12 host.
+- `git diff --check`: PASS; only line-ending conversion warnings.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for object constants uploaded after
+  `BeginRenderPass`, an invalid `TEXCOORD0` semantic name in the masked Depth
+  input layout, and missing planned-GPU late-failure coverage.
+- Primary accepted all findings, moved Direct object uploads into whole-lane
+  preflight with checked results and cached offsets, corrected the semantic to
+  `TEXCOORD` plus index 0, and added both pre-Begin upload-failure and
+  no-replay GPU late-failure tests.
+- Final verdict: APPROVE; no remaining P0/P1/P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. The Task 5 plan is execution-authoritative for Direct Depth;
+  malformed facts and unavailable bindings fail before recording, and the
+  legacy trace cannot submit commands.
+- Real DX12 validation confirms the masked shader reflection/input layout and
+  both synthetic and external-asset Direct/GPU parity.
+- `UpdateObjectConstants` now exposes upload failure as `bool`; legacy callers
+  that ignore it remain a tracked non-blocking migration item for their
+  planned-path tasks.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 6B Direct Opaque packet-range execution and exact legacy
+  parity for material, tangent-basis, shadow receiver, and motion constants.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged; they are unrelated local artifacts.
+- The pre-existing OpenGL ToneMapping SPIRV-Cross constant-buffer issue remains
+  a Task 14 compatibility gate.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

@@ -1559,6 +1559,9 @@ void SceneRenderer::PrepareMeshPassPackets()
 void SceneRenderer::InvalidateRenderFramePlan()
 {
     m_renderPolicyDiagnostics = {};
+    m_viewData.renderFrameExecutionPlan = nullptr;
+    m_viewData.meshPassPreparation = nullptr;
+    m_viewData.renderFrameExecutionReport = nullptr;
     m_frameDiagnostics.policy = {};
     m_gpuDrivenCullingEnabled = false;
     m_gpuDrivenPolicyDecision = {};
@@ -1579,6 +1582,9 @@ void SceneRenderer::CompileRenderFramePlan()
     m_renderPolicyDiagnostics.reportAvailable = false;
     m_renderPolicyDiagnostics.selectedPlan = {};
     m_renderPolicyDiagnostics.executionReport = {};
+    m_viewData.renderFrameExecutionPlan = nullptr;
+    m_viewData.meshPassPreparation = nullptr;
+    m_viewData.renderFrameExecutionReport = nullptr;
 
     RenderPolicyResolverInput input;
     input.request.frameSequence = m_renderScene.GetAcceptedHeader().sequence;
@@ -1703,6 +1709,26 @@ void SceneRenderer::CompileRenderFramePlan()
     {
         m_renderPolicyDiagnostics.planAvailable = true;
         m_renderPolicyDiagnostics.selectedPlan = compiled.plan;
+        m_viewData.renderFrameExecutionPlan =
+            &m_renderPolicyDiagnostics.selectedPlan;
+        m_viewData.meshPassPreparation = &m_meshPassPreparation;
+        m_viewData.renderFrameExecutionReport =
+            &m_renderPolicyDiagnostics.executionReport;
+        m_renderPolicyDiagnostics.executionReport.frameSequence =
+            compiled.plan.frameSequence;
+        for (const RenderPassExecutionPlan& passPlan : compiled.plan.passes)
+        {
+            RenderPassExecutionReport report;
+            report.pass = passPlan.pass;
+            report.executedVisibility = passPlan.visibility;
+            report.gpuDrivenLane.packetRange = passPlan.gpuEligiblePackets;
+            report.gpuDrivenLane.submission = passPlan.preferredSubmission;
+            report.directLane.packetRange = passPlan.directPackets;
+            report.directLane.submission = passPlan.fallbackSubmission;
+            report.skippedPacketCount = passPlan.partition.skippedPacketCount;
+            report.reason = passPlan.reason;
+            m_renderPolicyDiagnostics.executionReport.passes.push_back(report);
+        }
     }
     ApplyRenderFramePlanProjection();
 }
@@ -2487,6 +2513,25 @@ void SceneRenderer::Render()
         executionSkippedReason = graphCompileValid
                                      ? "Graphics command context is unavailable"
                                      : "RenderGraph compile reported validation errors";
+    }
+
+    if (graphExecuted && m_renderPolicyDiagnostics.planAvailable)
+    {
+        m_renderPolicyDiagnostics.reportAvailable = true;
+        bool anyFailed = false;
+        bool allCompleted =
+            !m_renderPolicyDiagnostics.executionReport.passes.empty();
+        for (const RenderPassExecutionReport& report :
+             m_renderPolicyDiagnostics.executionReport.passes)
+        {
+            anyFailed |= report.status == RenderExecutionStatus::Failed;
+            allCompleted &=
+                report.status == RenderExecutionStatus::Completed;
+        }
+        m_renderPolicyDiagnostics.executionReport.status = anyFailed
+            ? RenderExecutionStatus::Failed
+            : (allCompleted ? RenderExecutionStatus::Completed
+                            : RenderExecutionStatus::NotAttempted);
     }
 
     RefreshFrameDiagnostics(true,
@@ -4160,6 +4205,7 @@ void SceneRenderer::SetupDefaultPasses()
 {
     auto depthPrepass = std::make_unique<DepthPrepass>();
     depthPrepass->SetResources(m_pipelineCache.get());
+    depthPrepass->SetMaterialSystem(m_materialSystem.get());
     depthPrepass->SetResourceRegistry(m_renderResourceRegistry);
     depthPrepass->SetGPUDrivenCullingSource(m_gpuCulling.get());
     depthPrepass->SetGPUDrivenDepthIndirectEnabled(m_gpuDrivenCullingEnabled);

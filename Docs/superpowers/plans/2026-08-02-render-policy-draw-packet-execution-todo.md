@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-5 complete; Task 6A Direct Depth DrawPacket execution is
-the next implementation stage
+**Status:** Tasks 0-5 and Task 6A complete; Task 6B Direct Opaque DrawPacket
+execution is the next implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -150,16 +150,16 @@ qualification policy branch.
 
 #### 6A. Direct Depth migration
 
-- [ ] Add a packet-range Direct recorder that consumes the Task 5 Depth plan.
-- [ ] Bind packet geometry, primitive-data index, object/skinning data, and
+- [x] Add a packet-range Direct recorder that consumes the Task 5 Depth plan.
+- [x] Bind packet geometry, primitive-data index, object/skinning data, and
   masked/default-material requirements without rebuilding pass classification.
-- [ ] Reject malformed ranges and unavailable required bindings before command
+- [x] Reject malformed ranges and unavailable required bindings before command
   recording.
-- [ ] Run legacy and packet Depth construction in temporary dual-build mode and
+- [x] Run legacy and packet Depth construction in temporary dual-build mode and
   compare packet/draw counts without recording twice.
-- [ ] Add static, masked, skinned, missing-material, invalid-submesh, and empty
+- [x] Add static, masked, skinned, missing-material, invalid-submesh, and empty
   Depth fixtures.
-- [ ] Capture Direct reference parity before removing the legacy Depth loop.
+- [x] Capture Direct reference parity before removing the legacy Depth loop.
 
 #### 6B. Direct Opaque migration
 

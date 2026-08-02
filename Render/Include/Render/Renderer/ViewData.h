@@ -19,6 +19,9 @@ namespace RVX
     class Camera;
     class ResourceViewCache;
     class RenderSubmissionResourceBatch;
+    struct RenderFrameExecutionPlan;
+    struct RenderFrameExecutionReport;
+    struct SceneMeshPassPreparation;
 
     /**
      * @brief View data collected for rendering a single view/camera
@@ -196,6 +199,12 @@ namespace RVX
 
         /// Current recording batch for ephemeral GPU objects; null means no-submit standalone use.
         RenderSubmissionResourceBatch* submissionResourceBatch = nullptr;
+
+        /// Borrowed frame-owned execution contract published by SceneRenderer.
+        /// Passes must not retain these pointers beyond the current frame.
+        const RenderFrameExecutionPlan* renderFrameExecutionPlan = nullptr;
+        const SceneMeshPassPreparation* meshPassPreparation = nullptr;
+        RenderFrameExecutionReport* renderFrameExecutionReport = nullptr;
 
         // =====================================================================
         // Frame Info

@@ -1,6 +1,7 @@
 #include "Render/Policy/RenderPolicyDiagnostics.h"
 #include "Render/Policy/RenderFramePlanCompiler.h"
 #include "Render/Policy/RenderPolicyResolver.h"
+#include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/RenderDiagnostics.h"
 
 #include <gtest/gtest.h>
@@ -1320,5 +1321,93 @@ namespace
         invalidPlan.passes.front().gpuEligiblePackets = {0, 0};
         invalidPlan.passes.front().directPackets = {0, 4};
         EXPECT_FALSE(ValidateRenderFrameExecutionPlan(invalidPlan));
+    }
+
+    TEST(RenderPolicyValidation,
+         DirectDrawPacketBatchUsesSourceIndexAndFailsClosed)
+    {
+        SceneMeshPassPreparation preparation;
+        MeshPassProcessorResult direct = MakePreparedPacket(
+            RenderPassKind::Depth,
+            MeshPassDisposition::Direct,
+            MeshPassEligibilityReason::Skinned,
+            17,
+            42);
+        direct.packet.primitiveData = 0;
+        direct.packet.geometryKey.mesh = RenderResourceHandle{3, 9};
+        direct.packet.geometryKey.submeshIndex = 2;
+        direct.packet.geometryKey.indexType = MeshUploadIndexType::UInt32;
+        direct.packet.materialKey.material = RenderResourceHandle{4, 7};
+        direct.packet.arguments = RenderDrawArguments{12, 1, 8, -2, 0};
+        direct.directLayout.vertexStreams = MeshPassVertexStreams::Position |
+                                            MeshPassVertexStreams::BoneIndices |
+                                            MeshPassVertexStreams::BoneWeights;
+        direct.directLayout.bindings = MeshPassBindingRequirements::Frame |
+                                       MeshPassBindingRequirements::Object |
+                                       MeshPassBindingRequirements::Geometry |
+                                       MeshPassBindingRequirements::Skinning;
+        direct.directLayout.primitiveDataBinding =
+            PrimitiveDataBinding::PerDrawConstants;
+        direct.groupKey.layout = direct.directLayout;
+        preparation.depth.Record(direct);
+        preparation.depth.FinalizeGroups();
+        preparation.opaque.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+
+        const RenderFramePlanCompileResult compiled =
+            CompileRenderFrameExecutionPlan(
+                ResolvePreparation(preparation, 505, 0), preparation);
+        ASSERT_TRUE(compiled.succeeded);
+        const DirectDrawPacketBatchBuildResult built =
+            BuildDirectDrawPacketBatch(compiled.plan,
+                                       RenderPassKind::Depth,
+                                       preparation.depth);
+        ASSERT_TRUE(built.succeeded);
+        ASSERT_EQ(1u, built.batch.packets.size());
+        EXPECT_EQ(0u, built.batch.packets.front().sourcePacketIndex);
+        EXPECT_EQ(17u, built.batch.packets.front().sourceOrdinal);
+        EXPECT_EQ(direct.packet, built.batch.packets.front().packet);
+        EXPECT_EQ(direct.directLayout, built.batch.packets.front().layout);
+
+        RenderFrameExecutionPlan invalid = compiled.plan;
+        auto& depthPlan = invalid.passes.front();
+        ASSERT_EQ(1u, depthPlan.directPackets.count);
+        invalid.packetReferences[depthPlan.directPackets.first].sourcePacketIndex =
+            99;
+        EXPECT_FALSE(BuildDirectDrawPacketBatch(invalid,
+                                                RenderPassKind::Depth,
+                                                preparation.depth)
+                         .succeeded);
+
+        invalid = compiled.plan;
+        invalid.packetReferences[invalid.passes.front().directPackets.first].pass =
+            RenderPassKind::Opaque;
+        EXPECT_FALSE(BuildDirectDrawPacketBatch(invalid,
+                                                RenderPassKind::Depth,
+                                                preparation.depth)
+                         .succeeded);
+
+        invalid = compiled.plan;
+        invalid.passes.front().directPackets.count = 0;
+        invalid.passes.front().partition.directPacketCount = 0;
+        EXPECT_FALSE(BuildDirectDrawPacketBatch(invalid,
+                                                RenderPassKind::Depth,
+                                                preparation.depth)
+                         .succeeded);
+
+        preparation.depth.packets.front().directLayout.vertexStreams =
+            MeshPassVertexStreams::InstanceIndex;
+        EXPECT_FALSE(BuildDirectDrawPacketBatch(compiled.plan,
+                                                RenderPassKind::Depth,
+                                                preparation.depth)
+                         .succeeded);
+
+        preparation.depth.packets.front().directLayout = direct.directLayout;
+        ++preparation.depth.stats.relevantPacketCount;
+        EXPECT_FALSE(BuildDirectDrawPacketBatch(compiled.plan,
+                                                RenderPassKind::Depth,
+                                                preparation.depth)
+                         .succeeded);
     }
 } // namespace

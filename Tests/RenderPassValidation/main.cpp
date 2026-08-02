@@ -29,6 +29,7 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/DepthPrepass.h"
+#include "Render/Passes/MeshPassProcessor.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/OpaquePass.h"
@@ -60,6 +61,8 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/ViewData.h"
+#include "Render/Policy/RenderFramePlanCompiler.h"
+#include "Render/Policy/RenderPolicyResolver.h"
 #include "Render/SwapChainManager.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "Resource/Types/MaterialResource.h"
@@ -151,6 +154,7 @@ namespace
         void Unmap() override {}
 
         const std::vector<uint8>& GetStorage() const { return m_storage; }
+        void SetMapSucceeds(bool succeeds) { m_mapSucceeds = succeeds; }
 
     private:
         RHIBufferDesc m_desc;
@@ -1060,6 +1064,176 @@ namespace
     {
         pass.SetResources(&pipelineCache);
         pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    }
+
+    RenderPassPolicyFacts MakeDirectPlanFacts(
+        RenderPassKind pass,
+        const MeshPassPacketStream& stream)
+    {
+        RenderPassPolicyFacts facts;
+        facts.pass = pass;
+        facts.requested = true;
+        facts.supported = true;
+        facts.directAllowed = true;
+        facts.gpuDrivenAllowed = pass == RenderPassKind::Depth ||
+                                 pass == RenderPassKind::Opaque;
+        facts.fixedCountIndirectAllowed = true;
+        facts.directShaderReadiness = RenderPolicyReadiness::Ready;
+        facts.directPipelineReadiness = RenderPolicyReadiness::Ready;
+        facts.directResourceReadiness = RenderPolicyReadiness::Ready;
+        facts.gpuDrivenShaderReadiness = RenderPolicyReadiness::Ready;
+        facts.gpuDrivenPipelineReadiness = RenderPolicyReadiness::Ready;
+        facts.gpuDrivenResourceReadiness = RenderPolicyReadiness::Ready;
+        facts.inputPacketCount = stream.stats.inputPacketCount;
+        facts.relevantPacketCount = stream.stats.relevantPacketCount;
+        facts.candidatePacketCount = stream.stats.gpuCandidatePacketCount;
+        facts.directPacketCount = stream.stats.directPacketCount;
+        facts.skippedPacketCount = stream.stats.skippedPacketCount;
+        facts.drawGroupCount = static_cast<uint32>(stream.groups.size());
+        facts.workloadBeneficial = true;
+        return facts;
+    }
+
+    RenderFramePlanCompileResult CompilePlan(
+        const SceneMeshPassPreparation& preparation,
+        RenderGPUDrivenMode gpuDrivenMode,
+        uint64 frameSequence)
+    {
+        RenderPolicyResolverInput input;
+        input.request.frameSequence = frameSequence;
+        input.request.gpuDrivenMode = gpuDrivenMode;
+        input.view.rendererAllowsGPUDriven = true;
+        input.view.viewAllowsGPUDriven = true;
+        input.view.implementationAvailable = true;
+        input.view.requestedVisibility = RenderVisibilityMode::GpuFrustum;
+        input.view.visibilityShaderReadiness = RenderPolicyReadiness::Ready;
+        input.view.visibilityPipelineReadiness = RenderPolicyReadiness::Ready;
+        input.view.sharedResourceReadiness = RenderPolicyReadiness::Ready;
+        input.view.requiredBindingReadiness = RenderPolicyReadiness::Ready;
+        input.capabilities.backend = RHIBackendType::DX12;
+        input.capabilities.supportsComputeVisibility = true;
+        input.capabilities.supportsDescriptorResourceBindings = true;
+        input.capabilities.supportsIndirectDrawCount = true;
+        input.qualification.backend = RHIBackendType::DX12;
+        input.qualification.revision = 1;
+        input.qualification.passedGateMask =
+            input.qualification.requiredGateMask;
+        input.passes = {
+            MakeDirectPlanFacts(RenderPassKind::Depth, preparation.depth),
+            MakeDirectPlanFacts(RenderPassKind::Opaque, preparation.opaque),
+            MakeDirectPlanFacts(RenderPassKind::Shadow, preparation.shadow),
+            MakeDirectPlanFacts(RenderPassKind::Transparent,
+                                preparation.transparent),
+        };
+        return CompileRenderFrameExecutionPlan(
+            ResolveRenderPolicy(input), preparation);
+    }
+
+    RenderFramePlanCompileResult CompileForcedDirectPlan(
+        const SceneMeshPassPreparation& preparation,
+        uint64 frameSequence = 601)
+    {
+        return CompilePlan(preparation,
+                           RenderGPUDrivenMode::ForceDisabled,
+                           frameSequence);
+    }
+
+    RenderFramePlanCompileResult CompileForcedGPUPlan(
+        const SceneMeshPassPreparation& preparation,
+        uint64 frameSequence = 607)
+    {
+        return CompilePlan(preparation,
+                           RenderGPUDrivenMode::ForceEnabled,
+                           frameSequence);
+    }
+
+    RenderDrawPacket MakeDepthPacket(
+        const RenderScene& scene,
+        uint32 objectIndex,
+        uint32 submeshIndex,
+        const MeshGPUBuffers& buffers,
+        RenderResourceHandle material,
+        RenderMaterialMode materialMode,
+        RenderDrawFlags flags)
+    {
+        RenderDrawPacket packet;
+        const RenderObject& object = scene.GetObject(objectIndex);
+        packet.objectId = object.entityId;
+        packet.primitiveData = objectIndex;
+        packet.submeshIndex = submeshIndex;
+        packet.pipelineKey.materialVariant =
+            materialMode == RenderMaterialMode::Masked
+                ? MaterialPipelineVariant::Masked
+                : MaterialPipelineVariant::Opaque;
+        packet.pipelineKey.topology = MeshUploadPrimitiveTopology::Triangles;
+        packet.pipelineKey.skinned =
+            (static_cast<uint32>(flags) &
+             static_cast<uint32>(RenderDrawFlags::Skinned)) != 0;
+        packet.geometryKey.mesh = object.mesh;
+        packet.geometryKey.submeshIndex = submeshIndex;
+        packet.geometryKey.indexType = MeshUploadIndexType::UInt32;
+        packet.materialKey.material = material;
+        packet.materialKey.materialMode = materialMode;
+        packet.flags = flags;
+        if (object.castsShadow)
+            packet.flags = packet.flags | RenderDrawFlags::CastsShadow;
+        if (object.receivesShadow)
+            packet.flags = packet.flags | RenderDrawFlags::ReceivesShadow;
+        if (submeshIndex < buffers.submeshes.size())
+        {
+            const SubmeshGPUInfo& submesh = buffers.submeshes[submeshIndex];
+            packet.arguments.indexCount = submesh.indexCount;
+            packet.arguments.firstIndex = submesh.indexOffset;
+            packet.arguments.vertexOffset = submesh.baseVertex;
+        }
+        return packet;
+    }
+
+    SceneMeshPassPreparation PrepareDepthPackets(
+        std::span<const RenderDrawItem> opaqueItems,
+        std::span<const RenderDrawItem> maskedItems)
+    {
+        SceneMeshPassPreparation preparation;
+        DepthMeshPassProcessor processor;
+        uint32 sourceOrdinal = 0;
+        const auto record = [&](const RenderDrawItem& item)
+        {
+            MeshPassProcessorInput input;
+            input.packet = item.packet;
+            input.availability.pipeline = MeshPassResourceAvailability::Ready;
+            input.availability.geometry = MeshPassResourceAvailability::Ready;
+            input.availability.material = MeshPassResourceAvailability::Ready;
+            input.sourceOrdinal = sourceOrdinal++;
+            preparation.depth.Record(processor.Process(input));
+        };
+        for (const RenderDrawItem& item : opaqueItems)
+            record(item);
+        for (const RenderDrawItem& item : maskedItems)
+            record(item);
+        preparation.depth.FinalizeGroups();
+        preparation.opaque.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+        return preparation;
+    }
+
+    RenderFrameExecutionReport MakeExecutionReport(
+        const RenderFrameExecutionPlan& plan)
+    {
+        RenderFrameExecutionReport frameReport;
+        frameReport.frameSequence = plan.frameSequence;
+        for (const RenderPassExecutionPlan& passPlan : plan.passes)
+        {
+            RenderPassExecutionReport report;
+            report.pass = passPlan.pass;
+            report.executedVisibility = passPlan.visibility;
+            report.gpuDrivenLane.packetRange = passPlan.gpuEligiblePackets;
+            report.gpuDrivenLane.submission = passPlan.preferredSubmission;
+            report.directLane.packetRange = passPlan.directPackets;
+            report.directLane.submission = passPlan.fallbackSubmission;
+            frameReport.passes.push_back(report);
+        }
+        return frameReport;
     }
 
     void ConfigureResources(RayTracedShadowPass& pass,
@@ -5635,6 +5809,439 @@ TEST_F(RenderPassValidationFixture, DepthPrepassConsumesGPUDrivenMultiMeshIndire
     EXPECT_EQ(0u, stats.directDrawCount);
     EXPECT_EQ(2u, stats.gpuDrivenIndirectBatchCount);
     EXPECT_EQ(2u, stats.gpuDrivenIndirectDrawCount);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DepthPrepassRecordsPlannedStaticMaskedAndDefaultMaterialPackets)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).entityId = 71;
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_FALSE(buffers.submeshes.empty());
+
+    RenderDrawItem opaqueItem = MakeDrawItem(MaterialRenderMode::Opaque);
+    opaqueItem.packet = MakeDepthPacket(
+        scene, 0, 0, buffers, opaqueItem.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    RenderDrawItem maskedItem = MakeDrawItem(MaterialRenderMode::Masked);
+    maskedItem.material = {};
+    maskedItem.packet = MakeDepthPacket(
+        scene, 0, 0, buffers, {}, RenderMaterialMode::Masked,
+        RenderDrawFlags::Masked | RenderDrawFlags::MissingMaterial);
+    std::vector<RenderDrawItem> opaqueItems = {opaqueItem};
+    std::vector<RenderDrawItem> maskedItems = {maskedItem};
+
+    SceneMeshPassPreparation preparation = PrepareDepthPackets(
+        opaqueItems, maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    ASSERT_TRUE(depthTexture);
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+
+    view.viewCache = &viewCache;
+    view.renderFrameExecutionPlan = &compiled.plan;
+    view.meshPassPreparation = &preparation;
+    view.renderFrameExecutionReport = &report;
+    view.viewportWidth = 64;
+    view.viewportHeight = 64;
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetMaterialSystem(&materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.beginRenderPassCount);
+    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(2u, ctx.drawIndexedCount);
+    ASSERT_EQ(2u, ctx.pipelineSequence.size());
+    EXPECT_EQ(pipelineCache.GetDepthOnlyPipeline(), ctx.pipelineSequence[0]);
+    EXPECT_EQ(pipelineCache.GetMaskedDepthOnlyPipeline(),
+              ctx.pipelineSequence[1]);
+    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(),
+                            ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 2; }));
+
+    const DepthPrepassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_TRUE(stats.planRequested);
+    EXPECT_TRUE(stats.planValidated);
+    EXPECT_TRUE(stats.directPacketPathUsed);
+    EXPECT_TRUE(stats.dualBuildCompared);
+    EXPECT_TRUE(stats.dualBuildMatched);
+    EXPECT_EQ(2u, stats.plannedPacketCount);
+    EXPECT_EQ(2u, stats.executedPacketCount);
+
+    ASSERT_FALSE(report.passes.empty());
+    const RenderPassExecutionReport& depthReport = report.passes.front();
+    EXPECT_EQ(RenderExecutionStatus::Completed, depthReport.status);
+    EXPECT_EQ(RenderExecutionStatus::Completed,
+              depthReport.directLane.status);
+    EXPECT_EQ(RenderExecutionStatus::NotAttempted,
+              depthReport.gpuDrivenLane.status);
+    EXPECT_EQ(2u, depthReport.directLane.executedPacketCount);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DepthPrepassRecordsPlannedSkinnedPacket)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    auto skinnedMesh = CreateTwoSubmeshMeshResource(402);
+    skinnedMesh->GetMesh()->SetBoneData(
+        std::vector<IVec4>(6, IVec4(0, 0, 0, 0)),
+        std::vector<Vec4>(6, Vec4(1.0f, 0.0f, 0.0f, 0.0f)));
+    ASSERT_TRUE(gpuResources.UploadImmediate(skinnedMesh.get()));
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(skinnedMesh->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_TRUE(buffers.HasSkinningVertexData());
+
+    RenderObject object = MakeRenderObject(*skinnedMesh, gpuResources);
+    object.entityId = 72;
+    object.skinningMatrices.push_back(Mat4Identity());
+    scene.AddObject(object);
+    RenderDrawItem item;
+    item.objectIndex = 1;
+    item.submeshIndex = 1;
+    item.mesh = object.mesh;
+    item.renderMode = RenderMaterialMode::Opaque;
+    item.packet = MakeDepthPacket(
+        scene, 1, 1, buffers, {}, RenderMaterialMode::Opaque,
+        RenderDrawFlags::Skinned | RenderDrawFlags::MissingMaterial);
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+
+    SceneMeshPassPreparation preparation = PrepareDepthPackets(
+        opaqueItems, maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 602);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+    view.viewCache = &viewCache;
+    view.renderFrameExecutionPlan = &compiled.plan;
+    view.meshPassPreparation = &preparation;
+    view.renderFrameExecutionReport = &report;
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetMaterialSystem(&materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.beginRenderPassCount);
+    EXPECT_EQ(1u, ctx.drawIndexedCount);
+    EXPECT_TRUE(pass.GetDrawStats().dualBuildMatched);
+    EXPECT_EQ(1u, pass.GetDrawStats().executedPacketCount);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DepthPrepassRejectsInvalidSubmeshBeforeRecording)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).entityId = 73;
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.submeshIndex = static_cast<uint32>(buffers.submeshes.size());
+    item.packet = MakeDepthPacket(
+        scene, 0, item.submeshIndex, buffers, item.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    // Keep the packet relevant so the execution-stage geometry validation is
+    // the component that fails closed.
+    item.packet.arguments.indexCount = 3;
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+    SceneMeshPassPreparation preparation = PrepareDepthPackets(
+        opaqueItems, maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 603);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+    view.viewCache = &viewCache;
+    view.renderFrameExecutionPlan = &compiled.plan;
+    view.meshPassPreparation = &preparation;
+    view.renderFrameExecutionReport = &report;
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetMaterialSystem(&materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.beginRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(RenderPolicyReason::UnexpectedRecordingFailure,
+              pass.GetDrawStats().failureReason);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              report.passes.front().directLane.status);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DepthPrepassRejectsObjectConstantUploadFailureBeforeRecording)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).entityId = 75;
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.packet = MakeDepthPacket(
+        scene, 0, 0, buffers, item.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+    SceneMeshPassPreparation preparation = PrepareDepthPackets(
+        opaqueItems, maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 606);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+    view.viewCache = &viewCache;
+    view.renderFrameExecutionPlan = &compiled.plan;
+    view.meshPassPreparation = &preparation;
+    view.renderFrameExecutionReport = &report;
+
+    auto* objectConstantBuffer = static_cast<FakeBuffer*>(
+        pipelineCache.m_objectConstantBuffer.Get());
+    ASSERT_NE(objectConstantBuffer, nullptr);
+    objectConstantBuffer->SetMapSucceeds(false);
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetMaterialSystem(&materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.beginRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(RenderPolicyReason::UnexpectedRecordingFailure,
+              pass.GetDrawStats().failureReason);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              report.passes.front().directLane.status);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DepthPrepassDoesNotReplayDirectAfterPlannedGPULateFailure)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).entityId = 76;
+    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_FALSE(buffers.submeshes.empty());
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.packet = MakeDepthPacket(
+        scene, 0, 0, buffers, item.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+    SceneMeshPassPreparation preparation = PrepareDepthPackets(
+        opaqueItems, maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedGPUPlan(preparation);
+    ASSERT_TRUE(compiled.succeeded);
+    const auto depthPlan = std::find_if(
+        compiled.plan.passes.begin(),
+        compiled.plan.passes.end(),
+        [](const RenderPassExecutionPlan& pass)
+        {
+            return pass.pass == RenderPassKind::Depth;
+        });
+    ASSERT_NE(depthPlan, compiled.plan.passes.end());
+    ASSERT_GT(depthPlan->partition.gpuDrivenPacketCount, 0u);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    GPUCulling culling;
+    GPUCullingConfig cullingConfig;
+    cullingConfig.maxInstances = 4;
+    cullingConfig.enableOcclusionCulling = false;
+    cullingConfig.enableDistanceCulling = false;
+    culling.Initialize(&device, cullingConfig);
+    ASSERT_NE(culling.GetInstanceBuffer(), nullptr);
+    ASSERT_NE(culling.GetInstanceIndexBuffer(), nullptr);
+    culling.BeginFrame();
+    GPUIndexedDrawDesc drawDesc;
+    drawDesc.indexCount = buffers.submeshes[0].indexCount;
+    drawDesc.firstIndex = buffers.submeshes[0].indexOffset;
+    drawDesc.vertexOffset = buffers.submeshes[0].baseVertex;
+    ASSERT_EQ(0u, culling.BeginDrawGroup(meshResource->GetId()));
+    EXPECT_NE(RVX_INVALID_INDEX,
+              culling.AddDrawItemInstance(scene, item, drawDesc, 0));
+    culling.EndDrawGroup();
+    culling.EndFrame();
+    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
+    ASSERT_TRUE(culling.WasCpuFallbackUsedLastCull());
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+    view.viewCache = &viewCache;
+    view.renderFrameExecutionPlan = &compiled.plan;
+    view.meshPassPreparation = &preparation;
+    view.renderFrameExecutionReport = &report;
+
+    auto* objectConstantBuffer = static_cast<FakeBuffer*>(
+        pipelineCache.m_objectConstantBuffer.Get());
+    ASSERT_NE(objectConstantBuffer, nullptr);
+    objectConstantBuffer->SetMapSucceeds(false);
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+    pass.SetGPUDrivenCullingSource(&culling);
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.beginRenderPassCount);
+    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
+    EXPECT_EQ(RenderPolicyReason::UnexpectedRecordingFailure,
+              pass.GetDrawStats().failureReason);
+    EXPECT_EQ(RenderExecutionStatus::Failed, report.status);
+    ASSERT_FALSE(report.passes.empty());
+    const RenderPassExecutionReport& depthReport = report.passes.front();
+    EXPECT_EQ(RenderExecutionStatus::Failed, depthReport.status);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              depthReport.gpuDrivenLane.status);
+    EXPECT_EQ(RenderExecutionStatus::NotAttempted,
+              depthReport.directLane.status);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DepthPrepassRejectsDualBuildDriftBeforeRecording)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).entityId = 74;
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.packet = MakeDepthPacket(
+        scene, 0, 0, buffers, item.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+    SceneMeshPassPreparation preparation = PrepareDepthPackets(
+        opaqueItems, maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 604);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+    opaqueItems.front().renderMode = RenderMaterialMode::Masked;
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+    view.viewCache = &viewCache;
+    view.renderFrameExecutionPlan = &compiled.plan;
+    view.meshPassPreparation = &preparation;
+    view.renderFrameExecutionReport = &report;
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetMaterialSystem(&materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(0u, ctx.beginRenderPassCount);
+    EXPECT_TRUE(pass.GetDrawStats().dualBuildCompared);
+    EXPECT_FALSE(pass.GetDrawStats().dualBuildMatched);
+    EXPECT_EQ(RenderPolicyReason::UnexpectedRecordingFailure,
+              pass.GetDrawStats().failureReason);
+}
+
+TEST_F(RenderPassValidationFixture,
+       DepthPrepassClearsForEmptyPlannedDirectRange)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    std::vector<RenderDrawItem> opaqueItems;
+    std::vector<RenderDrawItem> maskedItems;
+    SceneMeshPassPreparation preparation = PrepareDepthPackets(
+        opaqueItems, maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedDirectPlan(preparation, 605);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+    view.viewCache = &viewCache;
+    view.renderFrameExecutionPlan = &compiled.plan;
+    view.meshPassPreparation = &preparation;
+    view.renderFrameExecutionReport = &report;
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetMaterialSystem(&materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetDepthTarget(depthView.Get());
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    EXPECT_EQ(1u, ctx.beginRenderPassCount);
+    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(0u, ctx.drawIndexedCount);
+    EXPECT_TRUE(pass.GetDrawStats().directPacketPathUsed);
+    EXPECT_TRUE(pass.GetDrawStats().dualBuildMatched);
+    EXPECT_EQ(RenderExecutionStatus::Completed,
+              report.passes.front().directLane.status);
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassFallsBackToDirectDrawWhenGPUDrivenPipelineFails)

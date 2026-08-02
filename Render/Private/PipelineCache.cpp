@@ -41,6 +41,7 @@ namespace
     constexpr uint32 RVX_PIPELINE_PURPOSE_SHADOW_DEPTH = 0x53484457u; // SHDW
     constexpr uint32 RVX_PIPELINE_PURPOSE_OBJECT_VELOCITY = 0x4F56454Cu; // OVEL
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEPTH = 0x47444550u; // GDEP
+    constexpr uint32 RVX_PIPELINE_PURPOSE_MASKED_DEPTH = 0x4D444550u; // MDEP
     constexpr uint32 RVX_PIPELINE_PURPOSE_UI = 0x5549504Cu; // UIPL
     constexpr float RVX_MAX_SHADOW_CASTER_DEPTH_BIAS = 10000.0f;
     constexpr float RVX_MAX_SHADOW_CASTER_SLOPE_BIAS = 16.0f;
@@ -837,6 +838,7 @@ void PipelineCache::Shutdown()
     m_maskedPipeline.Reset();
     m_transparentPipeline.Reset();
     m_depthOnlyPipeline.Reset();
+    m_maskedDepthOnlyPipeline.Reset();
     m_gpuDrivenDepthOnlyPipeline.Reset();
     m_skyboxPipeline.Reset();
     m_toneMappingPipeline.Reset();
@@ -900,6 +902,8 @@ void PipelineCache::Shutdown()
     m_gpuDrivenVertexShader.Reset();
     m_pixelShader.Reset();
     m_depthOnlyVertexShader.Reset();
+    m_maskedDepthOnlyVertexShader.Reset();
+    m_maskedDepthOnlyPixelShader.Reset();
     m_gpuDrivenDepthOnlyVertexShader.Reset();
     m_skyboxVertexShader.Reset();
     m_skyboxPixelShader.Reset();
@@ -942,6 +946,8 @@ void PipelineCache::Shutdown()
     m_gpuDrivenVsCompileResult.reset();
     m_psCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
+    m_maskedDepthOnlyVsCompileResult.reset();
+    m_maskedDepthOnlyPsCompileResult.reset();
     m_gpuDrivenDepthOnlyVsCompileResult.reset();
     m_skyboxVsCompileResult.reset();
     m_skyboxPsCompileResult.reset();
@@ -1308,6 +1314,51 @@ bool PipelineCache::CompileShaders()
     }
     m_depthOnlyVertexShader = depthVsResult.shader;
     m_depthOnlyVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(depthVsResult.compileResult));
+
+    ShaderLoadDesc maskedDepthVsDesc = depthVsDesc;
+    maskedDepthVsDesc.entryPoint = "VSMainMasked";
+    auto maskedDepthVsResult =
+        m_shaderManager->LoadFromFile(m_device, maskedDepthVsDesc);
+    if (!maskedDepthVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile masked depth-only vertex shader: " +
+                     maskedDepthVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!maskedDepthVsResult.shader)
+    {
+        SetLastError("Failed to create masked depth-only vertex shader");
+        return false;
+    }
+    m_maskedDepthOnlyVertexShader = maskedDepthVsResult.shader;
+    m_maskedDepthOnlyVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(maskedDepthVsResult.compileResult));
+
+    ShaderLoadDesc maskedDepthPsDesc = depthVsDesc;
+    maskedDepthPsDesc.entryPoint = "PSMainMasked";
+    maskedDepthPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        maskedDepthPsDesc.targetProfile = "ps_5_0";
+    }
+    auto maskedDepthPsResult =
+        m_shaderManager->LoadFromFile(m_device, maskedDepthPsDesc);
+    if (!maskedDepthPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile masked depth-only pixel shader: " +
+                     maskedDepthPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!maskedDepthPsResult.shader)
+    {
+        SetLastError("Failed to create masked depth-only pixel shader");
+        return false;
+    }
+    m_maskedDepthOnlyPixelShader = maskedDepthPsResult.shader;
+    m_maskedDepthOnlyPsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(maskedDepthPsResult.compileResult));
 
     ShaderLoadDesc gpuDrivenDepthVsDesc = depthVsDesc;
     gpuDrivenDepthVsDesc.entryPoint = "VSMainGPUDriven";
@@ -3985,6 +4036,19 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
+    // Keep the long-established default-pipeline creation order stable for
+    // diagnostics and backend validation while still making masked depth a
+    // predictable initialization-time capability for frame-plan compilation.
+    m_maskedDepthOnlyPipeline = GetOrCreateMaskedDepthOnlyPipeline();
+    if (!m_maskedDepthOnlyPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create masked depth-only pipeline");
+        }
+        return false;
+    }
+
     if (!CreateRayTracedShadowPipeline())
     {
         if (m_lastError.empty())
@@ -4303,6 +4367,52 @@ RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline()
     if (!pipeline)
     {
         SetLastError("Backend failed to create depth-only pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateMaskedDepthOnlyPipeline()
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildMaskedDepthOnlyPipelineDesc();
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader)
+    {
+        SetLastError(
+            "Cannot create masked depth-only pipeline without shaders");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create masked depth-only pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create masked depth-only pipeline with invalid depth stencil format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Masked,
+        RVX_PIPELINE_PURPOSE_MASKED_DEPTH);
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create masked depth-only pipeline");
         return {};
     }
 
@@ -5268,6 +5378,16 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildMaskedDepthOnlyPipelineDesc() const
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    pipelineDesc.vertexShader = m_maskedDepthOnlyVertexShader.Get();
+    pipelineDesc.pixelShader = m_maskedDepthOnlyPixelShader.Get();
+    pipelineDesc.debugName = "MaskedDepthOnlyPipeline";
+    pipelineDesc.inputLayout.AddElement("TEXCOORD", RHIFormat::RG32_FLOAT, 2);
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDepthOnlyPipelineDesc() const
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
@@ -5717,6 +5837,10 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_psCompileResult.get());
         if (shader == m_depthOnlyVertexShader.Get())
             return ComputeShaderHash(m_depthOnlyVsCompileResult.get());
+        if (shader == m_maskedDepthOnlyVertexShader.Get())
+            return ComputeShaderHash(m_maskedDepthOnlyVsCompileResult.get());
+        if (shader == m_maskedDepthOnlyPixelShader.Get())
+            return ComputeShaderHash(m_maskedDepthOnlyPsCompileResult.get());
         if (shader == m_gpuDrivenDepthOnlyVertexShader.Get())
             return ComputeShaderHash(m_gpuDrivenDepthOnlyVsCompileResult.get());
         if (shader == m_toneMappingVertexShader.Get())
@@ -6017,28 +6141,28 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
     }
 }
 
-void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix)
+bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix)
 {
-    UpdateObjectConstants(worldMatrix, normalMatrix, Mat4Identity(), Mat4Identity(), false);
+    return UpdateObjectConstants(worldMatrix, normalMatrix, Mat4Identity(), Mat4Identity(), false);
 }
 
-void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
+bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
                                           const Mat4& normalMatrix,
                                           const Mat4& previousWorldMatrix,
                                           const Mat4& previousViewProjectionMatrix,
                                           bool previousWorldViewProjectionValid,
                                           std::span<const Mat4> skinningMatrices)
 {
-    UpdateObjectConstants(worldMatrix,
-                          normalMatrix,
-                          previousWorldMatrix,
-                          previousViewProjectionMatrix,
-                          previousWorldViewProjectionValid,
-                          true,
-                          skinningMatrices);
+    return UpdateObjectConstants(worldMatrix,
+                                 normalMatrix,
+                                 previousWorldMatrix,
+                                 previousViewProjectionMatrix,
+                                 previousWorldViewProjectionValid,
+                                 true,
+                                 skinningMatrices);
 }
 
-void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
+bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
                                           const Mat4& normalMatrix,
                                           const Mat4& previousWorldMatrix,
                                           const Mat4& previousViewProjectionMatrix,
@@ -6047,7 +6171,7 @@ void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
                                           std::span<const Mat4> skinningMatrices)
 {
     if (!m_objectConstantBuffer)
-        return;
+        return false;
 
     ObjectConstants constants{};
     constants.world = worldMatrix;
@@ -6074,11 +6198,13 @@ void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
 
     const uint64 offset = AllocateObjectConstantSlot();
     void* mapped = m_objectConstantBuffer->Map();
-    if (mapped)
+    if (mapped == nullptr)
     {
-        std::memcpy(static_cast<uint8*>(mapped) + offset, &constants, sizeof(ObjectConstants));
-        m_objectConstantBuffer->Unmap();
+        return false;
     }
+    std::memcpy(static_cast<uint8*>(mapped) + offset, &constants, sizeof(ObjectConstants));
+    m_objectConstantBuffer->Unmap();
+    return true;
 }
 
 } // namespace RVX

@@ -99,6 +99,7 @@ target_sources(RVX_Render PRIVATE
     Private/RayTracing/RayTracingScene.cpp
     Private/RayTracing/RayTracingSceneManager.cpp
     # Passes
+    Private/Passes/DirectDrawPacketBatch.cpp
     Private/Passes/MeshPassProcessor.cpp
     Private/Passes/DepthMeshPassProcessor.cpp
     Private/Passes/OpaqueMeshPassProcessor.cpp

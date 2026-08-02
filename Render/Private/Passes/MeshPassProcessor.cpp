@@ -365,8 +365,19 @@ MeshPassProcessorResult MeshPassProcessor::MakeRelevant(
 
     if (result.disposition == MeshPassDisposition::GPUCandidate)
     {
+        result.directLayout.vertexStreams = vertexStreams;
+        result.directLayout.bindings = bindings;
+        result.directLayout.primitiveDataBinding =
+            PrimitiveDataBinding::PerDrawConstants;
         result.packet.pipelineKey.skinned = false;
         vertexStreams |= MeshPassVertexStreams::InstanceIndex;
+    }
+    else
+    {
+        result.directLayout.vertexStreams = vertexStreams;
+        result.directLayout.bindings = bindings;
+        result.directLayout.primitiveDataBinding =
+            PrimitiveDataBinding::PerDrawConstants;
     }
 
     result.groupKey.pass = result.packet.pass;

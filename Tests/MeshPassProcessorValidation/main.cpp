@@ -99,7 +99,9 @@ TEST(MeshPassProcessorValidation, PassMatrixIsExactAndValueOnly)
         MakeInput(MaterialRenderMode::Transparent);
 
     EXPECT_TRUE(depth.Process(opaqueInput).IsGPUCandidate());
-    EXPECT_TRUE(depth.Process(maskedInput).IsGPUCandidate());
+    EXPECT_FALSE(depth.Process(maskedInput).IsGPUCandidate());
+    EXPECT_EQ(depth.Process(maskedInput).reason,
+              MeshPassEligibilityReason::PassRequiresDirect);
     EXPECT_FALSE(depth.Process(transparentInput).IsRelevant());
     EXPECT_EQ(depth.Process(opaqueInput).packet.pass, RenderPassKind::Depth);
 
@@ -136,9 +138,13 @@ TEST(MeshPassProcessorValidation,
     EXPECT_TRUE(HasBinding(depthResult, MeshPassBindingRequirements::Material));
     EXPECT_TRUE(HasStream(depthResult, MeshPassVertexStreams::Position));
     EXPECT_TRUE(HasStream(depthResult, MeshPassVertexStreams::TexCoord));
-    EXPECT_TRUE(HasStream(depthResult, MeshPassVertexStreams::InstanceIndex));
+    EXPECT_FALSE(HasStream(depthResult, MeshPassVertexStreams::InstanceIndex));
     EXPECT_EQ(depthResult.groupKey.layout.primitiveDataBinding,
-              PrimitiveDataBinding::InstanceBuffer);
+              PrimitiveDataBinding::PerDrawConstants);
+    EXPECT_EQ(depthResult.directLayout.vertexStreams,
+              depthResult.groupKey.layout.vertexStreams);
+    EXPECT_EQ(depthResult.directLayout.bindings,
+              depthResult.groupKey.layout.bindings);
 
     const MeshPassProcessorResult opaqueResult = opaque.Process(input);
     EXPECT_TRUE(HasStream(opaqueResult, MeshPassVertexStreams::Normal));

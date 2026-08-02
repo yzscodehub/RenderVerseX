@@ -144,6 +144,7 @@ namespace
             if (!source.IsGPUCandidate() ||
                 source.packet != sorted.packet ||
                 source.groupKey != sorted.groupKey ||
+                source.directLayout != sorted.directLayout ||
                 source.sourceOrdinal != sorted.sourceOrdinal ||
                 source.viewDepth != sorted.viewDepth)
             {

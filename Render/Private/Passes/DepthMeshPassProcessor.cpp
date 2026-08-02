@@ -31,6 +31,8 @@ MeshPassProcessorResult DepthMeshPassProcessor::Process(
                         RenderPassKind::Depth,
                         bindings,
                         streams,
-                        MeshPassEligibilityReason::None);
+                        variant == MaterialPipelineVariant::Masked
+                            ? MeshPassEligibilityReason::PassRequiresDirect
+                            : MeshPassEligibilityReason::None);
 }
 } // namespace RVX
