@@ -17,6 +17,7 @@
 #include "Render/Resources/RenderResourceTypes.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/MeshPassProcessor.h"
 #include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/ParticleFeaturePass.h"
@@ -204,6 +205,7 @@ namespace RVX
         uint32 cullableOpaqueDrawItemCount = 0;
         uint32 cullableMaskedDrawItemCount = 0;
         uint32 graphInputDrawItemCount = 0;
+        MeshPassProcessorStats opaqueMeshPassProcessorStats;
         uint32 skippedMissingGpuDataCount = 0;
         uint32 visibleCullableDrawItemCount = 0;
         uint32 frustumCulledDrawItemCount = 0;
@@ -1232,6 +1234,10 @@ namespace RVX
         const std::vector<RenderDrawItem>& GetOpaqueDrawItems() const { return m_opaqueDrawItems; }
         const std::vector<RenderDrawItem>& GetMaskedDrawItems() const { return m_maskedDrawItems; }
         const std::vector<RenderDrawItem>& GetTransparentDrawItems() const { return m_transparentDrawItems; }
+        const SceneMeshPassPreparation& GetMeshPassPreparation() const
+        {
+            return m_meshPassPreparation;
+        }
 
         /// Set shader directory (must be set before Initialize)
         void SetShaderDirectory(const std::string& dir) { m_shaderDir = dir; }
@@ -1244,6 +1250,7 @@ namespace RVX
         void AddGPUDrivenCullingPass();
         void CommitGPUDrivenAccessSnapshots();
         void BuildMaterialDrawLists();
+        void PrepareMeshPassPackets();
         void ApplyGPUDrivenCullingToDrawLists();
         void ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>& drawItems,
                                              uint32& cullableDrawItemCount);
@@ -1368,6 +1375,7 @@ namespace RVX
         std::vector<RenderDrawItem> m_opaqueDrawItems;
         std::vector<RenderDrawItem> m_maskedDrawItems;
         std::vector<RenderDrawItem> m_transparentDrawItems;
+        SceneMeshPassPreparation m_meshPassPreparation;
         std::vector<RenderDrawItem> m_gpuCullingScratchDrawItems;
         std::vector<std::string> m_loggedUnsupportedPassNames;
         std::vector<PreGraphPrepareCallbackEntry> m_preGraphPrepareCallbacks;

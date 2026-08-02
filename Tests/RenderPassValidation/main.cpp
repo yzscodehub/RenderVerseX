@@ -468,9 +468,18 @@ namespace
             lastDrawVertexCount = vertexCount;
             callSequence.push_back("Draw");
         }
-        void DrawIndexed(uint32, uint32 = 1, uint32 = 0, int32 = 0, uint32 = 0) override
+        void DrawIndexed(uint32 indexCount,
+                         uint32 instanceCount = 1,
+                         uint32 firstIndex = 0,
+                         int32 vertexOffset = 0,
+                         uint32 firstInstance = 0) override
         {
+            (void)indexCount;
+            (void)instanceCount;
+            (void)vertexOffset;
+            (void)firstInstance;
             ++drawIndexedCount;
+            drawIndexedFirstIndices.push_back(firstIndex);
         }
         void DrawIndirect(RHIBuffer*, uint64, uint32, uint32) override {}
         void DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 indirectDrawCount, uint32 stride) override
@@ -549,6 +558,7 @@ namespace
         uint32 depthBiasSetCount = 0;
         uint32 drawCount = 0;
         uint32 drawIndexedCount = 0;
+        std::vector<uint32> drawIndexedFirstIndices;
         uint32 drawIndexedIndirectCount = 0;
         uint32 buildBottomLevelASCount = 0;
         uint32 buildTopLevelASCount = 0;
@@ -5648,6 +5658,103 @@ TEST_F(RenderPassValidationFixture, OpaquePassFallsBackToDirectDrawWhenGPUDriven
     EXPECT_EQ(1u, stats.directDrawCount);
     EXPECT_EQ(stats.gpuDrivenFallbackReason,
               GPUDrivenDrawFallbackReason::PipelineUnavailable);
+}
+
+TEST_F(RenderPassValidationFixture, OpaquePassFallsBackWholePassForMixedGPUAndDirectOnlyItems)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
+
+    // The second source item represents a skinned/direct-only partition. It is
+    // intentionally absent from the GPU culling groups below.
+    auto directOnlyMeshResource = CreateTwoSubmeshMeshResource(402);
+    directOnlyMeshResource->GetMesh()->SetBoneData(
+        std::vector<IVec4>(6, IVec4(0, 0, 0, 0)),
+        std::vector<Vec4>(6, Vec4(1.0f, 0.0f, 0.0f, 0.0f)));
+    ASSERT_TRUE(gpuResources.UploadImmediate(directOnlyMeshResource.get()));
+    ASSERT_TRUE(gpuResources.IsGPUReady(directOnlyMeshResource->GetId()));
+    const MeshGPUBuffers directOnlyBuffers =
+        gpuResources.GetMeshBuffers(directOnlyMeshResource->GetId());
+    ASSERT_TRUE(directOnlyBuffers.IsValid());
+    ASSERT_TRUE(directOnlyBuffers.HasSkinningVertexData());
+    ASSERT_GE(directOnlyBuffers.submeshes.size(), 2u);
+
+    RenderObject directOnlyObject = MakeRenderObject(*directOnlyMeshResource, gpuResources);
+    directOnlyObject.skinningMatrices.push_back(Mat4Identity());
+    scene.AddObject(directOnlyObject);
+    ASSERT_TRUE(scene.GetObject(1).HasSkinningData());
+
+    RenderDrawItem gpuCandidate = MakeDrawItem(MaterialRenderMode::Opaque);
+    RenderDrawItem directOnly = MakeDrawItem(MaterialRenderMode::Opaque);
+    directOnly.objectIndex = 1;
+    directOnly.mesh = gpuResources.GetHandle(directOnlyMeshResource->GetId());
+    directOnly.submeshIndex = 1;
+
+    std::vector<RenderDrawItem> opaqueItems = {gpuCandidate, directOnly};
+    std::vector<RenderDrawItem> maskedItems;
+
+    MeshGPUBuffers candidateBuffers = gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(candidateBuffers.IsValid());
+    ASSERT_FALSE(candidateBuffers.submeshes.empty());
+
+    GPUIndexedDrawDesc candidateDrawDesc;
+    candidateDrawDesc.indexCount = candidateBuffers.submeshes[0].indexCount;
+    candidateDrawDesc.firstIndex = candidateBuffers.submeshes[0].indexOffset;
+    candidateDrawDesc.vertexOffset = candidateBuffers.submeshes[0].baseVertex;
+
+    GPUCulling culling;
+    GPUCullingConfig cullingConfig;
+    cullingConfig.maxInstances = 4;
+    cullingConfig.enableOcclusionCulling = false;
+    cullingConfig.enableDistanceCulling = false;
+    culling.Initialize(&device, cullingConfig);
+    culling.BeginFrame();
+    ASSERT_EQ(0u, culling.BeginDrawGroup(
+        meshResource->GetId(),
+        gpuCandidate.material.slot,
+        MaterialPipelineVariant::Opaque,
+        gpuCandidate.mesh,
+        gpuCandidate.material));
+    EXPECT_NE(RVX_INVALID_INDEX,
+              culling.AddDrawItemInstance(scene, gpuCandidate, candidateDrawDesc, 0));
+    culling.EndDrawGroup();
+    culling.EndFrame();
+    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
+
+    ASSERT_EQ(1u, culling.GetDrawGroups().size());
+    EXPECT_EQ(1u, culling.GetDrawGroups()[0].maxDrawCount);
+    EXPECT_EQ(1u, culling.GetInstanceCount());
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetGPUDrivenCullingSource(&culling);
+
+    RecordingCommandContext ctx;
+    pass.Execute(ctx, view);
+
+    // The source list has two items but the prepared GPU groups contain only
+    // one candidate, so the OpaquePass must submit both items through Direct.
+    EXPECT_EQ(2u, ctx.drawIndexedCount);
+    EXPECT_EQ((std::vector<uint32>{0u, 3u}), ctx.drawIndexedFirstIndices);
+    EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
+
+    const OpaquePassDrawStats& stats = pass.GetDrawStats();
+    EXPECT_TRUE(stats.gpuDrivenRequested);
+    EXPECT_TRUE(stats.gpuDrivenCullingReady);
+    EXPECT_FALSE(stats.gpuDrivenEligible);
+    EXPECT_FALSE(stats.gpuDrivenSubmitted);
+    EXPECT_EQ(GPUDrivenDrawFallbackReason::DrawGroupsUnavailable,
+              stats.gpuDrivenFallbackReason);
+    EXPECT_EQ(2u, stats.directDrawCount);
+    EXPECT_EQ(0u, stats.indirectBatchCount);
+    EXPECT_EQ(0u, stats.indirectDrawCount);
+    EXPECT_EQ(0u, stats.skippedInvalidObjectCount);
+    EXPECT_EQ(0u, stats.skippedMissingMeshCount);
+    EXPECT_EQ(0u, stats.skippedInvalidSubmeshCount);
+    EXPECT_EQ(0u, stats.skippedMaterialBindingCount);
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)

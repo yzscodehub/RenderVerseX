@@ -172,7 +172,6 @@ namespace RVX
         uint32 FindIndirectBatchLength(const std::vector<RenderDrawItem>& drawItems,
                                        size_t startIndex) const;
         bool EnsureIndirectDrawCapacity(uint32 commandCount);
-        const RenderDrawItem* FindGPUDrivenGroupRepresentative(const GPUCullingDrawGroup& group) const;
         bool AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) const;
         bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                                       const ViewData& view,

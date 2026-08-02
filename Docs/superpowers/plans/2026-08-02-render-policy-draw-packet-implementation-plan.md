@@ -1,6 +1,6 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-3 complete; Task 4 not started
+**Status:** Tasks 0-4 complete; Task 5 not started
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -464,6 +464,7 @@ making the global policy resolver understand material details.
 Proposed files:
 
 - `Render/Include/Render/Passes/MeshPassProcessor.h`
+- `Render/Private/Passes/MeshPassProcessor.cpp`
 - `Render/Private/Passes/DepthMeshPassProcessor.cpp`
 - `Render/Private/Passes/OpaqueMeshPassProcessor.cpp`
 - `Render/Private/Passes/TransparentMeshPassProcessor.cpp`
@@ -471,20 +472,58 @@ Proposed files:
 
 Work:
 
-- migrate Depth, Opaque, Masked, and Transparent classification first;
-- select pass-specific pipeline keys and binding requirements;
-- return stable eligibility reasons such as skinned, transparent, special
-  material, pipeline unavailable, geometry unavailable, and resource pending;
-- sort/group using `RenderDrawGroupKey`, not repeated linear searches;
-- keep Transparent ordered and Direct in the first implementation;
-- keep Skinned Direct until a separately qualified skinned indirect path exists.
+- introduce pure value-only processors with no scene, registry, pipeline-cache,
+  material-system, descriptor, RHI, or RenderGraph ownership. Each processor
+  adapts the retained pass-independent packet template into a pass-specific
+  packet, binding requirements, disposition, and exact group key;
+- classify Depth, Opaque/Masked, Transparent, and Shadow independently. Depth
+  and Opaque accept opaque/masked packets; Transparent accepts only transparent
+  packets; Shadow accepts every packet carrying `CastsShadow`, preserving the
+  current caster baseline regardless of main-view visibility;
+- use explicit `GPUCandidate`, `Direct`, and `Skip` dispositions. Every relevant
+  packet that is not a GPU candidate receives exactly one stable intrinsic or
+  supplied-availability reason. The fixed precedence is transparent, skinned,
+  special material, unsupported topology, unsupported index type, pipeline
+  unavailable, geometry unavailable, resource pending, resource unavailable,
+  and pass-requires-direct;
+- keep missing material as an explicit default-material binding requirement,
+  not as pending or rejected state. The existing packet cannot retain pending
+  provenance, so callers must supply backend-neutral readiness facts; Task 4
+  must never infer `ResourcePending` from an invalid handle;
+- make `RenderSubmissionLayout` describe the vertex/binding/primitive-data
+  layout, and make `RenderDrawGroupKey` cover pass, complete pipeline key,
+  exact geometry key including submesh/index type, exact material key, and
+  submission layout;
+- sort GPU candidates lexicographically by the full key and then source ordinal,
+  form contiguous groups in one linear pass, and never use hash iteration order
+  or a hash value as the ordering key;
+- generate value-only pass packet streams/group descriptions in parallel with
+  the existing `RenderDrawItem` compatibility lists. Preserve opaque-before-
+  masked ordering, transparent back-to-front order, and whole-scene Shadow
+  enumeration;
+- replace the quadratic local grouping in
+  `PrepareGPUDrivenGraphCullInputs()` with the prepared/sorted key path and
+  remove `OpaquePass::FindGPUDrivenGroupRepresentative()`. Existing pass
+  command recording and all-or-nothing fallback remain unchanged;
+- keep Transparent ordered and Direct. Keep Skinned Direct until a separately
+  qualified skinned indirect path exists. Shadow preparation is Direct-only in
+  this stage;
+- defer final pipeline/residency resolution to Task 5, packet-range command
+  consumption to Task 6, exactly-once packet IDs/partition diagnostics to Task
+  7, and duplicate culling/reset cleanup to Task 8.
 
 Acceptance:
 
 - packet counts and direct images match the pre-migration baseline;
 - no pass scans other pass-owned draw lists to find a representative item;
-- grouping is deterministic and uses sort/hash rather than quadratic lookup;
-- every rejected GPU packet has exactly one stable eligibility reason.
+- grouping is deterministic, collision-safe, and O(n log n) sort plus O(n)
+  grouping rather than quadratic lookup;
+- every relevant rejected GPU packet has exactly one stable eligibility reason,
+  and eligible plus rejected counts equal the relevant packet count;
+- Transparent order, missing-material default binding, Shadow caster coverage,
+  and skinned Direct behavior remain unchanged;
+- Task 4 does not change submission policy, command recording, RHI/backend
+  behavior, frame schema, qualification thresholds, or visual goldens.
 
 ### Task 5 - Implement RenderPolicyResolver and plan compilation
 

@@ -297,42 +297,6 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     }
 }
 
-const RenderDrawItem* OpaquePass::FindGPUDrivenGroupRepresentative(const GPUCullingDrawGroup& group) const
-{
-    const std::vector<RenderDrawItem>* drawItems = nullptr;
-    switch (group.pipelineVariant)
-    {
-        case MaterialPipelineVariant::Masked:
-            drawItems = m_maskedDrawItems;
-            break;
-        case MaterialPipelineVariant::Opaque:
-            drawItems = m_opaqueDrawItems;
-            break;
-        case MaterialPipelineVariant::Transparent:
-        default:
-            return nullptr;
-    }
-
-    if (!drawItems)
-    {
-        return nullptr;
-    }
-
-    for (const RenderDrawItem& item : *drawItems)
-    {
-        if (item.mesh != group.mesh ||
-            item.material != group.material ||
-            GetPipelineVariantForRenderMode(item.renderMode) != group.pipelineVariant)
-        {
-            continue;
-        }
-
-        return &item;
-    }
-
-    return nullptr;
-}
-
 bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) const
 {
     outDrawItemCount = 0;
@@ -374,11 +338,6 @@ bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) cons
         }
 
         if (buffers.HasSkinningVertexData())
-        {
-            return false;
-        }
-
-        if (!FindGPUDrivenGroupRepresentative(group))
         {
             return false;
         }
@@ -452,14 +411,6 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     for (uint32 groupIndex = 0; groupIndex < static_cast<uint32>(groups.size()); ++groupIndex)
     {
         const GPUCullingDrawGroup& group = groups[groupIndex];
-        const RenderDrawItem* representativeItem = FindGPUDrivenGroupRepresentative(group);
-        if (!representativeItem || representativeItem->objectIndex >= m_renderScene->GetObjectCount())
-        {
-            m_drawStats.gpuDrivenFallbackReason =
-                GPUDrivenDrawFallbackReason::DrawItemUnavailable;
-            return false;
-        }
-
         MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
             m_resourceRegistry, group.mesh);
         if (!buffers.IsValid())

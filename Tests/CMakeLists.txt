@@ -486,6 +486,15 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME MeshPassProcessorValidation
+    SOURCES MeshPassProcessorValidation/main.cpp
+    LIBS RVX::Render
+    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    LABELS "unit;architecture"
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME RHIConformanceValidation
     SOURCES RHIConformanceValidation/main.cpp
     LIBS RVX::RHI

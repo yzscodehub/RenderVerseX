@@ -832,6 +832,9 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
               std::string::npos);
     EXPECT_NE(header.find("void AddGPUDrivenCullingPass()"), std::string::npos);
     EXPECT_NE(header.find("void PrepareGPUDrivenGraphCullInputs()"), std::string::npos);
+    EXPECT_NE(header.find("void PrepareMeshPassPackets()"), std::string::npos);
+    EXPECT_NE(header.find("const SceneMeshPassPreparation& GetMeshPassPreparation() const"),
+              std::string::npos);
 
     const size_t buildDrawLists = source.find("void SceneRenderer::BuildMaterialDrawLists()");
     ASSERT_NE(buildDrawLists, std::string::npos);
@@ -840,16 +843,30 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
     ASSERT_NE(cullingCall, std::string::npos);
     ASSERT_NE(objectVelocityBind, std::string::npos);
     EXPECT_LT(cullingCall, objectVelocityBind);
+    const size_t prepareMeshPasses = source.find("PrepareMeshPassPackets();", buildDrawLists);
+    ASSERT_NE(prepareMeshPasses, std::string::npos);
+    EXPECT_LT(prepareMeshPasses, cullingCall);
 
     EXPECT_NE(source.find("m_gpuCulling->CullCpuFallback"), std::string::npos);
     EXPECT_EQ(source.find("drawItems.swap(m_gpuCullingScratchDrawItems);"), std::string::npos);
     EXPECT_NE(source.find("PrepareGPUDrivenGraphCullInputs();"), std::string::npos);
-    EXPECT_NE(source.find("queueDrawItems(m_opaqueDrawItems);"), std::string::npos);
-    EXPECT_NE(source.find("queueDrawItems(m_maskedDrawItems);"), std::string::npos);
+    EXPECT_NE(source.find("const MeshPassPacketStream& stream = m_meshPassPreparation.opaque;"),
+              std::string::npos);
+    EXPECT_NE(source.find("for (const RenderDrawGroupRange& group : stream.groups)"),
+              std::string::npos);
+    EXPECT_EQ(source.find("std::find_if(drawGroups.begin(), drawGroups.end()"),
+              std::string::npos);
     EXPECT_NE(source.find("m_gpuCulling->BeginDrawGroup("), std::string::npos);
-    EXPECT_NE(source.find("group.materialId"), std::string::npos);
-    EXPECT_NE(source.find("group.pipelineVariant"), std::string::npos);
-    EXPECT_NE(source.find("group.material = item.material"), std::string::npos);
+    EXPECT_NE(source.find("key.geometry.mesh"), std::string::npos);
+    EXPECT_NE(source.find("key.material.material"), std::string::npos);
+    EXPECT_NE(source.find("key.pipeline.materialVariant"), std::string::npos);
+
+    const std::string opaqueHeader =
+        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "OpaquePass.h");
+    const std::string opaqueSource =
+        ReadTextFile(root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
+    EXPECT_EQ(opaqueHeader.find("FindGPUDrivenGroupRepresentative"), std::string::npos);
+    EXPECT_EQ(opaqueSource.find("FindGPUDrivenGroupRepresentative"), std::string::npos);
 
     const size_t buildGraph = source.find("void SceneRenderer::BuildRenderGraph()");
     ASSERT_NE(buildGraph, std::string::npos);

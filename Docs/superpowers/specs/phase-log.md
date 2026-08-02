@@ -43303,7 +43303,7 @@ ctest --test-dir build\win_x64_debug -C Debug `
 ### R-SP323 Render-policy Task 3 retained draw-packet cache
 
 **Date:** 2026-08-02
-**Commit:** Pending
+**Commit:** `9f8f6de0 feat(render): retain draw packet templates`
 **Plan review agent:** Primary architect plus two read-only explorers
 **Code implementation agent:** terra worker with primary review
 
@@ -43442,6 +43442,151 @@ ctest --test-dir build\win_x64_debug -C Debug `
   changes.
 - Repair material-to-texture dependency replacement on hot reload as a separate
   resource-lifecycle task rather than hiding it inside draw-packet caching.
+
+---
+
+### R-SP324 Render-policy Task 4 pass preparation and deterministic grouping
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Plan review agent:** Primary architect plus two read-only explorers
+**Code implementation agent:** Primary agent after a delegated implementation
+attempt produced no edits
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- Task 4 - Add pass-specific MeshPassProcessors
+- Revised pure-value processor, explicit availability, and exact-group-key
+  contract
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP323 Render-policy Task 3 retained draw-packet cache
+- Evidence: Task 3 commit `9f8f6de0`, 401/401 CPU validation, and exact
+  synthetic/Porsche Direct-versus-GPU pixel parity.
+
+**Approved scope:**
+
+- Add pure value-only Depth, Opaque, Transparent, and Shadow mesh-pass
+  processors with no scene, registry, pipeline, descriptor, RHI, or
+  RenderGraph ownership.
+- Use explicit `GPUCandidate`, `Direct`, and `Skip` outcomes with fixed reason
+  precedence and explicit Ready/Pending/Unavailable facts supplied by the
+  renderer.
+- Preserve missing material as a default-material binding, Transparent and
+  Skinned as Direct, and Shadow as a whole-scene Direct preparation stream.
+- Build exact deterministic group keys from pass, full pipeline state, exact
+  mesh generation/submesh/index type, exact material generation/mode, and
+  submission layout.
+- Prepare frame-owned value streams alongside compatibility draw lists and use
+  the Opaque stream's lexicographically sorted GPU candidates for current GPU
+  culling groups.
+- Replace quadratic group lookup with O(n log n) sorting plus linear grouping,
+  and remove OpaquePass representative-item scans.
+- Preserve the existing all-or-nothing indirect gate and every existing Pass
+  command-recording loop.
+
+**Out of scope:**
+
+- Task 5 policy resolution and final pipeline/residency decisions.
+- Task 6 DrawPacket command consumption, Task 7 hybrid/exactly-once partition
+  accounting, and Task 8 duplicate culling cleanup.
+- RHI/backend behavior, frame schema, qualification thresholds, Samples,
+  Editor work, golden files, or asset-importer changes.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/MeshPassProcessor.h`
+- `Render/Private/Passes/MeshPassProcessor.cpp`
+- `Render/Private/Passes/DepthMeshPassProcessor.cpp`
+- `Render/Private/Passes/OpaqueMeshPassProcessor.cpp`
+- `Render/Private/Passes/TransparentMeshPassProcessor.cpp`
+- `Render/Private/Passes/ShadowMeshPassProcessor.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/MeshPassProcessorValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  MeshPassProcessorValidation RenderDrawPacketCacheValidation `
+  RenderDrawPacketValidation RenderSceneValidation RenderPolicyValidation `
+  RenderContractsValidation RenderFrameExtractionValidation `
+  GPUDrivenValidation RenderPassValidation --parallel 1
+
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelViewer VisualGoldenValidation --parallel 1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Focused CPU baseline: PASS 413/413; MeshPassProcessor 11/11,
+  RenderDrawPacketCache 6/6, RenderDrawPacket 5/5, RenderScene 14/14,
+  RenderPolicy 5/5, RenderContracts 203/203, RenderFrameExtraction 5/5,
+  GPUDriven 23/23, and RenderPass 141/141.
+- Synthetic DX12 Direct/GPU visual gate: PASS 3/3; different pixels 0,
+  MSE 0, PSNR 100, tolerance 0. Both SHA-256 values remain
+  `DD0FDD9B0FB7A6BA85E4350359B6358BCF2D051070F1615AEE822A18B079FB06`.
+- Porsche native DX12 visual gate: PASS 3/3, including visible-model,
+  Direct-ready, GPU-culling-ready, and multi-batch readiness assertions.
+- Porsche cross-path result: different pixels 0, MSE 0, PSNR 100,
+  tolerance 0. Both SHA-256 values remain
+  `FD02DDBB1305528680072C6DD15696CB27A44B89D3441571741CB8D4BBF2B2CA`.
+- The unfiltered CTest registry currently contains 811 entries, including many
+  intentionally unbuilt Samples/helper targets and two `*_NOT_BUILT` sentinels;
+  an unfiltered run is therefore not a valid gate for this partial build. The
+  same explicitly built CPU baseline used by R-SP323 is the recorded gate.
+- Validation fixtures emitted only their expected fallback diagnostics; all
+  selected processes exited successfully.
+- `git diff --check`: PASS; only existing LF-to-CRLF conversion warnings.
+
+**Artifacts:**
+
+- Synthetic parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json`
+- Porsche parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ExternalAssets/Porsche_CrossPath_DX12_320x180.json`
+
+**Review result:**
+
+- Verdict: PASS after primary architecture and integration review.
+- Pass preparation is now engine-owned and value-only; compatibility lists
+  remain the command-recording source until Task 6.
+- Opaque grouping is deterministic and collision-safe without quadratic lookup
+  or representative-item rescans.
+- Direct-only candidates are omitted from indirect groups, while the unchanged
+  source-count equality gate forces the whole pass back to Direct and prevents
+  dropped draws until Task 7 introduces a formally validated hybrid partition.
+- `OpaquePassFallsBackWholePassForMixedGPUAndDirectOnlyItems` verifies that a
+  mixed GPU-candidate/skinned-Direct source list records both source draws once
+  through Direct, records no GPU indirect draw, and reports
+  `DrawGroupsUnavailable` rather than dropping or double-submitting a packet.
+- No submission policy, RHI/backend behavior, frame schema, qualification
+  threshold, Sample control path, or visual golden changed in Task 4.
+
+**Notes / follow-ups:**
+
+- Task 4 is closed. Task 5 implements the engine-owned RenderPolicyResolver and
+  immutable frame-plan compilation; it has not started.
+- The pass streams currently coexist with compatibility draw lists by design.
+  Task 6, not Task 4, owns removal of duplicate command-consumer projections.
+- Repair the partial-build CTest registration so unbuilt targets do not appear
+  as runnable entries in a separate build-system hygiene task.
 
 ---
 

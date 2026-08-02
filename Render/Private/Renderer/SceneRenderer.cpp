@@ -50,6 +50,148 @@ namespace RVX
 {
 namespace
 {
+    MeshPassResourceAvailability ResolvePassResourceAvailability(
+        const RenderResourceRegistry* registry,
+        RenderResourceHandle handle,
+        bool gpuDataReady)
+    {
+        if (registry == nullptr || !handle.IsValid())
+        {
+            return MeshPassResourceAvailability::Unavailable;
+        }
+
+        const RenderResourceStatus status = registry->QueryStatus(handle);
+        if (status.code != RenderResourceStatusCode::Current)
+        {
+            return MeshPassResourceAvailability::Unavailable;
+        }
+
+        switch (status.state)
+        {
+            case RenderResourcePublicState::Reserved:
+            case RenderResourcePublicState::UploadQueued:
+            case RenderResourcePublicState::Uploading:
+                return MeshPassResourceAvailability::Pending;
+            case RenderResourcePublicState::GPUReady:
+                return gpuDataReady
+                           ? MeshPassResourceAvailability::Ready
+                           : MeshPassResourceAvailability::Unavailable;
+            case RenderResourcePublicState::Released:
+            case RenderResourcePublicState::Failed:
+            case RenderResourcePublicState::Evicting:
+            default:
+                return MeshPassResourceAvailability::Unavailable;
+        }
+    }
+
+    MeshPassProcessorInput MakeMeshPassProcessorInput(
+        RenderDrawPacket packet,
+        const RenderResourceRegistry* registry,
+        uint32 sourceOrdinal,
+        float32 viewDepth)
+    {
+        const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+            registry, packet.geometryKey.mesh);
+        const bool geometryReady = buffers.IsValid() &&
+            packet.geometryKey.submeshIndex < buffers.submeshes.size();
+        if (geometryReady)
+        {
+            const SubmeshGPUInfo& submesh =
+                buffers.submeshes[packet.geometryKey.submeshIndex];
+            packet.arguments.indexCount = submesh.indexCount;
+            packet.arguments.firstIndex = submesh.indexOffset;
+            packet.arguments.vertexOffset = submesh.baseVertex;
+        }
+
+        MeshPassProcessorInput input;
+        input.packet = packet;
+        input.availability.pipeline = MeshPassResourceAvailability::Ready;
+        input.availability.geometry = ResolvePassResourceAvailability(
+            registry, packet.geometryKey.mesh, geometryReady);
+        input.availability.material = ResolvePassResourceAvailability(
+            registry,
+            packet.materialKey.material,
+            registry != nullptr &&
+                registry->ResolveMaterial(packet.materialKey.material) != nullptr);
+        input.sourceOrdinal = sourceOrdinal;
+        input.viewDepth = viewDepth;
+        return input;
+    }
+
+    RenderDrawFlags SetRenderDrawFlag(RenderDrawFlags flags,
+                                      RenderDrawFlags flag,
+                                      bool enabled)
+    {
+        const uint32 flagBits = static_cast<uint32>(flag);
+        const uint32 resultBits = enabled
+                                      ? static_cast<uint32>(flags) | flagBits
+                                      : static_cast<uint32>(flags) & ~flagBits;
+        return static_cast<RenderDrawFlags>(resultBits);
+    }
+
+    RenderDrawPacket BuildShadowPacket(const RenderScene& scene,
+                                       const RenderObject& object,
+                                       const MeshBatch& batch)
+    {
+        RenderDrawPacket packet;
+        if (scene.FindCachedDrawPacketTemplate(batch, packet))
+        {
+            packet.objectId = batch.objectId;
+            packet.primitiveData = batch.primitiveData;
+            packet.submeshIndex = batch.submeshIndex;
+        }
+        else
+        {
+            packet = BuildLegacyMaterialDrawPacket(batch);
+        }
+        packet.flags = SetRenderDrawFlag(
+            packet.flags, RenderDrawFlags::CastsShadow, object.castsShadow);
+        packet.flags = SetRenderDrawFlag(
+            packet.flags, RenderDrawFlags::Skinned, object.HasSkinningData());
+        return packet;
+    }
+
+    MeshBatch BuildLegacyShadowBatch(const RenderObject& object,
+                                     uint32 objectIndex,
+                                     uint32 submeshIndex,
+                                     const SubmeshGPUInfo* submesh)
+    {
+        RenderBatchFlags flags = RenderBatchFlags::None;
+        if (object.HasSkinningData())
+            flags |= RenderBatchFlags::Skinned;
+        if (object.castsShadow)
+            flags |= RenderBatchFlags::CastsShadow;
+        if (object.receivesShadow)
+            flags |= RenderBatchFlags::ReceivesShadow;
+
+        const RenderMaterialMode materialMode =
+            submeshIndex < object.materialModes.size()
+                ? object.materialModes[submeshIndex]
+                : RenderMaterialMode::Opaque;
+        if (materialMode == RenderMaterialMode::Masked)
+            flags |= RenderBatchFlags::Masked;
+        if (materialMode == RenderMaterialMode::Transparent)
+            flags |= RenderBatchFlags::Transparent;
+        if (!object.material.IsValid())
+            flags |= RenderBatchFlags::MissingMaterial;
+
+        MeshBatch batch;
+        batch.objectId = object.entityId;
+        batch.mesh = object.mesh;
+        batch.material = object.material;
+        batch.submeshIndex = submeshIndex;
+        batch.primitiveData = objectIndex;
+        batch.materialMode = materialMode;
+        batch.flags = flags;
+        if (submesh != nullptr)
+        {
+            batch.geometry.indexOffset = submesh->indexOffset;
+            batch.geometry.indexCount = submesh->indexCount;
+            batch.geometry.baseVertex = submesh->baseVertex;
+        }
+        return batch;
+    }
+
     uint64 GetRenderObjectHistoryKey(const RenderObject& object)
     {
         return object.entityId;
@@ -1206,6 +1348,7 @@ void SceneRenderer::BuildMaterialDrawLists()
                                 m_maskedDrawItems,
                                 m_transparentDrawItems);
 
+    PrepareMeshPassPackets();
     ApplyGPUDrivenCullingToDrawLists();
 
     if (m_objectVelocityPass)
@@ -1214,12 +1357,123 @@ void SceneRenderer::BuildMaterialDrawLists()
     }
 }
 
+void SceneRenderer::PrepareMeshPassPackets()
+{
+    m_meshPassPreparation.Clear();
+
+    DepthMeshPassProcessor depthProcessor;
+    OpaqueMeshPassProcessor opaqueProcessor;
+    TransparentMeshPassProcessor transparentProcessor;
+    ShadowMeshPassProcessor shadowProcessor;
+
+    uint32 materialSourceOrdinal = 0;
+    const auto prepareMaterialItems =
+        [this, &depthProcessor, &opaqueProcessor, &materialSourceOrdinal](
+            const std::vector<RenderDrawItem>& drawItems)
+    {
+        for (const RenderDrawItem& item : drawItems)
+        {
+            MeshPassProcessorInput input = MakeMeshPassProcessorInput(
+                item.packet,
+                m_renderResourceRegistry,
+                materialSourceOrdinal++,
+                item.depthFromCamera);
+            m_meshPassPreparation.depth.Record(depthProcessor.Process(input));
+            m_meshPassPreparation.opaque.Record(opaqueProcessor.Process(input));
+        }
+    };
+    prepareMaterialItems(m_opaqueDrawItems);
+    prepareMaterialItems(m_maskedDrawItems);
+
+    for (uint32 sourceOrdinal = 0;
+         sourceOrdinal < static_cast<uint32>(m_transparentDrawItems.size());
+         ++sourceOrdinal)
+    {
+        const RenderDrawItem& item = m_transparentDrawItems[sourceOrdinal];
+        const MeshPassProcessorInput input = MakeMeshPassProcessorInput(
+            item.packet,
+            m_renderResourceRegistry,
+            sourceOrdinal,
+            item.depthFromCamera);
+        m_meshPassPreparation.transparent.Record(
+            transparentProcessor.Process(input));
+    }
+
+    uint32 shadowSourceOrdinal = 0;
+    for (uint32 objectIndex = 0;
+         objectIndex < static_cast<uint32>(m_renderScene.GetObjectCount());
+         ++objectIndex)
+    {
+        const RenderObject& object = m_renderScene.GetObject(objectIndex);
+        if (object.meshBatchesAuthoritative)
+        {
+            for (const MeshBatch& batch : object.meshBatches)
+            {
+                const RenderDrawPacket packet = BuildShadowPacket(
+                    m_renderScene, object, batch);
+                const MeshPassProcessorInput input =
+                    MakeMeshPassProcessorInput(
+                        packet,
+                        m_renderResourceRegistry,
+                        shadowSourceOrdinal++,
+                        0.0f);
+                m_meshPassPreparation.shadow.Record(
+                    shadowProcessor.Process(input));
+            }
+            continue;
+        }
+
+        const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+            m_renderResourceRegistry, object.mesh);
+        const uint32 submeshCount = buffers.submeshes.empty()
+                                        ? 1U
+                                        : static_cast<uint32>(
+                                              buffers.submeshes.size());
+        for (uint32 submeshIndex = 0;
+             submeshIndex < submeshCount;
+             ++submeshIndex)
+        {
+            const SubmeshGPUInfo* submesh =
+                submeshIndex < buffers.submeshes.size()
+                    ? &buffers.submeshes[submeshIndex]
+                    : nullptr;
+            const MeshBatch batch = BuildLegacyShadowBatch(
+                object, objectIndex, submeshIndex, submesh);
+            const MeshPassProcessorInput input = MakeMeshPassProcessorInput(
+                BuildLegacyMaterialDrawPacket(batch),
+                m_renderResourceRegistry,
+                shadowSourceOrdinal++,
+                0.0f);
+            m_meshPassPreparation.shadow.Record(
+                shadowProcessor.Process(input));
+        }
+    }
+
+    m_meshPassPreparation.depth.FinalizeGroups();
+    m_meshPassPreparation.opaque.FinalizeGroups();
+    m_meshPassPreparation.transparent.FinalizeGroups();
+    m_meshPassPreparation.shadow.FinalizeGroups();
+
+    const auto validateStream = [](const MeshPassPacketStream& stream)
+    {
+        RVX_DEBUG_ASSERT(stream.stats.HasCompleteRelevantOutcome());
+        RVX_DEBUG_ASSERT(
+            stream.stats.HasExactlyOneReasonPerRejectedPacket());
+    };
+    validateStream(m_meshPassPreparation.depth);
+    validateStream(m_meshPassPreparation.opaque);
+    validateStream(m_meshPassPreparation.transparent);
+    validateStream(m_meshPassPreparation.shadow);
+}
+
 void SceneRenderer::ApplyGPUDrivenCullingToDrawLists()
 {
     m_gpuDrivenCullingStats = {};
     m_gpuDrivenCullingStats.policyDecisionAvailable = true;
     m_gpuDrivenCullingStats.policyDecision = m_gpuDrivenPolicyDecision;
     m_gpuDrivenCullingStats.enabled = m_gpuDrivenCullingEnabled;
+    m_gpuDrivenCullingStats.opaqueMeshPassProcessorStats =
+        m_meshPassPreparation.opaque.stats;
     m_gpuDrivenCullingStats.inputOpaqueDrawItemCount = static_cast<uint32>(m_opaqueDrawItems.size());
     m_gpuDrivenCullingStats.inputMaskedDrawItemCount = static_cast<uint32>(m_maskedDrawItems.size());
     if (m_gpuCulling)
@@ -1320,103 +1574,61 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
     m_gpuDrivenCullingStats.graphInputDrawItemCount = 0;
     m_gpuCulling->BeginFrame();
 
-    struct GPUDrivenGroupedDrawItem
+    const auto getSourceDrawItem = [this](uint32 sourceOrdinal)
+        -> const RenderDrawItem*
     {
-        RenderDrawItem item;
-        GPUIndexedDrawDesc drawDesc;
-        uint32 sourceIndex = 0;
-    };
-
-    struct GPUDrivenDrawGroup
-    {
-        RenderResourceHandle mesh;
-        RenderResourceHandle material;
-        uint64 meshId = 0;
-        uint64 materialId = 0;
-        MaterialPipelineVariant pipelineVariant = MaterialPipelineVariant::Opaque;
-        std::vector<GPUDrivenGroupedDrawItem> items;
-    };
-
-    std::vector<GPUDrivenDrawGroup> drawGroups;
-    uint32 queuedSourceIndex = 0;
-    const auto queueDrawItems = [this, &drawGroups, &queuedSourceIndex](const std::vector<RenderDrawItem>& drawItems)
-    {
-        for (size_t drawIndex = 0; drawIndex < drawItems.size(); ++drawIndex)
+        if (sourceOrdinal < m_opaqueDrawItems.size())
         {
-            const RenderDrawItem& item = drawItems[drawIndex];
-            if (item.objectIndex >= m_renderScene.GetObjectCount())
-            {
-                continue;
-            }
-
-            const RenderObject& object = m_renderScene.GetObject(item.objectIndex);
-            const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-                m_renderResourceRegistry,
-                object.mesh);
-            if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
-            {
-                continue;
-            }
-
-            const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-            GPUIndexedDrawDesc drawDesc;
-            drawDesc.indexCount = submesh.indexCount;
-            drawDesc.firstIndex = submesh.indexOffset;
-            drawDesc.vertexOffset = submesh.baseVertex;
-
-            auto groupIt = std::find_if(drawGroups.begin(), drawGroups.end(),
-                [&object, &item](const GPUDrivenDrawGroup& group)
-                {
-                    return group.mesh == item.mesh &&
-                           group.material == item.material &&
-                           group.pipelineVariant == GetPipelineVariantForRenderMode(item.renderMode);
-                });
-            if (groupIt == drawGroups.end())
-            {
-                GPUDrivenDrawGroup group;
-                group.mesh = item.mesh;
-                group.material = item.material;
-                group.meshId = (static_cast<uint64>(item.mesh.slot) << 32U) |
-                               item.mesh.generation;
-                group.materialId =
-                    (static_cast<uint64>(item.material.slot) << 32U) |
-                    item.material.generation;
-                group.pipelineVariant = GetPipelineVariantForRenderMode(item.renderMode);
-                drawGroups.push_back(std::move(group));
-                groupIt = drawGroups.end() - 1;
-            }
-
-            GPUDrivenGroupedDrawItem groupedItem;
-            groupedItem.item = item;
-            groupedItem.drawDesc = drawDesc;
-            groupedItem.sourceIndex = queuedSourceIndex++;
-            groupIt->items.push_back(groupedItem);
+            return &m_opaqueDrawItems[sourceOrdinal];
         }
+        sourceOrdinal -= static_cast<uint32>(m_opaqueDrawItems.size());
+        return sourceOrdinal < m_maskedDrawItems.size()
+                   ? &m_maskedDrawItems[sourceOrdinal]
+                   : nullptr;
     };
 
-    queueDrawItems(m_opaqueDrawItems);
-    queueDrawItems(m_maskedDrawItems);
-
-    for (const GPUDrivenDrawGroup& group : drawGroups)
+    const MeshPassPacketStream& stream = m_meshPassPreparation.opaque;
+    for (const RenderDrawGroupRange& group : stream.groups)
     {
+        const RenderDrawGroupKey& key = group.key;
+        const uint64 meshId =
+            (static_cast<uint64>(key.geometry.mesh.slot) << 32U) |
+            key.geometry.mesh.generation;
+        const uint64 materialId =
+            (static_cast<uint64>(key.material.material.slot) << 32U) |
+            key.material.material.generation;
         const uint32 groupIndex = m_gpuCulling->BeginDrawGroup(
-            group.meshId,
-            group.materialId,
-            group.pipelineVariant,
-            group.mesh,
-            group.material);
+            meshId,
+            materialId,
+            key.pipeline.materialVariant,
+            key.geometry.mesh,
+            key.material.material);
         if (groupIndex == RVX_INVALID_INDEX)
         {
             continue;
         }
 
-        for (const GPUDrivenGroupedDrawItem& groupedItem : group.items)
+        for (uint32 offset = 0; offset < group.count; ++offset)
         {
+            const MeshPassProcessorResult& result =
+                stream.sortedGPUCandidates[group.first + offset];
+            const RenderDrawItem* item = getSourceDrawItem(
+                result.sourceOrdinal);
+            if (item == nullptr ||
+                item->objectIndex >= m_renderScene.GetObjectCount())
+            {
+                continue;
+            }
+
+            GPUIndexedDrawDesc drawDesc;
+            drawDesc.indexCount = result.packet.arguments.indexCount;
+            drawDesc.firstIndex = result.packet.arguments.firstIndex;
+            drawDesc.vertexOffset = result.packet.arguments.vertexOffset;
             m_gpuCulling->AddDrawItemInstance(
                 m_renderScene,
-                groupedItem.item,
-                groupedItem.drawDesc,
-                groupedItem.sourceIndex);
+                *item,
+                drawDesc,
+                result.sourceOrdinal);
         }
         m_gpuCulling->EndDrawGroup();
     }
