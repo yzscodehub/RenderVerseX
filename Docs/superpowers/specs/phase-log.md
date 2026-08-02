@@ -44331,6 +44331,116 @@ git diff --check
 
 ---
 
+### R-SP331 Render-policy Task 7B hybrid Depth/Opaque packet execution
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Plan review agent:** Primary architect with Task 7A contract and Task 7B acceptance review
+**Code review agent:** Independent terra worker; primary review of every finding and revision
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Task 7B hybrid recording slice; Task 8 visibility redesign excluded.
+
+**Prerequisite status:** PASS
+
+- Task 7A stable identity/accounting is committed at `22db718f`.
+- Direct and GPU consumers already reject stale prepared sources before command
+  recording.
+
+**Approved scope:**
+
+- Preserve the compiler's mutually exclusive GPU, Direct, and deliberate-Skip
+  partitions instead of rewriting a mixed pass to whole-pass Direct.
+- Validate the complete plan/source relationship and record planned GPU then
+  planned Direct work inside one Depth/Opaque render pass with one clear.
+- Support hybrid, GPU-with-Direct-skipped, all-Direct, and all-Skip plan shapes.
+- On a late GPU failure, report the failed lane and its recorded prefix, execute
+  only the preplanned Direct lane, and never replay GPU packets as Direct.
+- Preserve Direct behavior for Transparent, skinned, special, and
+  missing-material work while retaining stable unavailable/pending reasons.
+
+**Out of scope:**
+
+- Candidate/final visibility separation and visibility-provider ownership;
+  Task 8.
+- Frame-owned pass contexts and removal of persistent compatibility setters;
+  Task 9.
+- Backend qualification promotion or changing the default runtime policy;
+  Task 16B.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Include/Render/Passes/DirectDrawPacketBatch.h`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/Policy/RenderFramePlanCompiler.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/DirectDrawPacketBatch.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Policy/RenderFramePlanCompiler.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderPolicyValidation/main.cpp`
+- resolver contract, execution ledger, and this phase log.
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderPolicyValidation RenderPassValidation GPUDrivenValidation ModelViewer VisualGoldenValidation
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/GPUDrivenValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^ModelViewerGPUDrivenGBVSmoke$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries)$"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for Render, policy/pass/GPU-driven validation targets,
+  ModelViewer, and visual-golden validation.
+- Standalone suites: PASS 22/22 RenderPolicy, 159/159 RenderPass, and 24/24
+  GPUDriven.
+- Synthetic DX12 Debug Layer/Auto/forced-mode/parity gate: PASS 5/5 with zero
+  Direct-versus-GPU image difference.
+- External Porsche Direct/GPU/parity gate: PASS 3/3; DX12 GBV smoke: PASS 1/1.
+- Resize, frame-plan lifetime, submission failure, and resource-retirement gate:
+  PASS 6/6.
+- `git diff --check`: PASS.
+
+**Independent code review result:**
+
+- First revision: REQUEST CHANGES for one P2. A GPU-only forced plan counted
+  Direct sources as skipped and lost the `ForcedGPUDriven` diagnostic reason.
+  Primary accepted the finding, limited Direct-skip accounting to a nonempty
+  Direct source partition, and added a forced-GPU reason regression.
+- Second revision: REQUEST CHANGES for one P2 coverage gap. Acceptance fixtures
+  did not yet prove special/missing/transparent routing, GPU plus deliberately
+  skipped Direct work, or Depth all-Skip symmetry end to end. Primary accepted
+  the finding and added all three runtime fixtures.
+- Final verdict: APPROVE; no remaining P0-P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. The reviewer findings were valid and are fully resolved. The
+  compiler preserves resolver partitions and global reason precedence; complete
+  plan/source validation is collision-safe; Depth and Opaque execute only the
+  preplanned lanes exactly once with honest partial-recording telemetry.
+- The Auto DX12 qualification remains Candidate. No maturity promotion or
+  default-policy change is hidden in this stage.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 8 candidate visibility separation.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

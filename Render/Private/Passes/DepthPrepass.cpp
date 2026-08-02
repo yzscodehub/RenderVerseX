@@ -218,7 +218,10 @@ void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     }
 }
 
-bool DepthPrepass::AreGPUDrivenDepthGroupsDrawable(uint32& outDrawItemCount) const
+bool DepthPrepass::AreGPUDrivenDepthGroupsDrawable(
+    uint32 expectedPacketCount,
+    uint32 expectedGroupCount,
+    uint32& outDrawItemCount) const
 {
     outDrawItemCount = 0;
     if (!m_renderScene ||
@@ -230,6 +233,10 @@ bool DepthPrepass::AreGPUDrivenDepthGroupsDrawable(uint32& outDrawItemCount) con
 
     const auto& groups = m_gpuCulling->GetDrawGroups();
     if (groups.empty())
+    {
+        return false;
+    }
+    if (expectedGroupCount != 0 && groups.size() != expectedGroupCount)
     {
         return false;
     }
@@ -258,12 +265,17 @@ bool DepthPrepass::AreGPUDrivenDepthGroupsDrawable(uint32& outDrawItemCount) con
         }
     }
 
+    const uint32 requiredPacketCount =
+        expectedPacketCount != 0 ? expectedPacketCount : sourceDrawItemCount;
     return outDrawItemCount > 0 &&
-        outDrawItemCount == sourceDrawItemCount &&
+        outDrawItemCount == requiredPacketCount &&
         m_gpuCulling->GetInstanceCount() == outDrawItemCount;
 }
 
-bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx, const ViewData& view)
+bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
+                                            const ViewData& view,
+                                            uint32 expectedPacketCount,
+                                            uint32 expectedGroupCount)
 {
     m_drawStats.gpuDrivenRequested = m_gpuDrivenDepthIndirectEnabled && m_gpuCulling != nullptr;
     if (!m_gpuDrivenDepthIndirectEnabled ||
@@ -277,7 +289,9 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx, const ViewDa
     }
 
     uint32 drawItemCount = 0;
-    if (!AreGPUDrivenDepthGroupsDrawable(drawItemCount))
+    if (!AreGPUDrivenDepthGroupsDrawable(expectedPacketCount,
+                                         expectedGroupCount,
+                                         drawItemCount))
     {
         return false;
     }
@@ -560,20 +574,8 @@ bool DepthPrepass::BuildPlannedDirectBatch(
 
 bool DepthPrepass::TryDrawPlannedDirect(
     RHICommandContext& ctx,
-    const ViewData& view,
-    RHITextureView* depthTargetView,
     std::span<const PlannedDepthDraw> plannedDraws)
 {
-    RHIRenderPassDesc rpDesc;
-    rpDesc.SetDepthStencil(depthTargetView,
-                           RHILoadOp::Clear,
-                           RHIStoreOp::Store,
-                           m_pipelineCache->GetDepthClearValue(),
-                           0);
-    ctx.BeginRenderPass(rpDesc);
-    ctx.SetViewport(view.GetRHIViewport());
-    ctx.SetScissor(view.GetRHIScissor());
-
     for (const PlannedDepthDraw& planned : plannedDraws)
     {
         ctx.SetPipeline(planned.pipeline);
@@ -602,7 +604,6 @@ bool DepthPrepass::TryDrawPlannedDirect(
         ++m_drawStats.directDrawCount;
         ++m_drawStats.executedPacketCount;
     }
-    ctx.EndRenderPass();
     m_drawStats.directPacketPathUsed = true;
     return true;
 }
@@ -706,9 +707,13 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
             return;
         }
 
-        const bool plannedGPU =
-            depthPlan->partition.gpuDrivenPacketCount != 0;
-        if (plannedGPU && !ValidateWholePassGPUDrivenPacketRange(
+        const uint32 plannedGPUCount =
+            depthPlan->partition.gpuDrivenPacketCount;
+        const uint32 plannedDirectCount =
+            depthPlan->partition.directPacketCount;
+        const bool plannedGPU = plannedGPUCount != 0;
+        const bool plannedDirect = plannedDirectCount != 0;
+        if (plannedGPU && !ValidatePlannedGPUDrivenPacketRange(
                               *view.renderFrameExecutionPlan,
                               RenderPassKind::Depth,
                               view.meshPassPreparation->depth))
@@ -721,31 +726,29 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
                              depthPlan->visibility);
             return;
         }
-        if (!plannedGPU)
-        {
-            std::vector<PlannedDepthDraw> plannedDraws;
-            if (!BuildPlannedDirectBatch(view, plannedDraws))
-            {
-                updatePlanReport(RenderExecutionStatus::Failed,
-                                 m_drawStats.failureReason,
-                                 0,
-                                 false,
-                                 RenderVisibilityMode::Cpu);
-                return;
-            }
 
-            TryDrawPlannedDirect(ctx,
-                                 view,
-                                 depthTargetView,
-                                 plannedDraws);
-            m_drawStats.failureReason = RenderPolicyReason::None;
-            updatePlanReport(RenderExecutionStatus::Completed,
-                             RenderPolicyReason::None,
-                             m_drawStats.executedPacketCount,
+        // Preflight the Direct lane before attachment mutation. A Direct-only
+        // or all-Skip plan still records an empty pass so the planned clear is
+        // deterministic. Hybrid plans preflight both lanes before recording.
+        const bool validateDirectPlan = plannedDirect || !plannedGPU;
+        const bool executeDirectLane = plannedDirect ||
+            (!plannedGPU && depthPlan->partition.inputPacketCount == 0);
+        std::vector<PlannedDepthDraw> plannedDraws;
+        if (validateDirectPlan &&
+            !BuildPlannedDirectBatch(view, plannedDraws))
+        {
+            updatePlanReport(RenderExecutionStatus::Failed,
+                             m_drawStats.failureReason,
+                             0,
                              false,
-                             RenderVisibilityMode::Cpu);
+                             depthPlan->visibility);
             return;
         }
+
+        m_drawStats.planValidated = true;
+        m_drawStats.plannedPacketCount =
+            plannedGPUCount + plannedDirectCount;
+        m_drawStats.compiledPacketCount = m_drawStats.plannedPacketCount;
 
         RHIRenderPassDesc rpDesc;
         rpDesc.SetDepthStencil(depthTargetView,
@@ -756,63 +759,78 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
         ctx.BeginRenderPass(rpDesc);
         ctx.SetViewport(view.GetRHIViewport());
         ctx.SetScissor(view.GetRHIScissor());
-        const bool recorded = TryDrawGPUDrivenIndirect(ctx, view);
-        if (!recorded)
+
+        bool gpuRecorded = true;
+        if (plannedGPU)
         {
-            m_drawStats.failureReason =
-                RenderPolicyReason::UnexpectedRecordingFailure;
-            updatePlanReport(RenderExecutionStatus::Failed,
-                             m_drawStats.failureReason,
-                             0,
-                             true,
-                             depthPlan->visibility);
-            if (view.renderFrameExecutionReport != nullptr)
-            {
-                for (RenderPassExecutionReport& report :
-                     view.renderFrameExecutionReport->passes)
-                {
-                    if (report.pass == RenderPassKind::Depth)
-                    {
-                        report.executedVisibility = depthPlan->visibility;
-                        report.gpuDrivenLane.status =
-                            RenderExecutionStatus::Failed;
-                        report.gpuDrivenLane.reason = m_drawStats.failureReason;
-                        report.directLane.status =
-                            RenderExecutionStatus::NotAttempted;
-                        break;
-                    }
-                }
-            }
+            gpuRecorded = TryDrawGPUDrivenIndirect(
+                ctx,
+                view,
+                plannedGPUCount,
+                depthPlan->partition.drawGroupCount);
         }
-        else
+        if (executeDirectLane)
         {
-            updatePlanReport(RenderExecutionStatus::Completed,
-                             RenderPolicyReason::None,
-                             m_drawStats.gpuDrivenIndirectDrawCount,
-                             true,
-                             depthPlan->visibility);
-            if (view.renderFrameExecutionReport != nullptr)
-            {
-                for (RenderPassExecutionReport& report :
-                     view.renderFrameExecutionReport->passes)
-                {
-                    if (report.pass == RenderPassKind::Depth)
-                    {
-                        report.executedVisibility =
-                            depthPlan->visibility;
-                        report.gpuDrivenLane.status =
-                            RenderExecutionStatus::Completed;
-                        report.gpuDrivenLane.reason = RenderPolicyReason::None;
-                        report.gpuDrivenLane.executedPacketCount =
-                            m_drawStats.gpuDrivenIndirectDrawCount;
-                        report.gpuDrivenLane.executedDrawCount =
-                            m_drawStats.gpuDrivenIndirectDrawCount;
-                        break;
-                    }
-                }
-            }
+            TryDrawPlannedDirect(ctx, plannedDraws);
         }
         ctx.EndRenderPass();
+
+        m_drawStats.failureReason = gpuRecorded
+            ? RenderPolicyReason::None
+            : RenderPolicyReason::UnexpectedRecordingFailure;
+        if (view.renderFrameExecutionReport != nullptr)
+        {
+            for (RenderPassExecutionReport& report :
+                 view.renderFrameExecutionReport->passes)
+            {
+                if (report.pass != RenderPassKind::Depth)
+                {
+                    continue;
+                }
+                report.status = gpuRecorded
+                    ? RenderExecutionStatus::Completed
+                    : RenderExecutionStatus::Failed;
+                report.executedVisibility = depthPlan->visibility;
+                report.reason = gpuRecorded
+                    ? depthPlan->reason
+                    : m_drawStats.failureReason;
+                report.skippedPacketCount =
+                    depthPlan->partition.skippedPacketCount;
+                report.gpuDrivenLane.status = plannedGPU
+                    ? (gpuRecorded ? RenderExecutionStatus::Completed
+                                   : RenderExecutionStatus::Failed)
+                    : RenderExecutionStatus::NotAttempted;
+                report.gpuDrivenLane.reason = plannedGPU
+                    ? m_drawStats.failureReason
+                    : RenderPolicyReason::None;
+                // A late group failure does not erase commands already
+                // recorded by earlier groups. Report the actual submitted
+                // prefix while marking the lane failed; never claim zero or
+                // replay that prefix through Direct.
+                report.gpuDrivenLane.executedPacketCount = plannedGPU
+                    ? m_drawStats.gpuDrivenIndirectDrawCount
+                    : 0;
+                report.gpuDrivenLane.executedDrawCount = plannedGPU
+                    ? m_drawStats.gpuDrivenIndirectDrawCount
+                    : 0;
+                report.directLane.status = executeDirectLane
+                    ? RenderExecutionStatus::Completed
+                    : RenderExecutionStatus::NotAttempted;
+                report.directLane.reason = RenderPolicyReason::None;
+                report.directLane.executedPacketCount =
+                    m_drawStats.executedPacketCount;
+                report.directLane.executedDrawCount =
+                    m_drawStats.directDrawCount;
+                if (!gpuRecorded)
+                {
+                    view.renderFrameExecutionReport->status =
+                        RenderExecutionStatus::Failed;
+                }
+                break;
+            }
+            view.renderFrameExecutionReport->frameSequence =
+                view.renderFrameExecutionPlan->frameSequence;
+        }
         return;
     }
 

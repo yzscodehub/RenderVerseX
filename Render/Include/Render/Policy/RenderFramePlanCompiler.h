@@ -46,9 +46,9 @@ namespace RVX
     /**
      * @brief Compile one owned per-view plan from resolver output and prepared streams.
      *
-     * The function retains no references. Task 5C deliberately compiles a
-     * mixed GPU-candidate/Direct pass as whole-pass Direct; Task 7A adds stable
-     * packet identities and Task 7B introduces true hybrid submission.
+     * The function retains no references. Mixed GPU-candidate/Direct depth or
+     * opaque plans are compiled as planned hybrid lanes: GPU-sorted candidates,
+     * source-ordered directs, and ordered skips.
      */
     [[nodiscard]] RenderFramePlanCompileResult CompileRenderFrameExecutionPlan(
         const RenderPolicyResolution& resolution,

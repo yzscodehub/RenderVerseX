@@ -56,12 +56,12 @@ namespace RVX
         const MeshPassPacketStream& stream);
 
     /**
-     * @brief Validate the Task 5 whole-pass GPU lane against its source stream.
+     * @brief Validate planned GPU/Direct lane selections against a prepared stream.
      *
-     * Task 7 replaces this whole-pass gate with persistent packet identity and
-     * hybrid exactly-once accounting.
+     * GPU-driven plans may include a simultaneous Direct range for mixed source
+     * packets. This validation validates both planned partitions.
      */
-    [[nodiscard]] bool ValidateWholePassGPUDrivenPacketRange(
+    [[nodiscard]] bool ValidatePlannedGPUDrivenPacketRange(
         const RenderFrameExecutionPlan& plan,
         RenderPassKind pass,
         const MeshPassPacketStream& stream);

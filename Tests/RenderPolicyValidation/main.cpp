@@ -237,11 +237,15 @@ namespace
     RenderPolicyResolution ResolvePreparation(
         const SceneMeshPassPreparation& preparation,
         uint64 frameSequence,
-        uint32 viewOrdinal)
+        uint32 viewOrdinal,
+        RenderPolicyReadiness directResourceReadiness =
+            RenderPolicyReadiness::Ready,
+        bool backendQualified = true,
+        RenderGPUDrivenMode gpuDrivenMode = RenderGPUDrivenMode::Auto)
     {
         RenderPolicyResolverInput input;
         input.request.frameSequence = frameSequence;
-        input.request.gpuDrivenMode = RenderGPUDrivenMode::Auto;
+        input.request.gpuDrivenMode = gpuDrivenMode;
         input.viewOrdinal = viewOrdinal;
         input.view.rendererAllowsGPUDriven = true;
         input.view.viewAllowsGPUDriven = true;
@@ -257,13 +261,19 @@ namespace
         input.capabilities.supportsIndirectDrawCount = true;
         input.qualification.backend = RHIBackendType::DX12;
         input.qualification.revision = 1;
-        input.qualification.passedGateMask = input.qualification.requiredGateMask;
+        input.qualification.passedGateMask = backendQualified
+            ? input.qualification.requiredGateMask
+            : 0;
         input.passes = {
             MakeFacts(RenderPassKind::Transparent, preparation.transparent),
             MakeFacts(RenderPassKind::Opaque, preparation.opaque),
             MakeFacts(RenderPassKind::Shadow, preparation.shadow),
             MakeFacts(RenderPassKind::Depth, preparation.depth),
         };
+        for (RenderPassPolicyFacts& facts : input.passes)
+        {
+            facts.directResourceReadiness = directResourceReadiness;
+        }
         return ResolveRenderPolicy(input);
     }
 
@@ -1060,27 +1070,39 @@ namespace
     }
 
     TEST(RenderPolicyValidation,
-         FramePlanCompilerMakesMixedPassExplicitWholePassDirect)
+         FramePlanCompilerPreservesMixedPassHybridLanes)
     {
         SceneMeshPassPreparation preparation;
+        preparation.depth.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+
+        MeshPassProcessorResult direct = MakePreparedPacket(
+            RenderPassKind::Opaque, MeshPassDisposition::Direct,
+            MeshPassEligibilityReason::Skinned, 11, 2);
+        direct.directLayout.vertexStreams =
+            MeshPassVertexStreams::Position;
+        direct.directLayout.primitiveDataBinding =
+            PrimitiveDataBinding::PerDrawConstants;
+        direct.groupKey.layout = direct.directLayout;
+
         preparation.opaque.Record(MakePreparedPacket(
             RenderPassKind::Opaque, MeshPassDisposition::GPUCandidate,
             MeshPassEligibilityReason::None, 11, 1));
         preparation.opaque.Record(MakePreparedPacket(
-            RenderPassKind::Opaque, MeshPassDisposition::Direct,
-            MeshPassEligibilityReason::Skinned, 11, 2));
-        preparation.opaque.Record(MakePreparedPacket(
             RenderPassKind::Opaque, MeshPassDisposition::GPUCandidate,
             MeshPassEligibilityReason::None, 12, 3));
-        preparation.depth.FinalizeGroups();
+        preparation.opaque.Record(direct);
         preparation.opaque.FinalizeGroups();
-        preparation.shadow.FinalizeGroups();
-        preparation.transparent.FinalizeGroups();
+        EXPECT_EQ(2u, preparation.opaque.sortedGPUCandidatePacketIndices.size());
 
         const RenderPolicyResolution resolution =
             ResolvePreparation(preparation, 202, 1);
-        ASSERT_EQ(2u, resolution.canonicalPassDecisions[1]
+        EXPECT_EQ(2u, resolution.canonicalPassDecisions[1]
                           .partition.gpuDrivenPacketCount);
+        EXPECT_EQ(1u, resolution.canonicalPassDecisions[1]
+                          .partition.directPacketCount);
+
         const RenderFramePlanCompileResult first =
             CompileRenderFrameExecutionPlan(resolution, preparation);
         const RenderFramePlanCompileResult second =
@@ -1089,23 +1111,71 @@ namespace
         EXPECT_EQ(first, second);
         EXPECT_EQ(202u, first.plan.frameSequence);
         EXPECT_EQ(1u, first.plan.viewOrdinal);
-        EXPECT_EQ(GPUDrivenTier::Direct,
+        EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
                   first.plan.viewPolicy.selectedTier);
-        EXPECT_EQ(RenderPolicyReason::PlannedFallback,
-                  first.plan.viewPolicy.reason);
+        EXPECT_EQ(RenderPolicyReason::None, first.plan.viewPolicy.reason);
+
         const RenderPassExecutionPlan& opaque = first.plan.passes[1];
-        EXPECT_EQ(RenderSubmissionMode::Direct, opaque.preferredSubmission);
-        EXPECT_EQ(RenderVisibilityMode::Cpu, opaque.visibility);
-        EXPECT_EQ(RenderPolicyReason::PlannedFallback, opaque.reason);
-        EXPECT_EQ(0u, opaque.gpuEligiblePackets.count);
-        EXPECT_EQ(3u, opaque.directPackets.count);
-        for (uint32 index = 0; index < 3; ++index)
-        {
-            EXPECT_EQ(index,
-                      first.plan.packetReferences[
-                          opaque.directPackets.first + index]
-                          .sourcePacketIndex);
-        }
+        EXPECT_EQ(RenderSubmissionMode::MultiDrawIndirectCount,
+                  opaque.preferredSubmission);
+        EXPECT_EQ(RenderVisibilityMode::GpuFrustum, opaque.visibility);
+        EXPECT_EQ(RenderPolicyReason::None, opaque.reason);
+        EXPECT_EQ(2u, opaque.gpuEligiblePackets.count);
+        EXPECT_EQ(1u, opaque.directPackets.count);
+        EXPECT_EQ(0u, opaque.skippedPackets.count);
+        EXPECT_EQ((RenderPacketIdentityAccounting{3, 3, 3, 0, 0}),
+                  opaque.identityAccounting);
+        const uint32 expectedGpuSource0 =
+            preparation.opaque.sortedGPUCandidatePacketIndices[0];
+        const uint32 expectedGpuSource1 =
+            preparation.opaque.sortedGPUCandidatePacketIndices[1];
+        EXPECT_EQ(expectedGpuSource0,
+                  first.plan.packetReferences[opaque.gpuEligiblePackets.first]
+                      .sourcePacketIndex);
+        EXPECT_EQ(expectedGpuSource1,
+                  first.plan.packetReferences[opaque.gpuEligiblePackets.first + 1]
+                      .sourcePacketIndex);
+        EXPECT_EQ(2u,
+                  first.plan.packetReferences[opaque.directPackets.first]
+                      .sourcePacketIndex);
+
+        EXPECT_TRUE(ValidatePlannedGPUDrivenPacketRange(
+            first.plan, RenderPassKind::Opaque, preparation.opaque));
+
+        DirectDrawPacketBatchBuildResult batch =
+            BuildDirectDrawPacketBatch(first.plan,
+                                      RenderPassKind::Opaque,
+                                      preparation.opaque);
+        ASSERT_TRUE(batch.succeeded);
+        ASSERT_EQ(1u, batch.batch.packets.size());
+
+        RenderFrameExecutionPlan invalidReference = first.plan;
+        invalidReference.passes[1].directPackets.count = 0;
+        EXPECT_FALSE(BuildDirectDrawPacketBatch(invalidReference,
+                                                RenderPassKind::Opaque,
+                                                preparation.opaque)
+                         .succeeded);
+
+        invalidReference = first.plan;
+        invalidReference.passes[1].directPackets.first += 1u;
+        EXPECT_FALSE(BuildDirectDrawPacketBatch(invalidReference,
+                                                RenderPassKind::Opaque,
+                                                preparation.opaque)
+                         .succeeded);
+
+        invalidReference = first.plan;
+        auto& directReference =
+            invalidReference.packetReferences[opaque.directPackets.first];
+        ++directReference.sourceOrdinal;
+        EXPECT_FALSE(BuildDirectDrawPacketBatch(invalidReference,
+                                                RenderPassKind::Opaque,
+                                                preparation.opaque)
+                         .succeeded);
+
+        invalidReference = first.plan;
+        invalidReference.passes[1].directPackets.count = 2u;
+        EXPECT_FALSE(ValidatePlannedGPUDrivenPacketRange(
+            invalidReference, RenderPassKind::Opaque, preparation.opaque));
     }
 
     TEST(RenderPolicyValidation,
@@ -1130,6 +1200,87 @@ namespace
         EXPECT_FALSE(malformed.succeeded);
         EXPECT_TRUE(malformed.plan.passes.empty());
         EXPECT_TRUE(malformed.plan.packetReferences.empty());
+    }
+
+    TEST(RenderPolicyValidation,
+         FramePlanCompilerKeepsGPUWhenDirectResourcesArePending)
+    {
+        SceneMeshPassPreparation preparation;
+        preparation.depth.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+
+        preparation.opaque.Record(MakePreparedPacket(
+            RenderPassKind::Opaque,
+            MeshPassDisposition::GPUCandidate,
+            MeshPassEligibilityReason::None,
+            4,
+            10));
+        preparation.opaque.Record(MakePreparedPacket(
+            RenderPassKind::Opaque,
+            MeshPassDisposition::Direct,
+            MeshPassEligibilityReason::Skinned,
+            5,
+            11));
+        preparation.opaque.Record(MakePreparedPacket(
+            RenderPassKind::Opaque,
+            MeshPassDisposition::Skip,
+            MeshPassEligibilityReason::PassIrrelevant,
+            6,
+            12));
+        preparation.opaque.FinalizeGroups();
+
+        const RenderPolicyResolution resolution = ResolvePreparation(
+            preparation,
+            212,
+            2,
+            RenderPolicyReadiness::Pending);
+        const RenderPassPolicyDecision& decision =
+            resolution.canonicalPassDecisions[1];
+        ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+        EXPECT_EQ(1u, decision.partition.gpuDrivenPacketCount);
+        EXPECT_EQ(0u, decision.partition.directPacketCount);
+        EXPECT_EQ(2u, decision.partition.skippedPacketCount);
+        EXPECT_EQ(RenderPolicyReason::ResourcesPending, decision.reason);
+
+        const RenderFramePlanCompileResult compiled =
+            CompileRenderFrameExecutionPlan(resolution, preparation);
+        ASSERT_TRUE(compiled.succeeded);
+        const RenderPassExecutionPlan& opaque = compiled.plan.passes[1];
+        EXPECT_EQ(1u, opaque.gpuEligiblePackets.count);
+        EXPECT_EQ(0u, opaque.directPackets.count);
+        EXPECT_EQ(2u, opaque.skippedPackets.count);
+        EXPECT_EQ(0u,
+                  compiled.plan.packetReferences[
+                      opaque.gpuEligiblePackets.first]
+                      .sourcePacketIndex);
+        EXPECT_EQ(1u,
+                  compiled.plan.packetReferences[opaque.skippedPackets.first]
+                      .sourcePacketIndex);
+        EXPECT_EQ(2u,
+                  compiled.plan.packetReferences[
+                      opaque.skippedPackets.first + 1]
+                      .sourcePacketIndex);
+        EXPECT_EQ(1u,
+                  opaque.reasonCounts[static_cast<size_t>(
+                      RenderPolicyReason::None)]);
+        EXPECT_EQ(1u,
+                  opaque.reasonCounts[static_cast<size_t>(
+                      RenderPolicyReason::ResourcesPending)]);
+        EXPECT_EQ(1u,
+                  opaque.reasonCounts[static_cast<size_t>(
+                      RenderPolicyReason::PacketIrrelevant)]);
+        EXPECT_TRUE(ValidatePlannedGPUDrivenPacketRange(
+            compiled.plan,
+            RenderPassKind::Opaque,
+            preparation.opaque));
+
+        const DirectDrawPacketBatchBuildResult directBatch =
+            BuildDirectDrawPacketBatch(compiled.plan,
+                                       RenderPassKind::Opaque,
+                                       preparation.opaque);
+        ASSERT_TRUE(directBatch.succeeded);
+        EXPECT_TRUE(directBatch.batch.packets.empty());
     }
 
     TEST(RenderPolicyValidation,
@@ -1174,6 +1325,81 @@ namespace
         EXPECT_FALSE(reordered.succeeded);
         EXPECT_TRUE(reordered.plan.passes.empty());
         EXPECT_TRUE(reordered.plan.packetReferences.empty());
+    }
+
+    TEST(RenderPolicyValidation,
+         FramePlanCompilerPreservesGlobalReasonWhenDirectReadinessAlsoFails)
+    {
+        SceneMeshPassPreparation preparation;
+        preparation.depth.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+        preparation.opaque.Record(MakePreparedPacket(
+            RenderPassKind::Opaque,
+            MeshPassDisposition::GPUCandidate,
+            MeshPassEligibilityReason::None,
+            7,
+            20));
+        preparation.opaque.FinalizeGroups();
+
+        const RenderPolicyResolution resolution = ResolvePreparation(
+            preparation,
+            213,
+            0,
+            RenderPolicyReadiness::Pending,
+            false);
+        ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+        EXPECT_EQ(GPUDrivenTier::Direct,
+                  resolution.viewPolicy.selectedTier);
+        EXPECT_EQ(RenderPolicyReason::BackendNotQualified,
+                  resolution.viewPolicy.reason);
+        EXPECT_EQ(RenderPolicyReason::ResourcesPending,
+                  resolution.canonicalPassDecisions[1].reason);
+
+        const RenderFramePlanCompileResult compiled =
+            CompileRenderFrameExecutionPlan(resolution, preparation);
+        ASSERT_TRUE(compiled.succeeded);
+        EXPECT_EQ(resolution.viewPolicy, compiled.plan.viewPolicy);
+        EXPECT_EQ(RenderPolicyReason::ResourcesPending,
+                  compiled.plan.passes[1].reason);
+    }
+
+    TEST(RenderPolicyValidation,
+         FramePlanCompilerPreservesForcedGPUReasonForGPUOnlyPackets)
+    {
+        SceneMeshPassPreparation preparation;
+        preparation.depth.FinalizeGroups();
+        preparation.shadow.FinalizeGroups();
+        preparation.transparent.FinalizeGroups();
+        preparation.opaque.Record(MakePreparedPacket(
+            RenderPassKind::Opaque,
+            MeshPassDisposition::GPUCandidate,
+            MeshPassEligibilityReason::None,
+            8,
+            21));
+        preparation.opaque.FinalizeGroups();
+
+        const RenderPolicyResolution resolution = ResolvePreparation(
+            preparation,
+            214,
+            0,
+            RenderPolicyReadiness::Ready,
+            true,
+            RenderGPUDrivenMode::ForceEnabled);
+        ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+        EXPECT_EQ(RenderPolicyReason::ForcedGPUDriven,
+                  resolution.canonicalPassDecisions[1].reason);
+
+        const RenderFramePlanCompileResult compiled =
+            CompileRenderFrameExecutionPlan(resolution, preparation);
+        ASSERT_TRUE(compiled.succeeded);
+        const RenderPassExecutionPlan& opaque = compiled.plan.passes[1];
+        EXPECT_EQ(1u,
+                  opaque.reasonCounts[static_cast<size_t>(
+                      RenderPolicyReason::ForcedGPUDriven)]);
+        EXPECT_EQ(0u,
+                  opaque.reasonCounts[static_cast<size_t>(
+                      RenderPolicyReason::None)]);
     }
 
     TEST(RenderPolicyValidation,
@@ -1315,7 +1541,7 @@ namespace
         MeshPassPacketStream staleGPUStream = preparation.opaque;
         ++staleGPUStream.packets[0].packet.materialKey.material.generation;
         staleGPUStream.FinalizeGroups();
-        EXPECT_FALSE(ValidateWholePassGPUDrivenPacketRange(
+        EXPECT_FALSE(ValidatePlannedGPUDrivenPacketRange(
             compiled.plan, RenderPassKind::Opaque, staleGPUStream));
     }
 

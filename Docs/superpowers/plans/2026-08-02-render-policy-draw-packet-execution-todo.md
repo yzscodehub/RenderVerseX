@@ -1,6 +1,6 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-7A complete; Task 7B hybrid Depth/Opaque execution is the
+**Status:** Tasks 0-7 complete; Task 8 candidate visibility separation is the
 next implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
@@ -211,20 +211,20 @@ with exact/documented parity and no legacy duplicate submission.
 - [x] Compile mutually exclusive GPU, Direct, and deliberate-Skip partitions.
 - [x] Add exactly-once accounting: every relevant packet ID appears in exactly
   one terminal lane.
-- [ ] Replace all-pass `AreGPUDriven*GroupsDrawable()` gates with validated plan
+- [x] Replace all-pass `AreGPUDriven*GroupsDrawable()` gates with validated plan
   partitions.
-- [ ] Record GPU lanes indirectly and Direct fallback lanes in the same
+- [x] Record GPU lanes indirectly and Direct fallback lanes in the same
   Depth/Opaque pass with compatible load/depth semantics.
-- [ ] Keep Transparent Direct, Skinned Direct, and unavailable/pending behavior
+- [x] Keep Transparent Direct, Skinned Direct, and unavailable/pending behavior
   exactly as specified by the plan reason.
-- [ ] Define late recording failure behavior: fail/report the current lane and
+- [x] Define late recording failure behavior: fail/report the current lane and
   replan a later frame; never replay already-recorded packets in the same frame.
-- [ ] Add mixed static/skinned/special/missing/pending/transparent fixtures.
-- [ ] Assert zero duplicate IDs, zero unaccounted eligible IDs, and one failing
+- [x] Add mixed static/skinned/special/missing/pending/transparent fixtures.
+- [x] Assert zero duplicate IDs, zero unaccounted eligible IDs, and one failing
   group not forcing unrelated groups to Direct.
-- [ ] Run DX12 Debug Layer, GBV, repeated-frame, resize, resource-lifetime, and
+- [x] Run DX12 Debug Layer, GBV, repeated-frame, resize, resource-lifetime, and
   Direct/hybrid parity gates.
-- [ ] Commit packet identity/accounting separately from Depth/Opaque hybrid
+- [x] Commit packet identity/accounting separately from Depth/Opaque hybrid
   execution when useful for review.
 
 **Stop gate:** No visibility redesign begins until hybrid exactly-once

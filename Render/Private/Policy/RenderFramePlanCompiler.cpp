@@ -283,6 +283,7 @@ namespace
         const MeshPassProcessorResult& packet,
         bool plannedGPU,
         bool plannedDirect,
+        bool directSourcesSkipped,
         RenderPolicyReason passReason)
     {
         if (packet.disposition == MeshPassDisposition::Skip)
@@ -291,13 +292,20 @@ namespace
         }
         if (packet.disposition == MeshPassDisposition::Direct)
         {
-            return plannedDirect || plannedGPU
-                       ? MapSourceReason(packet.reason)
-                       : passReason;
+            return directSourcesSkipped
+                       ? passReason
+                       : (plannedDirect || plannedGPU
+                              ? MapSourceReason(packet.reason)
+                              : passReason);
         }
         if (plannedGPU)
         {
-            return passReason;
+            // A Direct-only readiness failure may set the pass-level reason
+            // while the GPU lane remains executable. Preserve the successful
+            // GPU packet outcome instead of attributing the Direct failure to
+            // every candidate in the pass.
+            return directSourcesSkipped ? RenderPolicyReason::None
+                                        : passReason;
         }
         if (plannedDirect)
         {
@@ -416,39 +424,6 @@ namespace
         outPass.partition = decision.partition;
 
         const uint32 sourceCandidates = stream.stats.gpuCandidatePacketCount;
-        const uint32 sourceDirect = stream.stats.directPacketCount;
-        const uint32 sourceSkipped = stream.stats.skippedPacketCount;
-        const bool resolverSelectedGPU =
-            decision.partition.gpuDrivenPacketCount != 0;
-        const bool mixedRequiresWholePassDirect =
-            resolverSelectedGPU && sourceCandidates != 0 && sourceDirect != 0;
-
-        if (mixedRequiresWholePassDirect)
-        {
-            outPass.visibility = RenderVisibilityMode::Cpu;
-            outPass.preferredSubmission = RenderSubmissionMode::Direct;
-            outPass.partition.gpuDrivenPacketCount = 0;
-            outPass.partition.drawGroupCount = 0;
-            if (decision.partition.directPacketCount == sourceDirect)
-            {
-                outPass.reason = RenderPolicyReason::PlannedFallback;
-                outPass.partition.directPacketCount =
-                    sourceCandidates + sourceDirect;
-                outPass.partition.skippedPacketCount = sourceSkipped;
-            }
-            else
-            {
-                outPass.reason =
-                    decision.reason == RenderPolicyReason::None ||
-                            decision.reason ==
-                                RenderPolicyReason::ForcedGPUDriven
-                        ? RenderPolicyReason::PlannedFallback
-                        : decision.reason;
-                outPass.partition.directPacketCount = 0;
-                outPass.partition.skippedPacketCount =
-                    outPass.partition.inputPacketCount;
-            }
-        }
 
         const bool plannedGPU =
             outPass.partition.gpuDrivenPacketCount == sourceCandidates &&
@@ -462,6 +437,13 @@ namespace
                 stream.stats.inputPacketCount &&
             outPass.partition.gpuDrivenPacketCount == 0 &&
             outPass.partition.directPacketCount == 0;
+        const bool directSourcesSkipped =
+            plannedGPU &&
+            stream.stats.directPacketCount != 0 &&
+            outPass.partition.directPacketCount == 0 &&
+            outPass.partition.skippedPacketCount ==
+                stream.stats.skippedPacketCount +
+                    stream.stats.directPacketCount;
 
         if (plannedGPU)
         {
@@ -530,6 +512,31 @@ namespace
                 ++outPass.skippedPackets.count;
             }
         }
+        else if (
+            plannedGPU &&
+            outPass.partition.directPacketCount == 0 &&
+            outPass.partition.skippedPacketCount ==
+                stream.stats.inputPacketCount -
+                    stream.stats.gpuCandidatePacketCount)
+        {
+            for (uint32 sourceIndex = 0;
+                 sourceIndex < static_cast<uint32>(stream.packets.size());
+                 ++sourceIndex)
+            {
+                const MeshPassProcessorResult& packet =
+                    stream.packets[sourceIndex];
+                if (packet.disposition != MeshPassDisposition::Skip &&
+                    packet.disposition != MeshPassDisposition::Direct)
+                {
+                    continue;
+                }
+                if (!AppendReference(plan, outPass.pass, sourceIndex, stream))
+                {
+                    return false;
+                }
+                ++outPass.skippedPackets.count;
+            }
+        }
         else if (!AppendSourceOrderedLane(plan,
                                           outPass,
                                           stream,
@@ -547,6 +554,7 @@ namespace
                 GetPacketOutcomeReason(packet,
                                        plannedGPU,
                                        plannedAllRelevantDirect,
+                                       directSourcesSkipped,
                                        outPass.reason));
         }
         if (outPass.gpuEligiblePackets.count !=
@@ -597,8 +605,6 @@ RenderFramePlanCompileResult CompileRenderFrameExecutionPlan(
     result.plan.capabilities = resolution.capabilities;
     result.plan.qualification = resolution.qualification;
 
-    bool anyGPU = false;
-    RenderPolicyReason firstDirectReason = RenderPolicyReason::None;
     for (const RenderPassPolicyDecision& decision :
          resolution.canonicalPassDecisions)
     {
@@ -612,37 +618,7 @@ RenderFramePlanCompileResult CompileRenderFrameExecutionPlan(
         {
             return result;
         }
-        anyGPU |= passPlan.partition.gpuDrivenPacketCount != 0;
-        if (firstDirectReason == RenderPolicyReason::None &&
-            passPlan.partition.gpuDrivenPacketCount == 0 &&
-            passPlan.partition.relevantPacketCount != 0)
-        {
-            firstDirectReason = passPlan.reason;
-        }
         result.plan.passes.push_back(std::move(passPlan));
-    }
-
-    if (!anyGPU)
-    {
-        result.plan.viewPolicy.selectedTier = GPUDrivenTier::Direct;
-        const RenderPolicyReason selectedDirectReason =
-            firstDirectReason == RenderPolicyReason::None
-                ? resolution.viewPolicy.reason
-                : firstDirectReason;
-        if (result.plan.viewPolicy.requestedMode ==
-            RenderGPUDrivenMode::ForceDisabled)
-        {
-            result.plan.viewPolicy.reason = RenderPolicyReason::ForcedDirect;
-        }
-        else if (selectedDirectReason == RenderPolicyReason::None ||
-                 selectedDirectReason == RenderPolicyReason::ForcedGPUDriven)
-        {
-            result.plan.viewPolicy.reason = RenderPolicyReason::PlannedFallback;
-        }
-        else
-        {
-            result.plan.viewPolicy.reason = selectedDirectReason;
-        }
     }
 
     if (!ValidateRenderFrameExecutionPlan(result.plan))

@@ -337,7 +337,10 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     }
 }
 
-bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) const
+bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(
+    uint32 expectedPacketCount,
+    uint32 expectedGroupCount,
+    uint32& outDrawItemCount) const
 {
     outDrawItemCount = 0;
     if (!m_renderScene ||
@@ -349,6 +352,10 @@ bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) cons
 
     const auto& groups = m_gpuCulling->GetDrawGroups();
     if (groups.empty())
+    {
+        return false;
+    }
+    if (expectedGroupCount != 0 && groups.size() != expectedGroupCount)
     {
         return false;
     }
@@ -383,8 +390,10 @@ bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) cons
         }
     }
 
+    const uint32 requiredPacketCount =
+        expectedPacketCount != 0 ? expectedPacketCount : sourceDrawItemCount;
     return outDrawItemCount > 0 &&
-        outDrawItemCount == sourceDrawItemCount &&
+        outDrawItemCount == requiredPacketCount &&
         m_gpuCulling->GetInstanceCount() == outDrawItemCount;
 }
 
@@ -392,7 +401,9 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                                           const ViewData& view,
                                           RHIFormat colorTargetFormat,
                                           RHIDescriptorSet* frameSet,
-                                          bool requireObjectConstantUpload)
+                                          bool requireObjectConstantUpload,
+                                          uint32 expectedPacketCount,
+                                          uint32 expectedGroupCount)
 {
     m_drawStats.gpuDrivenRequested = m_gpuDrivenOpaqueIndirectEnabled;
     m_drawStats.gpuDrivenFallbackReason = GPUDrivenDrawFallbackReason::Disabled;
@@ -430,7 +441,9 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     m_drawStats.gpuDrivenCullingReady = true;
 
     uint32 drawItemCount = 0;
-    if (!AreGPUDrivenOpaqueGroupsDrawable(drawItemCount))
+    if (!AreGPUDrivenOpaqueGroupsDrawable(expectedPacketCount,
+                                          expectedGroupCount,
+                                          drawItemCount))
     {
         m_drawStats.gpuDrivenFallbackReason =
             GPUDrivenDrawFallbackReason::DrawGroupsUnavailable;
@@ -805,27 +818,8 @@ bool OpaquePass::BuildPlannedDirectBatch(
 
 bool OpaquePass::TryDrawPlannedDirect(
     RHICommandContext& ctx,
-    const ViewData& view,
-    RHITextureView* colorTargetView,
     std::span<const PlannedOpaqueDraw> plannedDraws)
 {
-    RHIRenderPassDesc rpDesc;
-    rpDesc.AddColorAttachment(colorTargetView,
-                              RHILoadOp::Clear,
-                              RHIStoreOp::Store,
-                              RVX_SCENE_COLOR_CLEAR_VALUE);
-    if (m_depthTargetView)
-    {
-        rpDesc.SetDepthStencil(m_depthTargetView,
-                               RHILoadOp::Clear,
-                               RHIStoreOp::Store,
-                               m_pipelineCache->GetDepthClearValue(),
-                               0);
-    }
-
-    ctx.BeginRenderPass(rpDesc);
-    ctx.SetViewport(view.GetRHIViewport());
-    ctx.SetScissor(view.GetRHIScissor());
     for (const PlannedOpaqueDraw& planned : plannedDraws)
     {
         ctx.SetPipeline(planned.pipeline);
@@ -854,7 +848,6 @@ bool OpaquePass::TryDrawPlannedDirect(
         ++m_drawStats.directDrawCount;
         ++m_drawStats.executedPacketCount;
     }
-    ctx.EndRenderPass();
     m_drawStats.directPacketPathUsed = true;
     return true;
 }
@@ -1140,9 +1133,13 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     // recording failure.
     if (hasPublishedPlan)
     {
-        const bool plannedGPU =
-            opaquePlan->partition.gpuDrivenPacketCount != 0;
-        if (plannedGPU && !ValidateWholePassGPUDrivenPacketRange(
+        const uint32 plannedGPUCount =
+            opaquePlan->partition.gpuDrivenPacketCount;
+        const uint32 plannedDirectCount =
+            opaquePlan->partition.directPacketCount;
+        const bool plannedGPU = plannedGPUCount != 0;
+        const bool plannedDirect = plannedDirectCount != 0;
+        if (plannedGPU && !ValidatePlannedGPUDrivenPacketRange(
                               *view.renderFrameExecutionPlan,
                               RenderPassKind::Opaque,
                               view.meshPassPreparation->opaque))
@@ -1155,48 +1152,43 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                              opaquePlan->visibility);
             return;
         }
-        if (!plannedGPU)
+
+        const bool validateDirectPlan = plannedDirect || !plannedGPU;
+        const bool executeDirectLane = plannedDirect ||
+            (!plannedGPU && opaquePlan->partition.inputPacketCount == 0);
+        std::vector<PlannedOpaqueDraw> plannedDraws;
+        if (validateDirectPlan &&
+            !BuildPlannedDirectBatch(view,
+                                     colorTargetFormat,
+                                     plannedDraws))
         {
-            std::vector<PlannedOpaqueDraw> plannedDraws;
-            if (!BuildPlannedDirectBatch(
-                    view, colorTargetFormat, plannedDraws))
-            {
-                updatePlanReport(RenderExecutionStatus::Failed,
-                                 m_drawStats.failureReason,
-                                 0,
-                                 false,
-                                 opaquePlan->visibility);
-                return;
-            }
-
-            // Only the preflighted packet values determine material texture
-            // transitions for the planned Direct lane.
-            for (const PlannedOpaqueDraw& planned : plannedDraws)
-            {
-                MaterialBindingOptions materialOptions;
-                materialOptions.allowNormalMap = planned.allowNormalMap;
-                m_materialSystem->TransitionMaterialTextures(
-                    planned.packet.packet.materialKey.material,
-                    ctx,
-                    materialOptions);
-            }
-
-            TryDrawPlannedDirect(ctx,
-                                 drawView,
-                                 colorTargetView,
-                                 plannedDraws);
-            m_drawStats.failureReason = RenderPolicyReason::None;
-            updatePlanReport(RenderExecutionStatus::Completed,
-                             RenderPolicyReason::None,
-                             m_drawStats.executedPacketCount,
+            updatePlanReport(RenderExecutionStatus::Failed,
+                             m_drawStats.failureReason,
+                             0,
                              false,
                              opaquePlan->visibility);
             return;
         }
 
+        // Only preflighted Direct packet values determine their texture
+        // transitions. These happen before attachment mutation.
+        for (const PlannedOpaqueDraw& planned : plannedDraws)
+        {
+            MaterialBindingOptions materialOptions;
+            materialOptions.allowNormalMap = planned.allowNormalMap;
+            m_materialSystem->TransitionMaterialTextures(
+                planned.packet.packet.materialKey.material,
+                ctx,
+                materialOptions);
+        }
+
+        m_drawStats.planValidated = true;
+        m_drawStats.plannedPacketCount =
+            plannedGPUCount + plannedDirectCount;
+
         // The GPU lane retains its established indirect recording path. It
         // deliberately has no Direct fallback once the plan selected it.
-        if (m_renderScene)
+        if (plannedGPU && m_renderScene)
         {
             if (m_opaqueDrawItems)
             {
@@ -1229,33 +1221,27 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         ctx.SetViewport(drawView.GetRHIViewport());
         ctx.SetScissor(drawView.GetRHIScissor());
 
-        const bool recorded = TryDrawGPUDrivenIndirect(
-            ctx,
-            drawView,
-            colorTargetFormat,
-            m_pipelineCache->GetFrameDescriptorSet(),
-            true);
+        bool gpuRecorded = true;
+        if (plannedGPU)
+        {
+            gpuRecorded = TryDrawGPUDrivenIndirect(
+                ctx,
+                drawView,
+                colorTargetFormat,
+                m_pipelineCache->GetFrameDescriptorSet(),
+                true,
+                plannedGPUCount,
+                opaquePlan->partition.drawGroupCount);
+        }
+        if (executeDirectLane)
+        {
+            TryDrawPlannedDirect(ctx, plannedDraws);
+        }
         ctx.EndRenderPass();
 
-        if (!recorded)
-        {
-            m_drawStats.failureReason =
-                RenderPolicyReason::UnexpectedRecordingFailure;
-            updatePlanReport(RenderExecutionStatus::Failed,
-                             m_drawStats.failureReason,
-                             0,
-                             true,
-                             opaquePlan->visibility);
-        }
-        else
-        {
-            m_drawStats.failureReason = RenderPolicyReason::None;
-            updatePlanReport(RenderExecutionStatus::Completed,
-                             RenderPolicyReason::None,
-                             m_drawStats.gpuDrivenIndirectDrawCount,
-                             true,
-                             opaquePlan->visibility);
-        }
+        m_drawStats.failureReason = gpuRecorded
+            ? RenderPolicyReason::None
+            : RenderPolicyReason::UnexpectedRecordingFailure;
 
         if (view.renderFrameExecutionReport != nullptr)
         {
@@ -1264,11 +1250,49 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             {
                 if (report.pass == RenderPassKind::Opaque)
                 {
-                    report.directLane.status = RenderExecutionStatus::NotAttempted;
+                    report.status = gpuRecorded
+                        ? RenderExecutionStatus::Completed
+                        : RenderExecutionStatus::Failed;
+                    report.executedVisibility = opaquePlan->visibility;
+                    report.reason = gpuRecorded
+                        ? opaquePlan->reason
+                        : m_drawStats.failureReason;
+                    report.skippedPacketCount =
+                        opaquePlan->partition.skippedPacketCount;
+                    report.gpuDrivenLane.status = plannedGPU
+                        ? (gpuRecorded ? RenderExecutionStatus::Completed
+                                       : RenderExecutionStatus::Failed)
+                        : RenderExecutionStatus::NotAttempted;
+                    report.gpuDrivenLane.reason = plannedGPU
+                        ? m_drawStats.failureReason
+                        : RenderPolicyReason::None;
+                    // Preserve honest partial-recording telemetry on a late
+                    // group failure. The failed lane is not replayed through
+                    // Direct in this frame.
+                    report.gpuDrivenLane.executedPacketCount = plannedGPU
+                        ? m_drawStats.gpuDrivenIndirectDrawCount
+                        : 0;
+                    report.gpuDrivenLane.executedDrawCount = plannedGPU
+                        ? m_drawStats.gpuDrivenIndirectDrawCount
+                        : 0;
+                    report.directLane.status = executeDirectLane
+                        ? RenderExecutionStatus::Completed
+                        : RenderExecutionStatus::NotAttempted;
                     report.directLane.reason = RenderPolicyReason::None;
+                    report.directLane.executedPacketCount =
+                        m_drawStats.executedPacketCount;
+                    report.directLane.executedDrawCount =
+                        m_drawStats.directDrawCount;
+                    if (!gpuRecorded)
+                    {
+                        view.renderFrameExecutionReport->status =
+                            RenderExecutionStatus::Failed;
+                    }
                     break;
                 }
             }
+            view.renderFrameExecutionReport->frameSequence =
+                view.renderFrameExecutionPlan->frameSequence;
         }
         return;
     }

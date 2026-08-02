@@ -99,7 +99,19 @@ field containing the range. Every pass publishes expected, terminal, unique,
 duplicate, and unaccounted identity counts. Validation independently recomputes
 those values and accepts only a canonical, zero-duplicate, zero-unaccounted
 exactly-once partition. Task 7B may change mixed-pass lane selection, but not
-this identity or accounting contract.
+this identity or accounting contract. Task 7B now preserves those compiler
+partitions through recording: GPU, Direct, and deliberate-Skip ranges may
+coexist, while every relevant source remains in exactly one terminal lane.
+
+Depth and Opaque preflight the complete plan and prepared stream, then record
+the planned GPU lane followed by the planned Direct lane inside one render
+pass. Attachments are cleared and the pass is begun/ended exactly once. A plan
+may also contain GPU work with Direct sources deliberately skipped when Direct
+readiness is pending; that shape records only the GPU lane and retains the
+published skip reason. A late GPU recording failure marks that lane failed,
+continues only with the already-planned and preflighted Direct lane, reports the
+recorded prefix honestly, and never replays GPU packets as Direct in the same
+frame.
 
 Every plan and resolver value provides full value comparison. Validation is a
 non-throwing, fail-closed operation over external or compiled data.

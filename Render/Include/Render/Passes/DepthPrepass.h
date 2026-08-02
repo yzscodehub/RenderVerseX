@@ -133,12 +133,16 @@ namespace RVX
     private:
         struct PlannedDepthDraw;
 
-        bool AreGPUDrivenDepthGroupsDrawable(uint32& outDrawItemCount) const;
-        bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx, const ViewData& view);
+        bool AreGPUDrivenDepthGroupsDrawable(
+            uint32 expectedPacketCount,
+            uint32 expectedGroupCount,
+            uint32& outDrawItemCount) const;
+        bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
+                                      const ViewData& view,
+                                      uint32 expectedPacketCount = 0,
+                                      uint32 expectedGroupCount = 0);
         bool TryDrawPlannedDirect(
             RHICommandContext& ctx,
-            const ViewData& view,
-            RHITextureView* depthTargetView,
             std::span<const PlannedDepthDraw> plannedDraws);
         bool BuildPlannedDirectBatch(
             const ViewData& view,

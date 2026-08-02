@@ -169,16 +169,19 @@ namespace RVX
         // only for compatibility validation and must never become a Direct
         // rendering fallback when the frame policy was not published.
         bool m_gpuDrivenOpaqueIndirectEnabled = false;
-        bool AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) const;
+        bool AreGPUDrivenOpaqueGroupsDrawable(
+            uint32 expectedPacketCount,
+            uint32 expectedGroupCount,
+            uint32& outDrawItemCount) const;
         bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                                       const ViewData& view,
                                       RHIFormat colorTargetFormat,
                                       RHIDescriptorSet* frameSet,
-                                      bool requireObjectConstantUpload);
+                                      bool requireObjectConstantUpload,
+                                      uint32 expectedPacketCount = 0,
+                                      uint32 expectedGroupCount = 0);
         bool TryDrawPlannedDirect(
             RHICommandContext& ctx,
-            const ViewData& view,
-            RHITextureView* colorTargetView,
             std::span<const PlannedOpaqueDraw> plannedDraws);
         bool BuildPlannedDirectBatch(
             const ViewData& view,

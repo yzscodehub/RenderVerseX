@@ -1,8 +1,10 @@
 #include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/Policy/RenderFramePlanCompiler.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace RVX
 {
@@ -78,6 +80,52 @@ namespace
     {
         return static_cast<uint64>(range.first) + range.count <= size;
     }
+
+    enum class PacketPlanShape : uint8
+    {
+        Invalid = 0,
+        Hybrid,
+        GPUWithDirectSkipped,
+        AllDirect,
+        AllSkip,
+    };
+
+    [[nodiscard]] PacketPlanShape ClassifyPacketPlanShape(
+        const RenderPassExecutionPlan& passPlan,
+        const MeshPassPacketStream& stream) noexcept
+    {
+        const uint32 candidates = stream.stats.gpuCandidatePacketCount;
+        const uint32 direct = stream.stats.directPacketCount;
+        const uint32 skipped = stream.stats.skippedPacketCount;
+        const RenderPacketPartitionSummary& partition = passPlan.partition;
+        if (candidates != 0 &&
+            partition.gpuDrivenPacketCount == candidates &&
+            partition.directPacketCount == direct &&
+            partition.skippedPacketCount == skipped)
+        {
+            return PacketPlanShape::Hybrid;
+        }
+        if (candidates != 0 &&
+            partition.gpuDrivenPacketCount == candidates &&
+            partition.directPacketCount == 0 &&
+            partition.skippedPacketCount == skipped + direct)
+        {
+            return PacketPlanShape::GPUWithDirectSkipped;
+        }
+        if (partition.gpuDrivenPacketCount == 0 &&
+            partition.directPacketCount == candidates + direct &&
+            partition.skippedPacketCount == skipped)
+        {
+            return PacketPlanShape::AllDirect;
+        }
+        if (partition.gpuDrivenPacketCount == 0 &&
+            partition.directPacketCount == 0 &&
+            partition.skippedPacketCount == partition.inputPacketCount)
+        {
+            return PacketPlanShape::AllSkip;
+        }
+        return PacketPlanShape::Invalid;
+    }
 } // namespace
 
 DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
@@ -93,14 +141,26 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
     }
 
     const RenderPassExecutionPlan* passPlan = FindPassPlan(plan, pass);
-    if (passPlan == nullptr || passPlan->preferredSubmission !=
-                                   RenderSubmissionMode::Direct ||
-        passPlan->partition.gpuDrivenPacketCount != 0 ||
-        passPlan->directPackets.count !=
-            passPlan->partition.directPacketCount ||
+    const PacketPlanShape shape = passPlan != nullptr
+        ? ClassifyPacketPlanShape(*passPlan, stream)
+        : PacketPlanShape::Invalid;
+    const uint32 directCount = passPlan != nullptr ? passPlan->directPackets.count : 0u;
+
+    if (passPlan == nullptr || shape == PacketPlanShape::Invalid ||
+        !ValidateMeshPassPacketStream(stream) ||
+        passPlan->directPackets.count != passPlan->partition.directPacketCount ||
         !IsRangeInBounds(passPlan->directPackets,
                          plan.packetReferences.size()) ||
+        !IsRangeInBounds(passPlan->gpuEligiblePackets,
+                         plan.packetReferences.size()) ||
+        !IsRangeInBounds(passPlan->skippedPackets,
+                         plan.packetReferences.size()) ||
         stream.packets.size() != stream.stats.inputPacketCount ||
+        passPlan->partition.inputPacketCount != stream.stats.inputPacketCount ||
+        passPlan->partition.relevantPacketCount !=
+            stream.stats.relevantPacketCount ||
+        passPlan->partition.candidatePacketCount !=
+            stream.stats.gpuCandidatePacketCount ||
         !stream.stats.HasCompleteRelevantOutcome() ||
         !stream.stats.HasExactlyOneReasonPerRejectedPacket() ||
         stream.stats.relevantPacketCount + stream.stats.skippedPacketCount !=
@@ -109,17 +169,13 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
         return result;
     }
 
-    const uint32 directCount = passPlan->directPackets.count;
-    if (directCount > stream.packets.size())
-    {
-        return result;
-    }
-
     std::vector<bool> seenSourceIndices(stream.packets.size(), false);
     DirectDrawPacketBatch batch;
     batch.pass = pass;
     batch.packets.reserve(directCount);
-    for (uint32 offset = 0; offset < directCount; ++offset)
+    const bool allowGPUCandidatesInDirectLane =
+        shape == PacketPlanShape::AllDirect;
+    for (uint32 offset = 0; offset < passPlan->directPackets.count; ++offset)
     {
         const uint64 referenceIndex =
             static_cast<uint64>(passPlan->directPackets.first) + offset;
@@ -134,49 +190,82 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
 
         const MeshPassProcessorResult& source =
             stream.packets[reference.sourcePacketIndex];
-        if (source.disposition == MeshPassDisposition::Skip ||
+        if ((source.disposition != MeshPassDisposition::Direct &&
+             !(allowGPUCandidatesInDirectLane &&
+               source.disposition == MeshPassDisposition::GPUCandidate)) ||
             !RenderDrawPacketReferenceMatchesSource(plan,
-                                                    reference,
-                                                    source) ||
-            !IsValidDirectLayout(source.directLayout))
-        {
-            return result;
-        }
-
-        // A true Direct source already carries the same layout in its group
-        // key.  A GPU candidate may be here only as Task5 whole-pass fallback;
-        // its GPU group layout is intentionally not compared.
-        if (source.disposition == MeshPassDisposition::Direct &&
-            source.groupKey.layout != source.directLayout)
+                                                  reference,
+                                                  source) ||
+            !IsValidDirectLayout(source.directLayout) ||
+            (source.disposition == MeshPassDisposition::Direct &&
+             source.groupKey.layout != source.directLayout))
         {
             return result;
         }
 
         seenSourceIndices[reference.sourcePacketIndex] = true;
-        batch.packets.push_back(DirectDrawPacket{
-            source.packet,
-            source.directLayout,
-            reference.sourcePacketIndex,
-            reference.sourceOrdinal,
-        });
-    }
-
-    // The Direct lane must contain every relevant source packet exactly once.
-    // This protects consumers from malformed plans that happen to have a
-    // numerically valid range but omit a source packet.
-    uint32 expectedRelevant = 0;
-    for (const MeshPassProcessorResult& source : stream.packets)
-    {
-        if (source.disposition != MeshPassDisposition::Skip)
+        if (source.disposition == MeshPassDisposition::Direct ||
+            source.disposition == MeshPassDisposition::GPUCandidate)
         {
-            ++expectedRelevant;
+            batch.packets.push_back(DirectDrawPacket{
+                source.packet,
+                source.directLayout,
+                reference.sourcePacketIndex,
+                reference.sourceOrdinal,
+            });
         }
     }
-    if (expectedRelevant != directCount)
+
+    for (uint32 offset = 0; offset < passPlan->gpuEligiblePackets.count; ++offset)
     {
-        return result;
+        if (offset >= stream.sortedGPUCandidatePacketIndices.size())
+        {
+            return result;
+        }
+        const RenderDrawPacketReference& reference =
+            plan.packetReferences[static_cast<size_t>(
+                static_cast<uint64>(passPlan->gpuEligiblePackets.first) + offset)];
+        const uint32 sourceIndex = reference.sourcePacketIndex;
+        if (sourceIndex != stream.sortedGPUCandidatePacketIndices[offset] ||
+            sourceIndex >= stream.packets.size() ||
+            seenSourceIndices[sourceIndex] ||
+            stream.packets[sourceIndex].disposition !=
+                MeshPassDisposition::GPUCandidate ||
+            !RenderDrawPacketReferenceMatchesSource(
+                plan, reference, stream.packets[sourceIndex]))
+        {
+            return result;
+        }
+        seenSourceIndices[sourceIndex] = true;
     }
-    if (expectedRelevant != stream.stats.relevantPacketCount)
+
+    for (uint32 offset = 0; offset < passPlan->skippedPackets.count; ++offset)
+    {
+        const RenderDrawPacketReference& reference =
+            plan.packetReferences[static_cast<size_t>(
+                static_cast<uint64>(passPlan->skippedPackets.first) + offset)];
+        const uint32 sourceIndex = reference.sourcePacketIndex;
+        const MeshPassProcessorResult& source =
+            sourceIndex < stream.packets.size() ? stream.packets[sourceIndex]
+                                                : MeshPassProcessorResult{};
+        if (reference.pass != pass ||
+            sourceIndex >= stream.packets.size() ||
+            seenSourceIndices[sourceIndex] ||
+            (shape == PacketPlanShape::AllSkip
+                 ? false
+                 : (source.disposition != MeshPassDisposition::Skip &&
+                    !(shape == PacketPlanShape::GPUWithDirectSkipped &&
+                      source.disposition == MeshPassDisposition::Direct))) ||
+            !RenderDrawPacketReferenceMatchesSource(plan, reference, source))
+        {
+            return result;
+        }
+        seenSourceIndices[sourceIndex] = true;
+    }
+
+    if (!std::all_of(seenSourceIndices.begin(),
+                     seenSourceIndices.end(),
+                     [](bool value) { return value; }))
     {
         return result;
     }
@@ -187,7 +276,7 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
     return result;
 }
 
-bool ValidateWholePassGPUDrivenPacketRange(
+bool ValidatePlannedGPUDrivenPacketRange(
     const RenderFrameExecutionPlan& plan,
     RenderPassKind pass,
     const MeshPassPacketStream& stream)
@@ -200,7 +289,12 @@ bool ValidateWholePassGPUDrivenPacketRange(
     }
 
     const RenderPassExecutionPlan* passPlan = FindPassPlan(plan, pass);
+    const PacketPlanShape shape = passPlan != nullptr
+        ? ClassifyPacketPlanShape(*passPlan, stream)
+        : PacketPlanShape::Invalid;
     if (passPlan == nullptr ||
+        (shape != PacketPlanShape::Hybrid &&
+         shape != PacketPlanShape::GPUWithDirectSkipped) ||
         passPlan->preferredSubmission == RenderSubmissionMode::Direct ||
         passPlan->visibility == RenderVisibilityMode::Cpu ||
         passPlan->partition.inputPacketCount != stream.stats.inputPacketCount ||
@@ -208,15 +302,16 @@ bool ValidateWholePassGPUDrivenPacketRange(
             stream.stats.relevantPacketCount ||
         passPlan->partition.candidatePacketCount !=
             stream.stats.gpuCandidatePacketCount ||
-        passPlan->partition.gpuDrivenPacketCount !=
-            stream.stats.gpuCandidatePacketCount ||
-        passPlan->partition.directPacketCount != 0 ||
-        passPlan->partition.skippedPacketCount !=
-            stream.stats.skippedPacketCount ||
         passPlan->partition.drawGroupCount != stream.groups.size() ||
         passPlan->gpuEligiblePackets.count !=
             stream.sortedGPUCandidatePacketIndices.size() ||
+        passPlan->gpuEligiblePackets.count !=
+            passPlan->partition.gpuDrivenPacketCount ||
+        passPlan->directPackets.count != passPlan->partition.directPacketCount ||
+        passPlan->skippedPackets.count != passPlan->partition.skippedPacketCount ||
         !IsRangeInBounds(passPlan->gpuEligiblePackets,
+                         plan.packetReferences.size()) ||
+        !IsRangeInBounds(passPlan->directPackets,
                          plan.packetReferences.size()) ||
         !IsRangeInBounds(passPlan->skippedPackets,
                          plan.packetReferences.size()))
@@ -224,25 +319,42 @@ bool ValidateWholePassGPUDrivenPacketRange(
         return false;
     }
 
-    for (uint32 offset = 0;
-         offset < passPlan->gpuEligiblePackets.count;
-         ++offset)
+    std::vector<bool> seenSourceIndices(stream.packets.size(), false);
+    for (uint32 offset = 0; offset < passPlan->gpuEligiblePackets.count; ++offset)
     {
         const uint32 sourceIndex =
             stream.sortedGPUCandidatePacketIndices[offset];
         const RenderDrawPacketReference& reference =
-            plan.packetReferences[
-                static_cast<size_t>(passPlan->gpuEligiblePackets.first) +
-                offset];
-        if (sourceIndex >= stream.packets.size() ||
-            reference.pass != pass ||
+            plan.packetReferences[static_cast<size_t>(
+                static_cast<uint64>(passPlan->gpuEligiblePackets.first) + offset)];
+        if (seenSourceIndices[sourceIndex] ||
             reference.sourcePacketIndex != sourceIndex ||
-            !RenderDrawPacketReferenceMatchesSource(
-                plan, reference, stream.packets[sourceIndex]) ||
-            !stream.packets[sourceIndex].IsGPUCandidate())
+            !RenderDrawPacketReferenceMatchesSource(plan,
+                                                   reference,
+                                                   stream.packets[sourceIndex]))
         {
             return false;
         }
+        seenSourceIndices[sourceIndex] = true;
+    }
+
+    for (uint32 offset = 0; offset < passPlan->directPackets.count; ++offset)
+    {
+        const RenderDrawPacketReference& reference =
+            plan.packetReferences[static_cast<size_t>(
+                static_cast<uint64>(passPlan->directPackets.first) + offset)];
+        const uint32 sourceIndex = reference.sourcePacketIndex;
+        if (sourceIndex >= stream.packets.size() ||
+            seenSourceIndices[sourceIndex] ||
+            stream.packets[sourceIndex].disposition !=
+                MeshPassDisposition::Direct ||
+            !RenderDrawPacketReferenceMatchesSource(plan,
+                                                  reference,
+                                                  stream.packets[sourceIndex]))
+        {
+            return false;
+        }
+        seenSourceIndices[sourceIndex] = true;
     }
 
     for (uint32 offset = 0; offset < passPlan->skippedPackets.count; ++offset)
@@ -250,22 +362,31 @@ bool ValidateWholePassGPUDrivenPacketRange(
         const RenderDrawPacketReference& reference =
             plan.packetReferences[
                 static_cast<size_t>(passPlan->skippedPackets.first) + offset];
+        const uint32 sourceIndex = reference.sourcePacketIndex;
         if (reference.pass != pass ||
-            reference.sourcePacketIndex >= stream.packets.size())
-        {
-            return false;
-        }
-        const MeshPassProcessorResult& source =
-            stream.packets[reference.sourcePacketIndex];
-        if (source.disposition != MeshPassDisposition::Skip ||
+            sourceIndex >= stream.packets.size() ||
+            seenSourceIndices[sourceIndex] ||
+            (stream.packets[sourceIndex].disposition != MeshPassDisposition::Skip &&
+             !(shape == PacketPlanShape::GPUWithDirectSkipped &&
+               stream.packets[sourceIndex].disposition ==
+                   MeshPassDisposition::Direct)) ||
             !RenderDrawPacketReferenceMatchesSource(plan,
-                                                    reference,
-                                                    source))
+                                                   reference,
+                                                   stream.packets[sourceIndex]))
         {
             return false;
         }
+        seenSourceIndices[sourceIndex] = true;
+    }
+
+    if (!std::all_of(seenSourceIndices.begin(),
+                     seenSourceIndices.end(),
+                     [](bool value) { return value; }))
+    {
+        return false;
     }
 
     return true;
 }
+
 } // namespace RVX
