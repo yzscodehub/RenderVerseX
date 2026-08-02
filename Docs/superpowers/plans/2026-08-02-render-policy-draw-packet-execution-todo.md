@@ -1,6 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Task 0-4 complete; Task 5 is the next implementation stage
+**Status:** Tasks 0-4 and Task 5A/5B complete; Task 5C frame-plan compilation
+is the next implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -78,35 +79,35 @@ Task 11/12/13 serialization.
 
 #### 5A. Freeze plan input/output contracts
 
-- [ ] Inventory every current policy, backend, qualification, pipeline,
+- [x] Inventory every current policy, backend, qualification, pipeline,
   resource-residency, and pass-permission probe in `SceneRenderer`,
   `DepthPrepass`, `OpaquePass`, and `GPUDrivenPolicy`.
-- [ ] Define value-only resolver input facts: validated request, renderer/view
+- [x] Define value-only resolver input facts: validated request, renderer/view
   constraints, semantic device capabilities, qualification snapshot,
   pipeline/shader readiness, resource readiness, pass permission, and workload
   counts.
-- [ ] Define immutable per-view output values: selected tier, visibility mode,
+- [x] Define immutable per-view output values: selected tier, visibility mode,
   submission strategy, pass plans, Direct/GPU/Skip packet references, stable
   fallback reasons, and partition counts.
-- [ ] Keep Task 5 packet references frame-local and deterministic; do not claim
+- [x] Keep Task 5 packet references frame-local and deterministic; do not claim
   Task 7 exactly-once packet identity before the packet-ID contract lands.
-- [ ] Define stable enum values, names, comparison, validation, and diagnostic
+- [x] Define stable enum values, names, comparison, validation, and diagnostic
   projection for every new plan value.
-- [ ] Prove resolver and compiler values own no scene, registry, RHI,
+- [x] Prove resolver and compiler values own no scene, registry, RHI,
   descriptor, RenderGraph, or pass-object pointers.
 
 #### 5B. Implement deterministic policy resolution
 
-- [ ] Add `RenderPolicyResolver` with the documented fail-closed resolution
+- [x] Add `RenderPolicyResolver` with the documented fail-closed resolution
   order.
-- [ ] Wrap the existing GPU-driven policy and qualification records; do not
+- [x] Wrap the existing GPU-driven policy and qualification records; do not
   delete proven behavior in the first slice.
-- [ ] Preserve ForceDisabled determinism.
-- [ ] Preserve ForceEnabled qualification bypass while still enforcing device,
+- [x] Preserve ForceDisabled determinism.
+- [x] Preserve ForceEnabled qualification bypass while still enforcing device,
   pipeline, shader, and resource requirements.
-- [ ] Implement a conservative deterministic `Auto` benefit stub. Do not add
+- [x] Implement a conservative deterministic `Auto` benefit stub. Do not add
   timing history or hysteresis before Task 15.
-- [ ] Make missing or malformed facts select Direct/Skip with an explicit
+- [x] Make missing or malformed facts select Direct/Skip with an explicit
   reason; never silently reinterpret an invalid value as enabled.
 
 #### 5C. Compile and integrate one plan per view
@@ -126,18 +127,18 @@ Task 11/12/13 serialization.
 
 #### 5D. Validate and commit Task 5
 
-- [ ] Add resolver matrix tests for Auto, ForceEnabled, ForceDisabled, invalid
+- [x] Add resolver matrix tests for Auto, ForceEnabled, ForceDisabled, invalid
   mode, missing capability, unqualified backend, pipeline failure, pending
   resource, and pass-disabled cases.
-- [ ] Add determinism tests that permute identical input construction order and
+- [x] Add determinism tests that permute identical input construction order and
   compare the complete plan.
 - [ ] Add two-view tests proving independent plans before pass-context migration.
 - [ ] Add source/contract checks proving pass execution no longer probes backend
   type or qualification state.
-- [ ] Run RenderPolicy, MeshPassProcessor, RenderScene, GPUDriven, RenderPass,
+- [x] Run RenderPolicy, MeshPassProcessor, RenderScene, GPUDriven, RenderPass,
   RenderContracts, extraction, and Direct/GPU parity gates.
-- [ ] Record a phase-log entry and primary review.
-- [ ] Commit slice 5A: `feat(render): add per-view render policy plans`.
+- [x] Record a phase-log entry and primary review.
+- [x] Commit slice 5A: `feat(render): add per-view render policy plans`.
 - [ ] Commit slice 5B if integration is too large for one review:
   `refactor(render): compile frame policy before graph construction`.
 
@@ -560,12 +561,12 @@ Apply this checklist to every implementation slice:
 
 Start with **Task 5A only**:
 
-- [ ] Audit current decision probes and write the ownership matrix.
-- [ ] Freeze resolver input facts and immutable per-view plan outputs.
-- [ ] Define stable reasons and plan validation.
-- [ ] Implement the pure resolver behind existing behavior.
-- [ ] Add exhaustive CPU-only resolver matrix and determinism tests.
-- [ ] Do not change pass command recording, visual output, qualification bits,
+- [x] Audit current decision probes and write the ownership matrix.
+- [x] Freeze resolver input facts and immutable per-view plan outputs.
+- [x] Define stable reasons and plan validation.
+- [x] Implement the pure resolver behind existing behavior.
+- [x] Add exhaustive CPU-only resolver matrix and determinism tests.
+- [x] Do not change pass command recording, visual output, qualification bits,
   or Auto defaults.
-- [ ] Stop for primary architecture/code review before SceneRenderer
+- [x] Stop for primary architecture/code review before SceneRenderer
   integration in Task 5B.

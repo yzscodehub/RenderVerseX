@@ -43590,6 +43590,135 @@ ctest --test-dir build\win_x64_debug -C Debug `
 
 ---
 
+### R-SP325 Render-policy Task 5A contracts and pure policy resolver
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Plan review agents:** Primary architect plus two read-only explorers
+**Code implementation agent:** Terra worker, followed by primary corrections
+**Code review agent:** Independent Terra reviewer, followed by primary audit
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Task 5A contracts and Task 5B pure deterministic resolution
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP324 Render-policy Task 4 pass preparation
+- Evidence: Task 4 commit `80838c04`, deterministic pass streams, 413/413 CPU
+  validation, and exact synthetic/Porsche Direct-versus-GPU pixel parity.
+
+**Approved scope:**
+
+- Freeze the decision-probe ownership matrix and value-only resolver boundary.
+- Add stable per-view request/capability/qualification/readiness facts and
+  frame-local packet-reference/partition contracts without claiming Task 7
+  persistent packet identity.
+- Add a pure deterministic resolver with fail-closed gate precedence, explicit
+  Direct/GPU/Skip accounting, planned Direct fallback, and canonical pass
+  ordering.
+- Preserve the existing GPU-driven policy entry point while allowing explicit
+  qualification evidence injection.
+- Add stable distinct Pending reasons for shader, pipeline, resources, and
+  bindings while preserving all pre-existing reason values.
+- Validate submission capability, request/tier/reason relationships, packet
+  conservation, reference range coverage, and source Skip preservation.
+
+**Out of scope:**
+
+- `RenderFramePlanCompiler`, SceneRenderer integration, pass command-recording
+  changes, runtime packet-range consumption, or removal of legacy policy probes.
+- Task 6 Direct DrawPacket execution, Task 7 persistent IDs/hybrid submission,
+  Task 8 culling cleanup, Task 15 measured Auto policy, or Task 16 promotion.
+- RHI/backend behavior, qualification gate bits, Auto defaults, Samples,
+  Editor, asset import, visual goldens, or frame schema changes.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderPolicyTypes.h`
+- `Render/Include/Render/Policy/RenderFrameExecutionPlan.h`
+- `Render/Include/Render/Policy/RenderPolicyResolver.h`
+- `Render/Private/Policy/RenderPolicyResolver.cpp`
+- `Render/Include/Render/GPUDriven/GPUDrivenPolicy.h`
+- `Render/CMakeLists.txt`
+- `Tests/RenderPolicyValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Docs/superpowers/specs/2026-08-03-render-policy-resolver-contract.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  MeshPassProcessorValidation RenderDrawPacketCacheValidation `
+  RenderDrawPacketValidation RenderSceneValidation RenderPolicyValidation `
+  RenderContractsValidation RenderFrameExtractionValidation `
+  GPUDrivenValidation RenderPassValidation
+
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$" `
+  --output-on-failure
+
+cmake --build build\win_x64_debug --config Debug --target DX11Validation
+build\win_x64_debug\Tests\Debug\DX11Validation.exe
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^ModelViewerOpenGLPBRMaterialSmoke$" --output-on-failure
+```
+
+**Validation result:**
+
+- Focused CPU baseline: PASS 421/421; MeshPassProcessor 11/11,
+  RenderDrawPacketCache 6/6, RenderDrawPacket 5/5, RenderScene 14/14,
+  RenderPolicy 12/12, RenderContracts 203/203, RenderFrameExtraction 5/5,
+  GPUDriven 24/24, and RenderPass 141/141.
+- Exhaustive policy gate matrix: PASS 16,384 combinations plus targeted
+  mutation tests for unsupported passes, source partition conservation,
+  fallback strategy, capability, range, and request/tier/reason invariants.
+- Synthetic DX12 Direct/GPU visual gate: PASS 3/3 with exact parity.
+- Porsche native DX12 Direct/GPU visual gate: PASS 3/3 with exact parity.
+- DX11 compatibility validation: PASS 23/23 with the debug layer enabled.
+- The OpenGL PBR material smoke guard is BLOCKED by a pre-existing
+  SPIRV-Cross ToneMapping constant-buffer layout translation failure. Task 5A
+  changes no ShaderCompiler, ToneMapping, OpenGL RHI, SceneRenderer, or runtime
+  policy-integration code, so this is recorded as a Task 14 compatibility
+  blocker rather than mixed into the pure-policy commit.
+- Task 5A validation fixtures emitted only their expected fallback diagnostics;
+  all selected Task 5A and DX11 processes exited successfully.
+- `git diff --check`: PASS; only existing LF-to-CRLF conversion warnings.
+
+**Review result:**
+
+- Initial independent verdict: BLOCKED by three P1 findings covering
+  ForceDisabled/pass-support precedence, source Skip conservation, and
+  submission/request/tier/reason cross-validation.
+- Primary audit accepted all three findings, corrected the implementation, and
+  added isolated mutation tests. The second review found one remaining
+  Auto/ForceEnabled plus `ForcedDirect` gap, which the primary also accepted
+  and closed.
+- Final independent verdict: PASS with no remaining blocker.
+- Primary architecture/integration verdict: PASS. Values remain owned and
+  backend-neutral; runtime behavior is unchanged; Task 7 exactly-once identity
+  is not claimed prematurely.
+
+**Notes / follow-ups:**
+
+- The next slice is execution-checklist Task 5C: compile one immutable plan per
+  view after pass preparation and before RenderGraph construction.
+- Pass command recording remains unchanged until the Task 6 migration gate.
+- Repair and re-run `ModelViewerOpenGLPBRMaterialSmoke` before Task 14
+  compatibility closure; do not claim OpenGL visual readiness meanwhile.
+- The existing partial-build CTest registration hygiene issue remains separate
+  from this renderer architecture stage.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

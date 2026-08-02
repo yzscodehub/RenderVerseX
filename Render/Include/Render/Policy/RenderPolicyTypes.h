@@ -139,6 +139,18 @@ namespace RVX
         WorkloadNotBeneficial = 12,
         PlannedFallback = 13,
         UnexpectedRecordingFailure = 14,
+        RendererPathUnsupported = 15,
+        ViewUnsupported = 16,
+        QualificationInvalid = 17,
+        ShaderUnavailable = 18,
+        ResourcesPending = 19,
+        BindingsUnavailable = 20,
+        PassDisabled = 21,
+        InconsistentFacts = 22,
+        ShaderPending = 23,
+        PipelinePending = 24,
+        BindingsPending = 25,
+        Count = 26,
     };
 
     inline const char* GetRenderPolicyReasonName(RenderPolicyReason reason)
@@ -169,6 +181,49 @@ namespace RVX
             case RenderPolicyReason::PlannedFallback: return "PlannedFallback";
             case RenderPolicyReason::UnexpectedRecordingFailure:
                 return "UnexpectedRecordingFailure";
+            case RenderPolicyReason::RendererPathUnsupported:
+                return "RendererPathUnsupported";
+            case RenderPolicyReason::ViewUnsupported:
+                return "ViewUnsupported";
+            case RenderPolicyReason::QualificationInvalid:
+                return "QualificationInvalid";
+            case RenderPolicyReason::ShaderUnavailable:
+                return "ShaderUnavailable";
+            case RenderPolicyReason::ResourcesPending:
+                return "ResourcesPending";
+            case RenderPolicyReason::BindingsUnavailable:
+                return "BindingsUnavailable";
+            case RenderPolicyReason::PassDisabled: return "PassDisabled";
+            case RenderPolicyReason::InconsistentFacts:
+                return "InconsistentFacts";
+            case RenderPolicyReason::ShaderPending: return "ShaderPending";
+            case RenderPolicyReason::PipelinePending:
+                return "PipelinePending";
+            case RenderPolicyReason::BindingsPending:
+                return "BindingsPending";
+            case RenderPolicyReason::Count: return "Count";
+            default: return "Invalid";
+        }
+    }
+
+    /** @brief Readiness of an owned policy input dependency. */
+    enum class RenderPolicyReadiness : uint8
+    {
+        Unavailable = 0,
+        Pending = 1,
+        Ready = 2,
+        Count = 3,
+    };
+
+    inline const char* GetRenderPolicyReadinessName(
+        RenderPolicyReadiness readiness)
+    {
+        switch (readiness)
+        {
+            case RenderPolicyReadiness::Unavailable: return "Unavailable";
+            case RenderPolicyReadiness::Pending: return "Pending";
+            case RenderPolicyReadiness::Ready: return "Ready";
+            case RenderPolicyReadiness::Count: return "Count";
             default: return "Invalid";
         }
     }
@@ -178,6 +233,8 @@ namespace RVX
     {
         uint32 first = 0;
         uint32 count = 0;
+
+        bool operator==(const DrawPacketRange&) const = default;
     };
 
     /** @brief External frame-level rendering policy request. */
@@ -185,6 +242,8 @@ namespace RVX
     {
         uint64 frameSequence = 0;
         RenderGPUDrivenMode gpuDrivenMode = RenderGPUDrivenMode::Auto;
+
+        bool operator==(const RenderFramePolicyRequest&) const = default;
     };
 
     /** @brief Resolved tier for the frame's active view. */
@@ -193,6 +252,8 @@ namespace RVX
         RenderGPUDrivenMode requestedMode = RenderGPUDrivenMode::Auto;
         GPUDrivenTier selectedTier = GPUDrivenTier::Direct;
         RenderPolicyReason reason = RenderPolicyReason::ConservativeDefault;
+
+        bool operator==(const RenderViewPolicy&) const = default;
     };
 
     /** @brief Device capability snapshot consumed during policy resolution. */
@@ -203,16 +264,53 @@ namespace RVX
         bool supportsFixedCountIndirect = false;
         bool supportsIndirectDrawCount = false;
         bool supportsEncodedCommandBuffer = false;
+        /// Backend-neutral capability for descriptor/resource-table bindings
+        /// required by GPU visibility and indirect submission.
+        bool supportsDescriptorResourceBindings = false;
+
+        bool operator==(const RenderCapabilitySnapshot&) const = default;
     };
 
     /** @brief Reviewed backend qualification snapshot consumed by policy. */
     struct RenderQualificationSnapshot
     {
+        uint32 schemaVersion = RVX_GPU_DRIVEN_QUALIFICATION_SCHEMA_VERSION;
+        RHIBackendType backend = RHIBackendType::None;
         GPUDrivenQualificationLevel level =
             GPUDrivenQualificationLevel::Unqualified;
         uint32 revision = 0;
         uint64 passedGateMask = 0;
         uint64 requiredGateMask =
             RVX_GPU_DRIVEN_REQUIRED_QUALIFICATION_GATE_MASK;
+
+        bool operator==(const RenderQualificationSnapshot&) const = default;
     };
+
+    /** @brief Convert the explicit qualification manifest into plan diagnostics. */
+    inline RenderQualificationSnapshot MakeRenderQualificationSnapshot(
+        const GPUDrivenBackendQualification& qualification)
+    {
+        return {
+            qualification.schemaVersion,
+            qualification.backend,
+            qualification.GetLevel(),
+            qualification.revision,
+            qualification.passedGateMask,
+            qualification.requiredGateMask,
+        };
+    }
+
+    /** @brief Ensure a plan snapshot is a faithful, structurally valid manifest projection. */
+    inline bool IsRenderQualificationSnapshotValid(
+        const RenderQualificationSnapshot& snapshot)
+    {
+        GPUDrivenBackendQualification qualification;
+        qualification.schemaVersion = snapshot.schemaVersion;
+        qualification.backend = snapshot.backend;
+        qualification.revision = snapshot.revision;
+        qualification.passedGateMask = snapshot.passedGateMask;
+        qualification.requiredGateMask = snapshot.requiredGateMask;
+        return qualification.IsValidManifest() &&
+               snapshot.level == qualification.GetLevel();
+    }
 } // namespace RVX

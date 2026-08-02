@@ -1,6 +1,7 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-4 complete; Task 5 ready to start
+**Status:** Tasks 0-4 complete; Task 5 resolver/contracts complete; frame-plan
+compiler and SceneRenderer integration are next
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -531,6 +532,11 @@ Acceptance:
 ### Task 5 - Implement RenderPolicyResolver and plan compilation
 
 **Purpose:** Resolve engine-owned decisions once before graph construction.
+
+**Progress:** The value contracts, pure deterministic resolver, legacy-policy
+qualification injection, validation, and review gates are complete. The next
+slice adds `RenderFramePlanCompiler` and integrates one immutable plan per view
+without changing command recording.
 
 Proposed files:
 

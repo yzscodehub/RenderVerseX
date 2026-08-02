@@ -473,6 +473,37 @@ TEST_F(GPUDrivenValidationFixture, InvalidModeFailsClosed)
     EXPECT_EQ(GPUDrivenPolicyReason::InvalidMode, decision.reason);
 }
 
+TEST_F(GPUDrivenValidationFixture, InjectedQualificationMatchesLegacyAndRejectsMalformedEvidence)
+{
+    GPUDrivenPolicyInput input;
+    input.requestedMode = RenderGPUDrivenMode::Auto;
+    input.backend = RHIBackendType::DX12;
+    input.supportsComputePipeline = true;
+    input.supportsDescriptorSets = true;
+    input.supportsIndirectDrawCount = true;
+    input.pipelineReady = true;
+
+    const GPUDrivenBackendQualification qualification =
+        GetGPUDrivenBackendQualification(input.backend);
+    const GPUDrivenPolicyDecision legacy = ResolveGPUDrivenPolicy(input);
+    const GPUDrivenPolicyDecision injected = ResolveGPUDrivenPolicy(
+        input, qualification);
+    EXPECT_EQ(legacy.enabled, injected.enabled);
+    EXPECT_EQ(legacy.reason, injected.reason);
+    EXPECT_EQ(legacy.qualificationLevel, injected.qualificationLevel);
+    EXPECT_EQ(legacy.passedQualificationGateMask,
+              injected.passedQualificationGateMask);
+
+    input.requestedMode = RenderGPUDrivenMode::ForceEnabled;
+    GPUDrivenBackendQualification malformed = qualification;
+    malformed.schemaVersion++;
+    const GPUDrivenPolicyDecision malformedDecision = ResolveGPUDrivenPolicy(
+        input, malformed);
+    EXPECT_FALSE(malformedDecision.enabled);
+    EXPECT_EQ(GPUDrivenPolicyReason::QualificationInvalid,
+              malformedDecision.reason);
+}
+
 TEST_F(GPUDrivenValidationFixture, CpuFallbackCullsInstancesAndBuildsIndirectCommands)
 {
     FakeDevice device;

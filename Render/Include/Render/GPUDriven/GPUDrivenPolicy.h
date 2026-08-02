@@ -16,13 +16,14 @@ namespace RVX
     enum class GPUDrivenPolicyReason : uint8
     {
         None = 0,
-        InvalidMode,
-        ForcedDisabled,
-        BackendNotQualified,
-        ComputePipelineUnsupported,
-        DescriptorSetsUnsupported,
-        IndirectDrawCountUnsupported,
-        PipelineUnavailable,
+        InvalidMode = 1,
+        ForcedDisabled = 2,
+        BackendNotQualified = 3,
+        ComputePipelineUnsupported = 4,
+        DescriptorSetsUnsupported = 5,
+        IndirectDrawCountUnsupported = 6,
+        PipelineUnavailable = 7,
+        QualificationInvalid = 8,
     };
 
     inline const char* GetGPUDrivenPolicyReasonName(GPUDrivenPolicyReason reason)
@@ -37,6 +38,7 @@ namespace RVX
             case GPUDrivenPolicyReason::DescriptorSetsUnsupported: return "DescriptorSetsUnsupported";
             case GPUDrivenPolicyReason::IndirectDrawCountUnsupported: return "IndirectDrawCountUnsupported";
             case GPUDrivenPolicyReason::PipelineUnavailable: return "PipelineUnavailable";
+            case GPUDrivenPolicyReason::QualificationInvalid: return "QualificationInvalid";
             default: return "Invalid";
         }
     }
@@ -83,14 +85,13 @@ namespace RVX
         return GetGPUDrivenBackendQualification(backend).IsQualified();
     }
 
-    /** @brief Resolve the requested mode without silently bypassing requirements. */
+    /** @brief Resolve policy against explicitly supplied qualification evidence. */
     inline GPUDrivenPolicyDecision ResolveGPUDrivenPolicy(
-        const GPUDrivenPolicyInput& input)
+        const GPUDrivenPolicyInput& input,
+        const GPUDrivenBackendQualification& qualification)
     {
         GPUDrivenPolicyDecision decision;
         decision.requestedMode = input.requestedMode;
-        const GPUDrivenBackendQualification qualification =
-            GetGPUDrivenBackendQualification(input.backend);
         decision.qualificationLevel = qualification.GetLevel();
         decision.qualificationRevision = qualification.revision;
         decision.passedQualificationGateMask = qualification.passedGateMask;
@@ -113,6 +114,13 @@ namespace RVX
         if (input.requestedMode == RenderGPUDrivenMode::ForceDisabled)
         {
             decision.reason = GPUDrivenPolicyReason::ForcedDisabled;
+            return decision;
+        }
+
+        if (!qualification.IsValidManifest() ||
+            qualification.backend != input.backend)
+        {
+            decision.reason = GPUDrivenPolicyReason::QualificationInvalid;
             return decision;
         }
 
@@ -149,6 +157,14 @@ namespace RVX
         decision.enabled = true;
         decision.reason = GPUDrivenPolicyReason::None;
         return decision;
+    }
+
+    /** @brief Resolve using the reviewed manifest for the selected backend. */
+    inline GPUDrivenPolicyDecision ResolveGPUDrivenPolicy(
+        const GPUDrivenPolicyInput& input)
+    {
+        return ResolveGPUDrivenPolicy(
+            input, GetGPUDrivenBackendQualification(input.backend));
     }
 
     /** @brief Build policy input from the active device and pipeline state. */

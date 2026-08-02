@@ -359,7 +359,7 @@ rvx_add_gtest(
 rvx_add_gtest(
     NAME RenderPolicyValidation
     SOURCES RenderPolicyValidation/main.cpp
-    LIBS RVX::Core RVX::RenderContracts RVX::RHI
+    LIBS RVX::Core RVX::RenderContracts RVX::RHI RVX::Render
     INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
     LABELS "unit;architecture;render-policy"
     TIMEOUT 30

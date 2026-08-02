@@ -89,6 +89,8 @@ target_sources(RVX_Render PRIVATE
     Private/Renderer/RenderFrameResourceBinder.cpp
     Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
+    # Policy
+    Private/Policy/RenderPolicyResolver.cpp
     # Diagnostics
     Private/Diagnostics/RenderFeatureReport.cpp
     Private/Diagnostics/RenderToolArtifacts.cpp
