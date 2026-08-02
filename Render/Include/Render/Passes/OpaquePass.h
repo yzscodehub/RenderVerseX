@@ -10,7 +10,9 @@
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "RHI/RHICommandContext.h"
+#include <array>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace RVX
@@ -58,6 +60,15 @@ namespace RVX
         uint32 skippedMissingMeshCount = 0;
         uint32 skippedInvalidSubmeshCount = 0;
         uint32 skippedMaterialBindingCount = 0;
+        bool planRequested = false;
+        bool planValidated = false;
+        bool directPacketPathUsed = false;
+        bool dualBuildCompared = false;
+        bool dualBuildMatched = false;
+        uint32 plannedPacketCount = 0;
+        uint32 executedPacketCount = 0;
+        RenderPolicyReason failureReason =
+            RenderPolicyReason::ConservativeDefault;
     };
 
     /**
@@ -132,6 +143,8 @@ namespace RVX
         void SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView);
 
     private:
+        struct PlannedOpaqueDraw;
+
         RGTextureHandle m_colorTargetHandle;
         RGTextureHandle m_depthTargetHandle;
         RGTextureHandle m_directionalShadowReadHandle;
@@ -176,7 +189,17 @@ namespace RVX
         bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                                       const ViewData& view,
                                       RHIFormat colorTargetFormat,
-                                      RHIDescriptorSet* frameSet);
+                                      RHIDescriptorSet* frameSet,
+                                      bool requireObjectConstantUpload);
+        bool TryDrawPlannedDirect(
+            RHICommandContext& ctx,
+            const ViewData& view,
+            RHITextureView* colorTargetView,
+            std::span<const PlannedOpaqueDraw> plannedDraws);
+        bool BuildPlannedDirectBatch(
+            const ViewData& view,
+            RHIFormat colorTargetFormat,
+            std::vector<PlannedOpaqueDraw>& outPlannedDraws);
 
     };
 

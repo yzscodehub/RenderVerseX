@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-5 and Task 6A complete; Task 6B Direct Opaque DrawPacket
-execution is the next implementation stage
+**Status:** Tasks 0-5 and Tasks 6A-6B complete; Task 6C legacy-consumer
+removal and M1 exit validation is the next implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -163,16 +163,16 @@ qualification policy branch.
 
 #### 6B. Direct Opaque migration
 
-- [ ] Add packet-range Direct recording for opaque and masked lanes.
-- [ ] Preserve opaque-before-masked ordering, material fallback behavior,
+- [x] Add packet-range Direct recording for opaque and masked lanes.
+- [x] Preserve opaque-before-masked ordering, material fallback behavior,
   tangent-basis normal-map gating, shadow receiver state, and object motion
   constants.
-- [ ] Keep Transparent in its existing sorted Direct pass.
-- [ ] Run legacy and packet Opaque construction in dual-build mode and compare
+- [x] Keep Transparent in its existing sorted Direct pass.
+- [x] Run legacy and packet Opaque construction in dual-build mode and compare
   source ordinals, exact packet values, draw arguments, material handles, and
   counts.
-- [ ] Add multi-submesh/multi-material and skinned Direct fixtures.
-- [ ] Prove the packet path produces the existing Direct golden and Porsche
+- [x] Add multi-submesh/multi-material and skinned Direct fixtures.
+- [x] Prove the packet path produces the existing Direct golden and Porsche
   output at the approved tolerance.
 
 #### 6C. Remove temporary legacy consumers

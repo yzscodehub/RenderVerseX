@@ -413,7 +413,6 @@ namespace RVX
                     break;
                 case RenderMeshBufferSemantic::Tangent:
                     buffers.tangentBuffer = buffer;
-                    buffers.hasTangents = true;
                     break;
                 case RenderMeshBufferSemantic::BoneIndices:
                     buffers.boneIndicesBuffer = buffer;
@@ -428,6 +427,8 @@ namespace RVX
                     break;
             }
         }
+        buffers.hasTangents = buffers.tangentBuffer != nullptr &&
+                              mesh->createInfo.hasTangentBasis;
         buffers.submeshes.reserve(mesh->submeshes.size());
         for (const MeshUploadSubmesh& submesh : mesh->submeshes)
         {

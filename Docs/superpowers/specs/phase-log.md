@@ -43972,6 +43972,143 @@ ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
 
 ---
 
+### R-SP328 Render-policy Task 6B Direct Opaque packet execution
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Implementation agents:** primary agent with bounded `task6b_opaque_impl`,
+`task6b_rigid_pipeline`, and `task6b_tangent_fallback` assistance
+**Independent code review agent:** `task5c_independent_review`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Section: Task 6B
+- Contract: Task 5 canonical frame plan and Task 6A whole-lane preflight
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP327 Render-policy Task 6A Direct Depth packet execution.
+- Evidence: commit `94ece7c7`, packet-authoritative Direct Depth recording,
+  pre-recording validation, and synthetic/external DX12 parity.
+
+**Approved scope:**
+
+- Materialize the planned Opaque Direct packet range and compare it against a
+  value-only legacy trace before any command recording.
+- Preserve opaque-before-masked order, exact submesh arguments, missing-material
+  fallback, tangent-basis normal-map gating, shadow receiver state, skinning,
+  and previous-transform constants.
+- Preflight pipelines, descriptors, material bindings, object uploads, vertex
+  streams, and index data for the whole Direct lane before `BeginRenderPass`.
+- Select explicit Rigid slots 0-3 or Skinned slots 0-5 DefaultLit vertex-input
+  contracts. Upload a stable fallback tangent stream while keeping tangent-basis
+  provenance separate so fallback data cannot enable normal mapping.
+- Keep published GPU plans fail-closed without same-frame Direct replay and
+  preserve the no-plan GPU compatibility behavior.
+
+**Out of scope:**
+
+- Removing the Depth/Opaque legacy value or command consumers; Task 6C.
+- Migrating Transparent, Shadow, ObjectVelocity, or diagnostics adapters.
+- Hybrid packet identity/partitioning, visibility providers, pass record
+  contexts, or backend submission strategies; Tasks 7-13.
+- Fixing existing Vulkan/DX11 descriptor-layout validation or OpenGL
+  ToneMapping SPIRV-Cross failures; Tasks 12 and 14.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Resources/RenderResourceRegistry.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `RenderContracts/Include/RenderContracts/ResourceUploadRequest.h`
+- `Resource/Private/RenderUploadRequestBuilder.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderResourceRuntimeValidation/main.cpp`
+- `Tests/ResourceRuntimePolicyValidation/main.cpp`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target `
+  PipelineCacheValidation RenderPassValidation `
+  RenderResourceRuntimeValidation ResourceRuntimePolicyValidation ModelViewer
+
+PipelineCacheValidation.exe
+RenderPassValidation.exe
+RenderResourceRuntimeValidation.exe
+ResourceRuntimePolicyValidation.exe
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "^(RenderPolicyValidation|GPUDrivenValidation|RenderSceneValidation|MeshPassProcessorValidation|RenderPassValidation|RenderPassStatusValidation|SceneRendererDiagnosticsValidation|SceneRendererExternalTargetValidation|RenderPostProcessStackValidation)"
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+
+cmake --build build/win_x64_debug --config Debug --target VulkanValidation
+VulkanValidation.exe
+```
+
+**Validation result:**
+
+- Focused builds: PASS for all four validation targets and ModelViewer,
+  including DX11, DX12, Vulkan, and OpenGL backend libraries.
+- Standalone suites: PASS 128/128 PipelineCache, 156/156 RenderPass, 17/17
+  RenderResourceRuntime, and 32/32 ResourceRuntimePolicy with one environment
+  privilege skip.
+- Adjacent renderer contract CTest gate: PASS 223/223.
+- Synthetic and external Porsche Direct/GPU smoke plus pixel parity: PASS 6/6
+  on the configured DX12 host.
+- VulkanValidation executable: PASS 25/25. Its validation output still reports
+  existing signaled-fence and placed-buffer device-address VUIDs.
+- Vulkan ModelViewer remains blocked before Opaque recording by the existing
+  DefaultLit set-0 binding-4 type mismatch. OpenGL and DX11 compile/create the
+  new Rigid VS successfully, then hit the existing ToneMapping layout and
+  DefaultLit binding-visibility gates respectively. These remain explicit
+  Task 12/14 coverage gates, not silent skips.
+- `git diff --check`: PASS; only line-ending conversion warnings.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for optional tangent/bone input streams on
+  static DefaultLit draws and an unintended no-plan object-upload behavior
+  change.
+- Primary accepted both findings. The final implementation adds explicit
+  Rigid/Skinned vertex factories, synthesized tangent upload with provenance,
+  strict published-plan upload handling, and a compatibility-mode parameter
+  plus failure-injection proof for the no-plan path.
+- Final verdict: APPROVE; no remaining P0/P1 findings. Non-blocking follow-ups
+  are removal of the old no-plan Skinned layout dependency in Task 6C and
+  explicit tangent provenance for any future external payload constructors.
+
+**Primary review result:**
+
+- Verdict: PASS. The frame plan is authoritative for Opaque lane selection and
+  packet values; the complete Direct lane is validated before recording and
+  GPU late failure cannot cause duplicate Direct submission.
+- The Rigid/Skinned shader, input-layout, bindings, and pipeline-state hashes
+  agree exactly, including explicit stable selector values and invalid-value
+  rejection.
+- Transparent remains untouched and the legacy Opaque construction is only a
+  temporary value oracle; it cannot submit a duplicate draw.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 6C reviewed removal of replaced Depth/Opaque command
+  consumers and M1 exit accounting.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged; they are unrelated local artifacts.
+- Carry the Vulkan/DX11/OpenGL runtime coverage failures as explicit open
+  backend milestones into Tasks 12 and 14.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

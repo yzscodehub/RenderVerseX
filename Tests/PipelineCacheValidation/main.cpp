@@ -7938,6 +7938,116 @@ TEST_F(PipelineCacheValidationFixture, UIPipelineCreationFailureIsVisible)
     EXPECT_NE(cache.GetLastError().find("UI pipeline"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, DefaultLitDirectVertexInputModesUseDistinctShadersLayoutsAndFormatPipelines)
+{
+    EXPECT_EQ(static_cast<RVX::uint8>(
+                  RVX::DefaultLitDirectVertexInputMode::Rigid),
+              0u);
+    EXPECT_EQ(static_cast<RVX::uint8>(
+                  RVX::DefaultLitDirectVertexInputMode::Skinned),
+              1u);
+
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    cache.SetRenderTargetFormats(RVX::RHIFormat::RGBA16_FLOAT,
+                                 RVX::RHIFormat::RGBA16_FLOAT,
+                                 RVX::RHIFormat::BGRA8_UNORM);
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    const RVX::RHIPipeline* legacySkinned =
+        cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                    RVX::RHIFormat::RGBA16_FLOAT);
+    const RVX::RHIPipeline* explicitSkinned =
+        cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                    RVX::RHIFormat::RGBA16_FLOAT,
+                                    RVX::DefaultLitDirectVertexInputMode::Skinned);
+    const RVX::RHIPipeline* rigidRGBA16 =
+        cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                    RVX::RHIFormat::RGBA16_FLOAT,
+                                    RVX::DefaultLitDirectVertexInputMode::Rigid);
+    const RVX::RHIPipeline* rigidRGBA8 =
+        cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                    RVX::RHIFormat::RGBA8_UNORM,
+                                    RVX::DefaultLitDirectVertexInputMode::Rigid);
+    const RVX::RHIPipeline* rigidDefaultFormat =
+        cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                    RVX::RHIFormat::Unknown,
+                                    RVX::DefaultLitDirectVertexInputMode::Rigid);
+    const RVX::RHIPipeline* invalidInputMode =
+        cache.GetPipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque,
+            RVX::RHIFormat::RGBA16_FLOAT,
+            static_cast<RVX::DefaultLitDirectVertexInputMode>(255));
+
+    ASSERT_NE(legacySkinned, nullptr);
+    ASSERT_EQ(legacySkinned, explicitSkinned);
+    ASSERT_NE(rigidRGBA16, nullptr);
+    ASSERT_NE(rigidRGBA8, nullptr);
+    ASSERT_EQ(rigidDefaultFormat, rigidRGBA16);
+    EXPECT_EQ(invalidInputMode, nullptr);
+    EXPECT_NE(cache.GetLastError().find("vertex input mode"),
+              std::string::npos);
+    EXPECT_NE(rigidRGBA16, explicitSkinned);
+    EXPECT_NE(rigidRGBA16, rigidRGBA8);
+
+    const auto findPipeline = [&device](const char* debugName, RVX::RHIFormat format)
+        -> const RVX::RHIGraphicsPipelineDesc*
+    {
+        const auto it = std::find_if(
+            device.capturedGraphicsPipelines.begin(),
+            device.capturedGraphicsPipelines.end(),
+            [debugName, format](const RVX::RHIGraphicsPipelineDesc& desc)
+            {
+                return desc.debugName != nullptr &&
+                    std::string(desc.debugName) == debugName &&
+                    desc.renderTargetFormats[0] == format;
+            });
+        return it == device.capturedGraphicsPipelines.end() ? nullptr : &(*it);
+    };
+
+    const RVX::RHIGraphicsPipelineDesc* const skinnedDesc =
+        findPipeline("DefaultOpaquePipeline", RVX::RHIFormat::RGBA16_FLOAT);
+    const RVX::RHIGraphicsPipelineDesc* const rigidRGBA16Desc =
+        findPipeline("DefaultOpaqueRigidPipeline", RVX::RHIFormat::RGBA16_FLOAT);
+    const RVX::RHIGraphicsPipelineDesc* const rigidRGBA8Desc =
+        findPipeline("DefaultOpaqueRigidPipeline", RVX::RHIFormat::RGBA8_UNORM);
+    ASSERT_NE(skinnedDesc, nullptr);
+    ASSERT_NE(rigidRGBA16Desc, nullptr);
+    ASSERT_NE(rigidRGBA8Desc, nullptr);
+
+    EXPECT_NE(skinnedDesc->vertexShader, rigidRGBA16Desc->vertexShader);
+    ASSERT_EQ(skinnedDesc->inputLayout.elements.size(), 6u);
+    ASSERT_EQ(rigidRGBA16Desc->inputLayout.elements.size(), 4u);
+    for (size_t index = 0; index < rigidRGBA16Desc->inputLayout.elements.size(); ++index)
+    {
+        EXPECT_EQ(rigidRGBA16Desc->inputLayout.elements[index].inputSlot, index);
+    }
+    EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[0].semanticName, "POSITION");
+    EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[1].semanticName, "NORMAL");
+    EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[2].semanticName, "TEXCOORD");
+    EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[3].semanticName, "TANGENT");
+    EXPECT_STREQ(skinnedDesc->inputLayout.elements[4].semanticName, "BLENDINDICES");
+    EXPECT_STREQ(skinnedDesc->inputLayout.elements[5].semanticName, "BLENDWEIGHT");
+    EXPECT_EQ(rigidRGBA16Desc->renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(rigidRGBA8Desc->renderTargetFormats[0], RVX::RHIFormat::RGBA8_UNORM);
+
+    const size_t pipelineCountAfterFirstRequests = device.capturedGraphicsPipelines.size();
+    EXPECT_EQ(cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                          RVX::RHIFormat::RGBA16_FLOAT,
+                                          RVX::DefaultLitDirectVertexInputMode::Rigid),
+              rigidRGBA16);
+    EXPECT_EQ(device.capturedGraphicsPipelines.size(), pipelineCountAfterFirstRequests);
+
+    const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
+    EXPECT_NE(shader.find("struct RigidDirectVSInput"), std::string::npos);
+    EXPECT_NE(shader.find("PSInput VSMainRigid(RigidDirectVSInput input)"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture,
        MaskedDepthOnlyPipelineCreationFailureIsVisible)
 {

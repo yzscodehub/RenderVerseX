@@ -683,6 +683,61 @@ namespace
     }
 
     TEST_F(RenderResourceRuntimeFixture,
+           MeshTangentProvenanceControlsNormalMapTangentBasis)
+    {
+        const auto makeInfo = [](AssetId asset,
+                                 RenderResourceHandle handle,
+                                 bool hasTangentBasis)
+        {
+            MeshUploadPayload payload;
+            payload.createInfo.vertexCount = 3;
+            payload.createInfo.boundsMin = Vec3(-1.0f);
+            payload.createInfo.boundsMax = Vec3(1.0f);
+            payload.createInfo.hasTangentBasis = hasTangentBasis;
+            payload.bytes.resize(144U, 7U);
+            payload.positionRange = UploadByteRange{0, 36, 12};
+            payload.normalRange = UploadByteRange{36, 36, 12};
+            payload.uvRange = UploadByteRange{72, 24, 8};
+            payload.tangentRange = UploadByteRange{96, 48, 16};
+
+            ResourceUploadRequestCreateInfo info;
+            info.sequence = asset.value;
+            info.assetId = asset;
+            info.handle = handle;
+            info.kind = RenderResourceKind::Mesh;
+            info.payload = std::move(payload);
+            info.declaredPayloadBytes = 144;
+            return info;
+        };
+
+        const RenderResourceHandle fallbackHandle =
+            Reserve(AssetId{401}, RenderResourceKind::Mesh);
+        ResourceUploadRequestRef fallbackOwner = CreateAndQueue(
+            makeInfo(AssetId{401}, fallbackHandle, false));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const MeshGPUBuffers fallback =
+            registry.ResolveMeshBuffers(fallbackHandle);
+        EXPECT_NE(fallback.tangentBuffer, nullptr);
+        EXPECT_FALSE(fallback.hasTangents);
+        EXPECT_FALSE(fallback.HasNormalMapTangentBasis());
+
+        const RenderResourceHandle authoredHandle =
+            Reserve(AssetId{402}, RenderResourceKind::Mesh);
+        ResourceUploadRequestRef authoredOwner = CreateAndQueue(
+            makeInfo(AssetId{402}, authoredHandle, true));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const MeshGPUBuffers authored =
+            registry.ResolveMeshBuffers(authoredHandle);
+        EXPECT_NE(authored.tangentBuffer, nullptr);
+        EXPECT_TRUE(authored.hasTangents);
+        EXPECT_TRUE(authored.HasNormalMapTangentBasis());
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
            RayTracingMeshUploadsDeclareImmutableGeometryUsage)
     {
         device.capabilities.supportsRaytracing = true;

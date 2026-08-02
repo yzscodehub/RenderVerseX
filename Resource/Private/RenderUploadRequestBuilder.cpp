@@ -250,6 +250,24 @@ namespace
             uv = nullptr;
         }
 
+        const VertexAttribute* tangent =
+            mesh->GetAttribute(VertexBufferNames::Tangent);
+        const bool hasTangentBasis =
+            tangent != nullptr && tangent->GetData() != nullptr &&
+            tangent->GetVertexCount() == mesh->GetVertexCount() &&
+            tangent->GetComponents() == 4 &&
+            tangent->GetType() == AttributeType::Float &&
+            tangent->GetStride() == sizeof(Vec4) &&
+            tangent->GetTotalSize() != 0;
+        payload.createInfo.hasTangentBasis = hasTangentBasis;
+
+        std::vector<Vec4> fallbackTangents;
+        if (!hasTangentBasis)
+        {
+            fallbackTangents.assign(mesh->GetVertexCount(),
+                                    Vec4{1.0f, 0.0f, 0.0f, 1.0f});
+        }
+
         if ((mesh->GetIndexCount() != 0 &&
              !AppendRange(payload.bytes,
                           indexData.empty() ? nullptr : indexData.data(),
@@ -260,8 +278,14 @@ namespace
             !appendAttribute(mesh->GetAttribute(VertexBufferNames::Normal),
                              payload.normalRange) ||
             !appendAttribute(uv, payload.uvRange) ||
-            !appendAttribute(mesh->GetAttribute(VertexBufferNames::Tangent),
-                             payload.tangentRange) ||
+            !AppendRange(payload.bytes,
+                         hasTangentBasis ? tangent->GetData()
+                                             : fallbackTangents.data(),
+                         hasTangentBasis ? tangent->GetTotalSize()
+                                             : fallbackTangents.size() * sizeof(Vec4),
+                         hasTangentBasis ? tangent->GetStride()
+                                             : sizeof(Vec4),
+                         payload.tangentRange) ||
             !appendAttribute(mesh->GetAttribute(VertexBufferNames::BoneIndices),
                              payload.boneIndexRange) ||
             !appendAttribute(mesh->GetAttribute(VertexBufferNames::BoneWeights),

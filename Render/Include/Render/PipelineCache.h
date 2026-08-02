@@ -39,6 +39,13 @@ namespace RVX
 
     constexpr uint32 RVX_MAX_OBJECT_SKINNING_MATRICES = 128;
 
+    /** @brief Vertex-stream contract for DefaultLit direct graphics pipelines. */
+    enum class DefaultLitDirectVertexInputMode : uint8
+    {
+        Rigid = 0,
+        Skinned = 1,
+    };
+
     /**
      * @brief View constants structure (matches HLSL cbuffer)
      */
@@ -286,6 +293,9 @@ namespace RVX
          */
         RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant) const;
         RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
+        RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant,
+                                           RHIFormat renderTargetFormat,
+                                           DefaultLitDirectVertexInputMode inputMode);
         RHIPipeline* GetGPUDrivenPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
 
         /**
@@ -687,6 +697,7 @@ namespace RVX
                                                      const RHIDepthStencilState& depthStencilState,
                                                      const RHIBlendState& blendState,
                                                      RHIFormat renderTargetFormat,
+                                                     DefaultLitDirectVertexInputMode inputMode,
                                                      bool updatePrimaryStats);
         RHIPipelineRef GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPipelineVariant variant,
                                                               const char* debugName,
@@ -720,7 +731,8 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState,
-                                                            RHIFormat renderTargetFormat) const;
+                                                            RHIFormat renderTargetFormat,
+                                                            DefaultLitDirectVertexInputMode inputMode) const;
         RHIGraphicsPipelineDesc BuildGPUDrivenDefaultLitPipelineDesc(const char* debugName,
                                                                      const RHIDepthStencilState& depthStencilState,
                                                                      const RHIBlendState& blendState,
@@ -780,6 +792,7 @@ namespace RVX
 
         // Shaders
         RHIShaderRef m_vertexShader;
+        RHIShaderRef m_rigidVertexShader;
         RHIShaderRef m_gpuDrivenVertexShader;
         RHIShaderRef m_pixelShader;
         RHIShaderRef m_depthOnlyVertexShader;
@@ -824,6 +837,7 @@ namespace RVX
         RHIShaderRef m_rayTracedReflectionClosestHitShader;
         RHIShaderRef m_rayTracedReflectionAnyHitShader;
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rigidVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuDrivenVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;

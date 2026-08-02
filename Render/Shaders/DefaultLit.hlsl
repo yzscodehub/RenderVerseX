@@ -182,6 +182,15 @@ struct VSInput
     float4 BoneWeights : BLENDWEIGHT;
 };
 
+// Direct rigid draws do not bind skinning or GPU-driven instance streams.
+struct RigidDirectVSInput
+{
+    float3 Position : POSITION;
+    float3 Normal   : NORMAL;
+    float2 TexCoord : TEXCOORD0;
+    float4 Tangent  : TANGENT;
+};
+
 struct RigidVSInput
 {
     float3 Position : POSITION;
@@ -269,6 +278,20 @@ PSInput VSMain(VSInput input)
     output.WorldNormal = normalize(mul((float3x3)NormalMatrix, localNormal));
     output.TexCoord = input.TexCoord;
     output.WorldTangent = float4(normalize(mul((float3x3)World, localTangent)), input.Tangent.w);
+
+    return output;
+}
+
+PSInput VSMainRigid(RigidDirectVSInput input)
+{
+    PSInput output;
+
+    float4 worldPos = mul(World, float4(input.Position, 1.0f));
+    output.WorldPos = worldPos.xyz;
+    output.Position = mul(ViewProjection, worldPos);
+    output.WorldNormal = normalize(mul((float3x3)NormalMatrix, input.Normal));
+    output.TexCoord = input.TexCoord;
+    output.WorldTangent = float4(normalize(mul((float3x3)World, input.Tangent.xyz)), input.Tangent.w);
 
     return output;
 }

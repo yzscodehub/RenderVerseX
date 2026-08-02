@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -1511,11 +1512,58 @@ TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderOwnsMeshAndTextureBytes
     const auto meshPayload =
         std::get<MeshUploadPayload>(meshBuild.request->GetPayload());
     ASSERT_FALSE(meshPayload.bytes.empty());
+    EXPECT_FALSE(meshPayload.createInfo.hasTangentBasis);
+    ASSERT_EQ(meshPayload.tangentRange.stride, sizeof(Vec4));
+    ASSERT_EQ(meshPayload.tangentRange.size,
+              positions.size() * sizeof(Vec4));
+    ASSERT_LE(meshPayload.tangentRange.offset + meshPayload.tangentRange.size,
+              meshPayload.bytes.size());
+    for (size_t vertexIndex = 0; vertexIndex < positions.size(); ++vertexIndex)
+    {
+        Vec4 tangent{};
+        std::memcpy(&tangent,
+                    meshPayload.bytes.data() + meshPayload.tangentRange.offset +
+                        vertexIndex * meshPayload.tangentRange.stride,
+                    sizeof(tangent));
+        EXPECT_FLOAT_EQ(tangent.x, 1.0f);
+        EXPECT_FLOAT_EQ(tangent.y, 0.0f);
+        EXPECT_FLOAT_EQ(tangent.z, 0.0f);
+        EXPECT_FLOAT_EQ(tangent.w, 1.0f);
+    }
     const std::vector<uint8> ownedMeshBytes = meshPayload.bytes;
 
     mesh->SetPositions(std::vector<Vec3>(3, Vec3{42.0f}));
     EXPECT_EQ(std::get<MeshUploadPayload>(meshBuild.request->GetPayload()).bytes,
               ownedMeshBytes);
+
+    const std::vector<Vec4> authoredTangents = {
+        {0.0f, 1.0f, 0.0f, -1.0f},
+        {1.0f, 0.0f, 0.0f, 1.0f},
+        {0.0f, 1.0f, 0.0f, 1.0f}};
+    mesh->SetTangents(authoredTangents);
+    const RenderUploadRequestBuildResult authoredMeshBuild =
+        RenderUploadRequestBuilder::Build(meshResource, {3, 1}, 3, {});
+    ASSERT_EQ(authoredMeshBuild.code, RenderUploadRequestBuildCode::Built);
+    const auto& authoredMeshPayload =
+        std::get<MeshUploadPayload>(authoredMeshBuild.request->GetPayload());
+    EXPECT_TRUE(authoredMeshPayload.createInfo.hasTangentBasis);
+    ASSERT_EQ(authoredMeshPayload.tangentRange.stride, sizeof(Vec4));
+    ASSERT_EQ(authoredMeshPayload.tangentRange.size,
+              authoredTangents.size() * sizeof(Vec4));
+    for (size_t vertexIndex = 0; vertexIndex < authoredTangents.size();
+         ++vertexIndex)
+    {
+        Vec4 tangent{};
+        std::memcpy(&tangent,
+                    authoredMeshPayload.bytes.data() +
+                        authoredMeshPayload.tangentRange.offset +
+                        vertexIndex * authoredMeshPayload.tangentRange.stride,
+                    sizeof(tangent));
+        EXPECT_FLOAT_EQ(tangent.x, authoredTangents[vertexIndex].x);
+        EXPECT_FLOAT_EQ(tangent.y, authoredTangents[vertexIndex].y);
+        EXPECT_FLOAT_EQ(tangent.z, authoredTangents[vertexIndex].z);
+        EXPECT_FLOAT_EQ(tangent.w, authoredTangents[vertexIndex].w);
+    }
 
     TextureResource texture;
     texture.SetId(102);

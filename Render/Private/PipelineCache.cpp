@@ -899,6 +899,7 @@ void PipelineCache::Shutdown()
     m_pipelineLayout.Reset();
     m_setLayouts.clear();
     m_vertexShader.Reset();
+    m_rigidVertexShader.Reset();
     m_gpuDrivenVertexShader.Reset();
     m_pixelShader.Reset();
     m_depthOnlyVertexShader.Reset();
@@ -943,6 +944,7 @@ void PipelineCache::Shutdown()
     m_rayTracedReflectionClosestHitShader.Reset();
     m_rayTracedReflectionAnyHitShader.Reset();
     m_vsCompileResult.reset();
+    m_rigidVsCompileResult.reset();
     m_gpuDrivenVsCompileResult.reset();
     m_psCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
@@ -1251,6 +1253,24 @@ bool PipelineCache::CompileShaders()
     }
     m_vertexShader = vsResult.shader;
     m_vsCompileResult = std::make_unique<ShaderCompileResult>(std::move(vsResult.compileResult));
+
+    ShaderLoadDesc rigidVsDesc = vsDesc;
+    rigidVsDesc.entryPoint = "VSMainRigid";
+    auto rigidVsResult = m_shaderManager->LoadFromFile(m_device, rigidVsDesc);
+    if (!rigidVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile rigid direct vertex shader: " +
+                     rigidVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!rigidVsResult.shader)
+    {
+        SetLastError("Failed to create rigid direct vertex shader");
+        return false;
+    }
+    m_rigidVertexShader = rigidVsResult.shader;
+    m_rigidVsCompileResult =
+        std::make_unique<ShaderCompileResult>(std::move(rigidVsResult.compileResult));
 
     ShaderLoadDesc gpuDrivenVsDesc = vsDesc;
     gpuDrivenVsDesc.entryPoint = "VSMainGPUDriven";
@@ -3099,36 +3119,73 @@ RHIPipeline* PipelineCache::GetPipelineForVariant(MaterialPipelineVariant varian
         return GetPipelineForVariant(variant);
     }
 
+    return GetPipelineForVariant(
+        variant, renderTargetFormat, DefaultLitDirectVertexInputMode::Skinned);
+}
+
+RHIPipeline* PipelineCache::GetPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat,
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    if (inputMode != DefaultLitDirectVertexInputMode::Rigid &&
+        inputMode != DefaultLitDirectVertexInputMode::Skinned)
+    {
+        SetLastError("Invalid DefaultLit direct vertex input mode");
+        return nullptr;
+    }
+
+    if (renderTargetFormat == RHIFormat::Unknown)
+    {
+        renderTargetFormat = m_renderTargetFormat;
+    }
+
     const RHIDepthStencilState writableDepthState = BuildDepthStencilState(m_config.reverseZ, true);
     const RHIDepthStencilState readOnlyDepthState = BuildDepthStencilState(m_config.reverseZ, false);
+
+    const char* maskedDebugName =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? "DefaultMaskedRigidPipeline"
+            : "DefaultMaskedPipeline";
+    const char* transparentDebugName =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? "DefaultTransparentRigidPipeline"
+            : "DefaultTransparentPipeline";
+    const char* opaqueDebugName =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? "DefaultOpaqueRigidPipeline"
+            : "DefaultOpaquePipeline";
 
     switch (variant)
     {
         case MaterialPipelineVariant::Masked:
             return GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Masked,
-                                                 "DefaultMaskedPipeline",
+                                                 maskedDebugName,
                                                  writableDepthState,
                                                  RHIBlendState::Default(),
                                                  renderTargetFormat,
+                                                 inputMode,
                                                  false).Get();
         case MaterialPipelineVariant::Transparent:
         {
             RHIBlendState transparentBlend = RHIBlendState::Default();
             transparentBlend.renderTargets[0] = RHIRenderTargetBlendState::AlphaBlend();
             return GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Transparent,
-                                                 "DefaultTransparentPipeline",
+                                                 transparentDebugName,
                                                  readOnlyDepthState,
                                                  transparentBlend,
                                                  renderTargetFormat,
+                                                 inputMode,
                                                  false).Get();
         }
         case MaterialPipelineVariant::Opaque:
         default:
             return GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Opaque,
-                                                 "DefaultOpaquePipeline",
+                                                 opaqueDebugName,
                                                  writableDepthState,
                                                  RHIBlendState::Default(),
                                                  renderTargetFormat,
+                                                 inputMode,
                                                  false).Get();
     }
 }
@@ -3861,6 +3918,7 @@ bool PipelineCache::CreatePipeline()
                                                      writableDepthState,
                                                      RHIBlendState::Default(),
                                                      m_renderTargetFormat,
+                                                     DefaultLitDirectVertexInputMode::Skinned,
                                                      true);
     if (!m_opaquePipeline)
     {
@@ -3876,6 +3934,7 @@ bool PipelineCache::CreatePipeline()
                                                      writableDepthState,
                                                      RHIBlendState::Default(),
                                                      m_renderTargetFormat,
+                                                     DefaultLitDirectVertexInputMode::Skinned,
                                                      true);
     if (!m_maskedPipeline)
     {
@@ -3894,6 +3953,7 @@ bool PipelineCache::CreatePipeline()
                                                           readOnlyDepthState,
                                                           transparentBlend,
                                                           m_renderTargetFormat,
+                                                          DefaultLitDirectVertexInputMode::Skinned,
                                                           true);
     if (!m_transparentPipeline)
     {
@@ -4212,12 +4272,14 @@ RHIPipelineRef PipelineCache::GetOrCreateDefaultLitPipeline(MaterialPipelineVari
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState,
                                                             RHIFormat renderTargetFormat,
+                                                            DefaultLitDirectVertexInputMode inputMode,
                                                             bool updatePrimaryStats)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildDefaultLitPipelineDesc(debugName,
                                                                        depthStencilState,
                                                                        blendState,
-                                                                       renderTargetFormat);
+                                                                       renderTargetFormat,
+                                                                       inputMode);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create pipeline without vertex shader");
@@ -5296,11 +5358,14 @@ RHIPipelineRef PipelineCache::GetOrCreateUIPipeline(RHIFormat outputFormat)
 RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* debugName,
                                                                    const RHIDepthStencilState& depthStencilState,
                                                                    const RHIBlendState& blendState,
-                                                                   RHIFormat renderTargetFormat) const
+                                                                   RHIFormat renderTargetFormat,
+                                                                   DefaultLitDirectVertexInputMode inputMode) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
-    pipelineDesc.vertexShader = m_vertexShader.Get();
+    pipelineDesc.vertexShader = inputMode == DefaultLitDirectVertexInputMode::Rigid
+        ? m_rigidVertexShader.Get()
+        : m_vertexShader.Get();
     pipelineDesc.pixelShader = m_pixelShader.Get();
     pipelineDesc.pipelineLayout = m_pipelineLayout.Get();
     pipelineDesc.debugName = debugName;
@@ -5309,8 +5374,11 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* d
     pipelineDesc.inputLayout.AddElement("NORMAL", RHIFormat::RGB32_FLOAT, 1);
     pipelineDesc.inputLayout.AddElement("TEXCOORD", RHIFormat::RG32_FLOAT, 2);
     pipelineDesc.inputLayout.AddElement("TANGENT", RHIFormat::RGBA32_FLOAT, 3);
-    pipelineDesc.inputLayout.AddElement("BLENDINDICES", RHIFormat::RGBA32_UINT, 4);
-    pipelineDesc.inputLayout.AddElement("BLENDWEIGHT", RHIFormat::RGBA32_FLOAT, 5);
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        pipelineDesc.inputLayout.AddElement("BLENDINDICES", RHIFormat::RGBA32_UINT, 4);
+        pipelineDesc.inputLayout.AddElement("BLENDWEIGHT", RHIFormat::RGBA32_FLOAT, 5);
+    }
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();
     pipelineDesc.rasterizerState.frontFace = RHIFrontFace::Clockwise;
@@ -5334,7 +5402,11 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDefaultLitPipelineDesc(
     RHIFormat renderTargetFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc =
-        BuildDefaultLitPipelineDesc(debugName, depthStencilState, blendState, renderTargetFormat);
+        BuildDefaultLitPipelineDesc(debugName,
+                                    depthStencilState,
+                                    blendState,
+                                    renderTargetFormat,
+                                    DefaultLitDirectVertexInputMode::Rigid);
     pipelineDesc.vertexShader = m_gpuDrivenVertexShader.Get();
     std::erase_if(pipelineDesc.inputLayout.elements,
                   [](const RHIInputElement& element)
@@ -5831,6 +5903,8 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
     {
         if (shader == m_vertexShader.Get())
             return ComputeShaderHash(m_vsCompileResult.get());
+        if (shader == m_rigidVertexShader.Get())
+            return ComputeShaderHash(m_rigidVsCompileResult.get());
         if (shader == m_gpuDrivenVertexShader.Get())
             return ComputeShaderHash(m_gpuDrivenVsCompileResult.get());
         if (shader == m_pixelShader.Get())

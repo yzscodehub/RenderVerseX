@@ -95,6 +95,9 @@ namespace RVX
             MeshUploadPrimitiveTopology::Triangles;
         Vec3 boundsMin{0.0f};
         Vec3 boundsMax{0.0f};
+        // A tangent buffer may be synthesized for a stable vertex-input layout.
+        // Only a real or generated asset basis may enable normal-map shading.
+        bool hasTangentBasis = false;
     };
 
     struct MeshUploadSubmesh
