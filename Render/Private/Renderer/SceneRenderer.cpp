@@ -5,6 +5,7 @@
 
 #include "Render/Renderer/SceneRenderer.h"
 #include "Context/RenderContextInternal.h"
+#include "GPUScene/GPUSceneUpdate.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Core/Assert.h"
@@ -46,6 +47,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <new>
 #include <utility>
 #include <vector>
 
@@ -536,7 +538,10 @@ bool SceneRendererExternalTargetDesc::IsValid() const
            colorTarget->GetHeight() > 0;
 }
 
-SceneRenderer::SceneRenderer() = default;
+SceneRenderer::SceneRenderer()
+    : m_gpuSceneUpdate(std::make_unique<GPUSceneUpdate>())
+{
+}
 
 SceneRenderer::~SceneRenderer()
 {
@@ -811,6 +816,10 @@ void SceneRenderer::Initialize(
 void SceneRenderer::Shutdown()
 {
     InvalidateRenderFramePlan();
+    if (m_gpuSceneUpdate)
+    {
+        m_gpuSceneUpdate->Clear();
+    }
     if (!m_initialized)
         return;
 
@@ -1203,6 +1212,27 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
         return result;
     }
 
+    // The RenderScene is authoritative.  A failed shadow publication only
+    // records diagnostics and leaves direct/Tier 1 execution untouched.
+    if (m_gpuSceneUpdate)
+    {
+        try
+        {
+            static_cast<void>(m_gpuSceneUpdate->Publish(m_renderScene, registry));
+        }
+        catch (const std::bad_alloc&)
+        {
+            m_gpuSceneUpdate->RecordFailure(
+                m_renderScene.GetAcceptedHeader().sequence,
+                GPUScenePublicationFailureReason::AllocationFailed);
+        }
+        catch (...)
+        {
+            m_gpuSceneUpdate->RecordUnexpectedFailure(
+                m_renderScene.GetAcceptedHeader().sequence);
+        }
+    }
+
     const bool previousViewValid =
         m_renderScene.GetLastRenderedFrameSequence() != 0;
     const Mat4& previousViewProjection = previousViewValid
@@ -1398,6 +1428,29 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     {
         return result;
     }
+    if (m_gpuSceneUpdate && m_renderResourceRegistry)
+    {
+        // Exact-generation revalidation prevents an evicted/reloaded resource
+        // from ever making an old accepted shadow row appear current.  The
+        // mirror remains diagnostics-only in Task 11B and cannot alter this
+        // frame's authoritative execution result.
+        try
+        {
+            static_cast<void>(
+                m_gpuSceneUpdate->Revalidate(*m_renderResourceRegistry));
+        }
+        catch (const std::bad_alloc&)
+        {
+            m_gpuSceneUpdate->RecordFailure(
+                m_renderScene.GetAcceptedHeader().sequence,
+                GPUScenePublicationFailureReason::AllocationFailed);
+        }
+        catch (...)
+        {
+            m_gpuSceneUpdate->RecordUnexpectedFailure(
+                m_renderScene.GetAcceptedHeader().sequence);
+        }
+    }
     RVX_ASSERT_MSG(!m_submissionBatch,
                    "Previous frame submission ownership was not resolved");
     m_submissionBatch = std::make_unique<RenderSubmissionResourceBatch>();
@@ -1543,6 +1596,21 @@ void SceneRenderer::MarkAcceptedFramePresented()
 void SceneRenderer::SetSurfaceCompatibilityKey(uint64 key) noexcept
 {
     m_renderScene.SetSurfaceCompatibilityKey(key);
+}
+
+const GPUScenePublicationStats&
+SceneRenderer::GetGPUScenePublicationStats() const noexcept
+{
+    static const GPUScenePublicationStats unavailableStats{};
+    return m_gpuSceneUpdate ? m_gpuSceneUpdate->GetStats() : unavailableStats;
+}
+
+void SceneRenderer::ClearGPUSceneShadow()
+{
+    if (m_gpuSceneUpdate)
+    {
+        m_gpuSceneUpdate->Clear();
+    }
 }
 
 void SceneRenderer::ResolveRenderTargetExtent(uint32& width, uint32& height) const

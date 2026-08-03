@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
-10A/10B/10C, and Task 11A are complete and reviewed; Task 11B is next
+10A/10B/10C, and Tasks 11A/11B are complete and reviewed; Task 11C is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -376,7 +376,7 @@ formal submission interface with clean validation and parity.
   material, geometry, draw metadata, and generation/version data.
 - [ ] Define stable generation-checked indices and completion-aware free-list
   reuse.
-- [ ] Define publication rules: entries become visible only after dependent
+- [x] Define publication rules: entries become visible only after dependent
   mesh/material generations are resident.
 - [ ] Implement persistent buffers and dirty-range upload planning.
 - [ ] Double-buffer or version CPU-updated data that may overlap in-flight GPU
@@ -619,31 +619,40 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Task 11A implementation, independent review, remediation, primary audit, and
-focused regression gates are complete. Start **Task 11B** by deriving
-transactional accepted-scene diffs and exact resource-generation publication.
-The completed Task 11A acceptance ledger is:
+Task 11B implementation, two independent review rounds, remediation, primary
+audit, and focused regression gates are complete. Start **Task 11C** with
+persistent GPU buffers, dirty-range upload planning, and real completion-aware
+retirement. The completed Task 11B acceptance ledger is:
 
-- [x] Freeze backend-neutral, 16-byte-aligned POD rows and strongly typed
-  generation refs for primitive, bounds, transform, material, geometry, and
-  draw metadata without RHI/backend objects or shader `uint64` requirements.
-- [x] Preserve layer/pass/pipeline/material semantics, exact resource
-  slot+generation provenance, conservative bounds flags, previous/normal
-  transforms, and multi-draw objects.
-- [x] Implement an independent-table, non-movable CPU committed mirror with
-  zero/non-unique object rejection, atomic add/update/remove, stable unchanged
-  refs, stale-ref rejection, tombstones, and fail-closed capacity/version limits.
-- [x] Freeze draw ranges as contiguous atomic generation blocks; Task 11C must
-  retire/reclaim a whole block with one advanced non-wrapping generation.
-- [x] Keep retired slots quarantined and deliberately unreused until Task 11C
-  attaches reclamation to real multi-domain GPU completion tokens.
-- [x] Close independent review P2 findings for version wrap and unchecked draw
-  generation; final verdict READY with no remaining P0-P2 defects.
-- [x] Pass GPU Scene 13/13, combined scene/submission 49/49, GPU-driven 30/30,
-  module/architecture 8/8, phase gates 2/2, focused builds, and diff checks.
+- [x] Replace the Task 11A whole-state copy with a prepared, touched-row
+  transaction whose allocations finish before a `noexcept` finalize; injected
+  preparation failures preserve every logical row, slot, map entry, and version.
+- [x] Keep `Clear` append-only and identity-safe by tombstoning live rows while
+  preserving slots/generations and a monotonic committed version.
+- [x] Reject duplicate nonzero object IDs before retained RenderScene/cache
+  mutation and isolate all shadow-publication failures from authoritative
+  Apply, Direct, Tier 1, and draw-packet-cache behavior.
+- [x] Diff normalized accepted-scene values by object ID as Add/Update/Remove/
+  No-op, ignore row headers/padding/linkage, and preserve same-count refs and
+  rendered-frame previous-transform semantics.
+- [x] Publish only exact ready mesh/material dependency closures, use canonical
+  default material rows for missing or metadata-invalid materials, reject stale
+  generations, and never rebind an old accepted handle to a reused slot.
+- [x] Freeze pass eligibility as Depth/Opaque/Shadow/Transparent with Masked as
+  a material/pipeline variant, explicit row-major affine packing, conservative
+  invalid bounds, and fail-closed invalid transforms.
+- [x] Separate attempted/candidate diagnostics from committed mirror counts,
+  version, and source sequence; partial mirrors remain incomplete until a new
+  accepted-scene Publish actually restores excluded objects.
+- [x] Keep the result a non-executable CPU shadow. `executionEligible` remains
+  false; no RHI buffer, shader, submission, policy, or backend behavior changed.
+- [x] Finish independent re-review with READY and no unresolved P0-P2; pass
+  GPU Scene 24/24, RenderScene 17/17, cache 6/6, GPU-driven 34/34,
+  submission 27/27, focused architecture 12/12, and phase gate 1/1.
 
-Task 11B must replace the Task 11A whole-state candidate copy with a touched-row
-transaction journal or equivalent incremental publication before the database
-enters any per-frame render path. It must also reject duplicate object IDs at
-the accepted `RenderScene` boundary, preserve rendered-frame temporal semantics,
-and publish only exact resident mesh/material generations.
+Task 11C must allocate persistent per-table GPU buffers, derive dirty upload
+ranges from committed Task 11B changes, version CPU-updated data across in-flight
+reads, and attach all retirement/reuse to real multi-domain GPU completion
+tokens. Draw ranges must be reclaimed as whole contiguous generation blocks with
+strict non-wrapping generation advancement. Task 11C remains non-executing;
+Task 11D owns GPU visibility/command generation and Task 10 strategy consumption.

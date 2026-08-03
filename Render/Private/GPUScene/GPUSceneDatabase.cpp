@@ -1,6 +1,7 @@
 #include "GPUScene/GPUSceneDatabase.h"
 
 #include <limits>
+#include <new>
 #include <unordered_set>
 #include <utility>
 
@@ -72,7 +73,7 @@ namespace RVX
             std::vector<Row>& rows,
             std::vector<SlotRecord>& slots,
             uint64 objectId,
-            uint32 generation)
+            uint32 generation) noexcept
         {
             const uint32 slot = static_cast<uint32>(slots.size());
             slots.push_back({objectId, generation, GPUSceneSlotState::Live});
@@ -147,69 +148,306 @@ namespace RVX
             return {GPUSceneCommitStatus::VersionExhausted, m_state.mirror.version};
         }
 
-        // TODO(Task 11B): replace this whole-State copy with an incremental,
-        // frame-integrable transaction journal before this database enters a
-        // render-frame path. Task 11A favors straightforward strong atomicity.
-        State candidate = m_state;
+        PreparedTransaction prepared;
+        try
+        {
+            const GPUSceneCommitResult preflight =
+                PrepareTransaction(transaction, prepared);
+            if (!preflight.Succeeded())
+            {
+                return preflight;
+            }
+            const GPUSceneCommitResult reservation =
+                ReserveAndPrepareNodes(prepared);
+            if (!reservation.Succeeded())
+            {
+                return reservation;
+            }
+        }
+        catch (const std::bad_alloc&)
+        {
+            return {GPUSceneCommitStatus::AllocationFailed, m_state.mirror.version};
+        }
+
+        // Finalization mutates only touched rows. All dynamic allocations,
+        // including map nodes for Adds, completed above; this path is noexcept.
+        FinalizePrepared(prepared);
+        ++m_state.mirror.version;
+        return {GPUSceneCommitStatus::Success, m_state.mirror.version};
+    }
+
+    void GPUSceneDatabase::Clear() noexcept
+    {
+        const auto tombstone = [](auto& rows, auto& slots)
+        {
+            for (size_t slot = 1; slot < slots.size(); ++slot)
+            {
+                if (slots[slot].state != GPUSceneSlotState::Live)
+                {
+                    continue;
+                }
+                WriteTombstoneHeader(rows[slot], slots[slot].objectId,
+                                     slots[slot].generation);
+                slots[slot].state = slots[slot].generation ==
+                                             std::numeric_limits<uint32>::max()
+                                         ? GPUSceneSlotState::PermanentlyRetired
+                                         : GPUSceneSlotState::Retired;
+            }
+        };
+        tombstone(m_state.mirror.primitives, m_state.primitiveSlots);
+        tombstone(m_state.mirror.bounds, m_state.boundsSlots);
+        tombstone(m_state.mirror.transforms, m_state.transformSlots);
+        tombstone(m_state.mirror.materials, m_state.materialSlots);
+        tombstone(m_state.mirror.geometries, m_state.geometrySlots);
+        tombstone(m_state.mirror.draws, m_state.drawSlots);
+        m_state.objectToPrimitive.clear();
+        if (m_state.mirror.version != std::numeric_limits<uint64>::max())
+        {
+            ++m_state.mirror.version;
+        }
+    }
+
+    void GPUSceneDatabase::SetPrepareAllocationFailureCountdownForTesting(
+        int32 countdown) noexcept
+    {
+        m_prepareAllocationFailureCountdown = countdown;
+    }
+
+    void GPUSceneDatabase::FailPrepareAllocationCheckpoint()
+    {
+        if (m_prepareAllocationFailureCountdown == 0)
+        {
+            throw std::bad_alloc();
+        }
+        if (m_prepareAllocationFailureCountdown > 0)
+        {
+            --m_prepareAllocationFailureCountdown;
+        }
+    }
+
+    GPUSceneCommitResult GPUSceneDatabase::PrepareTransaction(
+        const GPUSceneTransaction& transaction,
+        PreparedTransaction& outPrepared)
+    {
         std::unordered_set<uint64> affectedObjectIds;
+        FailPrepareAllocationCheckpoint();
+        affectedObjectIds.reserve(transaction.m_operations.size());
+        FailPrepareAllocationCheckpoint();
+        outPrepared.operations.reserve(transaction.m_operations.size());
+
+        const auto addCount = [](size_t& total, size_t value)
+        {
+            if (value > std::numeric_limits<size_t>::max() - total)
+            {
+                return false;
+            }
+            total += value;
+            return true;
+        };
 
         for (const GPUSceneTransaction::Operation& operation : transaction.m_operations)
         {
-            GPUSceneCommitResult result;
+            uint64 objectId = operation.object.objectId;
             switch (operation.type)
             {
                 case GPUSceneTransaction::OperationType::Add:
-                    if (operation.object.objectId == 0)
-                    {
-                        return {GPUSceneCommitStatus::InvalidObjectId, m_state.mirror.version};
-                    }
-                    if (!affectedObjectIds.insert(operation.object.objectId).second)
-                    {
-                        return {GPUSceneCommitStatus::DuplicateObjectId, m_state.mirror.version};
-                    }
-                    result = AddObject(candidate, operation.object);
-                    break;
-
-                case GPUSceneTransaction::OperationType::Update:
-                    if (operation.object.objectId == 0)
-                    {
-                        return {GPUSceneCommitStatus::InvalidObjectId, m_state.mirror.version};
-                    }
-                    if (!affectedObjectIds.insert(operation.object.objectId).second)
-                    {
-                        return {GPUSceneCommitStatus::DuplicateObjectId, m_state.mirror.version};
-                    }
-                    result = UpdateObject(candidate, operation.primitive, operation.object);
-                    break;
-
-                case GPUSceneTransaction::OperationType::Remove:
                 {
-                    if (!IsLiveInState(candidate, operation.primitive))
+                    if (objectId == 0)
                     {
-                        return {GPUSceneCommitStatus::StalePrimitiveRef, m_state.mirror.version};
+                        return {GPUSceneCommitStatus::InvalidObjectId, m_state.mirror.version};
                     }
-
-                    const uint64 objectId =
-                        candidate.primitiveSlots[operation.primitive.slot].objectId;
                     if (!affectedObjectIds.insert(objectId).second)
                     {
                         return {GPUSceneCommitStatus::DuplicateObjectId, m_state.mirror.version};
                     }
-                    result = RemoveObject(candidate, operation.primitive);
+                    if (m_state.objectToPrimitive.contains(objectId))
+                    {
+                        return {GPUSceneCommitStatus::ObjectAlreadyExists, m_state.mirror.version};
+                    }
+                    if (operation.object.draws.size() >
+                        std::numeric_limits<uint32>::max())
+                    {
+                        return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
+                    }
+                    const size_t drawCount = operation.object.draws.size();
+                    if (!addCount(outPrepared.delta.primitives, 1) ||
+                        !addCount(outPrepared.delta.bounds, 1) ||
+                        !addCount(outPrepared.delta.transforms, 1) ||
+                        !addCount(outPrepared.delta.materials, drawCount) ||
+                        !addCount(outPrepared.delta.geometries, drawCount) ||
+                        !addCount(outPrepared.delta.draws, drawCount) ||
+                        !addCount(outPrepared.delta.objects, 1))
+                    {
+                        return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
+                    }
+                    PreparedOperation prepared;
+                    prepared.operation = &operation;
+                    prepared.objectId = objectId;
+                    prepared.primitive = {static_cast<uint32>(m_state.primitiveSlots.size() +
+                                                               outPrepared.delta.primitives - 1),
+                                          m_initialSlotGeneration};
+                    prepared.bounds = {static_cast<uint32>(m_state.boundsSlots.size() +
+                                                            outPrepared.delta.bounds - 1),
+                                       m_initialSlotGeneration};
+                    prepared.transform = {static_cast<uint32>(m_state.transformSlots.size() +
+                                                               outPrepared.delta.transforms - 1),
+                                          m_initialSlotGeneration};
+                    CapacityDelta prior = outPrepared.delta;
+                    prior.materials -= drawCount;
+                    prior.geometries -= drawCount;
+                    prior.draws -= drawCount;
+                    prepared.draws = MakeFutureDrawReferences(
+                        m_state, prior, static_cast<uint32>(drawCount));
+                    outPrepared.operations.push_back(prepared);
+                    break;
+                }
+
+                case GPUSceneTransaction::OperationType::Update:
+                {
+                    if (objectId == 0)
+                    {
+                        return {GPUSceneCommitStatus::InvalidObjectId, m_state.mirror.version};
+                    }
+                    if (!affectedObjectIds.insert(objectId).second)
+                    {
+                        return {GPUSceneCommitStatus::DuplicateObjectId, m_state.mirror.version};
+                    }
+                    if (!IsLiveInState(m_state, operation.primitive))
+                    {
+                        return {GPUSceneCommitStatus::StalePrimitiveRef, m_state.mirror.version};
+                    }
+                    const auto found = m_state.objectToPrimitive.find(objectId);
+                    if (found == m_state.objectToPrimitive.end())
+                    {
+                        return {GPUSceneCommitStatus::ObjectNotFound, m_state.mirror.version};
+                    }
+                    if (found->second != operation.primitive)
+                    {
+                        return {GPUSceneCommitStatus::StalePrimitiveRef, m_state.mirror.version};
+                    }
+                    const std::optional<DrawReferences> previous =
+                        GetDrawReferences(m_state, operation.primitive);
+                    if (!previous)
+                    {
+                        return {GPUSceneCommitStatus::InvalidDrawRange, m_state.mirror.version};
+                    }
+                    if (operation.object.draws.size() >
+                        std::numeric_limits<uint32>::max())
+                    {
+                        return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
+                    }
+                    const size_t drawCount = operation.object.draws.size();
+                    if (drawCount != previous->count &&
+                        (!addCount(outPrepared.delta.materials, drawCount) ||
+                         !addCount(outPrepared.delta.geometries, drawCount) ||
+                         !addCount(outPrepared.delta.draws, drawCount)))
+                    {
+                        return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
+                    }
+                    PreparedOperation prepared;
+                    prepared.operation = &operation;
+                    prepared.objectId = objectId;
+                    prepared.primitive = operation.primitive;
+                    const GPUScenePrimitiveRow& primitiveRow =
+                        m_state.mirror.primitives[operation.primitive.slot];
+                    prepared.bounds = primitiveRow.bounds;
+                    prepared.transform = primitiveRow.transform;
+                    prepared.previousDraws = *previous;
+                    prepared.replaceDraws = drawCount != previous->count;
+                    if (prepared.replaceDraws)
+                    {
+                        CapacityDelta prior = outPrepared.delta;
+                        prior.materials -= drawCount;
+                        prior.geometries -= drawCount;
+                        prior.draws -= drawCount;
+                        prepared.draws = MakeFutureDrawReferences(
+                            m_state, prior, static_cast<uint32>(drawCount));
+                    }
+                    else
+                    {
+                        prepared.draws = *previous;
+                    }
+                    outPrepared.operations.push_back(prepared);
+                    break;
+                }
+
+                case GPUSceneTransaction::OperationType::Remove:
+                {
+                    if (!IsLiveInState(m_state, operation.primitive))
+                    {
+                        return {GPUSceneCommitStatus::StalePrimitiveRef, m_state.mirror.version};
+                    }
+                    objectId = m_state.primitiveSlots[operation.primitive.slot].objectId;
+                    if (!affectedObjectIds.insert(objectId).second)
+                    {
+                        return {GPUSceneCommitStatus::DuplicateObjectId, m_state.mirror.version};
+                    }
+                    const std::optional<DrawReferences> previous =
+                        GetDrawReferences(m_state, operation.primitive);
+                    if (!previous)
+                    {
+                        return {GPUSceneCommitStatus::InvalidDrawRange, m_state.mirror.version};
+                    }
+                    PreparedOperation prepared;
+                    prepared.operation = &operation;
+                    prepared.objectId = objectId;
+                    prepared.primitive = operation.primitive;
+                    const GPUScenePrimitiveRow& primitiveRow =
+                        m_state.mirror.primitives[operation.primitive.slot];
+                    prepared.bounds = primitiveRow.bounds;
+                    prepared.transform = primitiveRow.transform;
+                    prepared.previousDraws = *previous;
+                    outPrepared.operations.push_back(prepared);
                     break;
                 }
             }
-
-            if (!result.Succeeded())
-            {
-                result.committedVersion = m_state.mirror.version;
-                return result;
-            }
         }
 
-        ++candidate.mirror.version;
-        using std::swap;
-        swap(m_state, candidate);
+        const auto canAppend = [this](size_t currentSize, size_t count)
+        {
+            return CanAppendSlots(currentSize, count, m_maxSlotCapacity);
+        };
+        if (!canAppend(m_state.primitiveSlots.size(), outPrepared.delta.primitives) ||
+            !canAppend(m_state.boundsSlots.size(), outPrepared.delta.bounds) ||
+            !canAppend(m_state.transformSlots.size(), outPrepared.delta.transforms) ||
+            !canAppend(m_state.materialSlots.size(), outPrepared.delta.materials) ||
+            !canAppend(m_state.geometrySlots.size(), outPrepared.delta.geometries) ||
+            !canAppend(m_state.drawSlots.size(), outPrepared.delta.draws))
+        {
+            return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
+        }
+        return {GPUSceneCommitStatus::Success, m_state.mirror.version};
+    }
+
+    GPUSceneCommitResult GPUSceneDatabase::ReserveAndPrepareNodes(
+        PreparedTransaction& prepared)
+    {
+        const auto reserveRows = [](auto& rows, auto& slots, size_t count)
+        {
+            rows.reserve(rows.size() + count);
+            slots.reserve(slots.size() + count);
+        };
+        FailPrepareAllocationCheckpoint(); reserveRows(m_state.mirror.primitives, m_state.primitiveSlots, prepared.delta.primitives);
+        FailPrepareAllocationCheckpoint(); reserveRows(m_state.mirror.bounds, m_state.boundsSlots, prepared.delta.bounds);
+        FailPrepareAllocationCheckpoint(); reserveRows(m_state.mirror.transforms, m_state.transformSlots, prepared.delta.transforms);
+        FailPrepareAllocationCheckpoint(); reserveRows(m_state.mirror.materials, m_state.materialSlots, prepared.delta.materials);
+        FailPrepareAllocationCheckpoint(); reserveRows(m_state.mirror.geometries, m_state.geometrySlots, prepared.delta.geometries);
+        FailPrepareAllocationCheckpoint(); reserveRows(m_state.mirror.draws, m_state.drawSlots, prepared.delta.draws);
+        FailPrepareAllocationCheckpoint();
+        m_state.objectToPrimitive.reserve(
+            m_state.objectToPrimitive.size() + prepared.delta.objects);
+        FailPrepareAllocationCheckpoint();
+        prepared.addedPrimitives.reserve(prepared.delta.objects);
+        for (const PreparedOperation& operation : prepared.operations)
+        {
+            if (operation.operation->type != GPUSceneTransaction::OperationType::Add)
+            {
+                continue;
+            }
+            FailPrepareAllocationCheckpoint();
+            prepared.addedPrimitives.emplace(
+                operation.operation->object.objectId, operation.primitive);
+        }
         return {GPUSceneCommitStatus::Success, m_state.mirror.version};
     }
 
@@ -313,132 +551,55 @@ namespace RVX
         return IsLive(draw) ? &m_state.mirror.draws[draw.slot] : nullptr;
     }
 
-    GPUSceneCommitResult GPUSceneDatabase::AddObject(
-        State& state,
-        const GPUSceneObjectData& object) const
+    void GPUSceneDatabase::FinalizePrepared(PreparedTransaction& prepared) noexcept
     {
-        if (state.objectToPrimitive.contains(object.objectId))
+        for (PreparedOperation& preparedOperation : prepared.operations)
         {
-            return {GPUSceneCommitStatus::ObjectAlreadyExists, state.mirror.version};
-        }
-
-        const size_t drawCount = object.draws.size();
-        if (drawCount > std::numeric_limits<uint32>::max() ||
-            !CanAppendSlots(state.primitiveSlots.size(), 1, m_maxSlotCapacity) ||
-            !CanAppendSlots(state.boundsSlots.size(), 1, m_maxSlotCapacity) ||
-            !CanAppendSlots(state.transformSlots.size(), 1, m_maxSlotCapacity) ||
-            !CanAppendSlots(state.materialSlots.size(), drawCount, m_maxSlotCapacity) ||
-            !CanAppendSlots(state.geometrySlots.size(), drawCount, m_maxSlotCapacity) ||
-            !CanAppendSlots(state.drawSlots.size(), drawCount, m_maxSlotCapacity))
-        {
-            return {GPUSceneCommitStatus::CapacityExhausted, state.mirror.version};
-        }
-
-        const uint32 primitiveSlot = AppendSlot(
-            state.mirror.primitives,
-            state.primitiveSlots,
-            object.objectId,
-            m_initialSlotGeneration);
-        const uint32 boundsSlot = AppendSlot(
-            state.mirror.bounds,
-            state.boundsSlots,
-            object.objectId,
-            m_initialSlotGeneration);
-        const uint32 transformSlot = AppendSlot(
-            state.mirror.transforms,
-            state.transformSlots,
-            object.objectId,
-            m_initialSlotGeneration);
-        const GPUScenePrimitiveRef primitive{primitiveSlot, m_initialSlotGeneration};
-        const GPUSceneBoundsRef bounds{boundsSlot, m_initialSlotGeneration};
-        const GPUSceneTransformRef transform{transformSlot, m_initialSlotGeneration};
-        const DrawReferences draws = AllocateDrawReferences(
-            state,
-            object.objectId,
-            static_cast<uint32>(drawCount));
-        WriteLiveObject(state, primitive, bounds, transform, draws, object);
-        state.objectToPrimitive.emplace(object.objectId, primitive);
-        return {GPUSceneCommitStatus::Success, state.mirror.version};
-    }
-
-    GPUSceneCommitResult GPUSceneDatabase::UpdateObject(
-        State& state,
-        GPUScenePrimitiveRef primitive,
-        const GPUSceneObjectData& object) const
-    {
-        if (!IsLiveInState(state, primitive))
-        {
-            return {GPUSceneCommitStatus::StalePrimitiveRef, state.mirror.version};
-        }
-
-        const auto found = state.objectToPrimitive.find(object.objectId);
-        if (found == state.objectToPrimitive.end())
-        {
-            return {GPUSceneCommitStatus::ObjectNotFound, state.mirror.version};
-        }
-        if (found->second != primitive)
-        {
-            return {GPUSceneCommitStatus::StalePrimitiveRef, state.mirror.version};
-        }
-
-        const GPUScenePrimitiveRow previous = state.mirror.primitives[primitive.slot];
-        const std::optional<DrawReferences> existingDraws =
-            GetDrawReferences(state, primitive);
-        if (!existingDraws)
-        {
-            return {GPUSceneCommitStatus::InvalidDrawRange, state.mirror.version};
-        }
-        DrawReferences draws = *existingDraws;
-        const size_t drawCount = object.draws.size();
-        if (drawCount > std::numeric_limits<uint32>::max())
-        {
-            return {GPUSceneCommitStatus::CapacityExhausted, state.mirror.version};
-        }
-
-        if (drawCount != draws.draws.size())
-        {
-            if (!CanAppendSlots(
-                    state.materialSlots.size(), drawCount, m_maxSlotCapacity) ||
-                !CanAppendSlots(
-                    state.geometrySlots.size(), drawCount, m_maxSlotCapacity) ||
-                !CanAppendSlots(
-                    state.drawSlots.size(), drawCount, m_maxSlotCapacity))
+            const GPUSceneTransaction::Operation& operation =
+                *preparedOperation.operation;
+            const GPUSceneObjectData& object = operation.object;
+            switch (operation.type)
             {
-                return {GPUSceneCommitStatus::CapacityExhausted, state.mirror.version};
+                case GPUSceneTransaction::OperationType::Add:
+                    AppendSlot(m_state.mirror.primitives, m_state.primitiveSlots,
+                               object.objectId, m_initialSlotGeneration);
+                    AppendSlot(m_state.mirror.bounds, m_state.boundsSlots,
+                               object.objectId, m_initialSlotGeneration);
+                    AppendSlot(m_state.mirror.transforms, m_state.transformSlots,
+                               object.objectId, m_initialSlotGeneration);
+                    AppendDrawReferences(m_state, object.objectId,
+                                         preparedOperation.draws);
+                    WriteLiveObject(m_state, preparedOperation.primitive,
+                                    preparedOperation.bounds,
+                                    preparedOperation.transform,
+                                    preparedOperation.draws, object);
+                    m_state.objectToPrimitive.insert(
+                        prepared.addedPrimitives.extract(object.objectId));
+                    break;
+                case GPUSceneTransaction::OperationType::Update:
+                    if (preparedOperation.replaceDraws)
+                    {
+                        RetireDrawReferences(m_state, preparedOperation.previousDraws);
+                        AppendDrawReferences(m_state, object.objectId,
+                                             preparedOperation.draws);
+                    }
+                    WriteLiveObject(m_state, preparedOperation.primitive,
+                                    preparedOperation.bounds,
+                                    preparedOperation.transform,
+                                    preparedOperation.draws, object);
+                    break;
+                case GPUSceneTransaction::OperationType::Remove:
+                    m_state.objectToPrimitive.erase(preparedOperation.objectId);
+                    RetireDrawReferences(m_state, preparedOperation.previousDraws);
+                    RetireRow(m_state.mirror.bounds, m_state.boundsSlots,
+                              preparedOperation.bounds);
+                    RetireRow(m_state.mirror.transforms, m_state.transformSlots,
+                              preparedOperation.transform);
+                    RetireRow(m_state.mirror.primitives, m_state.primitiveSlots,
+                              preparedOperation.primitive);
+                    break;
             }
-
-            RetireDrawReferences(state, draws);
-            draws = AllocateDrawReferences(
-                state,
-                object.objectId,
-                static_cast<uint32>(drawCount));
         }
-
-        WriteLiveObject(state, primitive, previous.bounds, previous.transform, draws, object);
-        return {GPUSceneCommitStatus::Success, state.mirror.version};
-    }
-
-    GPUSceneCommitResult GPUSceneDatabase::RemoveObject(
-        State& state,
-        GPUScenePrimitiveRef primitive) const
-    {
-        if (!IsLiveInState(state, primitive))
-        {
-            return {GPUSceneCommitStatus::StalePrimitiveRef, state.mirror.version};
-        }
-
-        const GPUScenePrimitiveRow previous = state.mirror.primitives[primitive.slot];
-        const std::optional<DrawReferences> draws = GetDrawReferences(state, primitive);
-        if (!draws)
-        {
-            return {GPUSceneCommitStatus::InvalidDrawRange, state.mirror.version};
-        }
-        state.objectToPrimitive.erase(state.primitiveSlots[primitive.slot].objectId);
-        RetireDrawReferences(state, *draws);
-        RetireRow(state.mirror.bounds, state.boundsSlots, previous.bounds);
-        RetireRow(state.mirror.transforms, state.transformSlots, previous.transform);
-        RetireRow(state.mirror.primitives, state.primitiveSlots, primitive);
-        return {GPUSceneCommitStatus::Success, state.mirror.version};
     }
 
     bool GPUSceneDatabase::IsLiveInState(
@@ -470,9 +631,6 @@ namespace RVX
             return std::nullopt;
         }
 
-        result.draws.reserve(primitiveRow.drawCount);
-        result.materials.reserve(primitiveRow.drawCount);
-        result.geometries.reserve(primitiveRow.drawCount);
         const uint32 drawBlockGeneration = primitiveRow.firstDraw.generation;
         for (uint32 offset = 0; offset < primitiveRow.drawCount; ++offset)
         {
@@ -500,46 +658,31 @@ namespace RVX
                 return std::nullopt;
             }
 
-            result.draws.push_back(drawRef);
-            result.materials.push_back(draw.material);
-            result.geometries.push_back(draw.geometry);
         }
+        result.firstDraw = primitiveRow.firstDraw;
+        const GPUSceneDrawMetadataRow& first =
+            state.mirror.draws[primitiveRow.firstDraw.slot];
+        result.firstMaterial = first.material;
+        result.firstGeometry = first.geometry;
+        result.count = primitiveRow.drawCount;
         return result;
     }
 
-    GPUSceneDatabase::DrawReferences GPUSceneDatabase::AllocateDrawReferences(
-        State& state,
-        uint64 objectId,
-        uint32 drawCount) const
+    GPUSceneDatabase::DrawReferences GPUSceneDatabase::MakeFutureDrawReferences(
+        const State& state,
+        const CapacityDelta& priorDelta,
+        uint32 drawCount) const noexcept
     {
         DrawReferences result;
-        // Task 11A never reuses retired draw blocks. Completion-aware reuse must
-        // advance and assign this one generation to the entire future block.
-        const uint32 drawBlockGeneration = m_initialSlotGeneration;
-        result.draws.reserve(drawCount);
-        result.materials.reserve(drawCount);
-        result.geometries.reserve(drawCount);
-        for (uint32 index = 0; index < drawCount; ++index)
-        {
-            const uint32 materialSlot = AppendSlot(
-                state.mirror.materials,
-                state.materialSlots,
-                objectId,
-                m_initialSlotGeneration);
-            const uint32 geometrySlot = AppendSlot(
-                state.mirror.geometries,
-                state.geometrySlots,
-                objectId,
-                m_initialSlotGeneration);
-            const uint32 drawSlot = AppendSlot(
-                state.mirror.draws,
-                state.drawSlots,
-                objectId,
-                drawBlockGeneration);
-            result.materials.push_back({materialSlot, m_initialSlotGeneration});
-            result.geometries.push_back({geometrySlot, m_initialSlotGeneration});
-            result.draws.push_back({drawSlot, drawBlockGeneration});
-        }
+        if (drawCount == 0)
+            return result;
+        result.firstMaterial = {static_cast<uint32>(
+            state.materialSlots.size() + priorDelta.materials), m_initialSlotGeneration};
+        result.firstGeometry = {static_cast<uint32>(
+            state.geometrySlots.size() + priorDelta.geometries), m_initialSlotGeneration};
+        result.firstDraw = {static_cast<uint32>(
+            state.drawSlots.size() + priorDelta.draws), m_initialSlotGeneration};
+        result.count = drawCount;
         return result;
     }
 
@@ -549,14 +692,14 @@ namespace RVX
         GPUSceneBoundsRef bounds,
         GPUSceneTransformRef transform,
         const DrawReferences& draws,
-        const GPUSceneObjectData& object) const
+        const GPUSceneObjectData& object) const noexcept
     {
         GPUScenePrimitiveRow primitiveRow;
         WriteLiveHeader(primitiveRow, object.objectId, primitive.generation);
         primitiveRow.bounds = bounds;
         primitiveRow.transform = transform;
-        primitiveRow.firstDraw = draws.draws.empty() ? GPUSceneDrawRef{} : draws.draws.front();
-        primitiveRow.drawCount = static_cast<uint32>(draws.draws.size());
+        primitiveRow.firstDraw = draws.firstDraw;
+        primitiveRow.drawCount = draws.count;
         primitiveRow.primitiveFlags = object.primitiveFlags;
         primitiveRow.layerMask = object.layerMask;
         primitiveRow.sortKey = PackGPUSceneUint64(object.sortKey);
@@ -574,28 +717,56 @@ namespace RVX
             GPUSceneMaterialRow material = object.draws[index].material;
             GPUSceneGeometryRow geometry = object.draws[index].geometry;
             GPUSceneDrawMetadataRow draw = object.draws[index].draw;
-            WriteLiveHeader(material, object.objectId, draws.materials[index].generation);
-            WriteLiveHeader(geometry, object.objectId, draws.geometries[index].generation);
-            WriteLiveHeader(draw, object.objectId, draws.draws[index].generation);
+            const GPUSceneMaterialRef materialRef{
+                draws.firstMaterial.slot + index, draws.firstMaterial.generation};
+            const GPUSceneGeometryRef geometryRef{
+                draws.firstGeometry.slot + index, draws.firstGeometry.generation};
+            const GPUSceneDrawRef drawRef{
+                draws.firstDraw.slot + index, draws.firstDraw.generation};
+            WriteLiveHeader(material, object.objectId, materialRef.generation);
+            WriteLiveHeader(geometry, object.objectId, geometryRef.generation);
+            WriteLiveHeader(draw, object.objectId, drawRef.generation);
             draw.primitive = primitive;
-            draw.material = draws.materials[index];
-            draw.geometry = draws.geometries[index];
+            draw.material = materialRef;
+            draw.geometry = geometryRef;
             draw.sortKey = PackGPUSceneUint64(object.sortKey);
-            state.mirror.materials[draws.materials[index].slot] = material;
-            state.mirror.geometries[draws.geometries[index].slot] = geometry;
-            state.mirror.draws[draws.draws[index].slot] = draw;
+            state.mirror.materials[materialRef.slot] = material;
+            state.mirror.geometries[geometryRef.slot] = geometry;
+            state.mirror.draws[drawRef.slot] = draw;
+        }
+    }
+
+    void GPUSceneDatabase::AppendDrawReferences(
+        State& state,
+        uint64 objectId,
+        const DrawReferences& draws) const noexcept
+    {
+        for (uint32 index = 0; index < draws.count; ++index)
+        {
+            AppendSlot(state.mirror.materials, state.materialSlots, objectId,
+                       draws.firstMaterial.generation);
+            AppendSlot(state.mirror.geometries, state.geometrySlots, objectId,
+                       draws.firstGeometry.generation);
+            AppendSlot(state.mirror.draws, state.drawSlots, objectId,
+                       draws.firstDraw.generation);
         }
     }
 
     void GPUSceneDatabase::RetireDrawReferences(
         State& state,
-        const DrawReferences& draws) const
+        const DrawReferences& draws) const noexcept
     {
-        for (uint32 index = 0; index < draws.draws.size(); ++index)
+        for (uint32 index = 0; index < draws.count; ++index)
         {
-            RetireRow(state.mirror.materials, state.materialSlots, draws.materials[index]);
-            RetireRow(state.mirror.geometries, state.geometrySlots, draws.geometries[index]);
-            RetireRow(state.mirror.draws, state.drawSlots, draws.draws[index]);
+            RetireRow(state.mirror.materials, state.materialSlots,
+                      GPUSceneMaterialRef{draws.firstMaterial.slot + index,
+                                          draws.firstMaterial.generation});
+            RetireRow(state.mirror.geometries, state.geometrySlots,
+                      GPUSceneGeometryRef{draws.firstGeometry.slot + index,
+                                          draws.firstGeometry.generation});
+            RetireRow(state.mirror.draws, state.drawSlots,
+                      GPUSceneDrawRef{draws.firstDraw.slot + index,
+                                      draws.firstDraw.generation});
         }
     }
 } // namespace RVX

@@ -7,8 +7,8 @@
  * This header is intentionally limited to fixed-width scalar values and typed
  * scene-table references. A reference slot indexes only its corresponding CPU
  * scene table; it never represents an object id, descriptor, GPU virtual
- * address, or backend object. Task 11A defines CPU mirror layout only: it does
- * not establish GPU residency or upload any row.
+ * address, or backend object. Task 11B defines a persistent CPU shadow only:
+ * it does not establish GPU residency, upload any row, or change rendering.
  */
 
 #include "Core/Types.h"
@@ -44,6 +44,38 @@ namespace RVX
         Invalid = 1U << 1U,
     };
 
+    /** @brief Backend-neutral material metadata flags for one draw-local row. */
+    enum class GPUSceneMaterialFlags : uint32
+    {
+        None = 0,
+        DefaultMaterial = 1U << 0U,
+        MissingMaterial = 1U << 1U,
+        MetadataInvalid = 1U << 2U,
+        Masked = 1U << 3U,
+        Transparent = 1U << 4U,
+        DoubleSided = 1U << 5U,
+        HasTextureBindings = 1U << 6U,
+    };
+
+    /** @brief Backend-neutral geometry metadata flags for one draw-local row. */
+    enum class GPUSceneGeometryFlags : uint32
+    {
+        None = 0,
+        IndexUInt16 = 1U << 0U,
+        IndexUInt32 = 1U << 1U,
+        Skinned = 1U << 2U,
+    };
+
+    /** @brief Backend-neutral pass eligibility bits for a draw-local row. */
+    enum class GPUScenePassMask : uint32
+    {
+        None = 0,
+        Depth = 1U << 0U,
+        Opaque = 1U << 1U,
+        Shadow = 1U << 2U,
+        Transparent = 1U << 3U,
+    };
+
     /** @brief True when every bit in @p flags is present in @p value. */
     constexpr bool HasGPUSceneTransformFlag(uint32 value, GPUSceneTransformFlags flags)
     {
@@ -58,6 +90,31 @@ namespace RVX
 
     /** @brief True when every bit in @p flags is present in @p value. */
     constexpr bool HasGPUSceneRowFlag(uint32 value, GPUSceneRowFlags flags)
+    {
+        return (value & static_cast<uint32>(flags)) == static_cast<uint32>(flags);
+    }
+
+    /** @brief True when every bit in @p flags is present in @p value. */
+    constexpr bool HasGPUSceneMaterialFlag(uint32 value, GPUSceneMaterialFlags flags)
+    {
+        return (value & static_cast<uint32>(flags)) == static_cast<uint32>(flags);
+    }
+
+    /** @brief True when every bit in @p flags is present in @p value. */
+    constexpr bool HasGPUSceneGeometryFlag(uint32 value, GPUSceneGeometryFlags flags)
+    {
+        return (value & static_cast<uint32>(flags)) == static_cast<uint32>(flags);
+    }
+
+    /**
+     * @brief True when every bit in @p flags is present in @p value.
+     *
+     * Material mode selects only material flags and materialVariant. A masked
+     * draw is Depth|Opaque (plus Shadow when it casts); transparent is only
+     * Transparent (plus Shadow when it casts). There is intentionally no
+     * Masked pass bit.
+     */
+    constexpr bool HasGPUScenePassMask(uint32 value, GPUScenePassMask flags)
     {
         return (value & static_cast<uint32>(flags)) == static_cast<uint32>(flags);
     }
@@ -230,6 +287,8 @@ namespace RVX
         uint32 generation = 0;
         uint32 flags = static_cast<uint32>(GPUSceneRowFlags::None);
         uint32 padding[3] = {};
+
+        constexpr bool operator==(const GPUSceneRowHeader&) const = default;
     };
 
     /**
@@ -253,6 +312,8 @@ namespace RVX
         uint32 layerMask = 0;
         uint32 padding0 = 0;
         GPUSceneUint64 sortKey;
+
+        constexpr bool operator==(const GPUScenePrimitiveRow&) const = default;
     };
 
     /** @brief Bounds as three float4-compatible vectors: minimum, maximum, sphere. */
@@ -264,6 +325,8 @@ namespace RVX
         GPUSceneFloat4 sphere;
         uint32 boundsFlags = 0;
         uint32 padding[3] = {};
+
+        constexpr bool operator==(const GPUSceneBoundsRow&) const = default;
     };
 
     /**
@@ -281,6 +344,8 @@ namespace RVX
         GPUSceneAffineMatrix3x4 normalFromLocal;
         uint32 transformFlags = 0;
         uint32 padding[3] = {};
+
+        constexpr bool operator==(const GPUSceneTransformRow&) const = default;
     };
 
     /** @brief Value-only material data and exact resource-registry identity. */
@@ -298,6 +363,8 @@ namespace RVX
         float32 roughness = 0.0F;
         float32 emissiveIntensity = 0.0F;
         float32 opacity = 0.0F;
+
+        constexpr bool operator==(const GPUSceneMaterialRow&) const = default;
     };
 
     /** @brief Geometry metadata and exact mesh-resource/submesh/index identity. */
@@ -314,6 +381,8 @@ namespace RVX
         uint32 topology = 0;
         uint32 geometryFlags = 0;
         uint32 padding[2] = {};
+
+        constexpr bool operator==(const GPUSceneGeometryRow&) const = default;
     };
 
     /** @brief Draw metadata and typed geometry/material ownership for one batch. */
@@ -334,6 +403,8 @@ namespace RVX
         GPUSceneUint64 pipelineKey;
         GPUSceneUint64 sortKey;
         uint32 padding[2] = {};
+
+        constexpr bool operator==(const GPUSceneDrawMetadataRow&) const = default;
     };
 
     static_assert(std::is_standard_layout_v<GPUScenePrimitiveRef>);
@@ -400,6 +471,16 @@ namespace RVX
     static_assert(static_cast<uint32>(GPUSceneBoundsFlags::None) == 0U);
     static_assert(static_cast<uint32>(GPUSceneBoundsFlags::ForceVisible) == 1U);
     static_assert(static_cast<uint32>(GPUSceneBoundsFlags::Invalid) == 2U);
+    static_assert(static_cast<uint32>(GPUSceneMaterialFlags::DefaultMaterial) == 1U);
+    static_assert(static_cast<uint32>(GPUSceneMaterialFlags::MissingMaterial) == 2U);
+    static_assert(static_cast<uint32>(GPUSceneMaterialFlags::MetadataInvalid) == 4U);
+    static_assert(static_cast<uint32>(GPUSceneGeometryFlags::IndexUInt16) == 1U);
+    static_assert(static_cast<uint32>(GPUSceneGeometryFlags::IndexUInt32) == 2U);
+    static_assert(static_cast<uint32>(GPUSceneGeometryFlags::Skinned) == 4U);
+    static_assert(static_cast<uint32>(GPUScenePassMask::Depth) == 1U);
+    static_assert(static_cast<uint32>(GPUScenePassMask::Opaque) == 2U);
+    static_assert(static_cast<uint32>(GPUScenePassMask::Shadow) == 4U);
+    static_assert(static_cast<uint32>(GPUScenePassMask::Transparent) == 8U);
 
     static_assert(alignof(GPUSceneUint64) == 8);
     static_assert(alignof(GPUScenePrimitiveRef) == 8);

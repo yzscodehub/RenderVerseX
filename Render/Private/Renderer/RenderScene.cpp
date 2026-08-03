@@ -143,6 +143,21 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
         return result;
     }
 
+    // Object identity is the retained-scene and GPU-scene-shadow key.  Reject
+    // a duplicate before constructing candidates or touching the publication
+    // cache so the prior accepted scene remains wholly intact.
+    std::unordered_set<uint64> packetObjectIds;
+    packetObjectIds.reserve(packet.GetPrimitives().size());
+    for (const RenderPrimitiveSnapshot& primitive : packet.GetPrimitives())
+    {
+        if (primitive.objectId != 0 &&
+            !packetObjectIds.insert(primitive.objectId).second)
+        {
+            result.code = RenderFrameApplyCode::InvalidPacket;
+            return result;
+        }
+    }
+
     std::vector<RenderObject> candidateObjects;
     std::vector<RenderLight> candidateLights;
     std::vector<RenderResourceHandle> candidateReferences;

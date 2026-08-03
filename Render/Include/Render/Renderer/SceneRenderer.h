@@ -7,6 +7,7 @@
 
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/GPUScene/GPUScenePublication.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/TransientResourcePool.h"
 #include "Render/Graph/ResourceViewCache.h"
@@ -68,6 +69,7 @@ namespace RVX
     class RenderRetirementQueue;
     class RenderResourceRegistry;
     class RenderSubmissionResourceBatch;
+    class GPUSceneUpdate;
     class RayTracedReflectionCompositePass;
     class RayTracedReflectionDenoisePass;
     class RayTracedReflectionPass;
@@ -892,6 +894,13 @@ namespace RVX
         /** @brief Update the surface key used by temporal compatibility checks. */
         void SetSurfaceCompatibilityKey(uint64 key) noexcept;
 
+        /** @brief Read-only diagnostics for the non-executable GPU-scene shadow. */
+        [[nodiscard]] const GPUScenePublicationStats&
+            GetGPUScenePublicationStats() const noexcept;
+
+        /** @brief Explicitly discard the non-executable GPU-scene shadow. */
+        void ClearGPUSceneShadow();
+
         /**
          * @brief Reset temporal histories on the next rendered view.
          *
@@ -1277,6 +1286,8 @@ namespace RVX
         void SetShaderDirectory(const std::string& dir) { m_shaderDir = dir; }
 
     private:
+        friend class SceneRendererTestAccess;
+
         void RetireOwnerSnapshots(const GPUCompletionToken& completion);
         void BuildRenderGraph();
         void PrepareRayTracingScene();
@@ -1365,6 +1376,7 @@ namespace RVX
         bool m_opaqueGPUCullingFramePrepared = false;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
+        std::unique_ptr<GPUSceneUpdate> m_gpuSceneUpdate;
 
         ViewData m_viewData;
         PrimaryDirectionalLightRecordInput m_primaryDirectionalLight;

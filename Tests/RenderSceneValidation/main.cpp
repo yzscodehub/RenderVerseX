@@ -1,5 +1,7 @@
+#include "GPUScene/GPUSceneUpdate.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderDrawPacket.h"
+#include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/RenderScene.h"
 #include "RenderContracts/RenderFramePacket.h"
 #include "RenderExtraction/RenderFramePacketBuilder.h"
@@ -13,6 +15,23 @@
 #include <memory>
 #include <utility>
 #include <vector>
+
+namespace RVX
+{
+    class SceneRendererTestAccess final
+    {
+    public:
+        static void SetShadowPublishAllocationFailure(
+            SceneRenderer& renderer,
+            bool enabled) noexcept
+        {
+            if (renderer.m_gpuSceneUpdate)
+            {
+                renderer.m_gpuSceneUpdate->SetThrowOnPublishForTesting(enabled);
+            }
+        }
+    };
+} // namespace RVX
 
 using namespace RVX;
 
@@ -257,6 +276,131 @@ TEST(RenderSceneValidation, AppliesTransactionallyAndOwnsPacketValues)
     EXPECT_EQ(scene.GetFeatures().particles.items[0].systemName,
               "packet-owned-feature");
     EXPECT_EQ(scene.GetAcceptedHeader().sequence, 10U);
+}
+
+TEST(RenderSceneValidation, ShadowPublicationFailureCannotRejectAnAppliedFrame)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {700}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    SceneRenderer renderer;
+
+    std::unique_ptr<const RenderFramePacket> first = MakePacket(
+        101, 1, 1, false, {MakePrimitive(mesh)});
+    ASSERT_NE(first, nullptr);
+    ASSERT_TRUE(renderer.ApplyFramePacket(*first, resources.registry).IsApplied());
+    const GPUScenePublicationStats before =
+        renderer.GetGPUScenePublicationStats();
+    ASSERT_EQ(before.failureReason, GPUScenePublicationFailureReason::None);
+    ASSERT_EQ(before.publishedObjectCount, 1U);
+
+    SceneRendererTestAccess::SetShadowPublishAllocationFailure(renderer, true);
+    std::unique_ptr<const RenderFramePacket> second = MakePacket(
+        102, 2, 1, false, {MakePrimitive(mesh, {}, {3.0F, 0.0F, 0.0F})});
+    ASSERT_NE(second, nullptr);
+    const RenderFrameApplyResult applied =
+        renderer.ApplyFramePacket(*second, resources.registry);
+
+    EXPECT_TRUE(applied.IsApplied());
+    EXPECT_EQ(renderer.GetRenderScene().GetAcceptedHeader().sequence, 102U);
+    const GPUScenePublicationStats& failed =
+        renderer.GetGPUScenePublicationStats();
+    EXPECT_EQ(failed.failureReason, GPUScenePublicationFailureReason::AllocationFailed);
+    EXPECT_EQ(failed.committedVersion, before.committedVersion);
+    EXPECT_EQ(failed.committedSourceSequence, before.committedSourceSequence);
+    EXPECT_EQ(failed.publishedObjectCount, before.publishedObjectCount);
+    EXPECT_EQ(failed.publishedDrawCount, before.publishedDrawCount);
+    EXPECT_FALSE(failed.executionEligible);
+}
+
+TEST(RenderSceneValidation, ShadowPreviousTransformFollowsRenderedHistoryAndDiscontinuities)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {701}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    RenderScene scene;
+    GPUSceneUpdate shadow;
+
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      1,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {1.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    const GPUScenePublicationStats firstPublication =
+        shadow.Publish(scene, resources.registry);
+    ASSERT_EQ(firstPublication.failureReason,
+              GPUScenePublicationFailureReason::None);
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      2,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {1.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    const GPUScenePublicationStats noOpPublication =
+        shadow.Publish(scene, resources.registry);
+    EXPECT_EQ(noOpPublication.committedVersion,
+              firstPublication.committedVersion);
+    EXPECT_EQ(noOpPublication.committedSourceSequence, 2U);
+    EXPECT_EQ(noOpPublication.noOpCount, 1U);
+
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      3,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {2.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    ASSERT_EQ(shadow.Publish(scene, resources.registry).failureReason,
+              GPUScenePublicationFailureReason::None);
+    const GPUSceneTransformRow& acceptedButNotRendered =
+        shadow.GetCommittedMirrorForTesting().transforms[1];
+    EXPECT_FALSE(HasGPUSceneTransformFlag(
+        acceptedButNotRendered.transformFlags,
+        GPUSceneTransformFlags::PreviousWorldFromLocalValid));
+
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      4,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {3.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    ASSERT_EQ(shadow.Publish(scene, resources.registry).failureReason,
+              GPUScenePublicationFailureReason::None);
+    const GPUSceneTransformRow& renderedHistory =
+        shadow.GetCommittedMirrorForTesting().transforms[1];
+    EXPECT_TRUE(HasGPUSceneTransformFlag(
+        renderedHistory.transformFlags,
+        GPUSceneTransformFlags::PreviousWorldFromLocalValid));
+    EXPECT_FLOAT_EQ(renderedHistory.previousWorldFromLocal.rows[0].w, 2.0F);
+
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      5,
+                      1,
+                      1,
+                      true,
+                      MakePrimitive(mesh, {}, {4.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    ASSERT_EQ(shadow.Publish(scene, resources.registry).failureReason,
+              GPUScenePublicationFailureReason::None);
+    const GPUSceneTransformRow& discontinuity =
+        shadow.GetCommittedMirrorForTesting().transforms[1];
+    EXPECT_FALSE(HasGPUSceneTransformFlag(
+        discontinuity.transformFlags,
+        GPUSceneTransformFlags::PreviousWorldFromLocalValid));
 }
 
 TEST(RenderSceneValidation,
@@ -768,4 +912,48 @@ TEST(RenderSceneValidation, StampsExactResourceClosureTransactionally)
     EXPECT_FALSE(resources.registry.MergeLastUseClosure(staleRoots, later));
     EXPECT_EQ(resources.registry.GetLastUse(material).points[0].value, 17U);
     EXPECT_EQ(resources.registry.GetLastUse(texture).points[0].value, 17U);
+}
+
+TEST(RenderSceneValidation, RejectsDuplicateNonzeroObjectIdsWithoutCacheOrSceneMutation)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {30}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      1,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {1.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    const RenderDrawPacketCacheStats beforeCache =
+        scene.GetDrawPacketCacheStats();
+    ASSERT_EQ(scene.GetAcceptedHeader().sequence, 1U);
+    ASSERT_EQ(scene.GetObjectCount(), 1U);
+
+    RenderPrimitiveSnapshot first = MakePrimitive(
+        mesh, {}, {2.0F, 0.0F, 0.0F});
+    RenderPrimitiveSnapshot duplicate = MakePrimitive(
+        mesh, {}, {3.0F, 0.0F, 0.0F});
+    first.objectId = 99;
+    duplicate.objectId = 99;
+    std::unique_ptr<const RenderFramePacket> packet = MakePacket(
+        2, 1, 1, false, {std::move(first), std::move(duplicate)});
+    ASSERT_NE(packet, nullptr);
+
+    EXPECT_EQ(scene.ApplyFramePacket(*packet, resources.registry).code,
+              RenderFrameApplyCode::InvalidPacket);
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 1U);
+    EXPECT_EQ(scene.GetObjectCount(), 1U);
+    EXPECT_EQ(Vec3(scene.GetObject(0).worldMatrix[3]),
+              (Vec3{1.0F, 0.0F, 0.0F}));
+    const RenderDrawPacketCacheStats afterCache =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterCache.entryCount, beforeCache.entryCount);
+    EXPECT_EQ(afterCache.resolveCount, beforeCache.resolveCount);
+    EXPECT_EQ(afterCache.entryCreationCount, beforeCache.entryCreationCount);
 }

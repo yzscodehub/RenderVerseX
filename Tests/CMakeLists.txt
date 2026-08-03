@@ -377,7 +377,7 @@ rvx_add_gtest(
 rvx_add_gtest(
     NAME GPUSceneValidation
     SOURCES GPUSceneValidation/main.cpp
-    LIBS RVX::Render
+    LIBS RVX::Render RVX_RenderRuntimeCore
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Render/Private
@@ -889,6 +889,7 @@ rvx_add_gtest(
         RVX::Resource
         RVX::RenderExtraction
         RVX::Scene
+        RVX::Render
         RVX::Animation
         RVX::RHI
         RVX_RenderRuntimeCore

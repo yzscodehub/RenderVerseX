@@ -46031,3 +46031,106 @@ below.
   generation advancement, persistent buffers, dirty journals, and retirement.
 
 ---
+
+### R-SP347 Render-policy Task 11B accepted-scene incremental shadow publication
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11B stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP346 (GPU Scene schema and transactional CPU mirror).
+- Task 10 submission contracts and Direct/Tier 1 behavior remain frozen. This
+  slice is a non-executable CPU shadow and owns no RHI or backend object.
+
+**Approved scope:**
+
+- Replace whole-state database copying with a prepared touched-row transaction:
+  validate, allocate, reserve, and prebuild map nodes before an allocation-free
+  `noexcept` finalize.
+- Derive normalized Add/Update/Remove/No-op diffs from the authoritative accepted
+  `RenderScene` after it commits; shadow failure must retain the prior mirror and
+  cannot reject or alter the accepted frame, Direct, Tier 1, or packet cache.
+- Reject duplicate object IDs before retained scene/cache mutation and preserve
+  previous transforms from the last actually rendered frame.
+- Publish only exact selected resource generations whose recursive dependencies
+  are ready. Missing or metadata-invalid materials use one canonical default;
+  stale/reused handles are never rebound to a newer generation implicitly.
+- Define Depth/Opaque/Shadow/Transparent eligibility, material/geometry flags,
+  row-major affine packing, conservative invalid bounds, and invalid-transform
+  exclusion without adding shader or backend execution.
+- Keep attempted/candidate diagnostics separate from the actual committed mirror
+  version, counts, and source sequence. Partial publication remains incomplete
+  until a later accepted-scene Publish restores every excluded object.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUScene/GPUSceneSchema.h`
+- `Render/Include/Render/GPUScene/GPUScenePublication.h`
+- `Render/Private/GPUScene/GPUSceneDatabase.h`
+- `Render/Private/GPUScene/GPUSceneDatabase.cpp`
+- `Render/Private/GPUScene/GPUSceneUpdate.h`
+- `Render/Private/GPUScene/GPUSceneUpdate.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Renderer/RenderScene.cpp`
+- Render/Test CMake registration, `GPUSceneValidation`, `RenderSceneValidation`,
+  the execution ledger, and this phase record.
+
+**Validation result:**
+
+- Primary serial build: PASS for `GPUSceneValidation`, `RenderSceneValidation`,
+  `RenderDrawPacketCacheValidation`, `GPUDrivenValidation`, and
+  `RenderSubmissionValidation`.
+- Focused CTest set: PASS 74/74 (GPU Scene 24, RenderScene 17, draw-packet cache
+  6, and submission-lifetime 27).
+- GPU-driven executable: PASS 34/34, including four Task 10 strategy fixtures.
+- Focused architecture gates: PASS 12/12; phase gate: PASS 1/1.
+- `Architecture.RHIOwnershipInventory` remains FAIL with 91 existing findings in
+  DX12, GPUDriven, Material/Pipeline, and pass inventory entries. No Task 11B
+  GPU Scene file appears in the findings; the inventory was not weakened or
+  edited in this slice.
+- `git diff --check`: PASS before documentation finalization.
+
+**Independent review result:**
+
+- Initial verdict NOT READY found stale identity reuse after `Clear`, allocation
+  paths inside mutation/finalize, candidate/committed diagnostics mixing, and a
+  Masked pseudo-pass that omitted real Depth/Opaque eligibility.
+- Remediation introduced append-only tombstone clear, prepared node-handle
+  finalization, deterministic allocation-failure coverage, double exception
+  isolation, committed source identity, semantic-only comparisons, and correct
+  pass masks.
+- Second verdict found one remaining P2: partial publication could be promoted
+  to complete by revalidation without rebuilding an excluded object.
+- Final remediation preserved excluded/attempted coverage and added a stale
+  generation reuse regression. Final verdict READY; unresolved P0/P1/P2:
+  `0/0/0`.
+
+**Primary review status:**
+
+- PASS after full Task 11B diff review, adjudication of every independent
+  finding, inspection of prepare/finalize allocation boundaries and shadow
+  identity, serial rebuild, independent 108/108 focused executable tests,
+  12/12 architecture checks, phase gate, known-failure inventory audit, and
+  whitespace validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, and Python
+  cache changes remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- This is intentionally a CPU diagnostics shadow: no persistent GPU buffer,
+  upload, binding, visibility, command generation, or backend runtime path is
+  claimed. Task 11C/11D own those steps.
+- Material and geometry rows remain per draw; no global deduplication is claimed.
+  Task 11E must measure memory/cost before any schema-level canonicalization.
+- Task 11C must use real multi-domain completion tokens, reclaim an entire draw
+  block at once, advance one non-wrapping block generation, and prove unchanged
+  warm scenes do not upload the full scene.
+- Add a focused diagnostic test for the exact-ready-but-unresolvable mesh branch
+  when a suitable registry corruption seam exists; current production code
+  distinguishes it from ordinary resource unavailability.
+- Real DX12/Vulkan/Metal GPU Scene runtime validation remains open because this
+  slice intentionally creates no GPU path.
+
+---

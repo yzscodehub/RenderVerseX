@@ -46,6 +46,7 @@ namespace RVX
         InvalidDrawRange,
         CapacityExhausted,
         VersionExhausted,
+        AllocationFailed,
     };
 
     struct GPUSceneCommitResult
@@ -145,6 +146,12 @@ namespace RVX
          */
         [[nodiscard]] GPUSceneCommitResult Commit(const GPUSceneTransaction& transaction);
 
+        /** @brief Tombstone live rows without reusing or resetting any identity. */
+        void Clear() noexcept;
+
+        /** @brief Render-private deterministic prepare-allocation failure seam. */
+        void SetPrepareAllocationFailureCountdownForTesting(int32 countdown) noexcept;
+
         [[nodiscard]] const GPUSceneCommittedMirror& GetCommittedMirror() const;
         [[nodiscard]] uint64 GetCommittedVersion() const;
         /** @brief Number of addressable primitive-table slots, excluding slot zero. */
@@ -177,9 +184,10 @@ namespace RVX
 
         struct DrawReferences
         {
-            std::vector<GPUSceneDrawRef> draws;
-            std::vector<GPUSceneMaterialRef> materials;
-            std::vector<GPUSceneGeometryRef> geometries;
+            GPUSceneDrawRef firstDraw;
+            GPUSceneMaterialRef firstMaterial;
+            GPUSceneGeometryRef firstGeometry;
+            uint32 count = 0;
         };
 
         struct State
@@ -194,22 +202,52 @@ namespace RVX
             std::unordered_map<uint64, GPUScenePrimitiveRef> objectToPrimitive;
         };
 
-        [[nodiscard]] GPUSceneCommitResult AddObject(State& state, const GPUSceneObjectData& object) const;
-        [[nodiscard]] GPUSceneCommitResult UpdateObject(
-            State& state,
-            GPUScenePrimitiveRef primitive,
-            const GPUSceneObjectData& object) const;
-        [[nodiscard]] GPUSceneCommitResult RemoveObject(
-            State& state,
-            GPUScenePrimitiveRef primitive) const;
+        /** @brief Append-only slots required by a preflighted transaction. */
+        struct CapacityDelta
+        {
+            size_t primitives = 0;
+            size_t bounds = 0;
+            size_t transforms = 0;
+            size_t materials = 0;
+            size_t geometries = 0;
+            size_t draws = 0;
+            size_t objects = 0;
+        };
+
+        struct PreparedOperation
+        {
+            const GPUSceneTransaction::Operation* operation = nullptr;
+            uint64 objectId = 0;
+            GPUScenePrimitiveRef primitive;
+            GPUSceneBoundsRef bounds;
+            GPUSceneTransformRef transform;
+            DrawReferences previousDraws;
+            DrawReferences draws;
+            bool replaceDraws = false;
+        };
+
+        struct PreparedTransaction
+        {
+            std::vector<PreparedOperation> operations;
+            std::unordered_map<uint64, GPUScenePrimitiveRef> addedPrimitives;
+            CapacityDelta delta;
+        };
+
+        [[nodiscard]] GPUSceneCommitResult PrepareTransaction(
+            const GPUSceneTransaction& transaction,
+            PreparedTransaction& outPrepared);
+        [[nodiscard]] GPUSceneCommitResult ReserveAndPrepareNodes(
+            PreparedTransaction& prepared);
+        void FinalizePrepared(PreparedTransaction& prepared) noexcept;
+        void FailPrepareAllocationCheckpoint();
         [[nodiscard]] bool IsLiveInState(const State& state, GPUScenePrimitiveRef primitive) const;
         [[nodiscard]] std::optional<DrawReferences> GetDrawReferences(
             const State& state,
             GPUScenePrimitiveRef primitive) const;
-        [[nodiscard]] DrawReferences AllocateDrawReferences(
-            State& state,
-            uint64 objectId,
-            uint32 drawCount) const;
+        [[nodiscard]] DrawReferences MakeFutureDrawReferences(
+            const State& state,
+            const CapacityDelta& priorDelta,
+            uint32 drawCount) const noexcept;
 
         void WriteLiveObject(
             State& state,
@@ -217,11 +255,16 @@ namespace RVX
             GPUSceneBoundsRef bounds,
             GPUSceneTransformRef transform,
             const DrawReferences& draws,
-            const GPUSceneObjectData& object) const;
-        void RetireDrawReferences(State& state, const DrawReferences& draws) const;
+            const GPUSceneObjectData& object) const noexcept;
+        void AppendDrawReferences(
+            State& state,
+            uint64 objectId,
+            const DrawReferences& draws) const noexcept;
+        void RetireDrawReferences(State& state, const DrawReferences& draws) const noexcept;
 
         State m_state;
         uint32 m_initialSlotGeneration = 1;
         uint32 m_maxSlotCapacity = std::numeric_limits<uint32>::max();
+        int32 m_prepareAllocationFailureCountdown = -1;
     };
 } // namespace RVX

@@ -1,4 +1,9 @@
 #include "GPUScene/GPUSceneDatabase.h"
+#include "GPUScene/GPUSceneUpdate.h"
+#include "Render/Renderer/RenderScene.h"
+#include "Resources/RenderResourceRegistry.h"
+#include "Resources/RenderRetirementQueue.h"
+#include "Runtime/RenderResourceGateway.h"
 
 #include <gtest/gtest.h>
 
@@ -92,6 +97,141 @@ namespace
             database.FindPrimitive(objectId);
         EXPECT_TRUE(primitive.has_value());
         return primitive.value_or(GPUScenePrimitiveRef{});
+    }
+
+    class PublicationRegistryFixture final
+    {
+    public:
+        PublicationRegistryFixture()
+            : gateway(MakeConfig())
+        {
+            EXPECT_TRUE(registry.Initialize(&gateway.GetStatusTable(), &retirement));
+        }
+
+        ~PublicationRegistryFixture()
+        {
+            registry.Shutdown();
+        }
+
+        RenderResourceHandle AddReadyMesh(AssetId asset)
+        {
+            const RenderResourceReserveResult reserved =
+                gateway.ReserveResource(asset, RenderResourceKind::Mesh);
+            EXPECT_EQ(reserved.code, RenderResourceReserveCode::Reserved);
+            const RenderResourceHandle handle = reserved.handle;
+            PackedRenderResourceStatus status{
+                handle.generation,
+                RenderResourcePublicState::Reserved,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus queued = status;
+            queued.state = RenderResourcePublicState::UploadQueued;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, status, queued, RenderStatusWriter::Update));
+            PackedRenderResourceStatus uploading = queued;
+            uploading.state = RenderResourcePublicState::Uploading;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, queued, uploading, RenderStatusWriter::Render));
+            EXPECT_TRUE(registry.BeginPending(handle, RenderResourceKind::Mesh, {}));
+            MeshUploadCreateInfo createInfo;
+            createInfo.indexCount = 3;
+            EXPECT_TRUE(registry.SetPendingMeshMetadata(
+                handle,
+                createInfo,
+                {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}}));
+            EXPECT_TRUE(registry.Commit(handle));
+            PackedRenderResourceStatus ready = uploading;
+            ready.state = RenderResourcePublicState::GPUReady;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, uploading, ready, RenderStatusWriter::Render));
+            return handle;
+        }
+
+        RenderResourceHandle AddReadyMaterialWithoutMetadata(AssetId asset)
+        {
+            const RenderResourceReserveResult reserved =
+                gateway.ReserveResource(asset, RenderResourceKind::Material);
+            EXPECT_EQ(reserved.code, RenderResourceReserveCode::Reserved);
+            const RenderResourceHandle handle = reserved.handle;
+            PackedRenderResourceStatus status{
+                handle.generation,
+                RenderResourcePublicState::Reserved,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus queued = status;
+            queued.state = RenderResourcePublicState::UploadQueued;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, status, queued, RenderStatusWriter::Update));
+            PackedRenderResourceStatus uploading = queued;
+            uploading.state = RenderResourcePublicState::Uploading;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, queued, uploading, RenderStatusWriter::Render));
+            EXPECT_TRUE(registry.BeginPending(handle, RenderResourceKind::Material, {}));
+            EXPECT_TRUE(registry.Commit(handle));
+            PackedRenderResourceStatus ready = uploading;
+            ready.state = RenderResourcePublicState::GPUReady;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, uploading, ready, RenderStatusWriter::Render));
+            return handle;
+        }
+
+        RenderResourceHandle ReleaseAndReuseReadyMesh(
+            RenderResourceHandle previous,
+            AssetId replacementAsset)
+        {
+            EXPECT_EQ(gateway.RequestRelease(previous).code,
+                      RenderReleaseCode::Accepted);
+            EXPECT_TRUE(registry.Release(previous));
+            EXPECT_EQ(gateway.TryDequeueRelease(), previous);
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                previous,
+                {previous.generation,
+                 RenderResourcePublicState::Evicting,
+                 RenderResourceFailureCode::None},
+                {previous.generation,
+                 RenderResourcePublicState::Released,
+                 RenderResourceFailureCode::None},
+                RenderStatusWriter::Render));
+            return AddReadyMesh(replacementAsset);
+        }
+
+        static RenderTransportConfig MakeConfig()
+        {
+            RenderTransportConfig config;
+            config.statusSlotCapacity = 1024;
+            config.uploadRequestCapacity = 8;
+            config.uploadByteCapacity = 1024;
+            return config;
+        }
+
+        RenderResourceGateway gateway;
+        RenderRetirementQueue retirement;
+        RenderResourceRegistry registry;
+    };
+
+    RenderObject MakePublishedRenderObject(
+        uint64 objectId,
+        RenderResourceHandle mesh,
+        float32 x)
+    {
+        RenderObject object;
+        object.entityId = objectId;
+        object.drawable = true;
+        object.mesh = mesh;
+        object.worldMatrix = Mat4Identity();
+        object.worldMatrix[3] = {x, 0.0F, 0.0F, 1.0F};
+        object.previousWorldMatrix = object.worldMatrix;
+        object.normalMatrix = Mat4Identity();
+        object.bounds = AABB({x - 1.0F, -1.0F, -1.0F}, {x + 1.0F, 1.0F, 1.0F});
+        object.meshBatches.push_back(MeshBatch{
+            objectId,
+            mesh,
+            {},
+            0,
+            0,
+            MeshUploadIndexType::UInt32,
+            {0, 3, 0, MeshUploadPrimitiveTopology::Triangles},
+            RenderMaterialMode::Opaque,
+            RenderBatchFlags::CastsShadow});
+        return object;
     }
 } // namespace
 
@@ -405,6 +545,80 @@ TEST(GPUSceneValidation, VersionExhaustionFailsClosedWhileEmptyCommitStaysNoOp)
     EXPECT_EQ(finalSentinel.flags, primitiveSentinel.flags);
 }
 
+TEST(GPUSceneValidation, ClearTombstonesAllIdentityWithoutResettingSlotsOrVersion)
+{
+    GPUSceneDatabase database;
+    GPUSceneTransaction initial;
+    initial.Add(MakeObject(101, 1.0F, 2));
+    initial.Add(MakeObject(202, 2.0F, 1));
+    ASSERT_TRUE(database.Commit(initial).Succeeded());
+
+    const GPUScenePrimitiveRef first = database.FindPrimitive(101).value();
+    const GPUScenePrimitiveRef second = database.FindPrimitive(202).value();
+    const GPUScenePrimitiveRow firstRow = *database.GetRow(first);
+    const GPUSceneBoundsRef firstBounds = firstRow.bounds;
+    const GPUSceneTransformRef firstTransform = firstRow.transform;
+    const GPUSceneDrawRef firstDraw = firstRow.firstDraw;
+    const GPUSceneDrawMetadataRow firstDrawRow = *database.GetRow(firstDraw);
+    const uint64 versionBeforeClear = database.GetCommittedVersion();
+    const uint32 capacityBeforeClear = database.GetSlotCapacity();
+
+    database.Clear();
+
+    EXPECT_EQ(database.GetCommittedVersion(), versionBeforeClear + 1U);
+    EXPECT_EQ(database.GetSlotCapacity(), capacityBeforeClear);
+    EXPECT_EQ(database.GetObjectCount(), 0U);
+    EXPECT_FALSE(database.FindPrimitive(101).has_value());
+    EXPECT_FALSE(database.FindPrimitive(202).has_value());
+    EXPECT_FALSE(database.IsLive(first));
+    EXPECT_FALSE(database.IsLive(second));
+    EXPECT_FALSE(database.IsLive(firstBounds));
+    EXPECT_FALSE(database.IsLive(firstTransform));
+    EXPECT_FALSE(database.IsLive(firstDraw));
+    EXPECT_FALSE(database.IsLive(firstDrawRow.material));
+    EXPECT_FALSE(database.IsLive(firstDrawRow.geometry));
+    EXPECT_EQ(database.GetRow(first), nullptr);
+    EXPECT_TRUE(HasGPUSceneRowFlag(
+        database.GetCommittedMirror().primitives[first.slot].header.flags,
+        GPUSceneRowFlags::Tombstone));
+
+    const GPUScenePrimitiveRef replacement = AddSingleObject(database, 303);
+    EXPECT_GT(replacement.slot, capacityBeforeClear);
+    EXPECT_FALSE(database.IsLive(first));
+}
+
+TEST(GPUSceneValidation, PreparationAllocationFailuresLeaveCommittedMirrorUntouched)
+{
+    for (int32 checkpoint = 0; checkpoint <= 10; ++checkpoint)
+    {
+        GPUSceneDatabase database;
+        const GPUScenePrimitiveRef original = AddSingleObject(database, 101);
+        const GPUSceneCommittedMirror before = database.GetCommittedMirror();
+        const uint64 versionBefore = database.GetCommittedVersion();
+        const uint32 objectCountBefore = database.GetObjectCount();
+        const uint32 slotCapacityBefore = database.GetSlotCapacity();
+
+        GPUSceneTransaction transaction;
+        transaction.Add(MakeObject(202, 2.0F, 2));
+        database.SetPrepareAllocationFailureCountdownForTesting(checkpoint);
+        const GPUSceneCommitResult result = database.Commit(transaction);
+
+        EXPECT_EQ(result.status, GPUSceneCommitStatus::AllocationFailed)
+            << "checkpoint=" << checkpoint;
+        EXPECT_EQ(database.GetCommittedVersion(), versionBefore);
+        EXPECT_EQ(database.GetObjectCount(), objectCountBefore);
+        EXPECT_EQ(database.GetSlotCapacity(), slotCapacityBefore);
+        EXPECT_EQ(database.GetCommittedMirror().primitives, before.primitives);
+        EXPECT_EQ(database.GetCommittedMirror().bounds, before.bounds);
+        EXPECT_EQ(database.GetCommittedMirror().transforms, before.transforms);
+        EXPECT_EQ(database.GetCommittedMirror().materials, before.materials);
+        EXPECT_EQ(database.GetCommittedMirror().geometries, before.geometries);
+        EXPECT_EQ(database.GetCommittedMirror().draws, before.draws);
+        EXPECT_TRUE(database.IsLive(original));
+        EXPECT_FALSE(database.FindPrimitive(202).has_value());
+    }
+}
+
 TEST(GPUSceneValidation, ZeroDrawObjectSupportsAddUpdateAndRemove)
 {
     GPUSceneDatabase database;
@@ -529,4 +743,394 @@ TEST(GPUSceneValidation, ContradictoryOperationsRejectWithoutPublishingMutation)
     EXPECT_FLOAT_EQ(
         database.GetRow(database.GetRow(primitive)->bounds)->minimum.x,
         1.0F);
+}
+
+TEST(GPUSceneValidation, MixedDisjointTransactionCommitsOnlyItsTouchedObjects)
+{
+    GPUSceneDatabase database;
+    const GPUScenePrimitiveRef first = AddSingleObject(database, 101);
+    const GPUScenePrimitiveRef second = AddSingleObject(database, 202);
+
+    GPUSceneTransaction transaction;
+    transaction.Update(first, MakeObject(101, 9.0F, 1));
+    transaction.Remove(second);
+    transaction.Add(MakeObject(303, 12.0F, 2));
+    const GPUSceneCommitResult result = database.Commit(transaction);
+
+    ASSERT_TRUE(result.Succeeded());
+    EXPECT_EQ(database.GetCommittedVersion(), 3U);
+    EXPECT_EQ(database.FindPrimitive(101).value(), first);
+    EXPECT_FALSE(database.FindPrimitive(202).has_value());
+    EXPECT_TRUE(database.FindPrimitive(303).has_value());
+    EXPECT_FLOAT_EQ(
+        database.GetRow(database.GetRow(first)->bounds)->minimum.x,
+        9.0F);
+    EXPECT_FALSE(database.IsLive(second));
+    EXPECT_TRUE(HasGPUSceneRowFlag(
+        database.GetCommittedMirror().primitives[second.slot].header.flags,
+        GPUSceneRowFlags::Tombstone));
+}
+
+TEST(GPUSceneValidation, PublicationDiffsByObjectIdAndIgnoresAcceptedObjectOrder)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle mesh = resources.AddReadyMesh({500});
+    GPUSceneUpdate update;
+
+    RenderScene first;
+    first.AddObject(MakePublishedRenderObject(1, mesh, 1.0F));
+    first.AddObject(MakePublishedRenderObject(2, mesh, 2.0F));
+    const GPUScenePublicationStats initial =
+        update.Publish(first, resources.registry);
+    ASSERT_EQ(initial.failureReason, GPUScenePublicationFailureReason::None);
+    EXPECT_EQ(initial.addCount, 2U);
+    EXPECT_EQ(initial.publishedObjectCount, 2U);
+    EXPECT_EQ(initial.publishedDrawCount, 2U);
+    EXPECT_TRUE(initial.complete);
+    EXPECT_FALSE(initial.executionEligible);
+
+    RenderScene reordered;
+    reordered.AddObject(MakePublishedRenderObject(2, mesh, 2.0F));
+    reordered.AddObject(MakePublishedRenderObject(1, mesh, 1.0F));
+    const GPUScenePublicationStats noOp =
+        update.Publish(reordered, resources.registry);
+    EXPECT_EQ(noOp.addCount, 0U);
+    EXPECT_EQ(noOp.updateCount, 0U);
+    EXPECT_EQ(noOp.removeCount, 0U);
+    EXPECT_EQ(noOp.noOpCount, 2U);
+    EXPECT_EQ(noOp.committedVersion, initial.committedVersion);
+
+    RenderScene changed;
+    changed.AddObject(MakePublishedRenderObject(1, mesh, 4.0F));
+    const GPUScenePublicationStats mixed =
+        update.Publish(changed, resources.registry);
+    EXPECT_EQ(mixed.updateCount, 1U);
+    EXPECT_EQ(mixed.removeCount, 1U);
+    EXPECT_EQ(mixed.publishedObjectCount, 1U);
+    EXPECT_EQ(mixed.excludedObjectCount, 0U);
+    EXPECT_GT(mixed.committedVersion, initial.committedVersion);
+
+    const uint64 committedVersion = mixed.committedVersion;
+    EXPECT_TRUE(resources.registry.Release(mesh));
+    const GPUScenePublicationStats stale =
+        update.Revalidate(resources.registry);
+    EXPECT_EQ(stale.failureReason,
+              GPUScenePublicationFailureReason::ResourceUnavailable);
+    EXPECT_FALSE(stale.complete);
+    EXPECT_FALSE(stale.executionEligible);
+    EXPECT_EQ(stale.committedVersion, committedVersion);
+
+    update.Clear();
+    EXPECT_EQ(update.GetStats().sourceSequence, 0U);
+    EXPECT_GT(update.GetStats().committedVersion, committedVersion);
+    EXPECT_EQ(update.GetStats().publishedObjectCount, 0U);
+    EXPECT_EQ(update.GetStats().publishedDrawCount, 0U);
+}
+
+TEST(GPUSceneValidation, PublicationFailureKeepsActualCommittedIdentityAndAttemptCounters)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle mesh = resources.AddReadyMesh({501});
+    GPUSceneUpdate update;
+
+    RenderScene scene;
+    scene.AddObject(MakePublishedRenderObject(1, mesh, 1.0F));
+    const GPUScenePublicationStats initial = update.Publish(scene, resources.registry);
+    ASSERT_EQ(initial.failureReason, GPUScenePublicationFailureReason::None);
+
+    RenderScene candidate;
+    candidate.AddObject(MakePublishedRenderObject(1, mesh, 2.0F));
+    candidate.AddObject(MakePublishedRenderObject(2, mesh, 3.0F));
+    update.SetDatabasePrepareAllocationFailureCountdownForTesting(0);
+    const GPUScenePublicationStats failed = update.Publish(candidate, resources.registry);
+
+    EXPECT_EQ(failed.failureReason, GPUScenePublicationFailureReason::AllocationFailed);
+    EXPECT_EQ(failed.sourceSequence, candidate.GetAcceptedHeader().sequence);
+    EXPECT_EQ(failed.committedVersion, initial.committedVersion);
+    EXPECT_EQ(failed.committedSourceSequence, initial.committedSourceSequence);
+    EXPECT_EQ(failed.publishedObjectCount, 1U);
+    EXPECT_EQ(failed.publishedDrawCount, 1U);
+    EXPECT_EQ(failed.attemptedObjectCount, 2U);
+    EXPECT_EQ(failed.candidateObjectCount, 2U);
+    EXPECT_EQ(failed.updateCount, 1U);
+    EXPECT_EQ(failed.addCount, 1U);
+    EXPECT_FALSE(failed.complete);
+    EXPECT_FALSE(failed.executionEligible);
+}
+
+TEST(GPUSceneValidation, ChangedDrawCountUpdatesOneObjectWhileAcceptedOrderRemainsNoOp)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle mesh = resources.AddReadyMesh({508});
+    GPUSceneUpdate update;
+
+    RenderScene initialScene;
+    initialScene.AddObject(MakePublishedRenderObject(1, mesh, 1.0F));
+    initialScene.AddObject(MakePublishedRenderObject(2, mesh, 2.0F));
+    const GPUScenePublicationStats initial =
+        update.Publish(initialScene, resources.registry);
+    ASSERT_EQ(initial.failureReason, GPUScenePublicationFailureReason::None);
+
+    RenderObject expanded = MakePublishedRenderObject(1, mesh, 1.0F);
+    MeshBatch secondBatch = expanded.meshBatches.front();
+    secondBatch.submeshIndex = 1;
+    secondBatch.geometry.indexOffset = 3;
+    expanded.meshBatches.push_back(secondBatch);
+    RenderScene changedDrawCount;
+    changedDrawCount.AddObject(std::move(expanded));
+    changedDrawCount.AddObject(MakePublishedRenderObject(2, mesh, 2.0F));
+    const GPUScenePublicationStats changed =
+        update.Publish(changedDrawCount, resources.registry);
+    EXPECT_EQ(changed.updateCount, 1U);
+    EXPECT_EQ(changed.noOpCount, 1U);
+    EXPECT_EQ(changed.publishedObjectCount, 2U);
+    EXPECT_EQ(changed.publishedDrawCount, 3U);
+    EXPECT_GT(changed.committedVersion, initial.committedVersion);
+
+    RenderScene reordered;
+    reordered.AddObject(MakePublishedRenderObject(2, mesh, 2.0F));
+    RenderObject reorderedExpanded = MakePublishedRenderObject(1, mesh, 1.0F);
+    reorderedExpanded.meshBatches.push_back(secondBatch);
+    reordered.AddObject(std::move(reorderedExpanded));
+    const GPUScenePublicationStats noOp = update.Publish(reordered, resources.registry);
+    EXPECT_EQ(noOp.addCount, 0U);
+    EXPECT_EQ(noOp.updateCount, 0U);
+    EXPECT_EQ(noOp.removeCount, 0U);
+    EXPECT_EQ(noOp.noOpCount, 2U);
+    EXPECT_EQ(noOp.committedVersion, changed.committedVersion);
+}
+
+TEST(GPUSceneValidation, PassMasksUseOnlyDepthOpaqueShadowAndTransparent)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle mesh = resources.AddReadyMesh({502});
+    GPUSceneUpdate update;
+    RenderScene scene;
+
+    const auto addObject = [&scene, mesh](
+                               uint64 objectId,
+                               RenderMaterialMode mode,
+                               bool castsShadow)
+    {
+        RenderObject object = MakePublishedRenderObject(
+            objectId, mesh, static_cast<float32>(objectId));
+        object.meshBatches[0].materialMode = mode;
+        object.meshBatches[0].flags = castsShadow
+                                         ? RenderBatchFlags::CastsShadow
+                                         : RenderBatchFlags::None;
+        scene.AddObject(std::move(object));
+    };
+    addObject(1, RenderMaterialMode::Opaque, false);
+    addObject(2, RenderMaterialMode::Opaque, true);
+    addObject(3, RenderMaterialMode::Masked, false);
+    addObject(4, RenderMaterialMode::Masked, true);
+    addObject(5, RenderMaterialMode::Transparent, false);
+    addObject(6, RenderMaterialMode::Transparent, true);
+
+    ASSERT_EQ(update.Publish(scene, resources.registry).failureReason,
+              GPUScenePublicationFailureReason::None);
+    const GPUSceneCommittedMirror& mirror = update.GetCommittedMirrorForTesting();
+    ASSERT_EQ(mirror.draws.size(), 7U);
+    const uint32 depthOpaque =
+        static_cast<uint32>(GPUScenePassMask::Depth) |
+        static_cast<uint32>(GPUScenePassMask::Opaque);
+    const uint32 transparentMask = static_cast<uint32>(GPUScenePassMask::Transparent);
+    for (size_t index = 1; index < mirror.draws.size(); ++index)
+    {
+        const GPUSceneDrawMetadataRow& draw = mirror.draws[index];
+        const uint64 objectId = UnpackGPUSceneUint64(draw.header.objectId);
+        const bool castsShadow = objectId % 2U == 0U;
+        const bool transparent = objectId == 5U || objectId == 6U;
+        const uint32 expectedMask =
+            (transparent ? transparentMask : depthOpaque) |
+            (castsShadow ? static_cast<uint32>(GPUScenePassMask::Shadow) : 0U);
+        const uint32 expectedVariant =
+            transparent
+                ? static_cast<uint32>(MaterialPipelineVariant::Transparent)
+                : (objectId == 3U || objectId == 4U)
+                      ? static_cast<uint32>(MaterialPipelineVariant::Masked)
+                      : static_cast<uint32>(MaterialPipelineVariant::Opaque);
+        EXPECT_EQ(draw.passMask, expectedMask);
+        EXPECT_EQ(draw.materialVariant, expectedVariant);
+    }
+}
+
+TEST(GPUSceneValidation, MissingAndMetadataInvalidMaterialsPublishDefaultRows)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle mesh = resources.AddReadyMesh({503});
+    const RenderResourceHandle invalidMetadata =
+        resources.AddReadyMaterialWithoutMetadata({504});
+    GPUSceneUpdate update;
+    RenderScene scene;
+
+    RenderObject missing = MakePublishedRenderObject(1, mesh, 1.0F);
+    RenderObject invalid = MakePublishedRenderObject(2, mesh, 2.0F);
+    invalid.material = invalidMetadata;
+    invalid.meshBatches[0].material = invalidMetadata;
+    scene.AddObject(std::move(missing));
+    scene.AddObject(std::move(invalid));
+
+    const GPUScenePublicationStats stats = update.Publish(scene, resources.registry);
+    ASSERT_EQ(stats.failureReason, GPUScenePublicationFailureReason::None);
+    ASSERT_EQ(stats.publishedObjectCount, 2U);
+    const GPUSceneCommittedMirror& mirror = update.GetCommittedMirrorForTesting();
+    ASSERT_EQ(mirror.materials.size(), 3U);
+    for (size_t index = 1; index < mirror.materials.size(); ++index)
+    {
+        const GPUSceneMaterialRow& material = mirror.materials[index];
+        const uint64 objectId = UnpackGPUSceneUint64(material.header.objectId);
+        EXPECT_TRUE(HasGPUSceneMaterialFlag(
+            material.materialFlags, GPUSceneMaterialFlags::DefaultMaterial));
+        EXPECT_TRUE(HasGPUSceneMaterialFlag(
+            material.materialFlags,
+            objectId == 1U ? GPUSceneMaterialFlags::MissingMaterial
+                           : GPUSceneMaterialFlags::MetadataInvalid));
+        EXPECT_EQ(material.resourceSlot, 0U);
+        EXPECT_EQ(material.resourceGeneration, 0U);
+        EXPECT_EQ(material.baseColor, (GPUSceneFloat4{0.8F, 0.8F, 0.8F, 1.0F}));
+        EXPECT_FLOAT_EQ(material.metallic, 0.0F);
+        EXPECT_FLOAT_EQ(material.roughness, 0.5F);
+        EXPECT_FLOAT_EQ(material.emissiveIntensity, 0.0F);
+        EXPECT_FLOAT_EQ(material.opacity, 1.0F);
+    }
+}
+
+TEST(GPUSceneValidation, EvictedGenerationIsNotReboundUntilNewHandleIsAccepted)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle oldMesh = resources.AddReadyMesh({505});
+    GPUSceneUpdate update;
+    RenderScene oldScene;
+    oldScene.AddObject(MakePublishedRenderObject(1, oldMesh, 1.0F));
+    ASSERT_EQ(update.Publish(oldScene, resources.registry).failureReason,
+              GPUScenePublicationFailureReason::None);
+
+    const RenderResourceHandle newMesh =
+        resources.ReleaseAndReuseReadyMesh(oldMesh, {506});
+    ASSERT_EQ(newMesh.slot, oldMesh.slot);
+    ASSERT_EQ(newMesh.generation, oldMesh.generation + 1U);
+    const GPUScenePublicationStats stale = update.Revalidate(resources.registry);
+    EXPECT_EQ(stale.failureReason,
+              GPUScenePublicationFailureReason::ResourceUnavailable);
+    EXPECT_EQ(stale.publishedObjectCount, 1U);
+    const GPUSceneCommittedMirror& staleMirror =
+        update.GetCommittedMirrorForTesting();
+    EXPECT_EQ(staleMirror.geometries[1].resourceSlot, oldMesh.slot);
+    EXPECT_EQ(staleMirror.geometries[1].resourceGeneration, oldMesh.generation);
+
+    RenderScene replacementScene;
+    replacementScene.AddObject(MakePublishedRenderObject(1, newMesh, 1.0F));
+    const GPUScenePublicationStats replacement =
+        update.Publish(replacementScene, resources.registry);
+    ASSERT_EQ(replacement.failureReason, GPUScenePublicationFailureReason::None);
+    EXPECT_EQ(replacement.publishedObjectCount, 1U);
+    const GPUSceneCommittedMirror& replacementMirror =
+        update.GetCommittedMirrorForTesting();
+    ASSERT_GE(replacementMirror.geometries.size(), 2U);
+    bool foundNewGeneration = false;
+    for (size_t index = 1; index < replacementMirror.geometries.size(); ++index)
+    {
+        const GPUSceneGeometryRow& geometry = replacementMirror.geometries[index];
+        if (HasGPUSceneRowFlag(geometry.header.flags, GPUSceneRowFlags::Live))
+        {
+            foundNewGeneration = geometry.resourceSlot == newMesh.slot &&
+                                 geometry.resourceGeneration == newMesh.generation;
+        }
+    }
+    EXPECT_TRUE(foundNewGeneration);
+}
+
+TEST(GPUSceneValidation,
+     RevalidationCannotPromoteAnIncompletePublicationAfterHandleReuse)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle meshA = resources.AddReadyMesh({509});
+    const RenderResourceHandle oldMeshB = resources.AddReadyMesh({510});
+    GPUSceneUpdate update;
+
+    RenderScene staleAcceptedScene;
+    staleAcceptedScene.AddObject(MakePublishedRenderObject(1, meshA, 1.0F));
+    staleAcceptedScene.AddObject(MakePublishedRenderObject(2, oldMeshB, 2.0F));
+    const RenderResourceHandle newMeshB =
+        resources.ReleaseAndReuseReadyMesh(oldMeshB, {511});
+    ASSERT_EQ(newMeshB.slot, oldMeshB.slot);
+    ASSERT_EQ(newMeshB.generation, oldMeshB.generation + 1U);
+
+    const GPUScenePublicationStats partial =
+        update.Publish(staleAcceptedScene, resources.registry);
+    EXPECT_EQ(partial.failureReason,
+              GPUScenePublicationFailureReason::ResourceUnavailable);
+    EXPECT_EQ(partial.attemptedObjectCount, 2U);
+    EXPECT_EQ(partial.candidateObjectCount, 1U);
+    EXPECT_EQ(partial.excludedObjectCount, 1U);
+    EXPECT_EQ(partial.publishedObjectCount, 1U);
+    EXPECT_FALSE(partial.complete);
+
+    const GPUScenePublicationStats revalidated =
+        update.Revalidate(resources.registry);
+    EXPECT_EQ(revalidated.failureReason,
+              GPUScenePublicationFailureReason::ResourceUnavailable);
+    EXPECT_EQ(revalidated.publishedObjectCount, 1U);
+    EXPECT_FALSE(revalidated.complete);
+    const GPUSceneCommittedMirror& incompleteMirror =
+        update.GetCommittedMirrorForTesting();
+    bool hasOldB = false;
+    for (size_t index = 1; index < incompleteMirror.primitives.size(); ++index)
+    {
+        const GPUScenePrimitiveRow& primitive = incompleteMirror.primitives[index];
+        hasOldB = hasOldB ||
+                  (HasGPUSceneRowFlag(
+                       primitive.header.flags, GPUSceneRowFlags::Live) &&
+                   UnpackGPUSceneUint64(primitive.header.objectId) == 2U);
+    }
+    EXPECT_FALSE(hasOldB);
+
+    RenderScene replacementAcceptedScene;
+    replacementAcceptedScene.AddObject(MakePublishedRenderObject(1, meshA, 1.0F));
+    replacementAcceptedScene.AddObject(MakePublishedRenderObject(2, newMeshB, 2.0F));
+    const GPUScenePublicationStats complete =
+        update.Publish(replacementAcceptedScene, resources.registry);
+    EXPECT_EQ(complete.failureReason, GPUScenePublicationFailureReason::None);
+    EXPECT_EQ(complete.addCount, 1U);
+    EXPECT_EQ(complete.noOpCount, 1U);
+    EXPECT_EQ(complete.publishedObjectCount, 2U);
+    EXPECT_TRUE(complete.complete);
+}
+
+TEST(GPUSceneValidation, AffineRowsAreRowMajorAndInvalidTransformsAreExcluded)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle mesh = resources.AddReadyMesh({507});
+    GPUSceneUpdate update;
+    RenderScene scene;
+
+    RenderObject valid = MakePublishedRenderObject(1, mesh, 1.0F);
+    valid.worldMatrix[0] = {1.0F, 2.0F, 3.0F, 0.0F};
+    valid.worldMatrix[1] = {4.0F, 5.0F, 6.0F, 0.0F};
+    valid.worldMatrix[2] = {7.0F, 8.0F, 9.0F, 0.0F};
+    valid.worldMatrix[3] = {10.0F, 11.0F, 12.0F, 1.0F};
+    valid.previousWorldMatrix = valid.worldMatrix;
+    valid.normalMatrix = Mat4Identity();
+
+    RenderObject nonAffine = MakePublishedRenderObject(2, mesh, 2.0F);
+    nonAffine.worldMatrix[0][3] = 0.5F;
+    RenderObject nonFiniteNormal = MakePublishedRenderObject(3, mesh, 3.0F);
+    nonFiniteNormal.normalMatrix[1][2] = std::numeric_limits<float32>::quiet_NaN();
+    scene.AddObject(std::move(valid));
+    scene.AddObject(std::move(nonAffine));
+    scene.AddObject(std::move(nonFiniteNormal));
+
+    const GPUScenePublicationStats stats = update.Publish(scene, resources.registry);
+    EXPECT_EQ(stats.attemptedObjectCount, 3U);
+    EXPECT_EQ(stats.candidateObjectCount, 1U);
+    EXPECT_EQ(stats.excludedObjectCount, 2U);
+    EXPECT_EQ(stats.failureReason, GPUScenePublicationFailureReason::InvalidObject);
+    EXPECT_EQ(stats.publishedObjectCount, 1U);
+    const GPUSceneCommittedMirror& mirror = update.GetCommittedMirrorForTesting();
+    ASSERT_EQ(mirror.transforms.size(), 2U);
+    const GPUSceneAffineMatrix3x4& packed = mirror.transforms[1].worldFromLocal;
+    EXPECT_EQ(packed.rows[0], (GPUSceneFloat4{1.0F, 4.0F, 7.0F, 10.0F}));
+    EXPECT_EQ(packed.rows[1], (GPUSceneFloat4{2.0F, 5.0F, 8.0F, 11.0F}));
+    EXPECT_EQ(packed.rows[2], (GPUSceneFloat4{3.0F, 6.0F, 9.0F, 12.0F}));
 }
