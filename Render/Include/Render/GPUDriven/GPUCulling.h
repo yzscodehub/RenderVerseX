@@ -153,13 +153,11 @@ namespace RVX
         bool operator==(const GPUCullingAccessSnapshots&) const = default;
     };
 
-    /** @brief Honest result of recording one indirect submission. */
-    struct GPUIndirectDrawSubmission
+    /** @brief Backend-neutral culling output for one indexed indirect submission. */
+    struct GPUCullingIndexedIndirectSubmission
     {
-        bool recorded = false;
-        uint32 submittedDrawUpperBound = 0;
-        bool executedDrawCountAvailable = false;
-        uint32 executedDrawCount = 0;
+        RHIIndexedIndirectExecutionDesc execution;
+        const RHICapabilities* capabilities = nullptr;
     };
 
     /** @brief Immutable graph-recording identity for one sealed culling slice. */
@@ -437,20 +435,12 @@ namespace RVX
          */
         GPUCullingFallbackReason GetLastFallbackReason() const { return m_lastFallbackReason; }
 
-        /**
-         * @brief Submit the generated indexed indirect draw buffer
-         * @return Recording result; GPU count-buffer execution remains unknown
-         */
-        GPUIndirectDrawSubmission DrawIndexedIndirect(
-            RHICommandContext& ctx,
+        /** @brief Build a backend-neutral submission for the whole compatible range. */
+        GPUCullingIndexedIndirectSubmission BuildIndexedIndirectSubmission(
             uint32 maxDrawCount = 0) const;
 
-        /**
-         * @brief Submit one mesh-compatible indirect draw group
-         * @return Recording result with a submitted upper bound and optional exact count
-         */
-        GPUIndirectDrawSubmission DrawIndexedIndirectGroup(
-            RHICommandContext& ctx,
+        /** @brief Build a backend-neutral submission for one mesh-compatible group. */
+        GPUCullingIndexedIndirectSubmission BuildIndexedIndirectGroupSubmission(
             uint32 groupIndex) const;
 
         // =========================================================================

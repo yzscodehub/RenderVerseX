@@ -1379,113 +1379,73 @@ void GPUCulling::CullCpuFallback(const Mat4& viewMatrix, const Mat4& projMatrix)
     UploadCullOutputs();
 }
 
-GPUIndirectDrawSubmission GPUCulling::DrawIndexedIndirect(
-    RHICommandContext& ctx,
+GPUCullingIndexedIndirectSubmission GPUCulling::BuildIndexedIndirectSubmission(
     uint32 maxDrawCount) const
 {
-    GPUIndirectDrawSubmission result;
+    GPUCullingIndexedIndirectSubmission submission;
     if (!m_indirectBuffer)
     {
-        return result;
+        return submission;
     }
 
     if (m_drawGroups.size() > 1)
     {
-        return result;
+        return submission;
     }
 
-    if (m_usedGpuExecutionLastCull && m_drawCountBuffer && m_device &&
-        m_device->GetCapabilities().indexedIndirectExecution.supportsCountBuffer)
+    submission.capabilities = m_device != nullptr
+        ? &m_device->GetCapabilities()
+        : nullptr;
+    submission.execution.argumentBuffer = m_indirectBuffer.Get();
+    submission.execution.commandStride = sizeof(IndirectDrawIndexedCommand);
+
+    if (m_usedGpuExecutionLastCull && m_drawCountBuffer)
     {
-        const uint32 maxGpuDrawCount = maxDrawCount > 0 ? std::min(m_instanceCount, maxDrawCount) : m_instanceCount;
-        if (maxGpuDrawCount == 0)
-        {
-            return result;
-        }
-
-        ctx.DrawIndexedIndirectCount(m_indirectBuffer.Get(),
-                                     0,
-                                     m_drawCountBuffer.Get(),
-                                     0,
-                                     maxGpuDrawCount,
-                                     sizeof(IndirectDrawIndexedCommand));
-        result.recorded = true;
-        result.submittedDrawUpperBound = maxGpuDrawCount;
-        return result;
+        submission.execution.mode = RHIIndirectExecutionMode::CountBuffer;
+        submission.execution.countBuffer = m_drawCountBuffer.Get();
+        submission.execution.maxDrawCount = maxDrawCount > 0
+            ? std::min(m_instanceCount, maxDrawCount)
+            : m_instanceCount;
+        return submission;
     }
 
-    result.executedDrawCountAvailable = m_usedCpuFallbackLastCull;
-    if (m_drawCount == 0)
-    {
-        return result;
-    }
-
-    const uint32 drawCount = maxDrawCount > 0 ? std::min(m_drawCount, maxDrawCount) : m_drawCount;
-    if (drawCount == 0)
-    {
-        return result;
-    }
-
-    ctx.DrawIndexedIndirect(m_indirectBuffer.Get(),
-                            0,
-                            drawCount,
-                            sizeof(IndirectDrawIndexedCommand));
-    result.recorded = true;
-    result.submittedDrawUpperBound = drawCount;
-    result.executedDrawCountAvailable = true;
-    result.executedDrawCount = drawCount;
-    return result;
+    submission.execution.mode = RHIIndirectExecutionMode::FixedCount;
+    submission.execution.maxDrawCount = maxDrawCount > 0
+        ? std::min(m_drawCount, maxDrawCount)
+        : m_drawCount;
+    return submission;
 }
 
-GPUIndirectDrawSubmission GPUCulling::DrawIndexedIndirectGroup(
-    RHICommandContext& ctx,
+GPUCullingIndexedIndirectSubmission GPUCulling::BuildIndexedIndirectGroupSubmission(
     uint32 groupIndex) const
 {
-    GPUIndirectDrawSubmission result;
+    GPUCullingIndexedIndirectSubmission submission;
     if (!m_indirectBuffer || groupIndex >= m_drawGroups.size())
     {
-        return result;
+        return submission;
     }
 
     const GPUCullingDrawGroup& group = m_drawGroups[groupIndex];
-    result.executedDrawCountAvailable = m_usedCpuFallbackLastCull;
-    if (group.maxDrawCount == 0)
-    {
-        return result;
-    }
-
-    const uint64 commandOffset =
+    submission.capabilities = m_device != nullptr
+        ? &m_device->GetCapabilities()
+        : nullptr;
+    submission.execution.argumentBuffer = m_indirectBuffer.Get();
+    submission.execution.argumentOffset =
         static_cast<uint64>(group.commandOffset) * sizeof(IndirectDrawIndexedCommand);
+    submission.execution.commandStride = sizeof(IndirectDrawIndexedCommand);
 
-    if (m_usedGpuExecutionLastCull && m_drawCountBuffer && m_device &&
-        m_device->GetCapabilities().indexedIndirectExecution.supportsCountBuffer)
+    if (m_usedGpuExecutionLastCull && m_drawCountBuffer)
     {
-        ctx.DrawIndexedIndirectCount(m_indirectBuffer.Get(),
-                                     commandOffset,
-                                     m_drawCountBuffer.Get(),
-                                     group.countBufferOffset,
-                                     group.maxDrawCount,
-                                     sizeof(IndirectDrawIndexedCommand));
-        result.recorded = true;
-        result.submittedDrawUpperBound = group.maxDrawCount;
-        result.executedDrawCountAvailable = false;
-        return result;
+        submission.execution.mode = RHIIndirectExecutionMode::CountBuffer;
+        submission.execution.countBuffer = m_drawCountBuffer.Get();
+        submission.execution.countOffset = group.countBufferOffset;
+        submission.execution.maxDrawCount = group.maxDrawCount;
+        return submission;
     }
 
-    if (group.visibleDrawCount == 0)
-    {
-        return result;
-    }
-
-    ctx.DrawIndexedIndirect(m_indirectBuffer.Get(),
-                            commandOffset,
-                            group.visibleDrawCount,
-                            sizeof(IndirectDrawIndexedCommand));
-    result.recorded = true;
-    result.submittedDrawUpperBound = group.visibleDrawCount;
-    result.executedDrawCountAvailable = true;
-    result.executedDrawCount = group.visibleDrawCount;
-    return result;
+    submission.execution.mode = RHIIndirectExecutionMode::FixedCount;
+    submission.execution.maxDrawCount = group.visibleDrawCount;
+    return submission;
 }
 
 // ============================================================================

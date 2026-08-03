@@ -1,5 +1,6 @@
 #include "Common/GpuTestUtils.h"
 #include "Core/Core.h"
+#include "DX12IndirectExecution.h"
 #include "DX12Resources.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/PipelineCache.h"
@@ -12,7 +13,9 @@
 
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <memory>
+#include <utility>
 #include <vector>
 
 using namespace RVX;
@@ -21,6 +24,25 @@ namespace
 {
     namespace RTShadowBindings = RayTracingResourceBindings::Shadow;
     namespace RTReflectionBindings = RayTracingResourceBindings::Reflection;
+
+    class IndirectValidationBuffer final : public RHIBuffer
+    {
+    public:
+        explicit IndirectValidationBuffer(RHIBufferDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        uint64 GetSize() const override { return m_desc.size; }
+        RHIBufferUsage GetUsage() const override { return m_desc.usage; }
+        RHIMemoryType GetMemoryType() const override { return m_desc.memoryType; }
+        uint32 GetStride() const override { return m_desc.stride; }
+        void* Map() override { return nullptr; }
+        void Unmap() override {}
+
+    private:
+        RHIBufferDesc m_desc;
+    };
 
     std::filesystem::path FindRenderShaderDirectory()
     {
@@ -756,6 +778,136 @@ TEST(DX12Validation, BarrierNoWorkInputsAreSafe)
     ctx->End();
     EXPECT_EQ(device->SubmitCommandContext(ctx.Get(), nullptr), 0u);
     device->WaitIdle();
+}
+
+TEST(DX12Validation, IndirectRawValidationIsFailClosedAndPreservesZeroStrideCompatibility)
+{
+    const uint32 indexedStride =
+        GetDX12IndirectCommandStride(RHIIndirectCommandSemantic::DrawIndexed);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), indexedStride);
+    EXPECT_EQ(indexedStride,
+              NormalizeDX12IndirectCommandStride(
+                  RHIIndirectCommandSemantic::DrawIndexed, 0));
+
+    RHIBufferDesc validDesc;
+    validDesc.size = static_cast<uint64>(indexedStride) * 2u;
+    validDesc.usage = RHIBufferUsage::IndirectArgs;
+    IndirectValidationBuffer validBuffer(validDesc);
+
+    EXPECT_EQ(DX12IndirectValidationCode::Success,
+              ValidateDX12IndirectArgumentRange(
+                  nullptr,
+                  0,
+                  0,
+                  0,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::Success,
+              ValidateDX12IndirectArgumentRange(
+                  &validBuffer,
+                  0,
+                  2,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::MissingArgumentBuffer,
+              ValidateDX12IndirectArgumentRange(
+                  nullptr,
+                  0,
+                  1,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+
+    RHIBufferDesc wrongUsageDesc = validDesc;
+    wrongUsageDesc.usage = RHIBufferUsage::Structured;
+    IndirectValidationBuffer wrongUsageBuffer(wrongUsageDesc);
+    EXPECT_EQ(DX12IndirectValidationCode::ArgumentUsageMissing,
+              ValidateDX12IndirectArgumentRange(
+                  &wrongUsageBuffer,
+                  0,
+                  1,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::ArgumentOffsetMisaligned,
+              ValidateDX12IndirectArgumentRange(
+                  &validBuffer,
+                  2,
+                  1,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::CommandStrideInvalid,
+              ValidateDX12IndirectArgumentRange(
+                  &validBuffer,
+                  0,
+                  1,
+                  indexedStride + 4u,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::ArgumentRangeOutOfBounds,
+              ValidateDX12IndirectArgumentRange(
+                  &validBuffer,
+                  indexedStride,
+                  2,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::ArgumentRangeOverflow,
+              ValidateDX12IndirectArgumentRange(
+                  &validBuffer,
+                  std::numeric_limits<uint64>::max() - 3u,
+                  1,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+
+    RHIBufferDesc countDesc;
+    countDesc.size = sizeof(uint32);
+    countDesc.usage = RHIBufferUsage::IndirectArgs;
+    IndirectValidationBuffer countBuffer(countDesc);
+    EXPECT_EQ(DX12IndirectValidationCode::Success,
+              ValidateDX12IndirectCountRange(&countBuffer, 0).code);
+    EXPECT_EQ(DX12IndirectValidationCode::MissingCountBuffer,
+              ValidateDX12IndirectCountRange(nullptr, 0).code);
+    EXPECT_EQ(DX12IndirectValidationCode::CountOffsetMisaligned,
+              ValidateDX12IndirectCountRange(&countBuffer, 2).code);
+    EXPECT_EQ(DX12IndirectValidationCode::CountRangeOutOfBounds,
+              ValidateDX12IndirectCountRange(&countBuffer, sizeof(uint32)).code);
+    EXPECT_EQ(DX12IndirectValidationCode::CountRangeOverflow,
+              ValidateDX12IndirectCountRange(
+                  &countBuffer,
+                  std::numeric_limits<uint64>::max() - 3u).code);
+
+    const RHIIndirectCommandLayout standardLayout{
+        RHIIndirectCommandSemantic::DrawIndexed,
+        indexedStride,
+        RHIIndirectCommandStateInvalidation::None};
+    EXPECT_EQ(DX12IndirectValidationCode::Success,
+              ValidateDX12IndirectCommandLayout(standardLayout).code);
+    RHIIndirectCommandLayout rootInvalidatingLayout = standardLayout;
+    rootInvalidatingLayout.stateInvalidation =
+        RHIIndirectCommandStateInvalidation::RootConstants;
+    EXPECT_EQ(DX12IndirectValidationCode::StateInvalidationUnsupported,
+              ValidateDX12IndirectCommandLayout(rootInvalidatingLayout).code);
+
+    RHICapabilities capabilities;
+    capabilities.indexedIndirectExecution.supportsFixedCount = true;
+    capabilities.indexedIndirectExecution.supportsCountBuffer = false;
+    capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+    capabilities.indexedIndirectExecution.requiresExactCommandStride = true;
+    capabilities.indexedIndirectExecution.indexedCommandSize = indexedStride;
+    capabilities.indexedIndirectExecution.minCommandStride = indexedStride;
+    capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+    capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+    capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+    capabilities.indexedIndirectExecution.maxDrawCount = 1;
+    capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+
+    RHIIndexedIndirectExecutionDesc execution;
+    execution.argumentBuffer = &validBuffer;
+    execution.commandStride = indexedStride;
+    execution.maxDrawCount = 2;
+    EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::DrawCountExceedsCapability,
+              ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution).code);
+    execution.mode = RHIIndirectExecutionMode::CountBuffer;
+    execution.countBuffer = &countBuffer;
+    execution.maxDrawCount = 1;
+    EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CapabilityUnsupported,
+              ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution).code);
 }
 
 TEST(DX12Validation, Heap)

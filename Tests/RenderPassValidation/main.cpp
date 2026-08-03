@@ -696,6 +696,20 @@ namespace
             m_capabilities.supportsDefaultQueueFenceSignal = true;
             m_capabilities.supportsExplicitQueueFenceSignal = true;
             m_capabilities.supportsAsyncCompute = true;
+            m_capabilities.supportsIndirectDrawCount = true;
+            m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
+            m_capabilities.indexedIndirectExecution.supportsCountBuffer = true;
+            m_capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+            m_capabilities.indexedIndirectExecution.requiresExactCommandStride = true;
+            m_capabilities.indexedIndirectExecution.indexedCommandSize =
+                sizeof(IndirectDrawIndexedCommand);
+            m_capabilities.indexedIndirectExecution.minCommandStride =
+                sizeof(IndirectDrawIndexedCommand);
+            m_capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+            m_capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+            m_capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+            m_capabilities.indexedIndirectExecution.maxDrawCount = UINT32_MAX;
+            m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
             m_capabilities.dx12.resourceBindingTier = 2;
             m_capabilities.queueTopology.completionMode =
                 RHIQueueCompletionMode::NativeTimeline;

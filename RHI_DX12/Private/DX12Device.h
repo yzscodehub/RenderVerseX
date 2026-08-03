@@ -2,10 +2,12 @@
 
 #include "DX12Common.h"
 #include "DX12DescriptorHeap.h"
+#include "DX12IndirectExecution.h"
 #include "DX12PipelineCache.h"
 #include "DX12CommandAllocatorPool.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHICapabilities.h"
+#include "RHI/RHIIndirectExecution.h"
 #include <array>
 #include <functional>
 #include <atomic>
@@ -20,6 +22,17 @@ namespace RVX
     class DX12SwapChain;
     class DX12CommandContext;
     class DX12Fence;
+
+    struct DX12IndirectCommandLayoutHash
+    {
+        size_t operator()(const RHIIndirectCommandLayout& layout) const noexcept
+        {
+            const size_t semantic = static_cast<size_t>(layout.semantic);
+            const size_t stride = static_cast<size_t>(layout.commandStride);
+            const size_t invalidation = static_cast<size_t>(layout.stateInvalidation);
+            return semantic ^ (stride << 8) ^ (invalidation << 24);
+        }
+    };
     
     // Root Signature cache key
     struct RootSignatureCacheKey
@@ -147,9 +160,8 @@ namespace RVX
         
         ID3D12CommandQueue* GetQueue(RHICommandQueueType type) const;
 
-        ID3D12CommandSignature* GetDrawCommandSignature();
-        ID3D12CommandSignature* GetDrawIndexedCommandSignature();
-        ID3D12CommandSignature* GetDispatchCommandSignature();
+        ID3D12CommandSignature* GetCommandSignature(
+            const RHIIndirectCommandLayout& layout);
 
         #ifdef RVX_USE_D3D12MA
         D3D12MA::Allocator* GetMemoryAllocator() const { return m_memoryAllocator.Get(); }
@@ -195,10 +207,11 @@ namespace RVX
         ComPtr<ID3D12CommandQueue> m_computeQueue;
         ComPtr<ID3D12CommandQueue> m_copyQueue;
 
-        // Command Signatures (for indirect)
-        ComPtr<ID3D12CommandSignature> m_drawCommandSignature;
-        ComPtr<ID3D12CommandSignature> m_drawIndexedCommandSignature;
-        ComPtr<ID3D12CommandSignature> m_dispatchCommandSignature;
+        // Command signatures keyed by their semantic payload and state effects.
+        std::unordered_map<RHIIndirectCommandLayout,
+                           ComPtr<ID3D12CommandSignature>,
+                           DX12IndirectCommandLayoutHash> m_commandSignatures;
+        std::mutex m_commandSignatureMutex;
 
         // Frame synchronization
         ComPtr<ID3D12Fence> m_frameFence;

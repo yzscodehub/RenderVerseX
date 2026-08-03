@@ -1,11 +1,11 @@
 #include "DX12CommandContext.h"
 #include "DX12Device.h"
+#include "DX12IndirectExecution.h"
 #include "DX12Resources.h"
 #include "DX12Pipeline.h"
 #include "DX12Query.h"
 
 #include <algorithm>
-#include <limits>
 
 namespace RVX
 {
@@ -1292,23 +1292,37 @@ namespace RVX
 
     void DX12CommandContext::DrawIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride)
     {
-        FlushBarriers();
-        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
-        if (!dx12Buffer)
+        if (drawCount == 0)
             return;
-
-        if (stride == 0)
-            stride = sizeof(D3D12_DRAW_ARGUMENTS);
-
-        if (stride != sizeof(D3D12_DRAW_ARGUMENTS))
+        stride = NormalizeDX12IndirectCommandStride(
+            RHIIndirectCommandSemantic::Draw, stride);
+        const DX12IndirectValidationResult rangeValidation =
+            ValidateDX12IndirectArgumentRange(buffer,
+                                              offset,
+                                              drawCount,
+                                              stride,
+                                              RHIIndirectCommandSemantic::Draw);
+        if (!rangeValidation)
         {
-            RVX_RHI_WARN("DrawIndirect stride {} does not match D3D12_DRAW_ARGUMENTS size {}", stride, sizeof(D3D12_DRAW_ARGUMENTS));
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndirect rejected because {}",
+                          rangeValidation.message);
+            return;
         }
-
-        auto* signature = m_device->GetDrawCommandSignature();
+        auto* dx12Buffer = dynamic_cast<DX12Buffer*>(buffer);
+        if (dx12Buffer == nullptr || dx12Buffer->GetResource() == nullptr)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndirect rejected because the argument buffer is not a live DX12 buffer");
+            return;
+        }
+        constexpr RHIIndirectCommandLayout layout{
+            RHIIndirectCommandSemantic::Draw,
+            sizeof(D3D12_DRAW_ARGUMENTS),
+            RHIIndirectCommandStateInvalidation::None};
+        auto* signature = m_device->GetCommandSignature(layout);
         if (!signature)
             return;
 
+        FlushBarriers();
         m_commandList->ExecuteIndirect(
             signature,
             drawCount,
@@ -1320,23 +1334,54 @@ namespace RVX
 
     void DX12CommandContext::DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride)
     {
-        FlushBarriers();
-        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
-        if (!dx12Buffer)
+        if (drawCount == 0)
             return;
-
-        if (stride == 0)
-            stride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
-
-        if (stride != sizeof(D3D12_DRAW_INDEXED_ARGUMENTS))
+        stride = NormalizeDX12IndirectCommandStride(
+            RHIIndirectCommandSemantic::DrawIndexed, stride);
+        const RHICapabilities& capabilities = m_device->GetCapabilities();
+        RHIIndexedIndirectExecutionDesc execution;
+        execution.mode = RHIIndirectExecutionMode::FixedCount;
+        execution.argumentBuffer = buffer;
+        execution.argumentOffset = offset;
+        execution.commandStride = stride;
+        execution.maxDrawCount = drawCount;
+        execution.argumentState =
+            capabilities.indexedIndirectExecution.requiredArgumentState;
+        const RHIIndexedIndirectExecutionValidationResult contractValidation =
+            ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution);
+        if (!contractValidation)
         {
-            RVX_RHI_WARN("DrawIndexedIndirect stride {} does not match D3D12_DRAW_INDEXED_ARGUMENTS size {}", stride, sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirect rejected by the RHI contract: {}",
+                          contractValidation.message);
+            return;
         }
-
-        auto* signature = m_device->GetDrawIndexedCommandSignature();
+        const DX12IndirectValidationResult rangeValidation =
+            ValidateDX12IndirectArgumentRange(buffer,
+                                              offset,
+                                              drawCount,
+                                              stride,
+                                              RHIIndirectCommandSemantic::DrawIndexed);
+        if (!rangeValidation)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirect rejected because {}",
+                          rangeValidation.message);
+            return;
+        }
+        auto* dx12Buffer = dynamic_cast<DX12Buffer*>(buffer);
+        if (dx12Buffer == nullptr || dx12Buffer->GetResource() == nullptr)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirect rejected because the argument buffer is not a live DX12 buffer");
+            return;
+        }
+        constexpr RHIIndirectCommandLayout layout{
+            RHIIndirectCommandSemantic::DrawIndexed,
+            sizeof(IndirectDrawIndexedCommand),
+            RHIIndirectCommandStateInvalidation::None};
+        auto* signature = m_device->GetCommandSignature(layout);
         if (!signature)
             return;
 
+        FlushBarriers();
         m_commandList->ExecuteIndirect(
             signature,
             drawCount,
@@ -1353,26 +1398,65 @@ namespace RVX
                                                       uint32 maxDrawCount,
                                                       uint32 stride)
     {
-        FlushBarriers();
-        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
-        auto* dx12CountBuffer = static_cast<DX12Buffer*>(countBuffer);
-        if (!dx12Buffer || !dx12CountBuffer)
+        if (maxDrawCount == 0)
             return;
-
-        if (stride == 0)
-            stride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
-
-        if (stride != sizeof(D3D12_DRAW_INDEXED_ARGUMENTS))
+        stride = NormalizeDX12IndirectCommandStride(
+            RHIIndirectCommandSemantic::DrawIndexed, stride);
+        const RHICapabilities& capabilities = m_device->GetCapabilities();
+        RHIIndexedIndirectExecutionDesc execution;
+        execution.mode = RHIIndirectExecutionMode::CountBuffer;
+        execution.argumentBuffer = buffer;
+        execution.argumentOffset = offset;
+        execution.commandStride = stride;
+        execution.maxDrawCount = maxDrawCount;
+        execution.argumentState =
+            capabilities.indexedIndirectExecution.requiredArgumentState;
+        execution.countBuffer = countBuffer;
+        execution.countOffset = countOffset;
+        execution.countState =
+            capabilities.indexedIndirectExecution.requiredCountState;
+        const RHIIndexedIndirectExecutionValidationResult contractValidation =
+            ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution);
+        if (!contractValidation)
         {
-            RVX_RHI_WARN("DrawIndexedIndirectCount stride {} does not match D3D12_DRAW_INDEXED_ARGUMENTS size {}",
-                         stride,
-                         sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirectCount rejected by the RHI contract: {}",
+                          contractValidation.message);
+            return;
         }
-
-        auto* signature = m_device->GetDrawIndexedCommandSignature();
+        const DX12IndirectValidationResult rangeValidation =
+            ValidateDX12IndirectArgumentRange(buffer,
+                                              offset,
+                                              maxDrawCount,
+                                              stride,
+                                              RHIIndirectCommandSemantic::DrawIndexed);
+        const DX12IndirectValidationResult countValidation =
+            ValidateDX12IndirectCountRange(countBuffer, countOffset);
+        if (!rangeValidation || !countValidation)
+        {
+            const char* message = !rangeValidation
+                ? rangeValidation.message
+                : countValidation.message;
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirectCount rejected because {}",
+                          message);
+            return;
+        }
+        auto* dx12Buffer = dynamic_cast<DX12Buffer*>(buffer);
+        auto* dx12CountBuffer = dynamic_cast<DX12Buffer*>(countBuffer);
+        if (dx12Buffer == nullptr || dx12Buffer->GetResource() == nullptr ||
+            dx12CountBuffer == nullptr || dx12CountBuffer->GetResource() == nullptr)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirectCount rejected because a buffer is not a live DX12 buffer");
+            return;
+        }
+        constexpr RHIIndirectCommandLayout layout{
+            RHIIndirectCommandSemantic::DrawIndexed,
+            sizeof(IndirectDrawIndexedCommand),
+            RHIIndirectCommandStateInvalidation::None};
+        auto* signature = m_device->GetCommandSignature(layout);
         if (!signature)
             return;
 
+        FlushBarriers();
         m_commandList->ExecuteIndirect(
             signature,
             maxDrawCount,
@@ -1393,15 +1477,33 @@ namespace RVX
 
     void DX12CommandContext::DispatchIndirect(RHIBuffer* buffer, uint64 offset)
     {
-        FlushBarriers();
-        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
-        if (!dx12Buffer)
+        const DX12IndirectValidationResult rangeValidation =
+            ValidateDX12IndirectArgumentRange(buffer,
+                                              offset,
+                                              1,
+                                              sizeof(D3D12_DISPATCH_ARGUMENTS),
+                                              RHIIndirectCommandSemantic::Dispatch);
+        if (!rangeValidation)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DispatchIndirect rejected because {}",
+                          rangeValidation.message);
             return;
-
-        auto* signature = m_device->GetDispatchCommandSignature();
+        }
+        auto* dx12Buffer = dynamic_cast<DX12Buffer*>(buffer);
+        if (dx12Buffer == nullptr || dx12Buffer->GetResource() == nullptr)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DispatchIndirect rejected because the argument buffer is not a live DX12 buffer");
+            return;
+        }
+        constexpr RHIIndirectCommandLayout layout{
+            RHIIndirectCommandSemantic::Dispatch,
+            sizeof(D3D12_DISPATCH_ARGUMENTS),
+            RHIIndirectCommandStateInvalidation::None};
+        auto* signature = m_device->GetCommandSignature(layout);
         if (!signature)
             return;
 
+        FlushBarriers();
         m_commandList->ExecuteIndirect(
             signature,
             1,

@@ -5,6 +5,7 @@
 #include "Render/Renderer/RenderDrawPacket.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/Submission/RenderSubmissionStrategy.h"
 #include "Render/Visibility/RenderVisibility.h"
 #include "RenderContracts/RenderFramePacket.h"
 #include "Resources/RenderRetirementQueue.h"
@@ -142,7 +143,19 @@ namespace
         void SetScissor(const RHIRect&) override {}
         void SetScissors(std::span<const RHIRect>) override {}
         void Draw(uint32, uint32 = 1, uint32 = 0, uint32 = 0) override {}
-        void DrawIndexed(uint32, uint32 = 1, uint32 = 0, int32 = 0, uint32 = 0) override {}
+        void DrawIndexed(uint32 indexCount,
+                         uint32 instanceCount = 1,
+                         uint32 firstIndex = 0,
+                         int32 vertexOffset = 0,
+                         uint32 firstInstance = 0) override
+        {
+            ++drawIndexedCalls;
+            lastDirectIndexCount = indexCount;
+            lastDirectInstanceCount = instanceCount;
+            lastDirectFirstIndex = firstIndex;
+            lastDirectVertexOffset = vertexOffset;
+            lastDirectFirstInstance = firstInstance;
+        }
         void DrawIndirect(RHIBuffer*, uint64, uint32, uint32) override {}
         void DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) override
         {
@@ -150,6 +163,21 @@ namespace
             lastIndirectBuffer = buffer;
             lastIndirectOffset = offset;
             lastIndirectDrawCount = drawCount;
+            lastIndirectStride = stride;
+        }
+        void DrawIndexedIndirectCount(RHIBuffer* buffer,
+                                      uint64 offset,
+                                      RHIBuffer* countBuffer,
+                                      uint64 countOffset,
+                                      uint32 maxDrawCount,
+                                      uint32 stride) override
+        {
+            ++drawIndexedIndirectCountCalls;
+            lastIndirectBuffer = buffer;
+            lastIndirectOffset = offset;
+            lastCountBuffer = countBuffer;
+            lastCountOffset = countOffset;
+            lastIndirectDrawCount = maxDrawCount;
             lastIndirectStride = stride;
         }
         void Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ) override
@@ -189,9 +217,18 @@ namespace
         void SignalFence(RHIFence*, uint64) override {}
         void WaitFence(RHIFence*, uint64) override {}
 
+        uint32 drawIndexedCalls = 0;
         uint32 drawIndexedIndirectCalls = 0;
+        uint32 drawIndexedIndirectCountCalls = 0;
+        uint32 lastDirectIndexCount = 0;
+        uint32 lastDirectInstanceCount = 0;
+        uint32 lastDirectFirstIndex = 0;
+        int32 lastDirectVertexOffset = 0;
+        uint32 lastDirectFirstInstance = 0;
         RHIBuffer* lastIndirectBuffer = nullptr;
+        RHIBuffer* lastCountBuffer = nullptr;
         uint64 lastIndirectOffset = 0;
+        uint64 lastCountOffset = 0;
         uint32 lastIndirectDrawCount = 0;
         uint32 lastIndirectStride = 0;
         std::vector<RHIBufferBarrier> bufferBarriers;
@@ -201,6 +238,24 @@ namespace
     class FakeDevice final : public IRHIDevice
     {
     public:
+        FakeDevice()
+        {
+            capabilities.indexedIndirectExecution.supportsFixedCount = true;
+            capabilities.indexedIndirectExecution.supportsCountBuffer = true;
+            capabilities.supportsIndirectDrawCount = true;
+            capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+            capabilities.indexedIndirectExecution.requiresExactCommandStride = true;
+            capabilities.indexedIndirectExecution.indexedCommandSize =
+                sizeof(IndirectDrawIndexedCommand);
+            capabilities.indexedIndirectExecution.minCommandStride =
+                sizeof(IndirectDrawIndexedCommand);
+            capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+            capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+            capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+            capabilities.indexedIndirectExecution.maxDrawCount = UINT32_MAX;
+            capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+        }
+
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             RHIBufferRef buffer(new FakeBuffer(desc, bufferLifetimeState));
@@ -295,6 +350,59 @@ namespace
         std::vector<RHIFenceRef> fences;
         std::shared_ptr<BufferLifetimeState> bufferLifetimeState;
     };
+
+    class FakeEncodedCommandBuffer final : public RHIEncodedCommandBuffer
+    {
+    public:
+        explicit FakeEncodedCommandBuffer(RHIBackendType backendType)
+            : m_backendType(backendType)
+        {
+        }
+
+        RHIBackendType GetBackendType() const override { return m_backendType; }
+
+    private:
+        RHIBackendType m_backendType = RHIBackendType::None;
+    };
+
+    class FakeEncodedSubmissionStrategy final : public IRenderSubmissionStrategy
+    {
+    public:
+        RenderSubmissionResult Submit(
+            RHICommandContext&,
+            const RenderSubmissionRequest& request) const override
+        {
+            RenderSubmissionResult result;
+            if (request.kind != RenderSubmissionKind::EncodedCommandBuffer)
+            {
+                result.validationCode =
+                    RenderSubmissionValidationCode::UnsupportedSubmissionKind;
+                return result;
+            }
+            if (request.encodedCommandBuffer.commandBuffer == nullptr ||
+                request.encodedCommandBuffer.commandBuffer->GetBackendType() !=
+                    RHIBackendType::Metal)
+            {
+                result.validationCode = RenderSubmissionValidationCode::InvalidRequest;
+                return result;
+            }
+            result.recorded = true;
+            result.submittedDrawUpperBound = 1;
+            return result;
+        }
+    };
+
+    RenderSubmissionResult RecordIndexedIndirectSubmission(
+        FakeCommandContext& context,
+        const GPUCullingIndexedIndirectSubmission& cullingSubmission)
+    {
+        RenderSubmissionRequest request;
+        request.kind = RenderSubmissionKind::IndexedIndirect;
+        request.indexedIndirect = cullingSubmission.execution;
+        request.capabilities = cullingSubmission.capabilities;
+        const IndexedIndirectRenderSubmissionStrategy strategy;
+        return strategy.Submit(context, request);
+    }
 
     template <typename T>
     T ReadBufferValue(const FakeBuffer& buffer, size_t index = 0)
@@ -654,8 +762,16 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackCullsInstancesAndBuildsIndirectCom
     EXPECT_EQ(command.indexCount, uploadedCommand.indexCount);
     EXPECT_EQ(command.firstInstance, uploadedCommand.firstInstance);
 
-    const GPUIndirectDrawSubmission submission =
-        culling.DrawIndexedIndirect(ctx);
+    const GPUCullingIndexedIndirectSubmission cullingSubmission =
+        culling.BuildIndexedIndirectSubmission();
+    EXPECT_EQ(RHIIndirectExecutionMode::FixedCount,
+              cullingSubmission.execution.mode);
+    EXPECT_EQ(culling.GetIndirectBuffer(),
+              cullingSubmission.execution.argumentBuffer);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand),
+              cullingSubmission.execution.commandStride);
+    const RenderSubmissionResult submission =
+        RecordIndexedIndirectSubmission(ctx, cullingSubmission);
     EXPECT_TRUE(submission.recorded);
     EXPECT_EQ(1u, submission.submittedDrawUpperBound);
     EXPECT_TRUE(submission.executedDrawCountAvailable);
@@ -1050,8 +1166,13 @@ TEST_F(GPUDrivenValidationFixture, DrawIndexedIndirectHonorsMaxDrawCount)
     culling.Cull(ctx, TestView(), TestProjection());
     ASSERT_EQ(2u, culling.GetDrawCount());
 
-    const GPUIndirectDrawSubmission submission =
-        culling.DrawIndexedIndirect(ctx, 1);
+    const GPUCullingIndexedIndirectSubmission cullingSubmission =
+        culling.BuildIndexedIndirectSubmission(1);
+    EXPECT_EQ(RHIIndirectExecutionMode::FixedCount,
+              cullingSubmission.execution.mode);
+    EXPECT_EQ(1u, cullingSubmission.execution.maxDrawCount);
+    const RenderSubmissionResult submission =
+        RecordIndexedIndirectSubmission(ctx, cullingSubmission);
     EXPECT_TRUE(submission.recorded);
     EXPECT_EQ(1u, submission.submittedDrawUpperBound);
     EXPECT_TRUE(submission.executedDrawCountAvailable);
@@ -1115,25 +1236,153 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuildsMeshGroupedIndirectRanges)
     EXPECT_EQ(24u, secondGroupCommand.indexCount);
     EXPECT_EQ(2u, secondGroupCommand.firstInstance);
 
-    EXPECT_FALSE(culling.DrawIndexedIndirect(ctx).recorded);
+    const GPUCullingIndexedIndirectSubmission wholeSubmission =
+        culling.BuildIndexedIndirectSubmission();
+    EXPECT_EQ(nullptr, wholeSubmission.execution.argumentBuffer);
     EXPECT_EQ(0u, ctx.drawIndexedIndirectCalls);
 
-    const GPUIndirectDrawSubmission firstSubmission =
-        culling.DrawIndexedIndirectGroup(ctx, 0);
+    const GPUCullingIndexedIndirectSubmission firstCullingSubmission =
+        culling.BuildIndexedIndirectGroupSubmission(0);
+    EXPECT_EQ(RHIIndirectExecutionMode::FixedCount,
+              firstCullingSubmission.execution.mode);
+    EXPECT_EQ(0u, firstCullingSubmission.execution.argumentOffset);
+    const RenderSubmissionResult firstSubmission =
+        RecordIndexedIndirectSubmission(ctx, firstCullingSubmission);
     EXPECT_TRUE(firstSubmission.recorded);
     EXPECT_EQ(1u, firstSubmission.submittedDrawUpperBound);
     EXPECT_TRUE(firstSubmission.executedDrawCountAvailable);
     EXPECT_EQ(1u, firstSubmission.executedDrawCount);
     EXPECT_EQ(0u, ctx.lastIndirectOffset);
     EXPECT_EQ(1u, ctx.lastIndirectDrawCount);
-    const GPUIndirectDrawSubmission secondSubmission =
-        culling.DrawIndexedIndirectGroup(ctx, 1);
+    const GPUCullingIndexedIndirectSubmission secondCullingSubmission =
+        culling.BuildIndexedIndirectGroupSubmission(1);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand) * 2u,
+              secondCullingSubmission.execution.argumentOffset);
+    const RenderSubmissionResult secondSubmission =
+        RecordIndexedIndirectSubmission(ctx, secondCullingSubmission);
     EXPECT_TRUE(secondSubmission.recorded);
     EXPECT_EQ(1u, secondSubmission.submittedDrawUpperBound);
     EXPECT_TRUE(secondSubmission.executedDrawCountAvailable);
     EXPECT_EQ(1u, secondSubmission.executedDrawCount);
     EXPECT_EQ(sizeof(IndirectDrawIndexedCommand) * 2u, ctx.lastIndirectOffset);
     EXPECT_EQ(1u, ctx.lastIndirectDrawCount);
+}
+
+TEST(RenderSubmissionStrategyValidation, DirectStrategyRecordsExactResultSemantics)
+{
+    FakeCommandContext context;
+    RenderSubmissionRequest request;
+    request.kind = RenderSubmissionKind::DirectIndexed;
+    request.directIndexed = {36u, 2u, 7u, -3, 4u};
+
+    const DirectRenderSubmissionStrategy strategy;
+    const RenderSubmissionResult result = strategy.Submit(context, request);
+
+    EXPECT_EQ(RenderSubmissionValidationCode::Success, result.validationCode);
+    EXPECT_TRUE(result.recorded);
+    EXPECT_EQ(1u, result.submittedDrawUpperBound);
+    EXPECT_TRUE(result.executedDrawCountAvailable);
+    EXPECT_EQ(1u, result.executedDrawCount);
+    EXPECT_EQ(1u, context.drawIndexedCalls);
+    EXPECT_EQ(36u, context.lastDirectIndexCount);
+    EXPECT_EQ(2u, context.lastDirectInstanceCount);
+    EXPECT_EQ(7u, context.lastDirectFirstIndex);
+    EXPECT_EQ(-3, context.lastDirectVertexOffset);
+    EXPECT_EQ(4u, context.lastDirectFirstInstance);
+}
+
+TEST(RenderSubmissionStrategyValidation, IndexedStrategyPreservesFixedAndCountSemantics)
+{
+    FakeDevice device;
+    RHIBufferDesc argumentDesc;
+    argumentDesc.size = sizeof(IndirectDrawIndexedCommand) * 2u;
+    argumentDesc.usage = RHIBufferUsage::IndirectArgs;
+    FakeBuffer argumentBuffer(argumentDesc);
+
+    RHIBufferDesc countDesc;
+    countDesc.size = sizeof(uint32);
+    countDesc.usage = RHIBufferUsage::IndirectArgs;
+    FakeBuffer countBuffer(countDesc);
+
+    FakeCommandContext context;
+    RenderSubmissionRequest fixedRequest;
+    fixedRequest.kind = RenderSubmissionKind::IndexedIndirect;
+    fixedRequest.capabilities = &device.capabilities;
+    fixedRequest.indexedIndirect.argumentBuffer = &argumentBuffer;
+    fixedRequest.indexedIndirect.commandStride = sizeof(IndirectDrawIndexedCommand);
+    fixedRequest.indexedIndirect.maxDrawCount = 2;
+
+    const IndexedIndirectRenderSubmissionStrategy strategy;
+    const RenderSubmissionResult fixedResult = strategy.Submit(context, fixedRequest);
+    EXPECT_EQ(RenderSubmissionValidationCode::Success, fixedResult.validationCode);
+    EXPECT_TRUE(fixedResult.recorded);
+    EXPECT_EQ(2u, fixedResult.submittedDrawUpperBound);
+    EXPECT_TRUE(fixedResult.executedDrawCountAvailable);
+    EXPECT_EQ(2u, fixedResult.executedDrawCount);
+    EXPECT_EQ(1u, context.drawIndexedIndirectCalls);
+    EXPECT_EQ(0u, context.drawIndexedIndirectCountCalls);
+
+    RenderSubmissionRequest countRequest = fixedRequest;
+    countRequest.indexedIndirect.mode = RHIIndirectExecutionMode::CountBuffer;
+    countRequest.indexedIndirect.countBuffer = &countBuffer;
+    const RenderSubmissionResult countResult = strategy.Submit(context, countRequest);
+    EXPECT_EQ(RenderSubmissionValidationCode::Success, countResult.validationCode);
+    EXPECT_TRUE(countResult.recorded);
+    EXPECT_EQ(2u, countResult.submittedDrawUpperBound);
+    EXPECT_FALSE(countResult.executedDrawCountAvailable);
+    EXPECT_EQ(0u, countResult.executedDrawCount);
+    EXPECT_EQ(1u, context.drawIndexedIndirectCalls);
+    EXPECT_EQ(1u, context.drawIndexedIndirectCountCalls);
+}
+
+TEST(RenderSubmissionStrategyValidation, IndexedStrategyZeroAndInvalidRequestsNeverRecord)
+{
+    FakeDevice device;
+    FakeCommandContext context;
+    const IndexedIndirectRenderSubmissionStrategy strategy;
+
+    RenderSubmissionRequest zeroRequest;
+    zeroRequest.kind = RenderSubmissionKind::IndexedIndirect;
+    zeroRequest.capabilities = &device.capabilities;
+    zeroRequest.indexedIndirect.maxDrawCount = 0;
+    const RenderSubmissionResult zeroResult = strategy.Submit(context, zeroRequest);
+    EXPECT_EQ(RenderSubmissionValidationCode::Success, zeroResult.validationCode);
+    EXPECT_FALSE(zeroResult.recorded);
+    EXPECT_TRUE(zeroResult.executedDrawCountAvailable);
+    EXPECT_EQ(0u, zeroResult.executedDrawCount);
+
+    RenderSubmissionRequest invalidRequest = zeroRequest;
+    invalidRequest.indexedIndirect.maxDrawCount = 1;
+    const RenderSubmissionResult invalidResult = strategy.Submit(context, invalidRequest);
+    EXPECT_EQ(RenderSubmissionValidationCode::IndexedIndirectValidationFailed,
+              invalidResult.validationCode);
+    EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::MissingArgumentBuffer,
+              invalidResult.indexedIndirectValidationCode);
+    EXPECT_FALSE(invalidResult.recorded);
+    EXPECT_EQ(0u, context.drawIndexedIndirectCalls);
+    EXPECT_EQ(0u, context.drawIndexedIndirectCountCalls);
+}
+
+TEST(RenderSubmissionStrategyValidation, EncodedExtensionUsesFrozenTypedRequestBoundary)
+{
+    FakeCommandContext context;
+    FakeEncodedCommandBuffer encodedCommandBuffer(RHIBackendType::Metal);
+    RenderSubmissionRequest request;
+    request.kind = RenderSubmissionKind::EncodedCommandBuffer;
+    request.encodedCommandBuffer.commandBuffer = &encodedCommandBuffer;
+
+    const DirectRenderSubmissionStrategy directStrategy;
+    EXPECT_EQ(RenderSubmissionValidationCode::UnsupportedSubmissionKind,
+              directStrategy.Submit(context, request).validationCode);
+    const IndexedIndirectRenderSubmissionStrategy indexedStrategy;
+    EXPECT_EQ(RenderSubmissionValidationCode::UnsupportedSubmissionKind,
+              indexedStrategy.Submit(context, request).validationCode);
+
+    const FakeEncodedSubmissionStrategy encodedStrategy;
+    const RenderSubmissionResult result = encodedStrategy.Submit(context, request);
+    EXPECT_EQ(RenderSubmissionValidationCode::Success, result.validationCode);
+    EXPECT_TRUE(result.recorded);
+    EXPECT_EQ(1u, result.submittedDrawUpperBound);
 }
 
 TEST_F(GPUDrivenValidationFixture, DrawItemsMapBackThroughVisibleSourceIndices)
@@ -1731,7 +1980,9 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingDeclaresComputeCompactionAndIndirec
               std::string::npos);
     EXPECT_NE(source.find("ctx.SetDescriptorSet(0, inputs->descriptorSet.Get())"),
               std::string::npos);
-    EXPECT_NE(source.find("ctx.DrawIndexedIndirectCount"), std::string::npos);
+    EXPECT_NE(source.find("BuildIndexedIndirectGroupSubmission"), std::string::npos);
+    EXPECT_NE(header.find("RHIIndexedIndirectExecutionDesc"), std::string::npos);
+    EXPECT_EQ(source.find("ctx.DrawIndexedIndirectCount"), std::string::npos);
     EXPECT_NE(source.find("GPUCulling.InstanceIndexBuffer"), std::string::npos);
     EXPECT_NE(source.find("RHIBufferUsage::Vertex"), std::string::npos);
     EXPECT_NE(source.find("(static_cast<uint64>(m_config.maxInstances) + 1u)"),
@@ -1850,7 +2101,8 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     EXPECT_EQ(opaqueHeader.find("SetGPUDriven" "RenderGraphResources"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("TryDrawGPUDrivenIndirect"), std::string::npos);
-    EXPECT_NE(opaqueSource.find("DrawIndexedIndirectGroup"), std::string::npos);
+    EXPECT_NE(opaqueSource.find("BuildIndexedIndirectGroupSubmission"), std::string::npos);
+    EXPECT_NE(opaqueSource.find("IndexedIndirectRenderSubmissionStrategy"), std::string::npos);
     EXPECT_NE(opaqueSource.find("ctx.SetVertexBuffer(6, m_gpuCulling->GetInstanceIndexBuffer())"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("TransitionGPUDrivenGroupMaterialTextures"),

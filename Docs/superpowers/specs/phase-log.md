@@ -45751,3 +45751,109 @@ below.
   cache DX12 signatures by semantic layout, and formalize state rebind behavior.
 
 ---
+
+### R-SP344 Render-policy Task 10B submission strategies and DX12 Tier 1 execution
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 10B stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP343 (semantic indexed-indirect RHI contract).
+- Structured capabilities, descriptors, validation codes, and fixed/count
+  semantics are stable, so backend execution can consume one renderer-owned
+  strategy boundary without backend-name inference.
+
+**Approved scope:**
+
+- Add one stateless `IRenderSubmissionStrategy` request/result contract with
+  Direct indexed and validated standard indexed-indirect implementations.
+- Freeze a typed backend-native encoded-command-buffer request branch for Task
+  13 without adding a Metal object, execution implementation, or sample policy.
+- Make `GPUCulling` publish only semantic indirect descriptors; keep visibility,
+  grouping, bindings, policy, and result truth outside the culling producer.
+- Route Depth/Opaque Direct and Tier 1 recording through the strategy after the
+  pass has bound pipeline, descriptors, vertex streams, and index state.
+- Cache DX12 command signatures by backend-neutral semantic layout; retain the
+  public raw zero-stride compatibility normalization while rejecting invalid
+  capability, maximum-count, usage, alignment, exact-stride, overflow, range,
+  native-buffer, and count-buffer inputs before `ExecuteIndirect`.
+- State explicitly that the current standard Draw, DrawIndexed, and Dispatch
+  layouts contain no root arguments and therefore invalidate no root state.
+  Future invalidating layouts fail closed until precise replay is implemented.
+- Keep Vulkan count, Metal ICB execution, GPU Scene, compatibility closure,
+  Auto tuning, promotion, and Task 10C machine evidence out of this slice.
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHIIndirectExecution.h`
+- `RHI_DX12/Private/DX12IndirectExecution.h`
+- `RHI_DX12/Private/DX12IndirectExecution.cpp`
+- `RHI_DX12/Private/DX12Device.h`
+- `RHI_DX12/Private/DX12Device.cpp`
+- `RHI_DX12/Private/DX12CommandContext.cpp`
+- `RHI_DX12/CMakeLists.txt`
+- `Render/Include/Render/Submission/RenderSubmissionStrategy.h`
+- `Render/Private/Submission/RenderSubmissionStrategy.cpp`
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/DX12Validation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Scripts/check_architecture_phase_gates.py`
+- Task 10 plans and this phase record.
+
+**Validation result:**
+
+- Serial build: PASS for `RVX_RHI_DX12`, `DX12Validation`,
+  `RHIContractValidation`, `GPUDrivenValidation`, `RenderPolicyValidation`, and
+  `RenderPassValidation`. An initial broad MSVC build hit transient `D8040`;
+  the unchanged serial retry passed.
+- Focused DX12 raw indirect validation: PASS 1/1.
+- RHIContractValidation: PASS 44/44.
+- GPUDrivenValidation: PASS 34/34.
+- RenderPolicyValidation: PASS 22/22.
+- RenderPassValidation: PASS 194/194.
+- Focused CTest registration/execution: PASS 256/256.
+- Full architecture phase gate including the M2 Task 10B cut: PASS.
+- `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Initial review found P0/P1/P2/P3 `0/4/1/0`: the encoded request was not wired
+  into the shared strategy, public RHI exposed a Metal-only enum, raw DX12
+  zero-stride compatibility regressed, culling published unvalidated result
+  metadata, and the highest-risk DX12 raw path lacked executable coverage.
+- Remediation froze the typed encoded request in the shared interface, reused
+  generic `RHIBackendType`, restored normalization, removed result metadata,
+  moved signature hashing to DX12 private code, made raw indexed entries consume
+  Task 10A capability/max-count validation, and extracted production-shared
+  DX12 validation helpers with runtime coverage.
+- Re-review found final unresolved P0/P1/P2/P3 `0/0/0/0`; verdict: ready.
+
+**Primary review status:**
+
+- PASS after complete public RHI, backend, Render, test, CMake, script, and plan
+  diff inspection; adjudication of every review finding; independent serial
+  builds; direct execution of all focused binaries; the 256-test CTest set;
+  the full architecture gate; and whitespace validation.
+- No `RenderSubmissionMode` value, visual golden, tolerance, assertion strength,
+  shader ABI, Vulkan count implementation, Metal ICB implementation, or sample
+  rendering policy changed.
+
+**Residual risks / follow-ups:**
+
+- This slice validates the DX12 raw contract and compiles the native backend,
+  but does not yet claim a full Debug Layer/GBV hardware `ExecuteIndirect`
+  matrix; Task 10C owns that runtime evidence and the M2 aggregate artifact.
+- Native Vulkan and Metal runtime coverage remains unavailable on this Windows
+  host and cannot be promoted by the DX12 result.
+- Task 13 may implement a Metal-private encoded command buffer behind the frozen
+  typed request; any shared contract revision requires a new cross-backend
+  freeze rather than a backend-local shortcut.
+
+---

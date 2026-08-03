@@ -886,58 +886,65 @@ namespace RVX
         }
     }
 
-    ID3D12CommandSignature* DX12Device::GetDrawCommandSignature()
+    ID3D12CommandSignature* DX12Device::GetCommandSignature(
+        const RHIIndirectCommandLayout& layout)
     {
-        if (!m_drawCommandSignature)
+        const DX12IndirectValidationResult layoutValidation =
+            ValidateDX12IndirectCommandLayout(layout);
+        if (!layoutValidation)
         {
-            D3D12_INDIRECT_ARGUMENT_DESC arg = {};
-            arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
-
-            D3D12_COMMAND_SIGNATURE_DESC desc = {};
-            desc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS);
-            desc.NumArgumentDescs = 1;
-            desc.pArgumentDescs = &arg;
-
-            DX12_CHECK(m_device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&m_drawCommandSignature)));
+            RVX_RHI_ERROR("DX12 command signature rejected: {}",
+                          layoutValidation.message);
+            return nullptr;
         }
 
-        return m_drawCommandSignature.Get();
-    }
-
-    ID3D12CommandSignature* DX12Device::GetDrawIndexedCommandSignature()
-    {
-        if (!m_drawIndexedCommandSignature)
+        D3D12_INDIRECT_ARGUMENT_TYPE argumentType =
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+        switch (layout.semantic)
         {
-            D3D12_INDIRECT_ARGUMENT_DESC arg = {};
-            arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
-
-            D3D12_COMMAND_SIGNATURE_DESC desc = {};
-            desc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
-            desc.NumArgumentDescs = 1;
-            desc.pArgumentDescs = &arg;
-
-            DX12_CHECK(m_device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&m_drawIndexedCommandSignature)));
+            case RHIIndirectCommandSemantic::Draw:
+                argumentType = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+                break;
+            case RHIIndirectCommandSemantic::DrawIndexed:
+                argumentType = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+                break;
+            case RHIIndirectCommandSemantic::Dispatch:
+                argumentType = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+                break;
+            default:
+                RVX_RHI_ERROR("DX12 command signature rejected: invalid semantic layout");
+                return nullptr;
+        }
+        std::lock_guard<std::mutex> lock(m_commandSignatureMutex);
+        const auto cached = m_commandSignatures.find(layout);
+        if (cached != m_commandSignatures.end())
+        {
+            return cached->second.Get();
         }
 
-        return m_drawIndexedCommandSignature.Get();
-    }
+        D3D12_INDIRECT_ARGUMENT_DESC argument = {};
+        argument.Type = argumentType;
+        D3D12_COMMAND_SIGNATURE_DESC desc = {};
+        desc.ByteStride = layout.commandStride;
+        desc.NumArgumentDescs = 1;
+        desc.pArgumentDescs = &argument;
 
-    ID3D12CommandSignature* DX12Device::GetDispatchCommandSignature()
-    {
-        if (!m_dispatchCommandSignature)
+        ComPtr<ID3D12CommandSignature> signature;
+        const HRESULT result = m_device->CreateCommandSignature(
+            &desc, nullptr, IID_PPV_ARGS(&signature));
+        if (FAILED(result))
         {
-            D3D12_INDIRECT_ARGUMENT_DESC arg = {};
-            arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
-
-            D3D12_COMMAND_SIGNATURE_DESC desc = {};
-            desc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
-            desc.NumArgumentDescs = 1;
-            desc.pArgumentDescs = &arg;
-
-            DX12_CHECK(m_device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&m_dispatchCommandSignature)));
+            RVX_RHI_ERROR("DX12 command signature creation failed (semantic {}, stride {}, HRESULT {:#x})",
+                          static_cast<uint32>(layout.semantic),
+                          layout.commandStride,
+                          static_cast<uint32>(result));
+            return nullptr;
         }
 
-        return m_dispatchCommandSignature.Get();
+        auto [inserted, wasInserted] =
+            m_commandSignatures.emplace(layout, std::move(signature));
+        (void)wasInserted;
+        return inserted->second.Get();
     }
 
     // =============================================================================

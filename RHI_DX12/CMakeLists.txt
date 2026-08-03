@@ -6,6 +6,7 @@ add_library(RVX_RHI_DX12 STATIC)
 target_sources(RVX_RHI_DX12 PRIVATE
     Private/DX12Device.cpp
     Private/DX12CommandContext.cpp
+    Private/DX12IndirectExecution.cpp
     Private/DX12CommandAllocatorPool.cpp
     Private/DX12Resources.cpp
     Private/DX12Pipeline.cpp

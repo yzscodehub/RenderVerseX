@@ -1,8 +1,7 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, and Task 10A
-semantic indirect RHI contract/conformance are complete and reviewed; Task 10B
-submission strategies and DX12 Tier 1 implementation are next.
+**Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, and Tasks 10A/10B
+are complete and reviewed; Task 10C M2 validation/evidence freeze is next.
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -695,8 +694,8 @@ and bypass. Task 9B-6B1 then closed typed Opaque color/depth attachment
 ownership, fail-closed source validation, and completion retention. Task
 9B-6B2a moved the primary directional light into the frame snapshot, and Task
 9B-6B2b removed the final Depth/Opaque/Shadow standalone frame-state paths.
-All Task 9 slices and Task 10A passed independent and primary review; Task 10B
-is next.
+All Task 9 slices and Tasks 10A/10B passed independent and primary review;
+Task 10C is next.
 
 Proposed files:
 
@@ -729,11 +728,12 @@ Acceptance:
 
 **Purpose:** Separate renderer grouping/visibility from backend execution.
 
-**Progress:** Task 10A is complete. The public RHI now owns a validated,
+**Progress:** Tasks 10A and 10B are complete. The public RHI owns a validated,
 schema-versioned indexed-indirect capability/descriptor contract; renderer and
-GPU-driven decisions consume that structured record. Task 10B owns strategy
-interfaces, DX12 command-signature caching, validated execution routing, and
-state rebind behavior. Task 10C remains the M2 evidence/freeze gate.
+GPU-driven decisions consume that structured record through one formal Direct,
+fixed/count, and typed backend-native extension strategy boundary. DX12 caches
+semantic command layouts and validates raw execution defensively. Task 10C is
+the remaining M2 evidence/freeze gate.
 
 Proposed files:
 

@@ -4081,6 +4081,88 @@ def check_p75_p80_runtime_visible_rendering_contract(root: Path) -> list[Finding
     return findings
 
 
+def check_m2_submission_strategy_cut(root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    for rel_path, needle, message in [
+        (
+            "Render/Include/Render/Submission/RenderSubmissionStrategy.h",
+            "class IRenderSubmissionStrategy",
+            "Task 10B must retain one formal renderer submission strategy interface.",
+        ),
+        (
+            "Render/Include/Render/Submission/RenderSubmissionStrategy.h",
+            "EncodedCommandBuffer",
+            "Task 10B must freeze the typed backend-native strategy extension branch.",
+        ),
+        (
+            "Render/Private/Passes/DepthPrepass.cpp",
+            "DirectRenderSubmissionStrategy",
+            "Task 10B Depth Direct recording must use the shared strategy interface.",
+        ),
+        (
+            "Render/Private/Passes/DepthPrepass.cpp",
+            "IndexedIndirectRenderSubmissionStrategy",
+            "Task 10B Depth indirect recording must use the shared strategy interface.",
+        ),
+        (
+            "Render/Private/Passes/OpaquePass.cpp",
+            "DirectRenderSubmissionStrategy",
+            "Task 10B Opaque Direct recording must use the shared strategy interface.",
+        ),
+        (
+            "Render/Private/Passes/OpaquePass.cpp",
+            "IndexedIndirectRenderSubmissionStrategy",
+            "Task 10B Opaque indirect recording must use the shared strategy interface.",
+        ),
+        (
+            "RHI_DX12/Private/DX12CommandContext.cpp",
+            "ValidateRHIIndexedIndirectExecutionDesc",
+            "Task 10B DX12 raw indexed-indirect entries must enforce the shared RHI contract.",
+        ),
+        (
+            "RHI_DX12/Private/DX12CommandContext.cpp",
+            "NormalizeDX12IndirectCommandStride",
+            "Task 10B DX12 raw entries must preserve zero-stride compatibility before validation.",
+        ),
+        (
+            "RHI_DX12/Private/DX12Device.h",
+            "m_commandSignatures",
+            "Task 10B DX12 command signatures must remain cached by semantic layout.",
+        ),
+        (
+            "Tests/DX12Validation/main.cpp",
+            "IndirectRawValidationIsFailClosedAndPreservesZeroStrideCompatibility",
+            "Task 10B must retain executable DX12 raw indirect validation coverage.",
+        ),
+        (
+            "Tests/GPUDrivenValidation/main.cpp",
+            "EncodedExtensionUsesFrozenTypedRequestBoundary",
+            "Task 10B must retain executable typed-extension strategy coverage.",
+        ),
+    ]:
+        require_contains(findings, "M2-10B", root, rel_path, needle, message)
+
+    for rel_path, needle, message in [
+        (
+            "Render/Private/GPUDriven/GPUCulling.cpp",
+            "ctx.DrawIndexedIndirect",
+            "Task 10B GPUCulling must describe semantic submissions instead of recording RHI draws.",
+        ),
+        (
+            "Render/Include/Render/GPUDriven/GPUCulling.h",
+            "DrawIndexedIndirectGroup(",
+            "Task 10B must not restore the pass-local indirect recording API.",
+        ),
+        (
+            "RHI/Include/RHI/RHIIndirectExecution.h",
+            "RHIEncodedCommandBufferBackend",
+            "Task 10B public RHI must not encode a Metal-only extension enum.",
+        ),
+    ]:
+        require_not_contains(findings, "M2-10B", root, rel_path, needle, message)
+    return findings
+
+
 def main() -> int:
     args = parse_args()
     root = resolve_repo_root(args.root)
@@ -4159,6 +4241,7 @@ def main() -> int:
     findings.extend(check_p74_resource_hot_reload_diagnostic_json_artifact_contract(root))
     findings.extend(check_p75_p80_runtime_visible_rendering_contract(root))
     findings.extend(check_m1_render_ownership_cut(root))
+    findings.extend(check_m2_submission_strategy_cut(root))
 
     if findings:
         print("Architecture phase gate failures:")
@@ -4167,7 +4250,7 @@ def main() -> int:
         return 1
 
     print("Architecture phase gates passed.")
-    print("P3 Actor/Component, P4 Service lifetime, P5 Resource runtime, P6 Quality, P8 Resource package, P9 Editor/runtime boundary, P10 Modern rendering capability, P11 Resource hot-reload, P12 Render proxy snapshot, P13 RHI capability report, P14 RHI device capability diagnostics, P15 renderer tool RHI capability snapshot, P16 RenderGraph diagnostics JSON, P17 tool diagnostics artifact summary, P18 artifact integrity, P19 capture identity, P20 portable artifact path, P21 artifact hash, P22 bundle hash, P23 bundle validation, P24 validation JSON, P25 validation sidecar, P26 validation capture identity, P27 summary validation verdict, P28 manifest validation sidecar discovery, P29 manifest artifact type metadata, P30 manifest sidecar schema metadata, P31 stable capture id, P32 summary sidecar schema metadata, P33 validation sidecar schema metadata, P34 JSON sidecar identity, P35 JSON sidecar artifact id, P36 RenderGraph JSON artifact identity, P37 RenderGraph schema identity, P38 validation entry artifact identity, P39 validation entry identity verification, P40 validation entry actual identity, P41 validation entry diagnostic code, P42 validation diagnostic code summary, P43 artifact summary validation diagnostic code snapshot, P44 manifest validation verdict scope, P45 validation verdict code, P46 validation primary failure summary, P47 validation primary failure detail, P48 validation primary failure artifact identity, P49 validation primary failure entry index, P50 validation failure count summary, P51 validation entry index metadata, P52 validation entry primary failure flag, P53 validation primary failure entry count, P54 validation entry count summary, P55 validation entry coverage summary, P56 validation entry coverage code, P57 validation entry coverage message, P58 validation entry coverage helper, P59 architecture baseline contract coverage, P60 CMake module link boundary, P61 CMake module include-edge boundary, P62 module-boundary manifest coverage, P63 public-header linkage, P64 public include-directory scope, P65 RHI RenderGraph baseline, P66 renderer RHI baseline diagnostics, P67 cross-backend RHI baseline report, P68 RHI report identity metadata, P69 RHI capability JSON artifact, P70 renderer RHI capability JSON sidecar, P71 shader runtime contract JSON artifact, P72 material shader contract snapshot JSON artifact, P73 resource load diagnostic JSON artifact, P74 resource hot reload diagnostic JSON artifact, P75-P80 runtime visible rendering, and M1 render ownership gates are covered.")
+    print("P3 Actor/Component, P4 Service lifetime, P5 Resource runtime, P6 Quality, P8 Resource package, P9 Editor/runtime boundary, P10 Modern rendering capability, P11 Resource hot-reload, P12 Render proxy snapshot, P13 RHI capability report, P14 RHI device capability diagnostics, P15 renderer tool RHI capability snapshot, P16 RenderGraph diagnostics JSON, P17 tool diagnostics artifact summary, P18 artifact integrity, P19 capture identity, P20 portable artifact path, P21 artifact hash, P22 bundle hash, P23 bundle validation, P24 validation JSON, P25 validation sidecar, P26 validation capture identity, P27 summary validation verdict, P28 manifest validation sidecar discovery, P29 manifest artifact type metadata, P30 manifest sidecar schema metadata, P31 stable capture id, P32 summary sidecar schema metadata, P33 validation sidecar schema metadata, P34 JSON sidecar identity, P35 JSON sidecar artifact id, P36 RenderGraph JSON artifact identity, P37 RenderGraph schema identity, P38 validation entry artifact identity, P39 validation entry identity verification, P40 validation entry actual identity, P41 validation entry diagnostic code, P42 validation diagnostic code summary, P43 artifact summary validation diagnostic code snapshot, P44 manifest validation verdict scope, P45 validation verdict code, P46 validation primary failure summary, P47 validation primary failure detail, P48 validation primary failure artifact identity, P49 validation primary failure entry index, P50 validation failure count summary, P51 validation entry index metadata, P52 validation entry primary failure flag, P53 validation primary failure entry count, P54 validation entry count summary, P55 validation entry coverage summary, P56 validation entry coverage code, P57 validation entry coverage message, P58 validation entry coverage helper, P59 architecture baseline contract coverage, P60 CMake module link boundary, P61 CMake module include-edge boundary, P62 module-boundary manifest coverage, P63 public-header linkage, P64 public include-directory scope, P65 RHI RenderGraph baseline, P66 renderer RHI baseline diagnostics, P67 cross-backend RHI baseline report, P68 RHI report identity metadata, P69 RHI capability JSON artifact, P70 renderer RHI capability JSON sidecar, P71 shader runtime contract JSON artifact, P72 material shader contract snapshot JSON artifact, P73 resource load diagnostic JSON artifact, P74 resource hot reload diagnostic JSON artifact, P75-P80 runtime visible rendering, M1 render ownership, and M2 Task 10B submission-strategy gates are covered.")
     return 0
 
 

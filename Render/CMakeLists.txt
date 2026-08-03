@@ -93,6 +93,8 @@ target_sources(RVX_Render PRIVATE
     # Policy
     Private/Policy/RenderFramePlanCompiler.cpp
     Private/Policy/RenderPolicyResolver.cpp
+    # Submission
+    Private/Submission/RenderSubmissionStrategy.cpp
     # Diagnostics
     Private/Diagnostics/RenderFeatureReport.cpp
     Private/Diagnostics/RenderToolArtifacts.cpp

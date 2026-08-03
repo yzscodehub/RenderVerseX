@@ -817,6 +817,7 @@ rvx_add_gtest(
     SOURCES
         GPUDrivenValidation/main.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/GPUDriven/GPUCulling.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Submission/RenderSubmissionStrategy.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Visibility/RenderVisibility.cpp
     LIBS
         RVX::Core

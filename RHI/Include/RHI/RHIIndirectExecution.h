@@ -37,6 +37,62 @@ namespace RVX
         CountBuffer = 1,
     };
 
+    /** @brief Semantic command payload selected by an indirect command signature. */
+    enum class RHIIndirectCommandSemantic : uint8
+    {
+        Draw = 0,
+        DrawIndexed,
+        Dispatch,
+    };
+
+    /**
+     * @brief Pipeline state invalidated by an indirect signature's root arguments.
+     *
+     * The current standard layouts contain no root arguments, so they must
+     * declare None. Backends reject non-None layouts until their corresponding
+     * root-argument replay/invalidation behavior is implemented.
+     */
+    enum class RHIIndirectCommandStateInvalidation : uint8
+    {
+        None = 0,
+        RootConstants = 1u << 0,
+        RootDescriptors = 1u << 1,
+        DescriptorTables = 1u << 2,
+    };
+
+    /** @brief Backend-neutral description of one indirect command payload layout. */
+    struct RHIIndirectCommandLayout
+    {
+        RHIIndirectCommandSemantic semantic = RHIIndirectCommandSemantic::DrawIndexed;
+        uint32 commandStride = 0;
+        RHIIndirectCommandStateInvalidation stateInvalidation =
+            RHIIndirectCommandStateInvalidation::None;
+
+        bool operator==(const RHIIndirectCommandLayout&) const = default;
+    };
+
+    /**
+     * @brief Typed backend-native encoded-command buffer boundary.
+     *
+     * This deliberately exposes neither a Metal implementation nor an
+     * untyped native pointer. Task 13 may provide a backend object derived
+     * from this contract without widening the public RHI with void* semantics.
+     */
+    class RHIEncodedCommandBuffer
+    {
+    public:
+        virtual ~RHIEncodedCommandBuffer() = default;
+        virtual RHIBackendType GetBackendType() const = 0;
+    };
+
+    /** @brief Typed future execution request for a backend-native command buffer. */
+    struct RHIEncodedCommandBufferExecutionDesc
+    {
+        RHIEncodedCommandBuffer* commandBuffer = nullptr;
+
+        bool operator==(const RHIEncodedCommandBufferExecutionDesc&) const = default;
+    };
+
     /** @brief Backend-published limits for the standard indexed indirect command layout. */
     struct RHIIndexedIndirectExecutionCapabilities
     {

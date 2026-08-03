@@ -12,6 +12,7 @@
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
+#include "Render/Submission/RenderSubmissionStrategy.h"
 #include "Resources/RenderResourceResolver.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
@@ -592,8 +593,18 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         }
         ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
 
-        const GPUIndirectDrawSubmission submission =
-            m_gpuCulling->DrawIndexedIndirectGroup(ctx, groupIndex);
+        const GPUCullingIndexedIndirectSubmission cullingSubmission =
+            m_gpuCulling->BuildIndexedIndirectGroupSubmission(groupIndex);
+        RenderSubmissionRequest request;
+        request.kind = RenderSubmissionKind::IndexedIndirect;
+        request.indexedIndirect = cullingSubmission.execution;
+        request.capabilities = cullingSubmission.capabilities;
+        static const IndexedIndirectRenderSubmissionStrategy strategy;
+        const RenderSubmissionResult submission = strategy.Submit(ctx, request);
+        if (submission.validationCode != RenderSubmissionValidationCode::Success)
+        {
+            return false;
+        }
         if (submission.recorded)
         {
             submittedAnyGroup = true;
@@ -837,6 +848,7 @@ bool DepthPrepass::TryDrawPlannedDirect(
     RHICommandContext& ctx,
     std::span<const PlannedDepthDraw> plannedDraws)
 {
+    static const DirectRenderSubmissionStrategy strategy;
     for (const PlannedDepthDraw& planned : plannedDraws)
     {
         ctx.SetPipeline(planned.pipeline);
@@ -857,13 +869,24 @@ bool DepthPrepass::TryDrawPlannedDirect(
         }
         ctx.SetIndexBuffer(planned.buffers.indexBuffer, RHIFormat::R32_UINT);
         const RenderDrawArguments& args = planned.packet.packet.arguments;
-        ctx.DrawIndexed(args.indexCount,
-                        args.instanceCount,
-                        args.firstIndex,
-                        args.vertexOffset,
-                        args.firstInstance);
-        ++m_drawStats.directDrawCount;
-        ++m_drawStats.executedPacketCount;
+        RenderSubmissionRequest request;
+        request.kind = RenderSubmissionKind::DirectIndexed;
+        request.directIndexed = {
+            args.indexCount,
+            args.instanceCount,
+            args.firstIndex,
+            args.vertexOffset,
+            args.firstInstance};
+        const RenderSubmissionResult submission = strategy.Submit(ctx, request);
+        if (submission.validationCode != RenderSubmissionValidationCode::Success)
+        {
+            return false;
+        }
+        if (submission.recorded)
+        {
+            ++m_drawStats.directDrawCount;
+            m_drawStats.executedPacketCount += submission.executedDrawCount;
+        }
     }
     m_drawStats.directPacketPathUsed = true;
     return true;

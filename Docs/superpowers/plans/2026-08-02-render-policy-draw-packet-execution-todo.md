@@ -1,8 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, and Task 10A
-semantic indirect RHI contract/conformance are complete and reviewed; Task 10B
-submission strategies and DX12 Tier 1 implementation are next
+**Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, and Tasks 10A/10B
+are complete and reviewed; Task 10C M2 validation/evidence freeze is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -337,16 +336,16 @@ from submitted upper bounds and CPU reference visibility.
 
 #### 10B. Strategy interface and DX12 implementation
 
-- [ ] Define `IRenderSubmissionStrategy` with Direct and IndirectCount
+- [x] Define `IRenderSubmissionStrategy` with Direct and IndirectCount
   implementations plus a typed backend-native encoded-command-buffer extension
   boundary for Task 13.
-- [ ] Make renderer grouping/visibility independent of backend command APIs.
-- [ ] Cache DX12 command signatures by semantic command layout.
-- [ ] Validate command/count buffer ranges before `ExecuteIndirect`.
-- [ ] Rebind state invalidated by indirect execution according to the RHI
+- [x] Make renderer grouping/visibility independent of backend command APIs.
+- [x] Cache DX12 command signatures by semantic command layout.
+- [x] Validate command/count buffer ranges before `ExecuteIndirect`.
+- [x] Rebind state invalidated by indirect execution according to the RHI
   contract.
-- [ ] Route both DX12 Direct and Tier 1 through the same strategy interface.
-- [ ] Remove obsolete pass-local DX12 submission branches and capability probes.
+- [x] Route both DX12 Direct and Tier 1 through the same strategy interface.
+- [x] Remove obsolete pass-local DX12 submission branches and capability probes.
 
 #### 10C. M2 validation
 
@@ -620,24 +619,23 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Task 10A implementation, remediation, independent re-review, primary audit,
-contract/runtime validation, and architecture gates are complete. Start
-**Task 10B** by introducing the formal submission-strategy interface and
-routing DX12 Direct/Tier 1 through it. The completed Task 10A acceptance ledger
-is:
+Task 10B implementation, remediation, independent re-review, primary audit,
+runtime validation, and architecture gates are complete. Start **Task 10C** by
+freezing the M2 evidence baseline. The completed Task 10B acceptance ledger is:
 
-- [x] Publish backend-neutral fixed/count-buffer, first-instance, stride,
-  alignment, limit, and required-state capabilities without backend-name
-  inference.
-- [x] Validate zero/no-op, command/count usage and state, exact/variable stride,
-  alignment, maximum count, safe ranges, overflow, and count clamping before a
-  backend execution path may consume the descriptor.
-- [x] Keep `RenderSubmissionMode` values and semantics stable while retaining
-  `EncodedCommandBuffer` only as a backend-native strategy extension signal.
-- [x] Preserve `supportsIndirectDrawCount` only as a validation-checked
-  projection with Task 16B as its named removal owner.
-- [x] Publish schema-5 structured capability diagnostics while preserving the
-  legacy report entry and numeric enum compatibility.
+- [x] Route prepared Direct and fixed/count indexed-indirect requests through
+  one backend-neutral strategy interface while leaving grouping, visibility,
+  bindings, and policy with the renderer.
+- [x] Freeze a typed backend-native encoded-command-buffer request branch that
+  Task 13 can implement without revising the shared strategy contract.
+- [x] Make `GPUCulling` produce semantic indirect descriptors only; final
+  validation and result truth come from the strategy.
+- [x] Cache DX12 command signatures by semantic layout, preserve raw zero-stride
+  compatibility, and fail closed on capability, count, usage, alignment,
+  stride, overflow, range, or native-buffer violations before `ExecuteIndirect`.
+- [x] Record that current standard layouts contain no root arguments and
+  therefore invalidate no cached root state; unsupported invalidating layouts
+  are rejected instead of approximated with rebind-all.
 - [x] Close independent review findings through final P0/P1/P2/P3 `0/0/0/0`;
-  pass 44 RHI contract, 22 policy, 30 GPU-driven, 194 render-pass tests, the
-  255-test focused CTest set, architecture phase gates, and diff checks.
+  pass 44 RHI contract, 22 policy, 34 GPU-driven, 194 render-pass tests, the
+  focused DX12 raw validation, architecture phase gates, and diff checks.
