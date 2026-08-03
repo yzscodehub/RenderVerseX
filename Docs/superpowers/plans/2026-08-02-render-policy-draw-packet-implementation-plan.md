@@ -1,7 +1,8 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-8, Task 9A, Task 9B-1, Task 9B-2, and Task 9B-3 complete;
-Task 9B-4 Transparent recording isolation is the next implementation stage
+**Status:** Tasks 0-8, Task 9A, and Tasks 9B-1 through 9B-4 complete;
+Task 9B-5 Skybox recording isolation is next after the Task 9B-4
+review/commit gate
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -681,7 +682,10 @@ submitted diagnostics (including rejection), projects realized full access
 snapshots back to persistent history ownership, and bounds the legacy adapter
 to one pending record. Task 9B-3 isolates ObjectVelocity setup/execute state
 with recording-owned raster/material bindings and monotonic publication.
-Later 9B slices migrate Transparent and Skybox, then remove the late binder.
+Task 9B-4 isolates Transparent with a value-owned ordered draw list,
+graph-handle-only targets, private per-record view/object/light/cluster
+bindings, and completion-aware submission retention. Skybox remains the next
+pass migration before the late binder is removed.
 
 Proposed files:
 

@@ -1,7 +1,8 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8, Task 9A, Task 9B-1, Task 9B-2, and Task 9B-3 complete;
-Task 9B-4 Transparent recording isolation is the next implementation stage
+**Status:** Tasks 0-8, Task 9A, and Tasks 9B-1 through 9B-4 complete;
+Task 9B-5 Skybox recording isolation begins only after the Task 9B-4
+review/commit gate
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -601,20 +602,24 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Task 9B-2 implementation, independent review, and primary integration are
-complete. Start **Task 9B-3** next; the completed 9B-2 acceptance ledger is:
+Task 9B-4 implementation and focused validation are complete; primary review,
+full validation, and commit remain the stage gate. Start **Task 9B-5** only
+after that gate. The completed 9B-4 acceptance ledger is:
 
-- [x] Define graph-owned `RayTracedShadowRecordOutput`, per-recording state,
-  identity-gated results, and fail-closed defaults.
-- [x] Split persistent temporal history into reservation, recorded,
-  submitted-commit, and unsubmitted-rollback states.
-- [x] Ensure simultaneous reservations use distinct writer slots and older
-  inverse-executed recordings cannot overwrite newer committed metadata.
-- [x] Explicitly retain imported history textures and all command-referenced
-  resources in the submission batch until completion.
-- [x] Make Opaque consume only the graph-owned RT output; remove modern-path
-  `GetShadowMaskHandle()` mailbox reads while retaining an explicit legacy
-  adapter for standalone tests.
-- [x] Add two-graph inverse execution, caller mutation, disabled/unsupported,
-  rejected/unsubmitted, resize, and in-flight retirement fixtures.
-- [x] Stop for independent review and primary integration gates before 9B-3.
+- [x] Copy Transparent scene/list inputs into the typed frame snapshot, retain
+  renderer-provided back-to-front order, and remove persistent scene/target
+  mailboxes from the production pass path.
+- [x] Resolve color/depth only from current graph handles; declare color
+  `ReadWrite(RenderTarget)` and optional depth `Read(DepthRead)` only after
+  record inputs and submission retention have succeeded.
+- [x] Build per-record view/object/frame descriptor snapshots, including local
+  copies of all six mutable light/cluster upload buffers and a private instance
+  fallback when reflection requires it.
+- [x] Bind fallback directional/ray shadow resources with matching disabled
+  view constants, without mutating caller `ViewData` or global descriptors.
+- [x] Retain attachment views/parent textures, geometry, material bindings,
+  pipelines, descriptors, and DefaultLit layout owners through completion.
+- [x] Prove reverse A/B recording, caller/source mutation isolation, blend
+  order/dynamic offsets, graph usage, and completion-aware retirement.
+- [x] Prove empty, legacy, foreign, stale, forged, incomplete, and sealed
+  inputs fail closed without usage declarations or command recording.

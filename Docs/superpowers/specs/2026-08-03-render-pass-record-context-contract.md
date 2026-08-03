@@ -1,7 +1,8 @@
 # Render Pass Record Context and Execution Data Contract
 
-**Status:** Task 9A, Task 9B-1, Task 9B-2, and Task 9B-3 implemented,
-validated, and independently reviewed; Task 9B-4 pending
+**Status:** Task 9A and Tasks 9B-1 through 9B-4 implemented and focused-
+validated; Task 9B-4 awaits primary review/commit, then Task 9B-5 Skybox
+migration is next
 **Date:** 2026-08-03
 **Scope:** Main raster pass chain; frame/view data ownership and RenderGraph
 recording lifetime
@@ -117,8 +118,9 @@ enable async compute.
 
 ### 9B - Remaining scene pass adapters
 
-**Implementation status:** Raster Shadow, RayTracedShadow (9B-2), and
-ObjectVelocity (9B-3) complete; remaining slices pending.
+**Implementation status:** Raster Shadow, RayTracedShadow (9B-2),
+ObjectVelocity (9B-3), and Transparent (9B-4) complete; Skybox and binder
+removal remain pending.
 
 - 9B-1 migrates raster Shadow to an independent graph-owned recorder. Setup
   publishes a producer-neutral `DirectionalShadowRecordOutput` with the current
@@ -149,8 +151,18 @@ ObjectVelocity (9B-3) complete; remaining slices pending.
   after the typed source context has proved target-graph identity plus an
   existing snapshot/results pair; cross-graph or incomplete contexts are
   no-op and cannot mutate their source results during helper initialization.
-- 9B-4 and 9B-5 migrate Transparent and Skybox scene/list/target/configuration
-  inputs to typed graph pass data.
+- 9B-4 migrates Transparent scene/list/target inputs to typed graph pass data.
+  Its frame snapshot owns the renderer-sorted transparent list. It creates a
+  private frame/object binding snapshot, copies all mutable light and cluster
+  upload bytes, binds fallback directional/ray shadow resources with matching
+  disabled view constants, and retains all command resources/layouts through
+  completion. Color is `ReadWrite(RenderTarget)` and optional depth is
+  `Read(DepthRead)` only after all input validation and submission retention
+  pass. Legacy setters are no-op adapters; malformed, foreign, stale, forged,
+  incomplete, empty, and sealed records declare no resources and execute no
+  commands.
+- 9B-5 migrates Skybox scene/list/target/configuration inputs to typed graph
+  pass data.
 - Resolve targets from declared graph handles instead of post-build raw view
   injection.
 - 9B-6 removes `RenderFrameResourceBinder`, the late `UpdatePassResources`

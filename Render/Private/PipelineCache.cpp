@@ -3178,10 +3178,34 @@ bool PipelineCache::CreateRasterDrawBindingSnapshot(
     uint32 objectCapacity,
     RasterDrawBindingSnapshot& outSnapshot) const
 {
+    return CreateRasterDrawBindingSnapshotInternal(
+        view, objectCapacity, nullptr, outSnapshot);
+}
+
+bool PipelineCache::CreateTransparentRasterDrawBindingSnapshot(
+    const ViewData& view,
+    uint32 objectCapacity,
+    const FrameLightResources& lightResources,
+    RasterDrawBindingSnapshot& outSnapshot) const
+{
+    return CreateRasterDrawBindingSnapshotInternal(
+        view, objectCapacity, &lightResources, outSnapshot);
+}
+
+bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
+    const ViewData& view,
+    uint32 objectCapacity,
+    const FrameLightResources* transparentLightResources,
+    RasterDrawBindingSnapshot& outSnapshot) const
+{
     outSnapshot = {};
-    if (!m_device || !m_initialized || !m_frameDescriptorSet ||
-        !m_objectDescriptorSet || !m_pipelineLayout || m_setLayouts.size() < 3 ||
+    if (!m_device || !m_initialized || !m_pipelineLayout || m_setLayouts.size() < 3 ||
         !m_setLayouts[0] || !m_setLayouts[1] || !m_setLayouts[2])
+    {
+        return false;
+    }
+    if (transparentLightResources == nullptr &&
+        (!m_frameDescriptorSet || !m_objectDescriptorSet))
     {
         return false;
     }
@@ -3201,14 +3225,38 @@ bool PipelineCache::CreateRasterDrawBindingSnapshot(
     viewDesc.size = AlignConstantBufferSize(sizeof(ViewConstants));
     viewDesc.usage = RHIBufferUsage::Constant;
     viewDesc.memoryType = RHIMemoryType::Upload;
-    viewDesc.debugName = "ObjectVelocityRecordViewConstants";
+    viewDesc.debugName = transparentLightResources != nullptr
+        ? "TransparentRecordViewConstants"
+        : "ObjectVelocityRecordViewConstants";
     RHIBufferRef viewBuffer = m_device->CreateBuffer(viewDesc);
     if (!viewBuffer)
     {
         return false;
     }
+    ViewData recordedView = view;
+    if (transparentLightResources != nullptr)
+    {
+        // Transparent shading is deliberately outside directional/ray-traced
+        // shadow sampling scope. Match the fallback descriptor bindings with
+        // matching shader constants without mutating the caller's ViewData.
+        recordedView.directionalShadowViewProjection = Mat4Identity();
+        recordedView.directionalShadowViewProjections = {};
+        recordedView.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        recordedView.directionalShadowCascadeFadeDistances =
+            Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        recordedView.directionalShadowCascadeCount = 0;
+        recordedView.directionalShadowDepthBias = 0.0f;
+        recordedView.directionalShadowStrength = 0.0f;
+        recordedView.directionalShadowInvMapSize = 0.0f;
+        recordedView.directionalShadowFilterRadiusTexels = 0.0f;
+        recordedView.directionalShadowNormalBias = 0.0f;
+        recordedView.directionalShadowEnabled = 0;
+        recordedView.rayTracedShadowEnabled = 0;
+        recordedView.rayTracedShadowFilterRadiusPixels = 0.0f;
+        recordedView.rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
+    }
     const ViewConstants viewConstants = BuildViewConstantsSnapshot(
-        view, m_device->GetBackendType(), m_config.reverseZ);
+        recordedView, m_device->GetBackendType(), m_config.reverseZ);
     void* viewMapped = viewBuffer->Map();
     if (!viewMapped)
     {
@@ -3221,7 +3269,9 @@ bool PipelineCache::CreateRasterDrawBindingSnapshot(
     objectDesc.size = objectStride * capacity;
     objectDesc.usage = RHIBufferUsage::Constant;
     objectDesc.memoryType = RHIMemoryType::Upload;
-    objectDesc.debugName = "ObjectVelocityRecordObjectConstants";
+    objectDesc.debugName = transparentLightResources != nullptr
+        ? "TransparentRecordObjectConstants"
+        : "ObjectVelocityRecordObjectConstants";
     RHIBufferRef objectBuffer = m_device->CreateBuffer(objectDesc);
     if (!objectBuffer)
     {
@@ -3230,39 +3280,201 @@ bool PipelineCache::CreateRasterDrawBindingSnapshot(
 
     RHIDescriptorSetDesc frameSetDesc;
     frameSetDesc.layout = m_setLayouts[0].Get();
-    frameSetDesc.bindings = m_frameDescriptorSet->GetDescriptorSnapshot();
-    frameSetDesc.debugName = "ObjectVelocityRecordFrameDescriptorSet";
-    bool replacedFrameBinding = false;
-    for (RHIDescriptorBinding& binding : frameSetDesc.bindings)
+    frameSetDesc.debugName = transparentLightResources != nullptr
+        ? "TransparentRecordFrameDescriptorSet"
+        : "ObjectVelocityRecordFrameDescriptorSet";
+    if (transparentLightResources == nullptr)
     {
-        if (binding.binding == 0 && binding.arrayElement == 0)
+        frameSetDesc.bindings = m_frameDescriptorSet->GetDescriptorSnapshot();
+        bool replacedFrameBinding = false;
+        for (RHIDescriptorBinding& binding : frameSetDesc.bindings)
         {
-            binding.buffer = viewBuffer.Get();
-            binding.offset = 0;
-            binding.range = AlignConstantBufferSize(sizeof(ViewConstants));
-            binding.textureView = nullptr;
-            binding.sampler = nullptr;
-            binding.accelerationStructure = nullptr;
-            replacedFrameBinding = true;
-            break;
+            if (binding.binding == 0 && binding.arrayElement == 0)
+            {
+                binding.buffer = viewBuffer.Get();
+                binding.offset = 0;
+                binding.range = AlignConstantBufferSize(sizeof(ViewConstants));
+                binding.textureView = nullptr;
+                binding.sampler = nullptr;
+                binding.accelerationStructure = nullptr;
+                replacedFrameBinding = true;
+                break;
+            }
+        }
+        if (!replacedFrameBinding)
+        {
+            frameSetDesc.BindBuffer(0, viewBuffer.Get(), 0,
+                                    AlignConstantBufferSize(sizeof(ViewConstants)));
         }
     }
-    if (!replacedFrameBinding)
+
+    std::array<RHIBufferRef, 6> transparentFrameBufferCopies;
+    if (transparentLightResources != nullptr)
     {
+        // LightManager and ClusteredLighting each expose a mutable upload
+        // allocation that is overwritten by the next frame. Strong references
+        // alone would preserve the allocation but not the contents. Clone the
+        // actual bound bytes while the graph is registered, then point the
+        // private descriptor set at the recording-owned copies.
+        if (!m_fallbackDirectionalShadowView || !m_directionalShadowSampler ||
+            !m_fallbackRayTracedShadowMaskView || !m_fallbackLightConstantsBuffer ||
+            !m_fallbackPointLightsBuffer || !m_fallbackSpotLightsBuffer ||
+            !m_fallbackClusterConstantsBuffer || !m_fallbackClusterBuffer ||
+            !m_fallbackClusterLightIndexBuffer)
+        {
+            return false;
+        }
+
+        const auto resolveSource = [](RHIBuffer* supplied,
+                                      const RHIBufferRef& fallback) -> RHIBuffer*
+        {
+            return supplied != nullptr ? supplied : fallback.Get();
+        };
+        const std::array<RHIBuffer*, 6> sources = {
+            resolveSource(transparentLightResources->lightConstantsBuffer,
+                          m_fallbackLightConstantsBuffer),
+            resolveSource(transparentLightResources->pointLightsBuffer,
+                          m_fallbackPointLightsBuffer),
+            resolveSource(transparentLightResources->spotLightsBuffer,
+                          m_fallbackSpotLightsBuffer),
+            resolveSource(transparentLightResources->clusterConstantsBuffer,
+                          m_fallbackClusterConstantsBuffer),
+            resolveSource(transparentLightResources->clusterBuffer,
+                          m_fallbackClusterBuffer),
+            resolveSource(transparentLightResources->clusterLightIndexBuffer,
+                          m_fallbackClusterLightIndexBuffer)};
+        constexpr std::array<const char*, 6> copyNames = {
+            "TransparentRecordLightConstants",
+            "TransparentRecordPointLights",
+            "TransparentRecordSpotLights",
+            "TransparentRecordClusterConstants",
+            "TransparentRecordClusterData",
+            "TransparentRecordClusterLightIndices"};
+        const auto cloneUploadBuffer = [this](RHIBuffer* source,
+                                               const char* debugName) -> RHIBufferRef
+        {
+            if (source == nullptr || source->GetSize() == 0 ||
+                source->GetMemoryType() != RHIMemoryType::Upload)
+            {
+                return {};
+            }
+
+            RHIBufferDesc desc;
+            desc.size = source->GetSize();
+            desc.usage = source->GetUsage();
+            desc.memoryType = RHIMemoryType::Upload;
+            desc.stride = source->GetStride();
+            desc.debugName = debugName;
+            RHIBufferRef copy = m_device->CreateBuffer(desc);
+            if (!copy)
+            {
+                return {};
+            }
+
+            void* sourceMapped = source->Map();
+            if (!sourceMapped)
+            {
+                return {};
+            }
+            void* copyMapped = copy->Map();
+            if (!copyMapped)
+            {
+                source->Unmap();
+                return {};
+            }
+            std::memcpy(copyMapped, sourceMapped,
+                        static_cast<size_t>(source->GetSize()));
+            copy->Unmap();
+            source->Unmap();
+            return copy;
+        };
+        for (uint32 index = 0; index < transparentFrameBufferCopies.size(); ++index)
+        {
+            transparentFrameBufferCopies[index] = cloneUploadBuffer(
+                sources[index], copyNames[index]);
+            if (!transparentFrameBufferCopies[index])
+            {
+                return false;
+            }
+        }
+
+        // Do not clone the cache's current frame descriptor. It is a mutable
+        // owner snapshot and some backends deliberately do not expose an
+        // executable descriptor snapshot there. Build the complete reflected
+        // set explicitly so this private recording set has no global frame
+        // descriptor dependency.
+        frameSetDesc.bindings.clear();
         frameSetDesc.BindBuffer(0, viewBuffer.Get(), 0,
                                 AlignConstantBufferSize(sizeof(ViewConstants)));
+        frameSetDesc.BindTexture(1, m_fallbackDirectionalShadowView.Get());
+        frameSetDesc.BindSampler(2, m_directionalShadowSampler.Get());
+        frameSetDesc.BindBuffer(3, transparentFrameBufferCopies[0].Get(), 0,
+                                AlignConstantBufferSize(sizeof(LightConstants)));
+        frameSetDesc.BindBuffer(4, transparentFrameBufferCopies[1].Get());
+        frameSetDesc.BindBuffer(5, transparentFrameBufferCopies[2].Get());
+        frameSetDesc.BindTexture(6, m_fallbackRayTracedShadowMaskView.Get());
+        frameSetDesc.BindBuffer(7, transparentFrameBufferCopies[3].Get(), 0,
+                                AlignConstantBufferSize(sizeof(GPUClusterConstants)));
+        frameSetDesc.BindBuffer(8, transparentFrameBufferCopies[4].Get());
+        frameSetDesc.BindBuffer(9, transparentFrameBufferCopies[5].Get());
     }
     RHIDescriptorSetRef frameSet = m_device->CreateDescriptorSet(frameSetDesc);
-    if (!frameSet)
+    if (!frameSet || !frameSet->IsReadyForBinding(m_setLayouts[0].Get()))
     {
         return false;
     }
 
+    // The object layout exposes an optional structured instance-data binding.
+    // Transparent recording cannot point at the cache-owned fallback because
+    // the record must remain self-contained until submission retirement.
+    // Allocate a zeroed record-local equivalent when reflection requires it.
+    RHIBufferRef transparentObjectInstanceFallback;
+    if (transparentLightResources != nullptr &&
+        FindRHIBindingLayoutEntry(*m_setLayouts[1], 1))
+    {
+        RHIBufferDesc instanceDesc;
+        instanceDesc.size = 256;
+        instanceDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+        instanceDesc.memoryType = RHIMemoryType::Upload;
+        instanceDesc.stride = 16;
+        instanceDesc.debugName = "TransparentRecordObjectInstanceFallback";
+        transparentObjectInstanceFallback = m_device->CreateBuffer(instanceDesc);
+        if (!transparentObjectInstanceFallback)
+        {
+            return false;
+        }
+
+        void* instanceMapped = transparentObjectInstanceFallback->Map();
+        if (!instanceMapped)
+        {
+            return false;
+        }
+        std::memset(instanceMapped, 0, static_cast<size_t>(instanceDesc.size));
+        transparentObjectInstanceFallback->Unmap();
+    }
+
     RHIDescriptorSetDesc objectSetDesc;
     objectSetDesc.layout = m_setLayouts[1].Get();
-    objectSetDesc.bindings = m_objectDescriptorSet->GetDescriptorSnapshot();
-    objectSetDesc.debugName = "ObjectVelocityRecordObjectDescriptorSet";
-    bool replacedObjectBinding = false;
+    if (transparentLightResources != nullptr)
+    {
+        objectSetDesc.BindBuffer(0, objectBuffer.Get(), 0, objectStride);
+        if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 1))
+        {
+            if (!transparentObjectInstanceFallback)
+            {
+                return false;
+            }
+            objectSetDesc.BindBuffer(1, transparentObjectInstanceFallback.Get());
+        }
+    }
+    else
+    {
+        objectSetDesc.bindings = m_objectDescriptorSet->GetDescriptorSnapshot();
+    }
+    objectSetDesc.debugName = transparentLightResources != nullptr
+        ? "TransparentRecordObjectDescriptorSet"
+        : "ObjectVelocityRecordObjectDescriptorSet";
+    bool replacedObjectBinding = transparentLightResources != nullptr;
     for (RHIDescriptorBinding& binding : objectSetDesc.bindings)
     {
         if (binding.binding == 0 && binding.arrayElement == 0)
@@ -3282,7 +3494,7 @@ bool PipelineCache::CreateRasterDrawBindingSnapshot(
         objectSetDesc.BindBuffer(0, objectBuffer.Get(), 0, objectStride);
     }
     RHIDescriptorSetRef objectSet = m_device->CreateDescriptorSet(objectSetDesc);
-    if (!objectSet)
+    if (!objectSet || !objectSet->IsReadyForBinding(m_setLayouts[1].Get()))
     {
         return false;
     }
@@ -3290,6 +3502,17 @@ bool PipelineCache::CreateRasterDrawBindingSnapshot(
     std::vector<Ref<RefCounted>> retainedResources;
     retainedResources.emplace_back(viewBuffer.Get());
     retainedResources.emplace_back(objectBuffer.Get());
+    for (const RHIBufferRef& copy : transparentFrameBufferCopies)
+    {
+        if (copy)
+        {
+            retainedResources.emplace_back(copy.Get());
+        }
+    }
+    if (transparentObjectInstanceFallback)
+    {
+        retainedResources.emplace_back(transparentObjectInstanceFallback.Get());
+    }
     retainedResources.emplace_back(frameSet.Get());
     retainedResources.emplace_back(objectSet.Get());
     // Backend descriptor sets and pipelines currently retain only raw layout

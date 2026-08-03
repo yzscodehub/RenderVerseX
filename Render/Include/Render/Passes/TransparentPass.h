@@ -9,7 +9,6 @@
  */
 
 #include "Render/Passes/IRenderPass.h"
-#include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderDrawItem.h"
 
 namespace RVX
@@ -18,6 +17,7 @@ namespace RVX
     class ClusteredLighting;
     class LightManager;
     class MaterialSystem;
+    class PipelineCache;
     class RenderScene;
 
     /**
@@ -49,6 +49,9 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
 
         // =========================================================================
         // Configuration
@@ -67,16 +70,16 @@ namespace RVX
         }
 
         /**
-         * @brief Set render scene and visible transparent objects
-         * @param scene The render scene
-         * @param transparentDrawItems Visible transparent submesh draw items (pre-sorted back-to-front)
+         * @brief Legacy Task 9B-6 compatibility adapter.
+         *
+         * Typed RenderPassRecordContext now owns the scene and ordered draw
+         * list for each graph recording. This method intentionally stores no
+         * state and cannot influence production recording.
          */
         void SetRenderScene(const RenderScene* scene, const std::vector<RenderDrawItem>* transparentDrawItems);
 
         /**
-         * @brief Set the render targets
-         * @param colorTargetView Color target for blending
-         * @param depthTargetView Depth target for depth testing (read-only)
+         * @brief Legacy Task 9B-6 compatibility adapter with no retained views.
          */
         void SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView);
 
@@ -95,14 +98,6 @@ namespace RVX
         MaterialSystem* m_materialSystem = nullptr;
         LightManager* m_lightManager = nullptr;
         ClusteredLighting* m_clusteredLighting = nullptr;
-        const RenderScene* m_renderScene = nullptr;
-        const std::vector<RenderDrawItem>* m_transparentDrawItems = nullptr;
-        RHITextureView* m_colorTargetView = nullptr;
-        RHITextureView* m_depthTargetView = nullptr;
-
-        // RenderGraph handles
-        RGTextureHandle m_colorTargetHandle;
-        RGTextureHandle m_depthTargetHandle;
     };
 
 } // namespace RVX

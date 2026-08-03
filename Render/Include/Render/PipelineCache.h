@@ -625,6 +625,21 @@ namespace RVX
                                              uint32 objectCapacity,
                                              RasterDrawBindingSnapshot& outSnapshot) const;
 
+        /**
+         * @brief Create isolated transparent frame/object bindings.
+         *
+         * Local-light and cluster buffers are single mutable upload allocations.
+         * This overload copies their contents into the recording-owned frame
+         * descriptor so later frames cannot rewrite an already registered graph.
+         * Directional and ray-traced shadow sampling remain explicitly disabled
+         * for transparent shading.
+         */
+        bool CreateTransparentRasterDrawBindingSnapshot(
+            const ViewData& view,
+            uint32 objectCapacity,
+            const FrameLightResources& lightResources,
+            RasterDrawBindingSnapshot& outSnapshot) const;
+
         /** @brief Upload one object slot in a recording-owned snapshot. */
         bool UpdateRasterDrawBindingSnapshotObject(
             RasterDrawBindingSnapshot& snapshot,
@@ -817,6 +832,11 @@ namespace RVX
         bool UpdateDefaultFrameDescriptorSet();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
         RHIDescriptorSetRef CreateObjectDescriptorSet();
+        bool CreateRasterDrawBindingSnapshotInternal(
+            const ViewData& view,
+            uint32 objectCapacity,
+            const FrameLightResources* transparentLightResources,
+            RasterDrawBindingSnapshot& outSnapshot) const;
         uint64 AllocateObjectConstantSlot();
         bool BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSetLayoutDesc>& outLayouts);
         bool ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSetLayoutDesc>& layouts);

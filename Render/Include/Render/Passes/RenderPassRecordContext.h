@@ -274,6 +274,10 @@ namespace RVX
         RenderScene scene{};
         std::vector<RenderDrawItem> opaqueDrawItems{};
         std::vector<RenderDrawItem> maskedDrawItems{};
+        // Transparent work must preserve the renderer's back-to-front order.
+        // The value copy keeps a later frame's sort/rebuild from changing a
+        // graph that is still waiting to execute.
+        std::vector<RenderDrawItem> transparentDrawItems{};
     };
 
     /** @brief Graph-owned directional-shadow output produced for Opaque. */
@@ -371,6 +375,7 @@ namespace RVX
         const RenderScene* renderScene = nullptr;
         const std::vector<RenderDrawItem>* opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* maskedDrawItems = nullptr;
+        const std::vector<RenderDrawItem>* transparentDrawItems = nullptr;
         RenderPassGPUDrivenInputs depthGPUDriven{};
         RenderPassGPUDrivenInputs opaqueGPUDriven{};
         DirectionalShadowRecordOutput directionalShadow{};
@@ -526,6 +531,10 @@ namespace RVX
         if (context.maskedDrawItems != nullptr)
         {
             snapshot->maskedDrawItems = *context.maskedDrawItems;
+        }
+        if (context.transparentDrawItems != nullptr)
+        {
+            snapshot->transparentDrawItems = *context.transparentDrawItems;
         }
         if (context.renderScene != nullptr)
         {

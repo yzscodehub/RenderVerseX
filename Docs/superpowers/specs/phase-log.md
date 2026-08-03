@@ -45017,6 +45017,150 @@ git diff --check
 
 ---
 
+### R-SP337 Render-policy Task 9B-4 Transparent recording isolation
+
+**Date:** 2026-08-03
+**Commit:** Pending `refactor(render): isolate transparent recording state`
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-pass-record-context-contract.md`
+
+**Approved scope:**
+
+- Move Transparent scene/list/target execution inputs into graph-owned typed
+  record data while preserving renderer-issued back-to-front ordering.
+- Give every record private view/object CBs, frame/object descriptors, six
+  copied mutable local-light/cluster uploads, required object-instance
+  fallback, material bindings, and completion-aware resource retention.
+- Resolve attachments only through current RenderGraph handles, declare color
+  `ReadWrite(RenderTarget)` and optional depth `Read(DepthRead)`, and fail
+  before declarations for invalid or unretainable work.
+- Preserve the existing Transparent shadow policy: fallback directional/ray
+  resources are paired with disabled private view constants, without changing
+  caller ViewData or global frame state.
+
+**Out of scope:**
+
+- Skybox migration, `RenderFrameResourceBinder` removal, alternative
+  transparency algorithms/OIT, GPU-driven Transparent, async compute, Editor,
+  backend policy promotion, and general per-record allocation pooling.
+
+**Focused validation:**
+
+- `RenderPassValidationFixture.TransparentPassBindsTransparentPipeline`
+- `RenderPassValidationFixture.TransparentPassTypedPathFailsClosedWhenRecordingBindingsCannotBeCreated`
+- `RenderPassValidationFixture.TransparentPassDrawsWhenMaterialBindingUsesFallback`
+- `RenderPassValidationFixture.TransparentPassOwnsReverseRecordingInputsAndSubmissionRetirement`
+- `RenderPassValidationFixture.TransparentPassFailsClosedForMalformedSealedAndEmptyRecordings`
+
+**Primary acceptance evidence:**
+
+- Register A then B, mutate all six source upload buffers and A caller inputs,
+  execute B then A, and prove each graph uses its own copied bytes, view/object
+  constants, target, ordered dynamic offsets, and material binding.
+- Color is graph `ReadWrite(RenderTarget)` and optional depth is graph
+  `Read(DepthRead)`. Attachment views plus parent textures are retained at
+  execution; pipeline/set-layout owners remain live across cache shutdown until
+  the matching completion token retires.
+- Empty, legacy, foreign, stale, forged, incomplete, and sealed-batch records
+  are compile-valid no-ops: they expose no graph usages, execute no pass/draw,
+  and cannot mutate a foreign result payload before the strict pre-helper gate.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/RenderPassRecordContext.h` and
+  `Render/Private/Renderer/SceneRenderer.cpp`: carry a value-owned transparent
+  draw list through the typed renderer record context.
+- `Render/Include/Render/Passes/TransparentPass.h` and
+  `Render/Private/Passes/TransparentPass.cpp`: replace mailbox/setter execution
+  with typed graph data, strict provenance gates, ordered direct recording,
+  graph-owned attachment resolution, and submission retention.
+- `Render/Include/Render/PipelineCache.h` and
+  `Render/Private/PipelineCache.cpp`: add transparent-private raster binding
+  snapshots, copied light/cluster uploads, matching shadow fallback constants,
+  descriptor readiness validation, and retained layout/resource ownership.
+- `Tests/RenderPassValidation/main.cpp` and
+  `Tests/PipelineCacheValidation/main.cpp`: correct fake descriptor-set base
+  contracts, keep the typed Transparent source contract explicit, and cover
+  normal, failure, reverse-recording, retirement, and malformed-input paths.
+- Task 9B plan, TODO, contract, and this phase record: synchronize accepted
+  scope, validation, residual risk, and the Task 9B-5 handoff.
+
+**Validation commands:**
+
+```powershell
+[Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+& 'D:\Program Files\CMake\bin\cmake.exe' --build build\win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation RHIContractValidation RenderGraphValidation RenderPolicyValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+build\win_x64_debug\Tests\Debug\RHIContractValidation.exe
+build\win_x64_debug\Tests\Debug\RenderGraphValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPolicyValidation.exe
+ctest --test-dir build\win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug -R "<Task 9B-4 integration matrix>" --output-on-failure
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS — all 8 affected validation/sample targets.
+- Focused Transparent tests: PASS — normal, binding-failure, fallback,
+  reverse-recording/retirement, and malformed/sealed/empty paths.
+  The reverse fixture also proves nonzero caller shadow inputs remain
+  unchanged while private ViewConstants disable them, and verifies every A/B
+  private set0/set1 binding, fallback identity, layout identity, and ready
+  state.
+- Full unit/contract suites: PASS — `RenderPassValidation` `177/177`,
+  `PipelineCacheValidation` `130/130`, `RHIContractValidation` `41/41`,
+  `RenderGraphValidation` `50/50`, and `RenderPolicyValidation` `22/22`
+  (`420/420` total).
+- GPU stability smoke: PASS `10/10` consecutive runs.
+- Integration/visual matrix: PASS `16/16`, covering Direct/GPU-driven parity,
+  external Porsche assets, DX12 GBV, resource retirement, resize ownership,
+  and the DX11 compatibility smoke.
+
+**Independent architecture/code review result:**
+
+- Self-review: PASS; P0 `0`, P1 `0`.
+- Resolved during focused validation: the fake descriptor test double failed to
+  initialize its `RHIDescriptorSet` base, so it incorrectly reported every
+  freshly-created descriptor not-ready and without a layout identity. The
+  fixture now preserves the real RHI readiness contract; no production
+  validation was weakened. The equivalent PipelineCache fixture defect was
+  corrected too. Its source-contract assertions now name the typed
+  Transparent implementation's `object` local while continuing to require the
+  same previous-world and skinning uploads.
+- Independent-review P2 coverage closure: `FakeDevice` captures created
+  descriptor-set objects alongside their immutable descriptions. The 9B-4
+  reverse-recording test checks both A/B `TransparentRecordFrame` and
+  `TransparentRecordObject` sets for ready/layout identity and exact private
+  and fallback bindings; this is test-only instrumentation.
+
+**Primary-agent review result:**
+
+- PASS after full source/diff review and independent-review adjudication;
+  unresolved P0/P1/P2/P3: `0/0/0/0`.
+- The independent P2 test-coverage finding was accepted and closed before the
+  commit gate. The primary agent independently rebuilt and reran the augmented
+  reverse-recording fixture plus the full `RenderPassValidation` suite.
+
+**Residual risks / follow-ups:**
+
+- Per-record copies of six upload buffers and descriptor allocations are a
+  correctness-first bridge; completion-aware pooling belongs to later work.
+- Transparent remains sorted Direct and deliberately does not sample
+  directional/ray-traced shadows in this pass; an explicit transparent-shadow
+  design is a separate feature decision.
+- Native Vulkan and Metal runtime execution remain unavailable on this Windows
+  host; the shared RHI/Render contract was validated only by available tests.
+- Next slice after this review/commit gate: Task 9B-5 Skybox recording
+  isolation.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

@@ -219,7 +219,8 @@ namespace
     {
     public:
         explicit FakeDescriptorSet(const RVX::RHIDescriptorSetDesc& desc)
-            : m_bindings(desc.bindings)
+            : RHIDescriptorSet(desc)
+            , m_bindings(desc.bindings)
         {
         }
 
@@ -2140,7 +2141,7 @@ TEST_F(PipelineCacheValidationFixture, DrawPassesUploadRenderObjectNormalMatrix)
     const std::string objectVelocityPass = ReadTextFile(passesDir / "ObjectVelocityPass.cpp");
 
     EXPECT_NE(opaquePass.find("planned.object.previousWorldMatrix"), std::string::npos);
-    EXPECT_NE(transparentPass.find("obj.previousWorldMatrix"), std::string::npos);
+    EXPECT_NE(transparentPass.find("object.previousWorldMatrix"), std::string::npos);
     EXPECT_NE(depthPrepass.find("planned.object.previousWorldMatrix"), std::string::npos);
     EXPECT_NE(shadowPass.find("obj.previousWorldMatrix"), std::string::npos);
     EXPECT_NE(opaquePass.find("view.previousViewProjectionMatrix"), std::string::npos);
@@ -2148,7 +2149,7 @@ TEST_F(PipelineCacheValidationFixture, DrawPassesUploadRenderObjectNormalMatrix)
     EXPECT_NE(depthPrepass.find("view.previousViewProjectionMatrix"), std::string::npos);
     EXPECT_NE(shadowPass.find("view.previousViewProjectionMatrix"), std::string::npos);
     EXPECT_NE(opaquePass.find("ResolveSkinningMatrices(planned.object, planned.buffers)"), std::string::npos);
-    EXPECT_NE(transparentPass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
+    EXPECT_NE(transparentPass.find("ResolveSkinningMatrices(object, buffers)"), std::string::npos);
     EXPECT_NE(depthPrepass.find("ResolveSkinningMatrices(planned.object, planned.buffers)"), std::string::npos);
     EXPECT_NE(shadowPass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
     EXPECT_NE(objectVelocityPass.find("ResolveSkinningMatrices(object, buffers)"), std::string::npos);

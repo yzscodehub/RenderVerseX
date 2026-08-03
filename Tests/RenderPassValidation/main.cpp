@@ -27,6 +27,8 @@
 #include "Render/Decal/DecalRenderer.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/Graph/ResourceViewCache.h"
+#include "Render/Lighting/ClusteredLighting.h"
+#include "Render/Lighting/LightManager.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/DepthPrepass.h"
 #include "Render/Passes/IRenderPass.h"
@@ -391,7 +393,8 @@ namespace
     {
     public:
         explicit FakeDescriptorSet(const RHIDescriptorSetDesc& desc)
-            : bindings(desc.bindings)
+            : RHIDescriptorSet(desc)
+            , bindings(desc.bindings)
         {
         }
 
@@ -829,7 +832,10 @@ namespace
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override
         {
             createdDescriptorSetDescs.push_back(desc);
-            return RHIDescriptorSetRef(new FakeDescriptorSet(desc));
+            auto descriptorSet = RHIDescriptorSetRef(new FakeDescriptorSet(desc));
+            createdDescriptorSets.push_back(
+                static_cast<FakeDescriptorSet*>(descriptorSet.Get()));
+            return descriptorSet;
         }
 
         RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc& desc) override
@@ -984,6 +990,7 @@ namespace
         std::vector<FakeBuffer*> createdBuffers;
         std::vector<RHIAccelerationStructureDesc> createdAccelerationStructureDescs;
         std::vector<RHIDescriptorSetDesc> createdDescriptorSetDescs;
+        std::vector<FakeDescriptorSet*> createdDescriptorSets;
         std::vector<RHIQueryPoolDesc> createdQueryPoolDescs;
         std::vector<RHITextureDesc> createdTextureDescs;
         std::vector<RHITextureViewDesc> createdTextureViewDescs;
@@ -1478,6 +1485,36 @@ namespace
     {
         pass.SetResources(&pipelineCache, &materialSystem);
         pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    }
+
+    RenderPassRecordContext MakeTransparentRecordContext(
+        RenderGraph& graph,
+        ViewData view,
+        const RenderScene& scene,
+        const std::vector<RenderDrawItem>& transparentDrawItems,
+        uint64 frameSequence,
+        uint64 recordEpoch,
+        RenderSubmissionResourceBatch* batch = nullptr)
+    {
+        RenderPassRecordContext context;
+        context.view = view;
+        context.view.renderGraph = &graph;
+        context.view.submissionResourceBatch = batch;
+        context.executionPlan = context.view.renderFrameExecutionPlan;
+        context.meshPassPreparation = context.view.meshPassPreparation;
+        context.visibility = context.view.renderVisibility;
+        context.executionReport = context.view.renderFrameExecutionReport;
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+        context.identity.frameSequence = frameSequence;
+        context.identity.viewOrdinal = 0;
+        context.identity.recordEpoch = recordEpoch;
+        context.renderScene = &scene;
+        context.transparentDrawItems = &transparentDrawItems;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(context, *context.results);
+        return context;
     }
 
     Resource::TextureHandle CreateTextureResource(Resource::ResourceId id)
@@ -9876,14 +9913,30 @@ TEST_F(RenderPassValidationFixture,
                        gpuResources,
                        pipelineCache,
                        materialSystem);
-    transparentPass.SetRenderScene(&scene, &transparentItems);
-    transparentPass.SetRenderTargets(colorView.Get(), nullptr);
+    RenderGraph transparentGraph;
+    transparentGraph.SetDevice(&device);
+    RHITextureRef transparentColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(transparentColor);
+    ViewData transparentView = view;
+    // This independent graph uses a new record epoch. It must not inherit the
+    // Opaque test's frame-618 plan/report pointers for a frame-619 recording.
+    transparentView.renderFrameExecutionPlan = nullptr;
+    transparentView.meshPassPreparation = nullptr;
+    transparentView.renderVisibility = nullptr;
+    transparentView.renderFrameExecutionReport = nullptr;
+    transparentView.colorTarget = transparentGraph.ImportTexture(
+        transparentColor.Get(), RHIResourceState::RenderTarget);
+    RenderPassRecordContext transparentContext = MakeTransparentRecordContext(
+        transparentGraph, transparentView, scene, transparentItems, 619, 619);
+    transparentPass.AddToGraph(transparentGraph, transparentContext);
+    transparentGraph.Compile();
+    ASSERT_TRUE(transparentGraph.GetCompileStats().compileValid);
     RecordingCommandContext transparentCtx;
-    transparentPass.Execute(transparentCtx, view);
+    transparentGraph.Execute(transparentCtx);
     ASSERT_EQ(1u, transparentCtx.drawIndexedCount);
     ASSERT_EQ(1u, transparentCtx.pipelineSequence.size());
-    EXPECT_EQ(pipelineCache.GetTransparentPipeline(),
-              transparentCtx.pipelineSequence[0]);
+    EXPECT_NE(nullptr, transparentCtx.pipelineSequence[0]);
 }
 
 TEST_F(RenderPassValidationFixture,
@@ -10613,7 +10666,7 @@ TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTang
     EXPECT_NE(transparentPass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
     EXPECT_NE(transparentPass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
               std::string::npos);
-    EXPECT_NE(transparentPass.find("item.material, view.viewCache, materialOptions"),
+    EXPECT_NE(transparentPass.find("item.material, data.viewCache, materialOptions"),
               std::string::npos);
 }
 
@@ -10644,25 +10697,25 @@ TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassBindFrameLightResour
 
     EXPECT_NE(transparentPass.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
     EXPECT_NE(transparentPass.find("#include \"Render/Lighting/ClusteredLighting.h\""), std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.lightConstantsBuffer = m_lightManager->GetLightConstantsBuffer();"),
+    EXPECT_NE(transparentPass.find("m_lightManager->GetLightConstantsBuffer()"),
               std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.pointLightsBuffer = m_lightManager->GetPointLightsBuffer();"),
+    EXPECT_NE(transparentPass.find("m_lightManager->GetPointLightsBuffer()"),
               std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.spotLightsBuffer = m_lightManager->GetSpotLightsBuffer();"),
+    EXPECT_NE(transparentPass.find("m_lightManager->GetSpotLightsBuffer()"),
               std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.clusterConstantsBuffer = m_clusteredLighting->GetClusterConstantsBuffer();"),
+    EXPECT_NE(transparentPass.find("m_clusteredLighting->GetClusterConstantsBuffer()"),
               std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.clusterBuffer = m_clusteredLighting->GetClusterBuffer();"),
+    EXPECT_NE(transparentPass.find("m_clusteredLighting->GetClusterBuffer()"),
               std::string::npos);
-    EXPECT_NE(transparentPass.find("lightResources.clusterLightIndexBuffer = m_clusteredLighting->GetLightIndexBuffer();"),
+    EXPECT_NE(transparentPass.find("m_clusteredLighting->GetLightIndexBuffer()"),
               std::string::npos);
-    EXPECT_NE(transparentPass.find("obj.receivesShadow,"), std::string::npos);
-
-    const size_t shadowUpdate = transparentPass.find("m_pipelineCache->UpdateDirectionalShadowFrameResources({});");
-    const size_t lightUpdate = transparentPass.find("m_pipelineCache->UpdateFrameLightResources(lightResources);");
-    ASSERT_NE(shadowUpdate, std::string::npos);
-    ASSERT_NE(lightUpdate, std::string::npos);
-    EXPECT_LT(shadowUpdate, lightUpdate);
+    EXPECT_NE(transparentPass.find("object.receivesShadow,"), std::string::npos);
+    EXPECT_NE(transparentPass.find("CreateTransparentRasterDrawBindingSnapshot"),
+              std::string::npos);
+    EXPECT_EQ(transparentPass.find("UpdateDirectionalShadowFrameResources"),
+              std::string::npos);
+    EXPECT_EQ(transparentPass.find("UpdateFrameLightResources"), std::string::npos);
+    EXPECT_EQ(transparentPass.find("UpdateViewConstants"), std::string::npos);
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassReportsShadowReceiverOptOutDrawItems)
@@ -10935,41 +10988,77 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
 
     std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
 
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    RHITextureRef colorTarget = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(colorTarget);
+    ViewData graphView = view;
+    graphView.viewCache = &viewCache;
+    graphView.viewportWidth = 64;
+    graphView.viewportHeight = 64;
+    graphView.colorTarget = graph.ImportTexture(
+        colorTarget.Get(), RHIResourceState::RenderTarget);
+
     TransparentPass pass;
     ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
-    pass.SetRenderScene(&scene, &transparentItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
+    RenderPassRecordContext context = MakeTransparentRecordContext(
+        graph, graphView, scene, transparentItems, 1101, 1101);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
 
     RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
+    graph.Execute(ctx);
 
     ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
-    EXPECT_EQ(pipelineCache.GetTransparentPipeline(), ctx.pipelineSequence[0]);
+    EXPECT_NE(nullptr, ctx.pipelineSequence[0]);
     EXPECT_EQ(1u, ctx.drawIndexedCount);
-    EXPECT_FALSE(pipelineCache.GetLastDirectionalShadowFrameBindingResult().shadowSamplingEnabled);
-    EXPECT_EQ(pipelineCache.GetLastDirectionalShadowFrameBindingResult().fallbackReason,
-              DirectionalShadowFallbackReason::DisabledNoDirectionalLight);
+    EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
+                            [](uint32 set) { return set == 2; }));
 }
 
-TEST_F(RenderPassValidationFixture, TransparentPassSkipsDrawWhenMaterialBindingErrors)
+TEST_F(RenderPassValidationFixture,
+       TransparentPassTypedPathFailsClosedWhenRecordingBindingsCannotBeCreated)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
 
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    RHITextureRef colorTarget = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(colorTarget);
+    ViewData graphView = view;
+    graphView.viewCache = &viewCache;
+    graphView.colorTarget = graph.ImportTexture(
+        colorTarget.Get(), RHIResourceState::RenderTarget);
+
     TransparentPass pass;
     ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
-    pass.SetRenderScene(&scene, &transparentItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
+    RenderPassRecordContext context = MakeTransparentRecordContext(
+        graph, graphView, scene, transparentItems, 1102, 1102);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
 
     RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
+    graph.Execute(ctx);
 
     EXPECT_EQ(0u, ctx.drawIndexedCount);
-    EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
-    EXPECT_FALSE(materialSystem.GetLastBindingResult().IsDrawable());
+    EXPECT_EQ(0u, ctx.beginRenderPassCount);
     EXPECT_FALSE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
                              [](uint32 set) { return set == 2; }));
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    const auto passDiagnostic = std::find_if(
+        diagnostics.passes.begin(), diagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "TransparentPass";
+        });
+    ASSERT_NE(diagnostics.passes.end(), passDiagnostic);
+    EXPECT_TRUE(passDiagnostic->usages.empty());
 }
 
 TEST_F(RenderPassValidationFixture, TransparentPassDrawsWhenMaterialBindingUsesFallback)
@@ -10984,19 +11073,727 @@ TEST_F(RenderPassValidationFixture, TransparentPassDrawsWhenMaterialBindingUsesF
     item.material = gpuResources.ResolveOrUpload(&materialResource);
     std::vector<RenderDrawItem> transparentItems = {item};
 
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    RHITextureRef colorTarget = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(colorTarget);
+    ViewData graphView = view;
+    graphView.viewCache = &viewCache;
+    graphView.colorTarget = graph.ImportTexture(
+        colorTarget.Get(), RHIResourceState::RenderTarget);
+
     TransparentPass pass;
     ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
-    pass.SetRenderScene(&scene, &transparentItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
+    RenderPassRecordContext context = MakeTransparentRecordContext(
+        graph, graphView, scene, transparentItems, 1103, 1103);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
 
     RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
+    graph.Execute(ctx);
 
     EXPECT_EQ(1u, ctx.drawIndexedCount);
-    EXPECT_EQ(MaterialBindingStatus::Fallback, materialSystem.GetLastBindingResult().status);
-    EXPECT_TRUE(materialSystem.GetLastBindingResult().IsDrawable());
     EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
                             [](uint32 set) { return set == 2; }));
+}
+
+TEST_F(RenderPassValidationFixture,
+       TransparentPassOwnsReverseRecordingInputsAndSubmissionRetirement)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.SetFenceAutoComplete(false);
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+
+    LightManager lightManager;
+    lightManager.Initialize(&device);
+    ASSERT_TRUE(lightManager.IsInitialized());
+    ClusteringConfig clusterConfig;
+    clusterConfig.clusterCountX = 1;
+    clusterConfig.clusterCountY = 1;
+    clusterConfig.clusterCountZ = 1;
+    clusterConfig.maxLightsPerCluster = 1;
+    ClusteredLighting clusteredLighting;
+    ASSERT_TRUE(clusteredLighting.Initialize(&device, clusterConfig));
+
+    const std::array<RHIBuffer*, 6> sourceBuffers = {
+        lightManager.GetLightConstantsBuffer(),
+        lightManager.GetPointLightsBuffer(),
+        lightManager.GetSpotLightsBuffer(),
+        clusteredLighting.GetClusterConstantsBuffer(),
+        clusteredLighting.GetClusterBuffer(),
+        clusteredLighting.GetLightIndexBuffer()};
+    for (RHIBuffer* buffer : sourceBuffers)
+    {
+        ASSERT_NE(nullptr, buffer);
+        ASSERT_GT(buffer->GetSize(), 0u);
+        ASSERT_EQ(RHIMemoryType::Upload, buffer->GetMemoryType());
+    }
+    const auto fillSources = [&sourceBuffers](uint8 firstValue)
+    {
+        for (uint32 index = 0; index < sourceBuffers.size(); ++index)
+        {
+            void* mapped = sourceBuffers[index]->Map();
+            ASSERT_NE(nullptr, mapped);
+            std::memset(mapped,
+                        static_cast<int>(firstValue + index),
+                        static_cast<size_t>(sourceBuffers[index]->GetSize()));
+            sourceBuffers[index]->Unmap();
+        }
+    };
+
+    RenderObject objectA0 = scene.GetObject(0);
+    objectA0.worldMatrix = Mat4Identity();
+    objectA0.worldMatrix[3][0] = 2.0f;
+    RenderObject objectA1 = objectA0;
+    objectA1.worldMatrix[3][0] = 4.0f;
+    RenderScene sceneA;
+    sceneA.AddObject(objectA0);
+    sceneA.AddObject(objectA1);
+    RenderObject objectB = objectA0;
+    objectB.worldMatrix[3][0] = 7.0f;
+    RenderScene sceneB;
+    sceneB.AddObject(objectB);
+
+    RenderDrawItem transparentA0 = MakeDrawItem(MaterialRenderMode::Transparent);
+    RenderDrawItem transparentA1 = transparentA0;
+    transparentA1.objectIndex = 1;
+    std::vector<RenderDrawItem> transparentItemsA = {transparentA0, transparentA1};
+    std::vector<RenderDrawItem> transparentItemsB = {transparentA0};
+
+    struct TransparentTargets
+    {
+        RHITextureRef color;
+        RHITextureRef depth;
+    };
+    const auto makeContext = [&](RenderGraph& graph,
+                                 const RenderScene& recordScene,
+                                 const std::vector<RenderDrawItem>& drawItems,
+                                 RenderSubmissionResourceBatch& batch,
+                                 TransparentTargets& targets,
+                                 uint64 sequence,
+                                 float viewTranslation)
+    {
+        targets.color = device.CreateTexture(
+            RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+        targets.depth = device.CreateTexture(
+            RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+        EXPECT_TRUE(targets.color);
+        EXPECT_TRUE(targets.depth);
+
+        ViewData recordView = view;
+        recordView.viewCache = &viewCache;
+        recordView.submissionResourceBatch = &batch;
+        recordView.colorTarget = graph.ImportTexture(
+            targets.color.Get(), RHIResourceState::RenderTarget);
+        recordView.depthTarget = graph.ImportTexture(
+            targets.depth.Get(), RHIResourceState::DepthRead);
+        recordView.viewProjectionMatrix = Mat4Identity();
+        recordView.viewProjectionMatrix[3][0] = viewTranslation;
+        recordView.directionalShadowViewProjection = Mat4Identity();
+        recordView.directionalShadowViewProjection[3][2] = viewTranslation + 10.0f;
+        recordView.directionalShadowViewProjections[0] =
+            recordView.directionalShadowViewProjection;
+        recordView.directionalShadowCascadeSplits = Vec4(5.0f, 11.0f, 0.0f, 0.0f);
+        recordView.directionalShadowCascadeFadeDistances =
+            Vec4(1.0f, 2.0f, 0.0f, 0.0f);
+        recordView.directionalShadowCascadeCount = 2;
+        recordView.directionalShadowDepthBias = 0.125f;
+        recordView.directionalShadowStrength = 0.75f;
+        recordView.directionalShadowInvMapSize = 0.25f;
+        recordView.directionalShadowFilterRadiusTexels = 2.0f;
+        recordView.directionalShadowNormalBias = 0.5f;
+        recordView.directionalShadowEnabled = 1;
+        recordView.rayTracedShadowEnabled = 1;
+        recordView.rayTracedShadowFilterRadiusPixels = 2.0f;
+        recordView.rayTracedShadowMode = RayTracedShadowMode::ReplaceRaster;
+        return MakeTransparentRecordContext(
+            graph, recordView, recordScene, drawItems, sequence, sequence, &batch);
+    };
+
+    RenderGraph graphA;
+    RenderGraph graphB;
+    graphA.SetDevice(&device);
+    graphB.SetDevice(&device);
+    RenderSubmissionResourceBatch batchA;
+    RenderSubmissionResourceBatch batchB;
+    TransparentTargets targetsA;
+    TransparentTargets targetsB;
+    RenderPassRecordContext contextA = makeContext(
+        graphA, sceneA, transparentItemsA, batchA, targetsA, 1201, 3.0f);
+    RenderPassRecordContext contextB = makeContext(
+        graphB, sceneB, transparentItemsB, batchB, targetsB, 1202, 9.0f);
+
+    TransparentPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    pass.SetResources(&pipelineCache, &materialSystem, &lightManager, &clusteredLighting);
+
+    ASSERT_EQ(3u, pipelineCache.m_setLayouts.size());
+    RHIPipelineLayoutRef pipelineLayoutProbe(pipelineCache.m_pipelineLayout.Get());
+    ASSERT_TRUE(pipelineLayoutProbe);
+
+    fillSources(0x10);
+    pass.AddToGraph(graphA, contextA);
+    fillSources(0x20);
+    pass.AddToGraph(graphB, contextB);
+    fillSources(0x30);
+
+    // AddToGraph must snapshot its own shadow policy. It may disable shadow
+    // sampling in the private upload, but never rewrite caller-owned view data.
+    const auto expectCallerShadowInputs = [](const ViewData& recordView,
+                                             float viewTranslation)
+    {
+        EXPECT_FLOAT_EQ(viewTranslation + 10.0f,
+                        recordView.directionalShadowViewProjection[3][2]);
+        EXPECT_EQ(2u, recordView.directionalShadowCascadeCount);
+        EXPECT_FLOAT_EQ(0.125f, recordView.directionalShadowDepthBias);
+        EXPECT_FLOAT_EQ(0.75f, recordView.directionalShadowStrength);
+        EXPECT_FLOAT_EQ(0.25f, recordView.directionalShadowInvMapSize);
+        EXPECT_FLOAT_EQ(2.0f, recordView.directionalShadowFilterRadiusTexels);
+        EXPECT_FLOAT_EQ(0.5f, recordView.directionalShadowNormalBias);
+        EXPECT_EQ(1u, recordView.directionalShadowEnabled);
+        EXPECT_EQ(1u, recordView.rayTracedShadowEnabled);
+        EXPECT_FLOAT_EQ(2.0f, recordView.rayTracedShadowFilterRadiusPixels);
+        EXPECT_EQ(RayTracedShadowMode::ReplaceRaster,
+                  recordView.rayTracedShadowMode);
+    };
+    expectCallerShadowInputs(contextA.view, 3.0f);
+    expectCallerShadowInputs(contextB.view, 9.0f);
+
+    const auto findRecordedBuffers = [this](const char* debugName)
+    {
+        std::vector<FakeBuffer*> buffers;
+        for (size_t index = 0;
+             index < device.createdBufferDescs.size() &&
+             index < device.createdBuffers.size();
+             ++index)
+        {
+            const char* name = device.createdBufferDescs[index].debugName;
+            if (name != nullptr && std::string(name) == debugName)
+            {
+                buffers.push_back(device.createdBuffers[index]);
+            }
+        }
+        return buffers;
+    };
+    constexpr std::array<const char*, 6> recordCopyNames = {
+        "TransparentRecordLightConstants",
+        "TransparentRecordPointLights",
+        "TransparentRecordSpotLights",
+        "TransparentRecordClusterConstants",
+        "TransparentRecordClusterData",
+        "TransparentRecordClusterLightIndices"};
+    std::array<std::array<FakeBuffer*, 2>, 6> recordedLightCopies{};
+    for (uint32 index = 0; index < recordCopyNames.size(); ++index)
+    {
+        const std::vector<FakeBuffer*> copies = findRecordedBuffers(recordCopyNames[index]);
+        ASSERT_EQ(2u, copies.size()) << recordCopyNames[index];
+        recordedLightCopies[index] = {copies[0], copies[1]};
+        ASSERT_FALSE(copies[0]->GetStorage().empty());
+        ASSERT_FALSE(copies[1]->GetStorage().empty());
+        EXPECT_EQ(static_cast<uint8>(0x10 + index), copies[0]->GetStorage()[0]);
+        EXPECT_EQ(static_cast<uint8>(0x20 + index), copies[1]->GetStorage()[0]);
+        EXPECT_NE(copies[0], sourceBuffers[index]);
+        EXPECT_NE(copies[1], sourceBuffers[index]);
+    }
+
+    const std::vector<FakeBuffer*> recordedViews =
+        findRecordedBuffers("TransparentRecordViewConstants");
+    const std::vector<FakeBuffer*> recordedObjects =
+        findRecordedBuffers("TransparentRecordObjectConstants");
+    ASSERT_EQ(2u, recordedViews.size());
+    ASSERT_EQ(2u, recordedObjects.size());
+    ViewConstants recordedViewA{};
+    ViewConstants recordedViewB{};
+    std::memcpy(&recordedViewA, recordedViews[0]->GetStorage().data(),
+                sizeof(recordedViewA));
+    std::memcpy(&recordedViewB, recordedViews[1]->GetStorage().data(),
+                sizeof(recordedViewB));
+    EXPECT_FLOAT_EQ(3.0f, recordedViewA.viewProjection[3][0]);
+    EXPECT_FLOAT_EQ(9.0f, recordedViewB.viewProjection[3][0]);
+    const auto expectPrivateShadowDisabled = [](const ViewConstants& constants)
+    {
+        EXPECT_FLOAT_EQ(0.0f, constants.cameraForwardAndShadowCascadeCount.w);
+        EXPECT_FLOAT_EQ(0.0f, constants.directionalShadowParams.x);
+        EXPECT_FLOAT_EQ(0.0f, constants.directionalShadowParams.y);
+        EXPECT_FLOAT_EQ(0.0f, constants.directionalShadowParams.z);
+        EXPECT_FLOAT_EQ(0.0f, constants.directionalShadowParams.w);
+        EXPECT_FLOAT_EQ(0.0f, constants.directionalShadowReceiverParams.x);
+        EXPECT_FLOAT_EQ(0.0f, constants.directionalShadowCascadeSplits.x);
+        EXPECT_FLOAT_EQ(0.0f, constants.directionalShadowCascadeFadeDistances.x);
+        EXPECT_FLOAT_EQ(0.0f, constants.rayTracedShadowParams.x);
+        EXPECT_FLOAT_EQ(0.0f, constants.rayTracedShadowParams.y);
+        EXPECT_FLOAT_EQ(0.0f, constants.rayTracedShadowParams.z);
+    };
+    expectPrivateShadowDisabled(recordedViewA);
+    expectPrivateShadowDisabled(recordedViewB);
+
+    const uint64 objectStride = pipelineCache.m_objectConstantStride;
+    ASSERT_GT(objectStride, 0u);
+    ObjectConstants recordedObjectA0{};
+    ObjectConstants recordedObjectA1{};
+    ObjectConstants recordedObjectB{};
+    std::memcpy(&recordedObjectA0, recordedObjects[0]->GetStorage().data(),
+                sizeof(recordedObjectA0));
+    std::memcpy(&recordedObjectA1,
+                recordedObjects[0]->GetStorage().data() + objectStride,
+                sizeof(recordedObjectA1));
+    std::memcpy(&recordedObjectB, recordedObjects[1]->GetStorage().data(),
+                sizeof(recordedObjectB));
+    EXPECT_FLOAT_EQ(2.0f, recordedObjectA0.world[3][0]);
+    EXPECT_FLOAT_EQ(4.0f, recordedObjectA1.world[3][0]);
+    EXPECT_FLOAT_EQ(7.0f, recordedObjectB.world[3][0]);
+
+    // The captured descriptors expose the exact set0/set1 resources used by
+    // each graph. Verify they are complete, private, and layout-ready rather
+    // than merely observing that buffers with matching debug names exist.
+    ASSERT_EQ(device.createdDescriptorSetDescs.size(),
+              device.createdDescriptorSets.size());
+    const auto findRecordedDescriptorSetIndices = [this](const char* debugName)
+    {
+        std::vector<size_t> indices;
+        for (size_t index = 0; index < device.createdDescriptorSetDescs.size(); ++index)
+        {
+            const char* name = device.createdDescriptorSetDescs[index].debugName;
+            if (name != nullptr && std::string(name) == debugName)
+            {
+                indices.push_back(index);
+            }
+        }
+        return indices;
+    };
+    const std::vector<size_t> frameSetIndices =
+        findRecordedDescriptorSetIndices("TransparentRecordFrameDescriptorSet");
+    const std::vector<size_t> objectSetIndices =
+        findRecordedDescriptorSetIndices("TransparentRecordObjectDescriptorSet");
+    ASSERT_EQ(2u, frameSetIndices.size());
+    ASSERT_EQ(2u, objectSetIndices.size());
+    ASSERT_TRUE(pipelineCache.m_fallbackDirectionalShadowView);
+    ASSERT_TRUE(pipelineCache.m_directionalShadowSampler);
+    ASSERT_TRUE(pipelineCache.m_fallbackRayTracedShadowMaskView);
+
+    const auto findBinding = [](const RHIDescriptorSetDesc& descriptor,
+                                uint32 binding) -> const RHIDescriptorBinding*
+    {
+        const auto it = std::find_if(
+            descriptor.bindings.begin(), descriptor.bindings.end(),
+            [binding](const RHIDescriptorBinding& candidate)
+            {
+                return candidate.binding == binding && candidate.arrayElement == 0;
+            });
+        return it != descriptor.bindings.end() ? &(*it) : nullptr;
+    };
+    const auto expectBufferBinding = [&findBinding](
+                                         const RHIDescriptorSetDesc& descriptor,
+                                         uint32 binding,
+                                         RHIBuffer* expectedBuffer)
+    {
+        const RHIDescriptorBinding* captured = findBinding(descriptor, binding);
+        ASSERT_NE(nullptr, captured);
+        EXPECT_EQ(expectedBuffer, captured->buffer);
+        EXPECT_EQ(nullptr, captured->textureView);
+        EXPECT_EQ(nullptr, captured->sampler);
+    };
+    const auto expectTextureBinding = [&findBinding](
+                                          const RHIDescriptorSetDesc& descriptor,
+                                          uint32 binding,
+                                          RHITextureView* expectedView)
+    {
+        const RHIDescriptorBinding* captured = findBinding(descriptor, binding);
+        ASSERT_NE(nullptr, captured);
+        EXPECT_EQ(expectedView, captured->textureView);
+        EXPECT_EQ(nullptr, captured->buffer);
+        EXPECT_EQ(nullptr, captured->sampler);
+    };
+    const auto expectSamplerBinding = [&findBinding](
+                                          const RHIDescriptorSetDesc& descriptor,
+                                          uint32 binding,
+                                          RHISampler* expectedSampler)
+    {
+        const RHIDescriptorBinding* captured = findBinding(descriptor, binding);
+        ASSERT_NE(nullptr, captured);
+        EXPECT_EQ(expectedSampler, captured->sampler);
+        EXPECT_EQ(nullptr, captured->buffer);
+        EXPECT_EQ(nullptr, captured->textureView);
+    };
+    const auto expectFrameDescriptor = [&](const RHIDescriptorSetDesc& descriptor,
+                                            const FakeDescriptorSet* descriptorSet,
+                                            FakeBuffer* expectedView,
+                                            const std::array<FakeBuffer*, 6>& expectedCopies)
+    {
+        ASSERT_NE(nullptr, descriptorSet);
+        EXPECT_EQ(pipelineCache.m_setLayouts[0].Get(), descriptor.layout);
+        EXPECT_EQ(pipelineCache.m_setLayouts[0].Get(),
+                  descriptorSet->GetLayoutIdentity());
+        EXPECT_TRUE(descriptorSet->IsReadyForBinding(
+            pipelineCache.m_setLayouts[0].Get()));
+        EXPECT_EQ(descriptor.bindings.size(),
+                  descriptorSet->GetDescriptorSnapshot().size());
+        expectBufferBinding(descriptor, 0, expectedView);
+        expectTextureBinding(descriptor, 1,
+                             pipelineCache.m_fallbackDirectionalShadowView.Get());
+        expectSamplerBinding(descriptor, 2,
+                             pipelineCache.m_directionalShadowSampler.Get());
+        expectBufferBinding(descriptor, 3, expectedCopies[0]);
+        expectBufferBinding(descriptor, 4, expectedCopies[1]);
+        expectBufferBinding(descriptor, 5, expectedCopies[2]);
+        expectTextureBinding(descriptor, 6,
+                             pipelineCache.m_fallbackRayTracedShadowMaskView.Get());
+        expectBufferBinding(descriptor, 7, expectedCopies[3]);
+        expectBufferBinding(descriptor, 8, expectedCopies[4]);
+        expectBufferBinding(descriptor, 9, expectedCopies[5]);
+    };
+
+    const bool requiresObjectInstanceFallback =
+        FindRHIBindingLayoutEntry(*pipelineCache.m_setLayouts[1], 1) != nullptr;
+    const std::vector<FakeBuffer*> objectInstanceFallbacks =
+        findRecordedBuffers("TransparentRecordObjectInstanceFallback");
+    if (requiresObjectInstanceFallback)
+    {
+        ASSERT_EQ(2u, objectInstanceFallbacks.size());
+    }
+    else
+    {
+        EXPECT_TRUE(objectInstanceFallbacks.empty());
+    }
+    const auto expectObjectDescriptor = [&](const RHIDescriptorSetDesc& descriptor,
+                                             const FakeDescriptorSet* descriptorSet,
+                                             FakeBuffer* expectedObject,
+                                             FakeBuffer* expectedInstanceFallback)
+    {
+        ASSERT_NE(nullptr, descriptorSet);
+        EXPECT_EQ(pipelineCache.m_setLayouts[1].Get(), descriptor.layout);
+        EXPECT_EQ(pipelineCache.m_setLayouts[1].Get(),
+                  descriptorSet->GetLayoutIdentity());
+        EXPECT_TRUE(descriptorSet->IsReadyForBinding(
+            pipelineCache.m_setLayouts[1].Get()));
+        EXPECT_EQ(descriptor.bindings.size(),
+                  descriptorSet->GetDescriptorSnapshot().size());
+        expectBufferBinding(descriptor, 0, expectedObject);
+        const RHIDescriptorBinding* instanceBinding = findBinding(descriptor, 1);
+        if (requiresObjectInstanceFallback)
+        {
+            ASSERT_NE(nullptr, instanceBinding);
+            EXPECT_EQ(expectedInstanceFallback, instanceBinding->buffer);
+        }
+        else
+        {
+            EXPECT_EQ(nullptr, instanceBinding);
+        }
+    };
+    expectFrameDescriptor(
+        device.createdDescriptorSetDescs[frameSetIndices[0]],
+        device.createdDescriptorSets[frameSetIndices[0]],
+        recordedViews[0],
+        {recordedLightCopies[0][0], recordedLightCopies[1][0],
+         recordedLightCopies[2][0], recordedLightCopies[3][0],
+         recordedLightCopies[4][0], recordedLightCopies[5][0]});
+    expectFrameDescriptor(
+        device.createdDescriptorSetDescs[frameSetIndices[1]],
+        device.createdDescriptorSets[frameSetIndices[1]],
+        recordedViews[1],
+        {recordedLightCopies[0][1], recordedLightCopies[1][1],
+         recordedLightCopies[2][1], recordedLightCopies[3][1],
+         recordedLightCopies[4][1], recordedLightCopies[5][1]});
+    expectObjectDescriptor(
+        device.createdDescriptorSetDescs[objectSetIndices[0]],
+        device.createdDescriptorSets[objectSetIndices[0]],
+        recordedObjects[0],
+        requiresObjectInstanceFallback ? objectInstanceFallbacks[0] : nullptr);
+    expectObjectDescriptor(
+        device.createdDescriptorSetDescs[objectSetIndices[1]],
+        device.createdDescriptorSets[objectSetIndices[1]],
+        recordedObjects[1],
+        requiresObjectInstanceFallback ? objectInstanceFallbacks[1] : nullptr);
+
+    // The recording is value-owned. Later frame extraction and source uploads
+    // must not alter either graph's ordered draw/object/light input set.
+    sceneA.GetMutableObject(0).worldMatrix[3][0] = 99.0f;
+    transparentItemsA.clear();
+    contextA.view.viewProjectionMatrix[3][0] = 99.0f;
+
+    graphA.Compile();
+    graphB.Compile();
+    ASSERT_TRUE(graphA.GetCompileStats().compileValid);
+    ASSERT_TRUE(graphB.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics diagnosticsA = graphA.GetDiagnostics();
+    const auto passA = std::find_if(
+        diagnosticsA.passes.begin(), diagnosticsA.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "TransparentPass";
+        });
+    ASSERT_NE(diagnosticsA.passes.end(), passA);
+    const auto colorUsage = std::find_if(
+        passA->usages.begin(), passA->usages.end(),
+        [&contextA](const RenderGraph::ResourceUsageDiagnostic& usage)
+        {
+            return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                   usage.resourceIndex == contextA.view.colorTarget.index;
+        });
+    const auto depthUsage = std::find_if(
+        passA->usages.begin(), passA->usages.end(),
+        [&contextA](const RenderGraph::ResourceUsageDiagnostic& usage)
+        {
+            return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                   usage.resourceIndex == contextA.view.depthTarget.index;
+        });
+    ASSERT_NE(passA->usages.end(), colorUsage);
+    ASSERT_NE(passA->usages.end(), depthUsage);
+    EXPECT_EQ(RenderGraph::DiagnosticAccessType::ReadWrite, colorUsage->access);
+    EXPECT_EQ(RHIResourceState::RenderTarget, colorUsage->desiredState);
+    EXPECT_EQ(RenderGraph::DiagnosticAccessType::Read, depthUsage->access);
+    EXPECT_EQ(RHIResourceState::DepthRead, depthUsage->desiredState);
+
+    const uint32 retainedBeforeB = batchB.GetRetainedObjectCount();
+    RecordingCommandContext commandsB;
+    graphB.Execute(commandsB);
+    EXPECT_EQ(1u, commandsB.beginRenderPassCount);
+    EXPECT_EQ(1u, commandsB.drawIndexedCount);
+    EXPECT_GT(batchB.GetRetainedObjectCount(), retainedBeforeB);
+    const uint32 retainedBeforeA = batchA.GetRetainedObjectCount();
+    RecordingCommandContext commandsA;
+    graphA.Execute(commandsA);
+    EXPECT_EQ(1u, commandsA.beginRenderPassCount);
+    EXPECT_EQ(2u, commandsA.drawIndexedCount);
+    EXPECT_GT(batchA.GetRetainedObjectCount(), retainedBeforeA);
+    ASSERT_EQ(1u, commandsA.renderPasses.size());
+    ASSERT_EQ(1u, commandsB.renderPasses.size());
+    EXPECT_EQ(targetsA.color.Get(),
+              commandsA.renderPasses[0].colorAttachments[0].view->GetTexture());
+    EXPECT_EQ(targetsB.color.Get(),
+              commandsB.renderPasses[0].colorAttachments[0].view->GetTexture());
+    ASSERT_TRUE(commandsA.renderPasses[0].hasDepthStencil);
+    EXPECT_TRUE(commandsA.renderPasses[0].depthStencilAttachment.readOnly);
+
+    const auto objectOffsets = [](const RecordingCommandContext& commands)
+    {
+        std::vector<uint32> offsets;
+        for (size_t index = 0; index < commands.descriptorSetSequence.size(); ++index)
+        {
+            if (commands.descriptorSetSequence[index] == 1 &&
+                commands.descriptorSetDynamicOffsets[index].size() == 1)
+            {
+                offsets.push_back(commands.descriptorSetDynamicOffsets[index][0]);
+            }
+        }
+        return offsets;
+    };
+    EXPECT_EQ((std::vector<uint32>{0u, static_cast<uint32>(objectStride)}),
+              objectOffsets(commandsA));
+    EXPECT_EQ((std::vector<uint32>{0u}), objectOffsets(commandsB));
+
+    GPUCompletionToken completionB;
+    GPUCompletionToken completionA;
+    ASSERT_TRUE(InsertGPUCompletionPoint(completionB, tracker.Submit(&commandsB)));
+    ASSERT_TRUE(InsertGPUCompletionPoint(completionA, tracker.Submit(&commandsA)));
+    batchB.SealAndTransfer(completionB, retirement);
+    batchA.SealAndTransfer(completionA, retirement);
+    EXPECT_TRUE(batchA.IsSealed());
+    EXPECT_TRUE(batchB.IsSealed());
+    EXPECT_EQ(0u, batchA.GetRetainedObjectCount());
+    EXPECT_EQ(0u, batchB.GetRetainedObjectCount());
+    ASSERT_GT(retirement.GetDiagnostics().entryCount, 0u);
+
+    graphA.Clear();
+    graphB.Clear();
+    pipelineCache.Shutdown();
+    EXPECT_EQ(3u, pipelineLayoutProbe->GetRefCount());
+    FakeFence* const completionFence =
+        device.FindFenceWithSignal(completionA.points[0].value);
+    ASSERT_NE(nullptr, completionFence);
+    completionFence->Complete(completionB.points[0].value);
+    EXPECT_EQ(GPUCompletionStatus::Pending, retirement.Poll());
+    EXPECT_EQ(2u, pipelineLayoutProbe->GetRefCount());
+    completionFence->Complete(completionA.points[0].value);
+    EXPECT_EQ(GPUCompletionStatus::Completed, retirement.Poll());
+    EXPECT_EQ(1u, pipelineLayoutProbe->GetRefCount());
+    clusteredLighting.Shutdown();
+    lightManager.Shutdown();
+    tracker.Shutdown();
+}
+
+TEST_F(RenderPassValidationFixture,
+       TransparentPassFailsClosedForMalformedSealedAndEmptyRecordings)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    TransparentPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    std::vector<RenderDrawItem> transparentItems = {
+        MakeDrawItem(MaterialRenderMode::Transparent)};
+    const auto makeTargets = [this](uint32 extent)
+    {
+        return std::pair<RHITextureRef, RHITextureRef>(
+            device.CreateTexture(
+                RHITextureDesc::RenderTarget(extent, extent, RHIFormat::RGBA8_UNORM)),
+            device.CreateTexture(
+                RHITextureDesc::DepthStencil(extent, extent, RHIFormat::D32_FLOAT)));
+    };
+    const auto makeContext = [&](RenderGraph& graph,
+                                 const RenderScene& recordScene,
+                                 const std::vector<RenderDrawItem>& drawItems,
+                                 RHITexture* color,
+                                 RHITexture* depth,
+                                 uint64 sequence,
+                                 RenderSubmissionResourceBatch* batch = nullptr)
+    {
+        ViewData recordView = view;
+        recordView.viewCache = &viewCache;
+        recordView.colorTarget = graph.ImportTexture(color, RHIResourceState::RenderTarget);
+        recordView.depthTarget = graph.ImportTexture(depth, RHIResourceState::DepthRead);
+        return MakeTransparentRecordContext(
+            graph, recordView, recordScene, drawItems, sequence, sequence, batch);
+    };
+    const auto expectNoUsageOrCommands = [](RenderGraph& graph,
+                                            RecordingCommandContext& commands)
+    {
+        graph.Compile();
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+        const auto passDiagnostic = std::find_if(
+            diagnostics.passes.begin(), diagnostics.passes.end(),
+            [](const RenderGraph::PassDiagnostic& diagnostic)
+            {
+                return diagnostic.name == "TransparentPass";
+            });
+        ASSERT_NE(diagnostics.passes.end(), passDiagnostic);
+        EXPECT_TRUE(passDiagnostic->usages.empty());
+        graph.Execute(commands);
+        EXPECT_EQ(0u, commands.beginRenderPassCount);
+        EXPECT_EQ(0u, commands.drawIndexedCount);
+    };
+
+    // A typed empty draw list is not an attachment-only pass.
+    RenderGraph emptyGraph;
+    emptyGraph.SetDevice(&device);
+    auto emptyTargets = makeTargets(64);
+    ASSERT_TRUE(emptyTargets.first);
+    ASSERT_TRUE(emptyTargets.second);
+    std::vector<RenderDrawItem> emptyItems;
+    RenderPassRecordContext empty = makeContext(
+        emptyGraph, scene, emptyItems, emptyTargets.first.Get(), emptyTargets.second.Get(), 1301);
+    pass.AddToGraph(emptyGraph, empty);
+    RecordingCommandContext emptyCommands;
+    expectNoUsageOrCommands(emptyGraph, emptyCommands);
+
+    // Legacy setters and the ViewData overload cannot rebuild a typed mailbox.
+    RenderGraph legacyGraph;
+    legacyGraph.SetDevice(&device);
+    auto legacyTargets = makeTargets(64);
+    ASSERT_TRUE(legacyTargets.first);
+    ASSERT_TRUE(legacyTargets.second);
+    ViewData legacyView = view;
+    legacyView.viewCache = &viewCache;
+    legacyView.colorTarget = legacyGraph.ImportTexture(
+        legacyTargets.first.Get(), RHIResourceState::RenderTarget);
+    legacyView.depthTarget = legacyGraph.ImportTexture(
+        legacyTargets.second.Get(), RHIResourceState::DepthRead);
+    pass.SetRenderScene(&scene, &transparentItems);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.AddToGraph(legacyGraph, legacyView);
+    RecordingCommandContext legacyCommands;
+    expectNoUsageOrCommands(legacyGraph, legacyCommands);
+
+    // A foreign result object must not be initialized or overwritten before
+    // the target graph has accepted the complete paired context.
+    RenderGraph sourceGraph;
+    RenderGraph targetGraph;
+    sourceGraph.SetDevice(&device);
+    targetGraph.SetDevice(&device);
+    auto sourceTargets = makeTargets(64);
+    ASSERT_TRUE(sourceTargets.first);
+    ASSERT_TRUE(sourceTargets.second);
+    RenderPassRecordContext foreign = makeContext(
+        sourceGraph, scene, transparentItems,
+        sourceTargets.first.Get(), sourceTargets.second.Get(), 1302);
+    foreign.results->opaqueStats.directDrawCount = 791;
+    foreign.frameSnapshot.reset();
+    pass.AddToGraph(targetGraph, foreign);
+    RecordingCommandContext foreignCommands;
+    expectNoUsageOrCommands(targetGraph, foreignCommands);
+    EXPECT_EQ(791u, foreign.results->opaqueStats.directDrawCount);
+    EXPECT_EQ(foreign.identity, foreign.results->identity);
+
+    // Stale and forged resource handles are rejected before retention or graph
+    // access declarations, even when the remaining typed payload is paired.
+    RenderGraph staleSourceGraph;
+    RenderGraph staleGraph;
+    staleSourceGraph.SetDevice(&device);
+    staleGraph.SetDevice(&device);
+    auto staleTargets = makeTargets(64);
+    ASSERT_TRUE(staleTargets.first);
+    ASSERT_TRUE(staleTargets.second);
+    ViewData staleView = view;
+    staleView.viewCache = &viewCache;
+    staleView.colorTarget = staleSourceGraph.ImportTexture(
+        staleTargets.first.Get(), RHIResourceState::RenderTarget);
+    staleView.depthTarget = staleSourceGraph.ImportTexture(
+        staleTargets.second.Get(), RHIResourceState::DepthRead);
+    RenderPassRecordContext stale = MakeTransparentRecordContext(
+        staleGraph, staleView, scene, transparentItems, 1303, 1303);
+    pass.AddToGraph(staleGraph, stale);
+    RecordingCommandContext staleCommands;
+    expectNoUsageOrCommands(staleGraph, staleCommands);
+
+    RenderGraph forgedGraph;
+    forgedGraph.SetDevice(&device);
+    RGTextureHandle forgedColor;
+    forgedColor.index = 0;
+    forgedColor.graphIdentity = forgedGraph.GetGraphIdentity();
+    forgedColor.recordingGeneration = forgedGraph.GetRecordingGeneration();
+    RGTextureHandle forgedDepth = forgedColor;
+    forgedDepth.index = 1;
+    ViewData forgedView = view;
+    forgedView.viewCache = &viewCache;
+    forgedView.colorTarget = forgedColor;
+    forgedView.depthTarget = forgedDepth;
+    RenderPassRecordContext forged = MakeTransparentRecordContext(
+        forgedGraph, forgedView, scene, transparentItems, 1304, 1304);
+    pass.AddToGraph(forgedGraph, forged);
+    RecordingCommandContext forgedCommands;
+    expectNoUsageOrCommands(forgedGraph, forgedCommands);
+
+    // A self-graph incomplete snapshot and an already sealed submission batch
+    // each fail before ReadWrite(color)/Read(depth) declarations become visible.
+    RenderGraph partialGraph;
+    partialGraph.SetDevice(&device);
+    auto partialTargets = makeTargets(64);
+    ASSERT_TRUE(partialTargets.first);
+    ASSERT_TRUE(partialTargets.second);
+    RenderPassRecordContext partial = makeContext(
+        partialGraph, scene, transparentItems,
+        partialTargets.first.Get(), partialTargets.second.Get(), 1305);
+    partial.frameSnapshot.reset();
+    pass.AddToGraph(partialGraph, partial);
+    RecordingCommandContext partialCommands;
+    expectNoUsageOrCommands(partialGraph, partialCommands);
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+    RenderSubmissionResourceBatch sealedBatch;
+    sealedBatch.ReleaseUnsubmitted(retirement);
+    ASSERT_TRUE(sealedBatch.IsSealed());
+    RenderGraph sealedGraph;
+    sealedGraph.SetDevice(&device);
+    auto sealedTargets = makeTargets(64);
+    ASSERT_TRUE(sealedTargets.first);
+    ASSERT_TRUE(sealedTargets.second);
+    RenderPassRecordContext sealed = makeContext(
+        sealedGraph, scene, transparentItems,
+        sealedTargets.first.Get(), sealedTargets.second.Get(), 1306, &sealedBatch);
+    pass.AddToGraph(sealedGraph, sealed);
+    RecordingCommandContext sealedCommands;
+    expectNoUsageOrCommands(sealedGraph, sealedCommands);
+    EXPECT_EQ(GPUCompletionStatus::Completed, retirement.Poll());
+    tracker.Shutdown();
 }
 
 TEST(RenderPassStatusValidation, ParticleFeaturePassStaysDisabledWithoutSnapshotItems)

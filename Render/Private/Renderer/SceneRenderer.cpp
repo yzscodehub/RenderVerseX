@@ -4394,6 +4394,7 @@ void SceneRenderer::BuildRenderGraph()
     passRecordContext.renderScene = &m_renderScene;
     passRecordContext.opaqueDrawItems = &m_opaqueDrawItems;
     passRecordContext.maskedDrawItems = &m_maskedDrawItems;
+    passRecordContext.transparentDrawItems = &m_transparentDrawItems;
     passRecordContext.results = std::make_shared<RenderPassRecordResults>();
     passRecordContext.results->identity = passRecordContext.identity;
     passRecordContext.results->directionalShadowOutput = {};
@@ -4494,11 +4495,12 @@ void SceneRenderer::BuildRenderGraph()
             }
         }
 
-        // Shadow/Depth/Opaque/ObjectVelocity consume the explicit graph-owned record context;
-        // remaining passes retain the Task 9B compatibility adapter.
+        // Shadow/Depth/Opaque/ObjectVelocity/Transparent consume the explicit
+        // graph-owned record context; remaining passes retain the Task 9B
+        // compatibility adapter.
         if (pass.get() == m_shadowPass || pass.get() == m_depthPrepass ||
             pass.get() == m_rayTracedShadowPass || pass.get() == m_opaquePass ||
-            pass.get() == m_objectVelocityPass)
+            pass.get() == m_objectVelocityPass || pass.get() == m_transparentPass)
         {
             pass->AddToGraph(*m_renderGraph, passRecordContext);
         }
