@@ -88,9 +88,6 @@ namespace RVX
         
         RenderGraphPassType GetPassType() const override { return RenderGraphPassType::Graphics; }
 
-        void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
-        void Execute(RHICommandContext& ctx, const ViewData& view) override;
-        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
         void AddToGraph(RenderGraph& graph,
                         const RenderPassRecordContext& context) override;
 
@@ -103,15 +100,7 @@ namespace RVX
         {
             m_resourceRegistry = registry;
         }
-        /** @brief Compatibility-only legacy scene input. Typed recording snapshots it. */
-        void SetRenderScene(const RenderScene* scene);
         void SetConfig(const ShadowPassConfig& config);
-
-        /**
-         * @brief Calculate CSM cascades from view data
-         */
-        void CalculateCascades(const ViewData& view,
-                               const PrimaryDirectionalLightRecordInput& primaryLight);
 
         /**
          * @brief Get cascade info for shader binding
@@ -119,10 +108,6 @@ namespace RVX
         const std::vector<ShadowCascade>& GetCascades() const { return m_cascades; }
         const ShadowPassConfig& GetConfig() const { return m_config; }
 
-        /**
-         * @brief Get the shadow map texture (after execution)
-         */
-        RHITexture* GetShadowMap() const { return m_shadowMapTexture; }
         RGTextureHandle GetShadowMapTextureHandle() const { return m_shadowMapTextureHandle; }
         const std::vector<RGTextureHandle>& GetCascadeTextureHandles() const { return m_cascadeTextureHandles; }
         const ShadowPassStats& GetStats() const
@@ -147,6 +132,11 @@ namespace RVX
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
     private:
+        void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
+        void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void InitializeGraphRecorder(const RenderScene* scene);
+        void CalculateCascades(const ViewData& view,
+                               const PrimaryDirectionalLightRecordInput& primaryLight);
         bool ResolveCascadeViews(const ViewData& view);
         void Setup(RenderGraphBuilder& builder,
                    const ViewData& view,
@@ -171,9 +161,8 @@ namespace RVX
 
         // Shadow map resources
         RGTextureHandle m_shadowMapTextureHandle;
-        RHITexture* m_shadowMapTexture = nullptr;
         std::vector<RGTextureHandle> m_cascadeTextureHandles;
-        std::vector<RHITextureView*> m_cascadeViews;
+        std::vector<RHITextureViewRef> m_cascadeViews;
         ShadowPassStats m_stats;
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
     };

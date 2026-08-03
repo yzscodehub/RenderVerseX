@@ -45568,3 +45568,96 @@ below.
   this stage.
 
 ---
+
+### R-SP342 Render-policy Task 9B-6B2b standalone scene-pass input closure
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 9B-6B2b stage commit after the reviewed gate
+below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP341 (primary directional-light frame snapshot).
+- The shared light selection and graph-owned result bridge are stable, so the
+  last Depth/Opaque/Shadow per-frame compatibility inputs can be removed.
+
+**Approved scope:**
+
+- Remove standalone scene/list, raw target, GPU-culling/resource, shadow-source,
+  per-frame path-enable, public `ViewData` recording, and raw shadow-map access
+  surfaces from Depth/Opaque/Shadow.
+- Require an exact renderer-issued graph/record identity, plan, results,
+  self-consistent frame snapshot, current graph attachments, and compatible
+  shadow outputs before setup or execution-data materialization.
+- Execute through graph-owned recorder instances; rejected records declare no
+  usage, retain no foreign GPU state, and cannot mutate a foreign result sink.
+- Resolve attachments only from current graph handles and retain each view plus
+  its parent texture through submission completion.
+- Preserve Opaque setup-time shadow declaration diagnostics in the typed result
+  channel and add inverse, mutation, stale, empty, resize/target replacement,
+  base-adapter, and in-flight lifetime fixtures.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/ShadowPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- Task 9 plan/todo, record-context contract, and this phase record.
+
+**Validation result:**
+
+- Build: PASS for `RenderPassValidation`, `GPUDrivenValidation`,
+  `PipelineCacheValidation`, `RenderPolicyValidation`, and `ModelViewer`,
+  including configured shared DX11/DX12/Vulkan/OpenGL targets.
+- RenderPassValidation: PASS 194/194.
+- GPUDrivenValidation: PASS 30/30.
+- PipelineCacheValidation: PASS 130/130.
+- RenderPolicyValidation: PASS 22/22.
+- GPU-driven ModelViewer smoke/Auto/direct/GPU parity matrix: PASS 5/5.
+- Native DX12 `ModelViewerRayTracedShadowSmoke`: PASS.
+- `git diff --check`: PASS.
+- The independent DX11 `ModelViewerShadowSmoke` descriptor-visibility failure
+  was not rerun after two unchanged prior failures. The inherited stale RT
+  visual golden was not regenerated or re-baselined.
+
+**Independent review result:**
+
+- Initial review found P0/P1/P2/P3 `0/2/2/0`: migrated fixtures supplied an
+  empty visibility snapshot, the reviewer questioned base-adapter dispatch,
+  the shadow stability proof had been weakened, and the missing-GPU fixture
+  rejected before its intended branch.
+- Remediation synthesized explicit all-visible fixture data, restored semantic
+  texel/UV assertions, made the missing-GPU context otherwise valid, and added
+  a runtime base-pointer adapter proof. Separate diagnosis also restored valid
+  packets and nonzero object identity in migrated execution fixtures.
+- Re-review confirmed virtual redispatch reaches the typed fail-closed override,
+  setup diagnostics publish at registration, invalid GPU inputs are not
+  retained, and all ownership/lifetime fixtures reach their intended branches.
+- Final unresolved P0/P1/P2/P3: `0/0/0/0`; verdict: ready to commit.
+
+**Primary review status:**
+
+- PASS after complete production/header/test diff inspection, adjudication of
+  every independent finding, exact runtime diagnosis of the remaining fixture
+  failures, full unit gates, Sample parity, DX12 RT smoke, API absence search,
+  and whitespace validation.
+- No public RHI contract, backend shortcut, shader ABI, visual golden,
+  tolerance, assertion strength, or rendering fallback changed.
+
+**Residual risks / follow-ups:**
+
+- Native Vulkan and Metal runtime coverage remains unavailable on this Windows
+  host; no backend promotion claim is made.
+- The stale RT golden and known DX11 descriptor-visibility issue remain explicit
+  later qualification/compatibility gates.
+- Task 10A must preserve this frame-owned ownership model while introducing the
+  semantic indirect-execution capability and descriptor contract.
+
+---

@@ -1,8 +1,8 @@
 # Render Pass Record Context and Execution Data Contract
 
-**Status:** Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A, Task 9B-6B1, and
-Task 9B-6B2a complete and independently reviewed; Task 9B-6B2b standalone
-frame-state compatibility removal is next
+**Status:** Task 9A and every Task 9B slice through Task 9B-6B2b are complete
+and independently reviewed; Task 10A may now build on the frozen record
+ownership contract
 **Date:** 2026-08-03
 **Scope:** Main raster pass chain; frame/view data ownership and RenderGraph
 recording lifetime
@@ -122,7 +122,8 @@ enable async compute.
 ObjectVelocity (9B-3), Transparent (9B-4), Skybox (9B-5), production binder
 removal (9B-6A), typed Opaque attachment closure (9B-6B1), and the shared
 primary-directional-light snapshot (9B-6B2a) are implemented and reviewed.
-Remaining standalone Depth/Opaque/Shadow frame setters are pending 9B-6B2b.
+Task 9B-6B2b also removed the remaining standalone Depth/Opaque/Shadow frame
+setters and adapters; the Task 9 record contract is frozen.
 
 - 9B-1 migrates raster Shadow to an independent graph-owned recorder. Setup
   publishes a producer-neutral `DirectionalShadowRecordOutput` with the current
@@ -197,7 +198,14 @@ Remaining standalone Depth/Opaque/Shadow frame setters are pending 9B-6B2b.
   graph work. The legacy `ViewData` projection remains a bounded adapter until
   9B-6B2b and is not used by production SceneRenderer recording.
 - 9B-6B2b removes the remaining Depth/Opaque/Shadow standalone frame-state
-  compatibility setters after the shared light snapshot closes.
+  compatibility setters and public `ViewData` recording overloads. Typed
+  registrations validate the exact graph, identity, plan, results, snapshot,
+  attachments, and producer outputs before invoking execution helpers. Each
+  graph owns its recorder, attachment views and parent textures remain retained
+  through completion, and setup-time Opaque shadow declarations publish to the
+  current record results. Legacy base-adapter, foreign/stale, missing-GPU,
+  caller-mutation, empty, resize/target-replacement, inverse-graph, and
+  in-flight lifetime fixtures all fail closed or preserve their sealed record.
 - Preserve long-lived pass configuration and feature enablement.
 - Add resize, rejected-frame, empty-list, multi-view, and target-replacement
   fixtures for the migrated passes.

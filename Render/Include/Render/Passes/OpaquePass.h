@@ -51,9 +51,6 @@ namespace RVX
         void OnAdd(IRHIDevice* device) override;
         void OnRemove() override;
 
-        void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
-        void Execute(RHICommandContext& ctx, const ViewData& view) override;
-        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
         void AddToGraph(RenderGraph& graph,
                         const RenderPassRecordContext& context) override;
 
@@ -71,35 +68,6 @@ namespace RVX
             m_resourceRegistry = registry;
         }
 
-        /**
-         * @brief Set render scene data for this frame
-         * @param scene The render scene containing objects
-         * @param opaqueDrawItems Opaque submesh draw items
-         * @param maskedDrawItems Alpha-masked submesh draw items
-         */
-        void SetRenderScene(const RenderScene* scene,
-                            const std::vector<RenderDrawItem>* opaqueDrawItems,
-                            const std::vector<RenderDrawItem>* maskedDrawItems);
-
-        void SetDirectionalShadowSource(const ShadowPass* shadowPass);
-        /** @brief Set graph-owned directional-shadow inputs for one recording. */
-        void SetDirectionalShadowRecordInputs(
-            const DirectionalShadowRecordOutput& inputs)
-        {
-            m_directionalShadowInputs = inputs;
-        }
-        /** @brief Set graph-owned ray-traced-shadow inputs for one recording. */
-        void SetRayTracedShadowRecordInputs(
-            const RayTracedShadowRecordOutput& inputs)
-        {
-            m_rayTracedShadowInputs = inputs;
-        }
-        void SetGPUDrivenCullingSource(const GPUCulling* gpuCulling);
-        /** @brief Standalone compatibility injection for legacy validation. */
-        void SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
-                                              RGBufferHandle instanceIndexBuffer,
-                                              RGBufferHandle indirectDrawBuffer,
-                                              RGBufferHandle drawCountBuffer);
         const OpaquePassShadowStats& GetShadowStats() const
         {
             return m_publishedRecordResults
@@ -119,21 +87,20 @@ namespace RVX
                 m_publishedRecordResults = results;
             }
         }
-        /** @brief Standalone compatibility switch; SceneRenderer uses the plan. */
-        void SetGPUDrivenOpaqueIndirectEnabled(bool enabled) { m_gpuDrivenOpaqueIndirectEnabled = enabled; }
-
-        // =====================================================================
-        // Render Targets
-        // =====================================================================
-
-        /**
-         * @brief Set render target views for standalone compatibility rendering.
-         * Typed graph recordings resolve their attachments from RenderGraph handles.
-         */
-        void SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView);
-
     private:
         struct PlannedOpaqueDraw;
+
+        void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
+        void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void InitializeGraphRecorder(
+            const RenderScene* scene,
+            const std::vector<RenderDrawItem>* opaqueDrawItems,
+            const std::vector<RenderDrawItem>* maskedDrawItems,
+            const GPUCulling* gpuCulling,
+            const RenderPassGPUDrivenInputs& gpuInputs,
+            bool gpuDrivenPlanned,
+            const DirectionalShadowRecordOutput& directionalShadow,
+            const RayTracedShadowRecordOutput& rayTracedShadow);
 
         RGTextureHandle m_colorTargetHandle;
         RGTextureHandle m_depthTargetHandle;
@@ -156,20 +123,10 @@ namespace RVX
         LightManager* m_lightManager = nullptr;
         ClusteredLighting* m_clusteredLighting = nullptr;
         const RenderScene* m_renderScene = nullptr;
-        const ShadowPass* m_shadowPass = nullptr;
         const GPUCulling* m_gpuCulling = nullptr;
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
 
-        // Render target views
-        RHITextureView* m_colorTargetView = nullptr;
-        RHITextureView* m_depthTargetView = nullptr;
-        // Typed recordings may only consume the current RenderGraph's handles.
-        bool m_requireGraphOwnedAttachments = false;
-
-        // The no-plan GPU submission path is intentionally opt-in.  It exists
-        // only for compatibility validation and must never become a Direct
-        // rendering fallback when the frame policy was not published.
         bool m_gpuDrivenOpaqueIndirectEnabled = false;
         bool AreGPUDrivenOpaqueGroupsDrawable(
             uint32 expectedPacketCount,

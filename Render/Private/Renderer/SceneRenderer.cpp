@@ -3470,11 +3470,6 @@ void SceneRenderer::PreparePassesForFrame()
         m_rayTracedReflectionCompositePass->SetDenoisedReflectionSource(m_rayTracedReflectionDenoisePass);
     }
 
-    if (m_opaquePass)
-    {
-        m_opaquePass->SetDirectionalShadowSource(m_shadowPass);
-    }
-
     if (m_lightManager)
     {
         m_lightManager->CollectLights(m_renderScene);

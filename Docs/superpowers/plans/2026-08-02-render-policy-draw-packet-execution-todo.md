@@ -1,8 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8, Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A,
-Task 9B-6B1, and Task 9B-6B2a are complete and reviewed; Task 9B-6B2b
-standalone frame-state compatibility removal is next
+**Status:** Tasks 0-8 and all Task 9 slices through Task 9B-6B2b are complete
+and reviewed; Task 10A semantic indirect RHI contract/conformance is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -314,9 +313,9 @@ from submitted upper bounds and CPU reference visibility.
   make DefaultLit, raster Shadow, and RayTracedShadow consume that one
   value-owned selection. Keep long-lived feature enablement separate from
   per-frame shadow eligibility.
-- [ ] Remove the remaining Depth/Opaque/Shadow standalone frame-state
+- [x] Remove the remaining Depth/Opaque/Shadow standalone frame-state
   compatibility setters after the shared light snapshot migration closes.
-- [ ] Add reverse-order two-graph, caller-mutation, resize/target-replacement,
+- [x] Add reverse-order two-graph, caller-mutation, resize/target-replacement,
   rejected-frame, empty-list, stale-context, and in-flight resource fixtures.
 
 ### Task 10 - Submission Strategy and DX12 Tier 1 Closure
@@ -617,24 +616,23 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Task 9B-6B2a implementation, independent review, primary audit, unit/runtime
-validation, and DX12 RT smoke are complete. Start **Task 9B-6B2b** with the
-remaining Depth/Opaque/Shadow standalone frame-state compatibility removal.
-The completed 9B-6B2a acceptance ledger is:
+Task 9B-6B2b implementation, independent review, primary audit, unit/runtime
+validation, GPU-driven parity, and DX12 RT smoke are complete. Start
+**Task 10A** by freezing the backend-neutral semantic indirect-execution
+contract before introducing submission strategies. The completed 9B-6B2b
+acceptance ledger is:
 
-- [x] Select exactly one positive-intensity directional light in stable scene
-  order, reject NaN/zero/negative intensities, and value-copy it into the
-  frame snapshot before projecting DefaultLit `ViewData`.
-- [x] Keep feature enablement settings-only and evaluate raster/RT shadow
-  eligibility from the immutable primary-light record.
-- [x] Remove raster and ray-traced directional-light mailboxes; prove inverse
-  A/B recordings consume their own captured directions.
-- [x] Gate disabled or ineligible RT recordings before support/TLAS/material
-  table/history/resource work and publish a current disabled result with zero
-  graph passes or dispatches.
-- [x] Repair the pre-existing ModelViewer reset/resize readiness predicate so
-  reset write frames reject old history inputs and the next stable frame proves
-  history recovery; do not change production history semantics.
+- [x] Remove standalone Depth/Opaque/Shadow scene, target, GPU-input, shadow
+  source, enable, and `ViewData` recording paths from their public APIs.
+- [x] Require renderer-issued plan/results/snapshot identity and current-graph
+  attachments/outputs before setup; rejected records declare no usage and do
+  not retain foreign GPU state or mutate foreign results.
+- [x] Resolve attachments only from graph handles and retain every view plus
+  its parent texture through submission completion.
+- [x] Preserve setup-time Opaque shadow-declaration diagnostics in the current
+  record results while execute publishes realized draw/shadow status.
+- [x] Cover reverse-order graphs, caller mutation, stale/rejected contexts,
+  empty shadow records, resize/target replacement, and in-flight retention.
 - [x] Close independent review findings through final P0/P1/P2/P3
-  `0/0/0/0`; keep the stale visual golden mismatch explicit without updating
-  the golden or tolerance.
+  `0/0/0/0`; keep the inherited stale RT golden and DX11 compatibility issue
+  explicit without changing a golden, tolerance, assertion, or fallback.

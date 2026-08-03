@@ -13,7 +13,6 @@
 #include "Render/PipelineCache.h"
 #include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/Passes/RenderPassClearValues.h"
-#include "Render/Passes/ShadowPass.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resources/RenderResourceResolver.h"
@@ -273,7 +272,6 @@ void OpaquePass::OnRemove()
     m_lightManager = nullptr;
     m_clusteredLighting = nullptr;
     m_renderScene = nullptr;
-    m_shadowPass = nullptr;
     m_gpuCulling = nullptr;
     m_opaqueDrawItems = nullptr;
     m_maskedDrawItems = nullptr;
@@ -290,64 +288,27 @@ void OpaquePass::SetResources(PipelineCache* pipelines,
     m_clusteredLighting = clusteredLighting;
 }
 
-void OpaquePass::SetRenderScene(const RenderScene* scene,
-                                const std::vector<RenderDrawItem>* opaqueDrawItems,
-                                const std::vector<RenderDrawItem>* maskedDrawItems)
+void OpaquePass::InitializeGraphRecorder(
+    const RenderScene* scene,
+    const std::vector<RenderDrawItem>* opaqueDrawItems,
+    const std::vector<RenderDrawItem>* maskedDrawItems,
+    const GPUCulling* gpuCulling,
+    const RenderPassGPUDrivenInputs& gpuInputs,
+    bool gpuDrivenPlanned,
+    const DirectionalShadowRecordOutput& directionalShadow,
+    const RayTracedShadowRecordOutput& rayTracedShadow)
 {
     m_renderScene = scene;
     m_opaqueDrawItems = opaqueDrawItems;
     m_maskedDrawItems = maskedDrawItems;
-}
-
-void OpaquePass::SetDirectionalShadowSource(const ShadowPass* shadowPass)
-{
-    m_shadowPass = shadowPass;
-}
-
-void OpaquePass::SetGPUDrivenCullingSource(const GPUCulling* gpuCulling)
-{
     m_gpuCulling = gpuCulling;
-}
-
-void OpaquePass::SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
-                                                  RGBufferHandle instanceIndexBuffer,
-                                                  RGBufferHandle indirectDrawBuffer,
-                                                  RGBufferHandle drawCountBuffer)
-{
-    m_gpuDrivenInstanceHandle = instanceBuffer;
-    m_gpuDrivenInstanceIndexHandle = instanceIndexBuffer;
-    m_gpuDrivenIndirectHandle = indirectDrawBuffer;
-    m_gpuDrivenDrawCountHandle = drawCountBuffer;
-}
-
-void OpaquePass::SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView)
-{
-    m_colorTargetView = colorTargetView;
-    m_depthTargetView = depthTargetView;
-}
-
-void OpaquePass::AddToGraph(RenderGraph& graph, const ViewData& view)
-{
-    struct LegacyPassData
-    {
-        OpaquePass* pass = nullptr;
-        ViewData view{};
-    };
-
-    const ViewData capturedView = view;
-    graph.AddPass<LegacyPassData>(
-        GetName(),
-        GetPassType(),
-        [this, capturedView](RenderGraphBuilder& builder, LegacyPassData& data)
-        {
-            data.pass = this;
-            data.view = capturedView;
-            data.pass->Setup(builder, data.view);
-        },
-        [](const LegacyPassData& data, RHICommandContext& ctx)
-        {
-            data.pass->Execute(ctx, data.view);
-        });
+    m_gpuDrivenInstanceHandle = gpuInputs.instances;
+    m_gpuDrivenInstanceIndexHandle = gpuInputs.instanceIndices;
+    m_gpuDrivenIndirectHandle = gpuInputs.indirectDraws;
+    m_gpuDrivenDrawCountHandle = gpuInputs.drawCount;
+    m_gpuDrivenOpaqueIndirectEnabled = gpuDrivenPlanned;
+    m_directionalShadowInputs = directionalShadow;
+    m_rayTracedShadowInputs = rayTracedShadow;
 }
 
 void OpaquePass::AddToGraph(
@@ -438,7 +399,7 @@ void OpaquePass::AddToGraph(
         execution.identity.recordEpoch};
     const bool executionAttachmentsValid =
         hasCurrentGraphAttachments(execution.view, execution.identity);
-    const bool contextValid = sourceContextValid &&
+    const bool contextValid = sourceContextValid && hasPlan &&
         execution.MatchesTargetGraph(graph) &&
         execution.IsFrameIdentityValid() &&
         execution.frameSnapshot != nullptr && execution.results != nullptr &&
@@ -460,23 +421,12 @@ void OpaquePass::AddToGraph(
     ClusteredLighting* const clusteredLighting = m_clusteredLighting;
     const RenderScene* const renderScene = execution.frameSnapshot
         ? &execution.frameSnapshot->scene : nullptr;
-    const GPUCulling* const gpuCulling = hasPlan
-        ? (gpuInputs.recordedState != nullptr
-            ? &gpuInputs.recordedState->GetCulling() : nullptr)
-        : m_gpuCulling;
+    const GPUCulling* const gpuCulling = gpuInputs.recordedState != nullptr
+        ? &gpuInputs.recordedState->GetCulling() : nullptr;
     const std::vector<RenderDrawItem>* const opaqueDrawItems =
         execution.frameSnapshot ? &execution.frameSnapshot->opaqueDrawItems : nullptr;
     const std::vector<RenderDrawItem>* const maskedDrawItems =
         execution.frameSnapshot ? &execution.frameSnapshot->maskedDrawItems : nullptr;
-    const bool gpuEnabled = hasPlan ? gpuPlanned : m_gpuDrivenOpaqueIndirectEnabled;
-    const RGBufferHandle instanceHandle = hasPlan
-        ? gpuInputs.instances : m_gpuDrivenInstanceHandle;
-    const RGBufferHandle instanceIndexHandle = hasPlan
-        ? gpuInputs.instanceIndices : m_gpuDrivenInstanceIndexHandle;
-    const RGBufferHandle indirectHandle = hasPlan
-        ? gpuInputs.indirectDraws : m_gpuDrivenIndirectHandle;
-    const RGBufferHandle drawCountHandle = hasPlan
-        ? gpuInputs.drawCount : m_gpuDrivenDrawCountHandle;
     const DirectionalShadowRecordOutput directionalShadow =
         execution.directionalShadow;
     const RayTracedShadowRecordOutput rayTracedShadow =
@@ -501,11 +451,7 @@ void OpaquePass::AddToGraph(
          gpuCulling,
          opaqueDrawItems,
          maskedDrawItems,
-         gpuEnabled,
-         instanceHandle,
-         instanceIndexHandle,
-         indirectHandle,
-         drawCountHandle,
+         gpuPlanned,
          results](RenderGraphBuilder& builder, GraphPassData& data)
         {
             data.execution = execution;
@@ -528,15 +474,15 @@ void OpaquePass::AddToGraph(
                 lightManager,
                 clusteredLighting);
             data.recorder->SetResourceRegistry(resourceRegistry);
-            data.recorder->SetRenderScene(renderScene, opaqueDrawItems, maskedDrawItems);
-            data.recorder->SetDirectionalShadowRecordInputs(directionalShadow);
-            data.recorder->SetRayTracedShadowRecordInputs(rayTracedShadow);
-            data.recorder->SetGPUDrivenCullingSource(gpuCulling);
-            data.recorder->SetGPUDrivenRenderGraphResources(
-                instanceHandle, instanceIndexHandle, indirectHandle, drawCountHandle);
-            data.recorder->SetGPUDrivenOpaqueIndirectEnabled(gpuEnabled);
-            data.recorder->m_requireGraphOwnedAttachments = true;
+            data.recorder->InitializeGraphRecorder(
+                renderScene, opaqueDrawItems, maskedDrawItems, gpuCulling,
+                data.gpuInputs, gpuPlanned, directionalShadow, rayTracedShadow);
             data.recorder->Setup(builder, data.execution.view);
+            // Setup owns the graph-declaration diagnostics for this exact
+            // recording. Publish them immediately so callers observing the
+            // compiled graph do not have to wait for Execute to discover
+            // whether shadow inputs were requested and declared.
+            results->opaqueShadowStats = data.recorder->GetShadowStats();
         },
         [results](const GraphPassData& data, RHICommandContext& ctx)
         {
@@ -565,30 +511,6 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_rayTracedShadowMaskReadHandle = {};
     m_shadowStats = {};
 
-    // Legacy callers may still provide persistent pass sources. Snapshot them
-    // while declaring graph dependencies so Execute only consumes value-owned
-    // record inputs, exactly like the SceneRenderer graph path.
-    if (!m_directionalShadowInputs.identity.IsValid() && m_shadowPass != nullptr)
-    {
-        const ShadowPassConfig& config = m_shadowPass->GetConfig();
-        m_directionalShadowInputs.enabled = m_shadowPass->IsEnabled();
-        m_directionalShadowInputs.shadowMap =
-            m_shadowPass->GetShadowMapTextureHandle();
-        m_directionalShadowInputs.shadowMapSize = config.shadowMapSize;
-        m_directionalShadowInputs.cascadeBlendRatio = config.cascadeBlendRatio;
-        m_directionalShadowInputs.shadowBias = config.shadowBias;
-        m_directionalShadowInputs.normalBias = config.normalBias;
-        m_directionalShadowInputs.filterRadiusTexels = config.filterRadiusTexels;
-        m_directionalShadowInputs.cascadeViewProjections.clear();
-        m_directionalShadowInputs.cascadeSplitDepths.clear();
-        for (const ShadowCascade& cascade : m_shadowPass->GetCascades())
-        {
-            m_directionalShadowInputs.cascadeViewProjections.push_back(
-                cascade.viewProjection);
-            m_directionalShadowInputs.cascadeSplitDepths.push_back(
-                cascade.splitDepth);
-        }
-    }
     const auto accumulateShadowReceivers = [this](const std::vector<RenderDrawItem>* drawItems)
     {
         if (!drawItems || !m_renderScene)
@@ -1352,10 +1274,6 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             colorTargetView = colorTargetViewOwner.Get();
         }
     }
-    else if (!m_requireGraphOwnedAttachments)
-    {
-        colorTargetView = m_colorTargetView;
-    }
 
     RHITextureViewRef depthTargetViewOwner;
     RHITextureView* depthTargetView = nullptr;
@@ -1374,10 +1292,6 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             depthTargetView = depthTargetViewOwner.Get();
         }
     }
-    else if (!m_requireGraphOwnedAttachments)
-    {
-        depthTargetView = m_depthTargetView;
-    }
 
     if (!colorTargetView)
     {
@@ -1387,8 +1301,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    if (m_requireGraphOwnedAttachments &&
-        m_depthTargetHandle.IsValid() && !depthTargetView)
+    if (m_depthTargetHandle.IsValid() && !depthTargetView)
     {
         RVX_CORE_WARN("OpaquePass: failed to resolve graph-owned depth target view");
         reportPlannedFailure(opaquePlan != nullptr &&
@@ -1396,7 +1309,6 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    if (m_requireGraphOwnedAttachments)
     {
         const bool retainedColorAttachment =
             colorTargetView->GetTexture() != nullptr &&
@@ -1421,18 +1333,6 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                                  opaquePlan->partition.gpuDrivenPacketCount != 0);
             return;
         }
-    }
-
-    if (!hasPublishedPlan && !m_gpuDrivenOpaqueIndirectEnabled)
-    {
-        return;
-    }
-
-    if (!hasPublishedPlan && m_gpuDrivenOpaqueIndirectEnabled &&
-        m_materialSystem && m_gpuCulling)
-    {
-        TransitionGPUDrivenGroupMaterialTextures(
-            *m_gpuCulling, m_resourceRegistry, *m_materialSystem, ctx);
     }
 
     ViewData drawView = view;
@@ -1605,10 +1505,8 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    // A published plan owns lane selection. Preflight the full Direct lane
-    // before recording anything, and never replay Direct after a GPU-lane
-    // recording failure.
-    if (hasPublishedPlan)
+    // A sealed plan owns lane selection. Preflight the full Direct lane before
+    // recording anything, and never replay Direct after a GPU-lane failure.
     {
         const uint32 plannedGPUCount =
             opaquePlan->partition.gpuDrivenPacketCount;
@@ -1776,31 +1674,6 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    // Standalone compatibility path: no frame plan is available. The
-    // GPU-driven path is explicit opt-in and never replays Direct work.
-    RHIRenderPassDesc rpDesc;
-    rpDesc.AddColorAttachment(colorTargetView,
-                              RHILoadOp::Clear,
-                              RHIStoreOp::Store,
-                              RVX_SCENE_COLOR_CLEAR_VALUE);
-    if (depthTargetView)
-    {
-        rpDesc.SetDepthStencil(depthTargetView,
-                               RHILoadOp::Clear,
-                               RHIStoreOp::Store,
-                               m_pipelineCache->GetDepthClearValue(),
-                               0);
-    }
-
-    ctx.BeginRenderPass(rpDesc);
-    ctx.SetViewport(drawView.GetRHIViewport());
-    ctx.SetScissor(drawView.GetRHIScissor());
-    TryDrawGPUDrivenIndirect(ctx,
-                             drawView,
-                             colorTargetFormat,
-                             frameDescriptorSet.Get(),
-                             false);
-    ctx.EndRenderPass();
 }
 
 } // namespace RVX

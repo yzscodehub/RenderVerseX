@@ -1,8 +1,7 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-8, Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A,
-Task 9B-6B1, and Task 9B-6B2a are complete and reviewed; Task 9B-6B2b
-standalone frame-state compatibility removal is next.
+**Status:** Tasks 0-8 and all Task 9 slices through Task 9B-6B2b are complete
+and reviewed; Task 10A semantic indirect RHI contract/conformance is next.
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -690,9 +689,10 @@ attachments, private CB/descriptors, and retained sky/pipeline/layout
 ownership. Cubemap, Procedural, SolidColor, Equirectangular tint fallback, and
 Disabled behavior are packet-owned. Task 9B-6A removed the production binder
 and bypass. Task 9B-6B1 then closed typed Opaque color/depth attachment
-ownership, fail-closed source validation, and completion retention. Independent
-and primary review passed; the shared primary-directional-light snapshot is
-next.
+ownership, fail-closed source validation, and completion retention. Task
+9B-6B2a moved the primary directional light into the frame snapshot, and Task
+9B-6B2b removed the final Depth/Opaque/Shadow standalone frame-state paths.
+All Task 9 slices passed independent and primary review; Task 10A is next.
 
 Proposed files:
 

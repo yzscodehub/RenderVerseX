@@ -52,9 +52,6 @@ namespace RVX
 
         RenderGraphPassType GetPassType() const override { return RenderGraphPassType::Graphics; }
 
-        void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
-        void Execute(RHICommandContext& ctx, const ViewData& view) override;
-        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
         void AddToGraph(RenderGraph& graph,
                         const RenderPassRecordContext& context) override;
 
@@ -73,27 +70,6 @@ namespace RVX
             m_resourceRegistry = registry;
         }
 
-        /**
-         * @brief Set render scene and visible objects
-         * @param scene The render scene
-         * @param opaqueDrawItems Opaque draw items
-         * @param maskedDrawItems Alpha-masked draw items
-         */
-        void SetRenderScene(const RenderScene* scene,
-                            const std::vector<RenderDrawItem>* opaqueDrawItems,
-                            const std::vector<RenderDrawItem>* maskedDrawItems);
-
-        /**
-         * @brief Set GPU-driven culling outputs for indirect depth rendering
-         */
-        void SetGPUDrivenCullingSource(const GPUCulling* gpuCulling);
-
-        /** @brief Standalone compatibility injection for legacy validation. */
-        void SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
-                                              RGBufferHandle instanceIndexBuffer,
-                                              RGBufferHandle indirectDrawBuffer,
-                                              RGBufferHandle drawCountBuffer);
-
         const DepthPrepassDrawStats& GetDrawStats() const
         {
             return m_publishedRecordResults
@@ -109,15 +85,6 @@ namespace RVX
             }
         }
 
-        /** @brief Standalone compatibility switch; SceneRenderer uses the plan. */
-        void SetGPUDrivenDepthIndirectEnabled(bool enabled) { m_gpuDrivenDepthIndirectEnabled = enabled; }
-
-        /**
-         * @brief Set the depth target view
-         * @param depthView The depth texture view to render to
-         */
-        void SetDepthTarget(RHITextureView* depthView);
-
         /**
          * @brief Enable or disable this pass
          */
@@ -130,6 +97,16 @@ namespace RVX
 
     private:
         struct PlannedDepthDraw;
+
+        void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
+        void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void InitializeGraphRecorder(
+            const RenderScene* scene,
+            const std::vector<RenderDrawItem>* opaqueDrawItems,
+            const std::vector<RenderDrawItem>* maskedDrawItems,
+            const GPUCulling* gpuCulling,
+            const RenderPassGPUDrivenInputs& gpuInputs,
+            bool gpuDrivenPlanned);
 
         bool AreGPUDrivenDepthGroupsDrawable(
             uint32 expectedPacketCount,
@@ -155,7 +132,6 @@ namespace RVX
         const GPUCulling* m_gpuCulling = nullptr;
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
-        RHITextureView* m_depthTargetView = nullptr;
         RGTextureHandle m_depthTargetHandle;
         RGBufferHandle m_gpuDrivenInstanceHandle;
         RGBufferHandle m_gpuDrivenInstanceIndexHandle;
@@ -163,8 +139,6 @@ namespace RVX
         RGBufferHandle m_gpuDrivenDrawCountHandle;
         DepthPrepassDrawStats m_drawStats;
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
-        // Standalone, no-plan GPU submission is a compatibility path only.
-        // SceneRenderer opts in explicitly after it has published frame policy.
         bool m_gpuDrivenDepthIndirectEnabled = false;
     };
 

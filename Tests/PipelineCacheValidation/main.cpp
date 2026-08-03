@@ -5357,7 +5357,9 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
     const std::string pipelineSource = ReadTextFile(renderRoot / "Private" / "PipelineCache.cpp");
     const std::string defaultLitSource = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
 
-    EXPECT_NE(opaqueHeader.find("void SetRayTracedShadowRecordInputs("),
+    EXPECT_EQ(opaqueHeader.find("SetRayTraced" "ShadowRecordInputs"),
+              std::string::npos);
+    EXPECT_NE(opaqueSource.find("m_rayTracedShadowInputs = rayTracedShadow;"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("m_rayTracedShadowMaskReadHandle = builder.Read(shadowMask, RHIShaderStage::Pixel);"),
               std::string::npos);

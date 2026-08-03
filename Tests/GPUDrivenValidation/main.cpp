@@ -1403,8 +1403,10 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_NE(source.find("RHIResourceState::UnorderedAccess,"), std::string::npos);
     EXPECT_NE(source.find("data.indirectDraws = builder.Write(data.indirectDraws, unorderedAccess)"),
               std::string::npos);
-    EXPECT_EQ(source.find("m_depthPrepass->SetGPUDrivenRenderGraphResources"), std::string::npos);
-    EXPECT_EQ(source.find("m_opaquePass->SetGPUDrivenRenderGraphResources"), std::string::npos);
+    EXPECT_EQ(source.find("m_depthPrepass->SetGPUDriven" "RenderGraphResources"),
+              std::string::npos);
+    EXPECT_EQ(source.find("m_opaquePass->SetGPUDriven" "RenderGraphResources"),
+              std::string::npos);
     EXPECT_NE(source.find("RenderPassRecordContext passRecordContext"), std::string::npos);
     EXPECT_NE(source.find("passRecordContext.depthGPUDriven"), std::string::npos);
     EXPECT_NE(source.find("passRecordContext.opaqueGPUDriven"), std::string::npos);
@@ -1421,7 +1423,8 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_NE(source.find(
                   "opaqueGpuDrivenIndirectSubmittedDrawUpperBound"),
               std::string::npos);
-    EXPECT_NE(depthHeader.find("SetGPUDrivenRenderGraphResources"), std::string::npos);
+    EXPECT_EQ(depthHeader.find("SetGPUDriven" "RenderGraphResources"),
+              std::string::npos);
     EXPECT_NE(depthSource.find("builder.Read(m_gpuDrivenInstanceHandle, RHIShaderStage::Vertex)"),
               std::string::npos);
     EXPECT_NE(depthSource.find("builder.Read(m_gpuDrivenIndirectHandle, RHIResourceState::IndirectArgument)"),
@@ -1842,8 +1845,10 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
               std::string::npos);
     EXPECT_NE(pipelineSource.find("instanceIndexElement.perInstance = true"), std::string::npos);
     EXPECT_NE(pipelineSource.find("instanceIndexElement.instanceDataStepRate = 1"), std::string::npos);
-    EXPECT_NE(opaqueHeader.find("SetGPUDrivenCullingSource"), std::string::npos);
-    EXPECT_NE(opaqueHeader.find("SetGPUDrivenRenderGraphResources"), std::string::npos);
+    EXPECT_EQ(opaqueHeader.find("SetGPUDriven" "CullingSource"),
+              std::string::npos);
+    EXPECT_EQ(opaqueHeader.find("SetGPUDriven" "RenderGraphResources"),
+              std::string::npos);
     EXPECT_NE(opaqueSource.find("TryDrawGPUDrivenIndirect"), std::string::npos);
     EXPECT_NE(opaqueSource.find("DrawIndexedIndirectGroup"), std::string::npos);
     EXPECT_NE(opaqueSource.find("ctx.SetVertexBuffer(6, m_gpuCulling->GetInstanceIndexBuffer())"),

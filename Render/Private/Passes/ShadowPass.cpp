@@ -10,6 +10,7 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resources/RenderResourceResolver.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <algorithm>
@@ -197,7 +198,7 @@ void ShadowPass::SetResources(PipelineCache* pipelineCache)
     m_pipelineCache = pipelineCache;
 }
 
-void ShadowPass::SetRenderScene(const RenderScene* scene)
+void ShadowPass::InitializeGraphRecorder(const RenderScene* scene)
 {
     m_renderScene = scene;
 }
@@ -208,28 +209,16 @@ void ShadowPass::SetConfig(const ShadowPassConfig& config)
     m_cascades.resize(std::max(1u, config.numCascades));
 }
 
-void ShadowPass::AddToGraph(RenderGraph& graph, const ViewData& view)
+void ShadowPass::Setup(RenderGraphBuilder&, const ViewData&)
 {
-    struct LegacyPassData
-    {
-        ShadowPass* pass = nullptr;
-        ViewData view{};
-    };
+    // ShadowPass accepts only the typed recording contract.  This retained
+    // IRenderPass override makes a legacy base-class adapter a fail-closed
+    // no-op instead of exposing a standalone recording path.
+}
 
-    const ViewData capturedView = view;
-    graph.AddPass<LegacyPassData>(
-        GetName(),
-        GetPassType(),
-        [this, capturedView](RenderGraphBuilder& builder, LegacyPassData& data)
-        {
-            data.pass = this;
-            data.view = capturedView;
-            data.pass->Setup(builder, data.view);
-        },
-        [](const LegacyPassData& data, RHICommandContext& ctx)
-        {
-            data.pass->Execute(ctx, data.view);
-        });
+void ShadowPass::Execute(RHICommandContext&, const ViewData&)
+{
+    // See Setup(RenderGraphBuilder&, const ViewData&).
 }
 
 void ShadowPass::AddToGraph(
@@ -243,14 +232,61 @@ void ShadowPass::AddToGraph(
         bool contextValid = false;
     };
 
-    const RenderPassExecutionData execution =
-        MakeRenderPassExecutionData(context);
-    const bool contextValid = !context.legacyAdapter &&
-        context.MatchesTargetGraph(graph) &&
-        context.IsFrameIdentityValid() &&
+    const bool sourcePlanValid = context.executionPlan != nullptr &&
+        context.executionPlan->frameSequence == context.identity.frameSequence &&
+        context.executionPlan->viewOrdinal == context.identity.viewOrdinal;
+    const bool suppliedResultsValid = context.results != nullptr &&
+        context.results->identity == context.identity &&
+        (context.results->executionReport.frameSequence == 0 ||
+         context.results->executionReport.frameSequence ==
+             context.identity.frameSequence);
+    const bool suppliedSnapshotValid = suppliedResultsValid &&
+        context.frameSnapshot != nullptr &&
+        context.frameSnapshot->identity == context.identity &&
+        context.frameSnapshot->executionPlan.frameSequence ==
+            context.identity.frameSequence &&
+        context.frameSnapshot->executionPlan.viewOrdinal ==
+            context.identity.viewOrdinal &&
+        context.frameSnapshot->view.renderGraph == &graph &&
+        context.frameSnapshot->view.renderFrameExecutionPlan ==
+            &context.frameSnapshot->executionPlan &&
+        context.frameSnapshot->view.meshPassPreparation ==
+            &context.frameSnapshot->meshPassPreparation &&
+        context.frameSnapshot->view.renderVisibility ==
+            &context.frameSnapshot->visibility &&
+        context.frameSnapshot->view.renderFrameExecutionReport ==
+            &context.results->executionReport;
+    const bool sourceContextValid = !context.legacyAdapter &&
+        context.MatchesTargetGraph(graph) && context.IsFrameIdentityValid() &&
+        sourcePlanValid && suppliedResultsValid && suppliedSnapshotValid &&
+        context.view.renderGraph == &graph &&
+        context.view.renderFrameExecutionPlan == context.executionPlan &&
+        context.view.meshPassPreparation == context.meshPassPreparation &&
+        context.view.renderVisibility == context.visibility &&
+        context.view.renderFrameExecutionReport == context.executionReport;
+
+    RenderPassExecutionData execution;
+    if (sourceContextValid)
+    {
+        execution = MakeRenderPassExecutionData(context);
+    }
+    else
+    {
+        execution.view = context.view;
+        execution.identity = context.identity;
+    }
+    const RenderFrameExecutionPlan* executionPlan =
+        execution.GetExecutionPlan();
+    const bool hasPlan = executionPlan != nullptr;
+    const bool contextValid = sourceContextValid && hasPlan &&
         execution.MatchesTargetGraph(graph) &&
         execution.IsFrameIdentityValid() &&
         execution.frameSnapshot != nullptr && execution.results != nullptr;
+    const bool resultOwnershipValid = sourceContextValid &&
+        execution.identity.Matches(graph) && execution.results != nullptr &&
+        execution.results->identity == execution.identity &&
+        execution.frameSnapshot != nullptr &&
+        execution.frameSnapshot->identity == execution.identity;
 
     const ShadowPassConfig config = m_config;
     const PrimaryDirectionalLightRecordInput primaryLight = execution.frameSnapshot
@@ -261,7 +297,8 @@ void ShadowPass::AddToGraph(
     const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
     const RenderScene* const renderScene = execution.frameSnapshot
         ? &execution.frameSnapshot->scene : nullptr;
-    const std::shared_ptr<RenderPassRecordResults> results = execution.results;
+    const std::shared_ptr<RenderPassRecordResults> results =
+        resultOwnershipValid ? execution.results : nullptr;
 
     graph.AddPass<GraphPassData>(
         GetName(),
@@ -278,22 +315,18 @@ void ShadowPass::AddToGraph(
         {
             data.execution = execution;
             data.contextValid = contextValid;
-            if (!results)
+            if (!data.contextValid || !results)
             {
                 return;
             }
             results->directionalShadowOutput = {};
             results->directionalShadowOutput.identity = results->identity;
             results->shadowStats = {};
-            if (!data.contextValid)
-            {
-                return;
-            }
 
             data.recorder = std::make_unique<ShadowPass>();
             data.recorder->SetResources(pipelineCache);
             data.recorder->SetResourceRegistry(resourceRegistry);
-            data.recorder->SetRenderScene(renderScene);
+            data.recorder->InitializeGraphRecorder(renderScene);
             data.recorder->SetConfig(config);
             data.recorder->SetEnabled(requestedEnabled);
             if (!primaryLight.IsShadowEligible())
@@ -309,13 +342,8 @@ void ShadowPass::AddToGraph(
         },
         [results, primaryLight](const GraphPassData& data, RHICommandContext& ctx)
         {
-            if (!results)
+            if (!data.contextValid || !data.recorder || !results)
             {
-                return;
-            }
-            if (!data.contextValid || !data.recorder)
-            {
-                results->shadowStats = {};
                 return;
             }
             data.recorder->Execute(ctx, data.execution.view, primaryLight);
@@ -449,17 +477,6 @@ void ShadowPass::CalculateCascades(
     }
 }
 
-void ShadowPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
-{
-    PrimaryDirectionalLightRecordInput primaryLight;
-    primaryLight.selected = true;
-    primaryLight.castsShadow = true;
-    primaryLight.direction = view.directionalLightDirection;
-    primaryLight.color = view.directionalLightColor;
-    primaryLight.intensity = view.directionalLightIntensity;
-    Setup(builder, view, primaryLight);
-}
-
 void ShadowPass::Setup(
     RenderGraphBuilder& builder,
     const ViewData& view,
@@ -470,7 +487,6 @@ void ShadowPass::Setup(
 
     m_stats = {};
     m_shadowMapTextureHandle = {};
-    m_shadowMapTexture = nullptr;
     m_cascadeTextureHandles.clear();
     m_cascadeViews.clear();
     m_cascades.resize(std::max(1u, m_config.numCascades));
@@ -506,17 +522,6 @@ void ShadowPass::Setup(
     }
 
     m_stats.declaredCascadeResourceCount = static_cast<uint32_t>(m_cascadeTextureHandles.size());
-}
-
-void ShadowPass::Execute(RHICommandContext& ctx, const ViewData& view)
-{
-    PrimaryDirectionalLightRecordInput primaryLight;
-    primaryLight.selected = true;
-    primaryLight.castsShadow = true;
-    primaryLight.direction = view.directionalLightDirection;
-    primaryLight.color = view.directionalLightColor;
-    primaryLight.intensity = view.directionalLightIntensity;
-    Execute(ctx, view, primaryLight);
 }
 
 void ShadowPass::Execute(
@@ -558,6 +563,21 @@ void ShadowPass::Execute(
         return;
     }
 
+    for (const RHITextureViewRef& cascadeView : m_cascadeViews)
+    {
+        RHITextureView* const viewHandle = cascadeView.Get();
+        if (viewHandle == nullptr || viewHandle->GetTexture() == nullptr ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch, Ref<RefCounted>(viewHandle)) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(viewHandle->GetTexture())))
+        {
+            RVX_CORE_WARN("ShadowPass: submission ownership rejected cascade attachment");
+            return;
+        }
+    }
+
     // Render each cascade
     for (uint32_t i = 0; i < static_cast<uint32_t>(m_cascades.size()); ++i)
     {
@@ -569,9 +589,8 @@ void ShadowPass::Execute(
 
 bool ShadowPass::ResolveCascadeViews(const ViewData& view)
 {
-    m_cascadeViews.assign(m_cascadeTextureHandles.size(), nullptr);
+    m_cascadeViews.assign(m_cascadeTextureHandles.size(), RHITextureViewRef{});
     m_stats.resolvedCascadeViewCount = 0;
-    m_shadowMapTexture = nullptr;
 
     if (!view.renderGraph || !view.viewCache)
     {
@@ -595,11 +614,7 @@ bool ShadowPass::ResolveCascadeViews(const ViewData& view)
         if (!viewHandle)
             continue;
 
-        if (!m_shadowMapTexture)
-        {
-            m_shadowMapTexture = texture;
-        }
-        m_cascadeViews[i] = viewHandle;
+        m_cascadeViews[i] = RHITextureViewRef(viewHandle);
         ++m_stats.resolvedCascadeViewCount;
     }
 
@@ -624,7 +639,7 @@ void ShadowPass::RenderCascade(
 
     // Begin shadow render pass for this cascade
     RHIRenderPassDesc rpDesc;
-    rpDesc.SetDepthStencil(m_cascadeViews[cascadeIndex],
+    rpDesc.SetDepthStencil(m_cascadeViews[cascadeIndex].Get(),
                            RHILoadOp::Clear, RHIStoreOp::Store, m_pipelineCache->GetDepthClearValue(), 0);
 
     ctx.BeginRenderPass(rpDesc);

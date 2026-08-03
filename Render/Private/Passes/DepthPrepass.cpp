@@ -13,6 +13,7 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resources/RenderResourceResolver.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <limits>
@@ -225,61 +226,23 @@ void DepthPrepass::SetResources(PipelineCache* pipelineCache)
     m_pipelineCache = pipelineCache;
 }
 
-void DepthPrepass::SetRenderScene(const RenderScene* scene,
-                                  const std::vector<RenderDrawItem>* opaqueDrawItems,
-                                  const std::vector<RenderDrawItem>* maskedDrawItems)
+void DepthPrepass::InitializeGraphRecorder(
+    const RenderScene* scene,
+    const std::vector<RenderDrawItem>* opaqueDrawItems,
+    const std::vector<RenderDrawItem>* maskedDrawItems,
+    const GPUCulling* gpuCulling,
+    const RenderPassGPUDrivenInputs& gpuInputs,
+    bool gpuDrivenPlanned)
 {
     m_renderScene = scene;
     m_opaqueDrawItems = opaqueDrawItems;
     m_maskedDrawItems = maskedDrawItems;
-}
-
-void DepthPrepass::SetGPUDrivenCullingSource(const GPUCulling* gpuCulling)
-{
     m_gpuCulling = gpuCulling;
-}
-
-void DepthPrepass::SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
-                                                    RGBufferHandle instanceIndexBuffer,
-                                                    RGBufferHandle indirectDrawBuffer,
-                                                    RGBufferHandle drawCountBuffer)
-{
-    m_gpuDrivenInstanceHandle = instanceBuffer;
-    m_gpuDrivenInstanceIndexHandle = instanceIndexBuffer;
-    m_gpuDrivenIndirectHandle = indirectDrawBuffer;
-    m_gpuDrivenDrawCountHandle = drawCountBuffer;
-}
-
-void DepthPrepass::SetDepthTarget(RHITextureView* depthView)
-{
-    m_depthTargetView = depthView;
-}
-
-void DepthPrepass::AddToGraph(RenderGraph& graph, const ViewData& view)
-{
-    struct LegacyPassData
-    {
-        DepthPrepass* pass = nullptr;
-        ViewData view{};
-    };
-
-    // Explicit standalone adapter.  SceneRenderer uses the record-context
-    // overload below; this path only preserves validation coverage for the
-    // legacy Setup/Execute surface while still value-capturing ViewData.
-    const ViewData capturedView = view;
-    graph.AddPass<LegacyPassData>(
-        GetName(),
-        GetPassType(),
-        [this, capturedView](RenderGraphBuilder& builder, LegacyPassData& data)
-        {
-            data.pass = this;
-            data.view = capturedView;
-            data.pass->Setup(builder, data.view);
-        },
-        [](const LegacyPassData& data, RHICommandContext& ctx)
-        {
-            data.pass->Execute(ctx, data.view);
-        });
+    m_gpuDrivenInstanceHandle = gpuInputs.instances;
+    m_gpuDrivenInstanceIndexHandle = gpuInputs.instanceIndices;
+    m_gpuDrivenIndirectHandle = gpuInputs.indirectDraws;
+    m_gpuDrivenDrawCountHandle = gpuInputs.drawCount;
+    m_gpuDrivenDepthIndirectEnabled = gpuDrivenPlanned;
 }
 
 void DepthPrepass::AddToGraph(
@@ -294,28 +257,85 @@ void DepthPrepass::AddToGraph(
         bool contextValid = false;
     };
 
-    const RenderPassExecutionData execution =
-        MakeRenderPassExecutionData(context);
+    const auto hasCurrentGraphDepthAttachment = [&graph](
+                                                   const ViewData& view,
+                                                   const RenderPassRecordIdentity& identity)
+    {
+        return view.renderGraph == &graph && view.depthTarget.IsValid() &&
+               HasCurrentGraphProvenance(view.depthTarget, identity) &&
+               graph.GetTextureDesc(view.depthTarget) != nullptr;
+    };
+    const bool sourcePlanValid = context.executionPlan != nullptr &&
+        context.executionPlan->frameSequence == context.identity.frameSequence &&
+        context.executionPlan->viewOrdinal == context.identity.viewOrdinal;
+    const bool suppliedResultsValid = context.results != nullptr &&
+        context.results->identity == context.identity &&
+        (context.results->executionReport.frameSequence == 0 ||
+         context.results->executionReport.frameSequence ==
+             context.identity.frameSequence);
+    const bool suppliedSnapshotValid = suppliedResultsValid &&
+        context.frameSnapshot != nullptr &&
+        context.frameSnapshot->identity == context.identity &&
+        context.frameSnapshot->executionPlan.frameSequence ==
+            context.identity.frameSequence &&
+        context.frameSnapshot->executionPlan.viewOrdinal ==
+            context.identity.viewOrdinal &&
+        context.frameSnapshot->view.renderGraph == &graph &&
+        context.frameSnapshot->view.renderFrameExecutionPlan ==
+            &context.frameSnapshot->executionPlan &&
+        context.frameSnapshot->view.meshPassPreparation ==
+            &context.frameSnapshot->meshPassPreparation &&
+        context.frameSnapshot->view.renderVisibility ==
+            &context.frameSnapshot->visibility &&
+        context.frameSnapshot->view.renderFrameExecutionReport ==
+            &context.results->executionReport &&
+        hasCurrentGraphDepthAttachment(
+            context.frameSnapshot->view, context.identity);
+    const bool sourceContextValid = !context.legacyAdapter &&
+        context.MatchesTargetGraph(graph) && context.IsFrameIdentityValid() &&
+        sourcePlanValid && suppliedResultsValid && suppliedSnapshotValid &&
+        context.view.renderFrameExecutionPlan == context.executionPlan &&
+        context.view.meshPassPreparation == context.meshPassPreparation &&
+        context.view.renderFrameExecutionReport == context.executionReport &&
+        hasCurrentGraphDepthAttachment(context.view, context.identity);
+
+    RenderPassExecutionData execution;
+    if (sourceContextValid)
+    {
+        execution = MakeRenderPassExecutionData(context);
+    }
+    else
+    {
+        execution.view = context.view;
+        execution.identity = context.identity;
+    }
     const RenderFrameExecutionPlan* executionPlan =
         execution.GetExecutionPlan();
     const bool hasPlan = executionPlan != nullptr;
     const bool gpuPlanned = IsGPUDrivenPassPlanned(
         executionPlan, RenderPassKind::Depth);
-    const RenderPassGPUDrivenInputs gpuInputs = context.depthGPUDriven;
+    // Invalid sources are true no-ops: do not extend the lifetime of a
+    // foreign recording's GPU state merely by registering a rejected pass.
+    const RenderPassGPUDrivenInputs gpuInputs = sourceContextValid
+        ? context.depthGPUDriven : RenderPassGPUDrivenInputs{};
     const GPUCullingRecordingIdentity gpuRecordingIdentity{
         execution.identity.graphIdentity,
         execution.identity.graphRecordingGeneration,
         execution.identity.frameSequence,
         execution.identity.viewOrdinal,
         execution.identity.recordEpoch};
-    const bool contextValid = !context.legacyAdapter &&
-        context.MatchesTargetGraph(graph) &&
-        context.IsFrameIdentityValid() &&
+    const bool contextValid = sourceContextValid && hasPlan &&
         execution.MatchesTargetGraph(graph) &&
         execution.IsFrameIdentityValid() &&
         execution.frameSnapshot != nullptr && execution.results != nullptr &&
+        hasCurrentGraphDepthAttachment(execution.view, execution.identity) &&
         (!gpuPlanned || (gpuInputs.IsCompatibleWith(execution.identity) &&
                          gpuInputs.recordedState->Matches(gpuRecordingIdentity)));
+    const bool resultOwnershipValid = sourceContextValid &&
+        execution.identity.Matches(graph) && execution.results != nullptr &&
+        execution.results->identity == execution.identity &&
+        execution.frameSnapshot != nullptr &&
+        execution.frameSnapshot->identity == execution.identity;
 
     // Copy every service and frame reference into the graph registration
     // closure.  The callbacks below only read GraphPassData; the originating
@@ -329,22 +349,11 @@ void DepthPrepass::AddToGraph(
         execution.frameSnapshot ? &execution.frameSnapshot->opaqueDrawItems : nullptr;
     const std::vector<RenderDrawItem>* const maskedDrawItems =
         execution.frameSnapshot ? &execution.frameSnapshot->maskedDrawItems : nullptr;
-    const GPUCulling* const gpuCulling = hasPlan
-        ? (gpuInputs.recordedState != nullptr
-            ? &gpuInputs.recordedState->GetCulling() : nullptr)
-        : m_gpuCulling;
-    const bool gpuEnabled = hasPlan ? gpuPlanned : m_gpuDrivenDepthIndirectEnabled;
-    const RGBufferHandle instanceHandle = hasPlan
-        ? gpuInputs.instances : m_gpuDrivenInstanceHandle;
-    const RGBufferHandle instanceIndexHandle = hasPlan
-        ? gpuInputs.instanceIndices : m_gpuDrivenInstanceIndexHandle;
-    const RGBufferHandle indirectHandle = hasPlan
-        ? gpuInputs.indirectDraws : m_gpuDrivenIndirectHandle;
-    const RGBufferHandle drawCountHandle = hasPlan
-        ? gpuInputs.drawCount : m_gpuDrivenDrawCountHandle;
-    RHITextureView* const standaloneDepthTarget = m_depthTargetView;
+    const GPUCulling* const gpuCulling = gpuInputs.recordedState != nullptr
+        ? &gpuInputs.recordedState->GetCulling() : nullptr;
     const bool enabled = m_enabled;
-    const std::shared_ptr<RenderPassRecordResults> results = execution.results;
+    const std::shared_ptr<RenderPassRecordResults> results =
+        resultOwnershipValid ? execution.results : nullptr;
 
     graph.AddPass<GraphPassData>(
         GetName(),
@@ -359,45 +368,42 @@ void DepthPrepass::AddToGraph(
          opaqueDrawItems,
          maskedDrawItems,
          gpuCulling,
-         gpuEnabled,
-         instanceHandle,
-         instanceIndexHandle,
-         indirectHandle,
-         drawCountHandle,
-         standaloneDepthTarget,
+         gpuPlanned,
          enabled,
          results](RenderGraphBuilder& builder, GraphPassData& data)
         {
             data.execution = execution;
             data.gpuInputs = gpuInputs;
             data.contextValid = contextValid;
-            if (!data.contextValid)
+            if (!data.contextValid || !results)
             {
-                PublishDepthContextFailure(data.execution, results->depthStats);
+                if (results)
+                {
+                    PublishDepthContextFailure(data.execution, results->depthStats);
+                }
                 return;
             }
 
-            // This recorder is owned by graph PassData, not the persistent
-            // DepthPrepass instance.  Existing Setup/Execute compatibility
-            // logic is therefore shared without a second rendering behavior.
+            // The recorder is graph-owned. All frame input is copied from the
+            // sealed typed context; persistent pass state is configuration only.
             data.recorder = std::make_unique<DepthPrepass>();
             data.recorder->SetResources(pipelineCache);
             data.recorder->SetMaterialSystem(materialSystem);
             data.recorder->SetResourceRegistry(resourceRegistry);
-            data.recorder->SetRenderScene(renderScene, opaqueDrawItems, maskedDrawItems);
-            data.recorder->SetGPUDrivenCullingSource(gpuCulling);
-            data.recorder->SetGPUDrivenRenderGraphResources(
-                instanceHandle, instanceIndexHandle, indirectHandle, drawCountHandle);
-            data.recorder->SetGPUDrivenDepthIndirectEnabled(gpuEnabled);
-            data.recorder->SetDepthTarget(standaloneDepthTarget);
             data.recorder->SetEnabled(enabled);
+            data.recorder->InitializeGraphRecorder(
+                renderScene, opaqueDrawItems, maskedDrawItems, gpuCulling,
+                data.gpuInputs, gpuPlanned);
             data.recorder->Setup(builder, data.execution.view);
         },
         [results](const GraphPassData& data, RHICommandContext& ctx)
         {
-            if (!data.contextValid || !data.recorder)
+            if (!data.contextValid || !data.recorder || !results)
             {
-                PublishDepthContextFailure(data.execution, results->depthStats);
+                if (results)
+                {
+                    PublishDepthContextFailure(data.execution, results->depthStats);
+                }
                 return;
             }
             data.recorder->Execute(ctx, data.execution.view);
@@ -867,17 +873,37 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
     m_drawStats = {};
 
-    RHITextureView* depthTargetView = m_depthTargetView;
-    if (view.renderGraph && view.viewCache && m_depthTargetHandle.IsValid())
+    RHITextureViewRef depthTargetViewOwner;
+    RHITextureView* depthTargetView = nullptr;
+    const bool depthHandleBelongsToCurrentGraph =
+        view.renderGraph != nullptr &&
+        m_depthTargetHandle.IsValid() &&
+        m_depthTargetHandle.graphIdentity == view.renderGraph->GetGraphIdentity() &&
+        m_depthTargetHandle.recordingGeneration ==
+            view.renderGraph->GetRecordingGeneration();
+    if (depthHandleBelongsToCurrentGraph && view.viewCache)
     {
         if (RHITexture* depthTarget = view.renderGraph->GetTexture(m_depthTargetHandle))
         {
-            depthTargetView = view.viewCache->GetDefaultDSV(depthTarget);
+            depthTargetViewOwner = RHITextureViewRef(
+                view.viewCache->GetDefaultDSV(depthTarget));
+            depthTargetView = depthTargetViewOwner.Get();
         }
     }
 
     if (!m_pipelineCache || !m_renderScene || !depthTargetView)
     {
+        return;
+    }
+
+    if (depthTargetView->GetTexture() == nullptr ||
+        !RetainRenderSubmissionResource(
+            view.submissionResourceBatch, Ref<RefCounted>(depthTargetView)) ||
+        !RetainRenderSubmissionResource(
+            view.submissionResourceBatch,
+            Ref<RefCounted>(depthTargetView->GetTexture())))
+    {
+        RVX_RENDER_WARN("DepthPrepass: submission ownership rejected graph-owned depth attachment");
         return;
     }
 
@@ -1100,26 +1126,8 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    if (!m_gpuDrivenDepthIndirectEnabled)
-    {
-        return;
-    }
-
-    // Standalone compatibility path: no frame plan is available.  The
-    // GPU-driven path is explicit opt-in and has no Direct replay fallback.
-    RHIRenderPassDesc rpDesc;
-    rpDesc.SetDepthStencil(depthTargetView,
-                           RHILoadOp::Clear,
-                           RHIStoreOp::Store,
-                           m_pipelineCache->GetDepthClearValue(),
-                           0);
-
-    ctx.BeginRenderPass(rpDesc);
-
-    ctx.SetViewport(view.GetRHIViewport());
-    ctx.SetScissor(view.GetRHIScissor());
-    TryDrawGPUDrivenIndirect(ctx, view);
-    ctx.EndRenderPass();
+    m_drawStats.planRequested = true;
+    m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
 }
 
 } // namespace RVX
