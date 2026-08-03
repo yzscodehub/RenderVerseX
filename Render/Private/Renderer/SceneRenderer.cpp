@@ -2801,6 +2801,12 @@ void SceneRenderer::Render()
         {
             m_renderPolicyDiagnostics.executionReport =
                 m_activeRenderPassResults->executionReport;
+            if (m_shadowPass)
+            {
+                m_shadowPass->PublishRecordResults(
+                    m_activeRenderPassResults,
+                    m_activeRenderPassIdentity);
+            }
             if (m_depthPrepass)
             {
                 m_depthPrepass->PublishRecordResults(
@@ -4361,6 +4367,11 @@ void SceneRenderer::BuildRenderGraph()
     passRecordContext.opaqueDrawItems = &m_opaqueDrawItems;
     passRecordContext.maskedDrawItems = &m_maskedDrawItems;
     passRecordContext.results = std::make_shared<RenderPassRecordResults>();
+    passRecordContext.results->identity = passRecordContext.identity;
+    passRecordContext.results->directionalShadowOutput = {};
+    passRecordContext.results->directionalShadowOutput.identity =
+        passRecordContext.identity;
+    passRecordContext.results->shadowStats = {};
     passRecordContext.frameSnapshot = MakeRenderPassFrameSnapshot(
         passRecordContext, *passRecordContext.results);
     m_activeRenderPassResults = passRecordContext.results;
@@ -4429,36 +4440,19 @@ void SceneRenderer::BuildRenderGraph()
             continue;
         }
 
-        // Shadow producers have registered their graph writes by the time the
-        // opaque pass is reached. Capture only their value state now; Opaque's
-        // graph callbacks must never consult a mutable ShadowPass instance.
+        // The Shadow producer has registered its graph writes by the time the
+        // opaque pass is reached. Consume only this recording's graph-owned
+        // output; Opaque callbacks never query a mutable ShadowPass instance.
         if (pass.get() == m_opaquePass)
         {
-            passRecordContext.directionalShadow = {};
-            passRecordContext.directionalShadow.identity =
-                passRecordContext.identity;
-            if (m_shadowPass != nullptr && m_shadowPass->IsEnabled())
+            passRecordContext.directionalShadow =
+                passRecordContext.results->directionalShadowOutput;
+            if (passRecordContext.directionalShadow.identity !=
+                passRecordContext.identity)
             {
-                const ShadowPassConfig& config = m_shadowPass->GetConfig();
-                passRecordContext.directionalShadow.enabled = true;
-                passRecordContext.directionalShadow.shadowMap =
-                    m_shadowPass->GetShadowMapTextureHandle();
-                passRecordContext.directionalShadow.shadowMapSize =
-                    config.shadowMapSize;
-                passRecordContext.directionalShadow.cascadeBlendRatio =
-                    config.cascadeBlendRatio;
-                passRecordContext.directionalShadow.shadowBias =
-                    config.shadowBias;
-                passRecordContext.directionalShadow.normalBias = config.normalBias;
-                passRecordContext.directionalShadow.filterRadiusTexels =
-                    config.filterRadiusTexels;
-                for (const ShadowCascade& cascade : m_shadowPass->GetCascades())
-                {
-                    passRecordContext.directionalShadow.cascadeViewProjections.push_back(
-                        cascade.viewProjection);
-                    passRecordContext.directionalShadow.cascadeSplitDepths.push_back(
-                        cascade.splitDepth);
-                }
+                passRecordContext.directionalShadow = {};
+                passRecordContext.directionalShadow.identity =
+                    passRecordContext.identity;
             }
 
             passRecordContext.rayTracedShadow = {};
@@ -4477,9 +4471,10 @@ void SceneRenderer::BuildRenderGraph()
             }
         }
 
-        // Depth/Opaque have no persistent per-frame mailbox. They consume the
-        // explicit record context; remaining passes retain the Task 9B adapter.
-        if (pass.get() == m_depthPrepass || pass.get() == m_opaquePass)
+        // Shadow/Depth/Opaque consume the explicit graph-owned record context;
+        // remaining passes retain the Task 9B compatibility adapter.
+        if (pass.get() == m_shadowPass || pass.get() == m_depthPrepass ||
+            pass.get() == m_opaquePass)
         {
             pass->AddToGraph(*m_renderGraph, passRecordContext);
         }

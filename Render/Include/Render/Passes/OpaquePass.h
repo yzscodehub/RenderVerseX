@@ -86,7 +86,7 @@ namespace RVX
         void SetRayTracedShadowSource(const RayTracedShadowPass* shadowPass);
         /** @brief Set graph-owned directional-shadow inputs for one recording. */
         void SetDirectionalShadowRecordInputs(
-            const OpaqueDirectionalShadowRecordInputs& inputs)
+            const DirectionalShadowRecordOutput& inputs)
         {
             m_directionalShadowInputs = inputs;
         }
@@ -146,7 +146,7 @@ namespace RVX
         RGBufferHandle m_gpuDrivenDrawCountHandle;
         OpaquePassShadowStats m_shadowStats;
         OpaquePassDrawStats m_drawStats;
-        OpaqueDirectionalShadowRecordInputs m_directionalShadowInputs;
+        DirectionalShadowRecordOutput m_directionalShadowInputs;
         OpaqueRayTracedShadowRecordInputs m_rayTracedShadowInputs;
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
 

@@ -1816,7 +1816,7 @@ TEST(RenderPassStatusValidation, RecordContextRejectsStaleMismatchedAndIncomplet
         context.view.*handle = {};
     }
 
-    OpaqueDirectionalShadowRecordInputs directionalShadow;
+    DirectionalShadowRecordOutput directionalShadow;
     directionalShadow.identity = context.identity;
     directionalShadow.shadowMap = foreignTarget;
     EXPECT_FALSE(directionalShadow.IsCompatibleWith(context.identity));
@@ -1919,6 +1919,7 @@ TEST(RenderPassStatusValidation,
      PublishedResultsHoldLatestMatchingRecordAndReleaseReplacedSnapshot)
 {
     DepthPrepass depthPass;
+    ShadowPass shadowPass;
     OpaquePass opaquePass;
     const RenderPassRecordIdentity recordA{
         nullptr, 11u, 1u, 100u, 0u, 1u};
@@ -1928,27 +1929,35 @@ TEST(RenderPassStatusValidation,
     auto first = std::make_shared<RenderPassRecordResults>();
     first->identity = recordA;
     first->depthStats.directDrawCount = 1;
+    first->shadowStats.drawCount = 1;
     first->opaqueStats.directDrawCount = 1;
     auto second = std::make_shared<RenderPassRecordResults>();
     second->identity = recordB;
     second->depthStats.directDrawCount = 2;
+    // A current disabled recording must replace prior non-zero shadow results.
+    second->shadowStats = {};
     second->opaqueStats.directDrawCount = 2;
     const std::weak_ptr<RenderPassRecordResults> firstLifetime = first;
 
     depthPass.PublishRecordResults(first, recordA);
+    shadowPass.PublishRecordResults(first, recordA);
     opaquePass.PublishRecordResults(first, recordA);
     first.reset();
     EXPECT_FALSE(firstLifetime.expired());
 
     // A mismatched identity cannot overwrite the latest published data.
     depthPass.PublishRecordResults(second, recordA);
+    shadowPass.PublishRecordResults(second, recordA);
     opaquePass.PublishRecordResults(second, recordA);
     EXPECT_EQ(1u, depthPass.GetDrawStats().directDrawCount);
+    EXPECT_EQ(1u, shadowPass.GetStats().drawCount);
     EXPECT_EQ(1u, opaquePass.GetDrawStats().directDrawCount);
 
     depthPass.PublishRecordResults(second, recordB);
+    shadowPass.PublishRecordResults(second, recordB);
     opaquePass.PublishRecordResults(second, recordB);
     EXPECT_EQ(2u, depthPass.GetDrawStats().directDrawCount);
+    EXPECT_EQ(0u, shadowPass.GetStats().drawCount);
     EXPECT_EQ(2u, opaquePass.GetDrawStats().directDrawCount);
     EXPECT_TRUE(firstLifetime.expired());
 }
@@ -2453,6 +2462,440 @@ TEST_F(RenderPassValidationFixture, MigratedDepthPassExecutesItsOwnedRecordConte
                                 RenderPassKind::Depth);
     ASSERT_NE(depthReport, nullptr);
     EXPECT_EQ(RenderExecutionStatus::Completed, depthReport->status);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TypedShadowPassPublishesGraphOwnedOutputConsumedByOpaque)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+
+    const std::vector<RenderDrawItem> emptyDrawItems;
+    const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        emptyDrawItems, emptyDrawItems);
+    const RenderFramePlanCompileResult compiled = CompileForcedDirectPlan(
+        preparation, 79);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA8_UNORM);
+    colorDesc.debugName = "TypedShadowOpaqueColor";
+
+    RenderPassRecordContext context;
+    context.view = view;
+    context.view.renderGraph = &graph;
+    context.view.viewCache = &viewCache;
+    context.view.colorTarget = graph.CreateTexture(colorDesc);
+    context.view.viewportWidth = 64;
+    context.view.viewportHeight = 64;
+    context.view.aspectRatio = 1.0f;
+    context.view.fieldOfView = 1.0472f;
+    context.view.nearPlane = 0.1f;
+    context.view.farPlane = 100.0f;
+    context.view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+    context.view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+    context.view.inverseViewMatrix = Mat4Identity();
+    graph.SetExportState(context.view.colorTarget, RHIResourceState::RenderTarget);
+    context.view.renderFrameExecutionPlan = &compiled.plan;
+    context.view.meshPassPreparation = &preparation;
+    context.view.renderVisibility = nullptr;
+    context.view.renderFrameExecutionReport = &report;
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = compiled.plan.frameSequence;
+    context.identity.viewOrdinal = compiled.plan.viewOrdinal;
+    context.identity.recordEpoch = 11;
+    context.executionPlan = &compiled.plan;
+    context.meshPassPreparation = &preparation;
+    context.visibility = nullptr;
+    context.executionReport = &report;
+    context.renderScene = &scene;
+    context.opaqueDrawItems = &emptyDrawItems;
+    context.maskedDrawItems = &emptyDrawItems;
+    context.directionalShadow.identity = context.identity;
+    context.rayTracedShadow.identity = context.identity;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.results->identity = context.identity;
+    context.results->directionalShadowOutput.identity = context.identity;
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(
+        context, *context.results);
+
+    ShadowPassConfig shadowConfig;
+    shadowConfig.numCascades = 2;
+    shadowConfig.shadowMapSize = 64;
+    shadowConfig.cascadeBlendRatio = 0.1f;
+
+    ShadowPass shadowPass;
+    ConfigureResources(shadowPass, gpuResources, pipelineCache);
+    shadowPass.SetRenderScene(&scene);
+    shadowPass.SetConfig(shadowConfig);
+    shadowPass.SetDirectionalLight(
+        Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    shadowPass.AddToGraph(graph, context);
+
+    const DirectionalShadowRecordOutput producedOutput =
+        context.results->directionalShadowOutput;
+    EXPECT_TRUE(producedOutput.enabled);
+    EXPECT_TRUE(producedOutput.IsCompatibleWith(context.identity));
+    EXPECT_TRUE(HasCurrentGraphProvenance(
+        producedOutput.shadowMap, context.identity));
+    EXPECT_EQ(static_cast<size_t>(shadowConfig.numCascades),
+              producedOutput.cascadeViewProjections.size());
+    EXPECT_EQ(producedOutput.cascadeViewProjections.size(),
+              producedOutput.cascadeSplitDepths.size());
+    EXPECT_EQ(shadowConfig.numCascades,
+              context.results->shadowStats.configuredCascadeCount);
+    EXPECT_EQ(shadowConfig.numCascades,
+              context.results->shadowStats.declaredCascadeResourceCount);
+
+    // Opaque receives the graph-owned value.  It has no persistent shadow
+    // source, and later mutations of the producer cannot change this recording.
+    context.directionalShadow = producedOutput;
+    OpaquePass opaquePass;
+    ConfigureResources(opaquePass, gpuResources, pipelineCache, materialSystem);
+    opaquePass.AddToGraph(graph, context);
+    shadowPass.SetEnabled(false);
+    ShadowPassConfig mutatedConfig = shadowPass.GetConfig();
+    mutatedConfig.numCascades = 1;
+    mutatedConfig.shadowMapSize = 32;
+    shadowPass.SetConfig(mutatedConfig);
+
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(2u, graph.GetCompileStats().totalPasses);
+
+    RecordingCommandContext commandContext;
+    graph.Execute(commandContext);
+    opaquePass.PublishRecordResults(context.results, context.identity);
+    EXPECT_TRUE(opaquePass.GetShadowStats().requested);
+    EXPECT_TRUE(opaquePass.GetShadowStats().renderGraphReadDeclared);
+    EXPECT_TRUE(opaquePass.GetShadowStats().frameShadowReady);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TypedShadowPassFailClosedOutputStillAllowsOpaqueRegistration)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    const std::vector<RenderDrawItem> emptyDrawItems;
+    const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        emptyDrawItems, emptyDrawItems);
+    const RenderFramePlanCompileResult compiled = CompileForcedDirectPlan(
+        preparation, 80);
+    ASSERT_TRUE(compiled.succeeded);
+
+    const auto makeContext = [this,
+                              &compiled,
+                              &preparation,
+                              &emptyDrawItems](RenderGraph& graph,
+                                               RenderFrameExecutionReport& report)
+    {
+        RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+            32, 32, RHIFormat::RGBA8_UNORM);
+        RenderPassRecordContext context;
+        context.view = view;
+        context.view.renderGraph = &graph;
+        context.view.viewCache = &viewCache;
+        context.view.colorTarget = graph.CreateTexture(colorDesc);
+        context.view.viewportWidth = 32;
+        context.view.viewportHeight = 32;
+        graph.SetExportState(context.view.colorTarget,
+                             RHIResourceState::RenderTarget);
+        context.view.renderFrameExecutionPlan = &compiled.plan;
+        context.view.meshPassPreparation = &preparation;
+        context.view.renderVisibility = nullptr;
+        context.view.renderFrameExecutionReport = &report;
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+        context.identity.frameSequence = compiled.plan.frameSequence;
+        context.identity.viewOrdinal = compiled.plan.viewOrdinal;
+        context.identity.recordEpoch = 12;
+        context.executionPlan = &compiled.plan;
+        context.meshPassPreparation = &preparation;
+        context.visibility = nullptr;
+        context.executionReport = &report;
+        context.renderScene = &scene;
+        context.opaqueDrawItems = &emptyDrawItems;
+        context.maskedDrawItems = &emptyDrawItems;
+        context.directionalShadow.identity = context.identity;
+        context.rayTracedShadow.identity = context.identity;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.results->identity = context.identity;
+        context.results->directionalShadowOutput.identity = context.identity;
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(
+            context, *context.results);
+        return context;
+    };
+
+    const auto exerciseFailClosedProducer = [this, &makeContext](
+                                               const char* caseName,
+                                               const auto& configureShadow,
+                                               bool invalidateContext)
+    {
+        SCOPED_TRACE(caseName);
+        RenderGraph graph;
+        graph.SetDevice(&device);
+        RenderFrameExecutionReport report;
+        report.frameSequence = 80;
+        RenderPassRecordContext context = makeContext(graph, report);
+
+        ShadowPass shadowPass;
+        configureShadow(shadowPass);
+        if (invalidateContext)
+        {
+            context.legacyAdapter = true;
+        }
+        shadowPass.AddToGraph(graph, context);
+
+        EXPECT_FALSE(context.results->directionalShadowOutput.enabled);
+        EXPECT_TRUE(context.results->directionalShadowOutput.IsCompatibleWith(
+            context.identity));
+        EXPECT_EQ(0u, context.results->shadowStats.configuredCascadeCount);
+        EXPECT_EQ(0u, context.results->shadowStats.drawCount);
+
+        // Only the producer is invalid.  Its current disabled output remains a
+        // valid input for a separately validated Opaque registration.
+        context.legacyAdapter = false;
+        context.directionalShadow = context.results->directionalShadowOutput;
+        OpaquePass opaquePass;
+        ConfigureResources(opaquePass, gpuResources, pipelineCache, materialSystem);
+        opaquePass.AddToGraph(graph, context);
+        graph.Compile();
+        EXPECT_TRUE(graph.GetCompileStats().compileValid);
+    };
+
+    exerciseFailClosedProducer(
+        "disabled",
+        [this](ShadowPass& shadowPass)
+        {
+            ConfigureResources(shadowPass, gpuResources, pipelineCache);
+        },
+        false);
+    exerciseFailClosedProducer(
+        "unsupported",
+        [](ShadowPass& shadowPass)
+        {
+            shadowPass.SetDirectionalLight(
+                Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+        },
+        false);
+    exerciseFailClosedProducer(
+        "invalid context",
+        [this](ShadowPass& shadowPass)
+        {
+            ConfigureResources(shadowPass, gpuResources, pipelineCache);
+            shadowPass.SetDirectionalLight(
+                Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+        },
+        true);
+}
+
+TEST_F(RenderPassValidationFixture,
+       TypedShadowPassIsolatesOutputsAcrossInverseExecutedGraphs)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderGraph graphA;
+    RenderGraph graphB;
+    graphA.SetDevice(&device);
+    graphB.SetDevice(&device);
+
+    const std::vector<RenderDrawItem> emptyDrawItems;
+    const SceneMeshPassPreparation preparationA = PrepareOpaquePackets(
+        emptyDrawItems, emptyDrawItems);
+    const SceneMeshPassPreparation preparationB = PrepareOpaquePackets(
+        emptyDrawItems, emptyDrawItems);
+    const RenderFramePlanCompileResult compiledA = CompileForcedDirectPlan(
+        preparationA, 81);
+    const RenderFramePlanCompileResult compiledB = CompileForcedDirectPlan(
+        preparationB, 82);
+    ASSERT_TRUE(compiledA.succeeded);
+    ASSERT_TRUE(compiledB.succeeded);
+    RenderFrameExecutionReport reportA = MakeExecutionReport(compiledA.plan);
+    RenderFrameExecutionReport reportB = MakeExecutionReport(compiledB.plan);
+
+    const auto makeContext = [this, &emptyDrawItems](
+                                 RenderGraph& graph,
+                                 const RenderFrameExecutionPlan& plan,
+                                 const SceneMeshPassPreparation& preparation,
+                                 RenderFrameExecutionReport& report,
+                                 uint64 recordEpoch,
+                                 const char* colorTargetName)
+    {
+        RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM);
+        colorDesc.debugName = colorTargetName;
+
+        RenderPassRecordContext context;
+        context.view = view;
+        context.view.renderGraph = &graph;
+        context.view.viewCache = &viewCache;
+        context.view.colorTarget = graph.CreateTexture(colorDesc);
+        context.view.viewportWidth = 64;
+        context.view.viewportHeight = 64;
+        context.view.aspectRatio = 1.0f;
+        context.view.fieldOfView = 1.0472f;
+        context.view.nearPlane = 0.1f;
+        context.view.farPlane = 100.0f;
+        context.view.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+        context.view.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+        context.view.inverseViewMatrix = Mat4Identity();
+        graph.SetExportState(context.view.colorTarget,
+                             RHIResourceState::RenderTarget);
+        context.view.renderFrameExecutionPlan = &plan;
+        context.view.meshPassPreparation = &preparation;
+        context.view.renderVisibility = nullptr;
+        context.view.renderFrameExecutionReport = &report;
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+        context.identity.frameSequence = plan.frameSequence;
+        context.identity.viewOrdinal = plan.viewOrdinal;
+        context.identity.recordEpoch = recordEpoch;
+        context.executionPlan = &plan;
+        context.meshPassPreparation = &preparation;
+        context.visibility = nullptr;
+        context.executionReport = &report;
+        context.renderScene = &scene;
+        context.opaqueDrawItems = &emptyDrawItems;
+        context.maskedDrawItems = &emptyDrawItems;
+        context.directionalShadow.identity = context.identity;
+        context.rayTracedShadow.identity = context.identity;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.results->identity = context.identity;
+        context.results->directionalShadowOutput.identity = context.identity;
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(
+            context, *context.results);
+        return context;
+    };
+
+    RenderPassRecordContext contextA = makeContext(
+        graphA,
+        compiledA.plan,
+        preparationA,
+        reportA,
+        21,
+        "TypedShadowIsolationColorA");
+    RenderPassRecordContext contextB = makeContext(
+        graphB,
+        compiledB.plan,
+        preparationB,
+        reportB,
+        22,
+        "TypedShadowIsolationColorB");
+
+    ShadowPass shadowPass;
+    ConfigureResources(shadowPass, gpuResources, pipelineCache);
+    shadowPass.SetRenderScene(&scene);
+
+    ShadowPassConfig configA;
+    configA.numCascades = 2;
+    configA.shadowMapSize = 64;
+    configA.cascadeBlendRatio = 0.05f;
+    shadowPass.SetConfig(configA);
+    shadowPass.SetDirectionalLight(
+        Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    shadowPass.AddToGraph(graphA, contextA);
+    const DirectionalShadowRecordOutput outputA =
+        contextA.results->directionalShadowOutput;
+
+    ShadowPassConfig configB;
+    configB.numCascades = 3;
+    configB.shadowMapSize = 96;
+    configB.cascadeBlendRatio = 0.2f;
+    shadowPass.SetConfig(configB);
+    shadowPass.SetDirectionalLight(
+        Vec3{0.6f, -0.1f, 0.9f}, Vec3{0.5f, 0.7f, 1.0f}, 3.0f);
+    shadowPass.AddToGraph(graphB, contextB);
+    const DirectionalShadowRecordOutput outputB =
+        contextB.results->directionalShadowOutput;
+
+    ASSERT_TRUE(outputA.enabled);
+    ASSERT_TRUE(outputB.enabled);
+    EXPECT_TRUE(outputA.IsCompatibleWith(contextA.identity));
+    EXPECT_TRUE(outputB.IsCompatibleWith(contextB.identity));
+    EXPECT_FALSE(outputA.IsCompatibleWith(contextB.identity));
+    EXPECT_FALSE(outputB.IsCompatibleWith(contextA.identity));
+    EXPECT_TRUE(HasCurrentGraphProvenance(outputA.shadowMap, contextA.identity));
+    EXPECT_TRUE(HasCurrentGraphProvenance(outputB.shadowMap, contextB.identity));
+    EXPECT_FALSE(HasCurrentGraphProvenance(outputA.shadowMap, contextB.identity));
+    EXPECT_FALSE(HasCurrentGraphProvenance(outputB.shadowMap, contextA.identity));
+    EXPECT_EQ(configA.shadowMapSize, outputA.shadowMapSize);
+    EXPECT_EQ(configB.shadowMapSize, outputB.shadowMapSize);
+    EXPECT_EQ(configA.cascadeBlendRatio, outputA.cascadeBlendRatio);
+    EXPECT_EQ(configB.cascadeBlendRatio, outputB.cascadeBlendRatio);
+    ASSERT_EQ(static_cast<size_t>(configA.numCascades),
+              outputA.cascadeViewProjections.size());
+    ASSERT_EQ(static_cast<size_t>(configB.numCascades),
+              outputB.cascadeViewProjections.size());
+    EXPECT_NE(outputA.cascadeViewProjections[0][0][0],
+              outputB.cascadeViewProjections[0][0][0]);
+
+    contextA.directionalShadow = outputA;
+    contextB.directionalShadow = outputB;
+    OpaquePass opaquePassA;
+    OpaquePass opaquePassB;
+    ConfigureResources(opaquePassA, gpuResources, pipelineCache, materialSystem);
+    ConfigureResources(opaquePassB, gpuResources, pipelineCache, materialSystem);
+    opaquePassA.AddToGraph(graphA, contextA);
+    opaquePassB.AddToGraph(graphB, contextB);
+
+    // Both registrations above own their config/light snapshots.  A further
+    // persistent mutation must affect neither graph, even when B executes first.
+    ShadowPassConfig mutatedConfig = shadowPass.GetConfig();
+    mutatedConfig.numCascades = 1;
+    mutatedConfig.shadowMapSize = 32;
+    shadowPass.SetConfig(mutatedConfig);
+    shadowPass.SetDirectionalLight(
+        Vec3{0.0f, 1.0f, 0.0f}, Vec3{1.0f, 0.0f, 0.0f}, 7.0f);
+
+    graphB.Compile();
+    graphA.Compile();
+    ASSERT_TRUE(graphB.GetCompileStats().compileValid);
+    ASSERT_TRUE(graphA.GetCompileStats().compileValid);
+
+    RecordingCommandContext commandContextB;
+    RecordingCommandContext commandContextA;
+    graphB.Execute(commandContextB);
+    graphA.Execute(commandContextA);
+
+    EXPECT_EQ(configB.numCascades,
+              contextB.results->shadowStats.configuredCascadeCount);
+    EXPECT_EQ(configB.numCascades,
+              contextB.results->shadowStats.declaredCascadeResourceCount);
+    EXPECT_EQ(configB.numCascades,
+              contextB.results->shadowStats.resolvedCascadeViewCount);
+    EXPECT_EQ(configB.numCascades, contextB.results->shadowStats.drawCount);
+    EXPECT_EQ(configA.numCascades,
+              contextA.results->shadowStats.configuredCascadeCount);
+    EXPECT_EQ(configA.numCascades,
+              contextA.results->shadowStats.declaredCascadeResourceCount);
+    EXPECT_EQ(configA.numCascades,
+              contextA.results->shadowStats.resolvedCascadeViewCount);
+    EXPECT_EQ(configA.numCascades, contextA.results->shadowStats.drawCount);
+
+    opaquePassB.PublishRecordResults(contextB.results, contextB.identity);
+    opaquePassA.PublishRecordResults(contextA.results, contextA.identity);
+    EXPECT_TRUE(opaquePassB.GetShadowStats().renderGraphReadDeclared);
+    EXPECT_TRUE(opaquePassB.GetShadowStats().frameShadowReady);
+    EXPECT_TRUE(opaquePassA.GetShadowStats().renderGraphReadDeclared);
+    EXPECT_TRUE(opaquePassA.GetShadowStats().frameShadowReady);
+
+    const RenderPassRecordIdentity oldIdentityA = contextA.identity;
+    graphA.Clear();
+    RenderPassRecordIdentity refreshedIdentityA = oldIdentityA;
+    refreshedIdentityA.graphIdentity = graphA.GetGraphIdentity();
+    refreshedIdentityA.graphRecordingGeneration = graphA.GetRecordingGeneration();
+    ++refreshedIdentityA.recordEpoch;
+    EXPECT_FALSE(oldIdentityA.Matches(graphA));
+    EXPECT_FALSE(outputA.IsCompatibleWith(refreshedIdentityA));
+    EXPECT_FALSE(HasCurrentGraphProvenance(outputA.shadowMap,
+                                           refreshedIdentityA));
 }
 
 TEST(RenderPassValidation, RayTracingPipelineValidationRejectsInvalidShaderGroupContracts)

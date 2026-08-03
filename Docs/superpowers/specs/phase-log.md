@@ -44698,6 +44698,94 @@ git diff --check
 
 ---
 
+### R-SP334 Render-policy Task 9B-1 graph-owned raster Shadow output
+
+**Date:** 2026-08-03
+**Commit:** pending `refactor(render): isolate raster shadow recording state`
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-pass-record-context-contract.md`
+
+**Prerequisite status:** PASS
+
+- Task 9A commit `8e07c504` is present and its focused/integration gates were
+  green before this slice.
+
+**Approved scope:**
+
+- Move raster Shadow Setup/Execute to a graph-owned recorder clone that
+  captures configuration, light state, requested-enabled state, scene snapshot,
+  services, identity, and result sink.
+- Publish a producer-neutral `DirectionalShadowRecordOutput` during synchronous
+  Setup and consume it from Opaque without querying the persistent ShadowPass.
+- Seed disabled/current-identity output and zero stats for disabled,
+  unsupported, and invalid contexts; publish completed stats only through the
+  active identity gate.
+- Preserve the explicit standalone `ViewData` compatibility path.
+
+**Out of scope:**
+
+- RayTracedShadow remains a documented stateful island for Task 9B-2. Its
+  graph handles, temporal-history reservation/commit, imported-resource
+  lifetime, output, and stats are not claimed complete here.
+- ObjectVelocity, Transparent, Skybox, binder removal, submission strategies,
+  async compute, Editor work, and Auto-policy promotion remain later slices.
+
+**Files changed:**
+
+- Render pass record context, Shadow/Opaque contracts and implementations
+- SceneRenderer raster Shadow producer/consumer wiring and result publication
+- RenderPass and PipelineCache validation coverage
+- Task 9 contract, implementation plan, execution ledger, and this phase log
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation RHIContractValidation RenderGraphValidation RenderPolicyValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/PipelineCacheValidation.exe
+build/win_x64_debug/Tests/Debug/RHIContractValidation.exe
+build/win_x64_debug/Tests/Debug/RenderGraphValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation|ModelViewerGPUDrivenGBVSmoke|RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries|RenderingShowcaseDX11Smoke)$"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for all listed targets and the configured DX11, DX12, OpenGL,
+  and Vulkan libraries reached by their dependency graphs.
+- Standalone suites: PASS 171/171 RenderPass, 129/129 PipelineCache, 41/41
+  RHIContract, 50/50 RenderGraph, and 22/22 RenderPolicy.
+- Repeated DX12 GPU-driven smoke: PASS 10/10.
+- DX12 Direct/GPU/Auto/parity/GBV, Porsche Direct/GPU/parity,
+  resize/lifetime/retirement, and DX11 smoke: PASS 16/16.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for one P1: the first patch lacked the
+  required same-pass, two-graph, inverse-execution runtime proof.
+- Added a real A/B registration and B-to-A execution test covering distinct
+  identities, handle provenance, configuration/cascades, Opaque consumers,
+  execution stats, caller mutation, and stale generation after Clear.
+- Final verdict: APPROVE; no remaining P0-P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. The graph owns the raster Shadow recorder and frame output;
+  the persistent pass retains only configuration/services and an
+  identity-gated diagnostic snapshot.
+- Two stale PipelineCache source assertions from prior Depth/Opaque recorder
+  migration were updated to the current typed names; the full suite is green.
+- Next slice is Task 9B-2 RayTracedShadow frame state plus completion-aware
+  temporal-history reservation/commit/rollback and imported-resource retain.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

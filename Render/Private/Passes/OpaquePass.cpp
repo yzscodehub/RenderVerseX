@@ -419,7 +419,7 @@ void OpaquePass::AddToGraph(
         ? gpuInputs.indirectDraws : m_gpuDrivenIndirectHandle;
     const RGBufferHandle drawCountHandle = hasPlan
         ? gpuInputs.drawCount : m_gpuDrivenDrawCountHandle;
-    const OpaqueDirectionalShadowRecordInputs directionalShadow =
+    const DirectionalShadowRecordOutput directionalShadow =
         execution.directionalShadow;
     const OpaqueRayTracedShadowRecordInputs rayTracedShadow =
         execution.rayTracedShadow;

@@ -4,17 +4,19 @@
  */
 
 #include "Render/Passes/ShadowPass.h"
-#include "Render/Graph/ResourceViewCache.h"
-#include "Render/Renderer/ViewData.h"
-#include "Render/Renderer/RenderScene.h"
-#include "Resources/RenderResourceResolver.h"
-#include "Render/PipelineCache.h"
-#include "RHI/RHIRenderPass.h"
 #include "Core/Log.h"
+#include "Render/Graph/ResourceViewCache.h"
+#include "Render/PipelineCache.h"
+#include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/ViewData.h"
+#include "Resources/RenderResourceResolver.h"
+#include "RHI/RHIRenderPass.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <memory>
 
 namespace RVX
 {
@@ -126,6 +128,63 @@ namespace
         return slice;
     }
 
+    DirectionalShadowRecordOutput MakeDirectionalShadowRecordOutput(
+        const RenderPassRecordIdentity& identity,
+        const ShadowPass& recorder)
+    {
+        DirectionalShadowRecordOutput output;
+        output.identity = identity;
+
+        const ShadowPassStats& stats = recorder.GetStats();
+        const ShadowPassConfig& config = recorder.GetConfig();
+        const std::vector<ShadowCascade>& cascades = recorder.GetCascades();
+        const std::vector<RGTextureHandle>& cascadeHandles =
+            recorder.GetCascadeTextureHandles();
+        const RGTextureHandle shadowMap = recorder.GetShadowMapTextureHandle();
+        const uint32 cascadeCount = static_cast<uint32>(cascades.size());
+        const bool cascadeHandlesHaveCurrentProvenance = std::all_of(
+            cascadeHandles.begin(),
+            cascadeHandles.end(),
+            [&identity](const RGTextureHandle& cascadeHandle)
+            {
+                return HasCurrentGraphProvenance(cascadeHandle, identity);
+            });
+        if (!shadowMap.IsValid() ||
+            !HasCurrentGraphProvenance(shadowMap, identity) ||
+            config.shadowMapSize == 0 ||
+            cascadeCount == 0 ||
+            cascadeCount != config.numCascades ||
+            cascadeCount != stats.configuredCascadeCount ||
+            cascadeCount != stats.declaredCascadeResourceCount ||
+            cascadeCount != cascadeHandles.size() ||
+            !cascadeHandlesHaveCurrentProvenance ||
+            cascadeCount > RVX_MAX_DIRECTIONAL_SHADOW_CASCADES)
+        {
+            return output;
+        }
+
+        output.enabled = true;
+        output.shadowMap = shadowMap;
+        output.shadowMapSize = config.shadowMapSize;
+        output.cascadeBlendRatio = config.cascadeBlendRatio;
+        output.shadowBias = config.shadowBias;
+        output.normalBias = config.normalBias;
+        output.filterRadiusTexels = config.filterRadiusTexels;
+        output.cascadeViewProjections.reserve(cascadeCount);
+        output.cascadeSplitDepths.reserve(cascadeCount);
+        for (const ShadowCascade& cascade : cascades)
+        {
+            output.cascadeViewProjections.push_back(cascade.viewProjection);
+            output.cascadeSplitDepths.push_back(cascade.splitDepth);
+        }
+        if (!output.IsCompatibleWith(identity))
+        {
+            output = {};
+            output.identity = identity;
+        }
+        return output;
+    }
+
 } // namespace
 
 ShadowPass::ShadowPass()
@@ -155,6 +214,121 @@ void ShadowPass::SetDirectionalLight(const Vec3& direction, const Vec3& color, f
     m_lightColor = color;
     m_lightIntensity = intensity;
     m_enabled = true;  // Enable shadow pass when light is configured
+}
+
+void ShadowPass::AddToGraph(RenderGraph& graph, const ViewData& view)
+{
+    struct LegacyPassData
+    {
+        ShadowPass* pass = nullptr;
+        ViewData view{};
+    };
+
+    const ViewData capturedView = view;
+    graph.AddPass<LegacyPassData>(
+        GetName(),
+        GetPassType(),
+        [this, capturedView](RenderGraphBuilder& builder, LegacyPassData& data)
+        {
+            data.pass = this;
+            data.view = capturedView;
+            data.pass->Setup(builder, data.view);
+        },
+        [](const LegacyPassData& data, RHICommandContext& ctx)
+        {
+            data.pass->Execute(ctx, data.view);
+        });
+}
+
+void ShadowPass::AddToGraph(
+    RenderGraph& graph,
+    const RenderPassRecordContext& context)
+{
+    struct GraphPassData
+    {
+        RenderPassExecutionData execution{};
+        std::unique_ptr<ShadowPass> recorder;
+        bool contextValid = false;
+    };
+
+    const RenderPassExecutionData execution =
+        MakeRenderPassExecutionData(context);
+    const bool contextValid = !context.legacyAdapter &&
+        context.MatchesTargetGraph(graph) &&
+        context.IsFrameIdentityValid() &&
+        execution.MatchesTargetGraph(graph) &&
+        execution.IsFrameIdentityValid() &&
+        execution.frameSnapshot != nullptr && execution.results != nullptr;
+
+    const ShadowPassConfig config = m_config;
+    const Vec3 lightDirection = m_lightDirection;
+    const Vec3 lightColor = m_lightColor;
+    const float lightIntensity = m_lightIntensity;
+    const bool requestedEnabled = m_enabled;
+    PipelineCache* const pipelineCache = m_pipelineCache;
+    const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
+    const RenderScene* const renderScene = execution.frameSnapshot
+        ? &execution.frameSnapshot->scene : nullptr;
+    const std::shared_ptr<RenderPassRecordResults> results = execution.results;
+
+    graph.AddPass<GraphPassData>(
+        GetName(),
+        GetPassType(),
+        [execution,
+         contextValid,
+         config,
+         lightDirection,
+         lightColor,
+         lightIntensity,
+         requestedEnabled,
+         pipelineCache,
+         resourceRegistry,
+         renderScene,
+         results](RenderGraphBuilder& builder, GraphPassData& data)
+        {
+            data.execution = execution;
+            data.contextValid = contextValid;
+            if (!results)
+            {
+                return;
+            }
+            results->directionalShadowOutput = {};
+            results->directionalShadowOutput.identity = results->identity;
+            results->shadowStats = {};
+            if (!data.contextValid)
+            {
+                return;
+            }
+
+            data.recorder = std::make_unique<ShadowPass>();
+            data.recorder->SetResources(pipelineCache);
+            data.recorder->SetResourceRegistry(resourceRegistry);
+            data.recorder->SetRenderScene(renderScene);
+            data.recorder->SetConfig(config);
+            data.recorder->SetDirectionalLight(
+                lightDirection, lightColor, lightIntensity);
+            data.recorder->SetEnabled(requestedEnabled);
+            data.recorder->Setup(builder, data.execution.view);
+
+            results->shadowStats = data.recorder->GetStats();
+            results->directionalShadowOutput =
+                MakeDirectionalShadowRecordOutput(
+                    data.execution.identity, *data.recorder);
+        },
+        [results](const GraphPassData& data, RHICommandContext& ctx)
+        {
+            if (!results)
+            {
+                return;
+            }
+            if (!data.contextValid || !data.recorder)
+            {
+                results->shadowStats = {};
+                return;
+            }
+            data.recorder->Execute(ctx, data.execution.view);
+            results->shadowStats = data.recorder->GetStats();
+        });
 }
 
 bool ShadowPass::IsSupported() const

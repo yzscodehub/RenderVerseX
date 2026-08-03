@@ -44,6 +44,15 @@ namespace RVX
             RenderPolicyReason::ConservativeDefault;
     };
 
+    struct ShadowPassStats
+    {
+        uint32 configuredCascadeCount = 0;
+        uint32 declaredCascadeResourceCount = 0;
+        uint32 resolvedCascadeViewCount = 0;
+        uint32 shadowCasterCount = 0;
+        uint32 drawCount = 0;
+    };
+
     struct OpaquePassShadowStats
     {
         bool requested = false;
@@ -170,7 +179,7 @@ namespace RVX
         }
     };
 
-    /** @brief Value-owned scene state needed by Depth/Opaque recording only. */
+    /** @brief Value-owned scene state used by typed main-scene pass recording. */
     struct RenderPassFrameSnapshot
     {
         RenderPassRecordIdentity identity{};
@@ -183,17 +192,8 @@ namespace RVX
         std::vector<RenderDrawItem> maskedDrawItems{};
     };
 
-    /** @brief Lifetime-owned mutable outputs for one graph recording. */
-    struct RenderPassRecordResults
-    {
-        RenderPassRecordIdentity identity{};
-        RenderFrameExecutionReport executionReport{};
-        DepthPrepassDrawStats depthStats{};
-        OpaquePassDrawStats opaqueStats{};
-        OpaquePassShadowStats opaqueShadowStats{};
-    };
-
-    struct OpaqueDirectionalShadowRecordInputs
+    /** @brief Graph-owned directional-shadow output produced for Opaque. */
+    struct DirectionalShadowRecordOutput
     {
         RenderPassRecordIdentity identity{};
         bool enabled = false;
@@ -224,6 +224,18 @@ namespace RVX
                    cascadeCount <= RVX_MAX_DIRECTIONAL_SHADOW_CASCADES &&
                    cascadeSplitDepths.size() == cascadeCount;
         }
+    };
+
+    /** @brief Lifetime-owned mutable outputs for one graph recording. */
+    struct RenderPassRecordResults
+    {
+        RenderPassRecordIdentity identity{};
+        DirectionalShadowRecordOutput directionalShadowOutput{};
+        RenderFrameExecutionReport executionReport{};
+        DepthPrepassDrawStats depthStats{};
+        ShadowPassStats shadowStats{};
+        OpaquePassDrawStats opaqueStats{};
+        OpaquePassShadowStats opaqueShadowStats{};
     };
 
     struct OpaqueRayTracedShadowRecordInputs
@@ -263,7 +275,7 @@ namespace RVX
         const std::vector<RenderDrawItem>* maskedDrawItems = nullptr;
         RenderPassGPUDrivenInputs depthGPUDriven{};
         RenderPassGPUDrivenInputs opaqueGPUDriven{};
-        OpaqueDirectionalShadowRecordInputs directionalShadow{};
+        DirectionalShadowRecordOutput directionalShadow{};
         OpaqueRayTracedShadowRecordInputs rayTracedShadow{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
         std::shared_ptr<RenderPassRecordResults> results;
@@ -319,7 +331,7 @@ namespace RVX
         RenderPassRecordIdentity identity{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
         std::shared_ptr<RenderPassRecordResults> results;
-        OpaqueDirectionalShadowRecordInputs directionalShadow{};
+        DirectionalShadowRecordOutput directionalShadow{};
         OpaqueRayTracedShadowRecordInputs rayTracedShadow{};
 
         [[nodiscard]] const RenderFrameExecutionPlan* GetExecutionPlan() const

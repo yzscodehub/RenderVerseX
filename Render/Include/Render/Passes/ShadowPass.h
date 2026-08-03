@@ -9,10 +9,12 @@
  * directional lights.
  */
 
-#include "Render/Passes/IRenderPass.h"
 #include "Core/MathTypes.h"
+#include "Render/Passes/IRenderPass.h"
 #include "Render/Renderer/ShadowConstants.h"
 
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace RVX
@@ -60,15 +62,6 @@ namespace RVX
         RayTracedShadowMode rayTracedShadowMode = RayTracedShadowMode::ComplementRaster; // RT mask composition strategy
     };
 
-    struct ShadowPassStats
-    {
-        uint32_t configuredCascadeCount = 0;
-        uint32_t declaredCascadeResourceCount = 0;
-        uint32_t resolvedCascadeViewCount = 0;
-        uint32_t shadowCasterCount = 0;
-        uint32_t drawCount = 0;
-    };
-
     /**
      * @brief Shadow map generation pass
      * 
@@ -97,6 +90,9 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
 
         // =========================================================================
         // Configuration
@@ -107,6 +103,7 @@ namespace RVX
         {
             m_resourceRegistry = registry;
         }
+        /** @brief Compatibility-only legacy scene input. Typed recording snapshots it. */
         void SetRenderScene(const RenderScene* scene);
         void SetConfig(const ShadowPassConfig& config);
 
@@ -134,7 +131,20 @@ namespace RVX
         RHITexture* GetShadowMap() const { return m_shadowMapTexture; }
         RGTextureHandle GetShadowMapTextureHandle() const { return m_shadowMapTextureHandle; }
         const std::vector<RGTextureHandle>& GetCascadeTextureHandles() const { return m_cascadeTextureHandles; }
-        const ShadowPassStats& GetStats() const { return m_stats; }
+        const ShadowPassStats& GetStats() const
+        {
+            return m_publishedRecordResults
+                ? m_publishedRecordResults->shadowStats : m_stats;
+        }
+        void PublishRecordResults(
+            const std::shared_ptr<RenderPassRecordResults>& results,
+            const RenderPassRecordIdentity& expectedIdentity)
+        {
+            if (results != nullptr && results->identity == expectedIdentity)
+            {
+                m_publishedRecordResults = results;
+            }
+        }
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
         bool IsRequestedEnabled() const override { return m_enabled; }
@@ -165,6 +175,7 @@ namespace RVX
         std::vector<RGTextureHandle> m_cascadeTextureHandles;
         std::vector<RHITextureView*> m_cascadeViews;
         ShadowPassStats m_stats;
+        std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
     };
 
 } // namespace RVX

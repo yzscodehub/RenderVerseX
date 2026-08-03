@@ -1,7 +1,7 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-8 and Task 9A complete; Task 9B remaining scene-pass
-context migration is the next implementation stage
+**Status:** Tasks 0-8, Task 9A, and Task 9B-1 complete; Task 9B-2
+RayTracedShadow frame/history ownership is the next implementation stage
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -673,8 +673,11 @@ Acceptance:
 **Purpose:** Make graph recording safe for multiple views and later parallel
 recording.
 
-**Progress:** Task 9A is complete for the common contract plus Depth/Opaque.
-Task 9B migrates the remaining main-chain passes and removes the late binder.
+**Progress:** Task 9A is complete for the common contract plus Depth/Opaque,
+and Task 9B-1 is complete for raster Shadow producer/Opaque consumption.
+Task 9B-2 next isolates RayTracedShadow per-recording state while preserving a
+completion-aware temporal-history owner. Later 9B slices migrate
+ObjectVelocity, Transparent, and Skybox, then remove the late binder.
 
 Proposed files:
 
@@ -689,6 +692,9 @@ Work:
 - remove GPU-driven resource setters from Depth/Opaque;
 - make execute lambdas consume only captured pass data and record commands;
 - keep persistent pass objects limited to long-lived configuration and caches;
+- reserve RayTracedShadow history during graph setup, commit it only after an
+  actual submission token, roll it back for unsubmitted frames, and explicitly
+  retain imported history resources through completion;
 - declare compute-to-graphics dependencies in RenderGraph;
 - continue executing on the graphics physical queue until async-compute queue
   submission is independently supported and measured.

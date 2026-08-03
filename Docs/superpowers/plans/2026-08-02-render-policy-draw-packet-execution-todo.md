@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8 and Task 9A complete; Task 9B remaining scene-pass
-context migration is the next implementation stage
+**Status:** Tasks 0-8, Task 9A, and Task 9B-1 complete; Task 9B-2
+RayTracedShadow frame/history ownership is the next implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -283,8 +283,11 @@ from submitted upper bounds and CPU reference visibility.
 
 #### 9B. Remaining scene passes and binder removal
 
-- [ ] Migrate Shadow producer outputs and Opaque consumption to the shared
+- [x] Migrate raster Shadow producer outputs and Opaque consumption to the shared
   graph-owned results channel.
+- [ ] Migrate RayTracedShadow per-recording handles/output/stats to graph-owned
+  data; reserve history during setup, commit only on submitted work, roll back
+  unsubmitted reservations, and retain imported history through completion.
 - [ ] Migrate ObjectVelocity scene/list/targets and identity-gated stats.
 - [ ] Migrate Transparent scene/list/targets with truthful color ReadWrite and
   depth Read dependencies.
@@ -593,14 +596,19 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Start with **Task 5A only**:
+Start with **Task 9B-2 only**:
 
-- [x] Audit current decision probes and write the ownership matrix.
-- [x] Freeze resolver input facts and immutable per-view plan outputs.
-- [x] Define stable reasons and plan validation.
-- [x] Implement the pure resolver behind existing behavior.
-- [x] Add exhaustive CPU-only resolver matrix and determinism tests.
-- [x] Do not change pass command recording, visual output, qualification bits,
-  or Auto defaults.
-- [x] Stop for primary architecture/code review before SceneRenderer
-  integration in Task 5B.
+- [ ] Define graph-owned `RayTracedShadowRecordOutput`, per-recording state,
+  identity-gated results, and fail-closed defaults.
+- [ ] Split persistent temporal history into reservation, recorded,
+  submitted-commit, and unsubmitted-rollback states.
+- [ ] Ensure simultaneous reservations use distinct writer slots and older
+  inverse-executed recordings cannot overwrite newer committed metadata.
+- [ ] Explicitly retain imported history textures and all command-referenced
+  resources in the submission batch until completion.
+- [ ] Make Opaque consume only the graph-owned RT output; remove modern-path
+  `GetShadowMaskHandle()` mailbox reads while retaining an explicit legacy
+  adapter for standalone tests.
+- [ ] Add two-graph inverse execution, caller mutation, disabled/unsupported,
+  rejected/unsubmitted, resize, and in-flight retirement fixtures.
+- [ ] Stop for independent review and primary integration gates before 9B-3.

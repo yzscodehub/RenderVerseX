@@ -2100,17 +2100,17 @@ TEST_F(PipelineCacheValidationFixture, DrawPassesUploadRenderObjectNormalMatrix)
     const std::string shadowPass = ReadTextFile(passesDir / "ShadowPass.cpp");
     const std::string objectVelocityPass = ReadTextFile(passesDir / "ObjectVelocityPass.cpp");
 
-    EXPECT_NE(opaquePass.find("obj.previousWorldMatrix"), std::string::npos);
+    EXPECT_NE(opaquePass.find("planned.object.previousWorldMatrix"), std::string::npos);
     EXPECT_NE(transparentPass.find("obj.previousWorldMatrix"), std::string::npos);
-    EXPECT_NE(depthPrepass.find("obj.previousWorldMatrix"), std::string::npos);
+    EXPECT_NE(depthPrepass.find("planned.object.previousWorldMatrix"), std::string::npos);
     EXPECT_NE(shadowPass.find("obj.previousWorldMatrix"), std::string::npos);
     EXPECT_NE(opaquePass.find("view.previousViewProjectionMatrix"), std::string::npos);
     EXPECT_NE(transparentPass.find("view.previousViewProjectionMatrix"), std::string::npos);
     EXPECT_NE(depthPrepass.find("view.previousViewProjectionMatrix"), std::string::npos);
     EXPECT_NE(shadowPass.find("view.previousViewProjectionMatrix"), std::string::npos);
-    EXPECT_NE(opaquePass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
+    EXPECT_NE(opaquePass.find("ResolveSkinningMatrices(planned.object, planned.buffers)"), std::string::npos);
     EXPECT_NE(transparentPass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
-    EXPECT_NE(depthPrepass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
+    EXPECT_NE(depthPrepass.find("ResolveSkinningMatrices(planned.object, planned.buffers)"), std::string::npos);
     EXPECT_NE(shadowPass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
     EXPECT_NE(objectVelocityPass.find("ResolveSkinningMatrices(object, buffers)"), std::string::npos);
 }
@@ -5273,9 +5273,9 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
               std::string::npos);
     EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowEnabled = rayTracedShadowBinding.shadowMaskSamplingEnabled ? 1 : 0;"),
               std::string::npos);
-    EXPECT_NE(opaqueSource.find("rayTracedShadowConfig.filterRadiusTexels"),
+    EXPECT_NE(opaqueSource.find("m_rayTracedShadowInputs.filterRadiusTexels"),
               std::string::npos);
-    EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowMode = rayTracedShadowConfig.rayTracedShadowMode;"),
+    EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowMode = m_rayTracedShadowInputs.mode;"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster"),
               std::string::npos);
@@ -8062,5 +8062,68 @@ TEST_F(PipelineCacheValidationFixture,
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("masked depth-only pipeline"),
+              std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       TypedRasterShadowOutputIsPublishedDuringSetupBeforeOpaqueRegistration)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = FindShaderDirectory().parent_path();
+    const std::string contextHeader = ReadTextFile(
+        renderRoot / "Include" / "Render" / "Passes" /
+        "RenderPassRecordContext.h");
+    const std::string shadowHeader = ReadTextFile(
+        renderRoot / "Include" / "Render" / "Passes" / "ShadowPass.h");
+    const std::string shadowSource = ReadTextFile(
+        renderRoot / "Private" / "Passes" / "ShadowPass.cpp");
+    const std::string rendererSource = ReadTextFile(
+        renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+
+    EXPECT_NE(contextHeader.find("struct DirectionalShadowRecordOutput"),
+              std::string::npos);
+    EXPECT_EQ(contextHeader.find("OpaqueDirectionalShadowRecordInputs"),
+              std::string::npos);
+    EXPECT_NE(contextHeader.find(
+                  "DirectionalShadowRecordOutput directionalShadowOutput{};"),
+              std::string::npos);
+    EXPECT_NE(contextHeader.find("ShadowPassStats shadowStats{};"),
+              std::string::npos);
+    EXPECT_NE(shadowHeader.find(
+                  "int32_t GetPriority() const override { return 200; }"),
+              std::string::npos);
+
+    const size_t setLight = shadowSource.find("data.recorder->SetDirectionalLight(");
+    const size_t setEnabled = shadowSource.find(
+        "data.recorder->SetEnabled(requestedEnabled);");
+    const size_t setup = shadowSource.find(
+        "data.recorder->Setup(builder, data.execution.view);");
+    const size_t publishOutput = shadowSource.find(
+        "MakeDirectionalShadowRecordOutput(", setup);
+    ASSERT_NE(setLight, std::string::npos);
+    ASSERT_NE(setEnabled, std::string::npos);
+    ASSERT_NE(setup, std::string::npos);
+    ASSERT_NE(publishOutput, std::string::npos);
+    EXPECT_LT(setLight, setEnabled);
+    EXPECT_LT(setEnabled, setup);
+    EXPECT_LT(setup, publishOutput);
+
+    EXPECT_NE(rendererSource.find(
+                  "passRecordContext.results->directionalShadowOutput.identity ="),
+              std::string::npos);
+    EXPECT_NE(rendererSource.find(
+                  "passRecordContext.directionalShadow =\n"
+                  "                passRecordContext.results->directionalShadowOutput;"),
+              std::string::npos);
+    EXPECT_NE(rendererSource.find(
+                  "pass.get() == m_shadowPass || pass.get() == m_depthPrepass"),
+              std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_shadowPass->GetShadowMapTextureHandle"),
+              std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_shadowPass->GetCascades"),
               std::string::npos);
 }

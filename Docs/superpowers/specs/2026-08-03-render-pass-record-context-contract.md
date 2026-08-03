@@ -1,6 +1,6 @@
 # Render Pass Record Context and Execution Data Contract
 
-**Status:** Task 9A implemented and reviewed; Task 9B pending
+**Status:** Task 9A and Task 9B-1 implemented and reviewed; Task 9B-2 pending
 **Date:** 2026-08-03
 **Scope:** Main raster pass chain; frame/view data ownership and RenderGraph
 recording lifetime
@@ -116,13 +116,23 @@ enable async compute.
 
 ### 9B - Remaining scene pass adapters
 
-**Implementation status:** Pending.
+**Implementation status:** Raster Shadow complete; remaining slices pending.
 
-- Migrate Transparent, Shadow, ObjectVelocity, and Skybox scene/list/target
-  inputs to typed graph pass data.
+- 9B-1 migrates raster Shadow to an independent graph-owned recorder. Setup
+  publishes a producer-neutral `DirectionalShadowRecordOutput` with the current
+  recording identity; Opaque consumes only that result, and published stats are
+  identity-gated. Disabled, unsupported, invalid, inverse-executed two-graph,
+  caller-mutation, and stale-generation paths fail closed.
+- 9B-2 migrates RayTracedShadow per-recording handles, output, and stats. Its
+  persistent temporal-history owner must use reservation, submission commit,
+  and unsubmitted rollback; imported history resources require explicit
+  submission retention. Merely moving the mask handle is insufficient.
+- 9B-3 through 9B-5 migrate ObjectVelocity, Transparent, and Skybox
+  scene/list/target/configuration inputs to typed graph pass data.
 - Resolve targets from declared graph handles instead of post-build raw view
   injection.
-- Remove `RenderFrameResourceBinder` and the late `UpdatePassResources` phase.
+- 9B-6 removes `RenderFrameResourceBinder`, the late `UpdatePassResources`
+  phase, the direct `ExecutePasses` bypass, and obsolete frame-state setters.
 - Preserve long-lived pass configuration and feature enablement.
 - Add resize, rejected-frame, empty-list, multi-view, and target-replacement
   fixtures for the migrated passes.
