@@ -432,10 +432,36 @@ namespace RVX::Tests
         EXPECT_NE(poolHeader.find("TransientTextureLease"), std::string::npos);
         EXPECT_NE(poolHeader.find("RHITextureAccessSnapshot accessSnapshot"), std::string::npos);
         EXPECT_NE(poolSource.find("pooled.accessSnapshot = finalAccess"), std::string::npos);
-        EXPECT_NE(sceneRenderer.find("owner->GetAccessSnapshots()"), std::string::npos);
+        const size_t addCullingPassPos = sceneRenderer.find("void SceneRenderer::AddGPUDrivenCullingPass(");
+        const size_t commitSnapshotsPos =
+            sceneRenderer.find("void SceneRenderer::CommitGPUDrivenAccessSnapshots()");
+        const size_t buildRenderGraphPos =
+            sceneRenderer.find("void SceneRenderer::BuildRenderGraph()");
+        ASSERT_NE(addCullingPassPos, std::string::npos);
+        ASSERT_NE(commitSnapshotsPos, std::string::npos);
+        ASSERT_NE(buildRenderGraphPos, std::string::npos);
+        ASSERT_LT(addCullingPassPos, commitSnapshotsPos);
+        ASSERT_LT(commitSnapshotsPos, buildRenderGraphPos);
+        EXPECT_NE(sceneRenderer.find("recordedState->GetAccessSnapshots()"), std::string::npos);
+        EXPECT_NE(sceneRenderer.find("recordedState->CommitAccessSnapshots("), std::string::npos);
         EXPECT_NE(sceneRenderer.find("m_depthGPUCullingGraphHandles"), std::string::npos);
         EXPECT_NE(sceneRenderer.find("m_opaqueGPUCullingGraphHandles"), std::string::npos);
         EXPECT_NE(sceneRenderer.find("CommitGPUDrivenAccessSnapshots()"), std::string::npos);
+
+        const std::string addPassBlock =
+            sceneRenderer.substr(addCullingPassPos,
+                                 commitSnapshotsPos - addCullingPassPos);
+        const std::string commitBlock =
+            sceneRenderer.substr(commitSnapshotsPos,
+                                 buildRenderGraphPos - commitSnapshotsPos);
+        EXPECT_EQ(addPassBlock.find("owner->GetAccessSnapshots()"),
+                  std::string::npos);
+        EXPECT_EQ(addPassBlock.find("owner->CommitAccessSnapshots("),
+                  std::string::npos);
+        EXPECT_EQ(commitBlock.find("owner->GetAccessSnapshots()"),
+                  std::string::npos);
+        EXPECT_EQ(commitBlock.find("owner->CommitAccessSnapshots("),
+                  std::string::npos);
         EXPECT_EQ(sceneRenderer.find(
                       "ImportBuffer(visibilityBuffer, RHIResourceState::Common)"),
                   std::string::npos);

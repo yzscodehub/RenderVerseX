@@ -13,6 +13,7 @@
 #include "RenderContracts/RenderIdentity.h"
 #include "RHI/RHI.h"
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 namespace RVX
@@ -22,6 +23,7 @@ namespace RVX
     class RenderRetirementQueue;
     class RenderScene;
     class RenderSubmissionResourceBatch;
+    class GPUCullingRecordedState;
     struct GPUCompletionToken;
     struct RenderDrawItem;
     struct RenderDrawPacket;
@@ -160,6 +162,24 @@ namespace RVX
         uint32 executedDrawCount = 0;
     };
 
+    /** @brief Immutable graph-recording identity for one sealed culling slice. */
+    struct GPUCullingRecordingIdentity
+    {
+        uint64 graphIdentity = 0;
+        uint64 graphRecordingGeneration = 0;
+        uint64 frameSequence = 0;
+        uint32 viewOrdinal = 0;
+        uint64 recordEpoch = 0;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return graphIdentity != 0 && graphRecordingGeneration != 0 &&
+                   frameSequence != 0 && recordEpoch != 0;
+        }
+
+        bool operator==(const GPUCullingRecordingIdentity&) const = default;
+    };
+
     /**
      * @brief GPU-driven culling system
      *
@@ -224,6 +244,17 @@ namespace RVX
             return m_occlusionRequested;
         }
         [[nodiscard]] bool IsOcclusionAvailable() const { return false; }
+
+        /**
+         * @brief Seal the active frame-slot inputs for one RenderGraph recording.
+         *
+         * The returned state owns independent GPU buffers, copied CPU inputs,
+         * draw groups, and the pipeline references needed by graph callbacks.
+         * Later mutations of this source culler therefore cannot alter the
+         * already-recorded cull or indirect-draw commands.
+         */
+        [[nodiscard]] std::shared_ptr<GPUCullingRecordedState> SealForGraph(
+            const GPUCullingRecordingIdentity& identity) const;
 
         // =========================================================================
         // Instance Management
@@ -447,6 +478,7 @@ namespace RVX
         void SetStatisticsEnabled(bool enabled) { m_statsEnabled = enabled; }
 
     private:
+        friend class GPUCullingRecordedState;
         struct GPUCullingFrameInputs
         {
             RHIBufferRef instanceBuffer;
@@ -459,6 +491,8 @@ namespace RVX
         void CreateResources();
         void CreatePipelineResources();
         void QueueFrameInputRetirements();
+        [[nodiscard]] bool RetainSealedSubmissionResources(
+            RenderSubmissionResourceBatch& batch);
         [[nodiscard]] GPUCullingFrameInputs* GetActiveFrameInputs();
         [[nodiscard]] const GPUCullingFrameInputs* GetActiveFrameInputs() const;
         void RefreshActiveInputAccessSnapshots();
@@ -517,6 +551,50 @@ namespace RVX
         Statistics m_stats;
         bool m_statsEnabled = false;
         RHIBufferRef m_statsBuffer;
+    };
+
+    /** @brief Strongly-owned GPU culling state captured for one graph recording. */
+    class GPUCullingRecordedState
+    {
+    public:
+        [[nodiscard]] bool IsValid() const noexcept { return m_identity.IsValid(); }
+        [[nodiscard]] bool Matches(const GPUCullingRecordingIdentity& identity) const noexcept
+        {
+            return m_identity == identity;
+        }
+        [[nodiscard]] uint32 GetSourceFrameSlot() const noexcept
+        {
+            return m_sourceFrameSlot;
+        }
+        [[nodiscard]] const GPUCulling& GetCulling() const noexcept { return m_culling; }
+        [[nodiscard]] GPUCulling& GetCulling() noexcept { return m_culling; }
+        [[nodiscard]] const GPUCullingAccessSnapshots& GetAccessSnapshots() const
+        {
+            return m_culling.GetAccessSnapshots();
+        }
+        void CommitAccessSnapshots(const GPUCullingAccessSnapshots& snapshots)
+        {
+            m_culling.CommitAccessSnapshots(snapshots);
+        }
+        void Cull(RHICommandContext& ctx,
+                  const Mat4& viewMatrix,
+                  const Mat4& projectionMatrix,
+                  RHITexture* hiZTexture = nullptr)
+        {
+            m_culling.Cull(ctx, viewMatrix, projectionMatrix, hiZTexture);
+        }
+        [[nodiscard]] bool RetainSubmissionResources(
+            RenderSubmissionResourceBatch& batch)
+        {
+            return m_culling.RetainSealedSubmissionResources(batch);
+        }
+
+    private:
+        friend class GPUCulling;
+
+        GPUCullingRecordingIdentity m_identity{};
+        uint32 m_sourceFrameSlot = 0;
+        GPUCulling m_culling{};
     };
 
     /**

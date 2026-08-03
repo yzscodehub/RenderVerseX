@@ -4,25 +4,26 @@
  */
 
 #include "Render/Passes/OpaquePass.h"
-#include "Render/Passes/DirectDrawPacketBatch.h"
-#include "Render/Passes/RenderPassClearValues.h"
 #include "Core/Log.h"
 #include "Render/GPUDriven/GPUCulling.h"
-#include "Resources/RenderResourceResolver.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
+#include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/Passes/RayTracedShadowPass.h"
+#include "Render/Passes/RenderPassClearValues.h"
 #include "Render/Passes/ShadowPass.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resources/RenderResourceResolver.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace RVX
@@ -160,6 +161,86 @@ namespace
         return true;
     }
 
+    const RenderPassExecutionPlan* FindPassExecutionPlan(
+        const RenderFrameExecutionPlan* plan,
+        RenderPassKind pass)
+    {
+        if (plan == nullptr)
+        {
+            return nullptr;
+        }
+        for (const RenderPassExecutionPlan& candidate : plan->passes)
+        {
+            if (candidate.pass == pass)
+            {
+                return &candidate;
+            }
+        }
+        return nullptr;
+    }
+
+    bool IsGPUDrivenPassPlanned(const RenderFrameExecutionPlan* plan,
+                                RenderPassKind pass)
+    {
+        const RenderPassExecutionPlan* passPlan =
+            FindPassExecutionPlan(plan, pass);
+        return passPlan != nullptr &&
+               passPlan->partition.gpuDrivenPacketCount != 0;
+    }
+
+    void PublishOpaqueContextFailure(const RenderPassExecutionData& execution,
+                                     OpaquePassDrawStats& stats)
+    {
+        stats = {};
+        const RenderFrameExecutionPlan* executionPlan =
+            execution.GetExecutionPlan();
+        stats.planRequested = executionPlan != nullptr;
+        stats.failureReason = RenderPolicyReason::InconsistentFacts;
+        RenderFrameExecutionReport* executionReport =
+            execution.GetExecutionReport();
+        if (executionReport == nullptr)
+        {
+            return;
+        }
+        RenderFrameExecutionReport& frameReport = *executionReport;
+        frameReport.status = RenderExecutionStatus::Failed;
+        if (frameReport.frameSequence == 0)
+        {
+            frameReport.frameSequence = execution.identity.frameSequence;
+        }
+
+        const RenderPassExecutionPlan* passPlan = FindPassExecutionPlan(
+            executionPlan, RenderPassKind::Opaque);
+        const bool gpuLanePlanned = passPlan != nullptr &&
+            passPlan->partition.gpuDrivenPacketCount != 0;
+        const bool directLanePlanned = passPlan != nullptr &&
+            passPlan->partition.directPacketCount != 0;
+        const auto publishLaneFailure = [reason = stats.failureReason](
+                                            RenderPassLaneExecutionReport& lane,
+                                            bool planned)
+        {
+            lane.status = planned
+                ? RenderExecutionStatus::Failed
+                : RenderExecutionStatus::NotAttempted;
+            lane.reason = planned ? reason : RenderPolicyReason::None;
+            lane.executedCountsAvailable = planned;
+            lane.executedPacketCount = 0;
+            lane.executedDrawCount = 0;
+        };
+        for (RenderPassExecutionReport& report : frameReport.passes)
+        {
+            if (report.pass != RenderPassKind::Opaque)
+            {
+                continue;
+            }
+            report.status = RenderExecutionStatus::Failed;
+            report.reason = stats.failureReason;
+            publishLaneFailure(report.gpuDrivenLane, gpuLanePlanned);
+            publishLaneFailure(report.directLane, directLanePlanned);
+            break;
+        }
+    }
+
 } // namespace
 
 struct OpaquePass::PlannedOpaqueDraw
@@ -251,11 +332,208 @@ void OpaquePass::SetRenderTargets(RHITextureView* colorTargetView, RHITextureVie
     m_depthTargetView = depthTargetView;
 }
 
+void OpaquePass::AddToGraph(RenderGraph& graph, const ViewData& view)
+{
+    struct LegacyPassData
+    {
+        OpaquePass* pass = nullptr;
+        ViewData view{};
+    };
+
+    const ViewData capturedView = view;
+    graph.AddPass<LegacyPassData>(
+        GetName(),
+        GetPassType(),
+        [this, capturedView](RenderGraphBuilder& builder, LegacyPassData& data)
+        {
+            data.pass = this;
+            data.view = capturedView;
+            data.pass->Setup(builder, data.view);
+        },
+        [](const LegacyPassData& data, RHICommandContext& ctx)
+        {
+            data.pass->Execute(ctx, data.view);
+        });
+}
+
+void OpaquePass::AddToGraph(
+    RenderGraph& graph,
+    const RenderPassRecordContext& context)
+{
+    struct GraphPassData
+    {
+        RenderPassExecutionData execution{};
+        RenderPassGPUDrivenInputs gpuInputs{};
+        std::unique_ptr<OpaquePass> recorder;
+        bool contextValid = false;
+    };
+
+    const RenderPassExecutionData execution =
+        MakeRenderPassExecutionData(context);
+    const RenderFrameExecutionPlan* executionPlan =
+        execution.GetExecutionPlan();
+    const bool hasPlan = executionPlan != nullptr;
+    const bool gpuPlanned = IsGPUDrivenPassPlanned(
+        executionPlan, RenderPassKind::Opaque);
+    const RenderPassGPUDrivenInputs gpuInputs = context.opaqueGPUDriven;
+    const GPUCullingRecordingIdentity gpuRecordingIdentity{
+        execution.identity.graphIdentity,
+        execution.identity.graphRecordingGeneration,
+        execution.identity.frameSequence,
+        execution.identity.viewOrdinal,
+        execution.identity.recordEpoch};
+    const bool contextValid = !context.legacyAdapter &&
+        context.MatchesTargetGraph(graph) &&
+        context.IsFrameIdentityValid() &&
+        execution.MatchesTargetGraph(graph) &&
+        execution.IsFrameIdentityValid() &&
+        execution.frameSnapshot != nullptr && execution.results != nullptr &&
+        execution.directionalShadow.IsCompatibleWith(execution.identity) &&
+        execution.rayTracedShadow.IsCompatibleWith(execution.identity) &&
+        (!gpuPlanned || (gpuInputs.IsCompatibleWith(execution.identity) &&
+                         gpuInputs.recordedState->Matches(gpuRecordingIdentity)));
+
+    const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
+    PipelineCache* const pipelineCache = m_pipelineCache;
+    MaterialSystem* const materialSystem = m_materialSystem;
+    LightManager* const lightManager = m_lightManager;
+    ClusteredLighting* const clusteredLighting = m_clusteredLighting;
+    const RenderScene* const renderScene = execution.frameSnapshot
+        ? &execution.frameSnapshot->scene : nullptr;
+    const GPUCulling* const gpuCulling = hasPlan
+        ? (gpuInputs.recordedState != nullptr
+            ? &gpuInputs.recordedState->GetCulling() : nullptr)
+        : m_gpuCulling;
+    const std::vector<RenderDrawItem>* const opaqueDrawItems =
+        execution.frameSnapshot ? &execution.frameSnapshot->opaqueDrawItems : nullptr;
+    const std::vector<RenderDrawItem>* const maskedDrawItems =
+        execution.frameSnapshot ? &execution.frameSnapshot->maskedDrawItems : nullptr;
+    RHITextureView* const standaloneColorTarget = m_colorTargetView;
+    RHITextureView* const standaloneDepthTarget = m_depthTargetView;
+    const bool gpuEnabled = hasPlan ? gpuPlanned : m_gpuDrivenOpaqueIndirectEnabled;
+    const RGBufferHandle instanceHandle = hasPlan
+        ? gpuInputs.instances : m_gpuDrivenInstanceHandle;
+    const RGBufferHandle instanceIndexHandle = hasPlan
+        ? gpuInputs.instanceIndices : m_gpuDrivenInstanceIndexHandle;
+    const RGBufferHandle indirectHandle = hasPlan
+        ? gpuInputs.indirectDraws : m_gpuDrivenIndirectHandle;
+    const RGBufferHandle drawCountHandle = hasPlan
+        ? gpuInputs.drawCount : m_gpuDrivenDrawCountHandle;
+    const OpaqueDirectionalShadowRecordInputs directionalShadow =
+        execution.directionalShadow;
+    const OpaqueRayTracedShadowRecordInputs rayTracedShadow =
+        execution.rayTracedShadow;
+    const std::shared_ptr<RenderPassRecordResults> results = execution.results;
+
+    graph.AddPass<GraphPassData>(
+        GetName(),
+        GetPassType(),
+        [execution,
+         gpuInputs,
+         contextValid,
+         resourceRegistry,
+         pipelineCache,
+         materialSystem,
+         lightManager,
+         clusteredLighting,
+         renderScene,
+         directionalShadow,
+         rayTracedShadow,
+         gpuCulling,
+         opaqueDrawItems,
+         maskedDrawItems,
+         standaloneColorTarget,
+         standaloneDepthTarget,
+         gpuEnabled,
+         instanceHandle,
+         instanceIndexHandle,
+         indirectHandle,
+         drawCountHandle,
+         results](RenderGraphBuilder& builder, GraphPassData& data)
+        {
+            data.execution = execution;
+            data.gpuInputs = gpuInputs;
+            data.contextValid = contextValid;
+            if (!data.contextValid)
+            {
+                PublishOpaqueContextFailure(data.execution, results->opaqueStats);
+                results->opaqueShadowStats = {};
+                return;
+            }
+
+            data.recorder = std::make_unique<OpaquePass>();
+            data.recorder->SetResources(
+                pipelineCache,
+                materialSystem,
+                lightManager,
+                clusteredLighting);
+            data.recorder->SetResourceRegistry(resourceRegistry);
+            data.recorder->SetRenderScene(renderScene, opaqueDrawItems, maskedDrawItems);
+            data.recorder->SetDirectionalShadowRecordInputs(directionalShadow);
+            data.recorder->SetRayTracedShadowRecordInputs(rayTracedShadow);
+            data.recorder->SetGPUDrivenCullingSource(gpuCulling);
+            data.recorder->SetGPUDrivenRenderGraphResources(
+                instanceHandle, instanceIndexHandle, indirectHandle, drawCountHandle);
+            data.recorder->SetGPUDrivenOpaqueIndirectEnabled(gpuEnabled);
+            data.recorder->SetRenderTargets(
+                standaloneColorTarget,
+                standaloneDepthTarget);
+            data.recorder->Setup(builder, data.execution.view);
+        },
+        [results](const GraphPassData& data, RHICommandContext& ctx)
+        {
+            if (!data.contextValid || !data.recorder)
+            {
+                PublishOpaqueContextFailure(data.execution, results->opaqueStats);
+                results->opaqueShadowStats = {};
+                return;
+            }
+            data.recorder->Execute(ctx, data.execution.view);
+            results->opaqueStats = data.recorder->GetDrawStats();
+            results->opaqueShadowStats = data.recorder->GetShadowStats();
+        });
+}
+
 void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
     m_directionalShadowReadHandle = {};
     m_rayTracedShadowMaskReadHandle = {};
     m_shadowStats = {};
+
+    // Legacy callers may still provide persistent pass sources. Snapshot them
+    // while declaring graph dependencies so Execute only consumes value-owned
+    // record inputs, exactly like the SceneRenderer graph path.
+    if (!m_directionalShadowInputs.identity.IsValid() && m_shadowPass != nullptr)
+    {
+        const ShadowPassConfig& config = m_shadowPass->GetConfig();
+        m_directionalShadowInputs.enabled = m_shadowPass->IsEnabled();
+        m_directionalShadowInputs.shadowMap =
+            m_shadowPass->GetShadowMapTextureHandle();
+        m_directionalShadowInputs.shadowMapSize = config.shadowMapSize;
+        m_directionalShadowInputs.cascadeBlendRatio = config.cascadeBlendRatio;
+        m_directionalShadowInputs.shadowBias = config.shadowBias;
+        m_directionalShadowInputs.normalBias = config.normalBias;
+        m_directionalShadowInputs.filterRadiusTexels = config.filterRadiusTexels;
+        m_directionalShadowInputs.cascadeViewProjections.clear();
+        m_directionalShadowInputs.cascadeSplitDepths.clear();
+        for (const ShadowCascade& cascade : m_shadowPass->GetCascades())
+        {
+            m_directionalShadowInputs.cascadeViewProjections.push_back(
+                cascade.viewProjection);
+            m_directionalShadowInputs.cascadeSplitDepths.push_back(
+                cascade.splitDepth);
+        }
+    }
+    if (!m_rayTracedShadowInputs.identity.IsValid() &&
+        m_rayTracedShadowPass != nullptr)
+    {
+        const ShadowPassConfig& config = m_rayTracedShadowPass->GetConfig();
+        m_rayTracedShadowInputs.enabled = m_rayTracedShadowPass->IsEnabled();
+        m_rayTracedShadowInputs.shadowMask =
+            m_rayTracedShadowPass->GetShadowMaskHandle();
+        m_rayTracedShadowInputs.filterRadiusTexels = config.filterRadiusTexels;
+        m_rayTracedShadowInputs.mode = config.rayTracedShadowMode;
+    }
 
     const auto accumulateShadowReceivers = [this](const std::vector<RenderDrawItem>* drawItems)
     {
@@ -299,9 +577,9 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         m_depthTargetHandle = view.depthTarget;
     }
 
-    if (m_shadowPass && m_shadowPass->IsEnabled())
+    if (m_directionalShadowInputs.enabled)
     {
-        RGTextureHandle shadowMap = m_shadowPass->GetShadowMapTextureHandle();
+        RGTextureHandle shadowMap = m_directionalShadowInputs.shadowMap;
         if (shadowMap.IsValid())
         {
             shadowMap.hasSubresourceRange = true;
@@ -312,9 +590,9 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         }
     }
 
-    if (m_rayTracedShadowPass && m_rayTracedShadowPass->IsEnabled())
+    if (m_rayTracedShadowInputs.enabled)
     {
-        RGTextureHandle shadowMask = m_rayTracedShadowPass->GetShadowMaskHandle();
+        RGTextureHandle shadowMask = m_rayTracedShadowInputs.shadowMask;
         if (shadowMask.IsValid())
         {
             m_rayTracedShadowMaskReadHandle = builder.Read(shadowMask, RHIShaderStage::Pixel);
@@ -1034,9 +1312,10 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     drawView.rayTracedShadowEnabled = 0;
     drawView.rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
     DirectionalShadowFrameResources shadowResources;
-    if (m_shadowPass && m_directionalShadowReadHandle.IsValid() &&
+    if (m_directionalShadowInputs.enabled &&
+        m_directionalShadowReadHandle.IsValid() &&
         view.renderGraph && view.viewCache &&
-        !m_shadowPass->GetCascades().empty())
+        !m_directionalShadowInputs.cascadeViewProjections.empty())
     {
         RHITexture* shadowTexture = view.renderGraph->GetTexture(m_directionalShadowReadHandle);
         RHITextureViewDesc shadowViewDesc;
@@ -1055,9 +1334,8 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 
         RHITextureView* shadowView = shadowTexture ? view.viewCache->GetTextureView(shadowTexture, shadowViewDesc)
                                                    : nullptr;
-        const ShadowPassConfig& shadowConfig = m_shadowPass->GetConfig();
-        const auto& cascades = m_shadowPass->GetCascades();
-        const uint32 cascadeCount = std::min(static_cast<uint32>(cascades.size()),
+        const uint32 cascadeCount = std::min(
+            static_cast<uint32>(m_directionalShadowInputs.cascadeViewProjections.size()),
                                              RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
         const float nearClip = std::max(0.001f, view.nearPlane);
         const float farClip = std::max(nearClip + 1.0f, view.farPlane);
@@ -1068,10 +1346,15 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         drawView.directionalShadowCascadeFadeDistances = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
         for (uint32 i = 0; i < cascadeCount; ++i)
         {
-            drawView.directionalShadowViewProjections[i] = cascades[i].viewProjection;
-            drawView.directionalShadowCascadeSplits[i] = nearClip + cascades[i].splitDepth * clipRange;
+            drawView.directionalShadowViewProjections[i] =
+                m_directionalShadowInputs.cascadeViewProjections[i];
+            const float splitDepth = i < m_directionalShadowInputs.cascadeSplitDepths.size()
+                ? m_directionalShadowInputs.cascadeSplitDepths[i] : 0.0f;
+            drawView.directionalShadowCascadeSplits[i] =
+                nearClip + splitDepth * clipRange;
         }
-        const float blendRatio = SanitizeUnitRatio(shadowConfig.cascadeBlendRatio);
+        const float blendRatio = SanitizeUnitRatio(
+            m_directionalShadowInputs.cascadeBlendRatio);
         for (uint32 i = 0; i + 1 < cascadeCount; ++i)
         {
             const float splitDistance = drawView.directionalShadowCascadeSplits[i];
@@ -1079,14 +1362,17 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             const float cascadeSpan = std::max(0.0f, splitDistance - previousSplit);
             drawView.directionalShadowCascadeFadeDistances[i] = std::min(cascadeSpan, cascadeSpan * blendRatio);
         }
-        drawView.directionalShadowViewProjection = cascadeCount > 0 ? cascades[0].viewProjection : Mat4Identity();
-        drawView.directionalShadowDepthBias = shadowConfig.shadowBias;
+        drawView.directionalShadowViewProjection = cascadeCount > 0
+            ? m_directionalShadowInputs.cascadeViewProjections[0]
+            : Mat4Identity();
+        drawView.directionalShadowDepthBias = m_directionalShadowInputs.shadowBias;
         drawView.directionalShadowStrength = 1.0f;
-        drawView.directionalShadowInvMapSize = shadowConfig.shadowMapSize > 0
-                                                   ? 1.0f / static_cast<float>(shadowConfig.shadowMapSize)
+        drawView.directionalShadowInvMapSize = m_directionalShadowInputs.shadowMapSize > 0
+                                                   ? 1.0f / static_cast<float>(m_directionalShadowInputs.shadowMapSize)
                                                    : 0.0f;
-        drawView.directionalShadowFilterRadiusTexels = shadowConfig.filterRadiusTexels;
-        drawView.directionalShadowNormalBias = shadowConfig.normalBias;
+        drawView.directionalShadowFilterRadiusTexels =
+            m_directionalShadowInputs.filterRadiusTexels;
+        drawView.directionalShadowNormalBias = m_directionalShadowInputs.normalBias;
         shadowResources.enabled = true;
         shadowResources.shadowMapView = shadowView;
     }
@@ -1142,12 +1428,12 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     const RayTracedShadowFrameBindingResult rayTracedShadowBinding =
         m_pipelineCache->UpdateRayTracedShadowFrameResources(rayTracedShadowResources);
     drawView.rayTracedShadowEnabled = rayTracedShadowBinding.shadowMaskSamplingEnabled ? 1 : 0;
-    if (rayTracedShadowBinding.shadowMaskSamplingEnabled && m_rayTracedShadowPass)
+    if (rayTracedShadowBinding.shadowMaskSamplingEnabled &&
+        m_rayTracedShadowInputs.enabled)
     {
-        const ShadowPassConfig& rayTracedShadowConfig = m_rayTracedShadowPass->GetConfig();
         drawView.rayTracedShadowFilterRadiusPixels =
-            std::max(0.0f, rayTracedShadowConfig.filterRadiusTexels);
-        drawView.rayTracedShadowMode = rayTracedShadowConfig.rayTracedShadowMode;
+            std::max(0.0f, m_rayTracedShadowInputs.filterRadiusTexels);
+        drawView.rayTracedShadowMode = m_rayTracedShadowInputs.mode;
         if (drawView.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster)
         {
             ClearDirectionalShadowViewData(drawView);

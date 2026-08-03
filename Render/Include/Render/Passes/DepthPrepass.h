@@ -14,6 +14,7 @@
 #include "Render/Renderer/RenderDrawItem.h"
 
 #include <span>
+#include <memory>
 #include <vector>
 
 namespace RVX
@@ -22,26 +23,6 @@ namespace RVX
     class GPUCulling;
     class RenderScene;
     class MaterialSystem;
-
-    struct DepthPrepassDrawStats
-    {
-        uint32 directDrawCount = 0;
-        uint32 gpuDrivenIndirectBatchCount = 0;
-        uint32 gpuDrivenIndirectSubmittedDrawUpperBound = 0;
-        bool gpuDrivenIndirectExecutedDrawCountAvailable = false;
-        uint32 gpuDrivenIndirectDrawCount = 0;
-        bool gpuDrivenRequested = false;
-        bool gpuDrivenEligible = false;
-        bool planRequested = false;
-        bool planValidated = false;
-        bool directPacketPathUsed = false;
-        uint32 plannedPacketCount = 0;
-        uint32 compiledPacketCount = 0;
-        uint32 executedPacketCount = 0;
-        uint32 skippedMissingUVCount = 0;
-        uint32 skippedMaterialBindingCount = 0;
-        RenderPolicyReason failureReason = RenderPolicyReason::ConservativeDefault;
-    };
 
     /**
      * @brief Depth prepass for early-Z optimization
@@ -73,6 +54,9 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
 
         // =========================================================================
         // Configuration
@@ -104,16 +88,28 @@ namespace RVX
          */
         void SetGPUDrivenCullingSource(const GPUCulling* gpuCulling);
 
-        /**
-         * @brief Set RenderGraph handles for GPU-driven culling outputs
-         */
+        /** @brief Standalone compatibility injection for legacy validation. */
         void SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
                                               RGBufferHandle instanceIndexBuffer,
                                               RGBufferHandle indirectDrawBuffer,
                                               RGBufferHandle drawCountBuffer);
 
-        const DepthPrepassDrawStats& GetDrawStats() const { return m_drawStats; }
+        const DepthPrepassDrawStats& GetDrawStats() const
+        {
+            return m_publishedRecordResults
+                ? m_publishedRecordResults->depthStats : m_drawStats;
+        }
+        void PublishRecordResults(
+            const std::shared_ptr<RenderPassRecordResults>& results,
+            const RenderPassRecordIdentity& expectedIdentity)
+        {
+            if (results != nullptr && results->identity == expectedIdentity)
+            {
+                m_publishedRecordResults = results;
+            }
+        }
 
+        /** @brief Standalone compatibility switch; SceneRenderer uses the plan. */
         void SetGPUDrivenDepthIndirectEnabled(bool enabled) { m_gpuDrivenDepthIndirectEnabled = enabled; }
 
         /**
@@ -166,6 +162,7 @@ namespace RVX
         RGBufferHandle m_gpuDrivenIndirectHandle;
         RGBufferHandle m_gpuDrivenDrawCountHandle;
         DepthPrepassDrawStats m_drawStats;
+        std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
         // Standalone, no-plan GPU submission is a compatibility path only.
         // SceneRenderer opts in explicitly after it has published frame policy.
         bool m_gpuDrivenDepthIndirectEnabled = false;

@@ -3,6 +3,7 @@
 #include "Core/Log.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <sstream>
 
@@ -10,6 +11,35 @@ namespace RVX
 {
     namespace
     {
+        std::atomic<uint64> s_nextRenderGraphIdentity{1};
+
+        uint64 AllocateRenderGraphIdentity()
+        {
+            uint64 identity = s_nextRenderGraphIdentity.fetch_add(1, std::memory_order_relaxed);
+            while (identity == 0)
+            {
+                identity = s_nextRenderGraphIdentity.fetch_add(1, std::memory_order_relaxed);
+            }
+            return identity;
+        }
+
+        uint64 AdvanceRecordingGeneration(uint64 generation)
+        {
+            ++generation;
+            return generation == 0 ? 1 : generation;
+        }
+
+        bool HasCurrentHandleProvenance(uint64 graphIdentity,
+                                        uint64 recordingGeneration,
+                                        uint64 expectedGraphIdentity,
+                                        uint64 expectedRecordingGeneration)
+        {
+            return graphIdentity != 0 &&
+                recordingGeneration != 0 &&
+                graphIdentity == expectedGraphIdentity &&
+                recordingGeneration == expectedRecordingGeneration;
+        }
+
         using Diagnostics::JsonBool;
         using Diagnostics::JsonString;
 
@@ -478,6 +508,9 @@ namespace RVX
 
     class RenderGraph::Impl : public RenderGraphImpl
     {
+    public:
+        uint64 graphIdentity = AllocateRenderGraphIdentity();
+        uint64 recordingGeneration = 1;
     };
 
     std::vector<RenderGraph::PassDiagnostic> BuildRenderGraphPassDiagnostics(const RenderGraphImpl& graph)
@@ -531,6 +564,38 @@ namespace RVX
         Pass* pass = nullptr;
         IRHIDevice* device = nullptr;
         uint32* compatibilityStateProjectionCount = nullptr;
+        uint64 graphIdentity = 0;
+        uint64 recordingGeneration = 0;
+
+        bool Owns(RGTextureHandle texture) const
+        {
+            return HasCurrentHandleProvenance(texture.graphIdentity,
+                                              texture.recordingGeneration,
+                                              graphIdentity,
+                                              recordingGeneration);
+        }
+
+        bool Owns(RGBufferHandle buffer) const
+        {
+            return HasCurrentHandleProvenance(buffer.graphIdentity,
+                                              buffer.recordingGeneration,
+                                              graphIdentity,
+                                              recordingGeneration);
+        }
+
+        void RecordInvalidUsage(ResourceType type, RGAccessType access) const
+        {
+            if (pass == nullptr)
+            {
+                return;
+            }
+
+            ResourceUsage usage;
+            usage.type = type;
+            usage.index = RVX_INVALID_INDEX;
+            usage.access = access;
+            pass->usages.push_back(usage);
+        }
     };
 
     RenderGraph::RenderGraph() : m_impl(std::make_unique<Impl>()) {}
@@ -549,6 +614,16 @@ namespace RVX
         m_impl->transientResourcePool = pool;
     }
 
+    uint64 RenderGraph::GetGraphIdentity() const
+    {
+        return m_impl->graphIdentity;
+    }
+
+    uint64 RenderGraph::GetRecordingGeneration() const
+    {
+        return m_impl->recordingGeneration;
+    }
+
     RGTextureHandle RenderGraph::CreateTexture(const RHITextureDesc& desc)
     {
         TextureResource resource;
@@ -563,7 +638,12 @@ namespace RVX
         resource.currentAccessSnapshot = resource.initialAccessSnapshot;
         resource.imported = false;
         m_impl->textures.push_back(std::move(resource));
-        return RGTextureHandle{static_cast<uint32>(m_impl->textures.size() - 1)};
+        return RGTextureHandle{
+            static_cast<uint32>(m_impl->textures.size() - 1),
+            false,
+            RHISubresourceRange::All(),
+            m_impl->graphIdentity,
+            m_impl->recordingGeneration};
     }
 
     RGBufferHandle RenderGraph::CreateBuffer(const RHIBufferDesc& desc)
@@ -580,7 +660,13 @@ namespace RVX
         resource.currentAccessSnapshot = resource.initialAccessSnapshot;
         resource.imported = false;
         m_impl->buffers.push_back(std::move(resource));
-        return RGBufferHandle{static_cast<uint32>(m_impl->buffers.size() - 1)};
+        return RGBufferHandle{
+            static_cast<uint32>(m_impl->buffers.size() - 1),
+            false,
+            0,
+            RVX_WHOLE_SIZE,
+            m_impl->graphIdentity,
+            m_impl->recordingGeneration};
     }
 
     RGTextureHandle RenderGraph::ImportTexture(RHITexture* texture, RHIResourceState initialState)
@@ -616,7 +702,12 @@ namespace RVX
         resource.currentState = resource.initialState;
         resource.imported = true;
         m_impl->textures.push_back(std::move(resource));
-        return RGTextureHandle{static_cast<uint32>(m_impl->textures.size() - 1)};
+        return RGTextureHandle{
+            static_cast<uint32>(m_impl->textures.size() - 1),
+            false,
+            RHISubresourceRange::All(),
+            m_impl->graphIdentity,
+            m_impl->recordingGeneration};
     }
 
     RGBufferHandle RenderGraph::ImportBuffer(RHIBuffer* buffer, RHIResourceState initialState)
@@ -645,7 +736,13 @@ namespace RVX
         resource.currentState = resource.initialState;
         resource.imported = true;
         m_impl->buffers.push_back(std::move(resource));
-        return RGBufferHandle{static_cast<uint32>(m_impl->buffers.size() - 1)};
+        return RGBufferHandle{
+            static_cast<uint32>(m_impl->buffers.size() - 1),
+            false,
+            0,
+            RVX_WHOLE_SIZE,
+            m_impl->graphIdentity,
+            m_impl->recordingGeneration};
     }
 
     void RenderGraph::SetExportState(RGTextureHandle texture, RHIResourceState finalState)
@@ -664,7 +761,12 @@ namespace RVX
         RGTextureHandle texture,
         const RHIAccessSnapshot& finalAccess)
     {
-        if (!texture.IsValid() || texture.index >= m_impl->textures.size())
+        if (!texture.IsValid() ||
+            !HasCurrentHandleProvenance(texture.graphIdentity,
+                                        texture.recordingGeneration,
+                                        m_impl->graphIdentity,
+                                        m_impl->recordingGeneration) ||
+            texture.index >= m_impl->textures.size())
             return;
         auto& resource = m_impl->textures[texture.index];
         resource.exportAccess = finalAccess;
@@ -675,7 +777,12 @@ namespace RVX
         RGBufferHandle buffer,
         const RHIAccessSnapshot& finalAccess)
     {
-        if (!buffer.IsValid() || buffer.index >= m_impl->buffers.size())
+        if (!buffer.IsValid() ||
+            !HasCurrentHandleProvenance(buffer.graphIdentity,
+                                        buffer.recordingGeneration,
+                                        m_impl->graphIdentity,
+                                        m_impl->recordingGeneration) ||
+            buffer.index >= m_impl->buffers.size())
             return;
         auto& resource = m_impl->buffers[buffer.index];
         resource.exportAccess = finalAccess;
@@ -684,7 +791,12 @@ namespace RVX
 
     RHITextureAccessSnapshot RenderGraph::GetRealizedAccess(RGTextureHandle texture) const
     {
-        if (!texture.IsValid() || texture.index >= m_impl->textures.size())
+        if (!texture.IsValid() ||
+            !HasCurrentHandleProvenance(texture.graphIdentity,
+                                        texture.recordingGeneration,
+                                        m_impl->graphIdentity,
+                                        m_impl->recordingGeneration) ||
+            texture.index >= m_impl->textures.size())
             return {};
 
         const auto& resource = m_impl->textures[texture.index];
@@ -722,7 +834,12 @@ namespace RVX
 
     RHIBufferAccessSnapshot RenderGraph::GetRealizedAccess(RGBufferHandle buffer) const
     {
-        if (!buffer.IsValid() || buffer.index >= m_impl->buffers.size())
+        if (!buffer.IsValid() ||
+            !HasCurrentHandleProvenance(buffer.graphIdentity,
+                                        buffer.recordingGeneration,
+                                        m_impl->graphIdentity,
+                                        m_impl->recordingGeneration) ||
+            buffer.index >= m_impl->buffers.size())
             return {};
 
         const auto& resource = m_impl->buffers[buffer.index];
@@ -739,28 +856,48 @@ namespace RVX
 
     RHITexture* RenderGraph::GetTexture(RGTextureHandle handle) const
     {
-        if (!handle.IsValid() || handle.index >= m_impl->textures.size())
+        if (!handle.IsValid() ||
+            !HasCurrentHandleProvenance(handle.graphIdentity,
+                                        handle.recordingGeneration,
+                                        m_impl->graphIdentity,
+                                        m_impl->recordingGeneration) ||
+            handle.index >= m_impl->textures.size())
             return nullptr;
         return m_impl->textures[handle.index].GetTexture();
     }
 
     RHIBuffer* RenderGraph::GetBuffer(RGBufferHandle handle) const
     {
-        if (!handle.IsValid() || handle.index >= m_impl->buffers.size())
+        if (!handle.IsValid() ||
+            !HasCurrentHandleProvenance(handle.graphIdentity,
+                                        handle.recordingGeneration,
+                                        m_impl->graphIdentity,
+                                        m_impl->recordingGeneration) ||
+            handle.index >= m_impl->buffers.size())
             return nullptr;
         return m_impl->buffers[handle.index].GetBuffer();
     }
 
     const RHITextureDesc* RenderGraph::GetTextureDesc(RGTextureHandle handle) const
     {
-        if (!handle.IsValid() || handle.index >= m_impl->textures.size())
+        if (!handle.IsValid() ||
+            !HasCurrentHandleProvenance(handle.graphIdentity,
+                                        handle.recordingGeneration,
+                                        m_impl->graphIdentity,
+                                        m_impl->recordingGeneration) ||
+            handle.index >= m_impl->textures.size())
             return nullptr;
         return &m_impl->textures[handle.index].desc;
     }
 
     const RHIBufferDesc* RenderGraph::GetBufferDesc(RGBufferHandle handle) const
     {
-        if (!handle.IsValid() || handle.index >= m_impl->buffers.size())
+        if (!handle.IsValid() ||
+            !HasCurrentHandleProvenance(handle.graphIdentity,
+                                        handle.recordingGeneration,
+                                        m_impl->graphIdentity,
+                                        m_impl->recordingGeneration) ||
+            handle.index >= m_impl->buffers.size())
             return nullptr;
         return &m_impl->buffers[handle.index].desc;
     }
@@ -783,6 +920,8 @@ namespace RVX
         builderImpl.pass = &pass;
         builderImpl.device = m_impl->device;
         builderImpl.compatibilityStateProjectionCount = &m_impl->compatibilityStateProjectionCount;
+        builderImpl.graphIdentity = m_impl->graphIdentity;
+        builderImpl.recordingGeneration = m_impl->recordingGeneration;
         builder.m_impl = &builderImpl;
         if (setup)
         {
@@ -802,7 +941,12 @@ namespace RVX
                                              RHIShaderStage stages)
     {
         if (!m_impl || !m_impl->pass || !texture.IsValid())
-            return texture;
+            return {};
+        if (!m_impl->Owns(texture))
+        {
+            m_impl->RecordInvalidUsage(ResourceType::Texture, RGAccessType::Read);
+            return {};
+        }
 
         ResourceUsage usage;
         usage.type = ResourceType::Texture;
@@ -828,7 +972,12 @@ namespace RVX
         const RHIAccessSnapshot& access)
     {
         if (!m_impl || !m_impl->pass || !texture.IsValid())
-            return texture;
+            return {};
+        if (!m_impl->Owns(texture))
+        {
+            m_impl->RecordInvalidUsage(ResourceType::Texture, RGAccessType::Read);
+            return {};
+        }
 
         ResourceUsage usage;
         usage.type = ResourceType::Texture;
@@ -854,7 +1003,12 @@ namespace RVX
                                             RHIShaderStage stages)
     {
         if (!m_impl || !m_impl->pass || !buffer.IsValid())
-            return buffer;
+            return {};
+        if (!m_impl->Owns(buffer))
+        {
+            m_impl->RecordInvalidUsage(ResourceType::Buffer, RGAccessType::Read);
+            return {};
+        }
 
         ResourceUsage usage;
         usage.type = ResourceType::Buffer;
@@ -883,7 +1037,12 @@ namespace RVX
         const RHIAccessSnapshot& access)
     {
         if (!m_impl || !m_impl->pass || !buffer.IsValid())
-            return buffer;
+            return {};
+        if (!m_impl->Owns(buffer))
+        {
+            m_impl->RecordInvalidUsage(ResourceType::Buffer, RGAccessType::Read);
+            return {};
+        }
 
         ResourceUsage usage;
         usage.type = ResourceType::Buffer;
@@ -908,7 +1067,12 @@ namespace RVX
         RHIDiscardIntent discardIntent)
     {
         if (!m_impl || !m_impl->pass || !texture.IsValid())
-            return texture;
+            return {};
+        if (!m_impl->Owns(texture))
+        {
+            m_impl->RecordInvalidUsage(ResourceType::Texture, RGAccessType::Write);
+            return {};
+        }
 
         ResourceUsage usage;
         usage.type = ResourceType::Texture;
@@ -936,7 +1100,12 @@ namespace RVX
         RHIDiscardIntent discardIntent)
     {
         if (!m_impl || !m_impl->pass || !texture.IsValid())
-            return texture;
+            return {};
+        if (!m_impl->Owns(texture))
+        {
+            m_impl->RecordInvalidUsage(ResourceType::Texture, RGAccessType::Write);
+            return {};
+        }
 
         ResourceUsage usage;
         usage.type = ResourceType::Texture;
@@ -959,7 +1128,12 @@ namespace RVX
         RHIDiscardIntent discardIntent)
     {
         if (!m_impl || !m_impl->pass || !buffer.IsValid())
-            return buffer;
+            return {};
+        if (!m_impl->Owns(buffer))
+        {
+            m_impl->RecordInvalidUsage(ResourceType::Buffer, RGAccessType::Write);
+            return {};
+        }
 
         ResourceUsage usage{};
         usage.type = ResourceType::Buffer;
@@ -990,7 +1164,12 @@ namespace RVX
         RHIDiscardIntent discardIntent)
     {
         if (!m_impl || !m_impl->pass || !buffer.IsValid())
-            return buffer;
+            return {};
+        if (!m_impl->Owns(buffer))
+        {
+            m_impl->RecordInvalidUsage(ResourceType::Buffer, RGAccessType::Write);
+            return {};
+        }
 
         ResourceUsage usage;
         usage.type = ResourceType::Buffer;
@@ -1028,7 +1207,12 @@ namespace RVX
         const RHIAccessSnapshot& access)
     {
         if (!m_impl || !m_impl->pass || !texture.IsValid())
-            return texture;
+            return {};
+        if (!m_impl->Owns(texture))
+        {
+            m_impl->RecordInvalidUsage(ResourceType::Texture, RGAccessType::ReadWrite);
+            return {};
+        }
         ResourceUsage usage;
         usage.type = ResourceType::Texture;
         usage.index = texture.index;
@@ -1061,7 +1245,12 @@ namespace RVX
         const RHIAccessSnapshot& access)
     {
         if (!m_impl || !m_impl->pass || !buffer.IsValid())
-            return buffer;
+            return {};
+        if (!m_impl->Owns(buffer))
+        {
+            m_impl->RecordInvalidUsage(ResourceType::Buffer, RGAccessType::ReadWrite);
+            return {};
+        }
         ResourceUsage usage;
         usage.type = ResourceType::Buffer;
         usage.index = buffer.index;
@@ -1936,7 +2125,11 @@ namespace RVX
                     m_impl->transientResourcePool->ReleaseTexture(
                         texture.pooledRaw,
                         GetRealizedAccess(RGTextureHandle{
-                            static_cast<uint32>(&texture - m_impl->textures.data())}));
+                            static_cast<uint32>(&texture - m_impl->textures.data()),
+                            false,
+                            RHISubresourceRange::All(),
+                            m_impl->graphIdentity,
+                            m_impl->recordingGeneration}));
                 }
                 texture.pooledRaw = nullptr;
                 texture.pooled = false;
@@ -1951,7 +2144,12 @@ namespace RVX
                     m_impl->transientResourcePool->ReleaseBuffer(
                         buffer.pooledRaw,
                         GetRealizedAccess(RGBufferHandle{
-                            static_cast<uint32>(&buffer - m_impl->buffers.data())}));
+                            static_cast<uint32>(&buffer - m_impl->buffers.data()),
+                            false,
+                            0,
+                            RVX_WHOLE_SIZE,
+                            m_impl->graphIdentity,
+                            m_impl->recordingGeneration}));
                 }
                 buffer.pooledRaw = nullptr;
                 buffer.pooled = false;
@@ -1976,6 +2174,8 @@ namespace RVX
         m_impl->executionRealized = false;
         m_impl->memoryAliasingRequested = false;
         m_impl->enableMemoryAliasing = false;
+        m_impl->recordingGeneration =
+            AdvanceRecordingGeneration(m_impl->recordingGeneration);
     }
 
     std::string RenderGraph::ExportGraphviz() const

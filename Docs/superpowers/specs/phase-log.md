@@ -44591,6 +44591,113 @@ git diff --check
 
 ---
 
+### R-SP333 Render-policy Task 9A frame-owned Depth/Opaque recording
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Plan review agent:** Primary architect with the approved Task 9 contract
+**Code review agent:** Independent terra worker; primary review of every
+finding, remediation, test, final diff, and staged scope
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-pass-record-context-contract.md`
+- Task 9A common record contract plus Depth/Opaque; remaining scene passes and
+  binder removal are Task 9B.
+
+**Approved scope:**
+
+- Add stable RenderGraph identity and a nonzero recording generation to every
+  texture/buffer handle; `Clear()` advances the generation and foreign/stale
+  usage fails graph validation before resource access.
+- Capture plan, preparation, visibility, scene objects, draw lists, ViewData,
+  shadow values, and result storage in graph-owned recording data.
+- Register Depth/Opaque with graph-owned recorder clones so callbacks do not
+  read mutable per-frame state from the persistent pass objects.
+- Seal Depth/Opaque GPU-culling inputs into independent per-recording resources
+  and retain every command-referenced buffer, descriptor, shader, layout, and
+  pipeline through the actual submission completion token.
+- Publish execution reports and pass statistics only through identity-matched
+  shared recording results.
+- Keep main-chain execution on the graphics physical queue. Async compute,
+  remaining scene-pass migration, binder removal, and submission strategies
+  remain later tasks.
+
+**Files changed:**
+
+- RenderGraph public handle/identity contract and implementation
+- `Render/Include/Render/Passes/RenderPassRecordContext.h`
+- `IRenderPass`, `DepthPrepass`, and `OpaquePass` contracts/implementations
+- GPUCulling sealed recording state and submission retention
+- SceneRenderer context construction, sealed cull registration, result
+  publication, and access-snapshot commit
+- RenderGraph, RenderPass, GPUDriven, and RHI contract validations
+- Task 9 contract, execution ledger, implementation plan, and this phase log
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderGraphValidation RenderPassValidation GPUDrivenValidation RenderPolicyValidation RHIContractValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build/win_x64_debug/Tests/Debug/RenderGraphValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/GPUDrivenValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+build/win_x64_debug/Tests/Debug/RHIContractValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation|ModelViewerGPUDrivenGBVSmoke|RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries|RenderingShowcaseDX11Smoke)$"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for every listed target and configured DX11, DX12, OpenGL, and
+  Vulkan libraries reached by the dependency graph.
+- Standalone suites: PASS 50/50 RenderGraph, 168/168 RenderPass, 30/30
+  GPUDriven, 22/22 RenderPolicy, and 41/41 RHIContract.
+- Repeated DX12 GPU-driven soak: PASS 10/10.
+- DX12 Debug Layer/Auto/forced-mode/parity, Porsche Direct/GPU/parity, GBV,
+  resize, rejected/lifetime/retirement, and DX11 Direct smoke: PASS 16/16.
+- `git diff --check`: PASS; only line-ending and environment ignore warnings.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for three P1 findings. A valid context could
+  be registered into a different target graph, enabled shadow slices did not
+  validate handle provenance/completeness, and sealed imported GPU resources
+  were not retained beyond graph/state release.
+- Primary accepted every finding. Target-graph and ViewData handles now verify
+  graph identity/generation and fail closed with zero commands; directional
+  and ray-shadow slices validate current handles and cascade consistency; the
+  sealed state transfers all command-referenced RHI objects to the submission
+  batch.
+- Added real AddToGraph foreign/stale/invalid negatives plus a timeline/fence
+  test proving resources survive state release and retire only after GPU
+  completion.
+- Final verdict: APPROVE; no remaining P0-P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. The three independent findings are valid and fully resolved.
+  Graph callbacks consume recording-owned inputs, stale/foreign aliases are
+  rejected before command recording, lane failure reports remain honest, and
+  submission lifetime follows completion evidence rather than CPU frame age.
+- RHI source-contract validation was updated from mutable `owner` snapshots to
+  the sealed `recordedState` boundary and made robust to function size changes.
+- Per-recording culling resources intentionally trade allocation/memory for
+  correctness. Completion-aware pooling is a later optimization and must not
+  weaken recording isolation.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 9B-1 shared result contract and Shadow producer/Opaque
+  consumer migration.
+- Keep `Engine/Private/Engine.cpp`, `RenderRuntimeFatalDiagnostics.json`, and
+  `Scripts/__pycache__/` unstaged.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

@@ -29,6 +29,8 @@ namespace RVX
         uint32 index = RVX_INVALID_INDEX;
         bool hasSubresourceRange = false;
         RHISubresourceRange subresourceRange = RHISubresourceRange::All();
+        uint64 graphIdentity = 0;
+        uint64 recordingGeneration = 0;
 
         bool IsValid() const { return index != RVX_INVALID_INDEX; }
         
@@ -43,6 +45,8 @@ namespace RVX
         bool hasRange = false;
         uint64 rangeOffset = 0;
         uint64 rangeSize = RVX_WHOLE_SIZE;
+        uint64 graphIdentity = 0;
+        uint64 recordingGeneration = 0;
 
         bool IsValid() const { return index != RVX_INVALID_INDEX; }
 
@@ -123,6 +127,12 @@ namespace RVX
 
         void SetDevice(IRHIDevice* device);
         void SetTransientResourcePool(TransientResourcePool* pool);
+
+        /** @brief Stable non-zero identity for this graph instance. */
+        uint64 GetGraphIdentity() const;
+
+        /** @brief Non-zero resource-recording generation; changes on Clear(). */
+        uint64 GetRecordingGeneration() const;
 
         // Create transient resources
         RGTextureHandle CreateTexture(const RHITextureDesc& desc);

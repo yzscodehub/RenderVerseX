@@ -8,9 +8,10 @@
  * tracking, barrier insertion, and memory aliasing.
  */
 
+#include "Render/Graph/RenderGraph.h"
+#include "Render/Passes/RenderPassRecordContext.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
-#include "Render/Graph/RenderGraph.h"
 
 #include <string>
 
@@ -178,26 +179,51 @@ namespace RVX
          */
         virtual void AddToGraph(RenderGraph& graph, const ViewData& view)
         {
-            // Default implementation captures 'this' and 'view' to bridge
-            // the IRenderPass interface with RenderGraph's callback system
+            AddToGraph(graph, MakeRenderPassRecordContext(graph, view));
+        }
+
+        /**
+         * @brief Register this pass using an immutable record context.
+         *
+         * The default adapter is retained for unmigrated passes.  It captures
+         * ViewData by value and never retains a caller-owned ViewData address.
+         */
+        virtual void AddToGraph(RenderGraph& graph,
+                                const RenderPassRecordContext& context)
+        {
             struct PassData
             {
                 IRenderPass* pass;
-                const ViewData* viewData;
+                RenderPassExecutionData execution;
+                bool contextValid = false;
             };
+
+            const RenderPassExecutionData execution =
+                MakeRenderPassExecutionData(context);
+            const bool contextValid = context.MatchesTargetGraph(graph) &&
+                execution.MatchesTargetGraph(graph);
 
             graph.AddPass<PassData>(
                 GetName(),
                 GetPassType(),
-                [this, &view](RenderGraphBuilder& builder, PassData& data)
+                [this, execution, contextValid](RenderGraphBuilder& builder,
+                                                 PassData& data)
                 {
                     data.pass = this;
-                    data.viewData = &view;
-                    this->Setup(builder, view);
+                    data.execution = execution;
+                    data.contextValid = contextValid;
+                    if (!data.contextValid)
+                    {
+                        return;
+                    }
+                    this->Setup(builder, data.execution.view);
                 },
                 [](const PassData& data, RHICommandContext& ctx)
                 {
-                    data.pass->Execute(ctx, *data.viewData);
+                    if (data.contextValid)
+                    {
+                        data.pass->Execute(ctx, data.execution.view);
+                    }
                 });
         }
     };

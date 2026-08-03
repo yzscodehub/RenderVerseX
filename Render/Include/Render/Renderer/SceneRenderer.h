@@ -1280,7 +1280,8 @@ namespace RVX
         void BuildRenderGraph();
         void PrepareRayTracingScene();
         void AddRayTracingSceneBuildPass();
-        void AddGPUDrivenCullingPass();
+        void AddGPUDrivenCullingPass(
+            const RenderPassRecordIdentity& recordIdentity);
         void CommitGPUDrivenAccessSnapshots();
         void BuildMaterialDrawLists();
         void PrepareMeshPassPackets();
@@ -1359,6 +1360,8 @@ namespace RVX
         };
         GPUCullingGraphHandles m_depthGPUCullingGraphHandles;
         GPUCullingGraphHandles m_opaqueGPUCullingGraphHandles;
+        std::shared_ptr<GPUCullingRecordedState> m_depthGPUCullingRecordedState;
+        std::shared_ptr<GPUCullingRecordedState> m_opaqueGPUCullingRecordedState;
         bool m_depthGPUCullingFramePrepared = false;
         bool m_opaqueGPUCullingFramePrepared = false;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
@@ -1379,6 +1382,11 @@ namespace RVX
         SceneRendererFrameDiagnostics m_frameDiagnostics;
         SceneRendererToolDiagnosticsSnapshot m_toolDiagnosticsSnapshot;
         uint64 m_frameDiagnosticsCounter = 0;
+        /// Incremented for every graph recording so a frame-local handle slice
+        /// can never be reused after RenderGraph::Clear().
+        uint64 m_renderPassRecordEpoch = 0;
+        std::shared_ptr<RenderPassRecordResults> m_activeRenderPassResults;
+        RenderPassRecordIdentity m_activeRenderPassIdentity{};
         IRHIDevice* m_featureReportDeviceForTesting = nullptr;
         SceneEnvironmentIBLStats m_environmentIBLStats;
         SceneGPUDrivenCullingStats m_gpuDrivenCullingStats;

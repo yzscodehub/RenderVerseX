@@ -1,7 +1,7 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-8 complete; Task 9 frame-owned pass contexts is the next
-implementation stage
+**Status:** Tasks 0-8 and Task 9A complete; Task 9B remaining scene-pass
+context migration is the next implementation stage
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -67,7 +67,8 @@ It is not yet a GPU-resident scene. The important current limitations are:
 - GPU-driven eligibility is checked partly in `SceneRenderer` and partly in
   Depth/Opaque execution;
 - one ineligible group can force an entire pass to Direct;
-- RenderGraph handles and enablement are injected through mutable pass setters;
+- Transparent, Shadow, ObjectVelocity, and Skybox still receive frame state
+  through mutable pass setters pending Task 9B;
 - GPU execution is intentionally hard-limited to DX12;
 - Vulkan does not yet expose or implement indirect-count submission through
   the RHI contract;
@@ -671,6 +672,9 @@ Acceptance:
 
 **Purpose:** Make graph recording safe for multiple views and later parallel
 recording.
+
+**Progress:** Task 9A is complete for the common contract plus Depth/Opaque.
+Task 9B migrates the remaining main-chain passes and removes the late binder.
 
 Proposed files:
 

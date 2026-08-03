@@ -140,6 +140,52 @@ bool GPUCulling::RetainSubmissionResources(
     return true;
 }
 
+bool GPUCulling::RetainSealedSubmissionResources(
+    RenderSubmissionResourceBatch& batch)
+{
+    // A sealed state may outlive both the graph callbacks that recorded it and
+    // the source culler that created it.  Retain every RHI object that its
+    // recorded cull or indirect commands can reference; RenderGraph only owns
+    // graph-created resources and must not be relied upon for these objects.
+    if (!RetainSubmissionResources(batch))
+    {
+        return false;
+    }
+
+    const GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
+    if (inputs == nullptr)
+    {
+        return false;
+    }
+
+    const auto retain = [&batch]<typename T>(const Ref<T>& object,
+                                              uint64 estimatedBytes = 0)
+    {
+        return !object || batch.Retain(object, estimatedBytes);
+    };
+    const auto retainBuffer = [&retain](const RHIBufferRef& buffer)
+    {
+        return retain(buffer, buffer ? buffer->GetSize() : 0);
+    };
+
+    return retainBuffer(inputs->instanceBuffer) &&
+        retainBuffer(inputs->constantsBuffer) &&
+        retain(inputs->descriptorSet) &&
+        retainBuffer(m_instanceIndexBuffer) &&
+        retainBuffer(m_visibilityBuffer) &&
+        retainBuffer(m_visibleInstanceBuffer) &&
+        retainBuffer(m_indirectBuffer) &&
+        retainBuffer(m_drawCountBuffer) &&
+        retainBuffer(m_statsBuffer) &&
+        retain(m_frustumCullShader) &&
+        retain(m_compactShader) &&
+        retain(m_cullingDescriptorSetLayout) &&
+        retain(m_cullingPipelineLayout) &&
+        retain(m_frustumCullPipeline) &&
+        retain(m_occlusionCullPipeline) &&
+        retain(m_compactPipeline);
+}
+
 void GPUCulling::SetConfig(const GPUCullingConfig& config)
 {
     bool needsResize = config.maxInstances != m_config.maxInstances;
@@ -612,6 +658,82 @@ bool GPUCulling::SupportsGpuExecution() const
 GPUCullingExecutionDecision GPUCulling::GetExecutionDecision() const
 {
     return EvaluateGpuExecution(true);
+}
+
+std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGraph(
+    const GPUCullingRecordingIdentity& identity) const
+{
+    if (!identity.IsValid() || m_device == nullptr ||
+        GetActiveFrameInputs() == nullptr)
+    {
+        RVX_RENDER_WARN("GPUCulling: rejected an invalid graph-recording seal");
+        return nullptr;
+    }
+
+    auto recordedState = std::make_shared<GPUCullingRecordedState>();
+    GPUCulling& sealed = recordedState->m_culling;
+    sealed.m_device = m_device;
+    sealed.m_config = m_config;
+    sealed.m_occlusionRequested = m_occlusionRequested;
+    sealed.m_statsEnabled = m_statsEnabled;
+    sealed.m_frameInputs.resize(1);
+    sealed.CreateResources();
+
+    // Pipelines and layouts are immutable RHI objects.  The recorded state
+    // owns strong references to them, while its descriptor set below binds
+    // only the new per-recording buffers created above.
+    sealed.m_frustumCullShader = m_frustumCullShader;
+    sealed.m_compactShader = m_compactShader;
+    sealed.m_cullingDescriptorSetLayout = m_cullingDescriptorSetLayout;
+    sealed.m_cullingPipelineLayout = m_cullingPipelineLayout;
+    sealed.m_frustumCullPipeline = m_frustumCullPipeline;
+    sealed.m_occlusionCullPipeline = m_occlusionCullPipeline;
+    sealed.m_compactPipeline = m_compactPipeline;
+    sealed.m_pipelineFallbackReason = m_pipelineFallbackReason;
+
+    GPUCullingFrameInputs* sealedInputs = sealed.GetActiveFrameInputs();
+    if (sealed.m_cullingDescriptorSetLayout && sealedInputs != nullptr &&
+        sealedInputs->constantsBuffer && sealedInputs->instanceBuffer &&
+        sealed.m_visibilityBuffer && sealed.m_visibleInstanceBuffer &&
+        sealed.m_indirectBuffer && sealed.m_drawCountBuffer)
+    {
+        RHIDescriptorSetDesc descriptorDesc;
+        descriptorDesc.debugName = "GPUCulling.RecordedDescriptorSet";
+        descriptorDesc.SetLayout(sealed.m_cullingDescriptorSetLayout.Get())
+            .BindBuffer(0, sealedInputs->constantsBuffer.Get())
+            .BindBuffer(1, sealedInputs->instanceBuffer.Get())
+            .BindBuffer(2, sealed.m_visibilityBuffer.Get())
+            .BindBuffer(3, sealed.m_visibleInstanceBuffer.Get())
+            .BindBuffer(4, sealed.m_indirectBuffer.Get())
+            .BindBuffer(5, sealed.m_drawCountBuffer.Get());
+        sealedInputs->descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
+        if (!sealedInputs->descriptorSet)
+        {
+            sealed.m_frustumCullPipeline.Reset();
+            sealed.m_compactPipeline.Reset();
+            sealed.m_pipelineFallbackReason =
+                GPUCullingFallbackReason::DescriptorSetCreationFailed;
+        }
+    }
+
+    sealed.m_instances = m_instances;
+    sealed.m_visibleInstanceIndices = m_visibleInstanceIndices;
+    sealed.m_visibleSourceIndices = m_visibleSourceIndices;
+    sealed.m_indirectCommands = m_indirectCommands;
+    sealed.m_groupDrawCounts = m_groupDrawCounts;
+    sealed.m_drawGroups = m_drawGroups;
+    sealed.m_instanceCount = m_instanceCount;
+    sealed.m_drawCount = m_drawCount;
+    sealed.m_activeDrawGroupIndex = m_activeDrawGroupIndex;
+    sealed.m_usedCpuFallbackLastCull = m_usedCpuFallbackLastCull;
+    sealed.m_usedGpuExecutionLastCull = m_usedGpuExecutionLastCull;
+    sealed.m_lastFallbackReason = m_lastFallbackReason;
+    sealed.m_stats = m_stats;
+    sealed.UploadInstances();
+
+    recordedState->m_identity = identity;
+    recordedState->m_sourceFrameSlot = m_activeFrameSlot;
+    return recordedState;
 }
 
 void GPUCulling::BeginFrame()

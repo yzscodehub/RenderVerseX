@@ -29,8 +29,8 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/DepthPrepass.h"
-#include "Render/Passes/MeshPassProcessor.h"
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/MeshPassProcessor.h"
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/OpaquePass.h"
 #include "Render/Passes/ParticleFeaturePass.h"
@@ -61,6 +61,7 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/ViewData.h"
+#include "Render/Visibility/RenderVisibility.h"
 #include "Render/Policy/RenderFramePlanCompiler.h"
 #include "Render/Policy/RenderPolicyResolver.h"
 #include "Render/SwapChainManager.h"
@@ -927,6 +928,27 @@ namespace
         std::string m_unsupportedReason;
     };
 
+    class ViewSnapshotPass final : public IRenderPass
+    {
+    public:
+        const char* GetName() const override { return "ViewSnapshotPass"; }
+        void Setup(RenderGraphBuilder& builder, const ViewData& view) override
+        {
+            if (view.colorTarget.IsValid())
+            {
+                builder.Write(view.colorTarget, RHIResourceState::RenderTarget);
+            }
+        }
+        void Execute(RHICommandContext&, const ViewData& view) override
+        {
+            observedViewportWidths.push_back(view.viewportWidth);
+            observedFrameNumbers.push_back(view.frameNumber);
+        }
+
+        std::vector<uint32> observedViewportWidths;
+        std::vector<uint64> observedFrameNumbers;
+    };
+
     class RecordingPostProcessPass final : public IPostProcessPass
     {
     public:
@@ -1680,6 +1702,757 @@ TEST(RenderPassStatusValidation, BuiltInProductionPassStatusesAreHonest)
     EXPECT_TRUE(transparentPass.IsRequestedEnabled());
     EXPECT_TRUE(transparentPass.IsSupported());
     EXPECT_TRUE(transparentPass.IsEnabled());
+}
+
+TEST(RenderPassStatusValidation, DefaultGraphAdapterValueCapturesViewsAcrossGraphsAndFrames)
+{
+    ViewSnapshotPass pass;
+    RenderGraph firstGraph;
+    RenderGraph secondGraph;
+    FakeDevice device;
+    firstGraph.SetDevice(&device);
+    secondGraph.SetDevice(&device);
+
+    RHITextureDesc targetDesc = RHITextureDesc::RenderTarget(
+        4, 4, RHIFormat::RGBA8_UNORM);
+    const RGTextureHandle firstTarget = firstGraph.CreateTexture(targetDesc);
+    const RGTextureHandle secondTarget = secondGraph.CreateTexture(targetDesc);
+    firstGraph.SetExportState(firstTarget, RHIResourceState::RenderTarget);
+    secondGraph.SetExportState(secondTarget, RHIResourceState::RenderTarget);
+
+    ViewData firstView;
+    firstView.viewportWidth = 640;
+    firstView.frameNumber = 41;
+    firstView.colorTarget = firstTarget;
+    ViewData secondView;
+    secondView.viewportWidth = 1280;
+    secondView.frameNumber = 42;
+    secondView.colorTarget = secondTarget;
+
+    pass.AddToGraph(firstGraph, firstView);
+    pass.AddToGraph(secondGraph, secondView);
+    // Both caller-owned structs may change after registration.  The graph
+    // callbacks retain individual record-time snapshots instead.
+    firstView.viewportWidth = 7;
+    firstView.frameNumber = 99;
+    secondView.viewportWidth = 8;
+    secondView.frameNumber = 100;
+
+    firstGraph.Compile();
+    secondGraph.Compile();
+    RecordingCommandContext firstContext;
+    RecordingCommandContext secondContext;
+    firstGraph.Execute(firstContext);
+    secondGraph.Execute(secondContext);
+
+    ASSERT_EQ(2u, pass.observedViewportWidths.size());
+    ASSERT_EQ(2u, pass.observedFrameNumbers.size());
+    EXPECT_EQ(640u, pass.observedViewportWidths[0]);
+    EXPECT_EQ(41u, pass.observedFrameNumbers[0]);
+    EXPECT_EQ(1280u, pass.observedViewportWidths[1]);
+    EXPECT_EQ(42u, pass.observedFrameNumbers[1]);
+}
+
+TEST(RenderPassStatusValidation,
+     DefaultGraphAdapterRejectsForeignRenderGraphResources)
+{
+    Log::Initialize();
+    ViewSnapshotPass pass;
+    FakeDevice device;
+    RenderGraph sourceGraph;
+    RenderGraph targetGraph;
+    sourceGraph.SetDevice(&device);
+    targetGraph.SetDevice(&device);
+
+    const RGTextureHandle sourceTarget = sourceGraph.CreateTexture(
+        RHITextureDesc::RenderTarget(4, 4, RHIFormat::RGBA8_UNORM));
+    sourceGraph.Clear();
+    ViewData view;
+    view.colorTarget = sourceTarget;
+
+    pass.AddToGraph(targetGraph, view);
+    targetGraph.Compile();
+    EXPECT_TRUE(targetGraph.GetCompileStats().compileValid);
+
+    RecordingCommandContext commands;
+    targetGraph.Execute(commands);
+    EXPECT_TRUE(pass.observedViewportWidths.empty());
+    EXPECT_TRUE(pass.observedFrameNumbers.empty());
+    EXPECT_EQ(0u, commands.beginRenderPassCount);
+    EXPECT_EQ(0u, commands.drawIndexedCount);
+    EXPECT_EQ(0u, commands.drawIndexedIndirectCount);
+    Log::Shutdown();
+}
+
+TEST(RenderPassStatusValidation, RecordContextRejectsStaleMismatchedAndIncompleteGpuSlices)
+{
+    RenderGraph graph;
+    RenderGraph otherGraph;
+    RenderPassRecordContext context;
+    context.view.renderGraph = &graph;
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = 8;
+    context.identity.viewOrdinal = 2;
+    context.identity.recordEpoch = 3;
+
+    EXPECT_TRUE(context.IsFrameIdentityValid());
+
+    const RHITextureDesc targetDesc = RHITextureDesc::RenderTarget(
+        4, 4, RHIFormat::RGBA8_UNORM);
+    const RGTextureHandle currentTarget = graph.CreateTexture(targetDesc);
+    const RGTextureHandle foreignTarget = otherGraph.CreateTexture(targetDesc);
+    const std::array<RGTextureHandle ViewData::*, 3> viewHandles = {
+        &ViewData::colorTarget,
+        &ViewData::depthTarget,
+        &ViewData::velocityTarget};
+    for (RGTextureHandle ViewData::* handle : viewHandles)
+    {
+        context.view.*handle = currentTarget;
+        EXPECT_TRUE(context.IsFrameIdentityValid());
+        context.view.*handle = foreignTarget;
+        EXPECT_FALSE(context.IsFrameIdentityValid());
+        context.view.*handle = {};
+    }
+
+    OpaqueDirectionalShadowRecordInputs directionalShadow;
+    directionalShadow.identity = context.identity;
+    directionalShadow.shadowMap = foreignTarget;
+    EXPECT_FALSE(directionalShadow.IsCompatibleWith(context.identity));
+    directionalShadow.shadowMap = currentTarget;
+    directionalShadow.enabled = true;
+    directionalShadow.shadowMapSize = 4;
+    directionalShadow.cascadeViewProjections = {Mat4Identity()};
+    directionalShadow.cascadeSplitDepths = {1.0f};
+    EXPECT_TRUE(directionalShadow.IsCompatibleWith(context.identity));
+    directionalShadow.cascadeSplitDepths.clear();
+    EXPECT_FALSE(directionalShadow.IsCompatibleWith(context.identity));
+
+    OpaqueRayTracedShadowRecordInputs rayTracedShadow;
+    rayTracedShadow.identity = context.identity;
+    rayTracedShadow.shadowMask = foreignTarget;
+    EXPECT_FALSE(rayTracedShadow.IsCompatibleWith(context.identity));
+
+    RenderPassGPUDrivenInputs inputs;
+    inputs.identity = context.identity;
+    EXPECT_FALSE(inputs.IsCompatibleWith(context.identity));
+
+    inputs.identity.recordEpoch = 2;
+    EXPECT_FALSE(inputs.IsCompatibleWith(context.identity));
+
+    context.view.renderGraph = &otherGraph;
+    EXPECT_FALSE(context.IsFrameIdentityValid());
+}
+
+TEST(RenderPassStatusValidation,
+     GraphOwnedFrameSnapshotRebindsPointersAndRejectsClearedGraph)
+{
+    RenderGraph graph;
+    RenderFrameExecutionPlan plan;
+    plan.frameSequence = 71;
+    plan.viewOrdinal = 3;
+    SceneMeshPassPreparation preparation;
+    RenderVisibilityResult visibility;
+    RenderFrameExecutionReport report;
+    report.frameSequence = plan.frameSequence;
+    RenderScene scene;
+    RenderObject object;
+    object.entityId = 99;
+    scene.AddObject(object);
+    std::vector<RenderDrawItem> opaqueDrawItems(1);
+    std::vector<RenderDrawItem> maskedDrawItems(1);
+
+    RenderPassRecordContext context;
+    context.view.renderGraph = &graph;
+    context.view.renderFrameExecutionPlan = &plan;
+    context.view.meshPassPreparation = &preparation;
+    context.view.renderVisibility = &visibility;
+    context.view.renderFrameExecutionReport = &report;
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = plan.frameSequence;
+    context.identity.viewOrdinal = plan.viewOrdinal;
+    context.identity.recordEpoch = 1;
+    context.executionPlan = &plan;
+    context.meshPassPreparation = &preparation;
+    context.visibility = &visibility;
+    context.executionReport = &report;
+    context.renderScene = &scene;
+    context.opaqueDrawItems = &opaqueDrawItems;
+    context.maskedDrawItems = &maskedDrawItems;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(
+        context, *context.results);
+
+    const RenderPassExecutionData execution =
+        MakeRenderPassExecutionData(context);
+    ASSERT_TRUE(execution.IsFrameIdentityValid());
+    ASSERT_NE(nullptr, execution.frameSnapshot);
+    EXPECT_EQ(&execution.frameSnapshot->executionPlan,
+              execution.view.renderFrameExecutionPlan);
+    EXPECT_EQ(&execution.frameSnapshot->meshPassPreparation,
+              execution.view.meshPassPreparation);
+    EXPECT_EQ(&execution.frameSnapshot->visibility,
+              execution.view.renderVisibility);
+    EXPECT_EQ(&execution.results->executionReport,
+              execution.view.renderFrameExecutionReport);
+
+    // The source A data can change after recording without affecting graph B.
+    plan.frameSequence = 999;
+    report.frameSequence = 999;
+    scene.Clear();
+    opaqueDrawItems.clear();
+    maskedDrawItems.clear();
+    EXPECT_EQ(71u, execution.GetExecutionPlan()->frameSequence);
+    EXPECT_EQ(71u, execution.GetExecutionReport()->frameSequence);
+    EXPECT_EQ(1u, execution.frameSnapshot->scene.GetObjectCount());
+    EXPECT_EQ(1u, execution.frameSnapshot->opaqueDrawItems.size());
+    EXPECT_EQ(1u, execution.frameSnapshot->maskedDrawItems.size());
+
+    graph.Clear();
+    EXPECT_FALSE(execution.IsFrameIdentityValid());
+}
+
+TEST(RenderPassStatusValidation,
+     PublishedResultsHoldLatestMatchingRecordAndReleaseReplacedSnapshot)
+{
+    DepthPrepass depthPass;
+    OpaquePass opaquePass;
+    const RenderPassRecordIdentity recordA{
+        nullptr, 11u, 1u, 100u, 0u, 1u};
+    const RenderPassRecordIdentity recordB{
+        nullptr, 11u, 1u, 101u, 0u, 2u};
+
+    auto first = std::make_shared<RenderPassRecordResults>();
+    first->identity = recordA;
+    first->depthStats.directDrawCount = 1;
+    first->opaqueStats.directDrawCount = 1;
+    auto second = std::make_shared<RenderPassRecordResults>();
+    second->identity = recordB;
+    second->depthStats.directDrawCount = 2;
+    second->opaqueStats.directDrawCount = 2;
+    const std::weak_ptr<RenderPassRecordResults> firstLifetime = first;
+
+    depthPass.PublishRecordResults(first, recordA);
+    opaquePass.PublishRecordResults(first, recordA);
+    first.reset();
+    EXPECT_FALSE(firstLifetime.expired());
+
+    // A mismatched identity cannot overwrite the latest published data.
+    depthPass.PublishRecordResults(second, recordA);
+    opaquePass.PublishRecordResults(second, recordA);
+    EXPECT_EQ(1u, depthPass.GetDrawStats().directDrawCount);
+    EXPECT_EQ(1u, opaquePass.GetDrawStats().directDrawCount);
+
+    depthPass.PublishRecordResults(second, recordB);
+    opaquePass.PublishRecordResults(second, recordB);
+    EXPECT_EQ(2u, depthPass.GetDrawStats().directDrawCount);
+    EXPECT_EQ(2u, opaquePass.GetDrawStats().directDrawCount);
+    EXPECT_TRUE(firstLifetime.expired());
+}
+
+TEST_F(RenderPassValidationFixture, MigratedDepthAndOpaquePassesFailClosedForMissingGpuDeclarations)
+{
+    const std::vector<RenderDrawItem> emptyDrawItems;
+    const auto makeContext = [this, &emptyDrawItems](RenderGraph& graph,
+                                    RenderFrameExecutionPlan& plan,
+                                    SceneMeshPassPreparation& preparation,
+                                    RenderVisibilityResult& visibility,
+                                    RenderFrameExecutionReport& report,
+                                    RenderPassKind passKind,
+                                    uint32 directPacketCount = 0)
+    {
+        plan.frameSequence = 77;
+        plan.viewOrdinal = 0;
+        RenderPassExecutionPlan passPlan;
+        passPlan.pass = passKind;
+        passPlan.partition.gpuDrivenPacketCount = 1;
+        passPlan.partition.directPacketCount = directPacketCount;
+        plan.passes = {passPlan};
+        report.frameSequence = plan.frameSequence;
+        report.passes = {{passKind}};
+
+        RenderPassRecordContext context;
+        context.view.renderGraph = &graph;
+        context.view.renderFrameExecutionPlan = &plan;
+        context.view.meshPassPreparation = &preparation;
+        context.view.renderVisibility = &visibility;
+        context.view.renderFrameExecutionReport = &report;
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+        context.identity.frameSequence = plan.frameSequence;
+        context.identity.viewOrdinal = plan.viewOrdinal;
+        context.identity.recordEpoch = 9;
+        context.executionPlan = &plan;
+        context.meshPassPreparation = &preparation;
+        context.visibility = &visibility;
+        context.executionReport = &report;
+        context.renderScene = &scene;
+        context.opaqueDrawItems = &emptyDrawItems;
+        context.maskedDrawItems = &emptyDrawItems;
+        context.directionalShadow.identity = context.identity;
+        context.rayTracedShadow.identity = context.identity;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        return context;
+    };
+
+    RenderGraph depthGraph;
+    depthGraph.SetDevice(&device);
+    RenderFrameExecutionPlan depthPlan;
+    SceneMeshPassPreparation depthPreparation;
+    RenderVisibilityResult depthVisibility;
+    RenderFrameExecutionReport depthReport;
+    RenderPassRecordContext depthContext = makeContext(
+        depthGraph, depthPlan, depthPreparation, depthVisibility, depthReport,
+        RenderPassKind::Depth);
+    depthContext.depthGPUDriven.identity = depthContext.identity;
+    // No owner or handles: a planned GPU lane must not record an undeclared
+    // indirect consumer.
+    DepthPrepass depthPass;
+    depthPass.AddToGraph(depthGraph, depthContext);
+    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+              depthContext.results->depthStats.failureReason);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              depthContext.results->executionReport.status);
+    const RenderPassExecutionReport* depthExecution =
+        FindPassExecutionReport(depthContext.results->executionReport,
+                                RenderPassKind::Depth);
+    ASSERT_NE(depthExecution, nullptr);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              depthExecution->gpuDrivenLane.status);
+    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+              depthExecution->gpuDrivenLane.reason);
+    EXPECT_TRUE(depthExecution->gpuDrivenLane.executedCountsAvailable);
+    EXPECT_EQ(0u, depthExecution->gpuDrivenLane.executedPacketCount);
+    EXPECT_EQ(0u, depthExecution->gpuDrivenLane.executedDrawCount);
+    EXPECT_EQ(RenderExecutionStatus::NotAttempted,
+              depthExecution->directLane.status);
+    EXPECT_EQ(RenderPolicyReason::None, depthExecution->directLane.reason);
+    EXPECT_FALSE(depthExecution->directLane.executedCountsAvailable);
+    EXPECT_EQ(0u, depthExecution->directLane.executedPacketCount);
+    EXPECT_EQ(0u, depthExecution->directLane.executedDrawCount);
+    depthGraph.Compile();
+    ASSERT_TRUE(depthGraph.GetCompileStats().compileValid);
+    RecordingCommandContext depthCommands;
+    depthGraph.Execute(depthCommands);
+    EXPECT_EQ(0u, depthCommands.beginRenderPassCount);
+    EXPECT_EQ(0u, depthCommands.drawIndexedCount);
+    EXPECT_EQ(0u, depthCommands.drawIndexedIndirectCount);
+
+    RenderGraph opaqueGraph;
+    opaqueGraph.SetDevice(&device);
+    RenderFrameExecutionPlan opaquePlan;
+    SceneMeshPassPreparation opaquePreparation;
+    RenderVisibilityResult opaqueVisibility;
+    RenderFrameExecutionReport opaqueReport;
+    RenderPassRecordContext opaqueContext = makeContext(
+        opaqueGraph, opaquePlan, opaquePreparation, opaqueVisibility, opaqueReport,
+        RenderPassKind::Opaque);
+    opaqueContext.opaqueGPUDriven.identity = opaqueContext.identity;
+    OpaquePass opaquePass;
+    opaquePass.AddToGraph(opaqueGraph, opaqueContext);
+    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+              opaqueContext.results->opaqueStats.failureReason);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              opaqueContext.results->executionReport.status);
+    const RenderPassExecutionReport* opaqueExecution =
+        FindPassExecutionReport(opaqueContext.results->executionReport,
+                                RenderPassKind::Opaque);
+    ASSERT_NE(opaqueExecution, nullptr);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              opaqueExecution->gpuDrivenLane.status);
+    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+              opaqueExecution->gpuDrivenLane.reason);
+    EXPECT_TRUE(opaqueExecution->gpuDrivenLane.executedCountsAvailable);
+    EXPECT_EQ(0u, opaqueExecution->gpuDrivenLane.executedPacketCount);
+    EXPECT_EQ(0u, opaqueExecution->gpuDrivenLane.executedDrawCount);
+    EXPECT_EQ(RenderExecutionStatus::NotAttempted,
+              opaqueExecution->directLane.status);
+    EXPECT_EQ(RenderPolicyReason::None, opaqueExecution->directLane.reason);
+    EXPECT_FALSE(opaqueExecution->directLane.executedCountsAvailable);
+    EXPECT_EQ(0u, opaqueExecution->directLane.executedPacketCount);
+    EXPECT_EQ(0u, opaqueExecution->directLane.executedDrawCount);
+    opaqueGraph.Compile();
+    ASSERT_TRUE(opaqueGraph.GetCompileStats().compileValid);
+    RecordingCommandContext opaqueCommands;
+    opaqueGraph.Execute(opaqueCommands);
+    EXPECT_EQ(0u, opaqueCommands.beginRenderPassCount);
+    EXPECT_EQ(0u, opaqueCommands.drawIndexedCount);
+    EXPECT_EQ(0u, opaqueCommands.drawIndexedIndirectCount);
+
+    RenderGraph hybridGraph;
+    hybridGraph.SetDevice(&device);
+    RenderFrameExecutionPlan hybridPlan;
+    SceneMeshPassPreparation hybridPreparation;
+    RenderVisibilityResult hybridVisibility;
+    RenderFrameExecutionReport hybridReport;
+    RenderPassRecordContext hybridContext = makeContext(
+        hybridGraph, hybridPlan, hybridPreparation, hybridVisibility, hybridReport,
+        RenderPassKind::Depth, 1);
+    hybridContext.depthGPUDriven.identity = hybridContext.identity;
+    DepthPrepass hybridPass;
+    hybridPass.AddToGraph(hybridGraph, hybridContext);
+    const RenderPassExecutionReport* hybridExecution =
+        FindPassExecutionReport(hybridContext.results->executionReport,
+                                RenderPassKind::Depth);
+    ASSERT_NE(hybridExecution, nullptr);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              hybridExecution->gpuDrivenLane.status);
+    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+              hybridExecution->gpuDrivenLane.reason);
+    EXPECT_TRUE(hybridExecution->gpuDrivenLane.executedCountsAvailable);
+    EXPECT_EQ(0u, hybridExecution->gpuDrivenLane.executedPacketCount);
+    EXPECT_EQ(0u, hybridExecution->gpuDrivenLane.executedDrawCount);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              hybridExecution->directLane.status);
+    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+              hybridExecution->directLane.reason);
+    EXPECT_TRUE(hybridExecution->directLane.executedCountsAvailable);
+    EXPECT_EQ(0u, hybridExecution->directLane.executedPacketCount);
+    EXPECT_EQ(0u, hybridExecution->directLane.executedDrawCount);
+
+    RenderGraph unmatchedReportGraph;
+    unmatchedReportGraph.SetDevice(&device);
+    RenderFrameExecutionPlan unmatchedReportPlan;
+    SceneMeshPassPreparation unmatchedReportPreparation;
+    RenderVisibilityResult unmatchedReportVisibility;
+    RenderFrameExecutionReport unmatchedReport;
+    RenderPassRecordContext unmatchedReportContext = makeContext(
+        unmatchedReportGraph,
+        unmatchedReportPlan,
+        unmatchedReportPreparation,
+        unmatchedReportVisibility,
+        unmatchedReport,
+        RenderPassKind::Depth);
+    unmatchedReport.frameSequence = 0;
+    unmatchedReport.passes = {{RenderPassKind::Opaque}};
+    unmatchedReportContext.depthGPUDriven.identity = unmatchedReportContext.identity;
+    DepthPrepass unmatchedReportPass;
+    unmatchedReportPass.AddToGraph(unmatchedReportGraph, unmatchedReportContext);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              unmatchedReportContext.results->executionReport.status);
+    EXPECT_EQ(unmatchedReportContext.identity.frameSequence,
+              unmatchedReportContext.results->executionReport.frameSequence);
+}
+
+TEST_F(RenderPassValidationFixture,
+       MigratedPassesRejectForeignAndStaleRecordGraphs)
+{
+    const std::vector<RenderDrawItem> emptyDrawItems;
+    const auto makeContext = [this, &emptyDrawItems](
+                                 RenderGraph& graph,
+                                 RenderFrameExecutionPlan& plan,
+                                 SceneMeshPassPreparation& preparation,
+                                 RenderVisibilityResult& visibility,
+                                 RenderFrameExecutionReport& report,
+                                 RenderPassKind passKind)
+    {
+        plan.frameSequence = 451;
+        plan.viewOrdinal = 3;
+        plan.passes = {{passKind}};
+        report.frameSequence = plan.frameSequence;
+        report.passes = {{passKind}};
+
+        RenderPassRecordContext context;
+        context.view.renderGraph = &graph;
+        context.view.renderFrameExecutionPlan = &plan;
+        context.view.meshPassPreparation = &preparation;
+        context.view.renderVisibility = &visibility;
+        context.view.renderFrameExecutionReport = &report;
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration =
+            graph.GetRecordingGeneration();
+        context.identity.frameSequence = plan.frameSequence;
+        context.identity.viewOrdinal = plan.viewOrdinal;
+        context.identity.recordEpoch = 19;
+        context.executionPlan = &plan;
+        context.meshPassPreparation = &preparation;
+        context.visibility = &visibility;
+        context.executionReport = &report;
+        context.renderScene = &scene;
+        context.opaqueDrawItems = &emptyDrawItems;
+        context.maskedDrawItems = &emptyDrawItems;
+        context.directionalShadow.identity = context.identity;
+        context.rayTracedShadow.identity = context.identity;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        return context;
+    };
+
+    RenderGraph sourceGraph;
+    RenderGraph targetGraph;
+    sourceGraph.SetDevice(&device);
+    targetGraph.SetDevice(&device);
+    RenderFrameExecutionPlan depthPlan;
+    SceneMeshPassPreparation depthPreparation;
+    RenderVisibilityResult depthVisibility;
+    RenderFrameExecutionReport depthReport;
+    RenderPassRecordContext foreignDepthContext = makeContext(
+        sourceGraph,
+        depthPlan,
+        depthPreparation,
+        depthVisibility,
+        depthReport,
+        RenderPassKind::Depth);
+
+    DepthPrepass depthPass;
+    depthPass.AddToGraph(targetGraph, foreignDepthContext);
+    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+              foreignDepthContext.results->depthStats.failureReason);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              foreignDepthContext.results->executionReport.status);
+    targetGraph.Compile();
+    ASSERT_TRUE(targetGraph.GetCompileStats().compileValid);
+    RecordingCommandContext depthCommands;
+    targetGraph.Execute(depthCommands);
+    EXPECT_EQ(0u, depthCommands.beginRenderPassCount);
+    EXPECT_EQ(0u, depthCommands.drawIndexedCount);
+    EXPECT_EQ(0u, depthCommands.drawIndexedIndirectCount);
+
+    RenderGraph staleGraph;
+    staleGraph.SetDevice(&device);
+    RenderFrameExecutionPlan opaquePlan;
+    SceneMeshPassPreparation opaquePreparation;
+    RenderVisibilityResult opaqueVisibility;
+    RenderFrameExecutionReport opaqueReport;
+    RenderPassRecordContext staleOpaqueContext = makeContext(
+        staleGraph,
+        opaquePlan,
+        opaquePreparation,
+        opaqueVisibility,
+        opaqueReport,
+        RenderPassKind::Opaque);
+    staleGraph.Clear();
+
+    OpaquePass opaquePass;
+    opaquePass.AddToGraph(staleGraph, staleOpaqueContext);
+    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+              staleOpaqueContext.results->opaqueStats.failureReason);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              staleOpaqueContext.results->executionReport.status);
+    staleGraph.Compile();
+    ASSERT_TRUE(staleGraph.GetCompileStats().compileValid);
+    RecordingCommandContext opaqueCommands;
+    staleGraph.Execute(opaqueCommands);
+    EXPECT_EQ(0u, opaqueCommands.beginRenderPassCount);
+    EXPECT_EQ(0u, opaqueCommands.drawIndexedCount);
+    EXPECT_EQ(0u, opaqueCommands.drawIndexedIndirectCount);
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassRejectsInvalidForeignAndStaleShadowInputs)
+{
+    const std::vector<RenderDrawItem> emptyDrawItems;
+    const RHITextureDesc shadowDesc = RHITextureDesc::Texture2D(
+        4, 4, RHIFormat::R8_UNORM);
+    const auto makeContext = [this, &emptyDrawItems](
+                                 RenderGraph& graph,
+                                 RenderFrameExecutionPlan& plan,
+                                 SceneMeshPassPreparation& preparation,
+                                 RenderVisibilityResult& visibility,
+                                 RenderFrameExecutionReport& report)
+    {
+        plan.frameSequence = 452;
+        plan.viewOrdinal = 4;
+        plan.passes = {{RenderPassKind::Opaque}};
+        report.frameSequence = plan.frameSequence;
+        report.passes = {{RenderPassKind::Opaque}};
+
+        RenderPassRecordContext context;
+        context.view.renderGraph = &graph;
+        context.view.renderFrameExecutionPlan = &plan;
+        context.view.meshPassPreparation = &preparation;
+        context.view.renderVisibility = &visibility;
+        context.view.renderFrameExecutionReport = &report;
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration =
+            graph.GetRecordingGeneration();
+        context.identity.frameSequence = plan.frameSequence;
+        context.identity.viewOrdinal = plan.viewOrdinal;
+        context.identity.recordEpoch = 20;
+        context.executionPlan = &plan;
+        context.meshPassPreparation = &preparation;
+        context.visibility = &visibility;
+        context.executionReport = &report;
+        context.renderScene = &scene;
+        context.opaqueDrawItems = &emptyDrawItems;
+        context.maskedDrawItems = &emptyDrawItems;
+        context.directionalShadow.identity = context.identity;
+        context.rayTracedShadow.identity = context.identity;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        return context;
+    };
+    const auto expectRejected = [this, &makeContext](
+                                    const char* caseName,
+                                    const auto& configureContext)
+    {
+        SCOPED_TRACE(caseName);
+        RenderGraph graph;
+        graph.SetDevice(&device);
+        RenderFrameExecutionPlan plan;
+        SceneMeshPassPreparation preparation;
+        RenderVisibilityResult visibility;
+        RenderFrameExecutionReport report;
+        RenderPassRecordContext context = makeContext(
+            graph, plan, preparation, visibility, report);
+        configureContext(graph, context);
+
+        OpaquePass pass;
+        pass.AddToGraph(graph, context);
+        EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+                  context.results->opaqueStats.failureReason);
+        EXPECT_EQ(RenderExecutionStatus::Failed,
+                  context.results->executionReport.status);
+        graph.Compile();
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        RecordingCommandContext commands;
+        graph.Execute(commands);
+        EXPECT_EQ(0u, commands.beginRenderPassCount);
+        EXPECT_EQ(0u, commands.drawIndexedCount);
+        EXPECT_EQ(0u, commands.drawIndexedIndirectCount);
+    };
+
+    expectRejected("directional invalid",
+                   [](RenderGraph&, RenderPassRecordContext& context)
+                   {
+                       context.directionalShadow.enabled = true;
+                       context.directionalShadow.shadowMapSize = 4;
+                       context.directionalShadow.cascadeViewProjections = {
+                           Mat4Identity()};
+                       context.directionalShadow.cascadeSplitDepths = {1.0f};
+                   });
+
+    RenderGraph foreignGraph;
+    const RGTextureHandle foreignShadow = foreignGraph.CreateTexture(shadowDesc);
+    expectRejected("directional foreign",
+                   [foreignShadow](RenderGraph&, RenderPassRecordContext& context)
+                   {
+                       context.directionalShadow.enabled = true;
+                       context.directionalShadow.shadowMap = foreignShadow;
+                       context.directionalShadow.shadowMapSize = 4;
+                       context.directionalShadow.cascadeViewProjections = {
+                           Mat4Identity()};
+                       context.directionalShadow.cascadeSplitDepths = {1.0f};
+                   });
+
+    expectRejected("directional stale",
+                   [shadowDesc](RenderGraph& graph,
+                                RenderPassRecordContext& context)
+                   {
+                       const RGTextureHandle staleShadow =
+                           graph.CreateTexture(shadowDesc);
+                       graph.Clear();
+                       context.identity.graphIdentity = graph.GetGraphIdentity();
+                       context.identity.graphRecordingGeneration =
+                           graph.GetRecordingGeneration();
+                       context.directionalShadow.identity = context.identity;
+                       context.rayTracedShadow.identity = context.identity;
+                       context.directionalShadow.enabled = true;
+                       context.directionalShadow.shadowMap = staleShadow;
+                       context.directionalShadow.shadowMapSize = 4;
+                       context.directionalShadow.cascadeViewProjections = {
+                           Mat4Identity()};
+                       context.directionalShadow.cascadeSplitDepths = {1.0f};
+                   });
+
+    expectRejected("ray traced invalid",
+                   [](RenderGraph&, RenderPassRecordContext& context)
+                   {
+                       context.rayTracedShadow.enabled = true;
+                   });
+
+    expectRejected("ray traced foreign",
+                   [foreignShadow](RenderGraph&, RenderPassRecordContext& context)
+                   {
+                       context.rayTracedShadow.enabled = true;
+                       context.rayTracedShadow.shadowMask = foreignShadow;
+                   });
+
+    expectRejected("ray traced stale",
+                   [shadowDesc](RenderGraph& graph,
+                                RenderPassRecordContext& context)
+                   {
+                       const RGTextureHandle staleShadow =
+                           graph.CreateTexture(shadowDesc);
+                       graph.Clear();
+                       context.identity.graphIdentity = graph.GetGraphIdentity();
+                       context.identity.graphRecordingGeneration =
+                           graph.GetRecordingGeneration();
+                       context.directionalShadow.identity = context.identity;
+                       context.rayTracedShadow.identity = context.identity;
+                       context.rayTracedShadow.enabled = true;
+                       context.rayTracedShadow.shadowMask = staleShadow;
+                   });
+}
+
+TEST_F(RenderPassValidationFixture, MigratedDepthPassExecutesItsOwnedRecordContext)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+        32, 32, PipelineCache::GetDefaultDepthStencilFormat());
+    const RGTextureHandle depthTarget = graph.CreateTexture(depthDesc);
+    graph.SetExportState(depthTarget, RHIResourceState::DepthRead);
+
+    const std::vector<RenderDrawItem> emptyDrawItems;
+    const SceneMeshPassPreparation preparation = PrepareDepthPackets(
+        emptyDrawItems, emptyDrawItems);
+    const RenderFramePlanCompileResult compiled = CompileForcedDirectPlan(
+        preparation, 78);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderVisibilityResult visibility;
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    RenderPassRecordContext context;
+    context.view.renderGraph = &graph;
+    context.view.viewCache = &viewCache;
+    context.view.depthTarget = depthTarget;
+    context.view.viewportWidth = 32;
+    context.view.viewportHeight = 32;
+    context.view.renderFrameExecutionPlan = &compiled.plan;
+    context.view.meshPassPreparation = &preparation;
+    context.view.renderVisibility = &visibility;
+    context.view.renderFrameExecutionReport = &report;
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = compiled.plan.frameSequence;
+    context.identity.recordEpoch = 10;
+    context.executionPlan = &compiled.plan;
+    context.meshPassPreparation = &preparation;
+    context.visibility = &visibility;
+    context.executionReport = &report;
+    context.renderScene = &scene;
+    context.opaqueDrawItems = &emptyDrawItems;
+    context.maskedDrawItems = &emptyDrawItems;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.directionalShadow.identity = context.identity;
+    context.rayTracedShadow.identity = context.identity;
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    pass.SetMaterialSystem(&materialSystem);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RecordingCommandContext commandContext;
+    graph.Execute(commandContext);
+    EXPECT_EQ(1u, commandContext.beginRenderPassCount);
+    EXPECT_TRUE(context.results->depthStats.planValidated);
+    EXPECT_EQ(RenderPolicyReason::None, context.results->depthStats.failureReason);
+    const RenderPassExecutionReport* depthReport =
+        FindPassExecutionReport(context.results->executionReport,
+                                RenderPassKind::Depth);
+    ASSERT_NE(depthReport, nullptr);
+    EXPECT_EQ(RenderExecutionStatus::Completed, depthReport->status);
 }
 
 TEST(RenderPassValidation, RayTracingPipelineValidationRejectsInvalidShaderGroupContracts)
@@ -8123,6 +8896,14 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     EXPECT_TRUE(stats.compileValid);
     EXPECT_EQ(stats.totalPasses, 2u);
     EXPECT_EQ(stats.culledPasses, 0u);
+
+    // Opaque must draw from the snapshot captured at graph registration;
+    // changing the producer before execution cannot alter its shadow inputs.
+    shadowPass.SetEnabled(false);
+    ShadowPassConfig mutatedShadowConfig = shadowPass.GetConfig();
+    mutatedShadowConfig.shadowBias = 0.75f;
+    mutatedShadowConfig.filterRadiusTexels = 9.0f;
+    shadowPass.SetConfig(mutatedShadowConfig);
 
     RecordingCommandContext ctx;
     graph.Execute(ctx);

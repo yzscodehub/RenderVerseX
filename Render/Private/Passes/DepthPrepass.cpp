@@ -4,18 +4,19 @@
  */
 
 #include "Render/Passes/DepthPrepass.h"
+#include "Core/Log.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/Graph/ResourceViewCache.h"
-#include "Render/Renderer/ViewData.h"
-#include "Render/Renderer/RenderScene.h"
-#include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Material/MaterialSystem.h"
-#include "Resources/RenderResourceResolver.h"
 #include "Render/PipelineCache.h"
+#include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Renderer/RenderScene.h"
+#include "Render/Renderer/ViewData.h"
+#include "Resources/RenderResourceResolver.h"
 #include "RHI/RHIRenderPass.h"
-#include "Core/Log.h"
 
 #include <limits>
+#include <memory>
 
 namespace RVX
 {
@@ -116,6 +117,86 @@ namespace
         return true;
     }
 
+    const RenderPassExecutionPlan* FindPassExecutionPlan(
+        const RenderFrameExecutionPlan* plan,
+        RenderPassKind pass)
+    {
+        if (plan == nullptr)
+        {
+            return nullptr;
+        }
+        for (const RenderPassExecutionPlan& candidate : plan->passes)
+        {
+            if (candidate.pass == pass)
+            {
+                return &candidate;
+            }
+        }
+        return nullptr;
+    }
+
+    bool IsGPUDrivenPassPlanned(const RenderFrameExecutionPlan* plan,
+                                RenderPassKind pass)
+    {
+        const RenderPassExecutionPlan* passPlan =
+            FindPassExecutionPlan(plan, pass);
+        return passPlan != nullptr &&
+               passPlan->partition.gpuDrivenPacketCount != 0;
+    }
+
+    void PublishDepthContextFailure(const RenderPassExecutionData& execution,
+                                    DepthPrepassDrawStats& stats)
+    {
+        stats = {};
+        const RenderFrameExecutionPlan* executionPlan =
+            execution.GetExecutionPlan();
+        stats.planRequested = executionPlan != nullptr;
+        stats.failureReason = RenderPolicyReason::InconsistentFacts;
+        RenderFrameExecutionReport* executionReport =
+            execution.GetExecutionReport();
+        if (executionReport == nullptr)
+        {
+            return;
+        }
+        RenderFrameExecutionReport& frameReport = *executionReport;
+        frameReport.status = RenderExecutionStatus::Failed;
+        if (frameReport.frameSequence == 0)
+        {
+            frameReport.frameSequence = execution.identity.frameSequence;
+        }
+
+        const RenderPassExecutionPlan* passPlan = FindPassExecutionPlan(
+            executionPlan, RenderPassKind::Depth);
+        const bool gpuLanePlanned = passPlan != nullptr &&
+            passPlan->partition.gpuDrivenPacketCount != 0;
+        const bool directLanePlanned = passPlan != nullptr &&
+            passPlan->partition.directPacketCount != 0;
+        const auto publishLaneFailure = [reason = stats.failureReason](
+                                            RenderPassLaneExecutionReport& lane,
+                                            bool planned)
+        {
+            lane.status = planned
+                ? RenderExecutionStatus::Failed
+                : RenderExecutionStatus::NotAttempted;
+            lane.reason = planned ? reason : RenderPolicyReason::None;
+            lane.executedCountsAvailable = planned;
+            lane.executedPacketCount = 0;
+            lane.executedDrawCount = 0;
+        };
+        for (RenderPassExecutionReport& report : frameReport.passes)
+        {
+            if (report.pass != RenderPassKind::Depth)
+            {
+                continue;
+            }
+            report.status = RenderExecutionStatus::Failed;
+            report.reason = stats.failureReason;
+            publishLaneFailure(report.gpuDrivenLane, gpuLanePlanned);
+            publishLaneFailure(report.directLane, directLanePlanned);
+            break;
+        }
+    }
+
 } // namespace
 
 struct DepthPrepass::PlannedDepthDraw
@@ -172,6 +253,156 @@ void DepthPrepass::SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffe
 void DepthPrepass::SetDepthTarget(RHITextureView* depthView)
 {
     m_depthTargetView = depthView;
+}
+
+void DepthPrepass::AddToGraph(RenderGraph& graph, const ViewData& view)
+{
+    struct LegacyPassData
+    {
+        DepthPrepass* pass = nullptr;
+        ViewData view{};
+    };
+
+    // Explicit standalone adapter.  SceneRenderer uses the record-context
+    // overload below; this path only preserves validation coverage for the
+    // legacy Setup/Execute surface while still value-capturing ViewData.
+    const ViewData capturedView = view;
+    graph.AddPass<LegacyPassData>(
+        GetName(),
+        GetPassType(),
+        [this, capturedView](RenderGraphBuilder& builder, LegacyPassData& data)
+        {
+            data.pass = this;
+            data.view = capturedView;
+            data.pass->Setup(builder, data.view);
+        },
+        [](const LegacyPassData& data, RHICommandContext& ctx)
+        {
+            data.pass->Execute(ctx, data.view);
+        });
+}
+
+void DepthPrepass::AddToGraph(
+    RenderGraph& graph,
+    const RenderPassRecordContext& context)
+{
+    struct GraphPassData
+    {
+        RenderPassExecutionData execution{};
+        RenderPassGPUDrivenInputs gpuInputs{};
+        std::unique_ptr<DepthPrepass> recorder;
+        bool contextValid = false;
+    };
+
+    const RenderPassExecutionData execution =
+        MakeRenderPassExecutionData(context);
+    const RenderFrameExecutionPlan* executionPlan =
+        execution.GetExecutionPlan();
+    const bool hasPlan = executionPlan != nullptr;
+    const bool gpuPlanned = IsGPUDrivenPassPlanned(
+        executionPlan, RenderPassKind::Depth);
+    const RenderPassGPUDrivenInputs gpuInputs = context.depthGPUDriven;
+    const GPUCullingRecordingIdentity gpuRecordingIdentity{
+        execution.identity.graphIdentity,
+        execution.identity.graphRecordingGeneration,
+        execution.identity.frameSequence,
+        execution.identity.viewOrdinal,
+        execution.identity.recordEpoch};
+    const bool contextValid = !context.legacyAdapter &&
+        context.MatchesTargetGraph(graph) &&
+        context.IsFrameIdentityValid() &&
+        execution.MatchesTargetGraph(graph) &&
+        execution.IsFrameIdentityValid() &&
+        execution.frameSnapshot != nullptr && execution.results != nullptr &&
+        (!gpuPlanned || (gpuInputs.IsCompatibleWith(execution.identity) &&
+                         gpuInputs.recordedState->Matches(gpuRecordingIdentity)));
+
+    // Copy every service and frame reference into the graph registration
+    // closure.  The callbacks below only read GraphPassData; the originating
+    // pass is retained solely as a write-only diagnostics sink.
+    PipelineCache* const pipelineCache = m_pipelineCache;
+    MaterialSystem* const materialSystem = m_materialSystem;
+    const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
+    const RenderScene* const renderScene = execution.frameSnapshot
+        ? &execution.frameSnapshot->scene : nullptr;
+    const std::vector<RenderDrawItem>* const opaqueDrawItems =
+        execution.frameSnapshot ? &execution.frameSnapshot->opaqueDrawItems : nullptr;
+    const std::vector<RenderDrawItem>* const maskedDrawItems =
+        execution.frameSnapshot ? &execution.frameSnapshot->maskedDrawItems : nullptr;
+    const GPUCulling* const gpuCulling = hasPlan
+        ? (gpuInputs.recordedState != nullptr
+            ? &gpuInputs.recordedState->GetCulling() : nullptr)
+        : m_gpuCulling;
+    const bool gpuEnabled = hasPlan ? gpuPlanned : m_gpuDrivenDepthIndirectEnabled;
+    const RGBufferHandle instanceHandle = hasPlan
+        ? gpuInputs.instances : m_gpuDrivenInstanceHandle;
+    const RGBufferHandle instanceIndexHandle = hasPlan
+        ? gpuInputs.instanceIndices : m_gpuDrivenInstanceIndexHandle;
+    const RGBufferHandle indirectHandle = hasPlan
+        ? gpuInputs.indirectDraws : m_gpuDrivenIndirectHandle;
+    const RGBufferHandle drawCountHandle = hasPlan
+        ? gpuInputs.drawCount : m_gpuDrivenDrawCountHandle;
+    RHITextureView* const standaloneDepthTarget = m_depthTargetView;
+    const bool enabled = m_enabled;
+    const std::shared_ptr<RenderPassRecordResults> results = execution.results;
+
+    graph.AddPass<GraphPassData>(
+        GetName(),
+        GetPassType(),
+        [execution,
+         gpuInputs,
+         contextValid,
+         pipelineCache,
+         materialSystem,
+         resourceRegistry,
+         renderScene,
+         opaqueDrawItems,
+         maskedDrawItems,
+         gpuCulling,
+         gpuEnabled,
+         instanceHandle,
+         instanceIndexHandle,
+         indirectHandle,
+         drawCountHandle,
+         standaloneDepthTarget,
+         enabled,
+         results](RenderGraphBuilder& builder, GraphPassData& data)
+        {
+            data.execution = execution;
+            data.gpuInputs = gpuInputs;
+            data.contextValid = contextValid;
+            if (!data.contextValid)
+            {
+                PublishDepthContextFailure(data.execution, results->depthStats);
+                return;
+            }
+
+            // This recorder is owned by graph PassData, not the persistent
+            // DepthPrepass instance.  Existing Setup/Execute compatibility
+            // logic is therefore shared without a second rendering behavior.
+            data.recorder = std::make_unique<DepthPrepass>();
+            data.recorder->SetResources(pipelineCache);
+            data.recorder->SetMaterialSystem(materialSystem);
+            data.recorder->SetResourceRegistry(resourceRegistry);
+            data.recorder->SetRenderScene(renderScene, opaqueDrawItems, maskedDrawItems);
+            data.recorder->SetGPUDrivenCullingSource(gpuCulling);
+            data.recorder->SetGPUDrivenRenderGraphResources(
+                instanceHandle, instanceIndexHandle, indirectHandle, drawCountHandle);
+            data.recorder->SetGPUDrivenDepthIndirectEnabled(gpuEnabled);
+            data.recorder->SetDepthTarget(standaloneDepthTarget);
+            data.recorder->SetEnabled(enabled);
+            data.recorder->Setup(builder, data.execution.view);
+        },
+        [results](const GraphPassData& data, RHICommandContext& ctx)
+        {
+            if (!data.contextValid || !data.recorder)
+            {
+                PublishDepthContextFailure(data.execution, results->depthStats);
+                return;
+            }
+            data.recorder->Execute(ctx, data.execution.view);
+            results->depthStats = data.recorder->GetDrawStats();
+        });
 }
 
 bool DepthPrepass::IsSupported() const

@@ -2795,13 +2795,17 @@ TEST(RenderGraphValidation, ClearAndRecompile)
 TEST(RenderGraphValidation, InvalidTextureUsageIsReported)
 {
     RenderGraph graph;
+    RGTextureHandle invalidTexture;
+    invalidTexture.index = 777;
+    invalidTexture.graphIdentity = graph.GetGraphIdentity();
+    invalidTexture.recordingGeneration = graph.GetRecordingGeneration();
 
     graph.AddPass<SimplePassData>(
         "InvalidTextureUsage",
         RenderGraphPassType::Graphics,
-        [](RenderGraphBuilder& builder, SimplePassData& data)
+        [invalidTexture](RenderGraphBuilder& builder, SimplePassData& data)
         {
-            data.colorTarget = builder.Write(RGTextureHandle{777}, RHIResourceState::RenderTarget);
+            data.colorTarget = builder.Write(invalidTexture, RHIResourceState::RenderTarget);
         },
         [](const SimplePassData&, RHICommandContext&) {});
 
@@ -2815,9 +2819,191 @@ TEST(RenderGraphValidation, InvalidTextureUsageIsReported)
     EXPECT_FALSE(stats.executionOrderFallbackUsed);
 }
 
+TEST(RenderGraphValidation, ForeignHandlesAreRejectedBeforePassUsageRecording)
+{
+    RenderGraph sourceGraph;
+    RenderGraph destinationGraph;
+    EXPECT_NE(sourceGraph.GetGraphIdentity(), 0u);
+    EXPECT_NE(destinationGraph.GetGraphIdentity(), 0u);
+    EXPECT_NE(sourceGraph.GetGraphIdentity(), destinationGraph.GetGraphIdentity());
+    EXPECT_EQ(sourceGraph.GetRecordingGeneration(), 1u);
+    EXPECT_EQ(destinationGraph.GetRecordingGeneration(), 1u);
+
+    const RHITextureDesc textureDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT);
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 64;
+    bufferDesc.usage = RHIBufferUsage::ShaderResource;
+
+    const RGTextureHandle foreignTexture = sourceGraph.CreateTexture(textureDesc);
+    const RGBufferHandle foreignBuffer = sourceGraph.CreateBuffer(bufferDesc);
+    const RGTextureHandle localTexture = destinationGraph.CreateTexture(textureDesc);
+    const RGBufferHandle localBuffer = destinationGraph.CreateBuffer(bufferDesc);
+    bool foreignTextureRejected = false;
+    bool foreignBufferRejected = false;
+    bool localTextureAccepted = false;
+    bool localBufferAccepted = false;
+
+    struct ProvenancePassData
+    {
+        RGTextureHandle foreignTexture;
+        RGBufferHandle foreignBuffer;
+        RGTextureHandle localTexture;
+        RGBufferHandle localBuffer;
+    };
+    destinationGraph.AddPass<ProvenancePassData>(
+        "RejectForeignProvenance",
+        RenderGraphPassType::Graphics,
+        [foreignTexture,
+         foreignBuffer,
+         localTexture,
+         localBuffer,
+         &foreignTextureRejected,
+         &foreignBufferRejected,
+         &localTextureAccepted,
+         &localBufferAccepted](
+            RenderGraphBuilder& builder,
+            ProvenancePassData& data)
+        {
+            data.foreignTexture = builder.Write(
+                foreignTexture, RHIResourceState::RenderTarget);
+            data.foreignBuffer = builder.Read(
+                foreignBuffer, RHIShaderStage::Vertex);
+            builder.SetDepthStencil(foreignTexture);
+            builder.Read(RGTextureHandle{});
+            builder.Write(RGBufferHandle{});
+            data.localTexture = builder.Write(
+                localTexture, RHIResourceState::RenderTarget);
+            data.localBuffer = builder.Write(
+                localBuffer, RHIResourceState::UnorderedAccess);
+            foreignTextureRejected = !data.foreignTexture.IsValid();
+            foreignBufferRejected = !data.foreignBuffer.IsValid();
+            localTextureAccepted = data.localTexture.IsValid();
+            localBufferAccepted = data.localBuffer.IsValid();
+        },
+        [](const ProvenancePassData&, RHICommandContext&) {});
+
+    EXPECT_TRUE(foreignTextureRejected);
+    EXPECT_TRUE(foreignBufferRejected);
+    EXPECT_TRUE(localTextureAccepted);
+    EXPECT_TRUE(localBufferAccepted);
+
+    EXPECT_EQ(destinationGraph.GetTextureDesc(foreignTexture), nullptr);
+    EXPECT_EQ(destinationGraph.GetBufferDesc(foreignBuffer), nullptr);
+    EXPECT_EQ(destinationGraph.GetRealizedAccess(foreignTexture).uniformAccess.layout,
+              RHIResourceLayout::Undefined);
+    EXPECT_EQ(destinationGraph.GetRealizedAccess(foreignBuffer).uniformAccess.layout,
+              RHIResourceLayout::Undefined);
+
+    destinationGraph.SetExportState(foreignTexture, RHIResourceState::Present);
+    destinationGraph.SetExportState(localTexture, RHIResourceState::Present);
+    destinationGraph.Compile();
+    EXPECT_FALSE(destinationGraph.GetCompileStats().compileValid);
+    EXPECT_EQ(destinationGraph.GetCompileStats().invalidResourceUsageCount, 3u);
+    ASSERT_FALSE(destinationGraph.GetCompileDiagnostics().empty());
+    EXPECT_NE(destinationGraph.GetCompileDiagnostics().front().find("invalid"),
+              std::string::npos);
+}
+
+TEST(RenderGraphValidation, ClearInvalidatesOldHandleGenerationWithoutChangingGraphIdentity)
+{
+    RenderGraph graph;
+    const uint64 graphIdentity = graph.GetGraphIdentity();
+    const uint64 firstGeneration = graph.GetRecordingGeneration();
+    EXPECT_NE(graphIdentity, 0u);
+    EXPECT_NE(firstGeneration, 0u);
+
+    const RHITextureDesc textureDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT);
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 64;
+    bufferDesc.usage = RHIBufferUsage::ShaderResource;
+
+    const RGTextureHandle oldTexture = graph.CreateTexture(textureDesc);
+    const RGBufferHandle oldBuffer = graph.CreateBuffer(bufferDesc);
+    const RGTextureHandle oldSubresource = oldTexture.Subresource(0);
+    const RGBufferHandle oldRange = oldBuffer.Range(8, 16);
+    EXPECT_EQ(oldSubresource.graphIdentity, oldTexture.graphIdentity);
+    EXPECT_EQ(oldSubresource.recordingGeneration, oldTexture.recordingGeneration);
+    EXPECT_EQ(oldRange.graphIdentity, oldBuffer.graphIdentity);
+    EXPECT_EQ(oldRange.recordingGeneration, oldBuffer.recordingGeneration);
+
+    graph.Clear();
+    EXPECT_EQ(graph.GetGraphIdentity(), graphIdentity);
+    EXPECT_NE(graph.GetRecordingGeneration(), firstGeneration);
+    EXPECT_NE(graph.GetRecordingGeneration(), 0u);
+
+    const RGTextureHandle currentTexture = graph.CreateTexture(textureDesc);
+    const RGBufferHandle currentBuffer = graph.CreateBuffer(bufferDesc);
+    EXPECT_EQ(currentTexture.index, oldTexture.index);
+    EXPECT_EQ(currentBuffer.index, oldBuffer.index);
+    EXPECT_NE(currentTexture.recordingGeneration, oldTexture.recordingGeneration);
+    EXPECT_NE(currentBuffer.recordingGeneration, oldBuffer.recordingGeneration);
+    EXPECT_EQ(graph.GetTextureDesc(oldTexture), nullptr);
+    EXPECT_EQ(graph.GetBufferDesc(oldBuffer), nullptr);
+    EXPECT_NE(graph.GetTextureDesc(currentTexture), nullptr);
+    EXPECT_NE(graph.GetBufferDesc(currentBuffer), nullptr);
+    bool staleTextureRejected = false;
+    bool staleBufferRejected = false;
+    bool currentTextureAccepted = false;
+    bool currentBufferAccepted = false;
+
+    struct StaleHandlePassData
+    {
+        RGTextureHandle staleTexture;
+        RGBufferHandle staleBuffer;
+        RGTextureHandle currentTexture;
+        RGBufferHandle currentBuffer;
+    };
+    graph.AddPass<StaleHandlePassData>(
+        "RejectStaleGeneration",
+        RenderGraphPassType::Graphics,
+        [oldTexture,
+         oldBuffer,
+         currentTexture,
+         currentBuffer,
+         &staleTextureRejected,
+         &staleBufferRejected,
+         &currentTextureAccepted,
+         &currentBufferAccepted](
+            RenderGraphBuilder& builder,
+            StaleHandlePassData& data)
+        {
+            data.staleTexture = builder.Read(oldTexture);
+            data.staleBuffer = builder.Write(
+                oldBuffer, RHIResourceState::UnorderedAccess);
+            data.currentTexture = builder.Write(
+                currentTexture, RHIResourceState::RenderTarget);
+            data.currentBuffer = builder.Write(
+                currentBuffer, RHIResourceState::UnorderedAccess);
+            staleTextureRejected = !data.staleTexture.IsValid();
+            staleBufferRejected = !data.staleBuffer.IsValid();
+            currentTextureAccepted = data.currentTexture.IsValid();
+            currentBufferAccepted = data.currentBuffer.IsValid();
+        },
+        [](const StaleHandlePassData&, RHICommandContext&) {});
+
+    EXPECT_TRUE(staleTextureRejected);
+    EXPECT_TRUE(staleBufferRejected);
+    EXPECT_TRUE(currentTextureAccepted);
+    EXPECT_TRUE(currentBufferAccepted);
+
+    graph.SetExportState(currentTexture, RHIResourceState::Present);
+    graph.Compile();
+    EXPECT_FALSE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().invalidResourceUsageCount, 2u);
+    ASSERT_FALSE(graph.GetCompileDiagnostics().empty());
+    EXPECT_NE(graph.GetCompileDiagnostics().front().find("invalid"),
+              std::string::npos);
+}
+
 TEST(RenderGraphValidation, InvalidBufferUsageIsReported)
 {
     RenderGraph graph;
+    RGBufferHandle invalidBuffer;
+    invalidBuffer.index = 888;
+    invalidBuffer.graphIdentity = graph.GetGraphIdentity();
+    invalidBuffer.recordingGeneration = graph.GetRecordingGeneration();
 
     struct InvalidBufferPassData
     {
@@ -2827,9 +3013,9 @@ TEST(RenderGraphValidation, InvalidBufferUsageIsReported)
     graph.AddPass<InvalidBufferPassData>(
         "InvalidBufferUsage",
         RenderGraphPassType::Compute,
-        [](RenderGraphBuilder& builder, InvalidBufferPassData& data)
+        [invalidBuffer](RenderGraphBuilder& builder, InvalidBufferPassData& data)
         {
-            data.buffer = builder.Write(RGBufferHandle{888}, RHIResourceState::UnorderedAccess);
+            data.buffer = builder.Write(invalidBuffer, RHIResourceState::UnorderedAccess);
         },
         [](const InvalidBufferPassData&, RHICommandContext&) {});
 
@@ -2923,13 +3109,17 @@ TEST(RenderGraphValidation, ShaderStageMismatchWarningsDoNotInvalidateCompile)
 TEST(RenderGraphValidation, IncompatiblePassStateIsReported)
 {
     RenderGraph graph;
+    RGTextureHandle invalidTexture;
+    invalidTexture.index = 999;
+    invalidTexture.graphIdentity = graph.GetGraphIdentity();
+    invalidTexture.recordingGeneration = graph.GetRecordingGeneration();
 
     graph.AddPass<SimplePassData>(
         "ComputeRenderTargetState",
         RenderGraphPassType::Compute,
-        [](RenderGraphBuilder& builder, SimplePassData& data)
+        [invalidTexture](RenderGraphBuilder& builder, SimplePassData& data)
         {
-            data.colorTarget = builder.Write(RGTextureHandle{999}, RHIResourceState::RenderTarget);
+            data.colorTarget = builder.Write(invalidTexture, RHIResourceState::RenderTarget);
         },
         [](const SimplePassData&, RHICommandContext&) {});
 

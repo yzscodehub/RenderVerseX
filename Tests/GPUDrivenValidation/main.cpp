@@ -7,6 +7,9 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Visibility/RenderVisibility.h"
 #include "RenderContracts/RenderFramePacket.h"
+#include "Resources/RenderRetirementQueue.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHI.h"
 #include "RHI/RHICommandContext.h"
 #include "ShaderCompiler/ShaderCompiler.h"
@@ -17,6 +20,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -25,14 +29,29 @@ using namespace RVX;
 
 namespace
 {
+    struct BufferLifetimeState
+    {
+        uint32 destroyedCount = 0;
+    };
+
     class FakeBuffer final : public RHIBuffer
     {
     public:
-        explicit FakeBuffer(const RHIBufferDesc& desc)
+        explicit FakeBuffer(const RHIBufferDesc& desc,
+                            std::shared_ptr<BufferLifetimeState> lifetimeState = {})
             : m_desc(desc)
             , m_storage(static_cast<size_t>(desc.size))
+            , m_lifetimeState(std::move(lifetimeState))
         {
             m_debugName = desc.debugName ? desc.debugName : "";
+        }
+
+        ~FakeBuffer() override
+        {
+            if (m_lifetimeState)
+            {
+                ++m_lifetimeState->destroyedCount;
+            }
         }
 
         uint64 GetSize() const override { return m_desc.size; }
@@ -60,11 +79,40 @@ namespace
     private:
         RHIBufferDesc m_desc;
         std::vector<uint8> m_storage;
+        std::shared_ptr<BufferLifetimeState> m_lifetimeState;
+    };
+
+    class FakeFence final : public RHIFence
+    {
+    public:
+        explicit FakeFence(uint64 initialValue)
+            : m_completedValue(initialValue)
+            , m_nextValue(initialValue + 1)
+        {
+        }
+
+        uint64 GetCompletedValue() const override { return m_completedValue; }
+        void Signal(uint64 value) override { Complete(value); }
+        void SignalOnQueue(uint64 value, RHICommandQueueType) override
+        {
+            Complete(value);
+        }
+        void Wait(uint64 value, uint64 = UINT64_MAX) override { Complete(value); }
+        uint64 AllocateValue() { return m_nextValue++; }
+        void Complete(uint64 value)
+        {
+            m_completedValue = std::max(m_completedValue, value);
+        }
+
+    private:
+        uint64 m_completedValue = 0;
+        uint64 m_nextValue = 1;
     };
 
     class FakeCommandContext final : public RHICommandContext
     {
     public:
+        RHICommandQueueType GetQueueType() const override { return RHICommandQueueType::Graphics; }
         void Begin() override {}
         void End() override {}
         void Reset() override {}
@@ -155,7 +203,7 @@ namespace
     public:
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
-            RHIBufferRef buffer(new FakeBuffer(desc));
+            RHIBufferRef buffer(new FakeBuffer(desc, bufferLifetimeState));
             createdBuffers.push_back(static_cast<FakeBuffer*>(buffer.Get()));
             return buffer;
         }
@@ -176,10 +224,20 @@ namespace
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc&) override { return {}; }
         RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc&) override { return {}; }
         RHICommandContextRef CreateCommandContext(RHICommandQueueType) override { return RHICommandContextRef(new FakeCommandContext()); }
-        uint64 SubmitCommandContext(RHICommandContext*, RHIFence* = nullptr) override { return 0; }
+        uint64 SubmitCommandContext(RHICommandContext*, RHIFence* signalFence = nullptr) override
+        {
+            return signalFence
+                ? static_cast<FakeFence*>(signalFence)->AllocateValue()
+                : 0;
+        }
         uint64 SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence* = nullptr) override { return 0; }
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc&) override { return {}; }
-        RHIFenceRef CreateFence(uint64 = 0) override { return {}; }
+        RHIFenceRef CreateFence(uint64 initialValue = 0) override
+        {
+            RHIFenceRef fence(new FakeFence(initialValue));
+            fences.push_back(fence);
+            return fence;
+        }
         void WaitForFence(RHIFence*, uint64) override {}
         void WaitIdle() override {}
         void BeginFrame() override {}
@@ -203,8 +261,39 @@ namespace
             return nullptr;
         }
 
+        void EnableTimelineRetirement()
+        {
+            capabilities.backendType = RHIBackendType::DX12;
+            capabilities.adapterName = "GPUDrivenLifetimeFake";
+            capabilities.driverVersion = "1";
+            capabilities.supportsComputePipeline = true;
+            capabilities.supportsDescriptorSets = true;
+            capabilities.supportsDynamicDescriptorOffsets = true;
+            capabilities.maxDescriptorSets = 4;
+            capabilities.supportsExplicitResourceBarriers = true;
+            capabilities.supportsDefaultQueueFenceSignal = true;
+            capabilities.supportsExplicitQueueFenceSignal = true;
+            capabilities.supportsAsyncCompute = true;
+            capabilities.dx12.resourceBindingTier = 2;
+            capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+            capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy};
+            capabilities.queueTopology.activeDomainCount = 3;
+        }
+
+        FakeFence* GetFence(size_t index) const
+        {
+            return index < fences.size()
+                ? static_cast<FakeFence*>(fences[index].Get())
+                : nullptr;
+        }
+
         RHICapabilities capabilities;
         std::vector<FakeBuffer*> createdBuffers;
+        std::vector<RHIFenceRef> fences;
+        std::shared_ptr<BufferLifetimeState> bufferLifetimeState;
     };
 
     template <typename T>
@@ -707,6 +796,117 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_EQ(slot1ConstantsBeforeInvalidSelect, culling.GetCullingConstantsBuffer());
 }
 
+TEST_F(GPUDrivenValidationFixture,
+       SealedRecordingStateOwnsSlotInputsAcrossSourceMutation)
+{
+    FakeDevice device;
+    GPUCullingConfig config;
+    config.maxInstances = 4;
+
+    GPUCulling culling;
+    culling.Initialize(&device, config, 2);
+    ASSERT_TRUE(culling.SetFrameSlot(1));
+    culling.BeginFrame();
+    ASSERT_EQ(0u, culling.AddInstance(
+        MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 36)));
+    culling.EndFrame();
+
+    const GPUCullingRecordingIdentity identity{
+        101u, 7u, 88u, 1u, 5u};
+    const std::shared_ptr<GPUCullingRecordedState> recorded =
+        culling.SealForGraph(identity);
+    ASSERT_NE(nullptr, recorded);
+    ASSERT_TRUE(recorded->IsValid());
+    EXPECT_TRUE(recorded->Matches(identity));
+    EXPECT_EQ(1u, recorded->GetSourceFrameSlot());
+    ASSERT_NE(nullptr, recorded->GetCulling().GetInstanceBuffer());
+    EXPECT_NE(culling.GetInstanceBuffer(),
+              recorded->GetCulling().GetInstanceBuffer());
+
+    // Reuse the source slot before graph execution. The sealed state must
+    // retain the old slot contents, groups, and output resources.
+    culling.BeginFrame();
+    ASSERT_EQ(0u, culling.AddInstance(
+        MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 12)));
+    culling.EndFrame();
+
+    const GPUInstanceData sealedInstance = ReadBufferValue<GPUInstanceData>(
+        *static_cast<const FakeBuffer*>(recorded->GetCulling().GetInstanceBuffer()));
+    const GPUInstanceData mutatedSourceInstance = ReadBufferValue<GPUInstanceData>(
+        *static_cast<const FakeBuffer*>(culling.GetInstanceBuffer()));
+    EXPECT_EQ(36u, sealedInstance.indexCount);
+    EXPECT_EQ(12u, mutatedSourceInstance.indexCount);
+
+    FakeCommandContext context;
+    recorded->Cull(context, TestView(), TestProjection());
+    const GPUCulling& sealedCulling = recorded->GetCulling();
+    EXPECT_TRUE(sealedCulling.WasCpuFallbackUsedLastCull());
+    ASSERT_EQ(1u, sealedCulling.GetIndirectCommands().size());
+    EXPECT_EQ(36u, sealedCulling.GetIndirectCommands()[0].indexCount);
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       SealedRecordingSubmissionRetainsGpuObjectsUntilCompletion)
+{
+    FakeDevice device;
+    device.EnableTimelineRetirement();
+    device.bufferLifetimeState = std::make_shared<BufferLifetimeState>();
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+
+    GPUCullingConfig config;
+    config.maxInstances = 4;
+    GPUCulling culling;
+    culling.Initialize(&device, config);
+    culling.BeginFrame();
+    ASSERT_EQ(0u, culling.AddInstance(
+        MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 36)));
+    culling.EndFrame();
+
+    const GPUCullingRecordingIdentity identity{
+        201u, 11u, 99u, 0u, 6u};
+    std::shared_ptr<GPUCullingRecordedState> recorded =
+        culling.SealForGraph(identity);
+    ASSERT_NE(nullptr, recorded);
+
+    RenderSubmissionResourceBatch batch;
+    ASSERT_TRUE(recorded->RetainSubmissionResources(batch));
+
+    // This CPU-fallback fixture has exactly the active instance/constants
+    // pair plus the five shared culling/indirect buffers. A future omission is
+    // therefore observable as a smaller retained set.
+    constexpr uint32 expectedSealedPrimaryObjectCount = 7;
+    EXPECT_EQ(expectedSealedPrimaryObjectCount,
+              batch.GetRetainedObjectCount());
+
+    const uint32 destroyedBeforeStateRelease =
+        device.bufferLifetimeState->destroyedCount;
+    recorded.reset();
+    EXPECT_EQ(destroyedBeforeStateRelease,
+              device.bufferLifetimeState->destroyedCount);
+
+    FakeCommandContext context;
+    GPUCompletionToken completion;
+    const GPUCompletionPoint submittedPoint = tracker.Submit(&context);
+    ASSERT_TRUE(InsertGPUCompletionPoint(completion, submittedPoint));
+    batch.SealAndTransfer(completion, retirement);
+    EXPECT_EQ(retirement.GetDiagnostics().entryCount,
+              expectedSealedPrimaryObjectCount);
+    EXPECT_EQ(retirement.Poll(), GPUCompletionStatus::Pending);
+    EXPECT_EQ(destroyedBeforeStateRelease,
+              device.bufferLifetimeState->destroyedCount);
+
+    FakeFence* fence = device.GetFence(0);
+    ASSERT_NE(nullptr, fence);
+    fence->Complete(submittedPoint.value);
+    EXPECT_EQ(retirement.Poll(), GPUCompletionStatus::Completed);
+    EXPECT_EQ(destroyedBeforeStateRelease + expectedSealedPrimaryObjectCount,
+              device.bufferLifetimeState->destroyedCount);
+}
+
 TEST_F(GPUDrivenValidationFixture, CpuFallbackBuffersAvoidDx11InvalidGpuOnlyFlags)
 {
     FakeDevice device;
@@ -1020,7 +1220,7 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
     EXPECT_NE(header.find("SetGPUDrivenCullingMode"), std::string::npos);
     EXPECT_NE(header.find("const SceneGPUDrivenCullingStats& GetGPUDrivenCullingStats() const"),
               std::string::npos);
-    EXPECT_NE(header.find("void AddGPUDrivenCullingPass()"), std::string::npos);
+    EXPECT_NE(header.find("void AddGPUDrivenCullingPass("), std::string::npos);
     EXPECT_NE(header.find("void PrepareGPUDrivenGraphCullInputs()"), std::string::npos);
     EXPECT_NE(header.find("void BuildGPUDrivenVisibilityInputs()"), std::string::npos);
     EXPECT_NE(header.find("void PrepareMeshPassPackets()"), std::string::npos);
@@ -1139,7 +1339,8 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
 
     const size_t buildGraph = source.find("void SceneRenderer::BuildRenderGraph()");
     ASSERT_NE(buildGraph, std::string::npos);
-    const size_t cullGraphCall = source.find("AddGPUDrivenCullingPass();", buildGraph);
+    const size_t cullGraphCall = source.find(
+        "AddGPUDrivenCullingPass(passRecordContext.identity);", buildGraph);
     const size_t passRegistryLoop = source.find("for (auto& pass : m_passRegistry->GetPasses())", buildGraph);
     ASSERT_NE(cullGraphCall, std::string::npos);
     ASSERT_NE(passRegistryLoop, std::string::npos);
@@ -1153,11 +1354,18 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
     EXPECT_NE(source.find("RHIResourceState::UnorderedAccess,"), std::string::npos);
     EXPECT_NE(source.find("data.indirectDraws = builder.Write(data.indirectDraws, unorderedAccess)"),
               std::string::npos);
-    EXPECT_NE(source.find("m_depthPrepass->SetGPUDrivenRenderGraphResources"), std::string::npos);
-    EXPECT_NE(source.find("m_opaquePass->SetGPUDrivenRenderGraphResources"), std::string::npos);
-    EXPECT_NE(source.find("owner->Cull(ctx, m_viewData.viewMatrix, m_viewData.projectionMatrix)"),
+    EXPECT_EQ(source.find("m_depthPrepass->SetGPUDrivenRenderGraphResources"), std::string::npos);
+    EXPECT_EQ(source.find("m_opaquePass->SetGPUDrivenRenderGraphResources"), std::string::npos);
+    EXPECT_NE(source.find("RenderPassRecordContext passRecordContext"), std::string::npos);
+    EXPECT_NE(source.find("passRecordContext.depthGPUDriven"), std::string::npos);
+    EXPECT_NE(source.find("passRecordContext.opaqueGPUDriven"), std::string::npos);
+    EXPECT_NE(source.find("SealForGraph"), std::string::npos);
+    EXPECT_NE(source.find("recordedState->Cull"), std::string::npos);
+    EXPECT_EQ(source.find("owner->Cull(ctx, m_viewData.viewMatrix, m_viewData.projectionMatrix)"),
               std::string::npos);
-    EXPECT_NE(source.find("m_gpuDrivenCullingStats.gpuExecutionRecorded"), std::string::npos);
+    EXPECT_EQ(source.find("owner->Cull(ctx, cullViewMatrix, cullProjectionMatrix)"),
+              std::string::npos);
+    EXPECT_NE(source.find("cullingStatsSink->gpuExecutionRecorded"), std::string::npos);
     EXPECT_NE(source.find("m_opaquePass->GetDrawStats()"), std::string::npos);
     EXPECT_NE(source.find("m_gpuDrivenCullingStats.opaqueIndirectRequested"), std::string::npos);
     EXPECT_NE(source.find("m_gpuDrivenCullingStats.opaqueGpuDrivenIndirectDrawCount"), std::string::npos);

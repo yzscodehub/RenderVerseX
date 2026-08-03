@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8 complete; Task 9 frame-owned pass contexts is the next
-implementation stage
+**Status:** Tasks 0-8 and Task 9A complete; Task 9B remaining scene-pass
+context migration is the next implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -260,22 +260,40 @@ from submitted upper bounds and CPU reference visibility.
 
 ### Task 9 - Frame-Owned Pass Record Contexts
 
-- [ ] Define immutable `RenderPassRecordContext` and frame-owned
-  `RenderPassExecutionData`.
-- [ ] Evolve `IRenderPass::AddToGraph` to receive a per-view plan and captured
-  pass data.
-- [ ] Move graph handles, planned packet ranges, and transient RHI references
-  out of persistent pass members.
-- [ ] Remove Depth/Opaque GPU-resource setter injection.
-- [ ] Make execute lambdas consume only captured execution data and record
-  commands without policy/backend branching.
-- [ ] Declare compute-write to indirect-read and instance-index dependencies in
-  RenderGraph.
-- [ ] Keep execution on the graphics physical queue until async compute has its
-  own synchronization and performance proof.
-- [ ] Add two-view, sequential-view, repeated-frame, resize, rejected-frame,
-  and stale-handle fixtures.
-- [ ] Add graph-negative tests for missing declarations and lifetime violations.
+#### 9A. Core contract and Depth/Opaque migration
+
+- [x] Define immutable `RenderPassRecordContext`, graph-owned frame snapshots,
+  typed `RenderPassExecutionData`, and identity-gated result publication.
+- [x] Evolve `IRenderPass::AddToGraph` to receive captured per-view pass data;
+  keep only a value-capture compatibility adapter for unmigrated passes.
+- [x] Move Depth/Opaque plan, scene/list, shadow, graph-handle, and GPU-culling
+  inputs into graph-owned data and independent per-recording GPU state.
+- [x] Remove production Depth/Opaque GPU-resource setter injection; standalone
+  compatibility entry points remain only until Task 9B cleanup.
+- [x] Make Depth/Opaque graph callbacks execute graph-owned recorder clones and
+  never read persistent per-frame pass mailboxes.
+- [x] Declare compute-write to indirect/count/instance reads in RenderGraph and
+  keep execution on the graphics physical queue.
+- [x] Add graph identity/generation to RG handles and fail closed for foreign,
+  stale, incomplete GPU, invalid shadow, and missing-declaration contexts.
+- [x] Seal and submission-retain every RHI object used by a GPU-culling
+  recording; verify release occurs only after its completion point.
+- [x] Re-run Direct/GPU parity, repeated-frame, Porsche, GBV, resize/lifetime,
+  and DX11 Direct gates.
+
+#### 9B. Remaining scene passes and binder removal
+
+- [ ] Migrate Shadow producer outputs and Opaque consumption to the shared
+  graph-owned results channel.
+- [ ] Migrate ObjectVelocity scene/list/targets and identity-gated stats.
+- [ ] Migrate Transparent scene/list/targets with truthful color ReadWrite and
+  depth Read dependencies.
+- [ ] Migrate Skybox targets/configuration and per-recording submission-owned
+  constants/descriptors/resources.
+- [ ] Remove `RenderFrameResourceBinder`, `UpdatePassResources`, the direct
+  `ExecutePasses` bypass, and remaining production frame-state setters.
+- [ ] Add reverse-order two-graph, caller-mutation, resize/target-replacement,
+  rejected-frame, empty-list, stale-context, and in-flight resource fixtures.
 
 ### Task 10 - Submission Strategy and DX12 Tier 1 Closure
 

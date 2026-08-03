@@ -16,6 +16,7 @@
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/OpaquePass.h"
+#include "Render/Passes/RenderPassRecordContext.h"
 #include "Render/Passes/RenderPassClearValues.h"
 #include "Render/Passes/RayTracedReflectionCompositePass.h"
 #include "Render/Passes/RayTracedReflectionDenoisePass.h"
@@ -1351,7 +1352,11 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     if ((m_depthGPUCulling &&
          !m_depthGPUCulling->RetainSubmissionResources(*m_submissionBatch)) ||
         (m_opaqueGPUCulling &&
-         !m_opaqueGPUCulling->RetainSubmissionResources(*m_submissionBatch)))
+         !m_opaqueGPUCulling->RetainSubmissionResources(*m_submissionBatch)) ||
+        (m_depthGPUCullingRecordedState &&
+         !m_depthGPUCullingRecordedState->RetainSubmissionResources(*m_submissionBatch)) ||
+        (m_opaqueGPUCullingRecordedState &&
+         !m_opaqueGPUCullingRecordedState->RetainSubmissionResources(*m_submissionBatch)))
     {
         result.code = RenderFrameExecutionCode::SubmissionFailed;
         return result;
@@ -1729,14 +1734,6 @@ void SceneRenderer::InvalidateRenderFramePlan()
     m_gpuDrivenCullingEnabled = false;
     m_gpuDrivenPolicyDecision = {};
     m_gpuDrivenPolicyDecision.requestedMode = m_gpuDrivenCullingMode;
-    if (m_depthPrepass)
-    {
-        m_depthPrepass->SetGPUDrivenDepthIndirectEnabled(false);
-    }
-    if (m_opaquePass)
-    {
-        m_opaquePass->SetGPUDrivenOpaqueIndirectEnabled(false);
-    }
 }
 
 void SceneRenderer::CompileRenderFramePlan()
@@ -1952,14 +1949,6 @@ void SceneRenderer::ApplyRenderFramePlanProjection()
 
     m_gpuDrivenCullingEnabled = depthGPU || opaqueGPU;
     m_gpuDrivenPolicyDecision.enabled = m_gpuDrivenCullingEnabled;
-    if (m_depthPrepass)
-    {
-        m_depthPrepass->SetGPUDrivenDepthIndirectEnabled(depthGPU);
-    }
-    if (m_opaquePass)
-    {
-        m_opaquePass->SetGPUDrivenOpaqueIndirectEnabled(opaqueGPU);
-    }
 }
 
 void SceneRenderer::BuildGPUDrivenVisibilityInputs()
@@ -2807,6 +2796,24 @@ void SceneRenderer::Render()
         m_renderGraph->Execute(*ctx);
         graphExecuted = true;
         CommitGPUDrivenAccessSnapshots();
+        if (m_activeRenderPassResults &&
+            m_activeRenderPassResults->identity == m_activeRenderPassIdentity)
+        {
+            m_renderPolicyDiagnostics.executionReport =
+                m_activeRenderPassResults->executionReport;
+            if (m_depthPrepass)
+            {
+                m_depthPrepass->PublishRecordResults(
+                    m_activeRenderPassResults,
+                    m_activeRenderPassIdentity);
+            }
+            if (m_opaquePass)
+            {
+                m_opaquePass->PublishRecordResults(
+                    m_activeRenderPassResults,
+                    m_activeRenderPassIdentity);
+            }
+        }
         if (m_depthTexture && m_depthGraphHandle.IsValid())
         {
             m_depthAccessSnapshot = m_renderGraph->GetRealizedAccess(
@@ -3034,8 +3041,8 @@ void SceneRenderer::UpdatePassResources()
         m_transparentDrawItems,
         colorTargetView,
         depthTargetView,
-        m_depthPrepass,
-        m_opaquePass,
+        nullptr,
+        nullptr,
         m_shadowPass,
         m_transparentPass,
         m_skyboxPass);
@@ -3852,20 +3859,15 @@ void SceneRenderer::AddRayTracingSceneBuildPass()
         });
 }
 
-void SceneRenderer::AddGPUDrivenCullingPass()
+void SceneRenderer::AddGPUDrivenCullingPass(
+    const RenderPassRecordIdentity& recordIdentity)
 {
     m_depthGPUCullingGraphHandles = {};
     m_opaqueGPUCullingGraphHandles = {};
-    if (m_depthPrepass)
-    {
-        m_depthPrepass->SetGPUDrivenRenderGraphResources({}, {}, {}, {});
-    }
-    if (m_opaquePass)
-    {
-        m_opaquePass->SetGPUDrivenRenderGraphResources({}, {}, {}, {});
-    }
+    m_depthGPUCullingRecordedState.reset();
+    m_opaqueGPUCullingRecordedState.reset();
 
-    if (!m_renderGraph || !m_gpuDrivenCullingEnabled)
+    if (!m_renderGraph || !m_gpuDrivenCullingEnabled || !recordIdentity.IsValid())
     {
         return;
     }
@@ -3893,12 +3895,23 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     // SceneRenderer currently submits RenderGraph through Execute(graphicsCtx),
     // so compute shader execution still belongs to the graphics physical domain.
     const GPUQueueDomain computeExecutionDomain = graphicsDomain;
+    const Mat4 cullViewMatrix = m_viewData.viewMatrix;
+    const Mat4 cullProjectionMatrix = m_viewData.projectionMatrix;
+    SceneGPUDrivenCullingStats* const cullingStatsSink =
+        &m_gpuDrivenCullingStats;
     const auto addPass =
-        [this, graphicsDomain, computeExecutionDomain](
+        [this,
+         graphicsDomain,
+         computeExecutionDomain,
+         cullViewMatrix,
+         cullProjectionMatrix,
+         cullingStatsSink,
+         recordIdentity](
             const char* name,
             GPUCulling* owner,
             bool framePrepared,
-            GPUCullingGraphHandles& outHandles) -> bool
+            GPUCullingGraphHandles& outHandles,
+            std::shared_ptr<GPUCullingRecordedState>& outRecordedState) -> bool
     {
         if (!framePrepared || owner == nullptr ||
             owner->GetInstanceCount() == 0)
@@ -3906,13 +3919,28 @@ void SceneRenderer::AddGPUDrivenCullingPass()
             return false;
         }
 
-        RHIBuffer* constantsBuffer = owner->GetCullingConstantsBuffer();
-        RHIBuffer* instanceBuffer = owner->GetInstanceBuffer();
-        RHIBuffer* instanceIndexBuffer = owner->GetInstanceIndexBuffer();
-        RHIBuffer* visibilityBuffer = owner->GetVisibilityBuffer();
-        RHIBuffer* visibleInstanceBuffer = owner->GetVisibleInstanceBuffer();
-        RHIBuffer* indirectDrawBuffer = owner->GetIndirectBuffer();
-        RHIBuffer* drawCountBuffer = owner->GetDrawCountBuffer();
+        std::shared_ptr<GPUCullingRecordedState> recordedState =
+            owner->SealForGraph(GPUCullingRecordingIdentity{
+                recordIdentity.graphIdentity,
+                recordIdentity.graphRecordingGeneration,
+                recordIdentity.frameSequence,
+                recordIdentity.viewOrdinal,
+                recordIdentity.recordEpoch});
+        if (!recordedState || !recordedState->IsValid())
+        {
+            RVX_RENDER_WARN("SceneRenderer: failed to seal {} GPU culling inputs", name);
+            return false;
+        }
+
+        const GPUCulling& recordedCulling = recordedState->GetCulling();
+
+        RHIBuffer* constantsBuffer = recordedCulling.GetCullingConstantsBuffer();
+        RHIBuffer* instanceBuffer = recordedCulling.GetInstanceBuffer();
+        RHIBuffer* instanceIndexBuffer = recordedCulling.GetInstanceIndexBuffer();
+        RHIBuffer* visibilityBuffer = recordedCulling.GetVisibilityBuffer();
+        RHIBuffer* visibleInstanceBuffer = recordedCulling.GetVisibleInstanceBuffer();
+        RHIBuffer* indirectDrawBuffer = recordedCulling.GetIndirectBuffer();
+        RHIBuffer* drawCountBuffer = recordedCulling.GetDrawCountBuffer();
         if (!constantsBuffer || !instanceBuffer || !instanceIndexBuffer ||
             !visibilityBuffer || !visibleInstanceBuffer ||
             !indirectDrawBuffer || !drawCountBuffer)
@@ -3921,7 +3949,7 @@ void SceneRenderer::AddGPUDrivenCullingPass()
         }
 
         const GPUCullingAccessSnapshots& accessSnapshots =
-            owner->GetAccessSnapshots();
+            recordedState->GetAccessSnapshots();
         GPUDrivenCullPassData handles;
         handles.constants = m_renderGraph->ImportBuffer(
             constantsBuffer, accessSnapshots.constants);
@@ -3980,6 +4008,7 @@ void SceneRenderer::AddGPUDrivenCullingPass()
                       handles.visibleInstances,
                       handles.indirectDraws,
                       handles.drawCount};
+        outRecordedState = recordedState;
 
         m_renderGraph->AddPass<GPUDrivenCullPassData>(
             name,
@@ -4008,19 +4037,22 @@ void SceneRenderer::AddGPUDrivenCullingPass()
                 data.indirectDraws = builder.Write(data.indirectDraws, unorderedAccess);
                 data.drawCount = builder.Write(data.drawCount, unorderedAccess);
             },
-            [this, owner](const GPUDrivenCullPassData&, RHICommandContext& ctx)
+            [recordedState,
+             cullViewMatrix,
+             cullProjectionMatrix,
+             cullingStatsSink](const GPUDrivenCullPassData&, RHICommandContext& ctx)
             {
-                owner->Cull(ctx, m_viewData.viewMatrix, m_viewData.projectionMatrix);
-                m_gpuDrivenCullingStats.graphPassRecorded = true;
-                m_gpuDrivenCullingStats.executionDecisionAvailable = true;
-                m_gpuDrivenCullingStats.executionDecision =
-                    owner->GetExecutionDecision();
-                m_gpuDrivenCullingStats.gpuExecutionRecorded =
-                    m_gpuDrivenCullingStats.gpuExecutionRecorded ||
-                    owner->WasGpuExecutionUsedLastCull();
-                m_gpuDrivenCullingStats.fallbackUsed =
-                    m_gpuDrivenCullingStats.fallbackUsed ||
-                    owner->WasCpuFallbackUsedLastCull();
+                recordedState->Cull(ctx, cullViewMatrix, cullProjectionMatrix);
+                cullingStatsSink->graphPassRecorded = true;
+                cullingStatsSink->executionDecisionAvailable = true;
+                cullingStatsSink->executionDecision =
+                    recordedState->GetCulling().GetExecutionDecision();
+                cullingStatsSink->gpuExecutionRecorded =
+                    cullingStatsSink->gpuExecutionRecorded ||
+                    recordedState->GetCulling().WasGpuExecutionUsedLastCull();
+                cullingStatsSink->fallbackUsed =
+                    cullingStatsSink->fallbackUsed ||
+                    recordedState->GetCulling().WasCpuFallbackUsedLastCull();
             });
         return true;
     };
@@ -4028,29 +4060,13 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     const bool depthAdded = addPass("GPUDrivenDepthCull",
                                     m_depthGPUCulling.get(),
                                     m_depthGPUCullingFramePrepared,
-                                    m_depthGPUCullingGraphHandles);
+                                    m_depthGPUCullingGraphHandles,
+                                    m_depthGPUCullingRecordedState);
     const bool opaqueAdded = addPass("GPUDrivenOpaqueCull",
                                      m_opaqueGPUCulling.get(),
                                      m_opaqueGPUCullingFramePrepared,
-                                     m_opaqueGPUCullingGraphHandles);
-    if (depthAdded && m_depthPrepass)
-    {
-        const GPUCullingGraphHandles& handles = m_depthGPUCullingGraphHandles;
-        m_depthPrepass->SetGPUDrivenRenderGraphResources(
-            handles.instances,
-            handles.instanceIndices,
-            handles.indirectDraws,
-            handles.drawCount);
-    }
-    if (opaqueAdded && m_opaquePass)
-    {
-        const GPUCullingGraphHandles& handles = m_opaqueGPUCullingGraphHandles;
-        m_opaquePass->SetGPUDrivenRenderGraphResources(
-            handles.instances,
-            handles.instanceIndices,
-            handles.indirectDraws,
-            handles.drawCount);
-    }
+                                     m_opaqueGPUCullingGraphHandles,
+                                     m_opaqueGPUCullingRecordedState);
     m_gpuDrivenCullingStats.graphPassAdded = depthAdded || opaqueAdded;
     m_gpuDrivenCullingStats.gpuCullingGraphPassCount =
         (depthAdded ? 1u : 0u) + (opaqueAdded ? 1u : 0u);
@@ -4062,10 +4078,10 @@ void SceneRenderer::CommitGPUDrivenAccessSnapshots()
     {
         return;
     }
-    const auto commit = [this](GPUCulling* owner,
+    const auto commit = [this](const std::shared_ptr<GPUCullingRecordedState>& recordedState,
                                const GPUCullingGraphHandles& handles)
     {
-        if (owner == nullptr || !handles.IsValid())
+        if (!recordedState || !handles.IsValid())
         {
             return;
         }
@@ -4077,10 +4093,10 @@ void SceneRenderer::CommitGPUDrivenAccessSnapshots()
         snapshots.visibleInstances = m_renderGraph->GetRealizedAccess(handles.visibleInstances);
         snapshots.indirectDraws = m_renderGraph->GetRealizedAccess(handles.indirectDraws);
         snapshots.drawCount = m_renderGraph->GetRealizedAccess(handles.drawCount);
-        owner->CommitAccessSnapshots(snapshots);
+        recordedState->CommitAccessSnapshots(snapshots);
     };
-    commit(m_depthGPUCulling.get(), m_depthGPUCullingGraphHandles);
-    commit(m_opaqueGPUCulling.get(), m_opaqueGPUCullingGraphHandles);
+    commit(m_depthGPUCullingRecordedState, m_depthGPUCullingGraphHandles);
+    commit(m_opaqueGPUCullingRecordedState, m_opaqueGPUCullingGraphHandles);
 }
 
 void SceneRenderer::BuildRenderGraph()
@@ -4312,7 +4328,60 @@ void SceneRenderer::BuildRenderGraph()
     }
 
     AddRayTracingSceneBuildPass();
-    AddGPUDrivenCullingPass();
+
+    // All main-chain raster passes record from this immutable, graph-specific
+    // snapshot.  The epoch advances after every RenderGraph::Clear() / build;
+    // a GPU slice from an older recording cannot be accepted by Depth/Opaque.
+    RenderPassRecordContext passRecordContext;
+    passRecordContext.view = m_viewData;
+    passRecordContext.identity.graph = m_renderGraph.get();
+    passRecordContext.identity.graphIdentity = m_renderGraph->GetGraphIdentity();
+    passRecordContext.identity.graphRecordingGeneration =
+        m_renderGraph->GetRecordingGeneration();
+    passRecordContext.identity.frameSequence =
+        m_viewData.renderFrameExecutionPlan != nullptr
+            ? m_viewData.renderFrameExecutionPlan->frameSequence
+            : m_renderScene.GetAcceptedHeader().sequence;
+    passRecordContext.identity.viewOrdinal =
+        m_viewData.renderFrameExecutionPlan != nullptr
+            ? m_viewData.renderFrameExecutionPlan->viewOrdinal
+            : 0;
+    ++m_renderPassRecordEpoch;
+    if (m_renderPassRecordEpoch == 0)
+    {
+        ++m_renderPassRecordEpoch;
+    }
+    passRecordContext.identity.recordEpoch = m_renderPassRecordEpoch;
+    AddGPUDrivenCullingPass(passRecordContext.identity);
+    passRecordContext.executionPlan = m_viewData.renderFrameExecutionPlan;
+    passRecordContext.meshPassPreparation = m_viewData.meshPassPreparation;
+    passRecordContext.visibility = m_viewData.renderVisibility;
+    passRecordContext.executionReport = m_viewData.renderFrameExecutionReport;
+    passRecordContext.renderScene = &m_renderScene;
+    passRecordContext.opaqueDrawItems = &m_opaqueDrawItems;
+    passRecordContext.maskedDrawItems = &m_maskedDrawItems;
+    passRecordContext.results = std::make_shared<RenderPassRecordResults>();
+    passRecordContext.frameSnapshot = MakeRenderPassFrameSnapshot(
+        passRecordContext, *passRecordContext.results);
+    m_activeRenderPassResults = passRecordContext.results;
+    m_activeRenderPassIdentity = passRecordContext.identity;
+    const auto makeGPUDrivenInputs =
+        [&passRecordContext](const std::shared_ptr<GPUCullingRecordedState>& recordedState,
+                             const GPUCullingGraphHandles& handles)
+    {
+        RenderPassGPUDrivenInputs inputs;
+        inputs.identity = passRecordContext.identity;
+        inputs.recordedState = handles.IsValid() ? recordedState : nullptr;
+        inputs.instances = handles.instances;
+        inputs.instanceIndices = handles.instanceIndices;
+        inputs.indirectDraws = handles.indirectDraws;
+        inputs.drawCount = handles.drawCount;
+        return inputs;
+    };
+    passRecordContext.depthGPUDriven = makeGPUDrivenInputs(
+        m_depthGPUCullingRecordedState, m_depthGPUCullingGraphHandles);
+    passRecordContext.opaqueGPUDriven = makeGPUDrivenInputs(
+        m_opaqueGPUCullingRecordedState, m_opaqueGPUCullingGraphHandles);
 
     // Register each render pass with the RenderGraph
     // Passes are sorted by priority, so they will be added in correct order
@@ -4360,8 +4429,64 @@ void SceneRenderer::BuildRenderGraph()
             continue;
         }
 
-        // AddToGraph wraps Setup/Execute into RenderGraph callbacks.
-        pass->AddToGraph(*m_renderGraph, m_viewData);
+        // Shadow producers have registered their graph writes by the time the
+        // opaque pass is reached. Capture only their value state now; Opaque's
+        // graph callbacks must never consult a mutable ShadowPass instance.
+        if (pass.get() == m_opaquePass)
+        {
+            passRecordContext.directionalShadow = {};
+            passRecordContext.directionalShadow.identity =
+                passRecordContext.identity;
+            if (m_shadowPass != nullptr && m_shadowPass->IsEnabled())
+            {
+                const ShadowPassConfig& config = m_shadowPass->GetConfig();
+                passRecordContext.directionalShadow.enabled = true;
+                passRecordContext.directionalShadow.shadowMap =
+                    m_shadowPass->GetShadowMapTextureHandle();
+                passRecordContext.directionalShadow.shadowMapSize =
+                    config.shadowMapSize;
+                passRecordContext.directionalShadow.cascadeBlendRatio =
+                    config.cascadeBlendRatio;
+                passRecordContext.directionalShadow.shadowBias =
+                    config.shadowBias;
+                passRecordContext.directionalShadow.normalBias = config.normalBias;
+                passRecordContext.directionalShadow.filterRadiusTexels =
+                    config.filterRadiusTexels;
+                for (const ShadowCascade& cascade : m_shadowPass->GetCascades())
+                {
+                    passRecordContext.directionalShadow.cascadeViewProjections.push_back(
+                        cascade.viewProjection);
+                    passRecordContext.directionalShadow.cascadeSplitDepths.push_back(
+                        cascade.splitDepth);
+                }
+            }
+
+            passRecordContext.rayTracedShadow = {};
+            passRecordContext.rayTracedShadow.identity = passRecordContext.identity;
+            if (m_rayTracedShadowPass != nullptr &&
+                m_rayTracedShadowPass->IsEnabled())
+            {
+                const ShadowPassConfig& config = m_rayTracedShadowPass->GetConfig();
+                passRecordContext.rayTracedShadow.enabled = true;
+                passRecordContext.rayTracedShadow.shadowMask =
+                    m_rayTracedShadowPass->GetShadowMaskHandle();
+                passRecordContext.rayTracedShadow.filterRadiusTexels =
+                    config.filterRadiusTexels;
+                passRecordContext.rayTracedShadow.mode =
+                    config.rayTracedShadowMode;
+            }
+        }
+
+        // Depth/Opaque have no persistent per-frame mailbox. They consume the
+        // explicit record context; remaining passes retain the Task 9B adapter.
+        if (pass.get() == m_depthPrepass || pass.get() == m_opaquePass)
+        {
+            pass->AddToGraph(*m_renderGraph, passRecordContext);
+        }
+        else
+        {
+            pass->AddToGraph(*m_renderGraph, m_viewData);
+        }
         m_passChainStats.graphPassCount++;
     }
 
@@ -4593,8 +4718,6 @@ void SceneRenderer::SetupDefaultPasses()
     depthPrepass->SetResources(m_pipelineCache.get());
     depthPrepass->SetMaterialSystem(m_materialSystem.get());
     depthPrepass->SetResourceRegistry(m_renderResourceRegistry);
-    depthPrepass->SetGPUDrivenCullingSource(m_depthGPUCulling.get());
-    depthPrepass->SetGPUDrivenDepthIndirectEnabled(m_gpuDrivenCullingEnabled);
     m_depthPrepass = depthPrepass.get();
     AddPass(std::move(depthPrepass));
 
@@ -4660,8 +4783,6 @@ void SceneRenderer::SetupDefaultPasses()
                              m_lightManager.get(),
                              m_clusteredLighting.get());
     opaquePass->SetResourceRegistry(m_renderResourceRegistry);
-    opaquePass->SetGPUDrivenCullingSource(m_opaqueGPUCulling.get());
-    opaquePass->SetGPUDrivenOpaqueIndirectEnabled(m_gpuDrivenCullingEnabled);
     m_opaquePass = opaquePass.get();
     AddPass(std::move(opaquePass));
 

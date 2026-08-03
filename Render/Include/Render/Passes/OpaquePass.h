@@ -29,44 +29,6 @@ namespace RVX
     class ShadowPass;
     struct GPUCullingDrawGroup;
 
-    struct OpaquePassShadowStats
-    {
-        bool requested = false;
-        bool renderGraphReadDeclared = false;
-        bool frameShadowReady = false;
-        bool rayTracedRequested = false;
-        bool rayTracedRenderGraphReadDeclared = false;
-        bool rayTracedFrameMaskReady = false;
-        uint32 receiverCandidateDrawItemCount = 0;
-        uint32 shadowReceivingDrawItemCount = 0;
-        uint32 shadowReceiverOptOutDrawItemCount = 0;
-    };
-
-    struct OpaquePassDrawStats
-    {
-        uint32 directDrawCount = 0;
-        bool gpuDrivenRequested = false;
-        bool gpuDrivenCullingReady = false;
-        bool gpuDrivenPipelineReady = false;
-        bool gpuDrivenEligible = false;
-        bool gpuDrivenSubmitted = false;
-        uint32 gpuDrivenIndirectBatchCount = 0;
-        uint32 gpuDrivenIndirectSubmittedDrawUpperBound = 0;
-        bool gpuDrivenIndirectExecutedDrawCountAvailable = false;
-        uint32 gpuDrivenIndirectDrawCount = 0;
-        GPUDrivenDrawFallbackReason gpuDrivenFallbackReason =
-            GPUDrivenDrawFallbackReason::Disabled;
-        uint32 skippedMaterialBindingCount = 0;
-        bool planRequested = false;
-        bool planValidated = false;
-        bool directPacketPathUsed = false;
-        uint32 plannedPacketCount = 0;
-        uint32 compiledPacketCount = 0;
-        uint32 executedPacketCount = 0;
-        RenderPolicyReason failureReason =
-            RenderPolicyReason::ConservativeDefault;
-    };
-
     /**
      * @brief Opaque geometry render pass
      * 
@@ -92,6 +54,9 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
 
         // =====================================================================
         // Resource Dependencies
@@ -119,13 +84,44 @@ namespace RVX
 
         void SetDirectionalShadowSource(const ShadowPass* shadowPass);
         void SetRayTracedShadowSource(const RayTracedShadowPass* shadowPass);
+        /** @brief Set graph-owned directional-shadow inputs for one recording. */
+        void SetDirectionalShadowRecordInputs(
+            const OpaqueDirectionalShadowRecordInputs& inputs)
+        {
+            m_directionalShadowInputs = inputs;
+        }
+        /** @brief Set graph-owned ray-traced-shadow inputs for one recording. */
+        void SetRayTracedShadowRecordInputs(
+            const OpaqueRayTracedShadowRecordInputs& inputs)
+        {
+            m_rayTracedShadowInputs = inputs;
+        }
         void SetGPUDrivenCullingSource(const GPUCulling* gpuCulling);
+        /** @brief Standalone compatibility injection for legacy validation. */
         void SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
                                               RGBufferHandle instanceIndexBuffer,
                                               RGBufferHandle indirectDrawBuffer,
                                               RGBufferHandle drawCountBuffer);
-        const OpaquePassShadowStats& GetShadowStats() const { return m_shadowStats; }
-        const OpaquePassDrawStats& GetDrawStats() const { return m_drawStats; }
+        const OpaquePassShadowStats& GetShadowStats() const
+        {
+            return m_publishedRecordResults
+                ? m_publishedRecordResults->opaqueShadowStats : m_shadowStats;
+        }
+        const OpaquePassDrawStats& GetDrawStats() const
+        {
+            return m_publishedRecordResults
+                ? m_publishedRecordResults->opaqueStats : m_drawStats;
+        }
+        void PublishRecordResults(
+            const std::shared_ptr<RenderPassRecordResults>& results,
+            const RenderPassRecordIdentity& expectedIdentity)
+        {
+            if (results != nullptr && results->identity == expectedIdentity)
+            {
+                m_publishedRecordResults = results;
+            }
+        }
+        /** @brief Standalone compatibility switch; SceneRenderer uses the plan. */
         void SetGPUDrivenOpaqueIndirectEnabled(bool enabled) { m_gpuDrivenOpaqueIndirectEnabled = enabled; }
 
         // =====================================================================
@@ -150,6 +146,9 @@ namespace RVX
         RGBufferHandle m_gpuDrivenDrawCountHandle;
         OpaquePassShadowStats m_shadowStats;
         OpaquePassDrawStats m_drawStats;
+        OpaqueDirectionalShadowRecordInputs m_directionalShadowInputs;
+        OpaqueRayTracedShadowRecordInputs m_rayTracedShadowInputs;
+        std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
 
         // Resource dependencies
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
