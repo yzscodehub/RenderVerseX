@@ -14,6 +14,7 @@
 #include "Render/Renderer/ViewData.h"
 #include "Render/Visibility/RenderVisibility.h"
 
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -61,9 +62,66 @@ namespace RVX
         bool rayTracedRequested = false;
         bool rayTracedRenderGraphReadDeclared = false;
         bool rayTracedFrameMaskReady = false;
+        bool rayTracedExecutionReady = false;
+        bool rayTracedExecutionFailed = false;
         uint32 receiverCandidateDrawItemCount = 0;
         uint32 shadowReceivingDrawItemCount = 0;
         uint32 shadowReceiverOptOutDrawItemCount = 0;
+    };
+
+    /** @brief Per-recording ray-traced-shadow diagnostics. */
+    struct RayTracedShadowPassStats
+    {
+        bool requested = false;
+        bool supported = false;
+        bool tlasAvailable = false;
+        bool materialMetadataAvailable = false;
+        bool materialTextureTableAvailable = false;
+        bool alphaMetadataAvailable = false;
+        bool alphaTextureTableAvailable = false;
+        bool alphaGeometryTableAvailable = false;
+        bool depthAvailable = false;
+        bool velocityAvailable = false;
+        bool historyAvailable = false;
+        bool depthHistoryAvailable = false;
+        bool normalHistoryAvailable = false;
+        bool historyReset = false;
+        bool historyRecreated = false;
+        bool historyResolutionChanged = false;
+        bool historyConfigChanged = false;
+        bool temporalAccumulated = false;
+        bool outputDeclared = false;
+        bool resourceViewsAvailable = false;
+        bool descriptorSetAvailable = false;
+        bool constantsUploaded = false;
+        bool dispatchRecorded = false;
+        bool executionFailed = false;
+        bool gpuTimingSupported = false;
+        bool gpuTimingQueriesRecorded = false;
+        bool gpuTimingResolveRecorded = false;
+        bool gpuTimingReadbackBufferAvailable = false;
+        bool gpuTimingResultAvailable = false;
+        uint32 gpuTimingStartQueryIndex = 0;
+        uint32 gpuTimingEndQueryIndex = 1;
+        uint64 gpuTimestampFrequency = 0;
+        uint64 gpuTimingReadbackBytes = 0;
+        uint64 gpuTimingStartTimestamp = 0;
+        uint64 gpuTimingEndTimestamp = 0;
+        uint64 gpuTimingElapsedTicks = 0;
+        float32 gpuTimingElapsedMs = 0.0f;
+        uint32 gpuTimingReadbackBufferCount = 0;
+        uint32 gpuTimingReadbackFrameIndex = RVX_INVALID_INDEX;
+        uint32 samplesPerPixel = 1;
+        uint64 dispatchPixelCount = 0;
+        uint64 estimatedRayCount = 0;
+        uint32 materialTextureCount = 0;
+        uint32 materialTexturesBound = 0;
+        uint32 alphaTextureCount = 0;
+        uint32 alphaTexturesBound = 0;
+        uint32 alphaIndexBufferCount = 0;
+        uint32 alphaUVBufferCount = 0;
+        uint32 width = 0;
+        uint32 height = 0;
     };
 
     struct OpaquePassDrawStats
@@ -226,33 +284,46 @@ namespace RVX
         }
     };
 
-    /** @brief Lifetime-owned mutable outputs for one graph recording. */
-    struct RenderPassRecordResults
+    /** @brief Per-record execution gate shared by producer and consumers. */
+    struct RayTracedShadowExecutionState
     {
         RenderPassRecordIdentity identity{};
-        DirectionalShadowRecordOutput directionalShadowOutput{};
-        RenderFrameExecutionReport executionReport{};
-        DepthPrepassDrawStats depthStats{};
-        ShadowPassStats shadowStats{};
-        OpaquePassDrawStats opaqueStats{};
-        OpaquePassShadowStats opaqueShadowStats{};
+        std::atomic<bool> dispatchReady{false};
+        std::atomic<bool> executionFailed{false};
     };
 
-    struct OpaqueRayTracedShadowRecordInputs
+    /** @brief Graph-owned ray-traced-shadow output produced for Opaque. */
+    struct RayTracedShadowRecordOutput
     {
         RenderPassRecordIdentity identity{};
         bool enabled = false;
         RGTextureHandle shadowMask{};
         float32 filterRadiusTexels = 0.0f;
         RayTracedShadowMode mode = RayTracedShadowMode::ComplementRaster;
+        std::shared_ptr<RayTracedShadowExecutionState> executionState;
 
         [[nodiscard]] bool IsCompatibleWith(
             const RenderPassRecordIdentity& expected) const noexcept
         {
             return identity == expected &&
                    HasCurrentGraphProvenance(shadowMask, expected) &&
-                   (!enabled || shadowMask.IsValid());
+                   (!enabled || (shadowMask.IsValid() && executionState != nullptr &&
+                                 executionState->identity == expected));
         }
+    };
+
+    /** @brief Lifetime-owned mutable outputs for one graph recording. */
+    struct RenderPassRecordResults
+    {
+        RenderPassRecordIdentity identity{};
+        DirectionalShadowRecordOutput directionalShadowOutput{};
+        RayTracedShadowRecordOutput rayTracedShadowOutput{};
+        RenderFrameExecutionReport executionReport{};
+        DepthPrepassDrawStats depthStats{};
+        ShadowPassStats shadowStats{};
+        RayTracedShadowPassStats rayTracedShadowStats{};
+        OpaquePassDrawStats opaqueStats{};
+        OpaquePassShadowStats opaqueShadowStats{};
     };
 
     /**
@@ -276,7 +347,7 @@ namespace RVX
         RenderPassGPUDrivenInputs depthGPUDriven{};
         RenderPassGPUDrivenInputs opaqueGPUDriven{};
         DirectionalShadowRecordOutput directionalShadow{};
-        OpaqueRayTracedShadowRecordInputs rayTracedShadow{};
+        RayTracedShadowRecordOutput rayTracedShadow{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
         std::shared_ptr<RenderPassRecordResults> results;
         /// True only for the legacy ViewData adapter.  Migrated scene passes
@@ -332,7 +403,7 @@ namespace RVX
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
         std::shared_ptr<RenderPassRecordResults> results;
         DirectionalShadowRecordOutput directionalShadow{};
-        OpaqueRayTracedShadowRecordInputs rayTracedShadow{};
+        RayTracedShadowRecordOutput rayTracedShadow{};
 
         [[nodiscard]] const RenderFrameExecutionPlan* GetExecutionPlan() const
         {
@@ -405,6 +476,14 @@ namespace RVX
         {
             snapshot->executionPlan = *context.executionPlan;
         }
+        else
+        {
+            // The legacy adapter has no renderer-issued plan, but its
+            // value-owned execution snapshot must still carry the same
+            // recording identity as the graph that owns it.
+            snapshot->executionPlan.frameSequence = context.identity.frameSequence;
+            snapshot->executionPlan.viewOrdinal = context.identity.viewOrdinal;
+        }
         if (context.meshPassPreparation != nullptr)
         {
             snapshot->meshPassPreparation = *context.meshPassPreparation;
@@ -430,6 +509,11 @@ namespace RVX
         }
 
         results.identity = context.identity;
+        results.directionalShadowOutput = {};
+        results.directionalShadowOutput.identity = context.identity;
+        results.rayTracedShadowOutput = {};
+        results.rayTracedShadowOutput.identity = context.identity;
+        results.rayTracedShadowStats = {};
         results.executionReport = context.executionReport != nullptr
             ? *context.executionReport : RenderFrameExecutionReport{};
         if (results.executionReport.frameSequence == 0)

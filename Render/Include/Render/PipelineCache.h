@@ -521,6 +521,12 @@ namespace RVX
          */
         RHIDescriptorSet* GetFrameDescriptorSet();
 
+        /** @brief Acquire the current frame-set snapshot for submission ownership. */
+        RHIDescriptorSetRef GetFrameDescriptorSetSnapshot() const
+        {
+            return m_frameDescriptorSet;
+        }
+
         /**
          * @brief Update frame-scope directional shadow texture/sampler bindings.
          */

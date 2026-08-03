@@ -1378,6 +1378,11 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
 
 void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
 {
+    if (m_rayTracedShadowPass)
+    {
+        m_rayTracedShadowPass->NotifySubmission(
+            m_activeRenderPassIdentity, completion);
+    }
     RetireOwnerSnapshots(completion);
     if (m_transientResourcePool)
     {
@@ -1399,6 +1404,11 @@ void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
 
 void SceneRenderer::ReleaseUnsubmittedFrame()
 {
+    if (m_rayTracedShadowPass)
+    {
+        m_rayTracedShadowPass->ReleaseUnsubmittedFrame(
+            m_activeRenderPassIdentity);
+    }
     if (m_renderContext)
     {
         if (RenderSubmissionTracker* tracker =
@@ -2348,6 +2358,10 @@ RHIAccelerationStructure* SceneRenderer::GetRayTracingTopLevelAS() const
 const RayTracedShadowPassStats& SceneRenderer::GetRayTracedShadowStats() const
 {
     static const RayTracedShadowPassStats emptyStats;
+    // This accessor feeds the next frame's GPU budget policy.  It must return
+    // the completion-published sample rather than a current graph-owned
+    // snapshot, which may be unsubmitted, rejected, or awaiting timestamp
+    // readback.
     return m_rayTracedShadowPass ? m_rayTracedShadowPass->GetStats() : emptyStats;
 }
 
@@ -2371,7 +2385,14 @@ const RayTracedReflectionCompositePassStats& SceneRenderer::GetRayTracedReflecti
 
 SceneRayTracingFrameStats SceneRenderer::GetRayTracingFrameStats() const
 {
-    const RayTracedShadowPassStats& shadowStats = GetRayTracedShadowStats();
+    // Frame diagnostics intentionally report the active graph snapshot after
+    // execution.  Budget consumers use GetRayTracedShadowStats(), above, and
+    // therefore observe only submitted/completed timing data.
+    const RayTracedShadowPassStats& shadowStats =
+        m_activeRenderPassResults &&
+        m_activeRenderPassResults->identity == m_activeRenderPassIdentity
+            ? m_activeRenderPassResults->rayTracedShadowStats
+            : GetRayTracedShadowStats();
     const RayTracedReflectionPassStats& reflectionStats = GetRayTracedReflectionStats();
     const RayTracedReflectionDenoisePassStats& denoiseStats = GetRayTracedReflectionDenoiseStats();
     const RayTracedReflectionCompositePassStats& compositeStats = GetRayTracedReflectionCompositeStats();
@@ -3066,6 +3087,11 @@ void SceneRenderer::ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,
                                           bool reflectionRequested,
                                           bool denoiseRequested)
 {
+    if (m_rayTracedShadowPass)
+    {
+        m_rayTracedShadowPass->RefreshCompletionDiagnostics();
+    }
+
     SceneRayTracingFrameStats budgetStats;
     budgetStats.budgetEnabled = m_rayTracingBudgetSettings.enabled;
     budgetStats.rayBudget = m_rayTracingBudgetSettings.maxRayCount;
@@ -3585,7 +3611,6 @@ void SceneRenderer::PreparePassesForFrame()
     if (m_opaquePass)
     {
         m_opaquePass->SetDirectionalShadowSource(m_shadowPass);
-        m_opaquePass->SetRayTracedShadowSource(m_rayTracedShadowPass);
     }
 
     if (m_lightManager)
@@ -4455,26 +4480,21 @@ void SceneRenderer::BuildRenderGraph()
                     passRecordContext.identity;
             }
 
-            passRecordContext.rayTracedShadow = {};
-            passRecordContext.rayTracedShadow.identity = passRecordContext.identity;
-            if (m_rayTracedShadowPass != nullptr &&
-                m_rayTracedShadowPass->IsEnabled())
+            passRecordContext.rayTracedShadow =
+                passRecordContext.results->rayTracedShadowOutput;
+            if (passRecordContext.rayTracedShadow.identity !=
+                passRecordContext.identity)
             {
-                const ShadowPassConfig& config = m_rayTracedShadowPass->GetConfig();
-                passRecordContext.rayTracedShadow.enabled = true;
-                passRecordContext.rayTracedShadow.shadowMask =
-                    m_rayTracedShadowPass->GetShadowMaskHandle();
-                passRecordContext.rayTracedShadow.filterRadiusTexels =
-                    config.filterRadiusTexels;
-                passRecordContext.rayTracedShadow.mode =
-                    config.rayTracedShadowMode;
+                passRecordContext.rayTracedShadow = {};
+                passRecordContext.rayTracedShadow.identity =
+                    passRecordContext.identity;
             }
         }
 
         // Shadow/Depth/Opaque consume the explicit graph-owned record context;
         // remaining passes retain the Task 9B compatibility adapter.
         if (pass.get() == m_shadowPass || pass.get() == m_depthPrepass ||
-            pass.get() == m_opaquePass)
+            pass.get() == m_rayTracedShadowPass || pass.get() == m_opaquePass)
         {
             pass->AddToGraph(*m_renderGraph, passRecordContext);
         }
@@ -4729,6 +4749,10 @@ void SceneRenderer::SetupDefaultPasses()
         m_resourceViewCache.get());
     rayTracedShadowPass->SetResourceRegistry(m_renderResourceRegistry);
     rayTracedShadowPass->SetRayTracingScene(m_rayTracingSceneManager.get());
+    rayTracedShadowPass->SetSubmissionTracker(
+        m_renderContext
+            ? RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext)
+            : nullptr);
     rayTracedShadowPass->SetConfig(m_shadowPassConfig);
     m_rayTracedShadowPass = rayTracedShadowPass.get();
     AddPass(std::move(rayTracedShadowPass));

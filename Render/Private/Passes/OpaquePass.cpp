@@ -12,12 +12,12 @@
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
 #include "Render/Passes/DirectDrawPacketBatch.h"
-#include "Render/Passes/RayTracedShadowPass.h"
 #include "Render/Passes/RenderPassClearValues.h"
 #include "Render/Passes/ShadowPass.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resources/RenderResourceResolver.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <algorithm>
@@ -274,7 +274,6 @@ void OpaquePass::OnRemove()
     m_clusteredLighting = nullptr;
     m_renderScene = nullptr;
     m_shadowPass = nullptr;
-    m_rayTracedShadowPass = nullptr;
     m_gpuCulling = nullptr;
     m_opaqueDrawItems = nullptr;
     m_maskedDrawItems = nullptr;
@@ -303,11 +302,6 @@ void OpaquePass::SetRenderScene(const RenderScene* scene,
 void OpaquePass::SetDirectionalShadowSource(const ShadowPass* shadowPass)
 {
     m_shadowPass = shadowPass;
-}
-
-void OpaquePass::SetRayTracedShadowSource(const RayTracedShadowPass* shadowPass)
-{
-    m_rayTracedShadowPass = shadowPass;
 }
 
 void OpaquePass::SetGPUDrivenCullingSource(const GPUCulling* gpuCulling)
@@ -421,7 +415,7 @@ void OpaquePass::AddToGraph(
         ? gpuInputs.drawCount : m_gpuDrivenDrawCountHandle;
     const DirectionalShadowRecordOutput directionalShadow =
         execution.directionalShadow;
-    const OpaqueRayTracedShadowRecordInputs rayTracedShadow =
+    const RayTracedShadowRecordOutput rayTracedShadow =
         execution.rayTracedShadow;
     const std::shared_ptr<RenderPassRecordResults> results = execution.results;
 
@@ -524,17 +518,6 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
                 cascade.splitDepth);
         }
     }
-    if (!m_rayTracedShadowInputs.identity.IsValid() &&
-        m_rayTracedShadowPass != nullptr)
-    {
-        const ShadowPassConfig& config = m_rayTracedShadowPass->GetConfig();
-        m_rayTracedShadowInputs.enabled = m_rayTracedShadowPass->IsEnabled();
-        m_rayTracedShadowInputs.shadowMask =
-            m_rayTracedShadowPass->GetShadowMaskHandle();
-        m_rayTracedShadowInputs.filterRadiusTexels = config.filterRadiusTexels;
-        m_rayTracedShadowInputs.mode = config.rayTracedShadowMode;
-    }
-
     const auto accumulateShadowReceivers = [this](const std::vector<RenderDrawItem>* drawItems)
     {
         if (!drawItems || !m_renderScene)
@@ -907,6 +890,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
 bool OpaquePass::BuildPlannedDirectBatch(
     const ViewData& view,
     RHIFormat colorTargetFormat,
+    RHIDescriptorSet* frameSet,
     std::vector<PlannedOpaqueDraw>& outPlannedDraws)
 {
     outPlannedDraws.clear();
@@ -915,7 +899,8 @@ bool OpaquePass::BuildPlannedDirectBatch(
     if (view.renderFrameExecutionPlan == nullptr ||
         view.meshPassPreparation == nullptr ||
         m_renderScene == nullptr || m_resourceRegistry == nullptr ||
-        m_pipelineCache == nullptr || m_materialSystem == nullptr)
+        m_pipelineCache == nullptr || m_materialSystem == nullptr ||
+        frameSet == nullptr)
     {
         return false;
     }
@@ -1090,7 +1075,7 @@ bool OpaquePass::BuildPlannedDirectBatch(
         planned.buffers = buffers;
         planned.submesh = submesh;
         planned.pipeline = pipeline;
-        planned.frameSet = m_pipelineCache->GetFrameDescriptorSet();
+        planned.frameSet = frameSet;
         planned.objectSet = m_pipelineCache->GetObjectDescriptorSet();
         planned.materialBinding = std::move(materialBinding);
         planned.allowNormalMap = allowNormalMap;
@@ -1409,7 +1394,19 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     m_shadowStats.frameShadowReady = shadowBinding.shadowSamplingEnabled;
 
     RayTracedShadowFrameResources rayTracedShadowResources;
-    if (m_rayTracedShadowMaskReadHandle.IsValid() && view.renderGraph && view.viewCache)
+    RHITextureViewRef rayTracedShadowMaskView;
+    const bool rayTracedExecutionStateMatches =
+        m_rayTracedShadowInputs.executionState != nullptr &&
+        m_rayTracedShadowInputs.executionState->identity == m_rayTracedShadowInputs.identity;
+    const bool rayTracedExecutionFailed = rayTracedExecutionStateMatches &&
+        m_rayTracedShadowInputs.executionState->executionFailed.load(std::memory_order_acquire);
+    const bool rayTracedExecutionReady = rayTracedExecutionStateMatches &&
+        !rayTracedExecutionFailed &&
+        m_rayTracedShadowInputs.executionState->dispatchReady.load(std::memory_order_acquire);
+    m_shadowStats.rayTracedExecutionReady = rayTracedExecutionReady;
+    m_shadowStats.rayTracedExecutionFailed = rayTracedExecutionFailed;
+    if (rayTracedExecutionReady && m_rayTracedShadowMaskReadHandle.IsValid() &&
+        view.renderGraph && view.viewCache)
     {
         RHITexture* shadowMask = view.renderGraph->GetTexture(m_rayTracedShadowMaskReadHandle);
         if (shadowMask)
@@ -1421,9 +1418,15 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             viewDesc.type = RHITextureViewType::ShaderResource;
             viewDesc.debugName = "RayTracedShadowMaskSRV";
 
-            rayTracedShadowResources.shadowMaskView = view.viewCache->GetTextureView(shadowMask, viewDesc);
+            rayTracedShadowMaskView = RHITextureViewRef(
+                view.viewCache->GetTextureView(shadowMask, viewDesc));
+            rayTracedShadowResources.shadowMaskView = rayTracedShadowMaskView.Get();
             rayTracedShadowResources.enabled = rayTracedShadowResources.shadowMaskView != nullptr;
         }
+    }
+    if (rayTracedExecutionFailed)
+    {
+        RVX_RENDER_WARN("OpaquePass: Ray-traced shadow producer failed for the current recording; using raster-only shadowing");
     }
     const RayTracedShadowFrameBindingResult rayTracedShadowBinding =
         m_pipelineCache->UpdateRayTracedShadowFrameResources(rayTracedShadowResources);
@@ -1442,6 +1445,23 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     m_shadowStats.rayTracedFrameMaskReady = rayTracedShadowBinding.shadowMaskSamplingEnabled;
 
     m_pipelineCache->UpdateViewConstants(drawView);
+    const RHIDescriptorSetRef frameDescriptorSet =
+        m_pipelineCache->GetFrameDescriptorSetSnapshot();
+    const bool retainedFrameDescriptorSet = RetainRenderSubmissionResource(
+        view.submissionResourceBatch, Ref<RefCounted>(frameDescriptorSet));
+    const bool retainedRayTracedShadowMask =
+        !rayTracedShadowBinding.shadowMaskSamplingEnabled ||
+        RetainRenderSubmissionResource(
+            view.submissionResourceBatch, Ref<RefCounted>(rayTracedShadowMaskView));
+    if (!retainedFrameDescriptorSet || !retainedRayTracedShadowMask)
+    {
+        RVX_RENDER_WARN("OpaquePass: submission ownership rejected frame bindings");
+        drawView.rayTracedShadowEnabled = 0;
+        m_shadowStats.rayTracedFrameMaskReady = false;
+        reportPlannedFailure(opaquePlan != nullptr &&
+                             opaquePlan->partition.gpuDrivenPacketCount != 0);
+        return;
+    }
 
     // A published plan owns lane selection. Preflight the full Direct lane
     // before recording anything, and never replay Direct after a GPU-lane
@@ -1475,6 +1495,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         if (validateDirectPlan &&
             !BuildPlannedDirectBatch(view,
                                      colorTargetFormat,
+                                     frameDescriptorSet.Get(),
                                      plannedDraws))
         {
             updatePlanReport(RenderExecutionStatus::Failed,
@@ -1538,7 +1559,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 ctx,
                 drawView,
                 colorTargetFormat,
-                m_pipelineCache->GetFrameDescriptorSet(),
+                frameDescriptorSet.Get(),
                 true,
                 plannedGPUCount,
                 opaquePlan->partition.drawGroupCount);
@@ -1635,7 +1656,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     TryDrawGPUDrivenIndirect(ctx,
                              drawView,
                              colorTargetFormat,
-                             m_pipelineCache->GetFrameDescriptorSet(),
+                             frameDescriptorSet.Get(),
                              false);
     ctx.EndRenderPass();
 }

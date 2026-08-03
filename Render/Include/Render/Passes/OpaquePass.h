@@ -24,7 +24,6 @@ namespace RVX
     class LightManager;
     class MaterialSystem;
     class PipelineCache;
-    class RayTracedShadowPass;
     class RenderScene;
     class ShadowPass;
     struct GPUCullingDrawGroup;
@@ -83,7 +82,6 @@ namespace RVX
                             const std::vector<RenderDrawItem>* maskedDrawItems);
 
         void SetDirectionalShadowSource(const ShadowPass* shadowPass);
-        void SetRayTracedShadowSource(const RayTracedShadowPass* shadowPass);
         /** @brief Set graph-owned directional-shadow inputs for one recording. */
         void SetDirectionalShadowRecordInputs(
             const DirectionalShadowRecordOutput& inputs)
@@ -92,7 +90,7 @@ namespace RVX
         }
         /** @brief Set graph-owned ray-traced-shadow inputs for one recording. */
         void SetRayTracedShadowRecordInputs(
-            const OpaqueRayTracedShadowRecordInputs& inputs)
+            const RayTracedShadowRecordOutput& inputs)
         {
             m_rayTracedShadowInputs = inputs;
         }
@@ -147,7 +145,7 @@ namespace RVX
         OpaquePassShadowStats m_shadowStats;
         OpaquePassDrawStats m_drawStats;
         DirectionalShadowRecordOutput m_directionalShadowInputs;
-        OpaqueRayTracedShadowRecordInputs m_rayTracedShadowInputs;
+        RayTracedShadowRecordOutput m_rayTracedShadowInputs;
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
 
         // Resource dependencies
@@ -158,7 +156,6 @@ namespace RVX
         ClusteredLighting* m_clusteredLighting = nullptr;
         const RenderScene* m_renderScene = nullptr;
         const ShadowPass* m_shadowPass = nullptr;
-        const RayTracedShadowPass* m_rayTracedShadowPass = nullptr;
         const GPUCulling* m_gpuCulling = nullptr;
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
@@ -188,6 +185,7 @@ namespace RVX
         bool BuildPlannedDirectBatch(
             const ViewData& view,
             RHIFormat colorTargetFormat,
+            RHIDescriptorSet* frameSet,
             std::vector<PlannedOpaqueDraw>& outPlannedDraws);
 
     };

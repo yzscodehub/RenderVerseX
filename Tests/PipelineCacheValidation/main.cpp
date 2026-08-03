@@ -3578,7 +3578,9 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
     EXPECT_NE(source.find("#include \"Render/Passes/RayTracedReflectionPass.h\""), std::string::npos);
     EXPECT_NE(source.find("SceneRayTracingFrameStats SceneRenderer::GetRayTracingFrameStats() const"),
               std::string::npos);
-    EXPECT_NE(source.find("const RayTracedShadowPassStats& shadowStats = GetRayTracedShadowStats();"),
+    EXPECT_NE(source.find("const RayTracedShadowPassStats& shadowStats =\n        m_activeRenderPassResults"),
+              std::string::npos);
+    EXPECT_NE(source.find(": GetRayTracedShadowStats();"),
               std::string::npos);
     EXPECT_NE(source.find("const RayTracedReflectionPassStats& reflectionStats = GetRayTracedReflectionStats();"),
               std::string::npos);
@@ -4115,11 +4117,14 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
-    const std::string passHeader = ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "RayTracedShadowPass.h");
+    std::string passHeader = ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "RayTracedShadowPass.h");
+    passHeader += ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "RenderPassRecordContext.h");
     const std::string passSource = ReadTextFile(renderRoot / "Private" / "Passes" / "RayTracedShadowPass.cpp");
     const std::string viewDataHeader = ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "ViewData.h");
     const std::string pipelineHeader = ReadTextFile(renderRoot / "Include" / "Render" / "PipelineCache.h");
     const std::string pipelineSource = ReadTextFile(renderRoot / "Private" / "PipelineCache.cpp");
+    const std::string sceneRendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string shaderSource = ReadTextFile(FindShaderDirectory() / "RayTracing" / "RayTracedShadow.hlsl");
     const std::string metadataSource =
         ReadTextFile(FindShaderDirectory() / "RayTracing" / "RayTracingSceneMetadata.hlsli");
@@ -4128,10 +4133,10 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
               std::string::npos);
     EXPECT_NE(passHeader.find("void SetResourceRegistry(const RenderResourceRegistry* registry)"),
               std::string::npos);
-    EXPECT_NE(passHeader.find("bool EnsureHistoryTextures(uint32 width, uint32 height);"), std::string::npos);
-    EXPECT_NE(passHeader.find("void ResetHistoryTextures();"), std::string::npos);
-    EXPECT_NE(passHeader.find("ShadowPassConfig m_lastHistoryConfig;"), std::string::npos);
-    EXPECT_NE(passHeader.find("bool m_lastHistoryConfigValid = false;"), std::string::npos);
+    EXPECT_NE(passSource.find("bool EnsureHistoryTextures("), std::string::npos);
+    EXPECT_NE(passSource.find("void ResetHistoryTextures("), std::string::npos);
+    EXPECT_NE(passSource.find("ShadowPassConfig lastHistoryConfig{};"), std::string::npos);
+    EXPECT_NE(passSource.find("bool lastHistoryConfigValid = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool temporalAccumulated = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool resourceViewsAvailable = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool descriptorSetAvailable = false;"), std::string::npos);
@@ -4162,151 +4167,181 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     EXPECT_NE(passHeader.find("uint64 gpuTimestampFrequency = 0;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint64 gpuTimingReadbackBytes = 0;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint64 gpuTimingElapsedTicks = 0;"), std::string::npos);
-    EXPECT_NE(passHeader.find("float gpuTimingElapsedMs = 0.0f;"), std::string::npos);
+    EXPECT_NE(passHeader.find("float32 gpuTimingElapsedMs = 0.0f;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint32 gpuTimingReadbackBufferCount = 0;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint32 gpuTimingReadbackFrameIndex = RVX_INVALID_INDEX;"), std::string::npos);
-    EXPECT_NE(passHeader.find("RHIQueryPoolRef m_timingQueryPool;"), std::string::npos);
-    EXPECT_NE(passHeader.find("std::array<RHIBufferRef, RVX_MAX_FRAME_COUNT> m_timingReadbackBuffers;"),
+    EXPECT_NE(passSource.find("RHIQueryPoolRef timingQueryPool;"), std::string::npos);
+    EXPECT_NE(passSource.find("RHIBufferRef timingReadbackBuffer;"),
               std::string::npos);
-    EXPECT_NE(passHeader.find("std::array<bool, RVX_MAX_FRAME_COUNT> m_timingReadbackValid{};"),
+    EXPECT_NE(passSource.find("std::vector<PendingTimingSample> pendingTimingSamples;"),
               std::string::npos);
+    EXPECT_NE(passHeader.find("void RefreshCompletionDiagnostics();"), std::string::npos);
+    EXPECT_NE(passSource.find("std::vector<std::shared_ptr<RayTracedShadowSubmissionRecord>> submissionRecords;"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("RenderPassRecordIdentity lastSubmittedIdentity{};"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("bool legacyAdapter = false;"), std::string::npos);
+    EXPECT_NE(passSource.find("state->submissionRecord->stats = state->stats;"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("legacyRecordingAlreadyActive"), std::string::npos);
+    EXPECT_NE(passSource.find("owner.lastSubmittedIdentity = identity;"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("m_lastSubmittedStats = (*submission)->stats;"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("isNewestSubmittedRecording &&"), std::string::npos);
+    EXPECT_NE(passSource.find("MakeRHITextureAccessSnapshot(RHIResourceState::Common)"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("std::array<RHITextureAccessSnapshot, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> maskAccesses{};"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("ImportTexture(owner.masks[read].Get(), owner.maskAccesses[read])"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("recordedGraph->GetRealizedAccess(reservation->shadowMaskHandle)"),
+              std::string::npos);
+    const auto applyRayTracingBudget = sceneRendererSource.find(
+        "void SceneRenderer::ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,");
+    const auto refreshShadowDiagnostics = sceneRendererSource.find(
+        "m_rayTracedShadowPass->RefreshCompletionDiagnostics();", applyRayTracingBudget);
+    const auto readPreviousShadowStats = sceneRendererSource.find(
+        "const RayTracedShadowPassStats& previousShadowStats = GetRayTracedShadowStats();",
+        applyRayTracingBudget);
+    ASSERT_NE(applyRayTracingBudget, std::string::npos);
+    ASSERT_NE(refreshShadowDiagnostics, std::string::npos);
+    ASSERT_NE(readPreviousShadowStats, std::string::npos);
+    EXPECT_LT(refreshShadowDiagnostics, readPreviousShadowStats);
     EXPECT_NE(passHeader.find("uint32 samplesPerPixel = 1;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint64 dispatchPixelCount = 0;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint64 estimatedRayCount = 0;"), std::string::npos);
-    EXPECT_NE(passHeader.find("bool ResolveMaterialTextureViews(std::vector<RHITextureView*>& outViews) const;"),
+    EXPECT_NE(passSource.find("std::vector<RHITextureViewRef> materialTextureViews;"),
               std::string::npos);
-    EXPECT_NE(passHeader.find("m_historyDepthTextures"), std::string::npos);
-    EXPECT_NE(passHeader.find("m_historyNormalTextures"), std::string::npos);
-    EXPECT_NE(passHeader.find("RGTextureHandle m_velocityReadHandle;"), std::string::npos);
-    EXPECT_NE(passHeader.find("RHITextureRef m_fallbackVelocityTexture;"), std::string::npos);
-    EXPECT_NE(passHeader.find("bool EnsureFallbackVelocityTexture();"), std::string::npos);
+    EXPECT_NE(passSource.find("std::array<RHITextureRef, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> depths{};"), std::string::npos);
+    EXPECT_NE(passSource.find("std::array<RHITextureRef, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> normals{};"), std::string::npos);
+    EXPECT_NE(passSource.find("RGTextureHandle velocityHandle{};"), std::string::npos);
+    EXPECT_EQ(passHeader.find("m_fallbackVelocityTexture"), std::string::npos);
+    EXPECT_NE(passHeader.find("bool CreateFrameFallbackTextures(RayTracedShadowFrameState& state) const;"), std::string::npos);
     EXPECT_NE(passSource.find("GetRayTracedShadowPipeline()"), std::string::npos);
     EXPECT_NE(passSource.find("GetRayTracedShadowShaderTable()"), std::string::npos);
-    EXPECT_NE(passSource.find("EnsureHistoryTextures(view.viewportWidth, view.viewportHeight)"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.historyReset = view.resetTemporalHistory;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.historyRecreated = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("ShadowHistoryConfigChanged(m_lastHistoryConfig, m_config)"),
+    EXPECT_NE(passSource.find("EnsureHistoryTextures(*state->historyOwner,"), std::string::npos);
+    EXPECT_NE(passSource.find("stats.historyReset = stats.historyReset || resetRequested || configChanged;"), std::string::npos);
+    EXPECT_NE(passSource.find("stats.historyRecreated = true;"), std::string::npos);
+    EXPECT_NE(passSource.find("ShadowHistoryConfigChanged(owner.lastHistoryConfig, config)"),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.historyConfigChanged = historyConfigChanged;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_lastHistoryConfig = m_config;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_lastHistoryConfigValid = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.historyResolutionChanged = historyResolutionChanged;"),
+    EXPECT_NE(passSource.find("stats.historyConfigChanged = configChanged;"), std::string::npos);
+    EXPECT_NE(passSource.find("owner.lastHistoryConfig = reservation->config;"), std::string::npos);
+    EXPECT_NE(passSource.find("owner.lastHistoryConfigValid = true;"), std::string::npos);
+    EXPECT_NE(passSource.find("stats.historyResolutionChanged = resolutionChanged;"),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.historyAvailable = false;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_viewCache->InvalidateTexture(texture.Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("reservation->historyAvailable = reusableHistory;"), std::string::npos);
+    EXPECT_NE(passSource.find("viewCache->InvalidateTexture(owner.masks[index].Get())"), std::string::npos);
     const auto shadowOnAdd = passSource.find("void RayTracedShadowPass::OnAdd(IRHIDevice* device)");
     ASSERT_NE(shadowOnAdd, std::string::npos);
     const auto shadowDeviceChange = passSource.find("if (m_device != device)", shadowOnAdd);
     ASSERT_NE(shadowDeviceChange, std::string::npos);
-    const auto shadowResetHistoryOnDeviceChange = passSource.find("ResetHistoryTextures();", shadowDeviceChange);
-    const auto shadowMaskClearOnDeviceChange = passSource.find("m_shadowMaskTexture = nullptr;", shadowDeviceChange);
-    const auto shadowConstantBufferResetOnDeviceChange = passSource.find("m_constantBuffer.Reset();", shadowDeviceChange);
+    const auto shadowResetHistoryOnDeviceChange = passSource.find("ResetHistoryTextures(*m_historyOwner, m_viewCache);", shadowDeviceChange);
     const auto shadowDeviceAssign = passSource.find("m_device = device;", shadowDeviceChange);
     ASSERT_NE(shadowResetHistoryOnDeviceChange, std::string::npos);
-    ASSERT_NE(shadowMaskClearOnDeviceChange, std::string::npos);
-    ASSERT_NE(shadowConstantBufferResetOnDeviceChange, std::string::npos);
     ASSERT_NE(shadowDeviceAssign, std::string::npos);
-    EXPECT_LT(shadowResetHistoryOnDeviceChange, shadowMaskClearOnDeviceChange);
-    EXPECT_LT(shadowMaskClearOnDeviceChange, shadowConstantBufferResetOnDeviceChange);
-    EXPECT_LT(shadowConstantBufferResetOnDeviceChange, shadowDeviceAssign);
+    EXPECT_LT(shadowResetHistoryOnDeviceChange, shadowDeviceAssign);
     EXPECT_EQ(passSource.find("m_retainedDescriptorSets"), std::string::npos);
     EXPECT_NE(passSource.find("RetainRenderSubmissionResource("), std::string::npos);
-    EXPECT_NE(passSource.find("if (view.resetTemporalHistory)"), std::string::npos);
-    EXPECT_NE(passSource.find("m_historyValid = false;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_historyViewValid = false;"), std::string::npos);
+    EXPECT_NE(passSource.find("state->execution.view.resetTemporalHistory"), std::string::npos);
+    EXPECT_NE(passSource.find("owner.historyValid = false;"), std::string::npos);
+    EXPECT_NE(passSource.find("owner.historyViewValid = false;"), std::string::npos);
     EXPECT_NE(passSource.find("view.renderGraph->ImportTexture("), std::string::npos);
-    EXPECT_NE(passSource.find("SetExportState(m_shadowMaskHandle, RHIResourceState::ShaderResource)"),
+    EXPECT_NE(passSource.find("SetExportState(shadowMask, RHIResourceState::ShaderResource)"),
               std::string::npos);
-    EXPECT_NE(passSource.find("RayTracedShadowDepthHistory0"), std::string::npos);
-    EXPECT_NE(passSource.find("RayTracedShadowNormalHistory0"), std::string::npos);
-    EXPECT_NE(passSource.find("SetExportState(m_historyDepthWriteHandle, RHIResourceState::ShaderResource)"),
+    EXPECT_NE(passSource.find("RayTracedShadowDepthHistory"), std::string::npos);
+    EXPECT_NE(passSource.find("RayTracedShadowNormalHistory"), std::string::npos);
+    EXPECT_NE(passSource.find("SetExportState(historyDepthWrite, RHIResourceState::ShaderResource)"),
               std::string::npos);
-    EXPECT_NE(passSource.find("SetExportState(m_historyNormalWriteHandle, RHIResourceState::ShaderResource)"),
+    EXPECT_NE(passSource.find("SetExportState(historyNormalWrite, RHIResourceState::ShaderResource)"),
               std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultUAV(shadowMask)"), std::string::npos);
-    EXPECT_NE(passSource.find("m_depthReadHandle = builder.Read(depthHandle, RHIShaderStage::AllRayTracing);"),
+    EXPECT_NE(passSource.find("GetDefaultUAV(data->shadowMaskTexture.Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("const RGTextureHandle depthHandle = builder.Read(depth, RHIShaderStage::AllRayTracing);"),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.velocityAvailable = view.velocityTarget.IsValid();"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.samplesPerPixel = std::min(std::max(m_config.rayTracedSamplesPerPixel, 1u), 8u);"),
+    EXPECT_NE(passSource.find("state->stats.velocityAvailable = state->execution.view.velocityTarget.IsValid();"), std::string::npos);
+    EXPECT_NE(passSource.find("state->stats.samplesPerPixel = std::clamp(state->config.rayTracedSamplesPerPixel, 1u, 8u);"),
               std::string::npos);
-    EXPECT_NE(passSource.find("TryGetRHIRayTracingDispatchRayCount(m_stats.width, m_stats.height, 1, m_stats.dispatchPixelCount)"),
+    EXPECT_NE(passSource.find("TryGetRHIRayTracingDispatchRayCount(state->stats.width, state->stats.height, 1, state->stats.dispatchPixelCount)"),
               std::string::npos);
-    EXPECT_NE(passSource.find("TryMultiplyRHIRayTracingCount(m_stats.dispatchPixelCount"),
+    EXPECT_NE(passSource.find("TryMultiplyRHIRayTracingCount(state->stats.dispatchPixelCount"),
               std::string::npos);
     EXPECT_NE(passSource.find("RVX_RAY_TRACED_SHADOW_TIMING_QUERY_COUNT_PER_FRAME = 2"),
               std::string::npos);
-    EXPECT_NE(passSource.find("queryDesc.count = RVX_MAX_FRAME_COUNT * RVX_RAY_TRACED_SHADOW_TIMING_QUERY_COUNT_PER_FRAME;"),
+    EXPECT_NE(passSource.find("queryDesc.count = RVX_RAY_TRACED_SHADOW_TIMING_QUERY_COUNT_PER_FRAME;"),
               std::string::npos);
     EXPECT_NE(passSource.find("queryDesc.debugName = \"RayTracedShadowTimingQueries\";"), std::string::npos);
     EXPECT_NE(passSource.find("RVX_RAY_TRACED_SHADOW_TIMING_READBACK_BYTES = sizeof(uint64) * 2"),
               std::string::npos);
+    EXPECT_NE(passSource.find("status == GPUCompletionStatus::Completed ||\n                status == GPUCompletionStatus::CompatibilityWaitIdle"),
+              std::string::npos);
     EXPECT_NE(passSource.find("readbackDesc.usage = RHIBufferUsage::CopyDst;"), std::string::npos);
     EXPECT_NE(passSource.find("readbackDesc.memoryType = RHIMemoryType::Readback;"), std::string::npos);
     EXPECT_NE(passSource.find("readbackDesc.debugName = \"RayTracedShadowTimingReadback\";"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingSupported = m_timingQueryPool != nullptr;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingReadbackBufferAvailable = timingReadbackBuffer != nullptr;"),
+    EXPECT_NE(passSource.find("data->stats.gpuTimingSupported = data->timingQueryPool != nullptr;"), std::string::npos);
+    EXPECT_NE(passSource.find("data->stats.gpuTimingReadbackBufferAvailable = data->timingReadbackBuffer != nullptr;"),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingReadbackBytes = static_cast<uint64>(timingReadbackBufferCount) *"),
+    EXPECT_NE(passSource.find("data->stats.gpuTimingReadbackBufferCount ="),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimestampFrequency = m_timingQueryPool ? m_timingQueryPool->GetTimestampFrequency() : 0;"),
+    EXPECT_NE(passSource.find("data->stats.gpuTimingReadbackBytes = data->timingReadbackBuffer"),
               std::string::npos);
-    EXPECT_NE(passSource.find("ctx.WriteTimestamp(m_timingQueryPool.Get(), timingStartQuery);"),
+    EXPECT_NE(passSource.find("data->stats.gpuTimingReadbackFrameIndex = RVX_INVALID_INDEX;"),
               std::string::npos);
-    EXPECT_NE(passSource.find("ctx.WriteTimestamp(m_timingQueryPool.Get(), timingEndQuery);"),
+    EXPECT_NE(passSource.find("ctx.WriteTimestamp(data->timingQueryPool.Get(), data->stats.gpuTimingStartQueryIndex);"),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingQueriesRecorded = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("ctx.ResolveQueries(m_timingQueryPool.Get(),"), std::string::npos);
-    EXPECT_NE(passSource.find("m_timingReadbackValid[timingFrameIndex] = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingResolveRecorded = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("TryReadbackTimingResult(timingFrameIndex);"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingElapsedMs = static_cast<float>("), std::string::npos);
-    EXPECT_NE(passSource.find("m_velocityReadHandle = builder.Read(view.velocityTarget, RHIShaderStage::AllRayTracing);"),
+    EXPECT_NE(passSource.find("ctx.WriteTimestamp(data->timingQueryPool.Get(), data->stats.gpuTimingEndQueryIndex);"),
               std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultSRV(depthTexture)"), std::string::npos);
-    EXPECT_NE(passSource.find("RHITexture* sceneVelocity = m_velocityReadHandle.IsValid() ?"),
+    EXPECT_NE(passSource.find("data->stats.gpuTimingQueriesRecorded = true;"), std::string::npos);
+    EXPECT_NE(passSource.find("ctx.ResolveQueries(data->timingQueryPool.Get(),"), std::string::npos);
+    EXPECT_NE(passSource.find("data->reservation->timingResolveRecorded = true;"), std::string::npos);
+    EXPECT_NE(passSource.find("PollCompletedTimingSamples();"), std::string::npos);
+    EXPECT_NE(passSource.find("m_lastSubmittedStats.gpuTimingElapsedMs = static_cast<float32>("), std::string::npos);
+    EXPECT_NE(passSource.find("const RGTextureHandle velocityHandle = view.velocityTarget.IsValid()"),
               std::string::npos);
-    EXPECT_NE(passSource.find("EnsureFallbackVelocityTexture()"), std::string::npos);
-    EXPECT_NE(passSource.find("RHITextureDesc::Texture2D(1, 1, RHIFormat::RG16_FLOAT)"), std::string::npos);
+    EXPECT_NE(passSource.find("GetDefaultSRV(data->depthTexture.Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("data->velocityTexture = RHITextureRef(graph->GetTexture(data->velocityHandle));"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("bool RayTracedShadowPass::CreateFrameFallbackTextures("), std::string::npos);
+    EXPECT_NE(passSource.find("RHIFormat::RG16_FLOAT, RHITextureUsage::ShaderResource"), std::string::npos);
     EXPECT_NE(passSource.find("RayTracedShadowFallbackVelocity"), std::string::npos);
-    EXPECT_NE(passSource.find("sceneVelocity = m_fallbackVelocityTexture.Get();"), std::string::npos);
-    EXPECT_NE(passSource.find("m_viewCache->GetDefaultSRV(sceneVelocity)"), std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultSRV(previousShadowMask)"), std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultSRV(previousDepthHistory)"), std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultUAV(currentDepthHistory)"), std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultSRV(previousNormalHistory)"), std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultUAV(currentNormalHistory)"), std::string::npos);
-    EXPECT_NE(passSource.find("EnsureConstantBuffer()"), std::string::npos);
-    EXPECT_NE(passSource.find("UpdateConstants(view)"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindAccelerationStructure(RTShadowBindings::RVX_RT_SHADOW_TLAS_BINDING, tlas);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_OUTPUT_MASK_BINDING, shadowMaskUAV);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_SCENE_DEPTH_BINDING, depthSRV);"), std::string::npos);
+    EXPECT_NE(passSource.find("data->fallbackVelocityTexture.Get(), RHIResourceState::Common"), std::string::npos);
+    EXPECT_NE(passSource.find("GetDefaultSRV(data->velocityTexture.Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("GetDefaultSRV(data->historyReadTexture.Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("GetDefaultSRV(data->historyDepthReadTexture.Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("GetDefaultUAV(data->historyDepthWriteTexture.Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("GetDefaultSRV(data->historyNormalReadTexture.Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("GetDefaultUAV(data->historyNormalWriteTexture.Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("CreateFrameConstantBuffer(*state)"), std::string::npos);
+    EXPECT_NE(passSource.find("UpdateConstants(*data)"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindAccelerationStructure(RTShadowBindings::RVX_RT_SHADOW_TLAS_BINDING, data->tlas.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_OUTPUT_MASK_BINDING, data->shadowMaskUAV.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_SCENE_DEPTH_BINDING, data->depthSRV.Get());"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_CONSTANTS_BINDING,"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_PREVIOUS_MASK_BINDING, previousShadowMaskSRV);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_PREVIOUS_DEPTH_BINDING, previousDepthHistorySRV);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_OUTPUT_DEPTH_BINDING, currentDepthHistoryUAV);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_PREVIOUS_NORMAL_BINDING, previousNormalHistorySRV);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_OUTPUT_NORMAL_BINDING, currentNormalHistoryUAV);"), std::string::npos);
-    EXPECT_NE(passSource.find("RHIBuffer* materialMetadataBuffer = m_sceneManager->GetInstanceMaterialMetadataBuffer();"),
+    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_PREVIOUS_MASK_BINDING, data->previousShadowMaskSRV.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_PREVIOUS_DEPTH_BINDING, data->previousDepthHistorySRV.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_OUTPUT_DEPTH_BINDING, data->currentDepthHistoryUAV.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_PREVIOUS_NORMAL_BINDING, data->previousNormalHistorySRV.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_OUTPUT_NORMAL_BINDING, data->currentNormalHistoryUAV.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("state->materialMetadata = RHIBufferRef(m_sceneManager->GetInstanceMaterialMetadataBuffer());"),
               std::string::npos);
-    EXPECT_NE(passSource.find("ResolveMaterialTextureViews(materialTextureViews)"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.resourceViewsAvailable = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_METADATA_BINDING, alphaMetadataBuffer);"), std::string::npos);
-    EXPECT_NE(passSource.find("RHITextureView* alphaTextureFallback"), std::string::npos);
-    EXPECT_NE(passSource.find("textureIndex < RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_TEXTURES"),
+    EXPECT_NE(passSource.find("state->materialTextureViews.emplace_back(view);"), std::string::npos);
+    EXPECT_NE(passSource.find("data->stats.resourceViewsAvailable = true;"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_METADATA_BINDING, data->alphaMetadata.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("RHITextureView* alphaFallback"), std::string::npos);
+    EXPECT_NE(passSource.find("index < data->alphaTextureViews.size()"),
               std::string::npos);
-    EXPECT_NE(passSource.find("bufferIndex < RTShadowBindings::RVX_RT_SHADOW_MAX_ALPHA_GEOMETRY_BUFFERS"),
+    EXPECT_NE(passSource.find("index < data->alphaIndexBuffers.size()"),
               std::string::npos);
-    EXPECT_NE(passSource.find(": alphaMetadataBuffer;"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_MATERIAL_METADATA_BINDING, materialMetadataBuffer);"), std::string::npos);
-    EXPECT_NE(passSource.find("RHITextureView* materialTextureFallback"), std::string::npos);
-    EXPECT_NE(passSource.find("textureIndex < RTShadowBindings::RVX_RT_SHADOW_MAX_MATERIAL_TEXTURES"),
+    EXPECT_NE(passSource.find(": data->alphaMetadata.Get();"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_MATERIAL_METADATA_BINDING, data->materialMetadata.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("RHITextureView* materialFallback"), std::string::npos);
+    EXPECT_NE(passSource.find("index < data->materialTextureViews.size()"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_SCENE_VELOCITY_BINDING, sceneVelocitySRV);"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.descriptorSetAvailable = true;"), std::string::npos);
-    const auto shadowResourceViewsReady = passSource.find("m_stats.resourceViewsAvailable = true;");
-    const auto shadowCreateDescriptorSet = passSource.find("device->CreateDescriptorSet(descriptorDesc);");
-    const auto shadowDescriptorSetReady = passSource.find("m_stats.descriptorSetAvailable = true;");
-    const auto shadowSetPipeline = passSource.find("ctx.SetPipeline(pipeline);");
+    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_SCENE_VELOCITY_BINDING, data->velocitySRV.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("data->stats.descriptorSetAvailable = true;"), std::string::npos);
+    const auto shadowResourceViewsReady = passSource.find("data->stats.resourceViewsAvailable = true;");
+    const auto shadowCreateDescriptorSet = passSource.find("data->descriptorDevice->CreateDescriptorSet(descriptorDesc);");
+    const auto shadowDescriptorSetReady = passSource.find("data->stats.descriptorSetAvailable = true;");
+    const auto shadowSetPipeline = passSource.find("ctx.SetPipeline(data->pipeline.Get());");
     ASSERT_NE(shadowResourceViewsReady, std::string::npos);
     ASSERT_NE(shadowCreateDescriptorSet, std::string::npos);
     ASSERT_NE(shadowDescriptorSetReady, std::string::npos);
@@ -4315,23 +4350,24 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     EXPECT_LT(shadowCreateDescriptorSet, shadowDescriptorSetReady);
     EXPECT_LT(shadowDescriptorSetReady, shadowSetPipeline);
     EXPECT_NE(passSource.find("m_sceneManager->GetInstanceMaterialTextureTable()"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedTemporalAccumulation"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedLightAngularRadius"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedSamplesPerPixel"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedTemporalBlendFactor"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedHistoryDepthThreshold"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedHistoryNormalThreshold"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedHistoryVelocityRejectionScale"), std::string::npos);
-    EXPECT_NE(passSource.find("view.velocityTarget.IsValid() ? 1.0f : 0.0f"), std::string::npos);
-    EXPECT_NE(passSource.find("velocityRejectionScale"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedInstanceMask"), std::string::npos);
-    EXPECT_NE(passSource.find("constants.previousViewProjection = m_historyViewValid"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedTemporalAccumulation"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedLightAngularRadius"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedTemporalBlendFactor"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedHistoryDepthThreshold"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedHistoryNormalThreshold"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedHistoryVelocityRejectionScale"), std::string::npos);
+    EXPECT_NE(passSource.find("state.execution.view.velocityTarget.IsValid() ? 1.0f : 0.0f"), std::string::npos);
+    EXPECT_NE(passSource.find("ClampFiniteNonNegative(state.config.rayTracedHistoryVelocityRejectionScale, 8.0f)"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedInstanceMask"), std::string::npos);
+    EXPECT_NE(passSource.find("constants.previousViewProjection = state.reservation->historyViewValid"),
+              std::string::npos);
     EXPECT_NE(passSource.find("historyReprojectionParams"), std::string::npos);
     EXPECT_NE(passSource.find("softShadowParams"), std::string::npos);
     EXPECT_NE(passSource.find("rayOptions"), std::string::npos);
-    EXPECT_NE(passSource.find("std::min<uint32>(m_config.rayTracedInstanceMask, 0xFFu)"),
+    EXPECT_NE(passSource.find("std::min<uint32>(state.config.rayTracedInstanceMask, 0xFFu)"),
               std::string::npos);
-    EXPECT_NE(passSource.find("std::min(std::max(m_config.rayTracedSamplesPerPixel, 1u), 8u)"),
+    EXPECT_NE(passSource.find("static_cast<float32>(state.stats.samplesPerPixel)"),
               std::string::npos);
     EXPECT_NE(passSource.find("view.frameNumber & 0x00FFFFFFull"), std::string::npos);
     EXPECT_NE(passSource.find("ctx.DispatchRays(dispatchDesc);"), std::string::npos);
@@ -5263,7 +5299,7 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
     const std::string pipelineSource = ReadTextFile(renderRoot / "Private" / "PipelineCache.cpp");
     const std::string defaultLitSource = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
 
-    EXPECT_NE(opaqueHeader.find("void SetRayTracedShadowSource(const RayTracedShadowPass* shadowPass);"),
+    EXPECT_NE(opaqueHeader.find("void SetRayTracedShadowRecordInputs("),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("m_rayTracedShadowMaskReadHandle = builder.Read(shadowMask, RHIShaderStage::Pixel);"),
               std::string::npos);
@@ -5281,7 +5317,27 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
               std::string::npos);
     EXPECT_NE(opaqueSource.find("ClearDirectionalShadowViewData(drawView);"),
               std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("m_opaquePass->SetRayTracedShadowSource(m_rayTracedShadowPass);"),
+    EXPECT_NE(opaqueSource.find("dispatchReady.load(std::memory_order_acquire)"),
+              std::string::npos);
+    EXPECT_NE(opaqueSource.find("rayTracedExecutionFailed"), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("passRecordContext.rayTracedShadow ="),
+              std::string::npos);
+    EXPECT_EQ(sceneRendererSource.find("SetRayTracedShadowSource("), std::string::npos);
+
+    const auto shadowStatsAccessor = sceneRendererSource.find(
+        "const RayTracedShadowPassStats& SceneRenderer::GetRayTracedShadowStats() const");
+    ASSERT_NE(shadowStatsAccessor, std::string::npos);
+    const auto shadowStatsAccessorEnd = sceneRendererSource.find(
+        "const RayTracedReflectionPassStats& SceneRenderer::GetRayTracedReflectionStats() const",
+        shadowStatsAccessor);
+    ASSERT_NE(shadowStatsAccessorEnd, std::string::npos);
+    const std::string shadowStatsAccessorBody = sceneRendererSource.substr(
+        shadowStatsAccessor, shadowStatsAccessorEnd - shadowStatsAccessor);
+    EXPECT_NE(shadowStatsAccessorBody.find("m_rayTracedShadowPass ? m_rayTracedShadowPass->GetStats()"),
+              std::string::npos);
+    EXPECT_EQ(shadowStatsAccessorBody.find("m_activeRenderPassResults->rayTracedShadowStats"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("? m_activeRenderPassResults->rayTracedShadowStats"),
               std::string::npos);
 
     EXPECT_NE(pipelineHeader.find("RayTracedShadowFrameResources"), std::string::npos);

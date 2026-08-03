@@ -44786,6 +44786,104 @@ git diff --check
 
 ---
 
+### R-SP335 Render-policy Task 9B-2 graph-owned ray-traced Shadow state
+
+**Date:** 2026-08-03
+**Commit:** pending `refactor(render): isolate ray-traced shadow recording state`
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-pass-record-context-contract.md`
+
+**Prerequisite status:** PASS
+
+- Task 9B-1 commit `e7c23a49` is present and its focused/integration gates
+  were green before this slice.
+
+**Approved scope:**
+
+- Move RayTracedShadow handles, output, statistics, constant/timing resources,
+  descriptor state, and command-referenced resource ownership into immutable
+  per-recording graph state.
+- Keep temporal history in a completion-aware owner with exclusive writer
+  reservations, submitted commit, unsubmitted rollback, identity ordering,
+  and exact realized `RHITextureAccessSnapshot` handoff.
+- Publish a graph-owned producer output to Opaque and fail closed when setup or
+  execution cannot produce a valid mask.
+- Retain Opaque frame descriptor snapshots and the selected shadow-mask view in
+  the matching submission batch.
+- Preserve the standalone no-identity adapter as a bounded, single-pending
+  compatibility path.
+
+**Out of scope:**
+
+- ObjectVelocity, Transparent, Skybox, binder removal, formal submission
+  strategies, async compute, Editor work, and Auto-policy promotion remain
+  later tasks.
+- Completion-aware pooling of per-record query/readback/constant resources is
+  a later performance optimization; correctness currently favors isolation.
+- PipelineCache view/object constant storage remains a wider recording-snapshot
+  concern for Task 9B cleanup and must not regress the ownership established
+  here.
+
+**Files changed:**
+
+- RayTracedShadow/Opaque record contracts, implementations, diagnostics, and
+  submission ownership
+- SceneRenderer identity-aware submission/rollback and budget timing refresh
+- PipelineCache frame descriptor snapshot accessor
+- RenderPass and PipelineCache validation coverage
+- Task 9 contract, implementation plan, execution ledger, and this phase log
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation RHIContractValidation RenderGraphValidation RenderPolicyValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/PipelineCacheValidation.exe
+build/win_x64_debug/Tests/Debug/RHIContractValidation.exe
+build/win_x64_debug/Tests/Debug/RenderGraphValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation|ModelViewerGPUDrivenGBVSmoke|RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries|RenderingShowcaseDX11Smoke)$"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for all listed targets and the configured DX11, DX12, OpenGL,
+  and Vulkan libraries reached by their dependency graphs.
+- Standalone suites: PASS 173/173 RenderPass, 129/129 PipelineCache, 41/41
+  RHIContract, 50/50 RenderGraph, and 22/22 RenderPolicy.
+- Repeated DX12 GPU-driven smoke: PASS 10/10.
+- DX12 Direct/GPU/Auto/parity/GBV, Porsche Direct/GPU/parity,
+  resize/lifetime/retirement, and DX11 smoke: PASS 16/16.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for two P1 and two P2 findings: rejected or
+  failed submissions did not advance diagnostics, legacy completion could
+  become ambiguous, history reduced access to bare resource state, and timing
+  polling could be skipped while the pass was disabled.
+- Final verdict: APPROVE; all four findings have production-path fixes and
+  focused regressions, with no remaining P0-P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. RayTracedShadow recording data and Opaque consumption are
+  graph-owned, temporal state commits only from the newest submitted successful
+  dispatch, and all execution failure paths remain fail-closed.
+- The primary integration run additionally covered DX12/DX11 runtime,
+  cross-path parity, resize, submission retirement, external assets, and GBV.
+- Native Vulkan and Metal RT hardware execution remains a platform validation
+  item; Windows builds and cross-backend contracts are green.
+- Next slice is Task 9B-3 ObjectVelocity scene/list/target recording isolation
+  and identity-gated statistics.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

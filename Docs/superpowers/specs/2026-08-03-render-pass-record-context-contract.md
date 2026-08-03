@@ -1,6 +1,7 @@
 # Render Pass Record Context and Execution Data Contract
 
-**Status:** Task 9A and Task 9B-1 implemented and reviewed; Task 9B-2 pending
+**Status:** Task 9A, Task 9B-1, and Task 9B-2 implemented, validated, and
+independently reviewed; Task 9B-3 pending
 **Date:** 2026-08-03
 **Scope:** Main raster pass chain; frame/view data ownership and RenderGraph
 recording lifetime
@@ -116,7 +117,8 @@ enable async compute.
 
 ### 9B - Remaining scene pass adapters
 
-**Implementation status:** Raster Shadow complete; remaining slices pending.
+**Implementation status:** Raster Shadow and RayTracedShadow (9B-2) complete;
+remaining slices pending.
 
 - 9B-1 migrates raster Shadow to an independent graph-owned recorder. Setup
   publishes a producer-neutral `DirectionalShadowRecordOutput` with the current
@@ -124,9 +126,14 @@ enable async compute.
   identity-gated. Disabled, unsupported, invalid, inverse-executed two-graph,
   caller-mutation, and stale-generation paths fail closed.
 - 9B-2 migrates RayTracedShadow per-recording handles, output, and stats. Its
-  persistent temporal-history owner must use reservation, submission commit,
-  and unsubmitted rollback; imported history resources require explicit
-  submission retention. Merely moving the mask handle is insufficient.
+  persistent temporal-history owner uses reservation, submission commit, and
+  unsubmitted rollback; imported history resources use explicit submission
+  retention. Submission diagnostics have an identity watermark, so a newer
+  setup/execute rejection remains observable and a delayed older success
+  cannot regress stats or history. History ownership persists full RHI texture
+  access snapshots, projected from the recorded graph after execution rather
+  than a compatibility state projection. The standalone legacy adapter is
+  bounded to one pending legacy record.
 - 9B-3 through 9B-5 migrate ObjectVelocity, Transparent, and Skybox
   scene/list/target/configuration inputs to typed graph pass data.
 - Resolve targets from declared graph handles instead of post-build raw view
