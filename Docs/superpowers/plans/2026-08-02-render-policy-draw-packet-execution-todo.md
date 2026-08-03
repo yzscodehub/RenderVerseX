@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, and Tasks
-10A/10B/10C are complete and reviewed; Task 11 GPU Scene is next
+**Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
+10A/10B/10C, and Task 11A are complete and reviewed; Task 11B is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -372,7 +372,7 @@ formal submission interface with clean validation and parity.
 
 ### Task 11 - GPU Scene
 
-- [ ] Freeze GPU Scene table schemas for primitive, bounds, transform,
+- [x] Freeze GPU Scene table schemas for primitive, bounds, transform,
   material, geometry, draw metadata, and generation/version data.
 - [ ] Define stable generation-checked indices and completion-aware free-list
   reuse.
@@ -619,34 +619,31 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Task 10C implementation, remediation, independent re-review, primary audit,
-and the machine-recorded 298-test M2 exit are complete. Start **Task 11A** by
-freezing the GPU Scene schema and CPU-side stable-index allocator. The completed
-Task 10C acceptance ledger is:
+Task 11A implementation, independent review, remediation, primary audit, and
+focused regression gates are complete. Start **Task 11B** by deriving
+transactional accepted-scene diffs and exact resource-generation publication.
+The completed Task 11A acceptance ledger is:
 
-- [x] Repair Vulkan Direct shader/reflection/layout and optional-stage
-  capability truth without claiming unsupported mesh or indirect-count paths.
-- [x] Record non-gating plan/submission CPU cost and group occupancy; keep the
-  values unavailable for Direct and prohibited from influencing Auto.
-- [x] Add native DX12 zero-count, maximum-count/range, and completion-aware
-  indirect-resource retirement fixtures with fail-closed Debug Layer evidence.
-- [x] Add resize, zero-visible, Vulkan Direct, parity, validation-layer, and
-  exact Task 7/8/9 regression gates to one PowerShell 5.1-compatible runner.
-- [x] Emit `RVX.M2.RenderPolicyExit` schema 1 with source revision, dirty-tree
-  state, gate inventory/results, artifact hashes, metrics, and explicit
-  `HostPlatformUnsupported` Metal coverage on this Windows host.
-- [x] Close independent review findings through final P0/P1/P2/P3 `0/0/0/0`;
-  pass the expanded 298/298 CTest matrix and all 29 aggregate gate results.
+- [x] Freeze backend-neutral, 16-byte-aligned POD rows and strongly typed
+  generation refs for primitive, bounds, transform, material, geometry, and
+  draw metadata without RHI/backend objects or shader `uint64` requirements.
+- [x] Preserve layer/pass/pipeline/material semantics, exact resource
+  slot+generation provenance, conservative bounds flags, previous/normal
+  transforms, and multi-draw objects.
+- [x] Implement an independent-table, non-movable CPU committed mirror with
+  zero/non-unique object rejection, atomic add/update/remove, stable unchanged
+  refs, stale-ref rejection, tombstones, and fail-closed capacity/version limits.
+- [x] Freeze draw ranges as contiguous atomic generation blocks; Task 11C must
+  retire/reclaim a whole block with one advanced non-wrapping generation.
+- [x] Keep retired slots quarantined and deliberately unreused until Task 11C
+  attaches reclamation to real multi-domain GPU completion tokens.
+- [x] Close independent review P2 findings for version wrap and unchecked draw
+  generation; final verdict READY with no remaining P0-P2 defects.
+- [x] Pass GPU Scene 13/13, combined scene/submission 49/49, GPU-driven 30/30,
+  module/architecture 8/8, phase gates 2/2, focused builds, and diff checks.
 
-Task 11 will be committed in independently reversible serial slices:
-
-1. **11A schema/allocator:** backend-neutral generation-checked table refs,
-   row layouts, CPU committed mirror, uniqueness, reuse, and rollback tests.
-2. **11B update/publication:** accepted-scene diffs, exact resource-generation
-   residency, transactional add/update/remove/reload/evict semantics.
-3. **11C persistent upload/lifetime:** dirty journals, frame-slot versions,
-   capacity growth, exact completion-token retirement, and failure rollback.
-4. **11D Tier 2 integration:** stable GPU Scene visibility/command indices and
-   Task 10 strategy consumption while preserving Direct/Tier 1 semantics.
-5. **11E evidence:** warm-static, churn, generation reuse, resource eviction,
-   multi-view/resize/failure injection, capacity, and 100/1k/10k/50k metrics.
+Task 11B must replace the Task 11A whole-state candidate copy with a touched-row
+transaction journal or equivalent incremental publication before the database
+enters any per-frame render path. It must also reject duplicate object IDs at
+the accepted `RenderScene` boundary, preserve rendered-frame temporal semantics,
+and publish only exact resident mesh/material generations.

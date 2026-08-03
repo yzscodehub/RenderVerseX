@@ -45943,3 +45943,91 @@ below.
   Scene identity, publication, upload, lifetime, and eventual Tier 2 execution.
 
 ---
+
+### R-SP346 Render-policy Task 11A GPU Scene schema and transactional CPU mirror
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11A stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP345 (M2 validation and renderer/RHI evidence freeze).
+- Task 10 contracts remain unchanged; this slice is CPU-only and introduces no
+  GPU binding, upload, visibility, submission, policy, or backend behavior.
+
+**Approved scope:**
+
+- Freeze backend-neutral GPU Scene rows for primitive, bounds, transform,
+  material, geometry, and draw metadata using fixed-width, explicitly aligned
+  POD values and typed generation-checked refs.
+- Represent logical 64-bit values as low/high 32-bit words and define explicit
+  row-major affine pack/unpack values rather than inheriting GLM layout.
+- Preserve exact resource slot/generation identity, layer/pass/pipeline/material
+  semantics, conservative bounds flags, previous/normal transforms, and
+  multi-draw object structure.
+- Add a Render-private independent-table CPU database with atomic transactions,
+  nonzero/unique object IDs, stable unchanged refs, stale-ref rejection,
+  tombstones, capacity/version failure, and max-generation retirement.
+- Reserve slot zero, keep every retired slot quarantined, and defer actual
+  completion-aware reuse to Task 11C. No CPU frame number or fake completion is
+  accepted as a reuse condition.
+- Freeze each primitive's draw range as one contiguous atomic generation block;
+  future reclamation must retire/reuse the entire block with one advanced,
+  non-wrapping generation.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUScene/GPUSceneSchema.h`
+- `Render/Private/GPUScene/GPUSceneDatabase.h`
+- `Render/Private/GPUScene/GPUSceneDatabase.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/GPUSceneValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- Task execution ledger and this phase record.
+
+**Validation result:**
+
+- Serial build: PASS for `GPUSceneValidation`, `RenderSceneValidation`,
+  `GPUDrivenValidation`, and `RenderSubmissionValidation`.
+- GPUSceneValidation: PASS 13/13 after remediation.
+- Combined GPU Scene, RenderScene, and submission-lifetime set: PASS 49/49
+  before the five added remediation cases; the final GPU Scene set was rerun
+  independently at 13/13.
+- GPUDrivenValidationFixture: PASS 30/30.
+- Module/public-header/architecture boundary gates: PASS 8/8.
+- Final architecture phase gates: PASS 2/2.
+- `git diff --check`: PASS before documentation finalization.
+
+**Independent review result:**
+
+- Initial review verdict NOT READY with two P2 findings: committed version could
+  wrap to zero, and the contiguous draw range did not validate the generation
+  stored by `firstDraw` for every row.
+- Remediation added `VersionExhausted`, a terminal-version test seam, the atomic
+  draw-block generation contract, full per-row range validation, and five
+  additional zero-draw/count-change/capacity/contradiction tests.
+- Re-review verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after public ABI, independent table allocation, overflow arithmetic,
+  transaction rollback, multi-draw range, tombstone, CMake, and test inspection;
+  independent focused builds; 13/13, 49/49, 30/30, 8/8, and 2/2 gates; and
+  explicit preservation of unrelated worktree changes.
+- The reserved-zero table-ref invariant is intentional and consistent with the
+  approved GPU Scene design; refs are not interchangeable with resource handles
+  or frame-local candidate indices.
+
+**Residual risks / mandatory follow-ups:**
+
+- `State candidate = m_state` gives straightforward strong atomicity but copies
+  the whole scene for every non-empty transaction. Task 11B must replace it with
+  touched-row journaling, copy-on-write pages, or equivalent incremental
+  publication before any per-frame integration.
+- Task 11B owns accepted-scene diffs, duplicate-ID rejection at the RenderScene
+  boundary, exact residency/publication, temporal-value population, and
+  reload/evict behavior.
+- Task 11C owns multi-domain completion-token reclamation, whole draw-block
+  generation advancement, persistent buffers, dirty journals, and retirement.
+
+---

@@ -88,6 +88,8 @@ target_sources(RVX_Render PRIVATE
     Private/Renderer/RenderDrawItem.cpp
     Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
+    # GPU scene CPU mirror (Task 11A; no upload or residency path)
+    Private/GPUScene/GPUSceneDatabase.cpp
     # Visibility
     Private/Visibility/RenderVisibility.cpp
     # Policy
