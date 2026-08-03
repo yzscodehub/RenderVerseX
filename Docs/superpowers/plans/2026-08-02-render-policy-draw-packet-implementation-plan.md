@@ -1,7 +1,8 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-8 and all Task 9 slices through Task 9B-6B2b are complete
-and reviewed; Task 10A semantic indirect RHI contract/conformance is next.
+**Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, and Task 10A
+semantic indirect RHI contract/conformance are complete and reviewed; Task 10B
+submission strategies and DX12 Tier 1 implementation are next.
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -313,7 +314,9 @@ Mapping target:
 | OpenGL | Direct or supported multi-draw fixed count | Direct |
 
 `supportsIndirectDrawCount` remains during migration as a compatibility
-projection and is removed only after all consumers use the structured record.
+projection. Task 16B owns removing the `RHICapabilities`, Render, and
+GPUDriven projections only after diagnostics and tools use the structured
+record.
 
 ## 5. Implementation Tasks
 
@@ -692,7 +695,8 @@ and bypass. Task 9B-6B1 then closed typed Opaque color/depth attachment
 ownership, fail-closed source validation, and completion retention. Task
 9B-6B2a moved the primary directional light into the frame snapshot, and Task
 9B-6B2b removed the final Depth/Opaque/Shadow standalone frame-state paths.
-All Task 9 slices passed independent and primary review; Task 10A is next.
+All Task 9 slices and Task 10A passed independent and primary review; Task 10B
+is next.
 
 Proposed files:
 
@@ -724,6 +728,12 @@ Acceptance:
 ### Task 10 - Formalize submission strategies and complete DX12 Tier 1
 
 **Purpose:** Separate renderer grouping/visibility from backend execution.
+
+**Progress:** Task 10A is complete. The public RHI now owns a validated,
+schema-versioned indexed-indirect capability/descriptor contract; renderer and
+GPU-driven decisions consume that structured record. Task 10B owns strategy
+interfaces, DX12 command-signature caching, validated execution routing, and
+state rebind behavior. Task 10C remains the M2 evidence/freeze gate.
 
 Proposed files:
 
@@ -917,6 +927,9 @@ Work:
   eligibility counts/reasons, candidate/visible counts, group occupancy,
   command counts, Direct fallback counts, timings, and memory/update bytes;
 - emit JSON tool artifacts in addition to human-readable logs;
+- remove the `RHICapabilities`, Render, and GPUDriven compatibility projections
+  after diagnostics and tools consume structured indexed-indirect execution
+  capabilities;
 - keep ModelViewer CLI limited to request overrides, scene setup, captures, and
   observable assertions;
 - remove Sample access to renderer internals or backend capability decisions;

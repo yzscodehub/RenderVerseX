@@ -499,7 +499,7 @@ TEST_F(GPUDrivenValidationFixture, AutoModeRequiresAQualifiedBackend)
     input.backend = RHIBackendType::DX12;
     input.supportsComputePipeline = true;
     input.supportsDescriptorSets = true;
-    input.supportsIndirectDrawCount = true;
+    input.indexedIndirectExecution.supportsCountBuffer = true;
     input.pipelineReady = true;
 
     const GPUDrivenPolicyDecision decision = ResolveGPUDrivenPolicy(input);
@@ -522,14 +522,14 @@ TEST_F(GPUDrivenValidationFixture, ForceEnabledBypassesQualificationButNotCapabi
     input.backend = RHIBackendType::DX12;
     input.supportsComputePipeline = true;
     input.supportsDescriptorSets = true;
-    input.supportsIndirectDrawCount = true;
+    input.indexedIndirectExecution.supportsCountBuffer = true;
     input.pipelineReady = true;
 
     GPUDrivenPolicyDecision decision = ResolveGPUDrivenPolicy(input);
     EXPECT_TRUE(decision.enabled);
     EXPECT_EQ(GPUDrivenPolicyReason::None, decision.reason);
 
-    input.supportsIndirectDrawCount = false;
+    input.indexedIndirectExecution.supportsCountBuffer = false;
     decision = ResolveGPUDrivenPolicy(input);
     EXPECT_FALSE(decision.enabled);
     EXPECT_EQ(GPUDrivenPolicyReason::IndirectDrawCountUnsupported, decision.reason);
@@ -542,7 +542,7 @@ TEST_F(GPUDrivenValidationFixture, ForceDisabledAlwaysSelectsDirectRendering)
     input.backend = RHIBackendType::DX12;
     input.supportsComputePipeline = true;
     input.supportsDescriptorSets = true;
-    input.supportsIndirectDrawCount = true;
+    input.indexedIndirectExecution.supportsCountBuffer = true;
     input.pipelineReady = true;
 
     const GPUDrivenPolicyDecision decision = ResolveGPUDrivenPolicy(input);
@@ -557,7 +557,7 @@ TEST_F(GPUDrivenValidationFixture, InvalidModeFailsClosed)
     input.backend = RHIBackendType::DX12;
     input.supportsComputePipeline = true;
     input.supportsDescriptorSets = true;
-    input.supportsIndirectDrawCount = true;
+    input.indexedIndirectExecution.supportsCountBuffer = true;
     input.pipelineReady = true;
 
     const GPUDrivenPolicyDecision decision = ResolveGPUDrivenPolicy(input);
@@ -572,7 +572,7 @@ TEST_F(GPUDrivenValidationFixture, InjectedQualificationMatchesLegacyAndRejectsM
     input.backend = RHIBackendType::DX12;
     input.supportsComputePipeline = true;
     input.supportsDescriptorSets = true;
-    input.supportsIndirectDrawCount = true;
+    input.indexedIndirectExecution.supportsCountBuffer = true;
     input.pipelineReady = true;
 
     const GPUDrivenBackendQualification qualification =
@@ -953,7 +953,7 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionBuffersKeepStructuredUavFlags)
     FakeDevice device;
     device.capabilities.supportsComputePipeline = true;
     device.capabilities.supportsDescriptorSets = true;
-    device.capabilities.supportsIndirectDrawCount = true;
+    device.capabilities.indexedIndirectExecution.supportsCountBuffer = true;
 
     GPUCullingConfig config;
     config.maxInstances = 8;
@@ -988,7 +988,7 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionDecisionReportsCapabilityAndPipel
     {
         FakeDevice device;
         device.capabilities.supportsDescriptorSets = true;
-        device.capabilities.supportsIndirectDrawCount = true;
+        device.capabilities.indexedIndirectExecution.supportsCountBuffer = true;
 
         GPUCullingConfig config;
         config.maxInstances = 8;
@@ -1007,7 +1007,7 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionDecisionReportsCapabilityAndPipel
         FakeDevice device;
         device.capabilities.supportsComputePipeline = true;
         device.capabilities.supportsDescriptorSets = true;
-        device.capabilities.supportsIndirectDrawCount = true;
+        device.capabilities.indexedIndirectExecution.supportsCountBuffer = true;
 
         GPUCullingConfig config;
         config.maxInstances = 8;

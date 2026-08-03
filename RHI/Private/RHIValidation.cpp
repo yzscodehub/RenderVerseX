@@ -249,6 +249,7 @@ namespace RVX
             case RHICapabilityFeature::ExplicitResourceBarriers: return "ExplicitResourceBarriers";
             case RHICapabilityFeature::QueueSynchronization: return "QueueSynchronization";
             case RHICapabilityFeature::AsyncCompute: return "AsyncCompute";
+            case RHICapabilityFeature::IndexedIndirectExecution: return "IndexedIndirectExecution";
             case RHICapabilityFeature::IndirectDrawCount: return "IndirectDrawCount";
             case RHICapabilityFeature::RayTracing: return "RayTracing";
             case RHICapabilityFeature::BindlessResources: return "BindlessResources";
@@ -390,6 +391,44 @@ namespace RVX
         if (capabilities.supportsAsyncCompute && !capabilities.supportsComputePipeline)
         {
             fail("async compute support requires compute pipeline support");
+        }
+
+        const RHIIndexedIndirectExecutionCapabilities& indexedIndirect =
+            capabilities.indexedIndirectExecution;
+        if (capabilities.supportsIndirectDrawCount != indexedIndirect.supportsCountBuffer)
+        {
+            fail("supportsIndirectDrawCount must match indexedIndirectExecution.supportsCountBuffer");
+        }
+        if (indexedIndirect.supportsCountBuffer && !indexedIndirect.supportsFixedCount)
+        {
+            fail("indexed indirect count-buffer support requires fixed-count support");
+        }
+        if (indexedIndirect.supportsFixedCount || indexedIndirect.supportsCountBuffer)
+        {
+            if (indexedIndirect.indexedCommandSize == 0 ||
+                indexedIndirect.minCommandStride < indexedIndirect.indexedCommandSize ||
+                indexedIndirect.commandStrideAlignment == 0 ||
+                indexedIndirect.argumentOffsetAlignment == 0 ||
+                indexedIndirect.countOffsetAlignment == 0 ||
+                indexedIndirect.maxDrawCount == 0)
+            {
+                fail("indexed indirect support requires non-zero command layout, alignment, and draw-count limits");
+            }
+            if (indexedIndirect.requiredArgumentState != RHIResourceState::IndirectArgument ||
+                indexedIndirect.requiredCountState != RHIResourceState::IndirectArgument)
+            {
+                fail("indexed indirect support must require IndirectArgument states");
+            }
+            if (indexedIndirect.requiresExactCommandStride &&
+                indexedIndirect.minCommandStride != indexedIndirect.indexedCommandSize)
+            {
+                fail("exact indexed indirect command stride requires minCommandStride to equal indexedCommandSize");
+            }
+            if (indexedIndirect.supportsCountBuffer &&
+                indexedIndirect.countValueSize != sizeof(uint32))
+            {
+                fail("indexed indirect count-buffer support requires a uint32 count value");
+            }
         }
 
         const RHIQueueTopology& topology = capabilities.queueTopology;
@@ -592,6 +631,7 @@ namespace RVX
         report.validationPassed = validation.valid;
         report.validationMessage = validation.message;
         report.queueTopology = capabilities.queueTopology;
+        report.indexedIndirectExecution = capabilities.indexedIndirectExecution;
         report.renderGraphBaselineMissingRequirements =
             BuildRenderGraphBaselineMissingRequirements(capabilities, validation);
         report.renderGraphBaselineSupported = report.renderGraphBaselineMissingRequirements.empty();
@@ -678,11 +718,35 @@ namespace RVX
                           "Async compute is available.",
                           "Async compute is unavailable or lacks compute pipeline support.");
 
+        {
+            const RHIIndexedIndirectExecutionCapabilities& execution =
+                capabilities.indexedIndirectExecution;
+            RHICapabilityReportEntry entry;
+            entry.feature = RHICapabilityFeature::IndexedIndirectExecution;
+            entry.requiredCapability =
+                "indexedIndirectExecution.supportsFixedCount|indexedIndirectExecution.supportsCountBuffer";
+            if (execution.supportsFixedCount || execution.supportsCountBuffer)
+            {
+                entry.status = RHICapabilityStatus::Supported;
+                entry.diagnosticMessage = execution.supportsCountBuffer
+                    ? "Indexed indirect fixed-count and count-buffer execution are available."
+                    : "Indexed indirect fixed-count execution is available; count-buffer execution is unavailable.";
+            }
+            else
+            {
+                entry.status = RHICapabilityStatus::Unsupported;
+                entry.diagnosticMessage = "Indexed indirect execution is unavailable.";
+            }
+            AddCapabilityReportEntry(report, std::move(entry));
+        }
+
+        // Preserve the legacy feature entry as a projection so older tools can
+        // consume it while new tooling reads IndexedIndirectExecution above.
         addBooleanFeature(RHICapabilityFeature::IndirectDrawCount,
-                          capabilities.supportsIndirectDrawCount,
-                          "supportsIndirectDrawCount",
-                          "Indirect draw count is available.",
-                          "Indirect draw count is unavailable.");
+                          capabilities.indexedIndirectExecution.supportsCountBuffer,
+                          "indexedIndirectExecution.supportsCountBuffer",
+                          "Indirect draw count is available through indexed indirect execution.",
+                          "Indirect draw count is unavailable through indexed indirect execution.");
 
         addBooleanFeature(RHICapabilityFeature::RayTracing,
                           capabilities.supportsRaytracing && capabilities.supportsRaytracingPipeline,
@@ -737,6 +801,15 @@ namespace RVX
            << ", Copy="
            << GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[2])
            << ", Active=" << static_cast<uint32>(report.queueTopology.activeDomainCount) << "\n";
+        ss << "IndexedIndirectExecution: FixedCount="
+           << (report.indexedIndirectExecution.supportsFixedCount ? "true" : "false")
+           << ", CountBuffer="
+           << (report.indexedIndirectExecution.supportsCountBuffer ? "true" : "false")
+           << ", FirstInstance="
+           << (report.indexedIndirectExecution.supportsFirstInstance ? "true" : "false")
+           << ", CommandSize=" << report.indexedIndirectExecution.indexedCommandSize
+           << ", MinStride=" << report.indexedIndirectExecution.minCommandStride
+           << ", MaxDrawCount=" << report.indexedIndirectExecution.maxDrawCount << "\n";
         if (!report.validationMessage.empty())
         {
             ss << "ValidationMessage: " << report.validationMessage << "\n";
@@ -800,6 +873,21 @@ namespace RVX
            << JsonString(GetGPUQueueDomainName(report.queueTopology.logicalQueueDomains[2])) << "],\n";
         ss << "    \"activeDomainCount\": "
            << static_cast<uint32>(report.queueTopology.activeDomainCount) << "\n";
+        ss << "  },\n";
+        ss << "  \"indexedIndirectExecution\": {\n";
+        ss << "    \"supportsFixedCount\": " << JsonBool(report.indexedIndirectExecution.supportsFixedCount) << ",\n";
+        ss << "    \"supportsCountBuffer\": " << JsonBool(report.indexedIndirectExecution.supportsCountBuffer) << ",\n";
+        ss << "    \"supportsFirstInstance\": " << JsonBool(report.indexedIndirectExecution.supportsFirstInstance) << ",\n";
+        ss << "    \"requiresExactCommandStride\": " << JsonBool(report.indexedIndirectExecution.requiresExactCommandStride) << ",\n";
+        ss << "    \"indexedCommandSize\": " << report.indexedIndirectExecution.indexedCommandSize << ",\n";
+        ss << "    \"minCommandStride\": " << report.indexedIndirectExecution.minCommandStride << ",\n";
+        ss << "    \"commandStrideAlignment\": " << report.indexedIndirectExecution.commandStrideAlignment << ",\n";
+        ss << "    \"argumentOffsetAlignment\": " << report.indexedIndirectExecution.argumentOffsetAlignment << ",\n";
+        ss << "    \"countOffsetAlignment\": " << report.indexedIndirectExecution.countOffsetAlignment << ",\n";
+        ss << "    \"maxDrawCount\": " << report.indexedIndirectExecution.maxDrawCount << ",\n";
+        ss << "    \"countValueSize\": " << report.indexedIndirectExecution.countValueSize << ",\n";
+        ss << "    \"requiredArgumentState\": " << static_cast<uint32>(report.indexedIndirectExecution.requiredArgumentState) << ",\n";
+        ss << "    \"requiredCountState\": " << static_cast<uint32>(report.indexedIndirectExecution.requiredCountState) << "\n";
         ss << "  },\n";
         ss << "  \"summary\": {\n";
         ss << "    \"supportedCount\": " << report.supportedCount << ",\n";

@@ -223,11 +223,11 @@ namespace RVX
             {
                 return RenderSubmissionMode::EncodedCommandBuffer;
             }
-            if (capabilities.supportsIndirectDrawCount)
+            if (capabilities.indexedIndirectExecution.supportsCountBuffer)
             {
                 return RenderSubmissionMode::MultiDrawIndirectCount;
             }
-            if (capabilities.supportsFixedCountIndirect &&
+            if (capabilities.indexedIndirectExecution.supportsFixedCount &&
                 facts.fixedCountIndirectAllowed)
             {
                 return RenderSubmissionMode::FixedCountIndirect;
@@ -299,8 +299,8 @@ namespace RVX
 
             const bool hasIndirectStrategy =
                 input.capabilities.supportsEncodedCommandBuffer ||
-                input.capabilities.supportsIndirectDrawCount ||
-                input.capabilities.supportsFixedCountIndirect;
+                input.capabilities.indexedIndirectExecution.supportsCountBuffer ||
+                input.capabilities.indexedIndirectExecution.supportsFixedCount;
             if (!input.capabilities.supportsComputeVisibility ||
                 !input.capabilities.supportsDescriptorResourceBindings ||
                 !hasIndirectStrategy)
@@ -359,9 +359,9 @@ namespace RVX
                 case RenderSubmissionMode::Direct:
                     return true;
                 case RenderSubmissionMode::FixedCountIndirect:
-                    return capabilities.supportsFixedCountIndirect;
+                    return capabilities.indexedIndirectExecution.supportsFixedCount;
                 case RenderSubmissionMode::MultiDrawIndirectCount:
-                    return capabilities.supportsIndirectDrawCount;
+                    return capabilities.indexedIndirectExecution.supportsCountBuffer;
                 case RenderSubmissionMode::EncodedCommandBuffer:
                     return capabilities.supportsEncodedCommandBuffer;
                 default:

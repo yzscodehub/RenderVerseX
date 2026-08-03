@@ -9,6 +9,7 @@
 #include "Render/GPUDriven/GPUDrivenQualification.h"
 #include "RenderContracts/RenderFramePacket.h"
 #include "RHI/RHIDefinitions.h"
+#include "RHI/RHIIndirectExecution.h"
 
 namespace RVX
 {
@@ -58,9 +59,13 @@ namespace RVX
     /** @brief Draw submission mechanism selected for a render pass. */
     enum class RenderSubmissionMode : uint8
     {
+        /// CPU-recorded direct draws.
         Direct = 0,
+        /// Fixed number of commands from the execution plan.
         FixedCountIndirect = 1,
+        /// GPU count-buffer commands, clamped to the planned maximum draw count.
         MultiDrawIndirectCount = 2,
+        /// Backend-private extension point; not evidence of a Metal ICB RHI object.
         EncodedCommandBuffer = 3,
     };
 
@@ -267,8 +272,12 @@ namespace RVX
     {
         RHIBackendType backend = RHIBackendType::None;
         bool supportsComputeVisibility = false;
+        RHIIndexedIndirectExecutionCapabilities indexedIndirectExecution;
+        /** Temporary compatibility projection; policy must use indexedIndirectExecution. TODO(Task 16B): remove after diagnostics/tools migrate. */
         bool supportsFixedCountIndirect = false;
+        /** Temporary compatibility projection; policy must use indexedIndirectExecution. TODO(Task 16B): remove after diagnostics/tools migrate. */
         bool supportsIndirectDrawCount = false;
+        /** Backend-native strategy extension signal; never inferred from backend identity. */
         bool supportsEncodedCommandBuffer = false;
         /// Backend-neutral capability for descriptor/resource-table bindings
         /// required by GPU visibility and indirect submission.

@@ -8,6 +8,10 @@
 
 namespace RVX
 {
+    static_assert(sizeof(IndirectDrawIndexedCommand) ==
+                      sizeof(D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS),
+                  "DX11 indexed indirect execution must use the shared command layout.");
+
     // =============================================================================
     // Factory Function
     // =============================================================================
@@ -365,6 +369,21 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = false;      // DX11 doesn't support separate stencil refs
         m_capabilities.supportsSplitBarrier = false;            // DX11 doesn't have explicit barriers
         m_capabilities.supportsSecondaryCommandBuffer = false;  // DX11 uses deferred context instead
+        m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
+        m_capabilities.indexedIndirectExecution.supportsCountBuffer = false;
+        m_capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+        m_capabilities.indexedIndirectExecution.requiresExactCommandStride = false;
+        m_capabilities.indexedIndirectExecution.indexedCommandSize = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.minCommandStride = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+        m_capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.maxDrawCount = UINT32_MAX;
+        m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+        m_capabilities.indexedIndirectExecution.requiredArgumentState = RHIResourceState::IndirectArgument;
+        m_capabilities.indexedIndirectExecution.requiredCountState = RHIResourceState::IndirectArgument;
+        m_capabilities.supportsIndirectDrawCount =
+            m_capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_capabilities.supportsDescriptorSets = true;           // Implemented through DX11 binding remapping
         m_capabilities.supportsDynamicDescriptorOffsets = m_immediateContext1 != nullptr;
         m_capabilities.maxDescriptorSets = 4;

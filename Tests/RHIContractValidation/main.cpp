@@ -21,6 +21,18 @@ namespace RVX::Tests
     static_assert(static_cast<uint8>(RHIDeviceRuntimeStatus::FatalError) == 2);
     static_assert(static_cast<uint8>(RHIDeviceFaultOperation::None) == 0);
     static_assert(static_cast<uint8>(RHIDeviceFaultOperation::Shutdown) == 10);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::ComputePipeline) == 0);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::DescriptorSets) == 1);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::ExplicitResourceBarriers) == 2);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::QueueSynchronization) == 3);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::AsyncCompute) == 4);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::IndirectDrawCount) == 5);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::RayTracing) == 6);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::BindlessResources) == 7);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::QuerySupport) == 8);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::MemoryBudget) == 9);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::ExplicitHeapManagement) == 10);
+    static_assert(static_cast<uint8>(RHICapabilityFeature::IndexedIndirectExecution) == 11);
 
     namespace
     {
@@ -79,6 +91,26 @@ namespace RVX::Tests
             uint32 GetStride() const override { return 0; }
             void* Map() override { return nullptr; }
             void Unmap() override {}
+        };
+
+        class IndirectExecutionContractBuffer final : public RHIBuffer
+        {
+        public:
+            IndirectExecutionContractBuffer(uint64 size, RHIBufferUsage usage)
+                : m_size(size), m_usage(usage)
+            {
+            }
+
+            uint64 GetSize() const override { return m_size; }
+            RHIBufferUsage GetUsage() const override { return m_usage; }
+            RHIMemoryType GetMemoryType() const override { return RHIMemoryType::Default; }
+            uint32 GetStride() const override { return 0; }
+            void* Map() override { return nullptr; }
+            void Unmap() override {}
+
+        private:
+            uint64 m_size = 0;
+            RHIBufferUsage m_usage = RHIBufferUsage::None;
         };
 
         class DescriptorContractLayout final : public RHIDescriptorSetLayout
@@ -159,6 +191,28 @@ namespace RVX::Tests
             }
 
             return capabilities;
+        }
+
+        void EnableIndexedIndirectExecution(
+            RHICapabilities& capabilities,
+            bool countBuffer = true)
+        {
+            RHIIndexedIndirectExecutionCapabilities& execution =
+                capabilities.indexedIndirectExecution;
+            execution.supportsFixedCount = true;
+            execution.supportsCountBuffer = countBuffer;
+            execution.supportsFirstInstance = true;
+            execution.requiresExactCommandStride = false;
+            execution.indexedCommandSize = sizeof(IndirectDrawIndexedCommand);
+            execution.minCommandStride = sizeof(IndirectDrawIndexedCommand);
+            execution.commandStrideAlignment = 4;
+            execution.argumentOffsetAlignment = 4;
+            execution.countOffsetAlignment = 4;
+            execution.maxDrawCount = 4;
+            execution.countValueSize = sizeof(uint32);
+            execution.requiredArgumentState = RHIResourceState::IndirectArgument;
+            execution.requiredCountState = RHIResourceState::IndirectArgument;
+            capabilities.supportsIndirectDrawCount = countBuffer;
         }
 
         const RHICapabilityReportEntry* FindReportEntry(const RHICapabilityReport& report,
@@ -1004,6 +1058,203 @@ namespace RVX::Tests
         }
     }
 
+    TEST(RHIContractValidation, IndexedIndirectBackendLimitsUseNativeContracts)
+    {
+        const std::string dx12 = ReadSource("RHI_DX12/Private/DX12Device.cpp");
+        const std::string vulkan = ReadSource("RHI_Vulkan/Private/VulkanDevice.cpp");
+        const std::string dx11 = ReadSource("RHI_DX11/Private/DX11Device.cpp");
+        const std::string openGL = ReadSource("RHI_OpenGL/Private/OpenGLDevice.cpp");
+
+        EXPECT_NE(dx12.find("sizeof(D3D12_DRAW_INDEXED_ARGUMENTS)"),
+                  std::string::npos);
+        EXPECT_NE(vulkan.find("sizeof(VkDrawIndexedIndirectCommand)"),
+                  std::string::npos);
+        EXPECT_NE(dx11.find("sizeof(D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS)"),
+                  std::string::npos);
+        EXPECT_NE(openGL.find("std::numeric_limits<GLsizei>::max()"),
+                  std::string::npos);
+        EXPECT_NE(openGL.find("openGLMaxDrawCount"), std::string::npos);
+        EXPECT_NE(vulkan.find("m_enabledDrawIndirectFirstInstance ="),
+                  std::string::npos);
+        EXPECT_NE(vulkan.find("props.limits.maxDrawIndirectCount"),
+                  std::string::npos);
+    }
+
+    TEST(RHIContractValidation, IndexedIndirectExecutionValidatesZeroOneMaximumAndCountClamp)
+    {
+        RHICapabilities capabilities = MakeValidCapabilities(RHIBackendType::DX12);
+        EnableIndexedIndirectExecution(capabilities);
+
+        IndirectExecutionContractBuffer arguments(
+            sizeof(IndirectDrawIndexedCommand) * 4,
+            RHIBufferUsage::IndirectArgs);
+        IndirectExecutionContractBuffer counter(
+            sizeof(uint32), RHIBufferUsage::IndirectArgs);
+
+        RHIIndexedIndirectExecutionDesc desc;
+        desc.maxDrawCount = 0;
+        EXPECT_TRUE(ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc));
+
+        desc.argumentBuffer = &arguments;
+        desc.commandStride = sizeof(IndirectDrawIndexedCommand);
+
+        desc.maxDrawCount = 1;
+        EXPECT_TRUE(ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc));
+        EXPECT_EQ(1u, ResolveRHIIndexedIndirectExecutionDrawCount(desc, 99));
+
+        desc.maxDrawCount = capabilities.indexedIndirectExecution.maxDrawCount;
+        EXPECT_TRUE(ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc));
+
+        IndirectExecutionContractBuffer variableStrideArguments(
+            sizeof(IndirectDrawIndexedCommand) + 3 * 24,
+            RHIBufferUsage::IndirectArgs);
+        desc.argumentBuffer = &variableStrideArguments;
+        desc.commandStride = 24;
+        EXPECT_TRUE(ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc));
+        desc.argumentBuffer = &arguments;
+        desc.commandStride = sizeof(IndirectDrawIndexedCommand);
+
+        desc.mode = RHIIndirectExecutionMode::CountBuffer;
+        desc.countBuffer = &counter;
+        EXPECT_TRUE(ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc));
+        EXPECT_EQ(4u, ResolveRHIIndexedIndirectExecutionDrawCount(desc, 9));
+        EXPECT_EQ(3u, ResolveRHIIndexedIndirectExecutionDrawCount(desc, 3));
+        desc.mode = static_cast<RHIIndirectExecutionMode>(0xFFU);
+        EXPECT_EQ(0u, ResolveRHIIndexedIndirectExecutionDrawCount(desc, 3));
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::InvalidMode,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.mode = RHIIndirectExecutionMode::CountBuffer;
+
+        ++desc.maxDrawCount;
+        const RHIIndexedIndirectExecutionValidationResult overMaximum =
+            ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc);
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::DrawCountExceedsCapability,
+                  overMaximum.code);
+    }
+
+    TEST(RHIContractValidation, IndexedIndirectExecutionRejectsContractViolationsSafely)
+    {
+        RHICapabilities capabilities = MakeValidCapabilities(RHIBackendType::DX12);
+        EnableIndexedIndirectExecution(capabilities);
+        IndirectExecutionContractBuffer arguments(
+            sizeof(IndirectDrawIndexedCommand) * 2,
+            RHIBufferUsage::IndirectArgs);
+        IndirectExecutionContractBuffer counter(
+            sizeof(uint32), RHIBufferUsage::IndirectArgs);
+        IndirectExecutionContractBuffer wrongUsage(
+            sizeof(IndirectDrawIndexedCommand) * 2,
+            RHIBufferUsage::ShaderResource);
+        IndirectExecutionContractBuffer wrongCounter(
+            sizeof(uint32), RHIBufferUsage::ShaderResource);
+
+        RHIIndexedIndirectExecutionDesc desc;
+        desc.argumentBuffer = &arguments;
+        desc.commandStride = sizeof(IndirectDrawIndexedCommand);
+        desc.maxDrawCount = 1;
+
+        desc.requiresFirstInstance = true;
+        capabilities.indexedIndirectExecution.supportsFirstInstance = false;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::FirstInstanceUnsupported,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+        desc.requiresFirstInstance = false;
+        capabilities.indexedIndirectExecution.supportsFixedCount = false;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CapabilityUnsupported,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        capabilities.indexedIndirectExecution.supportsFixedCount = true;
+        desc.commandStride = sizeof(IndirectDrawIndexedCommand) - 4;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CommandStrideTooSmall,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.commandStride = sizeof(IndirectDrawIndexedCommand);
+        desc.argumentBuffer = nullptr;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::MissingArgumentBuffer,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.argumentBuffer = &arguments;
+
+        desc.argumentOffset = 2;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::ArgumentOffsetMisaligned,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.argumentOffset = 0;
+        desc.commandStride = sizeof(IndirectDrawIndexedCommand) + 2;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CommandStrideMisaligned,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.commandStride = sizeof(IndirectDrawIndexedCommand);
+        capabilities.indexedIndirectExecution.requiresExactCommandStride = true;
+        desc.commandStride += 4;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CommandStrideMustMatchCommandSize,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        capabilities.indexedIndirectExecution.requiresExactCommandStride = false;
+        desc.commandStride = sizeof(IndirectDrawIndexedCommand);
+        desc.argumentState = RHIResourceState::ShaderResource;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::ArgumentStateInvalid,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.argumentState = RHIResourceState::IndirectArgument;
+        desc.argumentBuffer = &wrongUsage;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::ArgumentBufferUsageMissing,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.argumentBuffer = &arguments;
+        desc.maxDrawCount = 2;
+        desc.argumentOffset = sizeof(IndirectDrawIndexedCommand);
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::ArgumentRangeOutOfBounds,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.argumentOffset = std::numeric_limits<uint64>::max() - 3;
+        desc.maxDrawCount = 1;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::ArgumentRangeOverflow,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+
+        desc.argumentOffset = 0;
+        desc.mode = RHIIndirectExecutionMode::FixedCount;
+        desc.countBuffer = &counter;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::FixedCountHasCountBuffer,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.mode = RHIIndirectExecutionMode::CountBuffer;
+        desc.countBuffer = nullptr;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::MissingCountBuffer,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.countBuffer = &counter;
+        desc.countState = RHIResourceState::ShaderResource;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CountStateInvalid,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.countState = RHIResourceState::IndirectArgument;
+        desc.countOffset = 2;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CountOffsetMisaligned,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.countOffset = 0;
+        desc.countBuffer = &wrongCounter;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CountBufferUsageMissing,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.countBuffer = &counter;
+        desc.countOffset = sizeof(uint32);
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CountRangeOutOfBounds,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        desc.countOffset = 0;
+        capabilities.indexedIndirectExecution.countValueSize = sizeof(uint16);
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CountValueSizeInvalid,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+        capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+        desc.countOffset = std::numeric_limits<uint64>::max() - 3;
+        EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CountRangeOverflow,
+                  ValidateRHIIndexedIndirectExecutionDesc(capabilities, desc).code);
+
+        desc.countOffset = 0;
+        desc.mode = RHIIndirectExecutionMode::FixedCount;
+        desc.countBuffer = nullptr;
+        capabilities.indexedIndirectExecution.requiresExactCommandStride = true;
+        capabilities.indexedIndirectExecution.minCommandStride =
+            sizeof(IndirectDrawIndexedCommand) + 4;
+        EXPECT_FALSE(ValidateRHICapabilities(capabilities));
+        EXPECT_NE(ValidateRHICapabilities(capabilities).message.find("exact indexed indirect command stride"),
+                  std::string::npos);
+        capabilities.indexedIndirectExecution.requiresExactCommandStride = false;
+        capabilities.indexedIndirectExecution.minCommandStride =
+            sizeof(IndirectDrawIndexedCommand);
+
+        capabilities.supportsIndirectDrawCount = false;
+        EXPECT_FALSE(ValidateRHICapabilities(capabilities));
+        EXPECT_NE(ValidateRHICapabilities(capabilities).message.find("supportsIndirectDrawCount"),
+                  std::string::npos);
+    }
+
     TEST(RHIContractValidation, AcceptsMinimalConcreteBackendCapabilities)
     {
         RHICapabilities capabilities = MakeValidCapabilities(RHIBackendType::DX12);
@@ -1161,7 +1412,7 @@ namespace RVX::Tests
     {
         RHICapabilities capabilities = MakeValidCapabilities(RHIBackendType::DX12);
         capabilities.supportsAsyncCompute = true;
-        capabilities.supportsIndirectDrawCount = true;
+        EnableIndexedIndirectExecution(capabilities);
         capabilities.supportsTimestampQueries = true;
         capabilities.supportsMemoryBudgetQuery = true;
         capabilities.supportsExplicitHeapManagement = true;
@@ -1175,7 +1426,7 @@ namespace RVX::Tests
         EXPECT_TRUE(report.validationPassed) << report.validationMessage;
         EXPECT_TRUE(report.renderGraphBaselineSupported);
         EXPECT_TRUE(report.renderGraphBaselineMissingRequirements.empty());
-        EXPECT_EQ(report.entries.size(), static_cast<size_t>(11));
+        EXPECT_EQ(report.entries.size(), static_cast<size_t>(12));
         EXPECT_STREQ(GetRHICapabilityFeatureName(RHICapabilityFeature::RayTracing), "RayTracing");
         EXPECT_STREQ(GetRHICapabilityStatusName(RHICapabilityStatus::Unsupported), "Unsupported");
         EXPECT_GE(report.supportedCount, 7u);
@@ -1197,6 +1448,19 @@ namespace RVX::Tests
         EXPECT_FALSE(rayTracing->supported);
         EXPECT_EQ(rayTracing->requiredCapability, "supportsRaytracing+supportsRaytracingPipeline");
         EXPECT_NE(rayTracing->diagnosticMessage.find("unavailable"), std::string::npos);
+
+        const RHICapabilityReportEntry* indexedIndirect =
+            FindReportEntry(report, RHICapabilityFeature::IndexedIndirectExecution);
+        ASSERT_NE(indexedIndirect, nullptr);
+        EXPECT_EQ(indexedIndirect->status, RHICapabilityStatus::Supported);
+        EXPECT_TRUE(report.indexedIndirectExecution.supportsCountBuffer);
+
+        const RHICapabilityReportEntry* legacyCount =
+            FindReportEntry(report, RHICapabilityFeature::IndirectDrawCount);
+        ASSERT_NE(legacyCount, nullptr);
+        EXPECT_EQ(legacyCount->status, RHICapabilityStatus::Supported);
+        EXPECT_EQ(legacyCount->requiredCapability,
+                  "indexedIndirectExecution.supportsCountBuffer");
     }
 
     TEST(RHIContractValidation, CapabilityReportSurfacesEmulationAndValidationFailures)
@@ -1256,7 +1520,7 @@ namespace RVX::Tests
         capabilities.supportsAsyncCompute = true;
         capabilities.queueTopology.logicalQueueDomains[1] = GPUQueueDomain::Compute;
         capabilities.queueTopology.activeDomainCount = 2;
-        capabilities.supportsIndirectDrawCount = true;
+        EnableIndexedIndirectExecution(capabilities);
         capabilities.supportsTimestampQueries = true;
 
         const FakeRHIDevice device(capabilities);
@@ -1267,7 +1531,7 @@ namespace RVX::Tests
         EXPECT_EQ(report.adapterName, capabilities.adapterName);
         EXPECT_EQ(report.driverVersion, capabilities.driverVersion);
         EXPECT_TRUE(report.validationPassed) << report.validationMessage;
-        EXPECT_EQ(report.entries.size(), static_cast<size_t>(11));
+        EXPECT_EQ(report.entries.size(), static_cast<size_t>(12));
 
         const RHICapabilityReportEntry* asyncCompute =
             FindReportEntry(report, RHICapabilityFeature::AsyncCompute);
@@ -1288,7 +1552,7 @@ namespace RVX::Tests
         const std::string text = device.ExportCapabilityReportText();
 
         EXPECT_NE(text.find("RHI Capability Report"), std::string::npos);
-        EXPECT_NE(text.find("Schema: 4"), std::string::npos);
+        EXPECT_NE(text.find("Schema: 5"), std::string::npos);
         EXPECT_NE(text.find("Backend: OpenGL"), std::string::npos);
         EXPECT_NE(text.find("Adapter: OpenGL Test Adapter"), std::string::npos);
         EXPECT_NE(text.find("DriverVersion: TestDriver.1"), std::string::npos);
@@ -1314,7 +1578,7 @@ namespace RVX::Tests
         const FakeRHIDevice device(capabilities);
         const std::string json = device.ExportCapabilityReportJson();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 4"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 5"), std::string::npos);
         EXPECT_NE(json.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
         EXPECT_NE(json.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
         EXPECT_NE(json.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
@@ -1329,6 +1593,7 @@ namespace RVX::Tests
         EXPECT_NE(json.find("\"logicalQueueDomains\": [\"Graphics\", \"Graphics\", \"Graphics\"]"),
                   std::string::npos);
         EXPECT_NE(json.find("\"renderGraphBaseline\": {"), std::string::npos);
+        EXPECT_NE(json.find("\"indexedIndirectExecution\": {"), std::string::npos);
         EXPECT_NE(json.find("\"supported\": true"), std::string::npos);
         EXPECT_NE(json.find("\"missingRequirements\": []"), std::string::npos);
         EXPECT_NE(json.find("\"feature\": \"ExplicitResourceBarriers\""), std::string::npos);

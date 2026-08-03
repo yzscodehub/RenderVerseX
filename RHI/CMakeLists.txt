@@ -5,6 +5,7 @@ add_library(RVX_RHI STATIC)
 
 target_sources(RVX_RHI PRIVATE
     Private/RHIAccess.cpp
+    Private/RHIIndirectExecution.cpp
     Private/RHIValidation.cpp
     Private/RHIValidationMessageSink.cpp
     Private/RHIConformance.cpp

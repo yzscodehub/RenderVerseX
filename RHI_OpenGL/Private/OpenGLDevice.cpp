@@ -10,8 +10,12 @@
 #include "OpenGLUpload.h"
 #include "RHI/RHIPipelineValidation.h"
 
+#include <limits>
+
 namespace RVX
 {
+    static_assert(sizeof(IndirectDrawIndexedCommand) == sizeof(uint32) * 5,
+                  "OpenGL indexed indirect execution requires the shared 20-byte command layout.");
     // =============================================================================
     // Debug Callback
     // =============================================================================
@@ -299,6 +303,26 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = true;       // OpenGL supports glStencilFuncSeparate
         m_capabilities.supportsSplitBarrier = false;            // OpenGL doesn't support split barriers
         m_capabilities.supportsSecondaryCommandBuffer = false;  // OpenGL is immediate mode
+        m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
+        m_capabilities.indexedIndirectExecution.supportsCountBuffer = false;
+        m_capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+        m_capabilities.indexedIndirectExecution.requiresExactCommandStride = false;
+        m_capabilities.indexedIndirectExecution.indexedCommandSize = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.minCommandStride = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+        m_capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+        const uint64 openGLMaxDrawCount =
+            static_cast<uint64>(std::numeric_limits<GLsizei>::max());
+        m_capabilities.indexedIndirectExecution.maxDrawCount =
+            openGLMaxDrawCount > std::numeric_limits<uint32>::max()
+                ? std::numeric_limits<uint32>::max()
+                : static_cast<uint32>(openGLMaxDrawCount);
+        m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+        m_capabilities.indexedIndirectExecution.requiredArgumentState = RHIResourceState::IndirectArgument;
+        m_capabilities.indexedIndirectExecution.requiredCountState = RHIResourceState::IndirectArgument;
+        m_capabilities.supportsIndirectDrawCount =
+            m_capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_capabilities.supportsComputePipeline = m_capabilities.opengl.hasComputeShader;
         m_capabilities.supportsAsyncCompute = false;            // OpenGL single queue
         m_capabilities.supportsDescriptorSets = true;           // Implemented through binding point remapping

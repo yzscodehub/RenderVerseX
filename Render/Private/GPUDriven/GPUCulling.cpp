@@ -610,7 +610,7 @@ GPUCullingExecutionDecision GPUCulling::EvaluateGpuExecution(bool requirePipelin
         return decision;
     }
 
-    if (!capabilities.supportsIndirectDrawCount)
+    if (!capabilities.indexedIndirectExecution.supportsCountBuffer)
     {
         decision.fallbackReason = GPUCullingFallbackReason::IndirectDrawCountUnsupported;
         return decision;
@@ -1395,7 +1395,7 @@ GPUIndirectDrawSubmission GPUCulling::DrawIndexedIndirect(
     }
 
     if (m_usedGpuExecutionLastCull && m_drawCountBuffer && m_device &&
-        m_device->GetCapabilities().supportsIndirectDrawCount)
+        m_device->GetCapabilities().indexedIndirectExecution.supportsCountBuffer)
     {
         const uint32 maxGpuDrawCount = maxDrawCount > 0 ? std::min(m_instanceCount, maxDrawCount) : m_instanceCount;
         if (maxGpuDrawCount == 0)
@@ -1458,7 +1458,7 @@ GPUIndirectDrawSubmission GPUCulling::DrawIndexedIndirectGroup(
         static_cast<uint64>(group.commandOffset) * sizeof(IndirectDrawIndexedCommand);
 
     if (m_usedGpuExecutionLastCull && m_drawCountBuffer && m_device &&
-        m_device->GetCapabilities().supportsIndirectDrawCount)
+        m_device->GetCapabilities().indexedIndirectExecution.supportsCountBuffer)
     {
         ctx.DrawIndexedIndirectCount(m_indirectBuffer.Get(),
                                      commandOffset,

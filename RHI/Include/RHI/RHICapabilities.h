@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RHI/RHIDefinitions.h"
+#include "RHI/RHIIndirectExecution.h"
 #include "RHI/RHIQueueTopology.h"
 #include <string>
 #include <vector>
@@ -8,7 +9,7 @@
 namespace RVX
 {
     inline constexpr const char* RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID = "RVX.RHI.CapabilityReport";
-    inline constexpr uint32 RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 4;
+    inline constexpr uint32 RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 5;
 
     // =============================================================================
     // DX11 Threading Mode
@@ -65,7 +66,13 @@ namespace RVX
         bool supportsVariableRateShading = false;
         bool supportsComputePipeline = false;
         bool supportsAsyncCompute = false;
+        /**
+         * @brief Temporary compatibility projection of indexedIndirectExecution.supportsCountBuffer.
+         * New code must consume indexedIndirectExecution directly.
+         * TODO(Task 16B): remove this projection after diagnostics and tools migrate.
+         */
         bool supportsIndirectDrawCount = false;
+        RHIIndexedIndirectExecutionCapabilities indexedIndirectExecution;
         bool supportsConservativeRasterization = false;
 
         // Query support
@@ -173,16 +180,17 @@ namespace RVX
     enum class RHICapabilityFeature : uint8
     {
         ComputePipeline = 0,
-        DescriptorSets,
-        ExplicitResourceBarriers,
-        QueueSynchronization,
-        AsyncCompute,
-        IndirectDrawCount,
-        RayTracing,
-        BindlessResources,
-        QuerySupport,
-        MemoryBudget,
-        ExplicitHeapManagement,
+        DescriptorSets = 1,
+        ExplicitResourceBarriers = 2,
+        QueueSynchronization = 3,
+        AsyncCompute = 4,
+        IndirectDrawCount = 5,
+        RayTracing = 6,
+        BindlessResources = 7,
+        QuerySupport = 8,
+        MemoryBudget = 9,
+        ExplicitHeapManagement = 10,
+        IndexedIndirectExecution = 11,
     };
 
     enum class RHICapabilityStatus : uint8
@@ -214,6 +222,7 @@ namespace RVX
         bool validationPassed = false;
         std::string validationMessage;
         RHIQueueTopology queueTopology;
+        RHIIndexedIndirectExecutionCapabilities indexedIndirectExecution;
         std::vector<RHICapabilityReportEntry> entries;
         uint32 supportedCount = 0;
         uint32 emulatedCount = 0;

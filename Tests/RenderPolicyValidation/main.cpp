@@ -111,6 +111,15 @@ namespace
         decltype(std::declval<RenderFrameExecutionPlan>().packetReferences),
         std::vector<RenderDrawPacketReference>>);
 
+    void SetIndexedIndirectCapabilities(
+        RenderCapabilitySnapshot& capabilities,
+        bool fixedCount,
+        bool countBuffer)
+    {
+        capabilities.indexedIndirectExecution.supportsFixedCount = fixedCount;
+        capabilities.indexedIndirectExecution.supportsCountBuffer = countBuffer;
+    }
+
     RenderPolicyResolverInput MakeValidResolverInput()
     {
         RenderPolicyResolverInput input;
@@ -128,8 +137,7 @@ namespace
         input.capabilities.backend = RHIBackendType::DX12;
         input.capabilities.supportsComputeVisibility = true;
         input.capabilities.supportsDescriptorResourceBindings = true;
-        input.capabilities.supportsFixedCountIndirect = true;
-        input.capabilities.supportsIndirectDrawCount = true;
+        SetIndexedIndirectCapabilities(input.capabilities, true, true);
         input.qualification.backend = RHIBackendType::DX12;
         input.qualification.revision = 1;
         input.qualification.passedGateMask = input.qualification.requiredGateMask;
@@ -259,7 +267,7 @@ namespace
         input.capabilities.backend = RHIBackendType::DX12;
         input.capabilities.supportsComputeVisibility = true;
         input.capabilities.supportsDescriptorResourceBindings = true;
-        input.capabilities.supportsIndirectDrawCount = true;
+        SetIndexedIndirectCapabilities(input.capabilities, true, true);
         input.qualification.backend = RHIBackendType::DX12;
         input.qualification.revision = 1;
         input.qualification.passedGateMask = backendQualified
@@ -800,9 +808,15 @@ namespace
                   resolution.canonicalPassDecisions.front().preferredSubmission);
 
         input = MakeValidResolverInput();
-        input.capabilities.supportsIndirectDrawCount = false;
+        input.capabilities.indexedIndirectExecution.supportsCountBuffer = false;
         resolution = ResolveRenderPolicy(input);
         EXPECT_EQ(RenderSubmissionMode::FixedCountIndirect,
+                  resolution.canonicalPassDecisions.front().preferredSubmission);
+
+        input = MakeValidResolverInput();
+        input.capabilities.supportsIndirectDrawCount = false;
+        resolution = ResolveRenderPolicy(input);
+        EXPECT_EQ(RenderSubmissionMode::MultiDrawIndirectCount,
                   resolution.canonicalPassDecisions.front().preferredSubmission);
     }
 
@@ -843,9 +857,10 @@ namespace
                         (gates & kComputeBit) != 0;
                     input.capabilities.supportsDescriptorResourceBindings =
                         (gates & kDescriptorBit) != 0;
-                    input.capabilities.supportsIndirectDrawCount =
-                        (gates & kIndirectBit) != 0;
-                    input.capabilities.supportsFixedCountIndirect = false;
+                    SetIndexedIndirectCapabilities(
+                        input.capabilities,
+                        false,
+                        (gates & kIndirectBit) != 0);
                     input.view.visibilityShaderReadiness =
                         (gates & kShaderBit) != 0
                             ? RenderPolicyReadiness::Ready
@@ -907,7 +922,7 @@ namespace
                     }
                     else if (!input.capabilities.supportsComputeVisibility ||
                              !input.capabilities.supportsDescriptorResourceBindings ||
-                             !input.capabilities.supportsIndirectDrawCount)
+                             !input.capabilities.indexedIndirectExecution.supportsCountBuffer)
                     {
                         expectedReason = RenderPolicyReason::CapabilityUnavailable;
                     }

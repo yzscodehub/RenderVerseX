@@ -1761,8 +1761,12 @@ void SceneRenderer::CompileRenderFramePlan()
         input.capabilities.backend = device->GetBackendType();
         input.capabilities.supportsComputeVisibility =
             capabilities.supportsComputePipeline;
+        input.capabilities.indexedIndirectExecution =
+            capabilities.indexedIndirectExecution;
+        input.capabilities.supportsFixedCountIndirect =
+            capabilities.indexedIndirectExecution.supportsFixedCount;
         input.capabilities.supportsIndirectDrawCount =
-            capabilities.supportsIndirectDrawCount;
+            capabilities.indexedIndirectExecution.supportsCountBuffer;
         input.capabilities.supportsDescriptorResourceBindings =
             capabilities.supportsDescriptorSets;
     }
@@ -1942,7 +1946,7 @@ void SceneRenderer::ApplyRenderFramePlanProjection()
         m_gpuDrivenPolicyDecision.capabilitiesReady =
             plan.capabilities.supportsComputeVisibility &&
             plan.capabilities.supportsDescriptorResourceBindings &&
-            plan.capabilities.supportsIndirectDrawCount;
+            plan.capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_gpuDrivenPolicyDecision.pipelineReady = depthGPU || opaqueGPU;
     }
 

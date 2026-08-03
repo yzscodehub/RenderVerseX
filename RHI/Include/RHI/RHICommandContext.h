@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RHI/RHIAccess.h"
+#include "RHI/RHIIndirectExecution.h"
 #include "RHI/RHIResources.h"
 #include "RHI/RHIRenderPass.h"
 #include "RHI/RHIQuery.h"
@@ -114,20 +115,6 @@ namespace RVX
         uint32 dstSubresource = 0;
         uint32 dstX = 0, dstY = 0, dstZ = 0;
         uint32 width = 0, height = 0, depth = 0;  // 0 = full size
-    };
-
-    /**
-     * @brief Standard indexed indirect draw command argument layout.
-     *
-     * Matches D3D12_DRAW_INDEXED_ARGUMENTS and VkDrawIndexedIndirectCommand.
-     */
-    struct IndirectDrawIndexedCommand
-    {
-        uint32 indexCount = 0;
-        uint32 instanceCount = 0;
-        uint32 firstIndex = 0;
-        int32 vertexOffset = 0;
-        uint32 firstInstance = 0;
     };
 
     // =============================================================================

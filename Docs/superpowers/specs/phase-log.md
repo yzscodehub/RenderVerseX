@@ -45661,3 +45661,93 @@ below.
   semantic indirect-execution capability and descriptor contract.
 
 ---
+
+### R-SP343 Render-policy Task 10A semantic indexed-indirect RHI contract
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 10A stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP342 (standalone scene-pass input closure).
+- Frame-owned pass recording and exact packet/result identity are stable, so
+  indirect execution can be described semantically before Task 10B introduces
+  backend execution strategies.
+
+**Approved scope:**
+
+- Add one public standard indexed-indirect command layout plus structured
+  fixed-count, count-buffer, first-instance, stride, alignment, limit, and
+  required-state capabilities.
+- Add a value descriptor and stable validation result/code for zero/no-op,
+  mode support, buffer usage/state, exact or aligned stride, first-instance,
+  maximum count, safe command/count ranges, overflow, and count clamping.
+- Make the structured record the Render/GPUDriven/diagnostics source of truth;
+  retain legacy booleans and report entries only as validated projections with
+  Task 16B as the named removal owner.
+- Populate current backend truth without implementing later stages: DX12
+  fixed/count, Vulkan fixed with logical-device-enabled first-instance and
+  physical draw-count limit, and Metal/DX11/OpenGL fixed only. Vulkan count,
+  Metal ICB, and the Task 10B strategy interface remain out of scope.
+- Bump the RHI capability report to schema 5, preserve existing public feature
+  enum values, add the structured report payload, and migrate architecture
+  gates without removing or weakening them.
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHIIndirectExecution.h`
+- `RHI/Private/RHIIndirectExecution.cpp`
+- `RHI/Include/RHI/RHICapabilities.h`
+- `RHI/Include/RHI/RHICommandContext.h`
+- `RHI/Private/RHIValidation.cpp`
+- `RHI/CMakeLists.txt`
+- DX12, Vulkan, Metal, DX11, and OpenGL device capability publication files.
+- Render policy, GPU-driven, renderer projection, and feature-diagnostics
+  consumers.
+- RHI contract, render-policy, GPU-driven, and render-pass validation tests.
+- Architecture phase gates, Task 10/16B plans, and this phase record.
+
+**Validation result:**
+
+- Build: PASS for `RHIContractValidation`, `RenderPolicyValidation`,
+  `GPUDrivenValidation`, and `RenderPassValidation`, including configured
+  DX11/DX12/Vulkan/OpenGL targets on Windows.
+- RHIContractValidation: PASS 44/44.
+- RenderPolicyValidation: PASS 22/22.
+- GPUDrivenValidation: PASS 30/30.
+- RenderPassValidation: PASS 194/194.
+- Focused CTest registration/execution: PASS 255/255.
+- Full architecture phase gate: PASS.
+- `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Initial review found P0/P1/P2/P3 `1/3/2/1`: a stale architecture gate,
+  dishonest OpenGL signed draw-count limit, invalid-mode fail-open behavior,
+  Vulkan available-versus-enabled ambiguity, public enum value drift, negative
+  test gaps, and avoidable public-header coupling.
+- Remediation migrated the gate and schema literals without weakening checks,
+  used the native OpenGL limit, made invalid mode resolve to zero, recorded the
+  Vulkan logical-device enabled feature, froze existing enum values, added the
+  missing negatives, and reduced header dependencies.
+- Re-review found final unresolved P0/P1/P2/P3 `0/0/0/0`; verdict: ready.
+
+**Primary review status:**
+
+- PASS after complete public RHI/backend/Render/test/script diff inspection,
+  adjudication of every independent finding, an independent four-target build,
+  direct execution of all four validation binaries, the full architecture
+  gate, and whitespace validation.
+- No raw virtual command API, Vulkan count path, Metal ICB object, Task 10B
+  strategy, visual golden, tolerance, or assertion strength changed.
+
+**Residual risks / follow-ups:**
+
+- Metal was not compiled on this Windows host; native Metal validation remains
+  a Task 13/platform gate.
+- Native Vulkan indirect execution and OpenGL driver behavior were not executed
+  in this slice; Task 10C/12/14 retain those runtime coverage obligations.
+- Task 10B must consume the validated descriptor before `ExecuteIndirect`,
+  cache DX12 signatures by semantic layout, and formalize state rebind behavior.
+
+---

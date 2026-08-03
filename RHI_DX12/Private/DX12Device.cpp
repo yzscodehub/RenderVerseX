@@ -13,6 +13,10 @@
 
 namespace RVX
 {
+    static_assert(sizeof(IndirectDrawIndexedCommand) ==
+                      sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+                  "DX12 indexed indirect execution must use the shared command layout.");
+
     namespace
     {
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS ToD3D12ASBuildFlags(
@@ -1029,7 +1033,21 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = false;      // DX12 doesn't support separate stencil refs
         m_capabilities.supportsSplitBarrier = true;             // DX12 supports split barriers
         m_capabilities.supportsSecondaryCommandBuffer = true;   // DX12 supports bundles
-        m_capabilities.supportsIndirectDrawCount = true;        // ExecuteIndirect supports count buffers
+        m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
+        m_capabilities.indexedIndirectExecution.supportsCountBuffer = true;
+        m_capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+        m_capabilities.indexedIndirectExecution.requiresExactCommandStride = true;
+        m_capabilities.indexedIndirectExecution.indexedCommandSize = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.minCommandStride = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+        m_capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.maxDrawCount = UINT32_MAX;
+        m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+        m_capabilities.indexedIndirectExecution.requiredArgumentState = RHIResourceState::IndirectArgument;
+        m_capabilities.indexedIndirectExecution.requiredCountState = RHIResourceState::IndirectArgument;
+        m_capabilities.supportsIndirectDrawCount =
+            m_capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_capabilities.supportsDescriptorSets = true;
         m_capabilities.supportsDynamicDescriptorOffsets = true;
         m_capabilities.maxDescriptorSets = 4;

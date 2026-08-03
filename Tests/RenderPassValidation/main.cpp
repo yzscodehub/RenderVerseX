@@ -1352,7 +1352,7 @@ namespace
         input.capabilities.backend = RHIBackendType::DX12;
         input.capabilities.supportsComputeVisibility = true;
         input.capabilities.supportsDescriptorResourceBindings = true;
-        input.capabilities.supportsIndirectDrawCount = true;
+        input.capabilities.indexedIndirectExecution.supportsCountBuffer = true;
         input.qualification.backend = RHIBackendType::DX12;
         input.qualification.revision = 1;
         input.qualification.passedGateMask =
@@ -14550,11 +14550,11 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
         << toolSnapshot.rhiCapabilityReport.validationMessage;
     EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.renderGraphBaselineSupported);
     EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.renderGraphBaselineMissingRequirements.empty());
-    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.entries.size(), static_cast<size_t>(11));
+    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.entries.size(), static_cast<size_t>(12));
 
     const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
     EXPECT_NE(diagnosticsText.find("rhiCapabilities=true"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("RHICapabilities: schema=4, backend=DirectX 12"), std::string::npos);
+    EXPECT_NE(diagnosticsText.find("RHICapabilities: schema=5, backend=DirectX 12"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("adapter=RenderPassValidation Test Adapter"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("driver=RenderPassValidation.Driver.1"), std::string::npos);
     EXPECT_NE(diagnosticsText.find(
@@ -14567,7 +14567,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
 
     const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
     EXPECT_NE(manifestJson.find("\"rhiCapabilityReportAvailable\": true"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"rhiCapabilities\": {\n    \"schemaVersion\": 4"), std::string::npos);
+    EXPECT_NE(manifestJson.find("\"rhiCapabilities\": {\n    \"schemaVersion\": 5"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"backend\": \"DirectX 12\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"adapterName\": \"RenderPassValidation Test Adapter\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"driverVersion\": \"RenderPassValidation.Driver.1\""), std::string::npos);
@@ -14584,7 +14584,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     EXPECT_NE(manifestJson.find("\"status\": \"Supported\""), std::string::npos);
 
     const std::string rhiCapabilityJson = renderer.ExportToolRHICapabilityReportJson();
-    EXPECT_NE(rhiCapabilityJson.find("\"schemaVersion\": 4"), std::string::npos);
+    EXPECT_NE(rhiCapabilityJson.find("\"schemaVersion\": 5"), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
     EXPECT_NE(rhiCapabilityJson.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);

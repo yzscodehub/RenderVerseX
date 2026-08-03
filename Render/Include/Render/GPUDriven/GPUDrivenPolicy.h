@@ -50,6 +50,8 @@ namespace RVX
         RHIBackendType backend = RHIBackendType::None;
         bool supportsComputePipeline = false;
         bool supportsDescriptorSets = false;
+        RHIIndexedIndirectExecutionCapabilities indexedIndirectExecution;
+        /** Temporary compatibility projection; policy evaluates indexedIndirectExecution. TODO(Task 16B): remove after diagnostics/tools migrate. */
         bool supportsIndirectDrawCount = false;
         bool pipelineReady = false;
     };
@@ -134,7 +136,7 @@ namespace RVX
             decision.reason = GPUDrivenPolicyReason::DescriptorSetsUnsupported;
             return decision;
         }
-        if (!input.supportsIndirectDrawCount)
+        if (!input.indexedIndirectExecution.supportsCountBuffer)
         {
             decision.reason = GPUDrivenPolicyReason::IndirectDrawCountUnsupported;
             return decision;
@@ -185,7 +187,9 @@ namespace RVX
         input.backend = device->GetBackendType();
         input.supportsComputePipeline = capabilities.supportsComputePipeline;
         input.supportsDescriptorSets = capabilities.supportsDescriptorSets;
-        input.supportsIndirectDrawCount = capabilities.supportsIndirectDrawCount;
+        input.indexedIndirectExecution = capabilities.indexedIndirectExecution;
+        input.supportsIndirectDrawCount =
+            capabilities.indexedIndirectExecution.supportsCountBuffer;
         return input;
     }
 } // namespace RVX

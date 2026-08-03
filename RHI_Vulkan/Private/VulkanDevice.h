@@ -177,6 +177,7 @@ namespace RVX
 
         // State
         RHICapabilities m_capabilities;
+        bool m_enabledDrawIndirectFirstInstance = false;
         bool m_validationEnabled = false;
         std::atomic<RHIDeviceRuntimeStatus> m_runtimeStatus{
             RHIDeviceRuntimeStatus::Ready};

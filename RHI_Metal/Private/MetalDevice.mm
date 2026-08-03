@@ -108,6 +108,21 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = true;       // Metal supports separate stencil refs
         m_capabilities.supportsSplitBarrier = false;            // Metal uses automatic barriers
         m_capabilities.supportsSecondaryCommandBuffer = true;   // Metal supports parallel encoders
+        m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
+        m_capabilities.indexedIndirectExecution.supportsCountBuffer = false;
+        m_capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+        m_capabilities.indexedIndirectExecution.requiresExactCommandStride = false;
+        m_capabilities.indexedIndirectExecution.indexedCommandSize = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.minCommandStride = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+        m_capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.maxDrawCount = UINT32_MAX;
+        m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+        m_capabilities.indexedIndirectExecution.requiredArgumentState = RHIResourceState::IndirectArgument;
+        m_capabilities.indexedIndirectExecution.requiredCountState = RHIResourceState::IndirectArgument;
+        m_capabilities.supportsIndirectDrawCount =
+            m_capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_capabilities.supportsDescriptorSets = true;           // Implemented through Metal binding metadata
         m_capabilities.supportsDynamicDescriptorOffsets = true;
         m_capabilities.maxDescriptorSets = 4;

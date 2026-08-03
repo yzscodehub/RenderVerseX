@@ -1,7 +1,8 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8 and all Task 9 slices through Task 9B-6B2b are complete
-and reviewed; Task 10A semantic indirect RHI contract/conformance is next
+**Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, and Task 10A
+semantic indirect RHI contract/conformance are complete and reviewed; Task 10B
+submission strategies and DX12 Tier 1 implementation are next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -322,17 +323,17 @@ from submitted upper bounds and CPU reference visibility.
 
 #### 10A. Semantic RHI contract
 
-- [ ] Replace backend-name inference with structured indirect execution
+- [x] Replace backend-name inference with structured indirect execution
   capabilities: fixed-count, count-buffer, first-instance, command stride,
   alignment, limits, and required states.
-- [ ] Add validated RHI descriptors for indexed indirect execution and count
+- [x] Add validated RHI descriptors for indexed indirect execution and count
   buffers.
-- [ ] Freeze renderer-facing `RenderSubmissionMode` semantics for Direct,
+- [x] Freeze renderer-facing `RenderSubmissionMode` semantics for Direct,
   fixed/count-buffer indirect, and the existing `EncodedCommandBuffer`
   extension point without pretending the Metal-specific RHI object exists yet.
-- [ ] Keep the old boolean capability only as a temporary projection with a
+- [x] Keep the old boolean capability only as a temporary projection with a
   named removal task.
-- [ ] Add zero/one/max/overflow/count-clamp/alignment/state conformance tests.
+- [x] Add zero/one/max/overflow/count-clamp/alignment/state conformance tests.
 
 #### 10B. Strategy interface and DX12 implementation
 
@@ -507,6 +508,9 @@ feature availability never implies the feature was enabled.
 
 ### Task 16B - Diagnostics, Samples, and Promotion
 
+- [ ] Remove the `RHICapabilities`, Render, and GPUDriven compatibility
+  projections only after all diagnostics and tools consume structured indexed-
+  indirect execution capabilities.
 - [ ] Run the required adapter/driver matrix and encode scoped deny-list entries
   rather than global bypasses.
 - [ ] Finalize public diagnostics for request, selected tier, visibility mode,
@@ -616,23 +620,24 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Task 9B-6B2b implementation, independent review, primary audit, unit/runtime
-validation, GPU-driven parity, and DX12 RT smoke are complete. Start
-**Task 10A** by freezing the backend-neutral semantic indirect-execution
-contract before introducing submission strategies. The completed 9B-6B2b
-acceptance ledger is:
+Task 10A implementation, remediation, independent re-review, primary audit,
+contract/runtime validation, and architecture gates are complete. Start
+**Task 10B** by introducing the formal submission-strategy interface and
+routing DX12 Direct/Tier 1 through it. The completed Task 10A acceptance ledger
+is:
 
-- [x] Remove standalone Depth/Opaque/Shadow scene, target, GPU-input, shadow
-  source, enable, and `ViewData` recording paths from their public APIs.
-- [x] Require renderer-issued plan/results/snapshot identity and current-graph
-  attachments/outputs before setup; rejected records declare no usage and do
-  not retain foreign GPU state or mutate foreign results.
-- [x] Resolve attachments only from graph handles and retain every view plus
-  its parent texture through submission completion.
-- [x] Preserve setup-time Opaque shadow-declaration diagnostics in the current
-  record results while execute publishes realized draw/shadow status.
-- [x] Cover reverse-order graphs, caller mutation, stale/rejected contexts,
-  empty shadow records, resize/target replacement, and in-flight retention.
-- [x] Close independent review findings through final P0/P1/P2/P3
-  `0/0/0/0`; keep the inherited stale RT golden and DX11 compatibility issue
-  explicit without changing a golden, tolerance, assertion, or fallback.
+- [x] Publish backend-neutral fixed/count-buffer, first-instance, stride,
+  alignment, limit, and required-state capabilities without backend-name
+  inference.
+- [x] Validate zero/no-op, command/count usage and state, exact/variable stride,
+  alignment, maximum count, safe ranges, overflow, and count clamping before a
+  backend execution path may consume the descriptor.
+- [x] Keep `RenderSubmissionMode` values and semantics stable while retaining
+  `EncodedCommandBuffer` only as a backend-native strategy extension signal.
+- [x] Preserve `supportsIndirectDrawCount` only as a validation-checked
+  projection with Task 16B as its named removal owner.
+- [x] Publish schema-5 structured capability diagnostics while preserving the
+  legacy report entry and numeric enum compatibility.
+- [x] Close independent review findings through final P0/P1/P2/P3 `0/0/0/0`;
+  pass 44 RHI contract, 22 policy, 30 GPU-driven, 194 render-pass tests, the
+  255-test focused CTest set, architecture phase gates, and diff checks.

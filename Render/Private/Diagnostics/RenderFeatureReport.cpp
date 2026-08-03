@@ -282,7 +282,7 @@ SceneRenderFeatureReport SceneRenderer::BuildRenderFeatureReport(
     {
         SceneRenderFeatureCapability entry;
         entry.feature = SceneRenderFeature::GPUDriven;
-        entry.requiredCapability = "supportsComputePipeline+supportsDescriptorSets+supportsIndirectDrawCount";
+        entry.requiredCapability = "supportsComputePipeline+supportsDescriptorSets+indexedIndirectExecution.supportsCountBuffer";
         entry.rhiCapabilityKnown = capabilities != nullptr;
         const SceneGPUDrivenCullingStats& gpuDriven = diagnostics.gpuDrivenCullingStats;
         const GPUDrivenPolicyDecision& policy = gpuDriven.policyDecision;
@@ -297,7 +297,7 @@ SceneRenderFeatureReport SceneRenderer::BuildRenderFeatureReport(
         const bool capabilitySupported = capabilities &&
                                          capabilities->supportsComputePipeline &&
                                          capabilities->supportsDescriptorSets &&
-                                         capabilities->supportsIndirectDrawCount;
+                                         capabilities->indexedIndirectExecution.supportsCountBuffer;
         entry.supported = gpuDriven.policyDecisionAvailable
             ? policy.capabilitiesReady && policy.pipelineReady
             : (gpuDriven.executionDecisionAvailable
@@ -343,10 +343,11 @@ SceneRenderFeatureReport SceneRenderer::BuildRenderFeatureReport(
 
         SceneRenderFeatureCapability entry;
         entry.feature = SceneRenderFeature::Instancing;
-        entry.requiredCapability = "supportsIndirectDrawCount";
+        entry.requiredCapability = "indexedIndirectExecution.supportsFixedCount";
         entry.rhiCapabilityKnown = capabilities != nullptr;
         entry.requested = drawItemCount > 0;
-        entry.supported = capabilities && capabilities->supportsIndirectDrawCount;
+        entry.supported = capabilities &&
+                          capabilities->indexedIndirectExecution.supportsFixedCount;
         entry.enabled = entry.requested && entry.supported;
         entry.fallbackUsed = entry.requested && !entry.supported;
         entry.renderGraphBacked = diagnostics.graphPassCount > 0;
@@ -365,7 +366,7 @@ SceneRenderFeatureReport SceneRenderer::BuildRenderFeatureReport(
         else if (entry.supported)
         {
             entry.status = SceneRenderFeatureStatus::Supported;
-            entry.diagnosticMessage = "Indirect draw count is available for instanced/indirect rendering.";
+            entry.diagnosticMessage = "Fixed-count indexed indirect execution is available for instanced rendering.";
         }
         else
         {

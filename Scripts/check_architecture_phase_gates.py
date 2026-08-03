@@ -578,9 +578,9 @@ def check_p10_modern_rendering_capability_closure(root: Path) -> list[Finding]:
             "P10 ray tracing features must map to explicit RHI capability bits.",
         ),
         (
-            "Render/Private/Renderer/SceneRenderer.cpp",
-            "supportsComputePipeline+supportsDescriptorSets+supportsIndirectDrawCount",
-            "P10 GPU-driven features must map to explicit RHI capability bits.",
+            "Render/Private/Diagnostics/RenderFeatureReport.cpp",
+            "supportsComputePipeline+supportsDescriptorSets+indexedIndirectExecution.supportsCountBuffer",
+            "P10 GPU-driven features must map to the structured indexed-indirect RHI capability.",
         ),
         (
             "Render/Private/Renderer/SceneRenderer.cpp",
@@ -1684,7 +1684,7 @@ def check_p35_tool_diagnostics_json_sidecar_artifact_id_contract(root: Path) -> 
     for rel_path, needle, message in [
         (
             "Render/Include/Render/Renderer/SceneRenderer.h",
-            "RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 24",
+            "RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 27",
             "Renderer tool diagnostics schema must stay bumped past the JSON sidecar artifact id contract.",
         ),
         (
@@ -3328,7 +3328,7 @@ def check_p65_rhi_render_graph_baseline_contract(root: Path) -> list[Finding]:
         ),
         (
             "RHI/Include/RHI/RHICapabilities.h",
-            "RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 4",
+            "RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 5",
             "P65 must bump the RHI capability report schema for baseline readiness.",
         ),
         (
@@ -3376,7 +3376,7 @@ def check_p66_renderer_rhi_baseline_diagnostics_contract(root: Path) -> list[Fin
         ),
         (
             "Render/Include/Render/Renderer/SceneRenderer.h",
-            "RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 24",
+            "RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 27",
             "P66 must bump renderer tool diagnostics schema for RHI baseline payload fields.",
         ),
         (
@@ -3472,7 +3472,7 @@ def check_p68_rhi_capability_report_identity_contract(root: Path) -> list[Findin
         ),
         (
             "RHI/Include/RHI/RHICapabilities.h",
-            "RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 4",
+            "RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 5",
             "P68 must bump the RHI capability report schema for backend identity metadata.",
         ),
         (
@@ -3497,7 +3497,7 @@ def check_p68_rhi_capability_report_identity_contract(root: Path) -> list[Findin
         ),
         (
             "Render/Include/Render/Renderer/SceneRenderer.h",
-            "RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 24",
+            "RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 27",
             "P68 must bump renderer tool diagnostics schema for RHI identity payload fields.",
         ),
         (

@@ -16,6 +16,10 @@
 
 namespace RVX
 {
+    static_assert(sizeof(IndirectDrawIndexedCommand) ==
+                      sizeof(VkDrawIndexedIndirectCommand),
+                  "Vulkan indexed indirect execution must use the shared command layout.");
+
     // =============================================================================
     // Validation Layer Callback
     // =============================================================================
@@ -540,6 +544,7 @@ namespace RVX
     // =============================================================================
     bool VulkanDevice::CreateLogicalDevice()
     {
+        m_enabledDrawIndirectFirstInstance = false;
         std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
         std::set<uint32> uniqueQueueFamilies = {
             m_queueFamilies.graphicsFamily.value()
@@ -599,6 +604,12 @@ namespace RVX
 
         vkGetPhysicalDeviceFeatures2(m_physicalDevice, &features2);
 
+        // This bit remains in the feature chain passed to vkCreateDevice.
+        // Publish it only after creation succeeds so capabilities describe the
+        // logical device rather than physical-device availability.
+        const bool enableDrawIndirectFirstInstance =
+            features2.features.drawIndirectFirstInstance == VK_TRUE;
+
 #ifdef VK_EXT_device_fault
         m_deviceFaultEnabled =
             deviceFaultExtensionAvailable &&
@@ -646,6 +657,8 @@ namespace RVX
             RVX_RHI_ERROR("Failed to create logical device: {}", VkResultToString(result));
             return false;
         }
+
+        m_enabledDrawIndirectFirstInstance = enableDrawIndirectFirstInstance;
 
         // Get queues
         vkGetDeviceQueue(m_device, m_queueFamilies.graphicsFamily.value(), 0, &m_graphicsQueue);
@@ -1028,6 +1041,24 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = true;       // Vulkan supports separate stencil refs
         m_capabilities.supportsSplitBarrier = false;            // Event-based split barriers are not implemented yet
         m_capabilities.supportsSecondaryCommandBuffer = true;   // Vulkan supports secondary command buffers
+        m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
+        // vkCmdDrawIndexedIndirectCount is intentionally not wired through the
+        // raw RHI command contract yet; Task 12 owns that implementation.
+        m_capabilities.indexedIndirectExecution.supportsCountBuffer = false;
+        m_capabilities.indexedIndirectExecution.supportsFirstInstance =
+            m_enabledDrawIndirectFirstInstance;
+        m_capabilities.indexedIndirectExecution.requiresExactCommandStride = false;
+        m_capabilities.indexedIndirectExecution.indexedCommandSize = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.minCommandStride = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+        m_capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.maxDrawCount = props.limits.maxDrawIndirectCount;
+        m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+        m_capabilities.indexedIndirectExecution.requiredArgumentState = RHIResourceState::IndirectArgument;
+        m_capabilities.indexedIndirectExecution.requiredCountState = RHIResourceState::IndirectArgument;
+        m_capabilities.supportsIndirectDrawCount =
+            m_capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_capabilities.supportsComputePipeline = true;          // Vulkan exposes compute pipelines in the base API
         const auto sameQueue = [](uint32 leftFamily,
                                   VkQueue leftQueue,
