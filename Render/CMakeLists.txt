@@ -86,7 +86,6 @@ target_sources(RVX_Render PRIVATE
     Private/Renderer/RenderDrawPacketCache.cpp
     Private/Renderer/RenderScene.cpp
     Private/Renderer/RenderDrawItem.cpp
-    Private/Renderer/RenderFrameResourceBinder.cpp
     Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp
     # Visibility

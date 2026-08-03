@@ -70,20 +70,6 @@ namespace RVX
         }
 
         /**
-         * @brief Legacy Task 9B-6 compatibility adapter.
-         *
-         * Typed RenderPassRecordContext now owns the scene and ordered draw
-         * list for each graph recording. This method intentionally stores no
-         * state and cannot influence production recording.
-         */
-        void SetRenderScene(const RenderScene* scene, const std::vector<RenderDrawItem>* transparentDrawItems);
-
-        /**
-         * @brief Legacy Task 9B-6 compatibility adapter with no retained views.
-         */
-        void SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView);
-
-        /**
          * @brief Enable or disable this pass
          */
         void SetEnabled(bool enabled) { m_enabled = enabled; }

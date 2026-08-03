@@ -300,8 +300,12 @@ from submitted upper bounds and CPU reference visibility.
   graph-only targets, private constants/descriptors, and completion-retained
   pipeline/layout/view/texture resources. Legacy Setup/Execute/targets and
   ViewData recording fail closed.
-- [ ] Remove `RenderFrameResourceBinder`, `UpdatePassResources`, the direct
-  `ExecutePasses` bypass, and remaining production frame-state setters.
+- [x] Remove `RenderFrameResourceBinder`, `UpdatePassResources`, and the direct
+  `ExecutePasses` bypass; route every registry pass through the immutable
+  record context; remove migrated Transparent/Skybox frame-state setters and
+  Skybox frame-packet setter projection.
+- [ ] Remove the remaining Depth/Opaque/Shadow production compatibility setters
+  after their independent migration closure.
 - [ ] Add reverse-order two-graph, caller-mutation, resize/target-replacement,
   rejected-frame, empty-list, stale-context, and in-flight resource fixtures.
 

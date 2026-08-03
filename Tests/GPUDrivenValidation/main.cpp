@@ -1185,7 +1185,7 @@ TEST_F(GPUDrivenValidationFixture, DrawItemsMapBackThroughVisibleSourceIndices)
     EXPECT_EQ(1u, stats.distanceCulled);
 }
 
-TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforePassResourceBinding)
+TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedPassRecording)
 {
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
@@ -1200,11 +1200,26 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforePassRe
         ReadTextFile(root / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
     const std::string subsystemSource =
         ReadTextFile(root / "Render" / "Private" / "RenderSubsystem.cpp");
+    const std::string renderCMake =
+        ReadTextFile(root / "Render" / "CMakeLists.txt");
+    const std::string skyboxHeader =
+        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "SkyboxPass.h");
+    const std::string skyboxSource =
+        ReadTextFile(root / "Render" / "Private" / "Passes" / "SkyboxPass.cpp");
+    const std::string transparentHeader =
+        ReadTextFile(root / "Render" / "Include" / "Render" / "Passes" / "TransparentPass.h");
+    const std::string transparentSource =
+        ReadTextFile(root / "Render" / "Private" / "Passes" / "TransparentPass.cpp");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(depthHeader.empty());
     ASSERT_FALSE(depthSource.empty());
     ASSERT_FALSE(subsystemSource.empty());
+    ASSERT_FALSE(renderCMake.empty());
+    ASSERT_FALSE(skyboxHeader.empty());
+    ASSERT_FALSE(skyboxSource.empty());
+    ASSERT_FALSE(transparentHeader.empty());
+    ASSERT_FALSE(transparentSource.empty());
 
     EXPECT_NE(header.find("SceneGPUDrivenCullingStats"), std::string::npos);
     EXPECT_NE(header.find("graphPassAdded"), std::string::npos);
@@ -1244,6 +1259,35 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforePassRe
     EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetRenderScene"), std::string::npos);
     EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetRenderTargets"), std::string::npos);
     EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetDrawItems"), std::string::npos);
+
+    EXPECT_FALSE(std::filesystem::exists(
+        root / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.h"));
+    EXPECT_FALSE(std::filesystem::exists(
+        root / "Render" / "Private" / "Renderer" / "RenderFrameResourceBinder.cpp"));
+    EXPECT_EQ(header.find("UpdatePassResources"), std::string::npos);
+    EXPECT_EQ(header.find("ExecutePasses"), std::string::npos);
+    EXPECT_EQ(source.find("RenderFrameResourceBinder"), std::string::npos);
+    EXPECT_EQ(source.find("UpdatePassResources"), std::string::npos);
+    EXPECT_EQ(source.find("ExecutePasses"), std::string::npos);
+    EXPECT_EQ(renderCMake.find("RenderFrameResourceBinder"), std::string::npos);
+    EXPECT_EQ(source.find("m_skyboxPass->SetCubemap"), std::string::npos);
+    EXPECT_EQ(source.find("m_skyboxPass->SetProceduralSkyParams"), std::string::npos);
+    EXPECT_EQ(source.find("m_skyboxPass->SetSolidColor"), std::string::npos);
+    EXPECT_EQ(source.find("m_skyboxPass->ClearSkybox"), std::string::npos);
+    EXPECT_EQ(skyboxHeader.find("SetCubemap"), std::string::npos);
+    EXPECT_EQ(skyboxHeader.find("SetProceduralSkyParams"), std::string::npos);
+    EXPECT_EQ(skyboxHeader.find("SetSolidColor"), std::string::npos);
+    EXPECT_EQ(skyboxHeader.find("ClearSkybox"), std::string::npos);
+    EXPECT_EQ(skyboxHeader.find("SetRenderTargets"), std::string::npos);
+    EXPECT_EQ(skyboxSource.find("SkyboxPass::SetRenderTargets"), std::string::npos);
+    EXPECT_EQ(skyboxSource.find("SkyboxPass::SetCubemap"), std::string::npos);
+    EXPECT_EQ(skyboxSource.find("SkyboxPass::SetProceduralSkyParams"), std::string::npos);
+    EXPECT_EQ(skyboxSource.find("SkyboxPass::SetSolidColor"), std::string::npos);
+    EXPECT_EQ(skyboxSource.find("SkyboxPass::ClearSkybox"), std::string::npos);
+    EXPECT_EQ(transparentHeader.find("SetRenderScene"), std::string::npos);
+    EXPECT_EQ(transparentHeader.find("SetRenderTargets"), std::string::npos);
+    EXPECT_EQ(transparentSource.find("TransparentPass::SetRenderScene"), std::string::npos);
+    EXPECT_EQ(transparentSource.find("TransparentPass::SetRenderTargets"), std::string::npos);
 
     const size_t renderDefinition = source.find("void SceneRenderer::Render()");
     const size_t compileCall = source.find("CompileRenderFramePlan();", renderDefinition);
@@ -1345,6 +1389,11 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforePassRe
     ASSERT_NE(cullGraphCall, std::string::npos);
     ASSERT_NE(passRegistryLoop, std::string::npos);
     EXPECT_LT(cullGraphCall, passRegistryLoop);
+    const size_t typedPassRecord = source.find(
+        "pass->AddToGraph(*m_renderGraph, passRecordContext);", passRegistryLoop);
+    ASSERT_NE(typedPassRecord, std::string::npos);
+    EXPECT_EQ(source.find("pass->AddToGraph(*m_renderGraph, m_viewData)"),
+              std::string::npos);
 
     EXPECT_NE(source.find("\"GPUDrivenDepthCull\""), std::string::npos);
     EXPECT_NE(source.find("\"GPUDrivenOpaqueCull\""), std::string::npos);

@@ -459,94 +459,10 @@ void SkyboxPass::SetResources(PipelineCache* pipelineCache)
     RefreshSupport();
 }
 
-void SkyboxPass::SetRenderTargets(RHITextureView* colorTargetView,
-                                  RHITextureView* depthTargetView)
-{
-    (void)colorTargetView;
-    (void)depthTargetView;
-    // Typed graph handles resolve their own attachment views during execution.
-}
-
-void SkyboxPass::SetCubemap(RHITexture* cubemap,
-                            float exposure,
-                            float rotation,
-                            float blurLevel)
-{
-    m_cubemap = cubemap;
-    m_exposure = exposure;
-    m_rotation = rotation;
-    m_blurLevel = blurLevel;
-    if (!cubemap)
-    {
-        ClearSkybox("SkyboxCubemapMissing");
-        return;
-    }
-
-    m_drawMode = SkyboxDrawMode::Cubemap;
-    m_skySelected = true;
-    RefreshSupport();
-}
-
-void SkyboxPass::SetProceduralSkyParams(const Vec3& sunDirection,
-                                        const Vec3& skyColor,
-                                        const Vec3& horizonColor,
-                                        const Vec3& groundColor,
-                                        const Vec3& sunColor,
-                                        float exposure,
-                                        float scatteringIntensity)
-{
-    m_sunDirection = sunDirection;
-    m_skyColor = skyColor;
-    m_horizonColor = horizonColor;
-    m_groundColor = groundColor;
-    m_sunColor = sunColor;
-    m_exposure = exposure;
-    m_scatteringIntensity = scatteringIntensity;
-    m_rotation = 0.0f;
-    m_blurLevel = 0.0f;
-    m_cubemap = nullptr;
-    m_drawMode = SkyboxDrawMode::Procedural;
-    m_skySelected = true;
-    RefreshSupport();
-}
-
-void SkyboxPass::SetSolidColor(const Vec3& color, float exposure)
-{
-    SetProceduralSkyParams(m_sunDirection,
-                           color,
-                           color,
-                           color,
-                           Vec3{0.0f, 0.0f, 0.0f},
-                           exposure,
-                           0.0f);
-}
-
-void SkyboxPass::ClearSkybox(const char* reason)
-{
-    m_skySelected = false;
-    m_drawReady = false;
-    m_cubemap = nullptr;
-    m_drawMode = SkyboxDrawMode::None;
-    m_unsupportedReason = reason ? reason : "No supported SkyboxComponent selected";
-}
-
 void SkyboxPass::RefreshSupport()
 {
     m_drawReady = false;
 
-    if (!m_enabled)
-    {
-        m_unsupportedReason = "Skybox pass is disabled";
-        return;
-    }
-    if (!m_skySelected)
-    {
-        if (m_unsupportedReason.empty())
-        {
-            m_unsupportedReason = "No supported SkyboxComponent selected";
-        }
-        return;
-    }
     if (!m_pipelineCache || !m_pipelineCache->IsInitialized())
     {
         m_unsupportedReason = "Skybox requires an initialized PipelineCache";

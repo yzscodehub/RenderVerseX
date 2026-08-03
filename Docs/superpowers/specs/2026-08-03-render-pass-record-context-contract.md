@@ -174,8 +174,13 @@ Binder removal remains pending 9B-6.
   setters remain status-only compatibility until 9B-6.
 - Resolve targets from declared graph handles instead of post-build raw view
   injection.
-- 9B-6 removes `RenderFrameResourceBinder`, the late `UpdatePassResources`
-  phase, the direct `ExecutePasses` bypass, and obsolete frame-state setters.
+- 9B-6A removed `RenderFrameResourceBinder`, the late
+  `UpdatePassResources` phase, the direct `ExecutePasses` bypass, the
+  Transparent/Skybox frame-state setters, and the Skybox frame-packet status
+  projection. Every registry pass now enters through the immutable record
+  context; the default value-capturing adapter remains for unmigrated passes.
+- 9B-6B removes the remaining Depth/Opaque/Shadow standalone frame-state
+  compatibility setters after their typed recorder and test migration closes.
 - Preserve long-lived pass configuration and feature enablement.
 - Add resize, rejected-frame, empty-list, multi-view, and target-replacement
   fixtures for the migrated passes.

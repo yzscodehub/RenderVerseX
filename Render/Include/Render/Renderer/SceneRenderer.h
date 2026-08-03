@@ -1306,9 +1306,7 @@ namespace RVX
         ToneMappingOutputColorSpace ResolveToneMappingOutputColorSpace(RHIFormat outputFormat) const;
         bool SupportsHDRSceneColor() const;
         void ResolveRenderTargetExtent(uint32& width, uint32& height) const;
-        void UpdatePassResources();
         void RunPreGraphPrepareCallbacks();
-        void ExecutePasses(RHICommandContext& ctx);
         void EnsureDepthBuffer(uint32_t width, uint32_t height);
         void RefreshFrameDiagnostics(bool renderAttempted,
                                      bool rendered,

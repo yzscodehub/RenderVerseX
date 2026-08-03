@@ -45288,3 +45288,99 @@ git diff --check
   binder and obsolete setter phase.
 
 ---
+
+### R-SP339 Render-policy Task 9B-6A production binder and bypass closure
+
+**Date:** 2026-08-03
+**Commit:** Included in the Task 9B-6A stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP338 (Skybox recording isolation).
+- Evidence: Shadow/Depth/Opaque/RayTracedShadow/ObjectVelocity/Transparent/
+  Skybox already accept graph-owned record contexts, while the remaining
+  default `IRenderPass` adapter value-captures `ViewData` for unmigrated passes.
+
+**Approved scope:**
+
+- Delete `RenderFrameResourceBinder`, `UpdatePassResources`, and the unused
+  manual `SceneRenderer::ExecutePasses` path so RenderGraph is the sole
+  production scheduler and resource-state authority.
+- Route every registered pass through `RenderPassRecordContext`; retain the
+  default typed adapter for CameraVelocity, the reflection chain, Particle,
+  and external legacy passes that have not yet been individually migrated.
+- Remove Transparent's no-op scene/target setters and Skybox's target and
+  frame-configuration setters. Skybox support now reflects only long-lived
+  pipeline/device/runtime-resource readiness; the immutable frame snapshot
+  selects Cubemap/Procedural/SolidColor/Equirectangular/Disabled behavior.
+- Add source-contract and behavioral dispatch gates, including a real
+  SceneRenderer registry probe that rejects fallback to the `ViewData`
+  overload and verifies record-time value ownership through execution.
+
+**Out of scope:**
+
+- Depth/Opaque/Shadow standalone compatibility-setter removal and directional
+  light snapshot migration (Task 9B-6B), Particle snapshot migration, new RHI
+  capability contracts, Editor work, and backend feature promotion.
+
+**Files changed:**
+
+- `Render/CMakeLists.txt`
+- `Render/Include/Render/Passes/SkyboxPass.h`
+- `Render/Include/Render/Passes/TransparentPass.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Passes/SkyboxPass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- Deleted `Render/Private/Renderer/RenderFrameResourceBinder.h`
+- Deleted `Render/Private/Renderer/RenderFrameResourceBinder.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- Task 9B plan/todo and record-context contract documents.
+
+**Validation result:**
+
+- Build: PASS for `RVX_Render`, `RenderPassValidation`,
+  `RenderHonestyValidation`, `RenderPolicyValidation`,
+  `GPUDrivenValidation`, `ModelViewer`, and `RenderingShowcase`.
+- Focused SceneRenderer typed-dispatch fixture: PASS 1/1.
+- RenderPassValidation: PASS 183/183.
+- RenderPolicyValidation: PASS 22/22.
+- GPUDrivenValidation: PASS 30/30.
+- RenderHonestyValidation: PASS 75/75 with `TEMP`/`TMP` rooted in the build
+  tree; the first run's external `%TEMP%` access denial was environmental and
+  reproduced cleanly without changing a test assertion.
+- GPU stability smoke: PASS 10/10 consecutive runs.
+- Integration/visual matrix: PASS 16/16, covering Direct/GPU-driven parity,
+  external Porsche assets, DX12 GBV, completion-aware retirement, resize
+  ownership, and the DX11 compatibility smoke.
+- `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Initial review: P0/P1/P2/P3 `0/0/1/0`. The P2 found that production typed
+  dispatch was protected only by source strings and direct adapter tests.
+- Resolution: added a dual-overload probe driven by real SceneRenderer
+  AddPass/build/compile/execute. It requires typed `1`, legacy `0`, a
+  non-legacy current-graph identity, paired snapshot/results, exact target
+  provenance, and stable `401/73/7001` record-time values after caller
+  mutation.
+- Incremental re-review: PASS; unresolved P0/P1/P2/P3 `0/0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diff/reference review, independent finding adjudication,
+  and independent rebuild/test execution. No production binder, late update,
+  manual execution path, Skybox frame projection, or registry `m_viewData`
+  dispatch remains.
+
+**Residual risks / follow-ups:**
+
+- Native Vulkan and Metal execution remain unavailable on this Windows host;
+  no qualification claim is made beyond shared Render/RHI contract coverage.
+- Depth/Opaque/Shadow still expose standalone compatibility frame setters and
+  are the explicit Task 9B-6B follow-up. The 9B-6B audit also identified that
+  typed Opaque depth must resolve and retain the current graph DSV rather than
+  depend on a raw target view.
+
+---

@@ -34,7 +34,6 @@
 #include "Render/PostProcess/ToneMapping.h"
 #include "Render/PostProcess/Vignette.h"
 #include "Render/RayTracing/RayTracingScene.h"
-#include "Renderer/RenderFrameResourceBinder.h"
 #include "Renderer/RenderPassRegistry.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderResourceResolver.h"
@@ -1276,54 +1275,6 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     if (m_particleFeaturePass)
     {
         m_particleFeaturePass->SetSnapshot(&m_featureSnapshot.particles);
-    }
-
-    if (m_skyboxPass)
-    {
-        const RenderSkySnapshot& sky = m_renderScene.GetSky();
-        switch (sky.mode)
-        {
-            case RenderSkyMode::Cubemap:
-            {
-                RHITexture* texture = sky.skyTexture.IsValid()
-                    ? registry.ResolveTextureObject(sky.skyTexture)
-                    : nullptr;
-                if (texture != nullptr)
-                {
-                    m_skyboxPass->SetCubemap(texture,
-                                              sky.intensity,
-                                              sky.rotationRadians,
-                                              sky.blurLevel);
-                }
-                else
-                {
-                    m_skyboxPass->SetSolidColor(sky.tint, sky.intensity);
-                }
-                break;
-            }
-            case RenderSkyMode::Procedural:
-                m_skyboxPass->SetProceduralSkyParams(
-                    sky.sunDirection,
-                    sky.zenithColor,
-                    sky.horizonColor,
-                    sky.groundColor,
-                    sky.sunColor,
-                    sky.intensity,
-                    sky.scatteringIntensity);
-                break;
-            case RenderSkyMode::SolidColor:
-                m_skyboxPass->SetSolidColor(sky.tint, sky.intensity);
-                break;
-            case RenderSkyMode::Equirectangular:
-                // Equirectangular-to-cubemap conversion is not part of the
-                // current RHI/shader contract. Preserve a deterministic packet
-                // fallback instead of silently selecting stale cubemap state.
-                m_skyboxPass->SetSolidColor(sky.tint, sky.intensity);
-                break;
-            case RenderSkyMode::Disabled:
-                m_skyboxPass->ClearSkybox("SkyboxDisabledByFramePacket");
-                break;
-        }
     }
 
     const RenderEnvironmentSnapshot& environment =
@@ -2827,10 +2778,6 @@ void SceneRenderer::Render()
     // Build the render graph (creates depth buffer if needed, imports resources)
     BuildRenderGraph();
 
-    // Update pass resources AFTER BuildRenderGraph creates resources
-    // This provides passes with render scene data and texture views
-    UpdatePassResources();
-
     // Compile the render graph (computes barriers, memory aliasing, pass culling)
     m_renderGraph->Compile();
     const bool graphCompileValid = m_renderGraph->GetCompileStats().compileValid;
@@ -2986,133 +2933,6 @@ void SceneRenderer::Render()
     UpdateObjectMotionHistory();
     m_previousViewProjectionMatrix = m_viewData.viewProjectionMatrix;
     m_previousViewProjectionValid = true;
-}
-
-void SceneRenderer::ExecutePasses(RHICommandContext& ctx)
-{
-    // NOTE: This is a legacy path for manual pass execution without RenderGraph.
-    // The preferred path is Render() -> BuildRenderGraph() -> RenderGraph::Execute()
-    // which handles barrier management automatically.
-
-    RHISwapChain* swapChain = m_renderContext->GetSwapChain();
-    if (!swapChain)
-        return;
-
-    // Get current back buffer and its tracked state
-    // State tracking is managed by BuildRenderGraph(), but if called standalone,
-    // ensure we have valid state tracking
-    uint32_t bufferCount = swapChain->GetBufferCount();
-    if (m_backBufferAccessSnapshots.size() != bufferCount)
-    {
-        m_backBufferAccessSnapshots.assign(
-            bufferCount,
-            MakeRHITextureAccessSnapshot(
-                RHIResourceState::Undefined,
-                RHIShaderStage::None,
-                GPUQueueDomain::Graphics,
-                RHIContentValidity::Invalid));
-    }
-
-    uint32_t backBufferIndex = swapChain->GetCurrentBackBufferIndex();
-    RHITexture* backBuffer = m_renderContext->GetCurrentBackBuffer();
-    RHITextureAccessSnapshot& backBufferAccess =
-        m_backBufferAccessSnapshots[backBufferIndex];
-    const RHIAccessSnapshot renderTargetAccess = MakeRHIAccessSnapshot(
-        RHIResourceState::RenderTarget,
-        RHIShaderStage::None,
-        GPUQueueDomain::Graphics);
-
-    // Transition back buffer to RenderTarget (from Undefined on first use, Present thereafter)
-    if (backBuffer && backBufferAccess.uniformAccess != renderTargetAccess)
-    {
-        ctx.TextureBarrier(
-            backBuffer,
-            backBufferAccess.uniformAccess,
-            renderTargetAccess,
-            RHISubresourceRange::All(),
-            backBufferAccess.uniformAccess.contentValidity == RHIContentValidity::Valid
-                ? RHIDiscardIntent::Preserve
-                : RHIDiscardIntent::Discard);
-        backBufferAccess.uniformAccess = renderTargetAccess;
-    }
-
-    // Transition depth buffer to DepthWrite if it exists
-    const RHIAccessSnapshot depthWriteAccess = MakeRHIAccessSnapshot(
-        RHIResourceState::DepthWrite,
-        RHIShaderStage::None,
-        GPUQueueDomain::Graphics);
-    if (m_depthTexture && m_depthAccessSnapshot.uniformAccess != depthWriteAccess)
-    {
-        ctx.TextureBarrier(
-            m_depthTexture.Get(),
-            m_depthAccessSnapshot.uniformAccess,
-            depthWriteAccess,
-            RHISubresourceRange::All(),
-            m_depthAccessSnapshot.uniformAccess.contentValidity == RHIContentValidity::Valid
-                ? RHIDiscardIntent::Preserve
-                : RHIDiscardIntent::Discard);
-        m_depthAccessSnapshot.uniformAccess = depthWriteAccess;
-    }
-
-    if (!m_passRegistry)
-        return;
-
-    for (auto& pass : m_passRegistry->GetPasses())
-    {
-        if (pass && pass->IsEnabled())
-        {
-            pass->Execute(ctx, m_viewData);
-        }
-    }
-
-    // Transition back buffer from RenderTarget back to Present
-    const RHIAccessSnapshot presentAccess = MakeRHIAccessSnapshot(
-        RHIResourceState::Present,
-        RHIShaderStage::None,
-        GPUQueueDomain::Graphics);
-    if (backBuffer && backBufferAccess.uniformAccess != presentAccess)
-    {
-        ctx.TextureBarrier(
-            backBuffer,
-            backBufferAccess.uniformAccess,
-            presentAccess);
-        backBufferAccess.uniformAccess = presentAccess;
-    }
-}
-
-void SceneRenderer::UpdatePassResources()
-{
-    if (!m_renderContext)
-        return;
-
-    RHITextureView* colorTargetView = nullptr;
-    RHITextureView* depthTargetView = m_depthTextureView.Get();
-    if (m_externalRenderTargetStats.active && m_renderGraph && m_resourceViewCache)
-    {
-        if (RHITexture* colorTarget = m_renderGraph->GetTexture(m_viewData.colorTarget))
-        {
-            colorTargetView = m_resourceViewCache->GetDefaultRTV(colorTarget);
-        }
-        if (RHITexture* depthTarget = m_renderGraph->GetTexture(m_viewData.depthTarget))
-        {
-            depthTargetView = m_resourceViewCache->GetDefaultDSV(depthTarget);
-        }
-    }
-
-    RenderFrameResourceBinder::BindScenePassResources(
-        *m_renderContext,
-        m_renderScene,
-        m_opaqueDrawItems,
-        m_maskedDrawItems,
-        m_transparentDrawItems,
-        colorTargetView,
-        depthTargetView,
-        nullptr,
-        nullptr,
-        m_shadowPass,
-        m_transparentPass,
-        m_skyboxPass);
-
 }
 
 void SceneRenderer::ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,
@@ -4527,20 +4347,11 @@ void SceneRenderer::BuildRenderGraph()
             }
         }
 
-        // Shadow/Depth/Opaque/Skybox/ObjectVelocity/Transparent consume the explicit
-        // graph-owned record context; remaining passes retain the Task 9B
-        // compatibility adapter.
-        if (pass.get() == m_shadowPass || pass.get() == m_depthPrepass ||
-            pass.get() == m_rayTracedShadowPass || pass.get() == m_opaquePass ||
-            pass.get() == m_skyboxPass || pass.get() == m_objectVelocityPass ||
-            pass.get() == m_transparentPass)
-        {
-            pass->AddToGraph(*m_renderGraph, passRecordContext);
-        }
-        else
-        {
-            pass->AddToGraph(*m_renderGraph, m_viewData);
-        }
+        // Every registered pass receives the same immutable, graph-specific
+        // context. Unmigrated passes use IRenderPass' value-capturing adapter;
+        // no production path may retain a mutable ViewData or frame-state
+        // mailbox.
+        pass->AddToGraph(*m_renderGraph, passRecordContext);
         m_passChainStats.graphPassCount++;
     }
 

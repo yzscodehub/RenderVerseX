@@ -398,24 +398,6 @@ namespace RVX
         m_clusteredLighting = clusteredLighting;
     }
 
-    void TransparentPass::SetRenderScene(
-        const RenderScene* scene,
-        const std::vector<RenderDrawItem>* transparentDrawItems)
-    {
-        (void)scene;
-        (void)transparentDrawItems;
-        // Task 9B-6 removes this source-compatibility adapter. It must not
-        // retain a caller-owned pointer or revive a cross-graph mailbox.
-    }
-
-    void TransparentPass::SetRenderTargets(RHITextureView* colorTargetView,
-                                           RHITextureView* depthTargetView)
-    {
-        (void)colorTargetView;
-        (void)depthTargetView;
-        // RenderGraph handles are resolved into owned views during execution.
-    }
-
     void TransparentPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     {
         (void)builder;

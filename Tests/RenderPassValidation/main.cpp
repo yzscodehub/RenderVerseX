@@ -1056,6 +1056,102 @@ namespace
         std::vector<uint64> observedFrameNumbers;
     };
 
+    class SceneRendererOverloadProbePass final : public IRenderPass
+    {
+    public:
+        const char* GetName() const override { return "SceneRendererOverloadProbePass"; }
+        int32_t GetPriority() const override { return 175; }
+
+        void Setup(RenderGraphBuilder& builder, const ViewData& view) override
+        {
+            ++setupCount;
+            setupColor = view.colorTarget;
+            setupDepth = view.depthTarget;
+            setupViewportWidth = view.viewportWidth;
+            setupFrameNumber = view.frameNumber;
+            (void)builder.ReadWrite(
+                view.colorTarget,
+                MakeRHIAccessSnapshot(RHIResourceState::RenderTarget,
+                                       RHIShaderStage::Pixel));
+            (void)builder.Read(view.depthTarget,
+                               RHIResourceState::DepthRead,
+                               RHIShaderStage::Pixel);
+        }
+
+        void Execute(RHICommandContext&, const ViewData& view) override
+        {
+            ++recordedExecutionCount;
+            recordedColor = view.colorTarget;
+            recordedDepth = view.depthTarget;
+            recordedViewportWidth = view.viewportWidth;
+            recordedFrameNumber = view.frameNumber;
+            recordedFrameSequence = view.renderFrameExecutionPlan
+                ? view.renderFrameExecutionPlan->frameSequence : 0;
+        }
+
+        void AddToGraph(RenderGraph&, const ViewData&) override
+        {
+            ++viewDataOverloadCount;
+        }
+
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override
+        {
+            ++typedOverloadCount;
+            typedLegacyAdapter = context.legacyAdapter;
+            typedIdentity = context.identity;
+            typedContextIdentityValid = context.MatchesTargetGraph(graph) &&
+                context.IsFrameIdentityValid() &&
+                context.frameSnapshot != nullptr && context.results != nullptr &&
+                context.frameSnapshot->identity == context.identity &&
+                context.results->identity == context.identity;
+            typedColor = context.view.colorTarget;
+            typedDepth = context.view.depthTarget;
+            typedSnapshotColor = context.frameSnapshot
+                ? context.frameSnapshot->view.colorTarget : RGTextureHandle{};
+            typedSnapshotDepth = context.frameSnapshot
+                ? context.frameSnapshot->view.depthTarget : RGTextureHandle{};
+            typedResourcesBelongToGraph =
+                HasCurrentGraphProvenance(typedColor, context.identity) &&
+                HasCurrentGraphProvenance(typedDepth, context.identity) &&
+                graph.GetTextureDesc(typedColor) != nullptr &&
+                graph.GetTextureDesc(typedDepth) != nullptr;
+
+            const RenderPassExecutionData execution =
+                MakeRenderPassExecutionData(context);
+            typedExecutionValid = execution.MatchesTargetGraph(graph) &&
+                execution.IsFrameIdentityValid();
+
+            // Exercise the production compatibility adapter with exactly the
+            // renderer-issued typed context. Its graph callbacks must retain
+            // a value-owned execution snapshot.
+            IRenderPass::AddToGraph(graph, context);
+        }
+
+        uint32 viewDataOverloadCount = 0;
+        uint32 typedOverloadCount = 0;
+        uint32 setupCount = 0;
+        uint32 recordedExecutionCount = 0;
+        bool typedLegacyAdapter = true;
+        bool typedContextIdentityValid = false;
+        bool typedResourcesBelongToGraph = false;
+        bool typedExecutionValid = false;
+        RenderPassRecordIdentity typedIdentity{};
+        RGTextureHandle typedColor{};
+        RGTextureHandle typedDepth{};
+        RGTextureHandle typedSnapshotColor{};
+        RGTextureHandle typedSnapshotDepth{};
+        RGTextureHandle setupColor{};
+        RGTextureHandle setupDepth{};
+        RGTextureHandle recordedColor{};
+        RGTextureHandle recordedDepth{};
+        uint32 setupViewportWidth = 0;
+        uint64 setupFrameNumber = 0;
+        uint32 recordedViewportWidth = 0;
+        uint64 recordedFrameNumber = 0;
+        uint64 recordedFrameSequence = 0;
+    };
+
     class RecordingPostProcessPass final : public IPostProcessPass
     {
     public:
@@ -4997,18 +5093,16 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
     }
 }
 
-TEST_F(RenderPassValidationFixture, SkyboxPassWithoutSelectedSkyboxDoesNotBindOrDraw)
+TEST_F(RenderPassValidationFixture, SkyboxPassWithoutFrameSnapshotDoesNotBindOrDraw)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
 
     EXPECT_TRUE(pass.IsRequestedEnabled());
-    EXPECT_FALSE(pass.IsSupported());
-    EXPECT_FALSE(pass.IsEnabled());
-    EXPECT_FALSE(pass.GetUnsupportedReason().empty());
+    EXPECT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    EXPECT_TRUE(pass.IsEnabled());
 
     RecordingCommandContext ctx;
     pass.Execute(ctx, view);
@@ -5016,6 +5110,48 @@ TEST_F(RenderPassValidationFixture, SkyboxPassWithoutSelectedSkyboxDoesNotBindOr
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
     EXPECT_TRUE(ctx.pipelineSequence.empty());
     EXPECT_EQ(ctx.drawCount, 0u);
+}
+
+TEST_F(RenderPassValidationFixture,
+       SkyboxRegistrySupportIsIndependentOfTypedFrameSelection)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderPassRegistry registry;
+    auto skybox = std::make_unique<SkyboxPass>();
+    skybox->SetResources(&pipelineCache);
+    skybox->SetResourceRegistry(&gpuResources.GetRegistry());
+    registry.AddPass(std::move(skybox), &device);
+
+    std::vector<RenderPassStatus> statuses = registry.GetPassStatuses();
+    ASSERT_EQ(1u, statuses.size());
+    EXPECT_TRUE(statuses[0].requestedEnabled);
+    EXPECT_TRUE(statuses[0].supported) << statuses[0].unsupportedReason;
+    EXPECT_TRUE(statuses[0].enabled) << statuses[0].unsupportedReason;
+
+    auto* const pass = static_cast<SkyboxPass*>(registry.GetPasses()[0].get());
+    ASSERT_NE(nullptr, pass);
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    ViewData recordView = view;
+    recordView.renderGraph = &graph;
+    recordView.viewCache = &viewCache;
+    recordView.colorTarget = graph.ImportTexture(
+        colorTexture.Get(), RHIResourceState::RenderTarget);
+    RenderSkySnapshot disabledSky;
+    disabledSky.mode = RenderSkyMode::Disabled;
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, recordView, scene, disabledSky, 900, 900);
+    pass->AddToGraph(graph, context);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    ASSERT_EQ(1u, graph.GetDiagnostics().passes.size());
+    EXPECT_TRUE(graph.GetDiagnostics().passes[0].usages.empty());
+
+    statuses = registry.GetPassStatuses();
+    ASSERT_EQ(1u, statuses.size());
+    EXPECT_TRUE(statuses[0].supported);
+    EXPECT_TRUE(statuses[0].enabled);
 }
 
 TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleThroughRenderGraph)
@@ -5045,9 +5181,6 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
-    pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
-                                Vec3{0.12f, 0.24f, 0.55f},
-                                Vec3{0.6f, 0.72f, 0.88f});
 
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
     ASSERT_TRUE(pass.IsEnabled());
@@ -5157,9 +5290,6 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDe
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
-    pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
-                                Vec3{0.12f, 0.24f, 0.55f},
-                                Vec3{0.6f, 0.72f, 0.88f});
 
     RenderSkySnapshot sky;
     sky.mode = RenderSkyMode::Procedural;
@@ -5203,11 +5333,8 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
-    pass.SetCubemap(cubemap, 1.25f, 0.35f, 1.0f);
 
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
-    ASSERT_TRUE(pass.IsCubemapSelected());
-    EXPECT_EQ(pass.GetSelectedCubemap(), cubemap);
 
     RenderSkySnapshot sky;
     sky.mode = RenderSkyMode::Cubemap;
@@ -5268,9 +5395,8 @@ TEST_F(RenderPassValidationFixture, SkyboxPassFallsBackToTintWhenCubemapSRVCreat
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
-    // Ensure the immutable fallback view exists before the selected cubemap
-    // SRV path is made to fail.
-    pass.SetSolidColor(Vec3{0.2f, 0.4f, 0.7f}, 0.8f);
+    // SetResources establishes the immutable fallback before the selected
+    // cubemap SRV path is made to fail.
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     ASSERT_NE(viewCache.GetDefaultRTV(colorTexture.Get()), nullptr);
@@ -5322,7 +5448,6 @@ TEST_F(RenderPassValidationFixture,
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
-    pass.SetSolidColor(Vec3{0.1f, 0.2f, 0.3f}, 1.0f);
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     RenderSkySnapshot sky;
@@ -5375,9 +5500,6 @@ TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenSamplerCannotBeCreate
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
-    pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
-                                Vec3{0.12f, 0.24f, 0.55f},
-                                Vec3{0.6f, 0.72f, 0.88f});
 
     EXPECT_FALSE(pass.IsSupported());
 
@@ -5411,9 +5533,6 @@ TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenConstantsCannotMap)
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
-    pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
-                                Vec3{0.12f, 0.24f, 0.55f},
-                                Vec3{0.6f, 0.72f, 0.88f});
 
     RenderSkySnapshot sky;
     sky.mode = RenderSkyMode::Procedural;
@@ -5475,7 +5594,6 @@ TEST_F(RenderPassValidationFixture,
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
-    pass.SetSolidColor(Vec3{0.1f, 0.2f, 0.3f});
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     RenderGraph graphA;
@@ -5519,9 +5637,9 @@ TEST_F(RenderPassValidationFixture,
     pass.AddToGraph(graphA, contextA);
     pass.AddToGraph(graphB, contextB);
 
-    // Neither pass mutable state nor a caller replacement of the source
+    // Neither later pass enablement nor a caller replacement of the source
     // context can change already-registered graph recording input.
-    pass.SetCubemap(cubemap, 99.0f, 2.0f, 4.0f);
+    pass.SetEnabled(false);
     auto replacementSnapshot = std::make_shared<RenderPassFrameSnapshot>(
         *contextA.frameSnapshot);
     replacementSnapshot->sky.tint = Vec3{9.0f, 9.0f, 9.0f};
@@ -5665,7 +5783,6 @@ TEST_F(RenderPassValidationFixture,
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
-    pass.SetSolidColor(Vec3{0.3f, 0.4f, 0.5f});
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     const auto makeColor = [this](uint32 extent)
@@ -5702,8 +5819,8 @@ TEST_F(RenderPassValidationFixture,
         EXPECT_EQ(0u, commands.drawCount);
     };
 
-    // Legacy setters and the ViewData overload cannot recover an execution
-    // mailbox, and the old Setup/Execute entry points are inert too.
+    // The ViewData overload cannot recover an execution mailbox, and the old
+    // Setup/Execute entry points are inert too.
     RenderGraph legacyGraph;
     legacyGraph.SetDevice(&device);
     RHITextureRef legacyColor = makeColor(64);
@@ -5713,7 +5830,6 @@ TEST_F(RenderPassValidationFixture,
     legacyView.viewCache = &viewCache;
     legacyView.colorTarget = legacyGraph.ImportTexture(
         legacyColor.Get(), RHIResourceState::RenderTarget);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
     pass.AddToGraph(legacyGraph, legacyView);
     RecordingCommandContext legacyCommands;
     expectNoUsageOrCommands(legacyGraph, legacyCommands);
@@ -5862,7 +5978,6 @@ TEST_F(RenderPassValidationFixture,
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
-    pass.SetSolidColor(Vec3{0.25f, 0.5f, 0.75f}, 1.25f);
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
     RHIPipelineLayoutRef layoutProbe(pipelineCache.GetSkyboxLayout());
     ASSERT_TRUE(layoutProbe);
@@ -6001,6 +6116,100 @@ TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
     EXPECT_EQ(renderer.GetPostProcessStats().backBufferFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(renderer.GetPostProcessStats().toneMappingOutputColorSpace, ToneMappingOutputColorSpace::SRGB);
     EXPECT_EQ(renderer.GetFrameDiagnostics().toneMappingOutputColorSpace, ToneMappingOutputColorSpace::SRGB);
+}
+
+TEST(SceneRendererPassRecordingValidation,
+     RegistryBuildUsesTypedRecordContextInsteadOfViewDataOverload)
+{
+    FakeDevice device;
+    SceneRenderer renderer;
+    auto graph = std::make_unique<RenderGraph>();
+    graph->SetDevice(&device);
+    renderer.SetRenderGraphForTesting(std::move(graph));
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        96, 64, RHIFormat::RGBA8_UNORM);
+    colorDesc.usage = RHITextureUsage::RenderTarget |
+        RHITextureUsage::ShaderResource;
+    RHITextureRef colorTarget = device.CreateTexture(colorDesc);
+    ASSERT_TRUE(colorTarget);
+
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+        96, 64, PipelineCache::GetDefaultDepthStencilFormat());
+    RHITextureRef depthTarget = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTarget);
+
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget.Get();
+    externalTarget.depthTarget = depthTarget.Get();
+    externalTarget.colorInitialState = RHIResourceState::ShaderResource;
+    externalTarget.colorFinalState = RHIResourceState::ShaderResource;
+    externalTarget.depthInitialState = RHIResourceState::DepthRead;
+    externalTarget.depthFinalState = RHIResourceState::DepthRead;
+    renderer.SetExternalRenderTarget(externalTarget);
+
+    auto probe = std::make_unique<SceneRendererOverloadProbePass>();
+    SceneRendererOverloadProbePass* const probePtr = probe.get();
+    ASSERT_NE(nullptr, probePtr);
+    renderer.AddPass(std::move(probe));
+    EXPECT_EQ(1u, renderer.GetPassCount());
+
+    // AddPass invalidates the renderer's working plan, so establish the
+    // frame identity and mutable caller values after registration.
+    RenderFrameExecutionPlan plan;
+    plan.frameSequence = 7001;
+    plan.viewOrdinal = 3;
+    renderer.GetViewData().renderFrameExecutionPlan = &plan;
+    renderer.GetViewData().viewportWidth = 401;
+    renderer.GetViewData().viewportHeight = 233;
+    renderer.GetViewData().frameNumber = 73;
+
+    renderer.BuildRenderGraphForTesting();
+
+    EXPECT_EQ(0u, probePtr->viewDataOverloadCount);
+    EXPECT_EQ(1u, probePtr->typedOverloadCount);
+    EXPECT_FALSE(probePtr->typedLegacyAdapter);
+    EXPECT_TRUE(probePtr->typedIdentity.Matches(*renderer.GetRenderGraph()));
+    EXPECT_TRUE(probePtr->typedContextIdentityValid);
+    EXPECT_TRUE(probePtr->typedResourcesBelongToGraph);
+    EXPECT_TRUE(probePtr->typedExecutionValid);
+    EXPECT_EQ(probePtr->typedColor.index, probePtr->typedSnapshotColor.index);
+    EXPECT_EQ(probePtr->typedColor.graphIdentity,
+              probePtr->typedSnapshotColor.graphIdentity);
+    EXPECT_EQ(probePtr->typedColor.recordingGeneration,
+              probePtr->typedSnapshotColor.recordingGeneration);
+    EXPECT_EQ(probePtr->typedDepth.index, probePtr->typedSnapshotDepth.index);
+    EXPECT_EQ(probePtr->typedDepth.graphIdentity,
+              probePtr->typedSnapshotDepth.graphIdentity);
+    EXPECT_EQ(probePtr->typedDepth.recordingGeneration,
+              probePtr->typedSnapshotDepth.recordingGeneration);
+    EXPECT_EQ(colorTarget.Get(),
+              renderer.GetRenderGraph()->GetTexture(probePtr->typedColor));
+    EXPECT_EQ(depthTarget.Get(),
+              renderer.GetRenderGraph()->GetTexture(probePtr->typedDepth));
+
+    // The production adapter must retain its value-owned snapshot rather than
+    // observe post-build mutations to SceneRenderer's working ViewData/plan.
+    renderer.GetViewData().viewportWidth = 999;
+    renderer.GetViewData().frameNumber = 88;
+    plan.frameSequence = 7999;
+
+    renderer.GetRenderGraph()->Compile();
+    ASSERT_TRUE(renderer.GetRenderGraph()->GetCompileStats().compileValid);
+    RecordingCommandContext commands;
+    renderer.GetRenderGraph()->Execute(commands);
+
+    EXPECT_EQ(1u, probePtr->setupCount);
+    EXPECT_EQ(probePtr->typedColor.index, probePtr->setupColor.index);
+    EXPECT_EQ(probePtr->typedDepth.index, probePtr->setupDepth.index);
+    EXPECT_EQ(401u, probePtr->setupViewportWidth);
+    EXPECT_EQ(73u, probePtr->setupFrameNumber);
+    EXPECT_EQ(1u, probePtr->recordedExecutionCount);
+    EXPECT_EQ(probePtr->typedColor.index, probePtr->recordedColor.index);
+    EXPECT_EQ(probePtr->typedDepth.index, probePtr->recordedDepth.index);
+    EXPECT_EQ(401u, probePtr->recordedViewportWidth);
+    EXPECT_EQ(73u, probePtr->recordedFrameNumber);
+    EXPECT_EQ(7001u, probePtr->recordedFrameSequence);
 }
 
 TEST(SceneRendererExternalTargetValidation, InvalidExternalColorTargetFallsBackWithoutImport)
@@ -12426,7 +12635,7 @@ TEST_F(RenderPassValidationFixture,
     RecordingCommandContext emptyCommands;
     expectNoUsageOrCommands(emptyGraph, emptyCommands);
 
-    // Legacy setters and the ViewData overload cannot rebuild a typed mailbox.
+    // The ViewData overload cannot rebuild a typed mailbox.
     RenderGraph legacyGraph;
     legacyGraph.SetDevice(&device);
     auto legacyTargets = makeTargets(64);
@@ -12438,8 +12647,6 @@ TEST_F(RenderPassValidationFixture,
         legacyTargets.first.Get(), RHIResourceState::RenderTarget);
     legacyView.depthTarget = legacyGraph.ImportTexture(
         legacyTargets.second.Get(), RHIResourceState::DepthRead);
-    pass.SetRenderScene(&scene, &transparentItems);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
     pass.AddToGraph(legacyGraph, legacyView);
     RecordingCommandContext legacyCommands;
     expectNoUsageOrCommands(legacyGraph, legacyCommands);
