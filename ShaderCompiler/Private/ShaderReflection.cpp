@@ -80,8 +80,34 @@ namespace RVX
             return value;
         }
 
+        std::string NormalizeSpirvFallbackSemantic(const char* semantic)
+        {
+            std::string normalized = semantic ? semantic : "";
+            const std::string uppercase = UpperAscii(normalized);
+            constexpr char inputPrefix[] = "IN.VAR.";
+            constexpr char outputPrefix[] = "OUT.VAR.";
+
+            if (uppercase.compare(
+                    0,
+                    sizeof(inputPrefix) - 1,
+                    inputPrefix) == 0)
+            {
+                return uppercase.substr(sizeof(inputPrefix) - 1);
+            }
+            if (uppercase.compare(
+                    0,
+                    sizeof(outputPrefix) - 1,
+                    outputPrefix) == 0)
+            {
+                return uppercase.substr(sizeof(outputPrefix) - 1);
+            }
+            return normalized;
+        }
+
 #if HAS_SPIRV_REFLECT
-        RHIBindingType ToBindingType(SpvReflectDescriptorType type)
+        RHIBindingType ToBindingType(
+            SpvReflectDescriptorType type,
+            SpvReflectResourceType resourceType)
         {
             switch (type)
             {
@@ -90,7 +116,16 @@ namespace RVX
                     return RHIBindingType::UniformBuffer;
                 case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER:
                 case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-                    return RHIBindingType::StorageBuffer;
+                {
+                    const bool isSrv =
+                        (resourceType & SPV_REFLECT_RESOURCE_FLAG_SRV) != 0;
+                    const bool isUav =
+                        (resourceType & SPV_REFLECT_RESOURCE_FLAG_UAV) != 0;
+                    // Ambiguous or unknown storage access must not select an SRV layout.
+                    return isSrv && !isUav
+                        ? RHIBindingType::ShaderResourceBuffer
+                        : RHIBindingType::StorageBuffer;
+                }
                 case SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
                     return RHIBindingType::SampledTexture;
                 case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE:
@@ -304,7 +339,9 @@ namespace RVX
             res.set = binding->set;
             res.binding = binding->binding;
             res.count = binding->count;
-            res.type = ToBindingType(binding->descriptor_type);
+            res.type = ToBindingType(
+                binding->descriptor_type,
+                binding->resource_type);
             reflection.resources.push_back(std::move(res));
         }
 
@@ -334,11 +371,13 @@ namespace RVX
             attr.location =
                 attr.systemValue ? RVX_INVALID_INDEX : input->location;
             attr.format = ToRhiFormat(input->format);
-            SetSemantic(
-                attr,
+            const std::string semantic = NormalizeSpirvFallbackSemantic(
                 input->semantic && input->semantic[0] != '\0'
                     ? input->semantic
                     : input->name);
+            SetSemantic(
+                attr,
+                semantic.c_str());
             reflection.inputs.push_back(std::move(attr));
         }
 
@@ -361,11 +400,13 @@ namespace RVX
             attr.location =
                 attr.systemValue ? RVX_INVALID_INDEX : output->location;
             attr.format = ToRhiFormat(output->format);
-            SetSemantic(
-                attr,
+            const std::string semantic = NormalizeSpirvFallbackSemantic(
                 output->semantic && output->semantic[0] != '\0'
                     ? output->semantic
                     : output->name);
+            SetSemantic(
+                attr,
+                semantic.c_str());
             reflection.outputs.push_back(std::move(attr));
         }
 

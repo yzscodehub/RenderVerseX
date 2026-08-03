@@ -250,10 +250,17 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             data.input = builder.Read(input, RHIShaderStage::Pixel);
             if (additive)
             {
-                // Destination blending reads the previous contents implicitly; expose that dependency to the graph.
-                builder.Read(output, RHIShaderStage::Pixel);
+                data.output = builder.ReadWrite(
+                    output,
+                    MakeRHIAccessSnapshot(RHIResourceState::RenderTarget,
+                                           RHIShaderStage::Pixel));
             }
-            data.output = builder.Write(output, RHIResourceState::RenderTarget);
+            else
+            {
+                data.output = builder.Write(
+                    output,
+                    RHIResourceState::RenderTarget);
+            }
             data.threshold = threshold;
             data.intensity = intensity;
             data.radius = radius;

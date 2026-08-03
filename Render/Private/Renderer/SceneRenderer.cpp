@@ -42,6 +42,8 @@
 #include "Resources/RenderSubmissionTracker.h"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <utility>
@@ -51,6 +53,67 @@ namespace RVX
 {
 namespace
 {
+    void PopulatePlanMeasurement(RenderPolicyDiagnostics& diagnostics)
+    {
+        RenderPolicyMeasurement& measurement = diagnostics.measurement;
+        measurement.candidatePacketCount = 0;
+        measurement.drawGroupCount = 0;
+        measurement.averageGroupOccupancy = 0.0;
+        measurement.averageGroupOccupancyAvailable = false;
+
+        if (!diagnostics.planAvailable)
+        {
+            return;
+        }
+
+        const RenderFrameExecutionPlan& plan = diagnostics.selectedPlan;
+        measurement.frameSequence = plan.frameSequence;
+        for (const RenderPassExecutionPlan& pass : plan.passes)
+        {
+            // These are pass-packet aggregates. Depth/Opaque can intentionally
+            // represent the same source primitive in separate pass lanes.
+            measurement.candidatePacketCount +=
+                pass.partition.candidatePacketCount;
+            measurement.drawGroupCount += pass.partition.drawGroupCount;
+        }
+        if (measurement.drawGroupCount != 0)
+        {
+            measurement.averageGroupOccupancy =
+                static_cast<float64>(measurement.candidatePacketCount) /
+                static_cast<float64>(measurement.drawGroupCount);
+            measurement.averageGroupOccupancyAvailable = true;
+        }
+    }
+
+    void PopulateSubmissionMeasurement(RenderPolicyDiagnostics& diagnostics)
+    {
+        RenderPolicyMeasurement& measurement = diagnostics.measurement;
+        measurement.submissionCpuNanoseconds = 0;
+        measurement.submissionCpuTimingAvailable = false;
+
+        for (const RenderPassExecutionReport& pass :
+             diagnostics.executionReport.passes)
+        {
+            if (pass.pass != RenderPassKind::Depth &&
+                pass.pass != RenderPassKind::Opaque)
+            {
+                continue;
+            }
+            const std::array<const RenderPassLaneExecutionReport*, 2> lanes{
+                &pass.gpuDrivenLane, &pass.directLane};
+            for (const RenderPassLaneExecutionReport* lane : lanes)
+            {
+                if (!lane->submissionCpuTimingAvailable)
+                {
+                    continue;
+                }
+                measurement.submissionCpuNanoseconds +=
+                    lane->submissionCpuNanoseconds;
+                measurement.submissionCpuTimingAvailable = true;
+            }
+        }
+    }
+
     MeshPassResourceAvailability ResolvePassResourceAvailability(
         const RenderResourceRegistry* registry,
         RenderResourceHandle handle,
@@ -1741,6 +1804,7 @@ void SceneRenderer::CompileRenderFramePlan()
     m_renderPolicyDiagnostics.reportAvailable = false;
     m_renderPolicyDiagnostics.selectedPlan = {};
     m_renderPolicyDiagnostics.executionReport = {};
+    m_renderPolicyDiagnostics.measurement = {};
     m_viewData.renderFrameExecutionPlan = nullptr;
     m_viewData.meshPassPreparation = nullptr;
     m_viewData.renderFrameExecutionReport = nullptr;
@@ -1879,9 +1943,16 @@ void SceneRenderer::CompileRenderFramePlan()
                                   false),
     };
 
+    m_renderPolicyDiagnostics.measurement.frameSequence =
+        input.request.frameSequence;
+    const auto planStart = std::chrono::steady_clock::now();
     const RenderPolicyResolution resolution = ResolveRenderPolicy(input);
     const RenderFramePlanCompileResult compiled =
         CompileRenderFrameExecutionPlan(resolution, m_meshPassPreparation);
+    m_renderPolicyDiagnostics.measurement.planCpuNanoseconds =
+        static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - planStart).count());
+    m_renderPolicyDiagnostics.measurement.planCpuTimingAvailable = true;
     if (compiled.succeeded)
     {
         m_renderPolicyDiagnostics.planAvailable = true;
@@ -1906,6 +1977,7 @@ void SceneRenderer::CompileRenderFramePlan()
             report.reason = passPlan.reason;
             m_renderPolicyDiagnostics.executionReport.passes.push_back(report);
         }
+        PopulatePlanMeasurement(m_renderPolicyDiagnostics);
     }
     ApplyRenderFramePlanProjection();
 }
@@ -2816,6 +2888,7 @@ void SceneRenderer::Render()
         {
             m_renderPolicyDiagnostics.executionReport =
                 m_activeRenderPassResults->executionReport;
+            PopulateSubmissionMeasurement(m_renderPolicyDiagnostics);
             if (m_shadowPass)
             {
                 m_shadowPass->PublishRecordResults(

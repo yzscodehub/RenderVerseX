@@ -991,8 +991,9 @@ namespace RVX
         m_capabilities.shaderGroupHandleAlignment = 0;
         m_capabilities.shaderTableBaseAlignment = 0;
 
-        // Check for mesh shader support (VK_EXT_mesh_shader)
-        m_capabilities.supportsMeshShaders = hasExtension(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+        // Mesh/task shader extension and feature chains are not enabled on this
+        // logical device, so physical-device availability must not be reported.
+        m_capabilities.supportsMeshShaders = false;
 
         // Check for variable rate shading support (VK_KHR_fragment_shading_rate)
         m_capabilities.supportsVariableRateShading = hasExtension(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);

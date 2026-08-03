@@ -64,6 +64,8 @@ namespace
     static_assert(std::is_move_constructible_v<RenderPassExecutionReport>);
     static_assert(std::is_copy_constructible_v<RenderFrameExecutionReport>);
     static_assert(std::is_move_constructible_v<RenderFrameExecutionReport>);
+    static_assert(std::is_copy_constructible_v<RenderPolicyMeasurement>);
+    static_assert(std::is_move_constructible_v<RenderPolicyMeasurement>);
     static_assert(std::is_copy_constructible_v<RenderPolicyDiagnostics>);
     static_assert(std::is_move_constructible_v<RenderPolicyDiagnostics>);
 
@@ -465,6 +467,8 @@ namespace
         EXPECT_EQ(0u, passReport.gpuDrivenLane.executedDrawCount);
         EXPECT_EQ(RenderPolicyReason::ConservativeDefault,
                   passReport.gpuDrivenLane.reason);
+        EXPECT_EQ(0u, passReport.gpuDrivenLane.submissionCpuNanoseconds);
+        EXPECT_FALSE(passReport.gpuDrivenLane.submissionCpuTimingAvailable);
         EXPECT_EQ(RenderExecutionStatus::NotAttempted,
                   passReport.directLane.status);
         EXPECT_EQ(RenderSubmissionMode::Direct,
@@ -491,6 +495,16 @@ namespace
         EXPECT_TRUE(diagnostics.selectedPlan.passes.empty());
         EXPECT_EQ(RenderExecutionStatus::NotAttempted,
                   diagnostics.executionReport.status);
+        EXPECT_EQ(0u, diagnostics.measurement.frameSequence);
+        EXPECT_EQ(0u, diagnostics.measurement.planCpuNanoseconds);
+        EXPECT_EQ(0u, diagnostics.measurement.submissionCpuNanoseconds);
+        EXPECT_EQ(0u, diagnostics.measurement.candidatePacketCount);
+        EXPECT_EQ(0u, diagnostics.measurement.drawGroupCount);
+        EXPECT_FALSE(diagnostics.measurement.planCpuTimingAvailable);
+        EXPECT_FALSE(diagnostics.measurement.submissionCpuTimingAvailable);
+        EXPECT_FALSE(diagnostics.measurement.averageGroupOccupancyAvailable);
+        EXPECT_TRUE(diagnostics.measurement.nonGating);
+        EXPECT_FALSE(diagnostics.measurement.usedForAutoDecision);
 
         const RenderFrameFeatureDiagnostics frameDiagnostics;
         EXPECT_FALSE(frameDiagnostics.policy.requestAvailable);
@@ -535,6 +549,35 @@ namespace
                   moved.selectedPlan.viewPolicy.selectedTier);
         EXPECT_EQ(7u,
                   moved.executionReport.passes.front().directLane.executedDrawCount);
+    }
+
+    TEST(RenderPolicyValidation, MeasurementsRemainValueOnlyAndNonGating)
+    {
+        RenderPolicyDiagnostics diagnostics;
+        diagnostics.measurement.frameSequence = 23;
+        diagnostics.measurement.planCpuNanoseconds = 17;
+        diagnostics.measurement.submissionCpuNanoseconds = 29;
+        diagnostics.measurement.candidatePacketCount = 8;
+        diagnostics.measurement.drawGroupCount = 2;
+        diagnostics.measurement.averageGroupOccupancy = 4.0;
+        diagnostics.measurement.planCpuTimingAvailable = true;
+        diagnostics.measurement.submissionCpuTimingAvailable = true;
+        diagnostics.measurement.averageGroupOccupancyAvailable = true;
+
+        RenderPolicyDiagnostics copied = diagnostics;
+        copied.measurement.candidatePacketCount = 3;
+        copied.measurement.usedForAutoDecision = false;
+
+        EXPECT_EQ(8u, diagnostics.measurement.candidatePacketCount);
+        EXPECT_EQ(3u, copied.measurement.candidatePacketCount);
+        EXPECT_TRUE(copied.measurement.nonGating);
+        EXPECT_FALSE(copied.measurement.usedForAutoDecision);
+
+        const RenderPolicyResolution before =
+            ResolveRenderPolicy(MakeValidResolverInput());
+        const RenderPolicyResolution after =
+            ResolveRenderPolicy(MakeValidResolverInput());
+        EXPECT_EQ(before, after);
     }
 
     TEST(RenderPolicyValidation, HybridPassReportPreservesIndependentLanes)

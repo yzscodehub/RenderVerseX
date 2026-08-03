@@ -3,6 +3,7 @@
 #include "Render/Context/RenderContext.h"
 #include "RHI/RHI.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
+#include "VulkanCommon.h"
 #include "VulkanDevice.h"
 
 #include <gtest/gtest.h>
@@ -68,6 +69,7 @@ TEST(VulkanValidation, RayTracingCapabilitiesAreDisabledUntilBackendImplementati
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
 
     const RHICapabilities& caps = device->GetCapabilities();
+    EXPECT_FALSE(caps.supportsMeshShaders);
     EXPECT_FALSE(caps.supportsRaytracing);
     EXPECT_FALSE(caps.supportsRaytracingPipeline);
     EXPECT_FALSE(caps.supportsRayQuery);
@@ -77,6 +79,42 @@ TEST(VulkanValidation, RayTracingCapabilitiesAreDisabledUntilBackendImplementati
     EXPECT_EQ(caps.shaderGroupHandleSize, 0u);
     EXPECT_EQ(caps.shaderGroupHandleAlignment, 0u);
     EXPECT_EQ(caps.shaderTableBaseAlignment, 0u);
+}
+
+TEST(VulkanValidation, OptionalShaderBarrierStagesRequireEnabledCapabilities)
+{
+    const RHIExecutionScope optionalScopes =
+        RHIExecutionScope::MeshShader |
+        RHIExecutionScope::AmplificationShader |
+        RHIExecutionScope::RayTracingShader;
+
+    EXPECT_EQ(
+        ToVkPipelineStageFlags2(optionalScopes, false, false),
+        VK_PIPELINE_STAGE_2_NONE);
+
+    const VkPipelineStageFlags2 coreGraphicsStages =
+        ToVkPipelineStageFlags2(
+            GetRHIExecutionScope(RHIShaderStage::AllGraphics),
+            false,
+            false);
+    EXPECT_NE(coreGraphicsStages & VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, 0u);
+    EXPECT_NE(coreGraphicsStages & VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0u);
+    EXPECT_EQ(coreGraphicsStages & VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT, 0u);
+    EXPECT_EQ(coreGraphicsStages & VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT, 0u);
+
+    const VkPipelineStageFlags2 meshStages =
+        ToVkPipelineStageFlags2(optionalScopes, true, false);
+    EXPECT_NE(meshStages & VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT, 0u);
+    EXPECT_NE(meshStages & VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT, 0u);
+    EXPECT_EQ(meshStages & VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, 0u);
+
+    const VkPipelineStageFlags2 rayTracingStages =
+        ToVkPipelineStageFlags2(optionalScopes, false, true);
+    EXPECT_EQ(rayTracingStages & VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT, 0u);
+    EXPECT_EQ(rayTracingStages & VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT, 0u);
+    EXPECT_NE(
+        rayTracingStages & VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        0u);
 }
 
 TEST(VulkanValidation, BufferCreation)

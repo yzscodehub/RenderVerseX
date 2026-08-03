@@ -9,7 +9,10 @@
 #include "RHI/RHIPipelineValidation.h"
 #include "RHI/RHITexture.h"
 
+#include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <vector>
 
 namespace RVX
 {
@@ -304,7 +307,14 @@ namespace RVX
 
     void DX12Device::Shutdown()
     {
-        WaitIdle();
+        if (m_device)
+        {
+            WaitIdle();
+            // This runs once, after GPU completion and before the device is
+            // released. A destructor's idempotent second Shutdown must not
+            // overwrite the process exit evidence with "available=false".
+            WriteDebugQueueExitReport();
+        }
 
         if (m_fenceEvent)
         {
@@ -333,6 +343,115 @@ namespace RVX
         m_factory.Reset();
 
         RVX_RHI_INFO("DX12 Device shutdown complete");
+    }
+
+    void DX12Device::WriteDebugQueueExitReport()
+    {
+        char* reportPathValue = nullptr;
+        size_t reportPathLength = 0;
+        if (_dupenv_s(&reportPathValue,
+                       &reportPathLength,
+                       "RVX_DX12_DEBUG_QUEUE_REPORT_PATH") != 0 ||
+            reportPathValue == nullptr)
+        {
+            return;
+        }
+        const std::string reportPath(reportPathValue);
+        std::free(reportPathValue);
+        if (reportPath.empty())
+        {
+            return;
+        }
+
+        bool available = false;
+        bool readComplete = true;
+        uint64 messageCount = 0;
+        uint64 errorCount = 0;
+        uint64 corruptionCount = 0;
+        if (m_device)
+        {
+            ComPtr<ID3D12InfoQueue> infoQueue;
+            if (SUCCEEDED(m_device.As(&infoQueue)) && infoQueue)
+            {
+                available = true;
+                messageCount = infoQueue->GetNumStoredMessages();
+                for (UINT64 index = 0; index < messageCount; ++index)
+                {
+                    SIZE_T messageSize = 0;
+                    if (FAILED(infoQueue->GetMessage(index, nullptr, &messageSize)) ||
+                        messageSize == 0)
+                    {
+                        readComplete = false;
+                        continue;
+                    }
+                    std::vector<uint8> messageBytes(messageSize);
+                    auto* message = reinterpret_cast<D3D12_MESSAGE*>(
+                        messageBytes.data());
+                    if (FAILED(infoQueue->GetMessage(index, message, &messageSize)))
+                    {
+                        readComplete = false;
+                        continue;
+                    }
+                    if (message->Severity == D3D12_MESSAGE_SEVERITY_ERROR)
+                    {
+                        ++errorCount;
+                    }
+                    else if (message->Severity ==
+                             D3D12_MESSAGE_SEVERITY_CORRUPTION)
+                    {
+                        ++corruptionCount;
+                    }
+                    if ((message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
+                         message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION) &&
+                        message->pDescription != nullptr)
+                    {
+                        RVX_RHI_ERROR("DX12 debug queue: {}", message->pDescription);
+                    }
+                }
+                infoQueue->ClearStoredMessages();
+            }
+        }
+
+        std::ofstream output(reportPath, std::ios::out | std::ios::trunc);
+        const bool reportWritten = static_cast<bool>(output);
+        if (reportWritten)
+        {
+            output << "{\n"
+                   << "  \"schema\": \"RVX.DX12DebugQueue\",\n"
+                   << "  \"schemaVersion\": 1,\n"
+                   << "  \"debugLayerEnabled\": "
+                   << (m_debugLayerEnabled ? "true" : "false") << ",\n"
+                   << "  \"available\": " << (available ? "true" : "false") << ",\n"
+                   << "  \"readComplete\": "
+                   << (readComplete ? "true" : "false") << ",\n"
+                   << "  \"messageCount\": " << messageCount << ",\n"
+                   << "  \"errorCount\": " << errorCount << ",\n"
+                   << "  \"corruptionCount\": " << corruptionCount << ",\n"
+                   << "  \"passed\": "
+                   << ((m_debugLayerEnabled && available && readComplete &&
+                        errorCount == 0 && corruptionCount == 0)
+                       ? "true" : "false") << "\n"
+                   << "}\n";
+        }
+        if (!output && reportWritten)
+        {
+            RVX_RHI_ERROR("Failed to write DX12 debug queue report: {}",
+                          reportPath);
+        }
+        else if (!reportWritten)
+        {
+            RVX_RHI_ERROR("Failed to open DX12 debug queue report: {}",
+                          reportPath);
+        }
+        RVX_RHI_INFO(
+            "RVX_DX12_DEBUG_QUEUE_SUMMARY debugLayerEnabled={} available={} readComplete={} messageCount={} errorCount={} corruptionCount={} reportWritten={}",
+            m_debugLayerEnabled,
+            available,
+            readComplete,
+            messageCount,
+            errorCount,
+            corruptionCount,
+            reportWritten && static_cast<bool>(output));
     }
 
     // =============================================================================

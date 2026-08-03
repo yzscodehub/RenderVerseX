@@ -154,15 +154,22 @@ namespace RVX
             return;
         }
 
+        const RHICapabilities& capabilities = m_device->GetCapabilities();
         VkBufferMemoryBarrier2 bufferBarrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
         bufferBarrier.srcStageMask = barrier.hasScopedAccess
-            ? ToVkPipelineStageFlags2(barrier.accessBefore.executionScope)
+            ? ToVkPipelineStageFlags2(
+                barrier.accessBefore.executionScope,
+                capabilities.supportsMeshShaders,
+                capabilities.supportsRaytracingPipeline)
             : ToVkPipelineStageFlags(barrier.stateBefore);
         bufferBarrier.srcAccessMask = barrier.hasScopedAccess
             ? ToVkAccessFlags2(barrier.accessBefore.memoryAccess)
             : ToVkAccessFlags(barrier.stateBefore);
         bufferBarrier.dstStageMask = barrier.hasScopedAccess
-            ? ToVkPipelineStageFlags2(barrier.accessAfter.executionScope)
+            ? ToVkPipelineStageFlags2(
+                barrier.accessAfter.executionScope,
+                capabilities.supportsMeshShaders,
+                capabilities.supportsRaytracingPipeline)
             : ToVkPipelineStageFlags(barrier.stateAfter);
         bufferBarrier.dstAccessMask = barrier.hasScopedAccess
             ? ToVkAccessFlags2(barrier.accessAfter.memoryAccess)
@@ -206,15 +213,22 @@ namespace RVX
             return;
         }
 
+        const RHICapabilities& capabilities = m_device->GetCapabilities();
         VkImageMemoryBarrier2 imageBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         imageBarrier.srcStageMask = barrier.hasScopedAccess
-            ? ToVkPipelineStageFlags2(barrier.accessBefore.executionScope)
+            ? ToVkPipelineStageFlags2(
+                barrier.accessBefore.executionScope,
+                capabilities.supportsMeshShaders,
+                capabilities.supportsRaytracingPipeline)
             : ToVkPipelineStageFlags(barrier.stateBefore);
         imageBarrier.srcAccessMask = barrier.hasScopedAccess
             ? ToVkAccessFlags2(barrier.accessBefore.memoryAccess)
             : ToVkAccessFlags(barrier.stateBefore);
         imageBarrier.dstStageMask = barrier.hasScopedAccess
-            ? ToVkPipelineStageFlags2(barrier.accessAfter.executionScope)
+            ? ToVkPipelineStageFlags2(
+                barrier.accessAfter.executionScope,
+                capabilities.supportsMeshShaders,
+                capabilities.supportsRaytracingPipeline)
             : ToVkPipelineStageFlags(barrier.stateAfter);
         imageBarrier.dstAccessMask = barrier.hasScopedAccess
             ? ToVkAccessFlags2(barrier.accessAfter.memoryAccess)

@@ -620,6 +620,7 @@ if(RVX_ENABLE_DX12)
         INCLUDES
             ${CMAKE_CURRENT_SOURCE_DIR}
             ${CMAKE_SOURCE_DIR}/RHI_DX12/Private
+            ${CMAKE_SOURCE_DIR}/Render/Private
         LABELS gpu
         TIMEOUT 120
     )
@@ -2258,6 +2259,10 @@ if(RVX_ENABLE_DX12 AND TARGET ModelViewer)
         "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.diff.ppm")
     set(RVX_MODELVIEWER_GPU_DRIVEN_PARITY_REPORT
         "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json")
+    set(RVX_MODELVIEWER_M2_GPU_RESIZE_REPORT
+        "${CMAKE_BINARY_DIR}/M2Exit/$<CONFIG>/ModelViewerGPUDrivenResize.measurement.json")
+    set(RVX_MODELVIEWER_M2_GPU_ZERO_VISIBLE_REPORT
+        "${CMAKE_BINARY_DIR}/M2Exit/$<CONFIG>/ModelViewerGPUDrivenZeroVisible.measurement.json")
     set(RVX_MODELVIEWER_GPU_DRIVEN_GOLDEN
         "${CMAKE_CURRENT_SOURCE_DIR}/Golden/ModelViewer/R11_GPUDriven_DX12_320x180.ppm")
     set(RVX_MODELVIEWER_RT_SHADOW_ACTUAL
@@ -2312,6 +2317,53 @@ if(RVX_ENABLE_DX12 AND TARGET ModelViewer)
     )
     set_tests_properties(ModelViewerGPUDrivenAutoPolicySmoke PROPERTIES
         LABELS "gpu;gpu-driven;qualification"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME ModelViewerGPUDrivenResizeSmoke
+        COMMAND $<TARGET_FILE:ModelViewer>
+            --smoke
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+            --backend dx12
+            --width ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_WIDTH}
+            --height ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_HEIGHT}
+            --frames 6
+            --no-ibl
+            --gpu-driven-culling-test-scene
+            --gpu-driven on
+            --expect-gpu-driven-culling-ready
+            --resize-frame 4
+            --resize-width ${RVX_MODELVIEWER_RT_RESIZE_WIDTH}
+            --resize-height ${RVX_MODELVIEWER_RT_RESIZE_HEIGHT}
+            --render-policy-report "${RVX_MODELVIEWER_M2_GPU_RESIZE_REPORT}"
+            --validation
+    )
+    set_tests_properties(ModelViewerGPUDrivenResizeSmoke PROPERTIES
+        LABELS "native;gpu;gpu-driven;resize;m2"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME ModelViewerGPUDrivenZeroVisibleSmoke
+        COMMAND $<TARGET_FILE:ModelViewer>
+            --smoke
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+            --backend dx12
+            --width ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_WIDTH}
+            --height ${RVX_MODELVIEWER_GPU_DRIVEN_SMOKE_HEIGHT}
+            --frames 8
+            --no-ibl
+            --gpu-driven-zero-visible-scene
+            --gpu-driven on
+            --expect-gpu-driven-zero-visible-ready
+            --render-policy-report "${RVX_MODELVIEWER_M2_GPU_ZERO_VISIBLE_REPORT}"
+            --validation
+    )
+    set_tests_properties(ModelViewerGPUDrivenZeroVisibleSmoke PROPERTIES
+        LABELS "native;gpu;gpu-driven;zero-visible;m2"
         TIMEOUT 120
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
@@ -2751,6 +2803,33 @@ if(RVX_ENABLE_DX12 AND TARGET ModelViewer)
     )
     set_tests_properties(ModelViewerRayTracingGpuBudgetRecoverySmoke PROPERTIES
         LABELS "visual;gpu;raytracing"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+endif()
+
+# Vulkan Direct ModelViewer smoke keeps the execution route backend-native and
+# exports the same public policy measurement schema used by the DX12 fixtures.
+if(RVX_ENABLE_VULKAN AND TARGET ModelViewer)
+    set(RVX_MODELVIEWER_M2_VULKAN_DIRECT_REPORT
+        "${CMAKE_BINARY_DIR}/M2Exit/$<CONFIG>/ModelViewerVulkanDirect.measurement.json")
+    add_test(
+        NAME ModelViewerVulkanDirectSmoke
+        COMMAND $<TARGET_FILE:ModelViewer>
+            --smoke
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+            --backend vulkan
+            --width 320
+            --height 180
+            --frames 2
+            --no-ibl
+            --gpu-driven off
+            --expect-gpu-driven-direct-ready
+            --render-policy-report "${RVX_MODELVIEWER_M2_VULKAN_DIRECT_REPORT}"
+            --validation
+    )
+    set_tests_properties(ModelViewerVulkanDirectSmoke PROPERTIES
+        LABELS "native;vulkan;direct;m2"
         TIMEOUT 120
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )

@@ -6428,7 +6428,7 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     EXPECT_NE(pipelineSource.find("GetOrCreateMaskedObjectVelocityPipeline"), std::string::npos);
     EXPECT_NE(pipelineSource.find("BuildMaskedObjectVelocityPipelineDesc"), std::string::npos);
     EXPECT_NE(pipelineSource.find("pipelineDesc.debugName = \"MaskedObjectVelocityPipeline\""), std::string::npos);
-    EXPECT_NE(pipelineSource.find("pipelineDesc.inputLayout.AddElement(\"TEXCOORD\", RHIFormat::RG32_FLOAT, 2)"),
+    EXPECT_NE(pipelineSource.find("pipelineDesc.inputLayout.AddElementAtLocation("),
               std::string::npos);
 
     EXPECT_NE(passHeader.find("MaterialSystem* materialSystem"), std::string::npos);
@@ -6559,18 +6559,27 @@ TEST_F(PipelineCacheValidationFixture, ObjectVelocityPipelineIsLazyAndUsesRG16FD
     EXPECT_NE(maskedVelocityDesc.vertexShader, nullptr);
     EXPECT_NE(maskedVelocityDesc.pixelShader, nullptr);
     ASSERT_EQ(maskedVelocityDesc.inputLayout.elements.size(), 4u);
+
     EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[0].semanticName, "POSITION");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[0].semanticIndex, 0u);
     EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[0].format, RVX::RHIFormat::RGB32_FLOAT);
     EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[0].inputSlot, 0u);
-    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[1].semanticName, "BLENDINDICES");
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].format, RVX::RHIFormat::RGBA32_UINT);
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].inputSlot, 4u);
-    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[2].semanticName, "BLENDWEIGHT");
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].format, RVX::RHIFormat::RGBA32_FLOAT);
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].inputSlot, 5u);
-    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[3].semanticName, "TEXCOORD");
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].format, RVX::RHIFormat::RG32_FLOAT);
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].inputSlot, 2u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[0].location, 0u);
+    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[1].semanticName, "TEXCOORD");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].semanticIndex, 0u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].format, RVX::RHIFormat::RG32_FLOAT);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].inputSlot, 2u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].location, 1u);
+    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[2].semanticName, "BLENDINDICES");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].semanticIndex, 0u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].format, RVX::RHIFormat::RGBA32_UINT);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].inputSlot, 4u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].location, 2u);
+    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[3].semanticName, "BLENDWEIGHT");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].semanticIndex, 0u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].format, RVX::RHIFormat::RGBA32_FLOAT);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].inputSlot, 5u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].location, 3u);
 
     EXPECT_EQ(cache.GetObjectVelocityPipeline(RVX::RHIFormat::RG16_FLOAT), velocityPipeline);
     EXPECT_EQ(cache.GetMaskedObjectVelocityPipeline(RVX::RHIFormat::RG16_FLOAT), maskedVelocityPipeline);
@@ -6860,10 +6869,34 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_NE(maskedDepthOnlyDesc.pixelShader, nullptr);
     ASSERT_EQ(maskedDepthOnlyDesc.inputLayout.elements.size(),
               static_cast<size_t>(4));
-    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[3].semanticName,
+    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[0].semanticName,
+                 "POSITION");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].format,
+              RVX::RHIFormat::RGB32_FLOAT);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].inputSlot, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].location, 0u);
+    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[1].semanticName,
                  "TEXCOORD");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].format,
+              RVX::RHIFormat::RG32_FLOAT);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].inputSlot, 2u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].location, 1u);
+    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[2].semanticName,
+                 "BLENDINDICES");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].format,
+              RVX::RHIFormat::RGBA32_UINT);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].inputSlot, 4u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].location, 2u);
+    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[3].semanticName,
+                 "BLENDWEIGHT");
     EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].semanticIndex, 0u);
-    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].inputSlot, 2u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].format,
+              RVX::RHIFormat::RGBA32_FLOAT);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].inputSlot, 5u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].location, 3u);
 
     ASSERT_NE(cache.GetSkyboxPipeline(), nullptr);
     EXPECT_EQ(skyboxDesc.numRenderTargets, 1u);

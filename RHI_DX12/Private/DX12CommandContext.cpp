@@ -6,6 +6,7 @@
 #include "DX12Query.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace RVX
 {

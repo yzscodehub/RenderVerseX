@@ -7447,6 +7447,17 @@ TEST(SceneRendererDiagnosticsValidation,
     renderer.CompileRenderFramePlanForTesting();
     ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().requestAvailable);
     ASSERT_TRUE(renderer.GetRenderPolicyDiagnostics().planAvailable);
+    const RenderPolicyMeasurement initialMeasurement =
+        renderer.GetRenderPolicyDiagnostics().measurement;
+    EXPECT_TRUE(initialMeasurement.planCpuTimingAvailable);
+    EXPECT_FALSE(initialMeasurement.submissionCpuTimingAvailable);
+    EXPECT_EQ(renderer.GetRenderPolicyDiagnostics().selectedPlan.frameSequence,
+              initialMeasurement.frameSequence);
+    EXPECT_EQ(0u, initialMeasurement.candidatePacketCount);
+    EXPECT_EQ(0u, initialMeasurement.drawGroupCount);
+    EXPECT_FALSE(initialMeasurement.averageGroupOccupancyAvailable);
+    EXPECT_TRUE(initialMeasurement.nonGating);
+    EXPECT_FALSE(initialMeasurement.usedForAutoDecision);
     const RenderFrameExecutionPlan ownedPlan =
         renderer.GetRenderPolicyDiagnostics().selectedPlan;
     EXPECT_EQ(0u, ownedPlan.viewOrdinal);
@@ -7851,6 +7862,42 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     EXPECT_EQ(stats.totalPasses, 7u);
     EXPECT_EQ(stats.culledPasses, 0u);
     EXPECT_EQ(stats.emptyPassUsageCount, 0u);
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    for (const char* additivePassName :
+         {"BloomComposite2", "BloomComposite1", "BloomComposite0"})
+    {
+        const auto additivePass = std::find_if(
+            diagnostics.passes.begin(),
+            diagnostics.passes.end(),
+            [additivePassName](const RenderGraph::PassDiagnostic& passDiagnostic)
+            {
+                return passDiagnostic.name == additivePassName;
+            });
+        ASSERT_NE(additivePass, diagnostics.passes.end());
+        const auto outputUsage = std::find_if(
+            additivePass->usages.begin(),
+            additivePass->usages.end(),
+            [output](const RenderGraph::ResourceUsageDiagnostic& usage)
+            {
+                return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                       usage.resourceIndex == output.index;
+            });
+        ASSERT_NE(outputUsage, additivePass->usages.end());
+        EXPECT_EQ(
+            outputUsage->access,
+            RenderGraph::DiagnosticAccessType::ReadWrite);
+        EXPECT_EQ(outputUsage->desiredState, RHIResourceState::RenderTarget);
+        EXPECT_FALSE(HasAnyAccess(
+            outputUsage->desiredAccess.memoryAccess,
+            RHIMemoryAccess::ShaderRead));
+        EXPECT_TRUE(HasAnyAccess(
+            outputUsage->desiredAccess.memoryAccess,
+            RHIMemoryAccess::ColorRead));
+        EXPECT_TRUE(HasAnyAccess(
+            outputUsage->desiredAccess.memoryAccess,
+            RHIMemoryAccess::ColorWrite));
+    }
 
     RecordingCommandContext ctx;
     graph.Execute(ctx);

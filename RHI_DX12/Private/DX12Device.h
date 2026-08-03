@@ -196,6 +196,7 @@ namespace RVX
         bool CreateCommandQueues();
         bool InitializeCapabilities();
         void EnableDebugLayer(bool enableGPUValidation);
+        void WriteDebugQueueExitReport();
 
         // DXGI/D3D12 Core Objects
         ComPtr<IDXGIFactory6> m_factory;

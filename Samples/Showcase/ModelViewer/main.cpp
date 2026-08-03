@@ -114,6 +114,7 @@ struct ModelViewerOptions
 {
     std::string modelPath;
     std::string screenshotPath;
+    std::string renderPolicyReportPath;
     std::string hdriPath;
     RHIBackendType backend = RHIBackendType::Auto;
     uint32 width = 1280;
@@ -146,12 +147,14 @@ struct ModelViewerOptions
     bool expectGPUDrivenAutoPolicyReady = false;
     bool expectGPUDrivenDirectReady = false;
     bool expectGPUDrivenMultiBatchReady = false;
+    bool expectGPUDrivenZeroVisibleReady = false;
     bool expectModelVisible = false;
     bool waitModelReady = false;
     uint32 modelReadyTimeoutMs = kDefaultModelReadyTimeoutMs;
     bool modelReadyTimeoutSet = false;
     bool expectParticlesReady = false;
     bool gpuDrivenCullingTestScene = false;
+    bool gpuDrivenZeroVisibleScene = false;
     RenderGPUDrivenMode gpuDrivenMode = RenderGPUDrivenMode::Auto;
     bool disableGPUDrivenCulling = false;
     bool particleTestScene = false;
@@ -486,6 +489,7 @@ namespace
             << "  --height <pixels>    Window height\n"
             << "  --backend <name>     auto, dx11, dx12, vulkan, metal, opengl\n"
             << "  --screenshot <path>  Write final smoke frame as binary PPM\n"
+            << "  --render-policy-report <path> Write RVX.RenderPolicyMeasurement v1 JSON from public diagnostics\n"
             << "  --camera-fit <auto|fixed> Fit the camera to model bounds or use the deterministic fixed camera\n"
             << "  --hdri <path>        Use an HDR/EXR environment for skybox and texture IBL\n"
             << "  --no-ibl             Disable procedural ModelViewer IBL wiring\n"
@@ -537,6 +541,8 @@ namespace
             << "                       Width used by --rt-resize-frame\n"
             << "  --rt-resize-height <pixels>\n"
             << "                       Height used by --rt-resize-frame\n"
+            << "  --resize-frame <frame>, --resize-width <pixels>, --resize-height <pixels>\n"
+            << "                       Backend-neutral aliases for the legacy RT resize controls\n"
             << "  --tonemap <default|none|reinhard|reinhard-extended|aces|uncharted2|neutral>\n"
             << "                       Select tone mapping operator without changing default smoke/golden behavior\n"
             << "  --post-exposure <linear>\n"
@@ -569,6 +575,7 @@ namespace
             << "  --expect-material-ready Smoke mode fails unless the PBR material swatch binds all texture maps\n"
             << "  --expect-procedural-ibl-quality Smoke mode fails unless default procedural IBL uses the CPU HDR pipeline\n"
             << "  --expect-gpu-driven-culling-ready Smoke mode fails unless GPU-driven culling feeds indirect draws\n"
+            << "  --expect-gpu-driven-zero-visible-ready Smoke mode proves a zero-visible CPU reference reaches GPU count submission\n"
             << "  --expect-gpu-driven-auto-policy-ready Smoke mode validates Auto against backend qualification\n"
             << "  --expect-gpu-driven-direct-ready Smoke mode fails unless forced-off uses direct draws\n"
             << "  --expect-gpu-driven-multi-batch-ready Smoke mode requires multiple indirect material batches and draws\n"
@@ -577,6 +584,7 @@ namespace
             << "  --model-ready-timeout-ms <ms>  Bounded resource readiness wait (default 120000, minimum 1000)\n"
             << "  --expect-particles-ready Smoke mode fails unless CPU billboard particles simulate and render\n"
             << "  --gpu-driven-culling-test-scene Add a deterministic distance-culled GPU-driven draw\n"
+            << "  --gpu-driven-zero-visible-scene Add deterministic GPU-driven candidates outside the distance limit\n"
             << "  --gpu-driven <auto|on|off> Select automatic, forced GPU-driven, or direct rendering\n"
             << "  --disable-gpu-driven-culling Legacy alias for --gpu-driven off\n"
             << "  --particle-test-scene Add a deterministic CPU billboard particle system\n"
@@ -982,6 +990,12 @@ namespace
                 if (!value) return false;
                 options.screenshotPath = value;
             }
+            else if (arg == "--render-policy-report")
+            {
+                const char* value = requireValue("--render-policy-report");
+                if (!value) return false;
+                options.renderPolicyReportPath = value;
+            }
             else if (arg == "--camera-fit")
             {
                 const char* value = requireValue("--camera-fit");
@@ -1188,6 +1202,42 @@ namespace
                 if (!ParseUInt(value, parsed) || parsed == 0u || parsed > 8192u)
                 {
                     RVX_CORE_ERROR("Invalid --rt-resize-height value: {} (expected integer range [1, 8192])",
+                                   value ? value : "");
+                    return false;
+                }
+                options.rayTracingResizeHeight = parsed;
+            }
+            else if (arg == "--resize-frame")
+            {
+                const char* value = requireValue("--resize-frame");
+                uint32 parsed = 0;
+                if (!ParseUInt(value, parsed) || parsed == 0u || parsed > 120u)
+                {
+                    RVX_CORE_ERROR("Invalid --resize-frame value: {} (expected integer range [1, 120])",
+                                   value ? value : "");
+                    return false;
+                }
+                options.rayTracingResizeFrame = parsed;
+            }
+            else if (arg == "--resize-width")
+            {
+                const char* value = requireValue("--resize-width");
+                uint32 parsed = 0;
+                if (!ParseUInt(value, parsed) || parsed == 0u || parsed > 8192u)
+                {
+                    RVX_CORE_ERROR("Invalid --resize-width value: {} (expected integer range [1, 8192])",
+                                   value ? value : "");
+                    return false;
+                }
+                options.rayTracingResizeWidth = parsed;
+            }
+            else if (arg == "--resize-height")
+            {
+                const char* value = requireValue("--resize-height");
+                uint32 parsed = 0;
+                if (!ParseUInt(value, parsed) || parsed == 0u || parsed > 8192u)
+                {
+                    RVX_CORE_ERROR("Invalid --resize-height value: {} (expected integer range [1, 8192])",
                                    value ? value : "");
                     return false;
                 }
@@ -1402,6 +1452,10 @@ namespace
             {
                 options.expectGPUDrivenMultiBatchReady = true;
             }
+            else if (arg == "--expect-gpu-driven-zero-visible-ready")
+            {
+                options.expectGPUDrivenZeroVisibleReady = true;
+            }
             else if (arg == "--expect-model-visible")
             {
                 options.expectModelVisible = true;
@@ -1435,6 +1489,10 @@ namespace
             else if (arg == "--gpu-driven-culling-test-scene")
             {
                 options.gpuDrivenCullingTestScene = true;
+            }
+            else if (arg == "--gpu-driven-zero-visible-scene")
+            {
+                options.gpuDrivenZeroVisibleScene = true;
             }
             else if (arg == "--gpu-driven")
             {
@@ -1534,6 +1592,32 @@ namespace
             return false;
         }
 
+        if (options.expectGPUDrivenZeroVisibleReady && !options.smoke)
+        {
+            RVX_CORE_ERROR("--expect-gpu-driven-zero-visible-ready requires --smoke");
+            return false;
+        }
+
+        if (options.expectGPUDrivenZeroVisibleReady &&
+            !options.gpuDrivenZeroVisibleScene)
+        {
+            RVX_CORE_ERROR("--expect-gpu-driven-zero-visible-ready requires --gpu-driven-zero-visible-scene");
+            return false;
+        }
+
+        if (options.expectGPUDrivenZeroVisibleReady &&
+            options.gpuDrivenMode != RenderGPUDrivenMode::ForceEnabled)
+        {
+            RVX_CORE_ERROR("--expect-gpu-driven-zero-visible-ready requires --gpu-driven on");
+            return false;
+        }
+
+        if (!options.renderPolicyReportPath.empty() && !options.smoke)
+        {
+            RVX_CORE_ERROR("--render-policy-report requires --smoke");
+            return false;
+        }
+
         if (options.expectModelVisible && !options.smoke)
         {
             RVX_CORE_ERROR("--expect-model-visible requires --smoke");
@@ -1568,6 +1652,19 @@ namespace
         if (options.gpuDrivenCullingTestScene && !options.smoke)
         {
             RVX_CORE_ERROR("--gpu-driven-culling-test-scene requires --smoke");
+            return false;
+        }
+
+        if (options.gpuDrivenZeroVisibleScene && !options.smoke)
+        {
+            RVX_CORE_ERROR("--gpu-driven-zero-visible-scene requires --smoke");
+            return false;
+        }
+
+        if (options.gpuDrivenCullingTestScene &&
+            options.gpuDrivenZeroVisibleScene)
+        {
+            RVX_CORE_ERROR("--gpu-driven-culling-test-scene cannot be combined with --gpu-driven-zero-visible-scene");
             return false;
         }
 
@@ -1949,6 +2046,7 @@ namespace
                                                 options.expectGPUDrivenDirectReady ||
                                                 options.expectGPUDrivenMultiBatchReady ||
                                                 options.gpuDrivenCullingTestScene ||
+                                                options.gpuDrivenZeroVisibleScene ||
                                                 options.gpuDrivenMode != RenderGPUDrivenMode::Auto;
                 options.backend = dx12SmokeRequested ? RHIBackendType::DX12 : RHIBackendType::DX11;
             }
@@ -1973,7 +2071,8 @@ namespace
 
         if (options.fitModel &&
             (options.materialTestScene || options.shadowTestScene ||
-             options.particleTestScene || options.gpuDrivenCullingTestScene))
+             options.particleTestScene || options.gpuDrivenCullingTestScene ||
+             options.gpuDrivenZeroVisibleScene))
         {
             RVX_CORE_ERROR("--camera-fit auto cannot be combined with deterministic test-scene options");
             return false;
@@ -2665,6 +2764,66 @@ namespace
         return value ? "true" : "false";
     }
 
+    bool WriteRenderPolicyMeasurementJson(
+        const std::string& filename,
+        const RenderFrameFeatureDiagnostics& frame)
+    {
+        const std::filesystem::path path(filename);
+        const std::filesystem::path parent = path.parent_path();
+        std::error_code error;
+        if (!parent.empty())
+        {
+            std::filesystem::create_directories(parent, error);
+        }
+        if (error)
+        {
+            RVX_CORE_ERROR("ModelViewer could not create render-policy report directory '{}': {}",
+                           parent.string(), error.message());
+            return false;
+        }
+
+        const RenderPolicyMeasurement& measurement = frame.policy.measurement;
+        std::ofstream output(path, std::ios::out | std::ios::trunc);
+        if (!output)
+        {
+            RVX_CORE_ERROR("ModelViewer could not open render-policy report '{}'",
+                           path.string());
+            return false;
+        }
+
+        output << "{\n"
+               << "  \"schema\": \"RVX.RenderPolicyMeasurement\",\n"
+               << "  \"schemaVersion\": 1,\n"
+               << "  \"frameSequence\": " << measurement.frameSequence << ",\n"
+               << "  \"planCpuNanoseconds\": " << measurement.planCpuNanoseconds << ",\n"
+               << "  \"planCpuTimingAvailable\": " << BoolText(measurement.planCpuTimingAvailable) << ",\n"
+               << "  \"submissionCpuNanoseconds\": " << measurement.submissionCpuNanoseconds << ",\n"
+               << "  \"submissionCpuTimingAvailable\": " << BoolText(measurement.submissionCpuTimingAvailable) << ",\n"
+               << "  \"candidatePacketCount\": " << measurement.candidatePacketCount << ",\n"
+               << "  \"drawGroupCount\": " << measurement.drawGroupCount << ",\n"
+               << "  \"averageGroupOccupancy\": ";
+        if (measurement.averageGroupOccupancyAvailable)
+        {
+            output << measurement.averageGroupOccupancy;
+        }
+        else
+        {
+            output << "null";
+        }
+        output << ",\n"
+               << "  \"averageGroupOccupancyAvailable\": " << BoolText(measurement.averageGroupOccupancyAvailable) << ",\n"
+               << "  \"nonGating\": " << BoolText(measurement.nonGating) << ",\n"
+               << "  \"usedForAutoDecision\": " << BoolText(measurement.usedForAutoDecision) << "\n"
+               << "}\n";
+        if (!output)
+        {
+            RVX_CORE_ERROR("ModelViewer could not write render-policy report '{}'",
+                           path.string());
+            return false;
+        }
+        return true;
+    }
+
     std::string DescribeGPUDrivenCullingReadiness(const RenderGPUDrivenCullingDiagnostics& stats)
     {
         return std::string("policyAvailable=") + BoolText(stats.policyDecisionAvailable) +
@@ -2743,6 +2902,41 @@ namespace
                            stats.opaqueGpuDrivenIndirectSubmittedDrawUpperBound > 0 &&
                            (!requireCullAffectsDrawCount ||
                             cullAffectsReferenceCount);
+        if (ready)
+        {
+            outReason.clear();
+            return true;
+        }
+
+        outReason = DescribeGPUDrivenCullingReadiness(stats);
+        return false;
+    }
+
+    bool IsGPUDrivenZeroVisibleReady(
+        const RenderFrameFeatureDiagnostics* sceneRenderer,
+        std::string& outReason)
+    {
+        if (!sceneRenderer)
+        {
+            outReason = "NoSceneRenderer";
+            return false;
+        }
+
+        const RenderGPUDrivenCullingDiagnostics& stats =
+            sceneRenderer->gpuDrivenCulling;
+        // GPU count buffers are not synchronously read back. The CPU reference
+        // establishes the deterministic zero-visible fixture while the recorded
+        // count-buffer draw proves the native GPU-driven submission path ran.
+        const bool ready = stats.policyDecisionAvailable &&
+            stats.policyDecision.enabled &&
+            stats.policyDecision.reason == GPUDrivenPolicyReason::None &&
+            stats.enabled && stats.graphInputDrawItemCount > 0 &&
+            stats.graphPassAdded && stats.graphPassRecorded &&
+            stats.gpuExecutionRecorded && stats.opaqueIndirectRequested &&
+            stats.opaqueCullingReady && stats.opaquePipelineReady &&
+            stats.opaqueIndirectEligible && stats.opaqueIndirectSubmitted &&
+            stats.cpuReferenceVisibleCullableDrawItemCount == 0 &&
+            stats.cpuReferenceCulledDrawItemCount > 0;
         if (ready)
         {
             outReason.clear();
@@ -3975,7 +4169,8 @@ int main(int argc, char* argv[])
     frameSettings.shadows =
         MakeShadowQualityConfig(options.shadowQualityPreset);
     frameSettings.gpuCulling.mode = options.gpuDrivenMode;
-    if (options.gpuDrivenCullingTestScene)
+    if (options.gpuDrivenCullingTestScene ||
+        options.gpuDrivenZeroVisibleScene)
     {
         frameSettings.gpuCulling.enableDistanceCulling = true;
         frameSettings.gpuCulling.enableOcclusionCulling = false;
@@ -4159,8 +4354,12 @@ int main(int argc, char* argv[])
             {
                 RVX_CORE_INFO("Model instantiated as SceneEntity: {}", modelEntity->GetName());
                 
-                // Center the model at origin
-                modelEntity->SetPosition(Vec3(0.0f, 0.0f, 0.0f));
+                // The zero-visible fixture deliberately uses the same distance
+                // culling configuration as the mixed fixture, but places every
+                // candidate outside its deterministic range.
+                modelEntity->SetPosition(options.gpuDrivenZeroVisibleScene
+                    ? Vec3(3.0f, 0.0f, -8.0f)
+                    : Vec3(0.0f, 0.0f, 0.0f));
 
                 if (options.gpuDrivenCullingTestScene)
                 {
@@ -5070,6 +5269,23 @@ int main(int argc, char* argv[])
                 }
             }
 
+            if (options.expectGPUDrivenZeroVisibleReady &&
+                (frameIndex + 1 == options.frames))
+            {
+                std::string gpuDrivenZeroVisibleReason;
+                if (!IsGPUDrivenZeroVisibleReady(
+                        sceneRenderer, gpuDrivenZeroVisibleReason))
+                {
+                    RVX_CORE_ERROR("ModelViewer smoke expected zero-visible GPU-driven count submission; stats: {}",
+                                   gpuDrivenZeroVisibleReason);
+                    smokeSucceeded = false;
+                }
+                else
+                {
+                    RVX_CORE_INFO("ModelViewer smoke zero-visible GPU-driven path recorded without a synchronous GPU readback");
+                }
+            }
+
             if (options.expectGPUDrivenMultiBatchReady &&
                 (frameIndex + 1 == options.frames))
             {
@@ -5151,6 +5367,13 @@ int main(int argc, char* argv[])
                 smokeSucceeded = false;
                 break;
             }
+        }
+
+        if (!options.renderPolicyReportPath.empty() &&
+            !WriteRenderPolicyMeasurementJson(
+                options.renderPolicyReportPath, lastDiagnostics.frameFeatures))
+        {
+            smokeSucceeded = false;
         }
 
         engine.Shutdown();

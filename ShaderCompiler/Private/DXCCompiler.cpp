@@ -721,17 +721,19 @@ namespace RVX
             args.push_back(L"2021");
             args.push_back(L"-Zpc");
             args.push_back(L"-spirv");
-            args.push_back(L"-fspv-reflect");
             args.push_back(L"-fvk-use-dx-position-w");
 
             if (options.targetBackend == RHIBackendType::Vulkan)
             {
+                // DXC's reflection annotations declare VK_GOOGLE extensions that
+                // are not required by the Vulkan 1.2 production baseline.
                 args.push_back(L"-fvk-use-dx-layout");
                 args.push_back(L"-fspv-target-env=vulkan1.2");
             }
             else
             {
                 // OpenGL: use Vulkan 1.0 semantics for broader compatibility
+                args.push_back(L"-fspv-reflect");
                 args.push_back(L"-fspv-target-env=vulkan1.0");
             }
 

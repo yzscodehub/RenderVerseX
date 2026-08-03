@@ -144,6 +144,9 @@ namespace RVX
         uint32 executedDrawCount = 0;
         RenderPolicyReason reason = RenderPolicyReason::ConservativeDefault;
         bool executedCountsAvailable = false;
+        /// CPU record time for this lane's bindings and submission calls.
+        uint64 submissionCpuNanoseconds = 0;
+        bool submissionCpuTimingAvailable = false;
 
         bool operator==(const RenderPassLaneExecutionReport&) const = default;
     };

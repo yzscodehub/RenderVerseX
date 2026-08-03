@@ -17,6 +17,7 @@
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
+#include <chrono>
 #include <limits>
 #include <memory>
 
@@ -895,6 +896,10 @@ bool DepthPrepass::TryDrawPlannedDirect(
 void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
     m_drawStats = {};
+    uint64 gpuLaneSubmissionCpuNanoseconds = 0;
+    uint64 directLaneSubmissionCpuNanoseconds = 0;
+    bool gpuLaneSubmissionTimingAvailable = false;
+    bool directLaneSubmissionTimingAvailable = false;
 
     RHITextureViewRef depthTargetViewOwner;
     RHITextureView* depthTargetView = nullptr;
@@ -1071,21 +1076,33 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
         ctx.SetScissor(view.GetRHIScissor());
 
         bool gpuRecorded = true;
+        bool directRecorded = true;
         if (plannedGPU)
         {
+            const auto laneStart = std::chrono::steady_clock::now();
             gpuRecorded = TryDrawGPUDrivenIndirect(
                 ctx,
                 view,
                 plannedGPUCount,
                 depthPlan->partition.drawGroupCount);
+            gpuLaneSubmissionCpuNanoseconds = static_cast<uint64>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - laneStart).count());
+            gpuLaneSubmissionTimingAvailable = true;
         }
         if (executeDirectLane)
         {
-            TryDrawPlannedDirect(ctx, plannedDraws);
+            const auto laneStart = std::chrono::steady_clock::now();
+            directRecorded = TryDrawPlannedDirect(ctx, plannedDraws);
+            directLaneSubmissionCpuNanoseconds = static_cast<uint64>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - laneStart).count());
+            directLaneSubmissionTimingAvailable = true;
         }
         ctx.EndRenderPass();
 
-        m_drawStats.failureReason = gpuRecorded
+        const bool passRecorded = gpuRecorded && directRecorded;
+        m_drawStats.failureReason = passRecorded
             ? RenderPolicyReason::None
             : RenderPolicyReason::UnexpectedRecordingFailure;
         if (view.renderFrameExecutionReport != nullptr)
@@ -1097,11 +1114,11 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
                 {
                     continue;
                 }
-                report.status = gpuRecorded
+                report.status = passRecorded
                     ? RenderExecutionStatus::Completed
                     : RenderExecutionStatus::Failed;
                 report.executedVisibility = depthPlan->visibility;
-                report.reason = gpuRecorded
+                report.reason = passRecorded
                     ? depthPlan->reason
                     : m_drawStats.failureReason;
                 report.skippedPacketCount =
@@ -1110,8 +1127,8 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
                     ? (gpuRecorded ? RenderExecutionStatus::Completed
                                    : RenderExecutionStatus::Failed)
                     : RenderExecutionStatus::NotAttempted;
-                report.gpuDrivenLane.reason = plannedGPU
-                    ? m_drawStats.failureReason
+                report.gpuDrivenLane.reason = plannedGPU && !gpuRecorded
+                    ? RenderPolicyReason::UnexpectedRecordingFailure
                     : RenderPolicyReason::None;
                 report.gpuDrivenLane.executedCountsAvailable = plannedGPU &&
                     m_drawStats.gpuDrivenIndirectExecutedDrawCountAvailable;
@@ -1127,16 +1144,27 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
                     report.gpuDrivenLane.executedCountsAvailable
                     ? m_drawStats.gpuDrivenIndirectDrawCount
                     : 0;
+                report.gpuDrivenLane.submissionCpuNanoseconds =
+                    gpuLaneSubmissionCpuNanoseconds;
+                report.gpuDrivenLane.submissionCpuTimingAvailable =
+                    gpuLaneSubmissionTimingAvailable;
                 report.directLane.status = executeDirectLane
-                    ? RenderExecutionStatus::Completed
+                    ? (directRecorded ? RenderExecutionStatus::Completed
+                                      : RenderExecutionStatus::Failed)
                     : RenderExecutionStatus::NotAttempted;
-                report.directLane.reason = RenderPolicyReason::None;
+                report.directLane.reason = executeDirectLane && !directRecorded
+                    ? RenderPolicyReason::UnexpectedRecordingFailure
+                    : RenderPolicyReason::None;
                 report.directLane.executedCountsAvailable = executeDirectLane;
                 report.directLane.executedPacketCount =
                     m_drawStats.executedPacketCount;
                 report.directLane.executedDrawCount =
                     m_drawStats.directDrawCount;
-                if (!gpuRecorded)
+                report.directLane.submissionCpuNanoseconds =
+                    directLaneSubmissionCpuNanoseconds;
+                report.directLane.submissionCpuTimingAvailable =
+                    directLaneSubmissionTimingAvailable;
+                if (!passRecorded)
                 {
                     view.renderFrameExecutionReport->status =
                         RenderExecutionStatus::Failed;

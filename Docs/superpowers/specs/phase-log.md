@@ -45857,3 +45857,89 @@ below.
   freeze rather than a backend-local shortcut.
 
 ---
+
+### R-SP345 Render-policy Task 10C M2 validation and evidence freeze
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 10C stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP344 (submission strategies and DX12 Tier 1 execution).
+- The renderer-facing strategy and semantic indirect RHI contracts are frozen;
+  this slice validates them on native backends and records the M2 evidence
+  baseline before persistent GPU Scene work begins.
+
+**Approved scope:**
+
+- Repair Vulkan Direct shader compilation, reflection, vertex layouts,
+  optional-stage barriers, and enabled-capability reporting needed for honest
+  native validation; do not add Vulkan indirect-count execution here.
+- Add public non-gating plan/submission CPU-time and group-occupancy
+  measurements. The values are diagnostic only and cannot affect Auto.
+- Add native DX12 zero-count, maximum-count/range, and completion-aware
+  indirect-resource retirement fixtures using the public RHI execution path.
+- Drain the DX12 InfoQueue after idle and before device destruction, fail closed
+  when Debug Layer/InfoQueue/readback evidence is unavailable, and emit a
+  schema-versioned report plus stable clean marker.
+- Add resize, zero-visible, Vulkan Direct, and exact Task 7/8/9 gate coverage to
+  one machine-recorded PowerShell 5.1-compatible M2 exit runner.
+- Keep Metal unsupported/open on this Windows host, keep metrics non-gating,
+  and make no Auto, promotion, Tier 2, compatibility, or visual-golden change.
+
+**Files changed:**
+
+- DX12 device shutdown diagnostics and command-context validation support.
+- Vulkan command context, capability truth, and shared shader/reflection fixes.
+- Render policy diagnostics, Depth/Opaque measurement and failure propagation,
+  SceneRenderer aggregation, pipeline layouts, and Bloom access declaration.
+- ModelViewer measurement/report, generic resize, and zero-visible fixtures.
+- RHI, shader compiler, pipeline, render-pass, render-policy, DX12, and Vulkan
+  validation tests plus CTest registration.
+- `Scripts/run_m2_render_policy_exit.ps1`, this phase record, and the execution
+  ledger.
+
+**Validation result:**
+
+- Formal M2 runner: PASS with status `passed`, source revision
+  `1e3c447034607bf0681a935b77702989d436d121`, dirty-tree provenance, 21 gate
+  inventory groups, 29 passed aggregate results, and 298/298 CTests.
+- Native DX12: PASS for zero-count/no-draw, maximum-count bounded execution,
+  and completion-aware retirement; Debug Layer and InfoQueue available/read
+  completely with zero error/corruption messages. Direct, GPU-driven, and GBV
+  shutdown evidence also passed.
+- Native Vulkan: PASS for Direct ModelViewer smoke and 26 validation fixtures
+  with zero validation-layer errors.
+- Metrics: three non-gating samples. GPU-driven resize and zero-visible samples
+  reported numeric occupancy; Direct explicitly reported unavailable/null.
+- Metal: `HostPlatformUnsupported` and non-required on the Windows host; no
+  Metal runtime or promotion claim.
+- `git diff --check`: PASS before documentation finalization.
+
+**Independent review result:**
+
+- Review found and remediation closed an ignored Direct-strategy failure result,
+  incomplete fail-closed DX12 evidence fields, resize-frame-zero ambiguity,
+  unavailable-occupancy encoding, and runner gate-selection/provenance issues.
+- Final unresolved P0/P1/P2/P3: `0/0/0/0`; verdict: ready for the full M2 run.
+- The full expanded runner then passed unchanged after relinking the native
+  DX12 validation target against the final InfoQueue-report implementation.
+
+**Primary review status:**
+
+- PASS after complete RHI/backend/Render/Sample/shader/test/runner diff review,
+  adjudication of every independent finding, targeted rebuilds, native gate
+  execution, machine-report inspection, process cleanup check, and whitespace
+  validation.
+- The stage does not weaken a tolerance/assertion, regenerate a golden, hide a
+  diagnostic, silently fall back, or change the selected rendering policy.
+
+**Residual risks / follow-ups:**
+
+- Metal runtime validation remains open until a macOS host is available.
+- Measurements are intentionally observational; Task 15 owns thresholds,
+  hysteresis, delayed GPU timing, and any Auto use.
+- Task 11 must preserve Direct/Tier 1 scene meaning while adding stable GPU
+  Scene identity, publication, upload, lifetime, and eventual Tier 2 execution.
+
+---

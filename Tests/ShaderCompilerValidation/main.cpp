@@ -697,12 +697,94 @@ TEST_F(
         blendIndicesIt->format,
         RVX::RHIFormat::RGBA32_UINT);
 
+    const auto texCoordOutputIt = std::find_if(
+        result.reflection.outputs.begin(),
+        result.reflection.outputs.end(),
+        [](const RVX::ShaderReflection::InputAttribute& output)
+        {
+            return output.semantic == "TEXCOORD" &&
+                   output.semanticIndex == 1;
+        });
+    ASSERT_NE(texCoordOutputIt, result.reflection.outputs.end());
+    EXPECT_EQ(texCoordOutputIt->format, RVX::RHIFormat::RG32_FLOAT);
+
     const RVX::RHIShaderInterface shaderInterface =
         RVX::BuildRHIShaderInterface(
             RVX::RHIShaderStage::Vertex,
             result.reflection);
     EXPECT_TRUE(shaderInterface.available);
     EXPECT_NE(shaderInterface.hash, 0u);
+}
+
+TEST_F(
+    ShaderCompilerValidationFixture,
+    VulkanCompileUsesPortableExtensionsAndDistinguishesStructuredBuffers)
+{
+    const std::string source = R"(
+StructuredBuffer<uint> gReadOnly : register(t0, space0);
+RWStructuredBuffer<uint> gReadWrite : register(u0, space1);
+
+[numthreads(1, 1, 1)]
+void main(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    gReadWrite[dispatchThreadId.x] = gReadOnly[dispatchThreadId.x];
+}
+)";
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Compute;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.targetBackend = RVX::RHIBackendType::Vulkan;
+    options.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport support =
+        compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_TRUE(result.reflection.valid);
+
+    const std::string spirvText(
+        reinterpret_cast<const char*>(result.bytecode.data()),
+        result.bytecode.size());
+    EXPECT_EQ(
+        spirvText.find("SPV_GOOGLE_hlsl_functionality1"),
+        std::string::npos);
+    EXPECT_EQ(
+        spirvText.find("SPV_GOOGLE_user_type"),
+        std::string::npos);
+
+    const auto findResource =
+        [&result](const char* name)
+        {
+            return std::find_if(
+                result.reflection.resources.begin(),
+                result.reflection.resources.end(),
+                [name](const RVX::ShaderReflection::ResourceBinding& resource)
+                {
+                    return resource.name == name;
+                });
+        };
+
+    const auto readOnlyIt = findResource("gReadOnly");
+    ASSERT_NE(readOnlyIt, result.reflection.resources.end());
+    EXPECT_EQ(
+        readOnlyIt->type,
+        RVX::RHIBindingType::ShaderResourceBuffer);
+
+    const auto readWriteIt = findResource("gReadWrite");
+    ASSERT_NE(readWriteIt, result.reflection.resources.end());
+    EXPECT_EQ(
+        readWriteIt->type,
+        RVX::RHIBindingType::StorageBuffer);
 }
 
 TEST_F(ShaderCompilerValidationFixture, DX11DefaultProfileSupportsRegisterSpaces)

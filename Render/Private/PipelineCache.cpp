@@ -5966,7 +5966,15 @@ RHIGraphicsPipelineDesc PipelineCache::BuildMaskedDepthOnlyPipelineDesc() const
     pipelineDesc.vertexShader = m_maskedDepthOnlyVertexShader.Get();
     pipelineDesc.pixelShader = m_maskedDepthOnlyPixelShader.Get();
     pipelineDesc.debugName = "MaskedDepthOnlyPipeline";
-    pipelineDesc.inputLayout.AddElement("TEXCOORD", RHIFormat::RG32_FLOAT, 2);
+    pipelineDesc.inputLayout.elements.clear();
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        0, "POSITION", 0, RHIFormat::RGB32_FLOAT, 0);
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        1, "TEXCOORD", 0, RHIFormat::RG32_FLOAT, 2);
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
     return pipelineDesc;
 }
 
@@ -6157,7 +6165,15 @@ RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(RHI
     pipelineDesc.vertexShader = m_maskedObjectVelocityVertexShader.Get();
     pipelineDesc.pixelShader = m_maskedObjectVelocityPixelShader.Get();
     pipelineDesc.debugName = "MaskedObjectVelocityPipeline";
-    pipelineDesc.inputLayout.AddElement("TEXCOORD", RHIFormat::RG32_FLOAT, 2);
+    pipelineDesc.inputLayout.elements.clear();
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        0, "POSITION", 0, RHIFormat::RGB32_FLOAT, 0);
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        1, "TEXCOORD", 0, RHIFormat::RG32_FLOAT, 2);
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
     return pipelineDesc;
 }
 

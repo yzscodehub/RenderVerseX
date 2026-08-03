@@ -495,7 +495,9 @@ namespace RVX
         }
     }
 
-    inline VkPipelineStageFlags2 ToVkPipelineStageFlags2(RHIExecutionScope scope)
+    inline VkPipelineStageFlags2 ToVkPipelineStageFlags2(RHIExecutionScope scope,
+        bool meshShadersEnabled,
+        bool rayTracingEnabled)
     {
         if (scope == RHIExecutionScope::AllCommands)
             return VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -512,9 +514,9 @@ namespace RVX
         if (has(RHIExecutionScope::GeometryShader)) flags |= VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT;
         if (has(RHIExecutionScope::PixelShader)) flags |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         if (has(RHIExecutionScope::ComputeShader)) flags |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        if (has(RHIExecutionScope::MeshShader)) flags |= VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
-        if (has(RHIExecutionScope::AmplificationShader)) flags |= VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT;
-        if (has(RHIExecutionScope::RayTracingShader)) flags |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+        if (meshShadersEnabled && has(RHIExecutionScope::MeshShader)) flags |= VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
+        if (meshShadersEnabled && has(RHIExecutionScope::AmplificationShader)) flags |= VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT;
+        if (rayTracingEnabled && has(RHIExecutionScope::RayTracingShader)) flags |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
         if (has(RHIExecutionScope::ColorOutput)) flags |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         if (has(RHIExecutionScope::DepthStencil))
             flags |= VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;

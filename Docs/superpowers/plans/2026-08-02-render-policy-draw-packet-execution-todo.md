@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, and Tasks 10A/10B
-are complete and reviewed; Task 10C M2 validation/evidence freeze is next
+**Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, and Tasks
+10A/10B/10C are complete and reviewed; Task 11 GPU Scene is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -349,18 +349,18 @@ from submitted upper bounds and CPU reference visibility.
 
 #### 10C. M2 validation
 
-- [ ] Run all RHI conformance and cross-backend shared-contract tests.
-- [ ] Run DX12 Debug Layer, GBV, Direct/hybrid parity, resize, zero-visible,
+- [x] Run all RHI conformance and cross-backend shared-contract tests.
+- [x] Run DX12 Debug Layer, GBV, Direct/hybrid parity, resize, zero-visible,
   maximum-count, and in-flight retirement fixtures.
-- [ ] Compile shared contracts and run Direct smoke on every configured primary
+- [x] Compile shared contracts and run Direct smoke on every configured primary
   backend; record unavailable Metal/Vulkan hosts as open M2 coverage gates.
-- [ ] Emit one machine-recorded M2 exit artifact aggregating Task 7 exactly-once
+- [x] Emit one machine-recorded M2 exit artifact aggregating Task 7 exactly-once
   failure injection, Task 8 CPU/GPU bounds parity, Task 9 multi-view/lifetime
   negatives, and Task 10 RHI conformance.
-- [ ] Verify zero-count groups emit no draw and buffer overrun is impossible.
-- [ ] Record CPU plan/submission cost and group occupancy without making Auto
+- [x] Verify zero-count groups emit no draw and buffer overrun is impossible.
+- [x] Record CPU plan/submission cost and group occupancy without making Auto
   decisions yet.
-- [ ] Freeze the renderer-facing strategy and semantic RHI baseline before
+- [x] Freeze the renderer-facing strategy and semantic RHI baseline before
   Tasks 11-13 branch. Task 13 may add Metal-private ICB objects behind the
   encoded-command-buffer extension; any shared contract change requires a
   primary-owned revision and a new cross-backend freeze.
@@ -619,23 +619,34 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Task 10B implementation, remediation, independent re-review, primary audit,
-runtime validation, and architecture gates are complete. Start **Task 10C** by
-freezing the M2 evidence baseline. The completed Task 10B acceptance ledger is:
+Task 10C implementation, remediation, independent re-review, primary audit,
+and the machine-recorded 298-test M2 exit are complete. Start **Task 11A** by
+freezing the GPU Scene schema and CPU-side stable-index allocator. The completed
+Task 10C acceptance ledger is:
 
-- [x] Route prepared Direct and fixed/count indexed-indirect requests through
-  one backend-neutral strategy interface while leaving grouping, visibility,
-  bindings, and policy with the renderer.
-- [x] Freeze a typed backend-native encoded-command-buffer request branch that
-  Task 13 can implement without revising the shared strategy contract.
-- [x] Make `GPUCulling` produce semantic indirect descriptors only; final
-  validation and result truth come from the strategy.
-- [x] Cache DX12 command signatures by semantic layout, preserve raw zero-stride
-  compatibility, and fail closed on capability, count, usage, alignment,
-  stride, overflow, range, or native-buffer violations before `ExecuteIndirect`.
-- [x] Record that current standard layouts contain no root arguments and
-  therefore invalidate no cached root state; unsupported invalidating layouts
-  are rejected instead of approximated with rebind-all.
+- [x] Repair Vulkan Direct shader/reflection/layout and optional-stage
+  capability truth without claiming unsupported mesh or indirect-count paths.
+- [x] Record non-gating plan/submission CPU cost and group occupancy; keep the
+  values unavailable for Direct and prohibited from influencing Auto.
+- [x] Add native DX12 zero-count, maximum-count/range, and completion-aware
+  indirect-resource retirement fixtures with fail-closed Debug Layer evidence.
+- [x] Add resize, zero-visible, Vulkan Direct, parity, validation-layer, and
+  exact Task 7/8/9 regression gates to one PowerShell 5.1-compatible runner.
+- [x] Emit `RVX.M2.RenderPolicyExit` schema 1 with source revision, dirty-tree
+  state, gate inventory/results, artifact hashes, metrics, and explicit
+  `HostPlatformUnsupported` Metal coverage on this Windows host.
 - [x] Close independent review findings through final P0/P1/P2/P3 `0/0/0/0`;
-  pass 44 RHI contract, 22 policy, 34 GPU-driven, 194 render-pass tests, the
-  focused DX12 raw validation, architecture phase gates, and diff checks.
+  pass the expanded 298/298 CTest matrix and all 29 aggregate gate results.
+
+Task 11 will be committed in independently reversible serial slices:
+
+1. **11A schema/allocator:** backend-neutral generation-checked table refs,
+   row layouts, CPU committed mirror, uniqueness, reuse, and rollback tests.
+2. **11B update/publication:** accepted-scene diffs, exact resource-generation
+   residency, transactional add/update/remove/reload/evict semantics.
+3. **11C persistent upload/lifetime:** dirty journals, frame-slot versions,
+   capacity growth, exact completion-token retirement, and failure rollback.
+4. **11D Tier 2 integration:** stable GPU Scene visibility/command indices and
+   Task 10 strategy consumption while preserving Direct/Tier 1 semantics.
+5. **11E evidence:** warm-static, churn, generation reuse, resource eviction,
+   multi-view/resize/failure injection, capacity, and 100/1k/10k/50k metrics.
