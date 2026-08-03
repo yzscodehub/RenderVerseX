@@ -197,9 +197,7 @@ namespace RVX
         RayTracedShadowPassStats stats{};
         RayTracedShadowRecordOutput output{};
         ShadowPassConfig config{};
-        Vec3 lightDirection{0.0f, -1.0f, 0.0f};
-        Vec3 lightColor{1.0f, 1.0f, 1.0f};
-        float32 lightIntensity = 0.0f;
+        PrimaryDirectionalLightRecordInput primaryDirectionalLight{};
         bool contextValid = false;
 
         RHIAccelerationStructureRef tlas;
@@ -538,7 +536,6 @@ namespace RVX
     void RayTracedShadowPass::AddToGraph(RenderGraph& graph,
                                          const RenderPassRecordContext& context)
     {
-        PollCompletedTimingSamples();
         const RenderPassExecutionData execution = MakeRenderPassExecutionData(context);
         auto state = std::make_shared<RayTracedShadowFrameState>();
         state->execution = execution;
@@ -546,18 +543,30 @@ namespace RVX
         state->executionState = std::make_shared<RayTracedShadowExecutionState>();
         state->executionState->identity = execution.identity;
         state->output.executionState = state->executionState;
-        state->historyOwner = m_historyOwner;
         state->config = m_config;
-        state->lightDirection = m_lightDirection;
-        state->lightColor = m_lightColor;
-        state->lightIntensity = m_lightIntensity;
+        state->primaryDirectionalLight = execution.frameSnapshot
+            ? execution.frameSnapshot->primaryDirectionalLight
+            : PrimaryDirectionalLightRecordInput{};
+        state->stats.requested = m_enabled;
+
+        // Every invocation first publishes a disabled value for this exact
+        // recording. Feature and light eligibility are authoritative record
+        // gates: neither may inspect RT support/resources, reserve history,
+        // register graph work, or dispatch rays.
+        PublishFrameResults(state);
+        if (!m_enabled || !state->primaryDirectionalLight.IsShadowEligible())
+        {
+            return;
+        }
+
+        PollCompletedTimingSamples();
+        state->historyOwner = m_historyOwner;
         state->viewCache = m_viewCache;
         state->descriptorDevice = m_pipelineCache ? m_pipelineCache->GetDevice() : nullptr;
         state->reverseZ = m_pipelineCache && m_pipelineCache->GetConfig().reverseZ;
         state->contextValid = context.MatchesTargetGraph(graph) &&
             execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&
             state->historyOwner != nullptr;
-        state->stats.requested = m_enabled;
         state->stats.supported = state->contextValid && IsSupported();
 
         // The legacy ViewData overload has no identity at its completion
@@ -606,9 +615,6 @@ namespace RVX
             }
         }
 
-        // Every path begins with a current-recording, disabled output.  A
-        // rejected/unsupported recording can therefore never expose a stale mask.
-        PublishFrameResults(state);
         if (!state->contextValid || !state->execution.view.depthTarget.IsValid() ||
             state->execution.view.viewportWidth == 0 || state->execution.view.viewportHeight == 0 ||
             !m_device || !m_sceneManager || !m_pipelineCache || !m_viewCache)
@@ -719,7 +725,8 @@ namespace RVX
             state->alphaUVBuffers.emplace_back(buffer);
         }
 
-        const Vec3 rayDirection = NormalizeOr(-state->lightDirection, Vec3(0.0f, 1.0f, 0.0f));
+        const Vec3 rayDirection = NormalizeOr(
+            -state->primaryDirectionalLight.direction, Vec3(0.0f, 1.0f, 0.0f));
         // Physical allocation is established before the logical reservation.
         // This prevents a resize from invalidating a reservation that another
         // graph has already observed, while keeping history validity a
@@ -1337,13 +1344,6 @@ namespace RVX
         }
         m_unsupportedReason.clear();
         return true;
-    }
-
-    void RayTracedShadowPass::SetDirectionalLight(const Vec3& direction, const Vec3& color, float intensity)
-    {
-        m_lightDirection = direction;
-        m_lightColor = color;
-        m_lightIntensity = intensity;
     }
 
     bool RayTracedShadowPass::CreateFrameConstantBuffer(

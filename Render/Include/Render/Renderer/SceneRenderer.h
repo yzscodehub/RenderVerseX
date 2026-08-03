@@ -17,6 +17,7 @@
 #include "Render/Resources/RenderResourceTypes.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/RenderPassRecordContext.h"
 #include "Render/Passes/MeshPassProcessor.h"
 #include "Render/Policy/RenderFramePlanCompiler.h"
 #include "Render/Policy/RenderPolicyDiagnostics.h"
@@ -1366,6 +1367,7 @@ namespace RVX
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
 
         ViewData m_viewData;
+        PrimaryDirectionalLightRecordInput m_primaryDirectionalLight;
         RenderScene m_renderScene;
         RenderFeatureSnapshot m_featureSnapshot;
         RenderProxySnapshot m_proxySnapshot;

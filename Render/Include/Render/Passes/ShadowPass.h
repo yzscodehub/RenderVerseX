@@ -108,22 +108,16 @@ namespace RVX
         void SetConfig(const ShadowPassConfig& config);
 
         /**
-         * @brief Set directional light for shadow mapping
-         */
-        void SetDirectionalLight(const Vec3& direction, const Vec3& color, float intensity);
-
-        /**
          * @brief Calculate CSM cascades from view data
          */
-        void CalculateCascades(const ViewData& view);
+        void CalculateCascades(const ViewData& view,
+                               const PrimaryDirectionalLightRecordInput& primaryLight);
 
         /**
          * @brief Get cascade info for shader binding
          */
         const std::vector<ShadowCascade>& GetCascades() const { return m_cascades; }
         const ShadowPassConfig& GetConfig() const { return m_config; }
-        const Vec3& GetLightDirection() const { return m_lightDirection; }
-        float GetLightIntensity() const { return m_lightIntensity; }
 
         /**
          * @brief Get the shadow map texture (after execution)
@@ -154,18 +148,24 @@ namespace RVX
 
     private:
         bool ResolveCascadeViews(const ViewData& view);
-        void RenderCascade(RHICommandContext& ctx, const ViewData& view, uint32_t cascadeIndex);
+        void Setup(RenderGraphBuilder& builder,
+                   const ViewData& view,
+                   const PrimaryDirectionalLightRecordInput& primaryLight);
+        void Execute(RHICommandContext& ctx,
+                     const ViewData& view,
+                     const PrimaryDirectionalLightRecordInput& primaryLight);
+        void RenderCascade(RHICommandContext& ctx,
+                           const ViewData& view,
+                           uint32_t cascadeIndex,
+                           const PrimaryDirectionalLightRecordInput& primaryLight);
 
-        bool m_enabled = false;  // Disabled by default until light is configured
+        bool m_enabled = false;
         mutable std::string m_unsupportedReason = "ShadowPass has not been configured";
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;
 
         ShadowPassConfig m_config;
-        Vec3 m_lightDirection{0.0f, -1.0f, 0.0f};
-        Vec3 m_lightColor{1.0f, 1.0f, 1.0f};
-        float m_lightIntensity = 1.0f;
 
         std::vector<ShadowCascade> m_cascades;
 

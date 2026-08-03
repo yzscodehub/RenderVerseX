@@ -3098,8 +3098,8 @@ namespace
         const bool ready = stats.scenePrepared && stats.tlasAvailable &&
                            stats.shadowRequested && stats.shadowSupported && stats.shadowRecorded &&
                            stats.shadowHistoryReset &&
-                           stats.shadowHistoryAvailable &&
-                           stats.shadowDepthHistoryAvailable && stats.shadowNormalHistoryAvailable &&
+                           !stats.shadowHistoryAvailable &&
+                           !stats.shadowDepthHistoryAvailable && !stats.shadowNormalHistoryAvailable &&
                            !stats.shadowTemporalAccumulated;
         if (ready)
         {
@@ -3156,8 +3156,8 @@ namespace
                            stats.shadowRequested && stats.shadowSupported && stats.shadowRecorded &&
                            stats.shadowHistoryReset && stats.shadowHistoryRecreated &&
                            stats.shadowHistoryResolutionChanged && !stats.shadowHistoryConfigChanged &&
-                           stats.shadowHistoryAvailable &&
-                           stats.shadowDepthHistoryAvailable && stats.shadowNormalHistoryAvailable &&
+                           !stats.shadowHistoryAvailable &&
+                           !stats.shadowDepthHistoryAvailable && !stats.shadowNormalHistoryAvailable &&
                            !stats.shadowTemporalAccumulated && sizeMatches;
         if (ready)
         {

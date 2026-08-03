@@ -11,6 +11,7 @@
 #include <fstream>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -1584,6 +1585,25 @@ namespace
         pass.SetResourceRegistry(&gpuResources.GetRegistry());
     }
 
+    void ConfigurePrimaryDirectionalLightRecord(
+        RenderPassRecordContext& context,
+        const Vec3& direction,
+        const Vec3& color,
+        float32 intensity,
+        bool castsShadow = true)
+    {
+        context.primaryDirectionalLight.selected = true;
+        context.primaryDirectionalLight.castsShadow = castsShadow;
+        context.primaryDirectionalLight.direction = direction;
+        context.primaryDirectionalLight.color = color;
+        context.primaryDirectionalLight.intensity = intensity;
+        if (context.results)
+        {
+            context.frameSnapshot = MakeRenderPassFrameSnapshot(
+                context, *context.results);
+        }
+    }
+
     RenderPassRecordContext MakeTransparentRecordContext(
         RenderGraph& graph,
         ViewData view,
@@ -1822,6 +1842,76 @@ namespace
         EXPECT_NE(sceneManager.GetInstanceAlphaMetadataBuffer(), nullptr);
     }
 
+    void ExpectRayTracedShadowRecordGateNoWork(
+        FakeDevice& device,
+        ResourceViewCache& viewCache,
+        RayTracedShadowPass& pass,
+        const char* caseName,
+        bool featureEnabled,
+        bool selected,
+        bool castsShadow,
+        uint64 frameNumber)
+    {
+        SCOPED_TRACE(caseName);
+        RenderGraph graph;
+        graph.SetDevice(&device);
+        RHITextureRef depthTexture = device.CreateTexture(RHITextureDesc::DepthStencil(
+            32, 32, PipelineCache::GetDefaultDepthStencilFormat()));
+        ASSERT_TRUE(depthTexture);
+        ViewData frameView;
+        frameView.renderGraph = &graph;
+        frameView.viewCache = &viewCache;
+        frameView.depthTarget = graph.ImportTexture(
+            depthTexture.Get(), RHIResourceState::DepthRead);
+        frameView.viewportWidth = 32;
+        frameView.viewportHeight = 32;
+        frameView.nearPlane = 0.1f;
+        frameView.farPlane = 100.0f;
+        frameView.frameNumber = frameNumber;
+
+        pass.SetEnabled(featureEnabled);
+        RenderPassRecordContext context = MakeRenderPassRecordContext(graph, frameView);
+        context.legacyAdapter = false;
+        context.primaryDirectionalLight.selected = selected;
+        context.primaryDirectionalLight.castsShadow = castsShadow;
+        context.primaryDirectionalLight.direction = Vec3{0.2f, -0.8f, 0.5f};
+        context.primaryDirectionalLight.intensity = 3.0f;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(context, *context.results);
+        const size_t texturesBefore = device.createdTextureDescs.size();
+        const size_t buffersBefore = device.createdBufferDescs.size();
+        const size_t descriptorSetsBefore = device.createdDescriptorSetDescs.size();
+
+        pass.AddToGraph(graph, context);
+
+        ASSERT_TRUE(context.results->rayTracedShadowOutput.executionState);
+        EXPECT_EQ(context.results->rayTracedShadowOutput.identity, context.identity);
+        EXPECT_TRUE(context.results->rayTracedShadowOutput.IsCompatibleWith(
+            context.identity));
+        EXPECT_FALSE(context.results->rayTracedShadowOutput.enabled);
+        EXPECT_FALSE(context.results->rayTracedShadowOutput.shadowMask.IsValid());
+        EXPECT_EQ(context.results->rayTracedShadowStats.requested, featureEnabled);
+        EXPECT_FALSE(context.results->rayTracedShadowStats.supported);
+        EXPECT_FALSE(context.results->rayTracedShadowStats.historyAvailable);
+        EXPECT_FALSE(context.results->rayTracedShadowStats.historyRecreated);
+        EXPECT_FALSE(context.results->rayTracedShadowStats.outputDeclared);
+        // The authoritative record gate precedes history allocation/reservation,
+        // per-frame resources, graph registration, and dispatch.
+        EXPECT_EQ(device.createdTextureDescs.size(), texturesBefore);
+        EXPECT_EQ(device.createdBufferDescs.size(), buffersBefore);
+        EXPECT_EQ(device.createdDescriptorSetDescs.size(), descriptorSetsBefore);
+
+        graph.Compile();
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
+        RecordingCommandContext commands;
+        graph.Execute(commands);
+        EXPECT_EQ(commands.dispatchRaysCount, 0u);
+        EXPECT_EQ(device.createdTextureDescs.size(), texturesBefore);
+        EXPECT_EQ(device.createdBufferDescs.size(), buffersBefore);
+        EXPECT_EQ(device.createdDescriptorSetDescs.size(), descriptorSetsBefore);
+    }
+
     class RenderPassValidationFixture : public ::testing::Test
     {
     protected:
@@ -1980,7 +2070,7 @@ TEST(RenderPassStatusValidation, BuiltInProductionPassStatusesAreHonest)
     EXPECT_FALSE(shadowPass.IsRequestedEnabled());
     EXPECT_FALSE(shadowPass.IsEnabled());
 
-    shadowPass.SetDirectionalLight(Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    shadowPass.SetEnabled(true);
     EXPECT_TRUE(shadowPass.IsRequestedEnabled());
     EXPECT_FALSE(shadowPass.IsSupported());
     EXPECT_FALSE(shadowPass.IsEnabled());
@@ -2956,8 +3046,9 @@ TEST_F(RenderPassValidationFixture,
     ConfigureResources(shadowPass, gpuResources, pipelineCache);
     shadowPass.SetRenderScene(&scene);
     shadowPass.SetConfig(shadowConfig);
-    shadowPass.SetDirectionalLight(
-        Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    ConfigurePrimaryDirectionalLightRecord(
+        context, Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    shadowPass.SetEnabled(true);
     shadowPass.AddToGraph(graph, context);
 
     const DirectionalShadowRecordOutput producedOutput =
@@ -3058,7 +3149,8 @@ TEST_F(RenderPassValidationFixture,
     const auto exerciseFailClosedProducer = [this, &makeContext](
                                                const char* caseName,
                                                const auto& configureShadow,
-                                               bool invalidateContext)
+                                               bool invalidateContext,
+                                               bool selectNonCasterPrimary)
     {
         SCOPED_TRACE(caseName);
         RenderGraph graph;
@@ -3066,6 +3158,37 @@ TEST_F(RenderPassValidationFixture,
         RenderFrameExecutionReport report;
         report.frameSequence = 80;
         RenderPassRecordContext context = makeContext(graph, report);
+
+        RenderScene selectionScene;
+        if (selectNonCasterPrimary)
+        {
+            RenderLight firstDirectional;
+            firstDirectional.type = RenderLight::Type::Directional;
+            firstDirectional.direction = Vec3{0.1f, -0.9f, 0.2f};
+            firstDirectional.intensity = 2.0f;
+            firstDirectional.castsShadow = false;
+            selectionScene.AddLight(firstDirectional);
+
+            RenderLight laterCaster = firstDirectional;
+            laterCaster.direction = Vec3{-0.6f, -0.4f, 0.7f};
+            laterCaster.intensity = 9.0f;
+            laterCaster.castsShadow = true;
+            selectionScene.AddLight(laterCaster);
+
+            // The record keeps the first positive directional light even
+            // though a later directional light casts shadows.
+            context.renderScene = &selectionScene;
+            context.primaryDirectionalLight =
+                SelectPrimaryDirectionalLightRecordInput(selectionScene);
+            context.frameSnapshot = MakeRenderPassFrameSnapshot(
+                context, *context.results);
+            ASSERT_TRUE(context.primaryDirectionalLight.selected);
+            ASSERT_FALSE(context.primaryDirectionalLight.castsShadow);
+            ASSERT_FALSE(context.primaryDirectionalLight.IsShadowEligible());
+            ASSERT_TRUE(context.frameSnapshot);
+            EXPECT_FALSE(
+                context.frameSnapshot->primaryDirectionalLight.castsShadow);
+        }
 
         ShadowPass shadowPass;
         configureShadow(shadowPass);
@@ -3079,6 +3202,8 @@ TEST_F(RenderPassValidationFixture,
         EXPECT_TRUE(context.results->directionalShadowOutput.IsCompatibleWith(
             context.identity));
         EXPECT_EQ(0u, context.results->shadowStats.configuredCascadeCount);
+        EXPECT_EQ(0u, context.results->shadowStats.declaredCascadeResourceCount);
+        EXPECT_EQ(0u, context.results->shadowStats.resolvedCascadeViewCount);
         EXPECT_EQ(0u, context.results->shadowStats.drawCount);
 
         // Only the producer is invalid.  Its current disabled output remains a
@@ -3090,6 +3215,27 @@ TEST_F(RenderPassValidationFixture,
         opaquePass.AddToGraph(graph, context);
         graph.Compile();
         EXPECT_TRUE(graph.GetCompileStats().compileValid);
+
+        if (selectNonCasterPrimary)
+        {
+            const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+            const auto shadowDiagnostic = std::find_if(
+                diagnostics.passes.begin(), diagnostics.passes.end(),
+                [](const RenderGraph::PassDiagnostic& diagnostic)
+                {
+                    return diagnostic.name == "ShadowPass";
+                });
+            ASSERT_NE(diagnostics.passes.end(), shadowDiagnostic);
+            EXPECT_TRUE(shadowDiagnostic->usages.empty());
+
+            RecordingCommandContext commands;
+            graph.Execute(commands);
+            // The only render pass belongs to the independently registered
+            // Opaque pass.  ShadowPass declared no resource usage above, so
+            // it has no render pass to execute for this record.
+            EXPECT_EQ(1u, commands.beginRenderPassCount);
+            EXPECT_EQ(1u, commands.endRenderPassCount);
+        }
     };
 
     exerciseFailClosedProducer(
@@ -3098,23 +3244,33 @@ TEST_F(RenderPassValidationFixture,
         {
             ConfigureResources(shadowPass, gpuResources, pipelineCache);
         },
+        false,
         false);
     exerciseFailClosedProducer(
         "unsupported",
         [](ShadowPass& shadowPass)
         {
-            shadowPass.SetDirectionalLight(
-                Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+            shadowPass.SetEnabled(true);
         },
+        false,
         false);
     exerciseFailClosedProducer(
         "invalid context",
         [this](ShadowPass& shadowPass)
         {
             ConfigureResources(shadowPass, gpuResources, pipelineCache);
-            shadowPass.SetDirectionalLight(
-                Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+            shadowPass.SetEnabled(true);
         },
+        true,
+        false);
+    exerciseFailClosedProducer(
+        "selected non-caster primary",
+        [this](ShadowPass& shadowPass)
+        {
+            ConfigureResources(shadowPass, gpuResources, pipelineCache);
+            shadowPass.SetEnabled(true);
+        },
+        false,
         true);
 }
 
@@ -3221,22 +3377,32 @@ TEST_F(RenderPassValidationFixture,
     configA.shadowMapSize = 64;
     configA.cascadeBlendRatio = 0.05f;
     shadowPass.SetConfig(configA);
-    shadowPass.SetDirectionalLight(
-        Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    ConfigurePrimaryDirectionalLightRecord(
+        contextA, Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    shadowPass.SetEnabled(true);
     shadowPass.AddToGraph(graphA, contextA);
     const DirectionalShadowRecordOutput outputA =
         contextA.results->directionalShadowOutput;
+    contextA.primaryDirectionalLight.direction = Vec3{0.0f, 1.0f, 0.0f};
+    contextA.view.directionalLightDirection = Vec3{0.0f, 1.0f, 0.0f};
+    ASSERT_TRUE(contextA.frameSnapshot);
+    EXPECT_FLOAT_EQ(contextA.frameSnapshot->primaryDirectionalLight.direction.x, -0.3f);
+    EXPECT_FLOAT_EQ(contextA.frameSnapshot->view.directionalLightDirection.y, -1.0f);
 
     ShadowPassConfig configB;
     configB.numCascades = 3;
     configB.shadowMapSize = 96;
     configB.cascadeBlendRatio = 0.2f;
     shadowPass.SetConfig(configB);
-    shadowPass.SetDirectionalLight(
-        Vec3{0.6f, -0.1f, 0.9f}, Vec3{0.5f, 0.7f, 1.0f}, 3.0f);
+    ConfigurePrimaryDirectionalLightRecord(
+        contextB, Vec3{0.6f, -0.1f, 0.9f}, Vec3{0.5f, 0.7f, 1.0f}, 3.0f);
     shadowPass.AddToGraph(graphB, contextB);
     const DirectionalShadowRecordOutput outputB =
         contextB.results->directionalShadowOutput;
+
+    ASSERT_TRUE(contextB.frameSnapshot);
+    EXPECT_FLOAT_EQ(contextB.frameSnapshot->primaryDirectionalLight.direction.x, 0.6f);
+    EXPECT_FLOAT_EQ(contextB.frameSnapshot->view.directionalLightColor.y, 0.7f);
 
     ASSERT_TRUE(outputA.enabled);
     ASSERT_TRUE(outputB.enabled);
@@ -3274,8 +3440,7 @@ TEST_F(RenderPassValidationFixture,
     mutatedConfig.numCascades = 1;
     mutatedConfig.shadowMapSize = 32;
     shadowPass.SetConfig(mutatedConfig);
-    shadowPass.SetDirectionalLight(
-        Vec3{0.0f, 1.0f, 0.0f}, Vec3{1.0f, 0.0f, 0.0f}, 7.0f);
+    shadowPass.SetEnabled(false);
 
     graphB.Compile();
     graphA.Compile();
@@ -3446,7 +3611,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassReportsSupportedWithDepthPipelineA
 
     ShadowPass pass;
     ConfigureResources(pass, gpuResources, pipelineCache);
-    pass.SetDirectionalLight(Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    pass.SetEnabled(true);
 
     EXPECT_TRUE(pass.IsRequestedEnabled());
     EXPECT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
@@ -3498,7 +3663,6 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorS
     pass.OnAdd(&device);
     ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
-    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
@@ -3539,7 +3703,6 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorS
     pass.OnAdd(&device);
     ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
-    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
     RenderGraph restartedGraph;
     restartedGraph.SetDevice(&device);
@@ -3558,6 +3721,48 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorS
     ASSERT_EQ(1u, restartedContext.dispatchRaysCount);
     pass.NotifySubmission(GPUCompletionToken{});
     EXPECT_TRUE(pass.GetStats().dispatchRecorded);
+}
+
+TEST_F(RenderPassValidationFixture,
+       RayTracedShadowPassNoEligiblePrimaryPublishesDisabledOutputWithoutWrites)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(
+        device, gpuResources, scene, rayTracingScene));
+
+    RayTracedShadowPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    ExpectRayTracedShadowRecordGateNoWork(
+        device, viewCache, pass, "feature enabled with a selected non-caster",
+        true, true, false, 420);
+}
+
+TEST_F(RenderPassValidationFixture,
+       RayTracedShadowPassFeatureDisabledPublishesDisabledOutputWithoutWrites)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(
+        device, gpuResources, scene, rayTracingScene));
+
+    RayTracedShadowPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    ExpectRayTracedShadowRecordGateNoWork(
+        device, viewCache, pass, "feature disabled with an eligible primary",
+        false, true, true, 421);
 }
 
 TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedMaterialTextureTable)
@@ -3620,7 +3825,6 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedMaterialT
     pass.OnAdd(&device);
     ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
-    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
     EXPECT_FALSE(pass.IsSupported());
     EXPECT_EQ(pass.GetUnsupportedReason(),
@@ -3720,7 +3924,6 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaText
     pass.OnAdd(&device);
     ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
-    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
     EXPECT_FALSE(pass.IsSupported());
     EXPECT_EQ(pass.GetUnsupportedReason(),
@@ -3814,7 +4017,6 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeom
     pass.OnAdd(&device);
     ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
-    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
     EXPECT_FALSE(pass.IsSupported());
     EXPECT_EQ(pass.GetUnsupportedReason(),
@@ -4202,7 +4404,6 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassReusesHistoryAcrossStable
     pass.OnAdd(&device);
     ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
-    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
 
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
@@ -4275,6 +4476,141 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassReusesHistoryAcrossStable
               "RayTracedShadowFallbackVelocity");
 }
 
+TEST_F(RenderPassValidationFixture,
+       RayTracedShadowPassTypedHistoryResetAndResizeWriteFramesDoNotReadOldInputs)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
+
+    RayTracingSceneManager rayTracingScene;
+    ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(
+        device, gpuResources, scene, rayTracingScene));
+
+    RayTracedShadowPass pass;
+    pass.SetEnabled(true);
+    pass.OnAdd(&device);
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
+    pass.SetRayTracingScene(&rayTracingScene);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    const auto runFrame = [&](uint64 frameNumber,
+                              uint32 extent,
+                              bool resetTemporalHistory) -> RayTracedShadowPassStats
+    {
+        RenderGraph graph;
+        graph.SetDevice(&device);
+
+        RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+            extent, extent, PipelineCache::GetDefaultDepthStencilFormat());
+        depthDesc.debugName = "RayTracedShadowTypedHistoryDepth";
+        RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+        EXPECT_TRUE(depthTexture);
+        if (!depthTexture)
+        {
+            return {};
+        }
+
+        ViewData frameView;
+        frameView.renderGraph = &graph;
+        frameView.viewCache = &viewCache;
+        frameView.depthTarget = graph.ImportTexture(
+            depthTexture.Get(), RHIResourceState::DepthRead);
+        frameView.viewportWidth = extent;
+        frameView.viewportHeight = extent;
+        frameView.aspectRatio = 1.0f;
+        frameView.fieldOfView = 1.0472f;
+        frameView.nearPlane = 0.1f;
+        frameView.farPlane = 100.0f;
+        frameView.cameraPosition = Vec3(0.0f, 0.0f, 5.0f);
+        frameView.cameraForward = Vec3(0.0f, 0.0f, -1.0f);
+        frameView.viewMatrix = Mat4Identity();
+        frameView.projectionMatrix = Mat4Identity();
+        frameView.viewProjectionMatrix = Mat4Identity();
+        frameView.inverseViewMatrix = Mat4Identity();
+        frameView.inverseProjectionMatrix = Mat4Identity();
+        frameView.previousViewProjectionMatrix = Mat4Identity();
+        frameView.frameNumber = frameNumber;
+        frameView.resetTemporalHistory = resetTemporalHistory;
+
+        RenderPassRecordContext context = MakeRenderPassRecordContext(graph, frameView);
+        context.legacyAdapter = false;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        ConfigurePrimaryDirectionalLightRecord(
+            context, Vec3{-0.3f, -1.0f, -0.2f},
+            Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+        EXPECT_TRUE(context.frameSnapshot);
+        if (!context.frameSnapshot)
+        {
+            return {};
+        }
+
+        pass.AddToGraph(graph, context);
+        graph.Compile();
+        EXPECT_TRUE(graph.GetCompileStats().compileValid);
+        EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
+
+        RecordingCommandContext commands;
+        graph.Execute(commands);
+        EXPECT_EQ(commands.dispatchRaysCount, 1u);
+        EXPECT_TRUE(commands.lastDispatchRaysValidation.valid)
+            << commands.lastDispatchRaysValidation.message;
+        const RayTracedShadowPassStats stats =
+            context.results->rayTracedShadowStats;
+        pass.NotifySubmission(context.identity, GPUCompletionToken{});
+        return stats;
+    };
+
+    const RayTracedShadowPassStats initialStats = runFrame(1, 64, false);
+    EXPECT_TRUE(initialStats.dispatchRecorded);
+    EXPECT_TRUE(initialStats.historyRecreated);
+    EXPECT_FALSE(initialStats.historyAvailable);
+    EXPECT_FALSE(initialStats.depthHistoryAvailable);
+    EXPECT_FALSE(initialStats.normalHistoryAvailable);
+    EXPECT_FALSE(initialStats.temporalAccumulated);
+
+    const RayTracedShadowPassStats stableStats = runFrame(2, 64, false);
+    EXPECT_TRUE(stableStats.dispatchRecorded);
+    EXPECT_TRUE(stableStats.historyAvailable);
+    EXPECT_TRUE(stableStats.depthHistoryAvailable);
+    EXPECT_TRUE(stableStats.normalHistoryAvailable);
+    EXPECT_TRUE(stableStats.temporalAccumulated);
+
+    const RayTracedShadowPassStats resetWriteStats = runFrame(3, 64, true);
+    EXPECT_TRUE(resetWriteStats.requested);
+    EXPECT_TRUE(resetWriteStats.supported);
+    EXPECT_TRUE(resetWriteStats.dispatchRecorded);
+    EXPECT_TRUE(resetWriteStats.historyReset);
+    EXPECT_FALSE(resetWriteStats.historyAvailable);
+    EXPECT_FALSE(resetWriteStats.depthHistoryAvailable);
+    EXPECT_FALSE(resetWriteStats.normalHistoryAvailable);
+    EXPECT_FALSE(resetWriteStats.temporalAccumulated);
+
+    const RayTracedShadowPassStats resetRecoveryStats = runFrame(4, 64, false);
+    EXPECT_TRUE(resetRecoveryStats.historyAvailable);
+    EXPECT_TRUE(resetRecoveryStats.depthHistoryAvailable);
+    EXPECT_TRUE(resetRecoveryStats.normalHistoryAvailable);
+    EXPECT_TRUE(resetRecoveryStats.temporalAccumulated);
+
+    const RayTracedShadowPassStats resizeWriteStats = runFrame(5, 96, false);
+    EXPECT_TRUE(resizeWriteStats.requested);
+    EXPECT_TRUE(resizeWriteStats.supported);
+    EXPECT_TRUE(resizeWriteStats.dispatchRecorded);
+    EXPECT_TRUE(resizeWriteStats.historyReset);
+    EXPECT_TRUE(resizeWriteStats.historyRecreated);
+    EXPECT_TRUE(resizeWriteStats.historyResolutionChanged);
+    EXPECT_EQ(resizeWriteStats.width, 96u);
+    EXPECT_EQ(resizeWriteStats.height, 96u);
+    EXPECT_FALSE(resizeWriteStats.historyAvailable);
+    EXPECT_FALSE(resizeWriteStats.depthHistoryAvailable);
+    EXPECT_FALSE(resizeWriteStats.normalHistoryAvailable);
+    EXPECT_FALSE(resizeWriteStats.temporalAccumulated);
+
+    const RayTracedShadowPassStats resizeRecoveryStats = runFrame(6, 96, false);
+    EXPECT_TRUE(resizeRecoveryStats.historyAvailable);
+    EXPECT_TRUE(resizeRecoveryStats.depthHistoryAvailable);
+    EXPECT_TRUE(resizeRecoveryStats.normalHistoryAvailable);
+    EXPECT_TRUE(resizeRecoveryStats.temporalAccumulated);
+}
+
 TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleaseByRecordIdentity)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, true);
@@ -4289,8 +4625,6 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     pass.OnAdd(&device);
     ConfigureResources(pass, gpuResources, pipelineCache, viewCache);
     pass.SetRayTracingScene(&rayTracingScene);
-    pass.SetDirectionalLight(
-        Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     std::vector<RHITextureRef> recordDepthTextures;
@@ -4365,6 +4699,14 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     graphB.SetDevice(&device);
     RenderPassRecordContext contextA = makeRecord(graphA, 100);
     RenderPassRecordContext contextB = makeRecord(graphB, 101);
+    ConfigurePrimaryDirectionalLightRecord(
+        contextA, Vec3{1.0f, 0.0f, 0.0f}, Vec3{1.0f, 0.4f, 0.2f}, 2.0f);
+    ConfigurePrimaryDirectionalLightRecord(
+        contextB, Vec3{0.0f, 1.0f, 0.0f}, Vec3{0.2f, 0.7f, 1.0f}, 3.0f);
+    ASSERT_TRUE(contextA.frameSnapshot);
+    ASSERT_TRUE(contextB.frameSnapshot);
+    EXPECT_FLOAT_EQ(contextA.frameSnapshot->primaryDirectionalLight.direction.x, 1.0f);
+    EXPECT_FLOAT_EQ(contextB.frameSnapshot->primaryDirectionalLight.direction.y, 1.0f);
     const uint32 constantsBefore = countConstants();
     const uint32 timingReadbacksBefore = countBuffersNamed("RayTracedShadowTimingReadback");
     const uint32 timingPoolsBefore = static_cast<uint32>(device.createdQueryPoolDescs.size());
@@ -4393,6 +4735,32 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
               contextB.results->rayTracedShadowOutput.identity);
     ASSERT_TRUE(contextA.results->rayTracedShadowOutput.shadowMask.IsValid());
     ASSERT_TRUE(contextB.results->rayTracedShadowOutput.shadowMask.IsValid());
+
+    const auto collectRayShadowConstantBuffers = [this]()
+    {
+        std::vector<const FakeBuffer*> buffers;
+        for (size_t index = 0;
+             index < device.createdBufferDescs.size() &&
+             index < device.createdBuffers.size();
+             ++index)
+        {
+            const char* debugName = device.createdBufferDescs[index].debugName;
+            if (debugName != nullptr &&
+                std::string(debugName) == "RayTracedShadowConstants")
+            {
+                buffers.push_back(device.createdBuffers[index]);
+            }
+        }
+        return buffers;
+    };
+    const std::vector<const FakeBuffer*> rayConstantBuffers =
+        collectRayShadowConstantBuffers();
+    ASSERT_EQ(static_cast<size_t>(constantsBefore + 2),
+              rayConstantBuffers.size());
+    const FakeBuffer* const constantsA = rayConstantBuffers[rayConstantBuffers.size() - 2];
+    const FakeBuffer* const constantsB = rayConstantBuffers.back();
+    ASSERT_NE(constantsA, nullptr);
+    ASSERT_NE(constantsB, nullptr);
     graphA.Compile();
     graphB.Compile();
     ASSERT_TRUE(graphA.GetCompileStats().compileValid);
@@ -4412,6 +4780,22 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     graphA.Execute(commandsA);
     ASSERT_EQ(1u, commandsA.dispatchRaysCount);
     ASSERT_EQ(1u, commandsB.dispatchRaysCount);
+    ASSERT_GE(constantsA->GetStorage().size(), sizeof(Mat4) * 2 + sizeof(Vec4));
+    ASSERT_GE(constantsB->GetStorage().size(), sizeof(Mat4) * 2 + sizeof(Vec4));
+    Vec4 recordedRayA{};
+    Vec4 recordedRayB{};
+    std::memcpy(&recordedRayA,
+                constantsA->GetStorage().data() + sizeof(Mat4) * 2,
+                sizeof(recordedRayA));
+    std::memcpy(&recordedRayB,
+                constantsB->GetStorage().data() + sizeof(Mat4) * 2,
+                sizeof(recordedRayB));
+    EXPECT_FLOAT_EQ(recordedRayA.x, -1.0f);
+    EXPECT_FLOAT_EQ(recordedRayA.y, 0.0f);
+    EXPECT_FLOAT_EQ(recordedRayA.z, 0.0f);
+    EXPECT_FLOAT_EQ(recordedRayB.x, 0.0f);
+    EXPECT_FLOAT_EQ(recordedRayB.y, -1.0f);
+    EXPECT_FLOAT_EQ(recordedRayB.z, 0.0f);
     ASSERT_EQ(descriptorCountBefore + 2, device.createdDescriptorSetDescs.size());
     const RHIDescriptorSetDesc& descriptorB = device.createdDescriptorSetDescs[descriptorCountBefore];
     const RHIDescriptorSetDesc& descriptorA = device.createdDescriptorSetDescs[descriptorCountBefore + 1];
@@ -4870,7 +5254,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassRejectsUnsupportedCascadeCounts)
     ShadowPass pass;
     ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetConfig(config);
-    pass.SetDirectionalLight(Vec3{0.0f, -1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    pass.SetEnabled(true);
 
     EXPECT_FALSE(pass.IsSupported());
     EXPECT_NE(pass.GetUnsupportedReason().find("cascade"), std::string::npos);
@@ -4940,7 +5324,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassSetupDeclaresCascadeDepthResources
     ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetRenderScene(&scene);
     pass.SetConfig(config);
-    pass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+    pass.SetEnabled(true);
 
     pass.AddToGraph(graph, view);
 
@@ -5014,7 +5398,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStabilizesCascadeCentersToShadowTe
     ConfigureResources(stabilizedPass, gpuResources, pipelineCache);
     stabilizedPass.SetRenderScene(&scene);
     stabilizedPass.SetConfig(config);
-    stabilizedPass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+    stabilizedPass.SetEnabled(true);
     stabilizedPass.AddToGraph(graph, view);
 
     ASSERT_EQ(stabilizedPass.GetCascades().size(), static_cast<size_t>(3));
@@ -5035,7 +5419,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStabilizesCascadeCentersToShadowTe
     ConfigureResources(unsnappedPass, gpuResources, pipelineCache);
     unsnappedPass.SetRenderScene(&scene);
     unsnappedPass.SetConfig(config);
-    unsnappedPass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+    unsnappedPass.SetEnabled(true);
     unsnappedPass.AddToGraph(unsnappedGraph, view);
 
     ASSERT_EQ(unsnappedPass.GetCascades().size(), stabilizedPass.GetCascades().size());
@@ -5066,7 +5450,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStableCascadeIgnoresSubTexelCamera
     ConfigureResources(pass, gpuResources, pipelineCache);
         pass.SetRenderScene(&scene);
         pass.SetConfig(config);
-        pass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+        pass.SetEnabled(true);
         pass.AddToGraph(graph, localView);
 
         EXPECT_FALSE(pass.GetCascades().empty());
@@ -5133,7 +5517,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassSingleCascadeStillDeclaresArrayCom
     ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetRenderScene(&scene);
     pass.SetConfig(config);
-    pass.SetDirectionalLight(Vec3{-0.4f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+    pass.SetEnabled(true);
 
     pass.AddToGraph(graph, view);
 
@@ -5180,7 +5564,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
     ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetRenderScene(&scene);
     pass.SetConfig(config);
-    pass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    pass.SetEnabled(true);
 
     pass.AddToGraph(graph, view);
     graph.Compile();
@@ -6190,6 +6574,140 @@ TEST_F(RenderPassValidationFixture, ViewDataDefaultsKeepTemporalHistoryStable)
 
     RenderObject defaultObject;
     EXPECT_EQ(defaultObject.previousWorldMatrixValid, 0);
+}
+
+TEST(RenderPassStatusValidation,
+     PrimaryDirectionalLightSnapshotValueCopiesAndProjectsViewData)
+{
+    RenderPassRecordContext context;
+    context.primaryDirectionalLight.selected = true;
+    context.primaryDirectionalLight.castsShadow = true;
+    context.primaryDirectionalLight.direction = Vec3{0.1f, -0.7f, 0.6f};
+    context.primaryDirectionalLight.color = Vec3{0.2f, 0.4f, 0.8f};
+    context.primaryDirectionalLight.intensity = 3.5f;
+    RenderPassRecordResults results;
+    const std::shared_ptr<const RenderPassFrameSnapshot> snapshot =
+        MakeRenderPassFrameSnapshot(context, results);
+
+    ASSERT_TRUE(snapshot);
+    EXPECT_TRUE(snapshot->primaryDirectionalLight.selected);
+    EXPECT_TRUE(snapshot->primaryDirectionalLight.IsShadowEligible());
+    EXPECT_FLOAT_EQ(snapshot->view.directionalLightDirection.x, 0.1f);
+    EXPECT_FLOAT_EQ(snapshot->view.directionalLightDirection.y, -0.7f);
+    EXPECT_FLOAT_EQ(snapshot->view.directionalLightDirection.z, 0.6f);
+    EXPECT_FLOAT_EQ(snapshot->view.directionalLightColor.x, 0.2f);
+    EXPECT_FLOAT_EQ(snapshot->view.directionalLightColor.y, 0.4f);
+    EXPECT_FLOAT_EQ(snapshot->view.directionalLightColor.z, 0.8f);
+    EXPECT_FLOAT_EQ(snapshot->view.directionalLightIntensity, 3.5f);
+
+    context.primaryDirectionalLight.direction = Vec3{9.0f, 8.0f, 7.0f};
+    context.primaryDirectionalLight.color = Vec3{6.0f, 5.0f, 4.0f};
+    context.primaryDirectionalLight.intensity = 0.0f;
+    EXPECT_FLOAT_EQ(snapshot->primaryDirectionalLight.direction.x, 0.1f);
+    EXPECT_FLOAT_EQ(snapshot->primaryDirectionalLight.color.z, 0.8f);
+    EXPECT_FLOAT_EQ(snapshot->primaryDirectionalLight.intensity, 3.5f);
+    EXPECT_TRUE(snapshot->primaryDirectionalLight.IsShadowEligible());
+}
+
+TEST(SceneRendererPassRecordingValidation,
+     PrimaryDirectionalLightSelectionPreservesSceneOrderAndCallerValues)
+{
+    struct SelectionCase
+    {
+        const char* name = "";
+        std::vector<RenderLight> lights;
+        bool selected = false;
+        bool castsShadow = false;
+        Vec3 direction{0.5f, -0.8f, 0.3f};
+        Vec3 color{1.0f, 1.0f, 1.0f};
+        float32 intensity = 4.0f;
+        bool mutateCaller = false;
+    };
+
+    const auto directional = [](const Vec3& direction,
+                                const Vec3& color,
+                                float32 intensity,
+                                bool castsShadow)
+    {
+        RenderLight light;
+        light.type = RenderLight::Type::Directional;
+        light.direction = direction;
+        light.color = color;
+        light.intensity = intensity;
+        light.castsShadow = castsShadow;
+        return light;
+    };
+    RenderLight point = directional(
+        Vec3{0.0f, 0.0f, -1.0f}, Vec3{1.0f}, 10.0f, true);
+    point.type = RenderLight::Type::Point;
+
+    const std::vector<SelectionCase> cases = {
+        {"no directional light", {point}, false, false},
+        {"first non-caster wins over later caster",
+         {directional(Vec3{0.1f, -0.9f, 0.2f}, Vec3{0.3f, 0.5f, 0.7f}, 2.0f, false),
+          directional(Vec3{-0.6f, -0.4f, 0.7f}, Vec3{1.0f, 0.2f, 0.1f}, 9.0f, true)},
+         true, false, Vec3{0.1f, -0.9f, 0.2f}, Vec3{0.3f, 0.5f, 0.7f}, 2.0f},
+        {"first eligible caster",
+         {directional(Vec3{-0.2f, -0.8f, 0.5f}, Vec3{0.8f, 0.7f, 0.6f}, 3.0f, true),
+          directional(Vec3{0.4f, -0.6f, 0.7f}, Vec3{0.1f, 0.2f, 1.0f}, 4.0f, true)},
+         true, true, Vec3{-0.2f, -0.8f, 0.5f}, Vec3{0.8f, 0.7f, 0.6f}, 3.0f},
+        {"zero and negative intensities skip",
+         {directional(Vec3{1.0f, 0.0f, 0.0f}, Vec3{1.0f, 0.0f, 0.0f}, 0.0f, true),
+          directional(Vec3{0.0f, 1.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f}, -2.0f, true),
+          directional(Vec3{0.0f, 0.0f, 1.0f}, Vec3{0.0f, 0.0f, 1.0f}, 5.0f, true)},
+         true, true, Vec3{0.0f, 0.0f, 1.0f}, Vec3{0.0f, 0.0f, 1.0f}, 5.0f},
+        {"NaN intensity skips to the later finite directional light",
+         {directional(Vec3{1.0f, 0.0f, 0.0f}, Vec3{1.0f, 0.0f, 0.0f},
+                      std::numeric_limits<float32>::quiet_NaN(), true),
+          directional(Vec3{0.0f, -1.0f, 0.0f}, Vec3{0.2f, 0.6f, 0.9f}, 5.0f, true)},
+         true, true, Vec3{0.0f, -1.0f, 0.0f}, Vec3{0.2f, 0.6f, 0.9f}, 5.0f, true},
+        {"caller mutation cannot alter copied scene light",
+         {directional(Vec3{0.3f, -0.4f, 0.8f}, Vec3{0.6f, 0.4f, 0.2f}, 6.0f, true)},
+         true, true, Vec3{0.3f, -0.4f, 0.8f}, Vec3{0.6f, 0.4f, 0.2f}, 6.0f, true},
+    };
+
+    for (const SelectionCase& testCase : cases)
+    {
+        SCOPED_TRACE(testCase.name);
+        RenderScene scene;
+        for (RenderLight light : testCase.lights)
+        {
+            scene.AddLight(light);
+            if (testCase.mutateCaller)
+            {
+                light.direction = Vec3{9.0f, 9.0f, 9.0f};
+                light.color = Vec3{8.0f, 8.0f, 8.0f};
+                light.intensity = -1.0f;
+                light.castsShadow = false;
+            }
+        }
+        const PrimaryDirectionalLightRecordInput& selected =
+            SelectPrimaryDirectionalLightRecordInput(scene);
+        EXPECT_EQ(selected.selected, testCase.selected);
+        EXPECT_EQ(selected.castsShadow, testCase.castsShadow);
+        EXPECT_FLOAT_EQ(selected.direction.x, testCase.direction.x);
+        EXPECT_FLOAT_EQ(selected.direction.y, testCase.direction.y);
+        EXPECT_FLOAT_EQ(selected.direction.z, testCase.direction.z);
+        EXPECT_FLOAT_EQ(selected.color.x, testCase.color.x);
+        EXPECT_FLOAT_EQ(selected.color.y, testCase.color.y);
+        EXPECT_FLOAT_EQ(selected.color.z, testCase.color.z);
+        EXPECT_FLOAT_EQ(selected.intensity, testCase.intensity);
+        EXPECT_EQ(selected.IsShadowEligible(), testCase.selected && testCase.castsShadow);
+
+        RenderPassRecordContext context;
+        context.primaryDirectionalLight = selected;
+        RenderPassRecordResults results;
+        const std::shared_ptr<const RenderPassFrameSnapshot> snapshot =
+            MakeRenderPassFrameSnapshot(context, results);
+        ASSERT_TRUE(snapshot);
+        EXPECT_TRUE(std::isfinite(snapshot->view.directionalLightDirection.x));
+        EXPECT_TRUE(std::isfinite(snapshot->view.directionalLightDirection.y));
+        EXPECT_TRUE(std::isfinite(snapshot->view.directionalLightDirection.z));
+        EXPECT_TRUE(std::isfinite(snapshot->view.directionalLightColor.x));
+        EXPECT_TRUE(std::isfinite(snapshot->view.directionalLightColor.y));
+        EXPECT_TRUE(std::isfinite(snapshot->view.directionalLightColor.z));
+        EXPECT_TRUE(std::isfinite(snapshot->view.directionalLightIntensity));
+    }
 }
 
 TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
@@ -12360,7 +12878,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     ConfigureResources(shadowPass, gpuResources, pipelineCache);
     shadowPass.SetRenderScene(&scene);
     shadowPass.SetConfig(shadowConfig);
-    shadowPass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    shadowPass.SetEnabled(true);
 
     std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
     std::vector<RenderDrawItem> maskedItems;
@@ -12478,7 +12996,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsMissingShadowSRVWhenRequest
     ConfigureResources(shadowPass, gpuResources, pipelineCache);
     shadowPass.SetRenderScene(&scene);
     shadowPass.SetConfig(shadowConfig);
-    shadowPass.SetDirectionalLight(Vec3{-0.3f, -1.0f, -0.2f}, Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    shadowPass.SetEnabled(true);
 
     std::vector<RenderDrawItem> opaqueItems = {MakeDrawItem(MaterialRenderMode::Opaque)};
     std::vector<RenderDrawItem> maskedItems;

@@ -1,8 +1,8 @@
 # Render Pass Record Context and Execution Data Contract
 
-**Status:** Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A, and Task 9B-6B1
-complete and independently reviewed; Task 9B-6B2a shared directional-light
-snapshot migration is next
+**Status:** Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A, Task 9B-6B1, and
+Task 9B-6B2a complete and independently reviewed; Task 9B-6B2b standalone
+frame-state compatibility removal is next
 **Date:** 2026-08-03
 **Scope:** Main raster pass chain; frame/view data ownership and RenderGraph
 recording lifetime
@@ -120,10 +120,9 @@ enable async compute.
 
 **Implementation status:** Raster Shadow, RayTracedShadow (9B-2),
 ObjectVelocity (9B-3), Transparent (9B-4), Skybox (9B-5), production binder
-removal (9B-6A), and typed Opaque attachment closure (9B-6B1) are implemented
-and reviewed. The shared primary-directional-light snapshot is pending
-9B-6B2a; remaining standalone Depth/Opaque/Shadow frame setters are pending
-9B-6B2b.
+removal (9B-6A), typed Opaque attachment closure (9B-6B1), and the shared
+primary-directional-light snapshot (9B-6B2a) are implemented and reviewed.
+Remaining standalone Depth/Opaque/Shadow frame setters are pending 9B-6B2b.
 
 - 9B-1 migrates raster Shadow to an independent graph-owned recorder. Setup
   publishes a producer-neutral `DirectionalShadowRecordOutput` with the current
@@ -189,8 +188,14 @@ and reviewed. The shared primary-directional-light snapshot is pending
   exact source/results/snapshot ownership validation, so foreign, stale,
   incomplete, forged, or reused-slot records are no-op and cannot pollute the
   source result channel.
-- 9B-6B2a moves the selected primary directional light into the value-owned
-  frame snapshot shared by DefaultLit, raster Shadow, and RayTracedShadow.
+- 9B-6B2a selects the first strictly positive-intensity directional light in
+  stable scene order and copies it into the value-owned frame snapshot shared
+  by DefaultLit, raster Shadow, and RayTracedShadow. Shadow feature settings
+  remain long-lived policy while `selected && castsShadow && intensity > 0`
+  is recording-local eligibility. Disabled or ineligible RT records publish a
+  current disabled result before any support, table, history, allocation, or
+  graph work. The legacy `ViewData` projection remains a bounded adapter until
+  9B-6B2b and is not used by production SceneRenderer recording.
 - 9B-6B2b removes the remaining Depth/Opaque/Shadow standalone frame-state
   compatibility setters after the shared light snapshot closes.
 - Preserve long-lived pass configuration and feature enablement.

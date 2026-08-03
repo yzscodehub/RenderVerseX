@@ -1,8 +1,8 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8, Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A, and
-Task 9B-6B1 are complete and reviewed; Task 9B-6B2a directional-light
-snapshot migration is next
+**Status:** Tasks 0-8, Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A,
+Task 9B-6B1, and Task 9B-6B2a are complete and reviewed; Task 9B-6B2b
+standalone frame-state compatibility removal is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -310,7 +310,7 @@ from submitted upper bounds and CPU reference visibility.
   graph handles, and retain both views and parent textures through submission
   completion. Foreign, stale, forged, incomplete, and view-creation failures
   declare no attachment usage and never fall back to raw setters.
-- [ ] Move the selected primary directional light into the frame snapshot and
+- [x] Move the selected primary directional light into the frame snapshot and
   make DefaultLit, raster Shadow, and RayTracedShadow consume that one
   value-owned selection. Keep long-lived feature enablement separate from
   per-frame shadow eligibility.
@@ -617,22 +617,24 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Task 9B-6B1 implementation, two independent review iterations, primary audit,
-and affected validation are complete. Start **Task 9B-6B2a** with the shared
-primary-directional-light snapshot. The completed 9B-6B1 acceptance ledger is:
+Task 9B-6B2a implementation, independent review, primary audit, unit/runtime
+validation, and DX12 RT smoke are complete. Start **Task 9B-6B2b** with the
+remaining Depth/Opaque/Shadow standalone frame-state compatibility removal.
+The completed 9B-6B2a acceptance ledger is:
 
-- [x] Guard the generic execution-data helper behind exact current-graph
-  source, plan, snapshot, results, and attachment validation so rejected
-  foreign/stale sources cannot initialize or overwrite their result channel.
-- [x] Reject forged current-generation and stale-generation color/depth handles
-  before setup declares RenderGraph usage.
-- [x] Resolve typed Opaque RTV/DSV only from current graph handles, preserve
-  color `RenderTarget` and depth `DepthWrite` declarations, and record depth
-  Clear/Store/non-read-only semantics.
-- [x] Retain attachment views and parent textures until the submission
-  completion token retires; prove reverse A/B execution isolation and raw
-  setter non-interference.
-- [x] Cover missing cache, null results, foreign/stale sources, reused slots,
-  forged indices, and actual RTV/DSV creation failure without fallback.
-- [x] Close independent review findings through `0/2/2/0`, `0/0/2/0`, and
-  final P0/P1/P2/P3 `0/0/0/0` gates.
+- [x] Select exactly one positive-intensity directional light in stable scene
+  order, reject NaN/zero/negative intensities, and value-copy it into the
+  frame snapshot before projecting DefaultLit `ViewData`.
+- [x] Keep feature enablement settings-only and evaluate raster/RT shadow
+  eligibility from the immutable primary-light record.
+- [x] Remove raster and ray-traced directional-light mailboxes; prove inverse
+  A/B recordings consume their own captured directions.
+- [x] Gate disabled or ineligible RT recordings before support/TLAS/material
+  table/history/resource work and publish a current disabled result with zero
+  graph passes or dispatches.
+- [x] Repair the pre-existing ModelViewer reset/resize readiness predicate so
+  reset write frames reject old history inputs and the next stable frame proves
+  history recovery; do not change production history semantics.
+- [x] Close independent review findings through final P0/P1/P2/P3
+  `0/0/0/0`; keep the stale visual golden mismatch explicit without updating
+  the golden or tolerance.

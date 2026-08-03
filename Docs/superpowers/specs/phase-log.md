@@ -45470,3 +45470,101 @@ below.
   later compatibility-closure stage.
 
 ---
+
+### R-SP341 Render-policy Task 9B-6B2a primary directional-light snapshot
+
+**Date:** 2026-08-03
+**Commit:** Included in the Task 9B-6B2a stage commit after the reviewed gate
+below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP340 (typed Opaque attachment ownership).
+- The production registry already records every pass through immutable
+  graph-owned contexts; this slice removes the remaining mutable directional
+  light selection shared by DefaultLit, raster Shadow, and RayTracedShadow.
+
+**Approved scope:**
+
+- Select the first strictly positive-intensity directional light in stable
+  scene order and value-copy it into `RenderPassFrameSnapshot`; NaN, zero, and
+  negative intensities cannot become primary or hide a later valid light.
+- Project that one record into DefaultLit `ViewData`, while raster and RT
+  shadow passes consume the same captured direction and eligibility.
+- Keep frame settings as the sole feature-enable source. A selected non-caster
+  may remain the primary lighting source but cannot produce either shadow path.
+- Publish an identity-correct disabled RT output and return before support,
+  TLAS/material-table, history, per-frame resource, graph, or dispatch work
+  when the feature is disabled or the primary light is ineligible.
+- Repair the pre-existing ModelViewer RT-shadow reset/resize readiness
+  predicate to reflect Task 9 history semantics: a reset write frame reads no
+  old mask/depth/normal history, and a subsequent submitted stable frame proves
+  recovery.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/RayTracedShadowPass.h`
+- `Render/Include/Render/Passes/RenderPassRecordContext.h`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Passes/RayTracedShadowPass.cpp`
+- `Render/Private/Passes/ShadowPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Samples/Showcase/ModelViewer/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- Task 9B plan/todo, record-context contract, and this phase record.
+
+**Validation result:**
+
+- Build: PASS for `RenderPassValidation`, `PipelineCacheValidation`,
+  `GPUDrivenValidation`, `RenderPolicyValidation`, `ModelViewer`, and
+  `VisualGoldenValidation`, including shared DX11/DX12/Vulkan/OpenGL targets.
+- RenderPassValidation: PASS 189/189.
+- PipelineCacheValidation: PASS 130/130.
+- GPUDrivenValidation: PASS 30/30.
+- RenderPolicyValidation: PASS 22/22.
+- Exact no-eligible, feature-disabled, NaN-selection, and typed history
+  lifecycle gates: PASS 4/4; GPU-driven smoke/parity matrix: PASS 5/5.
+- Native DX12 `ModelViewerRayTracedShadowSmoke`: PASS on NVIDIA GeForce RTX
+  4070 Ti with Debug Layer, including RT dispatch, reset/resize write frames,
+  and next-frame history recovery.
+- The dependent RT visual golden remains FAIL (MSE `458.535`, PSNR `21.5171`).
+  The checked-in golden dates to 2026-07-02. The pre-B2a actual artifact from
+  2026-08-02 and the freshly generated B2a capture compare pixel-identically
+  (`0` changed channel values, MSE `0`), proving this is an inherited stale
+  baseline rather than a B2a visual change. Capture/diff evidence is preserved;
+  no golden or tolerance was changed.
+- The independent DX11 `ModelViewerShadowSmoke` descriptor-visibility failure
+  remains unchanged and was not rerun after two prior identical failures.
+- `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Initial review found P0/P1/P2/P3 `0/1/1/0`: the RT feature/light gate was
+  after `IsSupported()` and table reads, and `<= 0` admitted NaN intensity.
+- Re-review also found a P2 exact-filter false green after the frozen
+  no-eligible test name was replaced. The implementation restored that exact
+  test and added a separate feature-disabled test.
+- The acceptance-gate repair received a separate read-only diagnosis and
+  independent review. Final unresolved P0/P1/P2/P3: `0/0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete production/test/Sample diff inspection, adjudication of
+  every review finding, independent rebuild and full test execution, and the
+  native DX12 smoke. No public RHI, shader ABI, backend shortcut, visual golden,
+  or tolerance changed.
+
+**Residual risks / follow-ups:**
+
+- Native Vulkan and Metal runtime validation remain unavailable on this
+  Windows host; shared contracts compile but no qualification claim is made.
+- Task 9B-6B2b removes the remaining standalone Depth/Opaque/Shadow frame-state
+  compatibility setters and completes the remaining inverse/rejected/resize
+  fixture ledger before Task 10A.
+- The stale RT visual golden and independent DX11 descriptor-visibility issue
+  remain explicit compatibility/visual-baseline gates; neither is hidden by
+  this stage.
+
+---

@@ -208,14 +208,6 @@ void ShadowPass::SetConfig(const ShadowPassConfig& config)
     m_cascades.resize(std::max(1u, config.numCascades));
 }
 
-void ShadowPass::SetDirectionalLight(const Vec3& direction, const Vec3& color, float intensity)
-{
-    m_lightDirection = direction;
-    m_lightColor = color;
-    m_lightIntensity = intensity;
-    m_enabled = true;  // Enable shadow pass when light is configured
-}
-
 void ShadowPass::AddToGraph(RenderGraph& graph, const ViewData& view)
 {
     struct LegacyPassData
@@ -261,9 +253,9 @@ void ShadowPass::AddToGraph(
         execution.frameSnapshot != nullptr && execution.results != nullptr;
 
     const ShadowPassConfig config = m_config;
-    const Vec3 lightDirection = m_lightDirection;
-    const Vec3 lightColor = m_lightColor;
-    const float lightIntensity = m_lightIntensity;
+    const PrimaryDirectionalLightRecordInput primaryLight = execution.frameSnapshot
+        ? execution.frameSnapshot->primaryDirectionalLight
+        : PrimaryDirectionalLightRecordInput{};
     const bool requestedEnabled = m_enabled;
     PipelineCache* const pipelineCache = m_pipelineCache;
     const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
@@ -277,9 +269,7 @@ void ShadowPass::AddToGraph(
         [execution,
          contextValid,
          config,
-         lightDirection,
-         lightColor,
-         lightIntensity,
+         primaryLight,
          requestedEnabled,
          pipelineCache,
          resourceRegistry,
@@ -305,17 +295,19 @@ void ShadowPass::AddToGraph(
             data.recorder->SetResourceRegistry(resourceRegistry);
             data.recorder->SetRenderScene(renderScene);
             data.recorder->SetConfig(config);
-            data.recorder->SetDirectionalLight(
-                lightDirection, lightColor, lightIntensity);
             data.recorder->SetEnabled(requestedEnabled);
-            data.recorder->Setup(builder, data.execution.view);
+            if (!primaryLight.IsShadowEligible())
+            {
+                return;
+            }
+            data.recorder->Setup(builder, data.execution.view, primaryLight);
 
             results->shadowStats = data.recorder->GetStats();
             results->directionalShadowOutput =
                 MakeDirectionalShadowRecordOutput(
                     data.execution.identity, *data.recorder);
         },
-        [results](const GraphPassData& data, RHICommandContext& ctx)
+        [results, primaryLight](const GraphPassData& data, RHICommandContext& ctx)
         {
             if (!results)
             {
@@ -326,7 +318,7 @@ void ShadowPass::AddToGraph(
                 results->shadowStats = {};
                 return;
             }
-            data.recorder->Execute(ctx, data.execution.view);
+            data.recorder->Execute(ctx, data.execution.view, primaryLight);
             results->shadowStats = data.recorder->GetStats();
         });
 }
@@ -379,7 +371,9 @@ bool ShadowPass::IsSupported() const
     return true;
 }
 
-void ShadowPass::CalculateCascades(const ViewData& view)
+void ShadowPass::CalculateCascades(
+    const ViewData& view,
+    const PrimaryDirectionalLightRecordInput& primaryLight)
 {
     if (m_cascades.empty())
         return;
@@ -389,7 +383,7 @@ void ShadowPass::CalculateCascades(const ViewData& view)
     const float range = farClip - nearClip;
     const float ratio = farClip / nearClip;
     const float lambda = clamp(m_config.cascadeSplitLambda, 0.0f, 1.0f);
-    const Vec3 lightDir = NormalizeOr(m_lightDirection, Vec3(0.0f, -1.0f, 0.0f));
+    const Vec3 lightDir = NormalizeOr(primaryLight.direction, Vec3(0.0f, -1.0f, 0.0f));
     const Vec3 worldUp(0.0f, 1.0f, 0.0f);
     const Vec3 lightUp = std::abs(dot(lightDir, worldUp)) > 0.95f ? Vec3(1.0f, 0.0f, 0.0f) : worldUp;
     const Vec3 lightRight = NormalizeOr(cross(lightDir, lightUp), Vec3(1.0f, 0.0f, 0.0f));
@@ -457,7 +451,21 @@ void ShadowPass::CalculateCascades(const ViewData& view)
 
 void ShadowPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
-    if (!IsEnabled())
+    PrimaryDirectionalLightRecordInput primaryLight;
+    primaryLight.selected = true;
+    primaryLight.castsShadow = true;
+    primaryLight.direction = view.directionalLightDirection;
+    primaryLight.color = view.directionalLightColor;
+    primaryLight.intensity = view.directionalLightIntensity;
+    Setup(builder, view, primaryLight);
+}
+
+void ShadowPass::Setup(
+    RenderGraphBuilder& builder,
+    const ViewData& view,
+    const PrimaryDirectionalLightRecordInput& primaryLight)
+{
+    if (!primaryLight.IsShadowEligible() || !IsEnabled())
         return;
 
     m_stats = {};
@@ -473,7 +481,7 @@ void ShadowPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         return;
     }
 
-    CalculateCascades(view);
+    CalculateCascades(view, primaryLight);
     m_stats.configuredCascadeCount = static_cast<uint32_t>(m_cascades.size());
 
     const RHIFormat depthFormat = m_pipelineCache ? m_pipelineCache->GetConfig().depthStencilFormat
@@ -502,7 +510,24 @@ void ShadowPass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
 void ShadowPass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
-    (void)view;
+    PrimaryDirectionalLightRecordInput primaryLight;
+    primaryLight.selected = true;
+    primaryLight.castsShadow = true;
+    primaryLight.direction = view.directionalLightDirection;
+    primaryLight.color = view.directionalLightColor;
+    primaryLight.intensity = view.directionalLightIntensity;
+    Execute(ctx, view, primaryLight);
+}
+
+void ShadowPass::Execute(
+    RHICommandContext& ctx,
+    const ViewData& view,
+    const PrimaryDirectionalLightRecordInput& primaryLight)
+{
+    if (!primaryLight.IsShadowEligible())
+    {
+        return;
+    }
 
     if (!IsEnabled())
     {
@@ -536,7 +561,7 @@ void ShadowPass::Execute(RHICommandContext& ctx, const ViewData& view)
     // Render each cascade
     for (uint32_t i = 0; i < static_cast<uint32_t>(m_cascades.size()); ++i)
     {
-        RenderCascade(ctx, view, i);
+        RenderCascade(ctx, view, i, primaryLight);
     }
 
     m_pipelineCache->UpdateViewConstants(view);
@@ -581,7 +606,11 @@ bool ShadowPass::ResolveCascadeViews(const ViewData& view)
     return m_stats.resolvedCascadeViewCount == m_cascadeTextureHandles.size();
 }
 
-void ShadowPass::RenderCascade(RHICommandContext& ctx, const ViewData& view, uint32_t cascadeIndex)
+void ShadowPass::RenderCascade(
+    RHICommandContext& ctx,
+    const ViewData& view,
+    uint32_t cascadeIndex,
+    const PrimaryDirectionalLightRecordInput& primaryLight)
 {
     if (cascadeIndex >= m_cascadeViews.size() || !m_cascadeViews[cascadeIndex])
     {
@@ -590,7 +619,7 @@ void ShadowPass::RenderCascade(RHICommandContext& ctx, const ViewData& view, uin
 
     ViewData shadowView = view;
     shadowView.viewProjectionMatrix = m_cascades[cascadeIndex].viewProjection;
-    shadowView.cameraForward = NormalizeOr(m_lightDirection, Vec3(0.0f, -1.0f, 0.0f));
+    shadowView.cameraForward = NormalizeOr(primaryLight.direction, Vec3(0.0f, -1.0f, 0.0f));
     m_pipelineCache->UpdateViewConstants(shadowView);
 
     // Begin shadow render pass for this cascade

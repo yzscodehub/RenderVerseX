@@ -78,7 +78,6 @@ namespace RVX
         }
         void SetConfig(const ShadowPassConfig& config) { m_config = config; }
         const ShadowPassConfig& GetConfig() const { return m_config; }
-        void SetDirectionalLight(const Vec3& direction, const Vec3& color, float intensity);
 
         /** @brief Last submitted diagnostics; graph consumers must use record results. */
         const RayTracedShadowPassStats& GetStats() const { return m_lastSubmittedStats; }
@@ -91,9 +90,6 @@ namespace RVX
         RayTracingSceneManager* m_sceneManager = nullptr;
         RenderSubmissionTracker* m_submissionTracker = nullptr;
         ShadowPassConfig m_config;
-        Vec3 m_lightDirection{0.0f, -1.0f, 0.0f};
-        Vec3 m_lightColor{1.0f, 1.0f, 1.0f};
-        float m_lightIntensity = 0.0f;
         bool m_enabled = false;
         mutable std::string m_unsupportedReason = "Ray traced shadows have not been requested";
 

@@ -1204,6 +1204,16 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     m_shadowPassConfig.cascadeBlendRatio =
         frameSettings.shadows.cascadeBlendRatio;
     ApplyShadowPassConfig(m_shadowPassConfig);
+    if (m_shadowPass)
+    {
+        m_shadowPass->SetEnabled(frameSettings.shadows.enabled);
+    }
+    if (m_rayTracedShadowPass)
+    {
+        m_rayTracedShadowPass->SetEnabled(
+            frameSettings.rayTracing.enabled &&
+            frameSettings.rayTracing.enableShadows);
+    }
 
     GPUCullingConfig gpuCullingConfig = GetGPUDrivenCullingConfig();
     gpuCullingConfig.maxInstances = frameSettings.gpuCulling.maxVisibleObjects;
@@ -2640,13 +2650,13 @@ void SceneRenderer::Render()
         m_materialSystem->BeginFrame();
     }
 
-    // Update view constants in pipeline cache
+    PreparePassesForFrame();
+    // The ViewData directional values are a projection of this frame's
+    // value-owned primary-light record. Upload only after that projection.
     if (m_pipelineCache && m_pipelineCache->IsInitialized())
     {
         m_pipelineCache->UpdateViewConstants(m_viewData);
     }
-
-    PreparePassesForFrame();
     RunPreGraphPrepareCallbacks();
     PrepareRayTracingScene();
 
@@ -3414,9 +3424,11 @@ void SceneRenderer::ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,
 
 void SceneRenderer::PreparePassesForFrame()
 {
-    m_viewData.directionalLightDirection = Vec3{0.5f, -0.8f, 0.3f};
-    m_viewData.directionalLightIntensity = 4.0f;
-    m_viewData.directionalLightColor = Vec3{1.0f, 1.0f, 1.0f};
+    m_primaryDirectionalLight =
+        SelectPrimaryDirectionalLightRecordInput(m_renderScene);
+    m_viewData.directionalLightDirection = m_primaryDirectionalLight.direction;
+    m_viewData.directionalLightIntensity = m_primaryDirectionalLight.intensity;
+    m_viewData.directionalLightColor = m_primaryDirectionalLight.color;
     m_viewData.directionalShadowEnabled = 0;
     m_viewData.directionalShadowCascadeCount = 0;
     m_viewData.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -3429,13 +3441,8 @@ void SceneRenderer::PreparePassesForFrame()
     m_viewData.rayTracedShadowFilterRadiusPixels = 1.0f;
     m_viewData.rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
 
-    if (m_shadowPass)
-    {
-        m_shadowPass->SetEnabled(false);
-    }
     if (m_rayTracedShadowPass)
     {
-        m_rayTracedShadowPass->SetEnabled(false);
         m_rayTracedShadowPass->SetRayTracingScene(m_rayTracingSceneManager.get());
     }
     if (m_cameraVelocityPass)
@@ -3551,30 +3558,6 @@ void SceneRenderer::PreparePassesForFrame()
                 }
             }
         }
-    }
-
-    for (const RenderLight& light : m_renderScene.GetLights())
-    {
-        if (light.type != RenderLight::Type::Directional || light.intensity <= 0.0f)
-            continue;
-
-        m_viewData.directionalLightDirection = light.direction;
-        m_viewData.directionalLightIntensity = light.intensity;
-        m_viewData.directionalLightColor = light.color;
-
-        if (light.castsShadow)
-        {
-            if (m_shadowPass)
-            {
-                m_shadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);
-            }
-            if (m_rayTracedShadowPass)
-            {
-                m_rayTracedShadowPass->SetEnabled(true);
-                m_rayTracedShadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);
-            }
-        }
-        break;
     }
 
 }
@@ -4220,6 +4203,7 @@ void SceneRenderer::BuildRenderGraph()
     // a GPU slice from an older recording cannot be accepted by Depth/Opaque.
     RenderPassRecordContext passRecordContext;
     passRecordContext.view = m_viewData;
+    passRecordContext.primaryDirectionalLight = m_primaryDirectionalLight;
     passRecordContext.identity.graph = m_renderGraph.get();
     passRecordContext.identity.graphIdentity = m_renderGraph->GetGraphIdentity();
     passRecordContext.identity.graphRecordingGeneration =

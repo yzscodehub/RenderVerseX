@@ -263,10 +263,62 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief The single directional light selected for one graph recording.
+     *
+     * This value is the authoritative primary-light choice for DefaultLit and
+     * both directional shadow implementations. ViewData is only a derived
+     * projection for shader constants; pass recording must not re-select from
+     * scene lights or mutable pass state.
+     */
+    struct PrimaryDirectionalLightRecordInput
+    {
+        bool selected = false;
+        bool castsShadow = false;
+        Vec3 direction{0.5f, -0.8f, 0.3f};
+        float32 intensity = 4.0f;
+        Vec3 color{1.0f, 1.0f, 1.0f};
+
+        [[nodiscard]] bool IsShadowEligible() const noexcept
+        {
+            return selected && castsShadow && intensity > 0.0f;
+        }
+    };
+
+    /**
+     * @brief Select the single directional-light record for one scene frame.
+     *
+     * Scene order is authoritative. The first positive-intensity directional
+     * light is retained even when it does not cast shadows, so later casters
+     * cannot split DefaultLit and shadow semantics.
+     */
+    [[nodiscard]] inline PrimaryDirectionalLightRecordInput
+    SelectPrimaryDirectionalLightRecordInput(const RenderScene& scene)
+    {
+        for (const RenderLight& light : scene.GetLights())
+        {
+            if (light.type != RenderLight::Type::Directional ||
+                !(light.intensity > 0.0f))
+            {
+                continue;
+            }
+
+            PrimaryDirectionalLightRecordInput result;
+            result.selected = true;
+            result.castsShadow = light.castsShadow;
+            result.direction = light.direction;
+            result.color = light.color;
+            result.intensity = light.intensity;
+            return result;
+        }
+        return {};
+    }
+
     /** @brief Value-owned scene state used by typed main-scene pass recording. */
     struct RenderPassFrameSnapshot
     {
         RenderPassRecordIdentity identity{};
+        PrimaryDirectionalLightRecordInput primaryDirectionalLight{};
         ViewData view{};
         RenderFrameExecutionPlan executionPlan{};
         SceneMeshPassPreparation meshPassPreparation{};
@@ -370,6 +422,7 @@ namespace RVX
     struct RenderPassRecordContext
     {
         ViewData view{};
+        PrimaryDirectionalLightRecordInput primaryDirectionalLight{};
         RenderPassRecordIdentity identity{};
         const RenderFrameExecutionPlan* executionPlan = nullptr;
         const SceneMeshPassPreparation* meshPassPreparation = nullptr;
@@ -506,7 +559,14 @@ namespace RVX
     {
         auto snapshot = std::make_shared<RenderPassFrameSnapshot>();
         snapshot->identity = context.identity;
+        snapshot->primaryDirectionalLight = context.primaryDirectionalLight;
         snapshot->view = context.view;
+        snapshot->view.directionalLightDirection =
+            snapshot->primaryDirectionalLight.direction;
+        snapshot->view.directionalLightColor =
+            snapshot->primaryDirectionalLight.color;
+        snapshot->view.directionalLightIntensity =
+            snapshot->primaryDirectionalLight.intensity;
         if (context.executionPlan != nullptr)
         {
             snapshot->executionPlan = *context.executionPlan;
@@ -610,6 +670,13 @@ namespace RVX
         context.meshPassPreparation = view.meshPassPreparation;
         context.visibility = view.renderVisibility;
         context.executionReport = view.renderFrameExecutionReport;
+        // The legacy ViewData adapter is intentionally bounded to one graph.
+        // Typed scene recording supplies this value directly from the renderer.
+        context.primaryDirectionalLight.selected = true;
+        context.primaryDirectionalLight.castsShadow = true;
+        context.primaryDirectionalLight.direction = view.directionalLightDirection;
+        context.primaryDirectionalLight.color = view.directionalLightColor;
+        context.primaryDirectionalLight.intensity = view.directionalLightIntensity;
         context.legacyAdapter = true;
         return context;
     }

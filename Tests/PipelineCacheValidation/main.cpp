@@ -2970,16 +2970,32 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererUsesSamePrimaryDirectionalLi
 
     const fs::path sceneRendererPath = FindShaderDirectory().parent_path() /
         "Private" / "Renderer" / "SceneRenderer.cpp";
+    const fs::path contextPath = FindShaderDirectory().parent_path() /
+        "Include" / "Render" / "Passes" / "RenderPassRecordContext.h";
     const std::string source = ReadTextFile(sceneRendererPath);
-    EXPECT_NE(source.find("m_viewData.directionalLightDirection = Vec3{0.5f, -0.8f, 0.3f};"),
+    const std::string contextHeader = ReadTextFile(contextPath);
+    EXPECT_NE(contextHeader.find("struct PrimaryDirectionalLightRecordInput"),
               std::string::npos);
-    EXPECT_NE(source.find("m_viewData.directionalLightColor = Vec3{1.0f, 1.0f, 1.0f};"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.directionalLightDirection = light.direction;"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.directionalLightIntensity = light.intensity;"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.directionalLightColor = light.color;"), std::string::npos);
-    EXPECT_NE(source.find("m_shadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);"),
+    EXPECT_NE(contextHeader.find("PrimaryDirectionalLightRecordInput primaryDirectionalLight{};"),
               std::string::npos);
-    EXPECT_NE(source.find("m_rayTracedShadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);"),
+    EXPECT_NE(contextHeader.find("snapshot->primaryDirectionalLight = context.primaryDirectionalLight;"),
+              std::string::npos);
+    EXPECT_NE(contextHeader.find("snapshot->view.directionalLightDirection ="),
+              std::string::npos);
+    EXPECT_NE(contextHeader.find("SelectPrimaryDirectionalLightRecordInput(const RenderScene& scene)"),
+              std::string::npos);
+    EXPECT_NE(contextHeader.find("later casters"), std::string::npos);
+    EXPECT_NE(source.find("SelectPrimaryDirectionalLightRecordInput(m_renderScene);"),
+              std::string::npos);
+    EXPECT_NE(source.find("passRecordContext.primaryDirectionalLight = m_primaryDirectionalLight;"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_shadowPass->SetEnabled(frameSettings.shadows.enabled);"),
+              std::string::npos);
+    EXPECT_NE(source.find("frameSettings.rayTracing.enableShadows"),
+              std::string::npos);
+    EXPECT_EQ(source.find("m_shadowPass->SetDirectional" "Light("),
+              std::string::npos);
+    EXPECT_EQ(source.find("m_rayTracedShadowPass->SetDirectional" "Light("),
               std::string::npos);
 }
 
@@ -3867,8 +3883,10 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
               std::string::npos);
     EXPECT_NE(source.find("m_rayTracedReflectionCompositePass->SetDenoisedReflectionSource(m_rayTracedReflectionDenoisePass);"),
               std::string::npos);
-    EXPECT_NE(source.find("m_rayTracedShadowPass->SetEnabled(false);"), std::string::npos);
-    EXPECT_NE(source.find("m_rayTracedShadowPass->SetEnabled(true);"), std::string::npos);
+    EXPECT_NE(source.find("m_rayTracedShadowPass->SetEnabled(\n"
+                          "            frameSettings.rayTracing.enabled &&\n"
+                          "            frameSettings.rayTracing.enableShadows);"),
+              std::string::npos);
     EXPECT_NE(source.find("m_cameraVelocityPass->SetEnabled(false);"), std::string::npos);
     EXPECT_NE(source.find("const bool cameraVelocityRequested = rayTracedReflectionsRequested && m_postProcessSettings.enableTAA;"),
               std::string::npos);
@@ -6239,6 +6257,18 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
     EXPECT_NE(source.find("stats.shadowWidth == expectedWidth && stats.shadowHeight == expectedHeight"),
               std::string::npos);
     EXPECT_NE(source.find("!stats.shadowTemporalAccumulated"), std::string::npos);
+    EXPECT_NE(source.find(
+                  "stats.shadowHistoryReset &&\n"
+                  "                           !stats.shadowHistoryAvailable &&\n"
+                  "                           !stats.shadowDepthHistoryAvailable && !stats.shadowNormalHistoryAvailable &&\n"
+                  "                           !stats.shadowTemporalAccumulated;"),
+              std::string::npos);
+    EXPECT_NE(source.find(
+                  "stats.shadowHistoryResolutionChanged && !stats.shadowHistoryConfigChanged &&\n"
+                  "                           !stats.shadowHistoryAvailable &&\n"
+                  "                           !stats.shadowDepthHistoryAvailable && !stats.shadowNormalHistoryAvailable &&\n"
+                  "                           !stats.shadowTemporalAccumulated && sizeMatches;"),
+              std::string::npos);
     EXPECT_NE(source.find("stats.reflectionRequested && stats.reflectionSupported && stats.reflectionRecorded"),
               std::string::npos);
     EXPECT_NE(source.find("stats.reflectionHistoryAvailable &&"), std::string::npos);
@@ -8202,20 +8232,26 @@ TEST_F(PipelineCacheValidationFixture,
                   "int32_t GetPriority() const override { return 200; }"),
               std::string::npos);
 
-    const size_t setLight = shadowSource.find("data.recorder->SetDirectionalLight(");
     const size_t setEnabled = shadowSource.find(
         "data.recorder->SetEnabled(requestedEnabled);");
+    const size_t primaryLight = shadowSource.find(
+        "const PrimaryDirectionalLightRecordInput primaryLight = execution.frameSnapshot");
+    const size_t eligibleGate = shadowSource.find(
+        "if (!primaryLight.IsShadowEligible())");
     const size_t setup = shadowSource.find(
-        "data.recorder->Setup(builder, data.execution.view);");
+        "data.recorder->Setup(builder, data.execution.view, primaryLight);");
     const size_t publishOutput = shadowSource.find(
         "MakeDirectionalShadowRecordOutput(", setup);
-    ASSERT_NE(setLight, std::string::npos);
     ASSERT_NE(setEnabled, std::string::npos);
+    ASSERT_NE(primaryLight, std::string::npos);
+    ASSERT_NE(eligibleGate, std::string::npos);
     ASSERT_NE(setup, std::string::npos);
     ASSERT_NE(publishOutput, std::string::npos);
-    EXPECT_LT(setLight, setEnabled);
+    EXPECT_LT(primaryLight, setEnabled);
     EXPECT_LT(setEnabled, setup);
+    EXPECT_LT(eligibleGate, setup);
     EXPECT_LT(setup, publishOutput);
+    EXPECT_EQ(shadowSource.find("SetDirectional" "Light("), std::string::npos);
 
     EXPECT_NE(rendererSource.find(
                   "passRecordContext.results->directionalShadowOutput.identity ="),
@@ -8225,7 +8261,7 @@ TEST_F(PipelineCacheValidationFixture,
                   "                passRecordContext.results->directionalShadowOutput;"),
               std::string::npos);
     EXPECT_NE(rendererSource.find(
-                  "pass.get() == m_shadowPass || pass.get() == m_depthPrepass"),
+                  "m_shadowPass->PublishRecordResults("),
               std::string::npos);
     EXPECT_EQ(rendererSource.find("m_shadowPass->GetShadowMapTextureHandle"),
               std::string::npos);

@@ -1,8 +1,8 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-8, Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A, and
-Task 9B-6B1 are complete and reviewed; Task 9B-6B2a shared directional-light
-snapshot migration is next.
+**Status:** Tasks 0-8, Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A,
+Task 9B-6B1, and Task 9B-6B2a are complete and reviewed; Task 9B-6B2b
+standalone frame-state compatibility removal is next.
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
