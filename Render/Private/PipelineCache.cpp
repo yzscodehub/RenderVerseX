@@ -271,6 +271,81 @@ namespace
         return result;
     }
 
+    ViewConstants BuildViewConstantsSnapshot(const ViewData& view,
+                                              RHIBackendType backend,
+                                              bool reverseZ)
+    {
+        ViewConstants constants{};
+        constants.viewProjection = ApplyBackendClipConvention(view.viewProjectionMatrix, backend);
+        constants.cameraPosition = view.cameraPosition;
+        constants.time = view.time;
+        constants.lightDirection = NormalizeOr(view.directionalLightDirection, Vec3(0.5f, -0.8f, 0.3f));
+        const Vec3 cameraForward = NormalizeOr(view.cameraForward, Vec3(0.0f, 0.0f, -1.0f));
+        constants.directionalLightIntensity = ClampFiniteNonNegative(view.directionalLightIntensity, 4.0f);
+        constants.directionalLightColor = SanitizeLightColor(view.directionalLightColor);
+        const bool iblAmbientEnabled = view.iblAmbientEnabled != 0;
+        constants.iblDiffuseAmbient = Vec4(view.iblDiffuseColor,
+                                           iblAmbientEnabled ? view.iblDiffuseIntensity : 0.0f);
+        constants.iblSpecularAmbient = Vec4(view.iblSpecularColor,
+                                            iblAmbientEnabled ? view.iblSpecularIntensity : 0.0f);
+        constants.iblTextureParams = Vec4(
+            view.textureIBLEnabled != 0 ? 1.0f : 0.0f,
+            static_cast<float>(std::max(1u, view.textureIBLPrefilteredMipLevels)),
+            ClampFiniteNonNegative(view.textureIBLIntensity, 1.0f),
+            ClampFiniteNonNegative(view.ambientFloorIntensity, 0.08f));
+
+        uint32 shadowCascadeCount = view.directionalShadowEnabled != 0
+            ? view.directionalShadowCascadeCount : 0;
+        if (view.directionalShadowEnabled != 0 && shadowCascadeCount == 0)
+        {
+            shadowCascadeCount = 1;
+        }
+        shadowCascadeCount = std::min(shadowCascadeCount, RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
+        constants.cameraForwardAndShadowCascadeCount =
+            Vec4(cameraForward, static_cast<float>(shadowCascadeCount));
+        for (uint32 i = 0; i < RVX_MAX_DIRECTIONAL_SHADOW_CASCADES; ++i)
+        {
+            const Mat4& sourceMatrix = view.directionalShadowCascadeCount > 0
+                ? view.directionalShadowViewProjections[i]
+                : (i == 0 ? view.directionalShadowViewProjection : Mat4Identity());
+            constants.directionalShadowViewProjections[i] =
+                ApplyBackendClipConvention(sourceMatrix, backend);
+        }
+        constants.directionalShadowCascadeSplits = Vec4(
+            ClampFiniteNonNegative(view.directionalShadowCascadeSplits.x, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeSplits.y, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeSplits.z, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeSplits.w, 0.0f));
+        constants.directionalShadowCascadeFadeDistances = Vec4(
+            ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.x, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.y, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.z, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.w, 0.0f));
+        const bool directionalShadowEnabled = view.directionalShadowEnabled != 0 &&
+                                              shadowCascadeCount > 0 && !reverseZ;
+        const float shadowInvMapSize = ClampFiniteNonNegative(view.directionalShadowInvMapSize, 0.0f);
+        const float shadowFilterRadiusTexels =
+            ClampFiniteNonNegative(view.directionalShadowFilterRadiusTexels, 1.0f);
+        const float unclampedShadowFilterStep = shadowInvMapSize * shadowFilterRadiusTexels;
+        const float shadowFilterStep = std::isfinite(unclampedShadowFilterStep)
+            ? std::max(0.0f, unclampedShadowFilterStep) : shadowInvMapSize;
+        constants.directionalShadowParams = Vec4(
+            directionalShadowEnabled ? 1.0f : 0.0f,
+            ClampFiniteNonNegative(view.directionalShadowDepthBias, 0.005f),
+            std::min(ClampFiniteNonNegative(view.directionalShadowStrength, 1.0f), 1.0f),
+            shadowFilterStep);
+        constants.directionalShadowReceiverParams = Vec4(
+            ClampFiniteNonNegative(view.directionalShadowNormalBias, 0.02f),
+            0.0f, 0.0f, 0.0f);
+        const float rayTracedShadowMode =
+            view.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster ? 1.0f : 0.0f;
+        constants.rayTracedShadowParams = Vec4(
+            view.rayTracedShadowEnabled != 0 ? 1.0f : 0.0f,
+            std::min(ClampFiniteNonNegative(view.rayTracedShadowFilterRadiusPixels, 1.0f), 3.0f),
+            rayTracedShadowMode, 0.0f);
+        return constants;
+    }
+
     std::filesystem::path GetManifestPath(const std::filesystem::path& directory)
     {
         return directory / PipelineCache::GetManifestFileName();
@@ -3096,6 +3171,218 @@ RHIDescriptorSetLayout* PipelineCache::GetMaterialSetLayout() const
 std::array<uint32, 1> PipelineCache::GetCurrentObjectDynamicOffset() const
 {
     return BuildSingleDynamicOffset(m_currentObjectConstantOffset);
+}
+
+bool PipelineCache::CreateRasterDrawBindingSnapshot(
+    const ViewData& view,
+    uint32 objectCapacity,
+    RasterDrawBindingSnapshot& outSnapshot) const
+{
+    outSnapshot = {};
+    if (!m_device || !m_initialized || !m_frameDescriptorSet ||
+        !m_objectDescriptorSet || !m_pipelineLayout || m_setLayouts.size() < 3 ||
+        !m_setLayouts[0] || !m_setLayouts[1] || !m_setLayouts[2])
+    {
+        return false;
+    }
+
+    const uint32 capacity = std::max(1u, objectCapacity);
+    const uint64 objectStride = m_objectConstantStride != 0
+        ? m_objectConstantStride : AlignConstantBufferSize(sizeof(ObjectConstants));
+    if (capacity > 1 &&
+        objectStride > static_cast<uint64>(std::numeric_limits<uint32>::max()) /
+                           static_cast<uint64>(capacity - 1) ||
+        objectStride > std::numeric_limits<uint64>::max() /
+                           static_cast<uint64>(capacity))
+    {
+        return false;
+    }
+    RHIBufferDesc viewDesc;
+    viewDesc.size = AlignConstantBufferSize(sizeof(ViewConstants));
+    viewDesc.usage = RHIBufferUsage::Constant;
+    viewDesc.memoryType = RHIMemoryType::Upload;
+    viewDesc.debugName = "ObjectVelocityRecordViewConstants";
+    RHIBufferRef viewBuffer = m_device->CreateBuffer(viewDesc);
+    if (!viewBuffer)
+    {
+        return false;
+    }
+    const ViewConstants viewConstants = BuildViewConstantsSnapshot(
+        view, m_device->GetBackendType(), m_config.reverseZ);
+    void* viewMapped = viewBuffer->Map();
+    if (!viewMapped)
+    {
+        return false;
+    }
+    std::memcpy(viewMapped, &viewConstants, sizeof(ViewConstants));
+    viewBuffer->Unmap();
+
+    RHIBufferDesc objectDesc;
+    objectDesc.size = objectStride * capacity;
+    objectDesc.usage = RHIBufferUsage::Constant;
+    objectDesc.memoryType = RHIMemoryType::Upload;
+    objectDesc.debugName = "ObjectVelocityRecordObjectConstants";
+    RHIBufferRef objectBuffer = m_device->CreateBuffer(objectDesc);
+    if (!objectBuffer)
+    {
+        return false;
+    }
+
+    RHIDescriptorSetDesc frameSetDesc;
+    frameSetDesc.layout = m_setLayouts[0].Get();
+    frameSetDesc.bindings = m_frameDescriptorSet->GetDescriptorSnapshot();
+    frameSetDesc.debugName = "ObjectVelocityRecordFrameDescriptorSet";
+    bool replacedFrameBinding = false;
+    for (RHIDescriptorBinding& binding : frameSetDesc.bindings)
+    {
+        if (binding.binding == 0 && binding.arrayElement == 0)
+        {
+            binding.buffer = viewBuffer.Get();
+            binding.offset = 0;
+            binding.range = AlignConstantBufferSize(sizeof(ViewConstants));
+            binding.textureView = nullptr;
+            binding.sampler = nullptr;
+            binding.accelerationStructure = nullptr;
+            replacedFrameBinding = true;
+            break;
+        }
+    }
+    if (!replacedFrameBinding)
+    {
+        frameSetDesc.BindBuffer(0, viewBuffer.Get(), 0,
+                                AlignConstantBufferSize(sizeof(ViewConstants)));
+    }
+    RHIDescriptorSetRef frameSet = m_device->CreateDescriptorSet(frameSetDesc);
+    if (!frameSet)
+    {
+        return false;
+    }
+
+    RHIDescriptorSetDesc objectSetDesc;
+    objectSetDesc.layout = m_setLayouts[1].Get();
+    objectSetDesc.bindings = m_objectDescriptorSet->GetDescriptorSnapshot();
+    objectSetDesc.debugName = "ObjectVelocityRecordObjectDescriptorSet";
+    bool replacedObjectBinding = false;
+    for (RHIDescriptorBinding& binding : objectSetDesc.bindings)
+    {
+        if (binding.binding == 0 && binding.arrayElement == 0)
+        {
+            binding.buffer = objectBuffer.Get();
+            binding.offset = 0;
+            binding.range = objectStride;
+            binding.textureView = nullptr;
+            binding.sampler = nullptr;
+            binding.accelerationStructure = nullptr;
+            replacedObjectBinding = true;
+            break;
+        }
+    }
+    if (!replacedObjectBinding)
+    {
+        objectSetDesc.BindBuffer(0, objectBuffer.Get(), 0, objectStride);
+    }
+    RHIDescriptorSetRef objectSet = m_device->CreateDescriptorSet(objectSetDesc);
+    if (!objectSet)
+    {
+        return false;
+    }
+
+    std::vector<Ref<RefCounted>> retainedResources;
+    retainedResources.emplace_back(viewBuffer.Get());
+    retainedResources.emplace_back(objectBuffer.Get());
+    retainedResources.emplace_back(frameSet.Get());
+    retainedResources.emplace_back(objectSet.Get());
+    // Backend descriptor sets and pipelines currently retain only raw layout
+    // identities. Keep the complete DefaultLit layout family alive through
+    // graph execution and submission retirement.
+    retainedResources.emplace_back(m_pipelineLayout.Get());
+    retainedResources.emplace_back(m_setLayouts[0].Get());
+    retainedResources.emplace_back(m_setLayouts[1].Get());
+    retainedResources.emplace_back(m_setLayouts[2].Get());
+    const auto retainBindingResources = [&retainedResources](
+                                            const std::vector<RHIDescriptorBinding>& bindings)
+    {
+        for (const RHIDescriptorBinding& binding : bindings)
+        {
+            if (binding.buffer)
+                retainedResources.emplace_back(binding.buffer);
+            if (binding.textureView)
+            {
+                retainedResources.emplace_back(binding.textureView);
+                if (RHITexture* texture = binding.textureView->GetTexture())
+                {
+                    retainedResources.emplace_back(texture);
+                }
+            }
+            if (binding.sampler)
+                retainedResources.emplace_back(binding.sampler);
+            if (binding.accelerationStructure)
+                retainedResources.emplace_back(binding.accelerationStructure);
+        }
+    };
+    retainBindingResources(frameSetDesc.bindings);
+    retainBindingResources(objectSetDesc.bindings);
+
+    outSnapshot.viewConstantBuffer = std::move(viewBuffer);
+    outSnapshot.objectConstantBuffer = std::move(objectBuffer);
+    outSnapshot.frameDescriptorSet = std::move(frameSet);
+    outSnapshot.objectDescriptorSet = std::move(objectSet);
+    outSnapshot.retainedResources = std::move(retainedResources);
+    outSnapshot.objectConstantStride = objectStride;
+    outSnapshot.objectCapacity = capacity;
+    outSnapshot.objectCursor = 0;
+    return outSnapshot.IsValid();
+}
+
+bool PipelineCache::UpdateRasterDrawBindingSnapshotObject(
+    RasterDrawBindingSnapshot& snapshot,
+    const Mat4& worldMatrix,
+    const Mat4& normalMatrix,
+    const Mat4& previousWorldMatrix,
+    const Mat4& previousViewProjectionMatrix,
+    bool previousWorldViewProjectionValid,
+    bool receivesShadow,
+    std::span<const Mat4> skinningMatrices) const
+{
+    if (!snapshot.IsValid() || snapshot.objectCursor >= snapshot.objectCapacity)
+    {
+        return false;
+    }
+
+    ObjectConstants constants{};
+    constants.world = worldMatrix;
+    constants.normalMatrix = normalMatrix;
+    const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
+    constants.previousWorldViewProjection = previousWorldViewProjectionValid
+        ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) * previousWorldMatrix
+        : Mat4Identity();
+    constants.objectVelocityParams = Vec4(
+        previousWorldViewProjectionValid ? 1.0f : 0.0f,
+        receivesShadow ? 1.0f : 0.0f,
+        0.0f, 0.0f);
+    const uint32 skinningMatrixCount = static_cast<uint32>(
+        std::min<size_t>(skinningMatrices.size(), RVX_MAX_OBJECT_SKINNING_MATRICES));
+    constants.skinningParams = Vec4(
+        skinningMatrixCount > 0 ? 1.0f : 0.0f,
+        static_cast<float>(skinningMatrixCount), 0.0f, 0.0f);
+    for (uint32 i = 0; i < skinningMatrixCount; ++i)
+    {
+        constants.skinningMatrices[i] = skinningMatrices[i];
+    }
+
+    const uint64 offset = static_cast<uint64>(snapshot.objectCursor) *
+                          snapshot.objectConstantStride;
+    void* mapped = snapshot.objectConstantBuffer->Map();
+    if (!mapped)
+    {
+        return false;
+    }
+    std::memcpy(static_cast<uint8*>(mapped) + offset,
+                &constants,
+                sizeof(ObjectConstants));
+    snapshot.objectConstantBuffer->Unmap();
+    ++snapshot.objectCursor;
+    return true;
 }
 
 RHIPipeline* PipelineCache::GetPipelineForVariant(MaterialPipelineVariant variant) const
@@ -6133,79 +6420,9 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
     if (!m_viewConstantBuffer)
         return;
 
-    ViewConstants constants{};
     const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
-    constants.viewProjection = ApplyBackendClipConvention(view.viewProjectionMatrix, backend);
-
-    constants.cameraPosition = view.cameraPosition;
-    constants.time = view.time;
-    constants.lightDirection = NormalizeOr(view.directionalLightDirection, Vec3(0.5f, -0.8f, 0.3f));
-    const Vec3 cameraForward = NormalizeOr(view.cameraForward, Vec3(0.0f, 0.0f, -1.0f));
-    constants.directionalLightIntensity = ClampFiniteNonNegative(view.directionalLightIntensity, 4.0f);
-    constants.directionalLightColor = SanitizeLightColor(view.directionalLightColor);
-    const bool iblAmbientEnabled = view.iblAmbientEnabled != 0;
-    const float iblDiffuseIntensity = iblAmbientEnabled ? view.iblDiffuseIntensity : 0.0f;
-    const float iblSpecularIntensity = iblAmbientEnabled ? view.iblSpecularIntensity : 0.0f;
-    constants.iblDiffuseAmbient = Vec4(view.iblDiffuseColor, iblDiffuseIntensity);
-    constants.iblSpecularAmbient = Vec4(view.iblSpecularColor, iblSpecularIntensity);
-    constants.iblTextureParams = Vec4(
-        view.textureIBLEnabled != 0 ? 1.0f : 0.0f,
-        static_cast<float>(std::max(1u, view.textureIBLPrefilteredMipLevels)),
-        ClampFiniteNonNegative(view.textureIBLIntensity, 1.0f),
-        ClampFiniteNonNegative(view.ambientFloorIntensity, 0.08f));
-    uint32 shadowCascadeCount = view.directionalShadowEnabled != 0 ? view.directionalShadowCascadeCount : 0;
-    if (view.directionalShadowEnabled != 0 && shadowCascadeCount == 0)
-    {
-        shadowCascadeCount = 1;
-    }
-    shadowCascadeCount = std::min(shadowCascadeCount, RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
-
-    constants.cameraForwardAndShadowCascadeCount =
-        Vec4(cameraForward, static_cast<float>(shadowCascadeCount));
-    for (uint32 i = 0; i < RVX_MAX_DIRECTIONAL_SHADOW_CASCADES; ++i)
-    {
-        const Mat4& sourceMatrix = view.directionalShadowCascadeCount > 0
-                                       ? view.directionalShadowViewProjections[i]
-                                       : (i == 0 ? view.directionalShadowViewProjection : Mat4Identity());
-        constants.directionalShadowViewProjections[i] = ApplyBackendClipConvention(sourceMatrix, backend);
-    }
-    constants.directionalShadowCascadeSplits = Vec4(
-        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.x, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.y, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.z, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.w, 0.0f));
-    constants.directionalShadowCascadeFadeDistances = Vec4(
-        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.x, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.y, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.z, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.w, 0.0f));
-    const bool directionalShadowEnabled = view.directionalShadowEnabled != 0 &&
-                                          shadowCascadeCount > 0 &&
-                                          !m_config.reverseZ;
-    const float shadowInvMapSize = ClampFiniteNonNegative(view.directionalShadowInvMapSize, 0.0f);
-    const float shadowFilterRadiusTexels =
-        ClampFiniteNonNegative(view.directionalShadowFilterRadiusTexels, 1.0f);
-    const float unclampedShadowFilterStep = shadowInvMapSize * shadowFilterRadiusTexels;
-    const float shadowFilterStep = std::isfinite(unclampedShadowFilterStep)
-                                       ? std::max(0.0f, unclampedShadowFilterStep)
-                                       : shadowInvMapSize;
-    constants.directionalShadowParams = Vec4(
-        directionalShadowEnabled ? 1.0f : 0.0f,
-        ClampFiniteNonNegative(view.directionalShadowDepthBias, 0.005f),
-        std::min(ClampFiniteNonNegative(view.directionalShadowStrength, 1.0f), 1.0f),
-        shadowFilterStep);
-    constants.directionalShadowReceiverParams = Vec4(
-        ClampFiniteNonNegative(view.directionalShadowNormalBias, 0.02f),
-        0.0f,
-        0.0f,
-        0.0f);
-    const float rayTracedShadowMode =
-        view.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster ? 1.0f : 0.0f;
-    constants.rayTracedShadowParams = Vec4(
-        view.rayTracedShadowEnabled != 0 ? 1.0f : 0.0f,
-        std::min(ClampFiniteNonNegative(view.rayTracedShadowFilterRadiusPixels, 1.0f), 3.0f),
-        rayTracedShadowMode,
-        0.0f);
+    const ViewConstants constants = BuildViewConstantsSnapshot(
+        view, backend, m_config.reverseZ);
 
     void* mapped = m_viewConstantBuffer->Map();
     if (mapped)

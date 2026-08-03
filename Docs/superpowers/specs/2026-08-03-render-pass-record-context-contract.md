@@ -1,7 +1,7 @@
 # Render Pass Record Context and Execution Data Contract
 
-**Status:** Task 9A, Task 9B-1, and Task 9B-2 implemented, validated, and
-independently reviewed; Task 9B-3 pending
+**Status:** Task 9A, Task 9B-1, Task 9B-2, and Task 9B-3 implemented,
+validated, and independently reviewed; Task 9B-4 pending
 **Date:** 2026-08-03
 **Scope:** Main raster pass chain; frame/view data ownership and RenderGraph
 recording lifetime
@@ -117,8 +117,8 @@ enable async compute.
 
 ### 9B - Remaining scene pass adapters
 
-**Implementation status:** Raster Shadow and RayTracedShadow (9B-2) complete;
-remaining slices pending.
+**Implementation status:** Raster Shadow, RayTracedShadow (9B-2), and
+ObjectVelocity (9B-3) complete; remaining slices pending.
 
 - 9B-1 migrates raster Shadow to an independent graph-owned recorder. Setup
   publishes a producer-neutral `DirectionalShadowRecordOutput` with the current
@@ -134,8 +134,23 @@ remaining slices pending.
   access snapshots, projected from the recorded graph after execution rather
   than a compatibility state projection. The standalone legacy adapter is
   bounded to one pending legacy record.
-- 9B-3 through 9B-5 migrate ObjectVelocity, Transparent, and Skybox
-  scene/list/target/configuration inputs to typed graph pass data.
+- 9B-3 migrates ObjectVelocity to graph-owned planned draws. Each record owns
+  private view/object constant buffers, descriptor snapshots, fixed dynamic
+  offsets, masked-material constant/descriptors, and strong view **and parent
+  texture** references. This matters on Vulkan where a texture view need not
+  retain its texture. The recording also owns the DefaultLit pipeline layout
+  and descriptor-set layouts 0/1/2 because current backend wrappers retain
+  only raw layout identities. Velocity is declared `ReadWrite(RenderTarget)` and depth
+  is declared `Read(DepthRead)`; empty/historyless, foreign/stale, legacy, and
+  submission-rejected records declare no attachment usage and issue no render
+  pass. Results cannot be adopted from a mismatched supplied identity, and
+  publication accepts only the newest frame/view/record epoch (or an identical
+  idempotent re-publication). The generic frame-snapshot helper is invoked only
+  after the typed source context has proved target-graph identity plus an
+  existing snapshot/results pair; cross-graph or incomplete contexts are
+  no-op and cannot mutate their source results during helper initialization.
+- 9B-4 and 9B-5 migrate Transparent and Skybox scene/list/target/configuration
+  inputs to typed graph pass data.
 - Resolve targets from declared graph handles instead of post-build raw view
   injection.
 - 9B-6 removes `RenderFrameResourceBinder`, the late `UpdatePassResources`

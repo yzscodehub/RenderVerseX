@@ -169,6 +169,34 @@ namespace RVX
         Mat4 skinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
     };
 
+    /**
+     * @brief Per-recording frame/object bindings used by graphics passes.
+     *
+     * The regular PipelineCache bindings are frame-global mutable rings.  A
+     * graph recording that may execute after another recording therefore needs
+     * private constant buffers and immutable descriptor-set snapshots.  The
+     * snapshot owns both buffers/sets and assigns fixed object offsets without
+     * touching the cache's current-frame cursors.
+     */
+    struct RasterDrawBindingSnapshot
+    {
+        RHIBufferRef viewConstantBuffer;
+        RHIBufferRef objectConstantBuffer;
+        RHIDescriptorSetRef frameDescriptorSet;
+        RHIDescriptorSetRef objectDescriptorSet;
+        std::vector<Ref<RefCounted>> retainedResources;
+        uint64 objectConstantStride = 0;
+        uint32 objectCapacity = 0;
+        uint32 objectCursor = 0;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return viewConstantBuffer && objectConstantBuffer &&
+                   frameDescriptorSet && objectDescriptorSet &&
+                   objectConstantStride != 0 && objectCapacity != 0;
+        }
+    };
+
     struct PipelineCacheConfig
     {
         RHIFormat renderTargetFormat = RHIFormat::RGBA8_UNORM;
@@ -591,6 +619,22 @@ namespace RVX
          * @brief Get dynamic constant-buffer offset for the current object slot
          */
         std::array<uint32, 1> GetCurrentObjectDynamicOffset() const;
+
+        /** @brief Create immutable per-record frame/object bindings. */
+        bool CreateRasterDrawBindingSnapshot(const ViewData& view,
+                                             uint32 objectCapacity,
+                                             RasterDrawBindingSnapshot& outSnapshot) const;
+
+        /** @brief Upload one object slot in a recording-owned snapshot. */
+        bool UpdateRasterDrawBindingSnapshotObject(
+            RasterDrawBindingSnapshot& snapshot,
+            const Mat4& worldMatrix,
+            const Mat4& normalMatrix,
+            const Mat4& previousWorldMatrix,
+            const Mat4& previousViewProjectionMatrix,
+            bool previousWorldViewProjectionValid,
+            bool receivesShadow,
+            std::span<const Mat4> skinningMatrices = {}) const;
 
         /**
          * @brief Build a single dynamic offset span for descriptor sets with one dynamic binding

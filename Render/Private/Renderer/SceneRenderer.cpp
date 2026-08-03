@@ -1565,10 +1565,6 @@ void SceneRenderer::BuildMaterialDrawLists()
 
     PrepareMeshPassPackets();
 
-    if (m_objectVelocityPass)
-    {
-        m_objectVelocityPass->SetRenderScene(&m_renderScene, &m_opaqueDrawItems, &m_maskedDrawItems);
-    }
 }
 
 void SceneRenderer::PrepareMeshPassPackets()
@@ -2341,6 +2337,11 @@ const CameraVelocityPassStats& SceneRenderer::GetCameraVelocityStats() const
 const ObjectVelocityPassStats& SceneRenderer::GetObjectVelocityStats() const
 {
     static const ObjectVelocityPassStats emptyStats;
+    if (m_activeRenderPassResults &&
+        m_activeRenderPassResults->identity == m_activeRenderPassIdentity)
+    {
+        return m_activeRenderPassResults->objectVelocityStats;
+    }
     return m_objectVelocityPass ? m_objectVelocityPass->GetStats() : emptyStats;
 }
 
@@ -2840,6 +2841,12 @@ void SceneRenderer::Render()
                     m_activeRenderPassResults,
                     m_activeRenderPassIdentity);
             }
+            if (m_objectVelocityPass)
+            {
+                m_objectVelocityPass->PublishRecordResults(
+                    m_activeRenderPassResults,
+                    m_activeRenderPassIdentity);
+            }
         }
         if (m_depthTexture && m_depthGraphHandle.IsValid())
         {
@@ -3074,10 +3081,6 @@ void SceneRenderer::UpdatePassResources()
         m_transparentPass,
         m_skyboxPass);
 
-    if (m_objectVelocityPass)
-    {
-        m_objectVelocityPass->SetRenderScene(&m_renderScene, &m_opaqueDrawItems, &m_maskedDrawItems);
-    }
 }
 
 void SceneRenderer::ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,
@@ -4491,10 +4494,11 @@ void SceneRenderer::BuildRenderGraph()
             }
         }
 
-        // Shadow/Depth/Opaque consume the explicit graph-owned record context;
+        // Shadow/Depth/Opaque/ObjectVelocity consume the explicit graph-owned record context;
         // remaining passes retain the Task 9B compatibility adapter.
         if (pass.get() == m_shadowPass || pass.get() == m_depthPrepass ||
-            pass.get() == m_rayTracedShadowPass || pass.get() == m_opaquePass)
+            pass.get() == m_rayTracedShadowPass || pass.get() == m_opaquePass ||
+            pass.get() == m_objectVelocityPass)
         {
             pass->AddToGraph(*m_renderGraph, passRecordContext);
         }

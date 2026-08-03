@@ -69,6 +69,32 @@ namespace RVX
         uint32 shadowReceiverOptOutDrawItemCount = 0;
     };
 
+    /** @brief Per-recording object motion-vector diagnostics. */
+    struct ObjectVelocityPassStats
+    {
+        bool requested = false;
+        bool supported = false;
+        bool velocityTargetAvailable = false;
+        bool depthAvailable = false;
+        bool previousViewProjectionAvailable = false;
+        bool drawItemsAvailable = false;
+        bool outputDeclared = false;
+        bool velocityRecorded = false;
+        uint32 width = 0;
+        uint32 height = 0;
+        uint32 drawItemCount = 0;
+        uint32 opaqueDrawItemCount = 0;
+        uint32 maskedDrawItemCount = 0;
+        uint32 objectsWithHistory = 0;
+        uint32 drawCount = 0;
+        uint32 maskedDrawCount = 0;
+        uint32 skippedNoHistoryCount = 0;
+        uint32 skippedMissingResourceCount = 0;
+        uint32 skippedMissingUVCount = 0;
+        uint32 skippedMaterialBindingCount = 0;
+        RHIFormat outputFormat = RHIFormat::Unknown;
+    };
+
     /** @brief Per-recording ray-traced-shadow diagnostics. */
     struct RayTracedShadowPassStats
     {
@@ -324,6 +350,7 @@ namespace RVX
         RayTracedShadowPassStats rayTracedShadowStats{};
         OpaquePassDrawStats opaqueStats{};
         OpaquePassShadowStats opaqueShadowStats{};
+        ObjectVelocityPassStats objectVelocityStats{};
     };
 
     /**

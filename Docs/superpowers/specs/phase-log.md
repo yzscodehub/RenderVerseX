@@ -44884,6 +44884,139 @@ git diff --check
 
 ---
 
+### R-SP336 Render-policy Task 9B-3 ObjectVelocity recording isolation
+
+**Date:** 2026-08-03
+**Commit:** Pending `refactor(render): isolate object velocity recording state`
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-pass-record-context-contract.md`
+
+**Approved scope:**
+
+- Migrate ObjectVelocity scene, lists, targets, planned draws, results, and
+  per-draw bindings into graph-owned record data.
+- Introduce private PipelineCache frame/object CB + descriptor snapshots and
+  MaterialSystem masked-material snapshots with fixed dynamic offsets.
+- Retain every command/descriptor resource for submission, including texture
+  views and their parent textures, plus the DefaultLit pipeline and descriptor
+  set-layout owners, which are required by Vulkan view and cross-backend raw
+  layout-identity lifetime contracts.
+- Make velocity `ReadWrite(RenderTarget)`, depth `Read(DepthRead)`, reject
+  stale/foreign/adversarial records before helper-owned state can be mutated,
+  and publish diagnostics monotonically by recording identity.
+
+**Out of scope:**
+
+- Transparent and Skybox migration, binder removal, submission strategies,
+  async compute, Editor work, and GPU-driven ObjectVelocity execution.
+- General replacement of PipelineCache/MaterialSystem frame rings; only the
+  ObjectVelocity recording bridge is introduced here.
+
+**Focused validation:**
+
+- `RenderPassValidationFixture.ObjectVelocityPassDrawsMaskedItemsWithMaterialSet`
+- `RenderPassValidationFixture.ObjectVelocityPassOwnsRecordingBindingsAcrossReverseGraphs`
+- `RenderPassValidationFixture.ObjectVelocityPassFailsClosedForForeignStaleAndRejectedRecordingInputs`
+- `PipelineCacheValidationFixture.MaskedObjectVelocityAlphaTestContracts`
+
+**Primary acceptance evidence:**
+
+- A/B graphs register before B then A executes. Their distinct view/object/
+  material CBs, descriptor sets, target views, fixed dynamic offsets, and
+  uploaded values remain isolated after caller mutation; delayed A publication
+  cannot replace B diagnostics.
+- Empty, no-history, legacy, stale-handle, foreign-result, partial-identity,
+  forged-current-provenance/out-of-range-handle, and sealed-batch paths issue
+  zero render passes. A sealed batch fails before declaring velocity/depth
+  graph usage. A self-consistent graph-A context whose snapshot is absent is
+  also a graph-B no-op; its graph-A results are never initialized or rewritten
+  by the generic execution-data helper.
+- Submission batches gain attachment view + texture ownership at execute time
+  and retire only after the matching GPU completion token. Runtime layout
+  probes prove graph callbacks and the submission batches retain the DefaultLit
+  pipeline/set layouts across cache shutdown, then release B and A only as
+  their respective completion points retire.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/ObjectVelocityPass.h` and
+  `Render/Private/Passes/ObjectVelocityPass.cpp`: move executable state into
+  graph-owned pass data, add strict source/target identity gates, resource
+  retention, and monotonic statistics publication.
+- `Render/Include/Render/Passes/RenderPassRecordContext.h` and
+  `Render/Private/Renderer/SceneRenderer.cpp`: route ObjectVelocity through the
+  typed record context and publish only the active record result.
+- `Render/Include/Render/PipelineCache.h`,
+  `Render/Private/PipelineCache.cpp`,
+  `Render/Include/Render/Material/MaterialSystem.h`, and
+  `Render/Private/Material/MaterialSystem.cpp`: add private raster/material
+  binding snapshots with checked allocation, fixed offsets, and strong layout
+  ownership.
+- `Tests/RenderPassValidation/main.cpp` and
+  `Tests/PipelineCacheValidation/main.cpp`: cover reverse graph execution,
+  caller mutation, malformed identity/handle/batch inputs, completion-aware
+  retirement, and dynamic-offset overflow.
+- Task 9B execution plan, TODO, record-context contract, and this phase record:
+  synchronize the accepted implementation and validation evidence.
+
+**Validation commands:**
+
+```powershell
+[Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+& 'D:\Program Files\CMake\bin\cmake.exe' --build build\win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation RHIContractValidation RenderGraphValidation RenderPolicyValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+build\win_x64_debug\Tests\Debug\RHIContractValidation.exe
+build\win_x64_debug\Tests\Debug\RenderGraphValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPolicyValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build/win_x64_debug -C Debug -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation|ModelViewerGPUDrivenGBVSmoke|RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries|RenderingShowcaseDX11Smoke)$" --output-on-failure
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for all eight requested targets.
+- Unit/contract tests: PASS -- RenderPass `175/175`, PipelineCache `130/130`,
+  RHIContract `41/41`, RenderGraph `50/50`, RenderPolicy `22/22`.
+- Focused independent rerun: PASS -- ObjectVelocity `3/3` and
+  ObjectVelocity/RasterDrawBindingSnapshot `4/4`.
+- Stability gate: PASS -- `ModelViewerGPUDrivenSmoke` repeated `10/10`.
+- Visual/integration gate: PASS -- `16/16`, including direct/GPU-driven parity,
+  external Porsche parity, GBV, resource retirement, resize, and DX11 smoke.
+- Diff integrity: PASS; only existing line-ending/global-ignore notices remain.
+
+**Independent architecture/code review result:**
+
+- Final implementation verdict: APPROVE; P0 `0`, P1 `0`.
+- Resolved review findings: parent-texture retention for views, strict
+  pre-helper identity gating, partial/foreign result rejection, pre-declaration
+  batch retention, forged current-provenance handle bounds, strong pipeline and
+  set-layout retention, and graph-A/null-snapshot injection into graph B.
+- The final P2 audit gap and P3 stale typed-context comment were closed before
+  commit by this record and the SceneRenderer comment update.
+
+**Primary-agent review result:**
+
+- APPROVE after source/diff inspection, full focused and integration gates,
+  independent review reconciliation, and verification that unrelated user and
+  runtime files remain outside the Task 9B-3 change set.
+
+**Residual risks / follow-ups:**
+
+- Per-record and per-masked-draw CB/descriptor allocation is a correctness-first
+  bridge; completion-aware pooling remains a later performance task.
+- Explicit pipeline/set-layout retention is a scoped ownership bridge until RHI
+  pipeline and descriptor wrappers own their native layout dependencies.
+- Native Vulkan and Metal runtime validation was unavailable on this Windows
+  host; backend-neutral contracts and the available Windows backend gates pass.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

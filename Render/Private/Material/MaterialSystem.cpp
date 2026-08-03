@@ -184,6 +184,121 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(
                                           materialName);
 }
 
+bool MaterialSystem::CreateMaterialBindingSnapshot(
+    RenderResourceHandle material,
+    ResourceViewCache* viewCache,
+    MaterialBindingOptions options,
+    MaterialBindingSnapshot& outSnapshot)
+{
+    outSnapshot = {};
+    if (!m_initialized || !m_device || !m_materialSetLayout || !m_defaultSampler)
+    {
+        return false;
+    }
+
+    const RenderMaterialResourceData* materialData =
+        m_resourceRegistry ? m_resourceRegistry->ResolveMaterial(material) : nullptr;
+    MaterialSourceData source;
+    if (materialData && materialData->metadataValid)
+    {
+        source = materialData->sourceData;
+    }
+    const ResolvedMaterialTextures textures =
+        ResolveMaterialTextures(material, viewCache, options);
+    if (!textures.baseColor || !textures.normal || !textures.metallicRoughness ||
+        !textures.occlusion || !textures.emissive || !textures.irradiance ||
+        !textures.prefilteredEnvironment || !textures.brdfLUT)
+    {
+        return false;
+    }
+
+    source.textureFlags = textures.textureFlags;
+    const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(source);
+    const uint64 stride = m_materialConstantStride != 0
+        ? m_materialConstantStride : AlignConstantBufferSize(sizeof(MaterialGPUConstants));
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = stride;
+    bufferDesc.usage = RHIBufferUsage::Constant;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    bufferDesc.debugName = "ObjectVelocityRecordMaterialConstants";
+    RHIBufferRef constantBuffer = m_device->CreateBuffer(bufferDesc);
+    if (!constantBuffer)
+    {
+        return false;
+    }
+    void* mapped = constantBuffer->Map();
+    if (!mapped)
+    {
+        return false;
+    }
+    std::memcpy(mapped, &constants, sizeof(MaterialGPUConstants));
+    constantBuffer->Unmap();
+
+    RHIDescriptorSetDesc descriptorDesc;
+    descriptorDesc.layout = m_materialSetLayout;
+    descriptorDesc.debugName = "ObjectVelocityRecordMaterialDescriptorSet";
+    descriptorDesc.BindBuffer(0, constantBuffer.Get(), 0, stride);
+    descriptorDesc.BindTexture(1, textures.baseColor);
+    descriptorDesc.BindTexture(2, textures.normal);
+    descriptorDesc.BindTexture(3, textures.metallicRoughness);
+    descriptorDesc.BindTexture(4, textures.occlusion);
+    descriptorDesc.BindTexture(5, textures.emissive);
+    descriptorDesc.BindSampler(6, m_defaultSampler.Get());
+    descriptorDesc.BindTexture(7, textures.irradiance);
+    descriptorDesc.BindTexture(8, textures.prefilteredEnvironment);
+    descriptorDesc.BindTexture(9, textures.brdfLUT);
+    RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptorSet)
+    {
+        return false;
+    }
+
+    MaterialBindingResult binding;
+    binding.status = textures.usedFallback ? MaterialBindingStatus::Fallback
+                                            : MaterialBindingStatus::Ready;
+    binding.descriptorSet = descriptorSet.Get();
+    binding.dynamicOffsets = {0};
+    binding.textureFlags = constants.textureFlags;
+    binding.fallbackTextureFlags = textures.fallbackTextureFlags;
+    binding.constantsUpdated = true;
+    binding.usedFallback = textures.usedFallback;
+    binding.materialName = material.IsValid()
+        ? "render-material[" + std::to_string(material.slot) + ":" +
+              std::to_string(material.generation) + "]"
+        : std::string();
+    binding.message = textures.usedFallback
+        ? "Material binding used explicit fallback resources"
+        : "Material binding ready";
+
+    outSnapshot.constantBuffer = std::move(constantBuffer);
+    outSnapshot.descriptorSet = std::move(descriptorSet);
+    outSnapshot.layout = RHIDescriptorSetLayoutRef(m_materialSetLayout);
+    outSnapshot.textureViews.reserve(8);
+    outSnapshot.textureViews.emplace_back(textures.baseColor);
+    outSnapshot.textureViews.emplace_back(textures.normal);
+    outSnapshot.textureViews.emplace_back(textures.metallicRoughness);
+    outSnapshot.textureViews.emplace_back(textures.occlusion);
+    outSnapshot.textureViews.emplace_back(textures.emissive);
+    outSnapshot.textureViews.emplace_back(textures.irradiance);
+    outSnapshot.textureViews.emplace_back(textures.prefilteredEnvironment);
+    outSnapshot.textureViews.emplace_back(textures.brdfLUT);
+    outSnapshot.textures.reserve(outSnapshot.textureViews.size());
+    for (const RHITextureViewRef& view : outSnapshot.textureViews)
+    {
+        RHITexture* texture = view ? view->GetTexture() : nullptr;
+        if (!texture)
+        {
+            outSnapshot = {};
+            return false;
+        }
+        outSnapshot.textures.emplace_back(texture);
+    }
+    outSnapshot.sampler = RHISamplerRef(m_defaultSampler.Get());
+    outSnapshot.binding = std::move(binding);
+    outSnapshot.binding.descriptorSet = outSnapshot.descriptorSet.Get();
+    return outSnapshot.IsDrawable();
+}
+
 MaterialBindingResult MaterialSystem::PrepareResolvedMaterialBinding(
     MaterialSourceData source,
     const ResolvedMaterialTextures& textures,

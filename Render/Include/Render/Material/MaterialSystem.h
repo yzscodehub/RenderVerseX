@@ -69,6 +69,26 @@ namespace RVX
         bool allowNormalMap = true;
     };
 
+    /** @brief Recording-owned material constants and descriptor snapshot. */
+    struct MaterialBindingSnapshot
+    {
+        RHIBufferRef constantBuffer;
+        RHIDescriptorSetRef descriptorSet;
+        RHIDescriptorSetLayoutRef layout;
+        std::vector<RHITextureViewRef> textureViews;
+        // Descriptor views do not necessarily own their parent textures on
+        // every backend (notably Vulkan).  Keep the textures alongside the
+        // views so a graph recording remains valid until submission retires.
+        std::vector<RHITextureRef> textures;
+        RHISamplerRef sampler;
+        MaterialBindingResult binding;
+
+        [[nodiscard]] bool IsDrawable() const noexcept
+        {
+            return constantBuffer && descriptorSet && layout && binding.IsDrawable();
+        }
+    };
+
     /**
      * @brief Owns material GPU constants, fallback textures, and set 2 descriptors.
      */
@@ -108,6 +128,18 @@ namespace RVX
         MaterialBindingResult PrepareMaterialBinding(RenderResourceHandle material,
                                                      ResourceViewCache* viewCache,
                                                      MaterialBindingOptions options = {});
+
+        /**
+         * @brief Resolve one material into recording-owned constants/descriptors.
+         *
+         * This path never allocates from the mutable frame material ring.  The
+         * returned binding has a fixed zero dynamic offset and owns its
+         * constant buffer/descriptor for graph execution and submission.
+         */
+        bool CreateMaterialBindingSnapshot(RenderResourceHandle material,
+                                           ResourceViewCache* viewCache,
+                                           MaterialBindingOptions options,
+                                           MaterialBindingSnapshot& outSnapshot);
         void TransitionMaterialTextures(RenderResourceHandle material,
                                         RHICommandContext& ctx,
                                         MaterialBindingOptions options = {}) const;

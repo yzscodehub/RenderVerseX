@@ -493,10 +493,14 @@ namespace
         }
         void SetVertexBuffers(uint32, std::span<RHIBuffer* const>, std::span<const uint64> = {}) override {}
         void SetIndexBuffer(RHIBuffer*, RHIFormat, uint64 = 0) override {}
-        void SetDescriptorSet(uint32 set, RHIDescriptorSet* descriptorSet, std::span<const uint32> = {}) override
+        void SetDescriptorSet(uint32 set,
+                              RHIDescriptorSet* descriptorSet,
+                              std::span<const uint32> dynamicOffsets = {}) override
         {
             descriptorSetSequence.push_back(set);
             descriptorSetPointers.push_back(descriptorSet);
+            descriptorSetDynamicOffsets.emplace_back(dynamicOffsets.begin(),
+                                                     dynamicOffsets.end());
             callSequence.push_back("SetDescriptorSet");
         }
         void SetPushConstants(const void*, uint32, uint32 = 0) override {}
@@ -633,6 +637,7 @@ namespace
         std::vector<RHIPipeline*> pipelineSequence;
         std::vector<uint32> descriptorSetSequence;
         std::vector<RHIDescriptorSet*> descriptorSetPointers;
+        std::vector<std::vector<uint32>> descriptorSetDynamicOffsets;
         std::vector<RHIViewport> viewports;
         std::vector<RHIRect> scissors;
         std::vector<std::string> callSequence;
@@ -7644,13 +7649,15 @@ TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMateri
 
     RHITextureDesc velocityDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT);
     velocityDesc.debugName = "GraphVelocityForObjectVelocityPass";
-    view.velocityTarget = graph.CreateTexture(velocityDesc);
-    graph.SetExportState(view.velocityTarget, RHIResourceState::RenderTarget);
+    RHITextureRef velocityTexture = device.CreateTexture(velocityDesc);
+    ASSERT_TRUE(velocityTexture);
+    view.velocityTarget = graph.ImportTexture(velocityTexture.Get(), RHIResourceState::RenderTarget);
 
     RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
     depthDesc.debugName = "GraphDepthForObjectVelocityPass";
-    view.depthTarget = graph.CreateTexture(depthDesc);
-    graph.SetExportState(view.depthTarget, RHIResourceState::DepthRead);
+    RHITextureRef depthTexture = device.CreateTexture(depthDesc);
+    ASSERT_TRUE(depthTexture);
+    view.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
 
     view.renderGraph = &graph;
     view.viewCache = &viewCache;
@@ -7662,18 +7669,31 @@ TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMateri
 
     ObjectVelocityPass pass;
     ConfigureResources(pass, gpuResources, pipelineCache, viewCache, materialSystem);
-    pass.SetRenderScene(&scene, &opaqueItems, &maskedItems);
     pass.SetEnabled(true);
 
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
-    pass.AddToGraph(graph, view);
+    RenderPassRecordContext context;
+    context.view = view;
+    context.identity.graph = &graph;
+    context.identity.graphIdentity = graph.GetGraphIdentity();
+    context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+    context.identity.frameSequence = 1;
+    context.identity.viewOrdinal = 0;
+    context.identity.recordEpoch = 1;
+    context.renderScene = &scene;
+    context.opaqueDrawItems = &opaqueItems;
+    context.maskedDrawItems = &maskedItems;
+    context.results = std::make_shared<RenderPassRecordResults>();
+    context.frameSnapshot = MakeRenderPassFrameSnapshot(context, *context.results);
+    pass.AddToGraph(graph, context);
     graph.Compile();
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
 
     RecordingCommandContext ctx;
     graph.Execute(ctx);
+    pass.PublishRecordResults(context.results, context.identity);
 
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
     EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetMaskedObjectVelocityPipeline(RHIFormat::RG16_FLOAT));
@@ -7689,6 +7709,763 @@ TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMateri
     EXPECT_EQ(stats.skippedMissingUVCount, 0u);
     EXPECT_EQ(stats.skippedMaterialBindingCount, 0u);
 }
+
+TEST_F(RenderPassValidationFixture,
+       ObjectVelocityPassOwnsRecordingBindingsAcrossReverseGraphs)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.SetFenceAutoComplete(false);
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+
+    Resource::MaterialResource materialResource;
+    materialResource.SetId(702);
+    materialResource.SetName("ObjectVelocityRecordingMaterial");
+    materialResource.SetMaterialData(std::make_shared<Material>());
+    ASSERT_TRUE(gpuResources.UploadImmediate(&materialResource));
+    const RenderResourceHandle materialHandle =
+        gpuResources.GetHandle(materialResource.GetId());
+    ASSERT_TRUE(materialHandle.IsValid());
+
+    RenderObject objectA = scene.GetObject(0);
+    objectA.worldMatrix = Mat4Identity();
+    objectA.worldMatrix[3][0] = 2.0f;
+    objectA.previousWorldMatrix = Mat4Identity();
+    objectA.previousWorldMatrix[3][0] = -2.0f;
+    objectA.previousWorldMatrixValid = 1;
+    RenderScene sceneA;
+    sceneA.AddObject(objectA);
+
+    RenderObject objectB = objectA;
+    objectB.worldMatrix[3][0] = 7.0f;
+    objectB.previousWorldMatrix[3][0] = 5.0f;
+    RenderScene sceneB;
+    sceneB.AddObject(objectB);
+
+    RenderDrawItem opaqueA = MakeDrawItem(MaterialRenderMode::Opaque);
+    RenderDrawItem maskedA = MakeDrawItem(MaterialRenderMode::Masked);
+    maskedA.material = materialHandle;
+    RenderDrawItem maskedB = maskedA;
+    std::vector<RenderDrawItem> opaqueItemsA = {opaqueA};
+    std::vector<RenderDrawItem> maskedItemsA = {maskedA};
+    std::vector<RenderDrawItem> opaqueItemsB;
+    std::vector<RenderDrawItem> maskedItemsB = {maskedB};
+
+    struct VelocityTargets
+    {
+        RHITextureRef velocity;
+        RHITextureRef depth;
+    };
+    const auto makeContext = [&] (RenderGraph& graph,
+                                   const RenderScene& recordScene,
+                                   const std::vector<RenderDrawItem>& opaqueItems,
+                                   const std::vector<RenderDrawItem>& maskedItems,
+                                   RenderSubmissionResourceBatch& batch,
+                                   VelocityTargets& targets,
+                                   uint64 frameSequence,
+                                   uint64 recordEpoch,
+                                   uint32 extent,
+                                   float viewTranslation)
+    {
+        RHITextureDesc velocityDesc = RHITextureDesc::RenderTarget(
+            extent, extent, RHIFormat::RG16_FLOAT);
+        velocityDesc.debugName = "ObjectVelocityRecordTarget";
+        targets.velocity = device.CreateTexture(velocityDesc);
+        EXPECT_TRUE(targets.velocity);
+        RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+            extent, extent, PipelineCache::GetDefaultDepthStencilFormat());
+        depthDesc.debugName = "ObjectVelocityRecordDepth";
+        targets.depth = device.CreateTexture(depthDesc);
+        EXPECT_TRUE(targets.depth);
+
+        RenderPassRecordContext context;
+        context.view.renderGraph = &graph;
+        context.view.viewCache = &viewCache;
+        context.view.submissionResourceBatch = &batch;
+        context.view.velocityTarget = graph.ImportTexture(
+            targets.velocity.Get(), RHIResourceState::RenderTarget);
+        context.view.depthTarget = graph.ImportTexture(
+            targets.depth.Get(), RHIResourceState::DepthRead);
+        context.view.viewportWidth = extent;
+        context.view.viewportHeight = extent;
+        context.view.viewProjectionMatrix = Mat4Identity();
+        context.view.viewProjectionMatrix[3][0] = viewTranslation;
+        context.view.previousViewProjectionMatrix = Mat4Identity();
+        context.view.previousViewProjectionMatrix[3][0] = -viewTranslation;
+        context.view.previousViewProjectionValid = 1;
+        context.view.resetTemporalHistory = false;
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+        context.identity.frameSequence = frameSequence;
+        context.identity.viewOrdinal = 0;
+        context.identity.recordEpoch = recordEpoch;
+        context.renderScene = &recordScene;
+        context.opaqueDrawItems = &opaqueItems;
+        context.maskedDrawItems = &maskedItems;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(
+            context, *context.results);
+        return context;
+    };
+
+    RenderGraph graphA;
+    RenderGraph graphB;
+    graphA.SetDevice(&device);
+    graphB.SetDevice(&device);
+    RenderSubmissionResourceBatch batchA;
+    RenderSubmissionResourceBatch batchB;
+    VelocityTargets targetsA;
+    VelocityTargets targetsB;
+    RenderPassRecordContext contextA = makeContext(
+        graphA, sceneA, opaqueItemsA, maskedItemsA, batchA, targetsA,
+        501, 501, 64, 3.0f);
+    RenderPassRecordContext contextB = makeContext(
+        graphB, sceneB, opaqueItemsB, maskedItemsB, batchB, targetsB,
+        502, 502, 96, 9.0f);
+
+    ObjectVelocityPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache, materialSystem);
+    pass.SetEnabled(true);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    // DX12/Vulkan/Metal descriptor sets and pipelines currently carry only
+    // raw layout identities. Pin probes let this runtime test prove both graph
+    // recording and submission retirement keep those layout owners alive.
+    ASSERT_EQ(3u, pipelineCache.m_setLayouts.size());
+    RHIPipelineLayoutRef pipelineLayoutProbe(pipelineCache.m_pipelineLayout.Get());
+    std::array<RHIDescriptorSetLayoutRef, 3> setLayoutProbes = {
+        RHIDescriptorSetLayoutRef(pipelineCache.m_setLayouts[0].Get()),
+        RHIDescriptorSetLayoutRef(pipelineCache.m_setLayouts[1].Get()),
+        RHIDescriptorSetLayoutRef(pipelineCache.m_setLayouts[2].Get())};
+    ASSERT_TRUE(pipelineLayoutProbe);
+    ASSERT_TRUE(setLayoutProbes[0]);
+    ASSERT_TRUE(setLayoutProbes[1]);
+    ASSERT_TRUE(setLayoutProbes[2]);
+    const uint32 pipelineLayoutReferencesBeforeRecording =
+        pipelineLayoutProbe->GetRefCount();
+    const uint32 frameSetLayoutReferencesBeforeRecording =
+        setLayoutProbes[0]->GetRefCount();
+    const uint32 objectSetLayoutReferencesBeforeRecording =
+        setLayoutProbes[1]->GetRefCount();
+    const uint32 materialSetLayoutReferencesBeforeRecording =
+        setLayoutProbes[2]->GetRefCount();
+    pass.AddToGraph(graphA, contextA);
+    pass.AddToGraph(graphB, contextB);
+
+    // Each graph owns a raster snapshot and its batch owns a retirement
+    // reference. The material layout additionally has one material snapshot
+    // per graph; the batch deduplicates it with the raster snapshot's set 2.
+    EXPECT_EQ(pipelineLayoutReferencesBeforeRecording + 4u,
+              pipelineLayoutProbe->GetRefCount());
+    EXPECT_EQ(frameSetLayoutReferencesBeforeRecording + 4u,
+              setLayoutProbes[0]->GetRefCount());
+    EXPECT_EQ(objectSetLayoutReferencesBeforeRecording + 4u,
+              setLayoutProbes[1]->GetRefCount());
+    EXPECT_EQ(materialSetLayoutReferencesBeforeRecording + 6u,
+              setLayoutProbes[2]->GetRefCount());
+
+    std::vector<FakeBuffer*> recordViewBuffers;
+    std::vector<FakeBuffer*> recordObjectBuffers;
+    std::vector<FakeBuffer*> recordMaterialBuffers;
+    for (size_t i = 0; i < device.createdBufferDescs.size(); ++i)
+    {
+        const char* debugName = device.createdBufferDescs[i].debugName;
+        if (!debugName)
+            continue;
+        const std::string name(debugName);
+        if (name == "ObjectVelocityRecordViewConstants")
+            recordViewBuffers.push_back(device.createdBuffers[i]);
+        else if (name == "ObjectVelocityRecordObjectConstants")
+            recordObjectBuffers.push_back(device.createdBuffers[i]);
+        else if (name == "ObjectVelocityRecordMaterialConstants")
+            recordMaterialBuffers.push_back(device.createdBuffers[i]);
+    }
+    ASSERT_EQ(2u, recordViewBuffers.size());
+    ASSERT_EQ(2u, recordObjectBuffers.size());
+    ASSERT_EQ(2u, recordMaterialBuffers.size());
+
+    ViewConstants recordedViewA{};
+    ViewConstants recordedViewB{};
+    std::memcpy(&recordedViewA, recordViewBuffers[0]->GetStorage().data(),
+                sizeof(recordedViewA));
+    std::memcpy(&recordedViewB, recordViewBuffers[1]->GetStorage().data(),
+                sizeof(recordedViewB));
+    EXPECT_FLOAT_EQ(3.0f, recordedViewA.viewProjection[3][0]);
+    EXPECT_FLOAT_EQ(9.0f, recordedViewB.viewProjection[3][0]);
+
+    const uint64 objectStride = pipelineCache.m_objectConstantStride;
+    ASSERT_GT(objectStride, 0u);
+    ObjectConstants recordedObjectA0{};
+    ObjectConstants recordedObjectA1{};
+    ObjectConstants recordedObjectB{};
+    std::memcpy(&recordedObjectA0, recordObjectBuffers[0]->GetStorage().data(),
+                sizeof(recordedObjectA0));
+    std::memcpy(&recordedObjectA1,
+                recordObjectBuffers[0]->GetStorage().data() + objectStride,
+                sizeof(recordedObjectA1));
+    std::memcpy(&recordedObjectB, recordObjectBuffers[1]->GetStorage().data(),
+                sizeof(recordedObjectB));
+    EXPECT_FLOAT_EQ(2.0f, recordedObjectA0.world[3][0]);
+    EXPECT_FLOAT_EQ(2.0f, recordedObjectA1.world[3][0]);
+    EXPECT_FLOAT_EQ(7.0f, recordedObjectB.world[3][0]);
+
+    // Setup already consumed value-owned scene/list/view state.  Mutating every
+    // caller-owned input before either graph runs must not alter its recording.
+    sceneA.GetMutableObject(0).worldMatrix[3][0] = 99.0f;
+    opaqueItemsA.clear();
+    maskedItemsA.clear();
+    contextA.view.viewProjectionMatrix[3][0] = 99.0f;
+
+    graphA.Compile();
+    graphB.Compile();
+    ASSERT_TRUE(graphA.GetCompileStats().compileValid);
+    ASSERT_TRUE(graphB.GetCompileStats().compileValid);
+
+    const RenderGraph::Diagnostics graphDiagnostics = graphA.GetDiagnostics();
+    const auto velocityPassDiagnostic = std::find_if(
+        graphDiagnostics.passes.begin(), graphDiagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "ObjectVelocityPass";
+        });
+    ASSERT_NE(graphDiagnostics.passes.end(), velocityPassDiagnostic);
+    const auto velocityUsage = std::find_if(
+        velocityPassDiagnostic->usages.begin(), velocityPassDiagnostic->usages.end(),
+        [&contextA](const RenderGraph::ResourceUsageDiagnostic& usage)
+        {
+            return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                   usage.resourceIndex == contextA.view.velocityTarget.index;
+        });
+    const auto depthUsage = std::find_if(
+        velocityPassDiagnostic->usages.begin(), velocityPassDiagnostic->usages.end(),
+        [&contextA](const RenderGraph::ResourceUsageDiagnostic& usage)
+        {
+            return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                   usage.resourceIndex == contextA.view.depthTarget.index;
+        });
+    ASSERT_NE(velocityPassDiagnostic->usages.end(), velocityUsage);
+    ASSERT_NE(velocityPassDiagnostic->usages.end(), depthUsage);
+    EXPECT_EQ(RenderGraph::DiagnosticAccessType::ReadWrite, velocityUsage->access);
+    EXPECT_EQ(RHIResourceState::RenderTarget, velocityUsage->desiredState);
+    EXPECT_EQ(RenderGraph::DiagnosticAccessType::Read, depthUsage->access);
+    EXPECT_EQ(RHIResourceState::DepthRead, depthUsage->desiredState);
+
+    const uint32 retainedBeforeB = batchB.GetRetainedObjectCount();
+    RecordingCommandContext commandsB;
+    graphB.Execute(commandsB);
+    EXPECT_EQ(1u, commandsB.beginRenderPassCount);
+    EXPECT_EQ(1u, commandsB.drawIndexedCount);
+    // Execute-time RTV/DSV retention contributes view + parent texture for
+    // each attachment, including backends whose views do not own textures.
+    EXPECT_EQ(retainedBeforeB + 4u, batchB.GetRetainedObjectCount());
+    pass.PublishRecordResults(contextB.results, contextB.identity);
+    const ObjectVelocityPassStats publishedB = pass.GetStats();
+    EXPECT_TRUE(publishedB.velocityRecorded);
+    EXPECT_EQ(96u, publishedB.width);
+    EXPECT_EQ(1u, publishedB.maskedDrawCount);
+
+    const uint32 retainedBeforeA = batchA.GetRetainedObjectCount();
+    RecordingCommandContext commandsA;
+    graphA.Execute(commandsA);
+    EXPECT_EQ(1u, commandsA.beginRenderPassCount);
+    EXPECT_EQ(2u, commandsA.drawIndexedCount);
+    EXPECT_EQ(retainedBeforeA + 4u, batchA.GetRetainedObjectCount());
+    ASSERT_EQ(1u, commandsA.renderPasses.size());
+    ASSERT_EQ(1u, commandsB.renderPasses.size());
+    EXPECT_EQ(targetsA.velocity.Get(),
+              commandsA.renderPasses[0].colorAttachments[0].view->GetTexture());
+    EXPECT_EQ(targetsB.velocity.Get(),
+              commandsB.renderPasses[0].colorAttachments[0].view->GetTexture());
+
+    // Publishing delayed A must not regress diagnostics from newer B.
+    pass.PublishRecordResults(contextA.results, contextA.identity);
+    EXPECT_EQ(publishedB.width, pass.GetStats().width);
+    EXPECT_EQ(publishedB.maskedDrawCount, pass.GetStats().maskedDrawCount);
+
+    const auto findDescriptorCall = [](
+        const RecordingCommandContext& commands,
+        uint32 set,
+        uint32 occurrence = 0) -> size_t
+    {
+        uint32 found = 0;
+        for (size_t i = 0; i < commands.descriptorSetSequence.size(); ++i)
+        {
+            if (commands.descriptorSetSequence[i] != set)
+                continue;
+            if (found++ == occurrence)
+                return i;
+        }
+        return std::numeric_limits<size_t>::max();
+    };
+    const size_t frameAIndex = findDescriptorCall(commandsA, 0);
+    const size_t objectA0Index = findDescriptorCall(commandsA, 1, 0);
+    const size_t objectA1Index = findDescriptorCall(commandsA, 1, 1);
+    const size_t materialAIndex = findDescriptorCall(commandsA, 2);
+    const size_t frameBIndex = findDescriptorCall(commandsB, 0);
+    const size_t objectBIndex = findDescriptorCall(commandsB, 1);
+    const size_t materialBIndex = findDescriptorCall(commandsB, 2);
+    ASSERT_NE(std::numeric_limits<size_t>::max(), frameAIndex);
+    ASSERT_NE(std::numeric_limits<size_t>::max(), objectA0Index);
+    ASSERT_NE(std::numeric_limits<size_t>::max(), objectA1Index);
+    ASSERT_NE(std::numeric_limits<size_t>::max(), materialAIndex);
+    ASSERT_NE(std::numeric_limits<size_t>::max(), frameBIndex);
+    ASSERT_NE(std::numeric_limits<size_t>::max(), objectBIndex);
+    ASSERT_NE(std::numeric_limits<size_t>::max(), materialBIndex);
+    EXPECT_NE(commandsA.descriptorSetPointers[frameAIndex],
+              commandsB.descriptorSetPointers[frameBIndex]);
+    EXPECT_NE(commandsA.descriptorSetPointers[objectA0Index],
+              commandsB.descriptorSetPointers[objectBIndex]);
+    EXPECT_NE(commandsA.descriptorSetPointers[materialAIndex],
+              commandsB.descriptorSetPointers[materialBIndex]);
+    EXPECT_NE(commandsA.descriptorSetPointers[frameAIndex],
+              pipelineCache.GetFrameDescriptorSet());
+    EXPECT_NE(commandsA.descriptorSetPointers[objectA0Index],
+              pipelineCache.GetObjectDescriptorSet());
+    ASSERT_EQ(1u, commandsA.descriptorSetDynamicOffsets[objectA0Index].size());
+    ASSERT_EQ(1u, commandsA.descriptorSetDynamicOffsets[objectA1Index].size());
+    ASSERT_EQ(1u, commandsA.descriptorSetDynamicOffsets[materialAIndex].size());
+    EXPECT_EQ(0u, commandsA.descriptorSetDynamicOffsets[objectA0Index][0]);
+    EXPECT_EQ(static_cast<uint32>(objectStride),
+              commandsA.descriptorSetDynamicOffsets[objectA1Index][0]);
+    EXPECT_EQ(0u, commandsA.descriptorSetDynamicOffsets[materialAIndex][0]);
+    EXPECT_EQ(0u, commandsB.descriptorSetDynamicOffsets[objectBIndex][0]);
+    EXPECT_EQ(0u, commandsB.descriptorSetDynamicOffsets[materialBIndex][0]);
+
+    const auto findBufferBinding = [](RHIDescriptorSet* descriptorSet,
+                                      uint32 binding) -> RHIBuffer*
+    {
+        const auto* fakeSet = dynamic_cast<const FakeDescriptorSet*>(descriptorSet);
+        if (!fakeSet)
+            return nullptr;
+        const auto found = std::find_if(
+            fakeSet->bindings.begin(), fakeSet->bindings.end(),
+            [binding](const RHIDescriptorBinding& candidate)
+            {
+                return candidate.binding == binding && candidate.arrayElement == 0;
+            });
+        return found != fakeSet->bindings.end() ? found->buffer : nullptr;
+    };
+    EXPECT_EQ(recordViewBuffers[0],
+              findBufferBinding(commandsA.descriptorSetPointers[frameAIndex], 0));
+    EXPECT_EQ(recordObjectBuffers[0],
+              findBufferBinding(commandsA.descriptorSetPointers[objectA0Index], 0));
+    EXPECT_EQ(recordMaterialBuffers[0],
+              findBufferBinding(commandsA.descriptorSetPointers[materialAIndex], 0));
+    EXPECT_EQ(recordViewBuffers[1],
+              findBufferBinding(commandsB.descriptorSetPointers[frameBIndex], 0));
+    EXPECT_EQ(recordObjectBuffers[1],
+              findBufferBinding(commandsB.descriptorSetPointers[objectBIndex], 0));
+    EXPECT_EQ(recordMaterialBuffers[1],
+              findBufferBinding(commandsB.descriptorSetPointers[materialBIndex], 0));
+
+    GPUCompletionToken completionB;
+    GPUCompletionToken completionA;
+    ASSERT_TRUE(InsertGPUCompletionPoint(completionB, tracker.Submit(&commandsB)));
+    ASSERT_TRUE(InsertGPUCompletionPoint(completionA, tracker.Submit(&commandsA)));
+    batchB.SealAndTransfer(completionB, retirement);
+    batchA.SealAndTransfer(completionA, retirement);
+    EXPECT_TRUE(batchA.IsSealed());
+    EXPECT_TRUE(batchB.IsSealed());
+    EXPECT_EQ(0u, batchA.GetRetainedObjectCount());
+    EXPECT_EQ(0u, batchB.GetRetainedObjectCount());
+    ASSERT_GT(retirement.GetDiagnostics().entryCount, 0u);
+
+    // Simulate a cache replacement after command submission. Graph callbacks
+    // and the cache release their ownership, leaving the in-flight submission
+    // batches as the sole owners besides these test probes.
+    graphA.Clear();
+    graphB.Clear();
+    pipelineCache.Shutdown();
+    EXPECT_EQ(3u, pipelineLayoutProbe->GetRefCount());
+    EXPECT_EQ(3u, setLayoutProbes[0]->GetRefCount());
+    EXPECT_EQ(3u, setLayoutProbes[1]->GetRefCount());
+    EXPECT_EQ(3u, setLayoutProbes[2]->GetRefCount());
+    FakeFence* const completionFence =
+        device.FindFenceWithSignal(completionA.points[0].value);
+    ASSERT_NE(nullptr, completionFence);
+    completionFence->Complete(completionB.points[0].value);
+    EXPECT_EQ(GPUCompletionStatus::Pending, retirement.Poll());
+    // B's retirement entries have now released, while A remains in flight.
+    EXPECT_EQ(2u, pipelineLayoutProbe->GetRefCount());
+    EXPECT_EQ(2u, setLayoutProbes[0]->GetRefCount());
+    EXPECT_EQ(2u, setLayoutProbes[1]->GetRefCount());
+    EXPECT_EQ(2u, setLayoutProbes[2]->GetRefCount());
+    completionFence->Complete(completionA.points[0].value);
+    EXPECT_EQ(GPUCompletionStatus::Completed, retirement.Poll());
+    EXPECT_EQ(1u, pipelineLayoutProbe->GetRefCount());
+    EXPECT_EQ(1u, setLayoutProbes[0]->GetRefCount());
+    EXPECT_EQ(1u, setLayoutProbes[1]->GetRefCount());
+    EXPECT_EQ(1u, setLayoutProbes[2]->GetRefCount());
+    tracker.Shutdown();
+}
+
+TEST_F(RenderPassValidationFixture,
+       ObjectVelocityPassFailsClosedForForeignStaleAndRejectedRecordingInputs)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderObject& object = scene.GetMutableObject(0);
+    object.previousWorldMatrix = Mat4Identity();
+    object.previousWorldMatrix[3][0] = -1.0f;
+    object.previousWorldMatrixValid = 1;
+    std::vector<RenderDrawItem> opaqueItems = {
+        MakeDrawItem(MaterialRenderMode::Opaque)};
+    std::vector<RenderDrawItem> maskedItems;
+
+    ObjectVelocityPass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, viewCache, materialSystem);
+    pass.SetEnabled(true);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    const auto makeTargets = [&](uint32 extent,
+                                 const char* velocityName,
+                                 const char* depthName)
+    {
+        RHITextureDesc velocityDesc = RHITextureDesc::RenderTarget(
+            extent, extent, RHIFormat::RG16_FLOAT);
+        velocityDesc.debugName = velocityName;
+        RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+            extent, extent, PipelineCache::GetDefaultDepthStencilFormat());
+        depthDesc.debugName = depthName;
+        return std::pair<RHITextureRef, RHITextureRef>(
+            device.CreateTexture(velocityDesc), device.CreateTexture(depthDesc));
+    };
+    const auto makeContext = [&](RenderGraph& graph,
+                                 RGTextureHandle velocity,
+                                 RGTextureHandle depth,
+                                 uint64 frameSequence,
+                                 uint64 recordEpoch,
+                                 bool hasPreviousView,
+                                 RenderSubmissionResourceBatch* batch = nullptr)
+    {
+        RenderPassRecordContext context;
+        context.view.renderGraph = &graph;
+        context.view.viewCache = &viewCache;
+        context.view.submissionResourceBatch = batch;
+        context.view.velocityTarget = velocity;
+        context.view.depthTarget = depth;
+        context.view.viewportWidth = 64;
+        context.view.viewportHeight = 64;
+        context.view.previousViewProjectionMatrix = Mat4Identity();
+        context.view.previousViewProjectionValid = hasPreviousView ? 1 : 0;
+        context.view.resetTemporalHistory = !hasPreviousView;
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+        context.identity.frameSequence = frameSequence;
+        context.identity.viewOrdinal = 0;
+        context.identity.recordEpoch = recordEpoch;
+        context.renderScene = &scene;
+        context.opaqueDrawItems = &opaqueItems;
+        context.maskedDrawItems = &maskedItems;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(
+            context, *context.results);
+        return context;
+    };
+
+    RenderGraph noHistoryGraph;
+    noHistoryGraph.SetDevice(&device);
+    auto noHistoryTargets = makeTargets(
+        64, "ObjectVelocityNoHistoryVelocity", "ObjectVelocityNoHistoryDepth");
+    ASSERT_TRUE(noHistoryTargets.first);
+    ASSERT_TRUE(noHistoryTargets.second);
+    RenderPassRecordContext noHistory = makeContext(
+        noHistoryGraph,
+        noHistoryGraph.ImportTexture(noHistoryTargets.first.Get(),
+                                     RHIResourceState::RenderTarget),
+        noHistoryGraph.ImportTexture(noHistoryTargets.second.Get(),
+                                     RHIResourceState::DepthRead),
+        610, 610, false);
+    pass.AddToGraph(noHistoryGraph, noHistory);
+    noHistoryGraph.Compile();
+    ASSERT_TRUE(noHistoryGraph.GetCompileStats().compileValid);
+    RecordingCommandContext noHistoryCommands;
+    noHistoryGraph.Execute(noHistoryCommands);
+    EXPECT_EQ(0u, noHistoryCommands.beginRenderPassCount);
+    EXPECT_EQ(0u, noHistoryCommands.drawIndexedCount);
+    EXPECT_FALSE(noHistory.results->objectVelocityStats.outputDeclared);
+    EXPECT_FALSE(noHistory.results->objectVelocityStats.velocityRecorded);
+
+    // Valid temporal data is still insufficient without any planned scene
+    // items; the pass must not open an attachment-only render pass.
+    RenderGraph emptyGraph;
+    emptyGraph.SetDevice(&device);
+    auto emptyTargets = makeTargets(
+        64, "ObjectVelocityEmptyVelocity", "ObjectVelocityEmptyDepth");
+    ASSERT_TRUE(emptyTargets.first);
+    ASSERT_TRUE(emptyTargets.second);
+    std::vector<RenderDrawItem> emptyOpaqueItems;
+    std::vector<RenderDrawItem> emptyMaskedItems;
+    RenderPassRecordContext empty = noHistory;
+    empty.view.renderGraph = &emptyGraph;
+    empty.view.velocityTarget = emptyGraph.ImportTexture(
+        emptyTargets.first.Get(), RHIResourceState::RenderTarget);
+    empty.view.depthTarget = emptyGraph.ImportTexture(
+        emptyTargets.second.Get(), RHIResourceState::DepthRead);
+    empty.view.previousViewProjectionValid = 1;
+    empty.view.resetTemporalHistory = false;
+    empty.identity.graph = &emptyGraph;
+    empty.identity.graphIdentity = emptyGraph.GetGraphIdentity();
+    empty.identity.graphRecordingGeneration = emptyGraph.GetRecordingGeneration();
+    empty.identity.frameSequence = 611;
+    empty.identity.recordEpoch = 611;
+    empty.opaqueDrawItems = &emptyOpaqueItems;
+    empty.maskedDrawItems = &emptyMaskedItems;
+    empty.results = std::make_shared<RenderPassRecordResults>();
+    empty.frameSnapshot = MakeRenderPassFrameSnapshot(empty, *empty.results);
+    pass.AddToGraph(emptyGraph, empty);
+    emptyGraph.Compile();
+    ASSERT_TRUE(emptyGraph.GetCompileStats().compileValid);
+    RecordingCommandContext emptyCommands;
+    emptyGraph.Execute(emptyCommands);
+    EXPECT_EQ(0u, emptyCommands.beginRenderPassCount);
+    EXPECT_EQ(0u, emptyCommands.drawIndexedCount);
+    EXPECT_FALSE(empty.results->objectVelocityStats.outputDeclared);
+    EXPECT_FALSE(empty.results->objectVelocityStats.velocityRecorded);
+
+    // The untyped ViewData overload carries no scene/list recording inputs.
+    // It remains a bounded compatibility adapter and must fail closed.
+    RenderGraph legacyGraph;
+    legacyGraph.SetDevice(&device);
+    auto legacyTargets = makeTargets(
+        64, "ObjectVelocityLegacyVelocity", "ObjectVelocityLegacyDepth");
+    ASSERT_TRUE(legacyTargets.first);
+    ASSERT_TRUE(legacyTargets.second);
+    ViewData legacyView = empty.view;
+    legacyView.renderGraph = &legacyGraph;
+    legacyView.velocityTarget = legacyGraph.ImportTexture(
+        legacyTargets.first.Get(), RHIResourceState::RenderTarget);
+    legacyView.depthTarget = legacyGraph.ImportTexture(
+        legacyTargets.second.Get(), RHIResourceState::DepthRead);
+    pass.AddToGraph(legacyGraph, legacyView);
+    legacyGraph.Compile();
+    ASSERT_TRUE(legacyGraph.GetCompileStats().compileValid);
+    RecordingCommandContext legacyCommands;
+    legacyGraph.Execute(legacyCommands);
+    EXPECT_EQ(0u, legacyCommands.beginRenderPassCount);
+    EXPECT_EQ(0u, legacyCommands.drawIndexedCount);
+
+    // A results payload owned by graph A must remain wholly untouched when a
+    // malformed graph B context attempts to smuggle it into this pass.
+    RenderGraph foreignGraph;
+    RenderGraph attackerGraph;
+    foreignGraph.SetDevice(&device);
+    attackerGraph.SetDevice(&device);
+    RenderPassRecordIdentity foreignIdentity;
+    foreignIdentity.graph = &foreignGraph;
+    foreignIdentity.graphIdentity = foreignGraph.GetGraphIdentity();
+    foreignIdentity.graphRecordingGeneration = foreignGraph.GetRecordingGeneration();
+    foreignIdentity.frameSequence = 620;
+    foreignIdentity.recordEpoch = 620;
+    auto foreignResults = std::make_shared<RenderPassRecordResults>();
+    foreignResults->identity = foreignIdentity;
+    foreignResults->objectVelocityStats.width = 777;
+    foreignResults->objectVelocityStats.velocityRecorded = true;
+    RenderPassRecordContext attacker;
+    attacker.view.renderGraph = &attackerGraph;
+    attacker.identity.graph = &attackerGraph;
+    attacker.identity.graphIdentity = attackerGraph.GetGraphIdentity();
+    attacker.identity.graphRecordingGeneration = attackerGraph.GetRecordingGeneration();
+    attacker.identity.frameSequence = 621;
+    attacker.identity.recordEpoch = 621;
+    attacker.results = foreignResults;
+    pass.AddToGraph(attackerGraph, attacker);
+    attackerGraph.Compile();
+    ASSERT_TRUE(attackerGraph.GetCompileStats().compileValid);
+    RecordingCommandContext attackerCommands;
+    attackerGraph.Execute(attackerCommands);
+    EXPECT_EQ(foreignIdentity, foreignResults->identity);
+    EXPECT_EQ(777u, foreignResults->objectVelocityStats.width);
+    EXPECT_TRUE(foreignResults->objectVelocityStats.velocityRecorded);
+    EXPECT_EQ(0u, attackerCommands.beginRenderPassCount);
+
+    // Even a self-consistent graph A source must not invoke the generic
+    // helper when registered into graph B with its paired snapshot missing:
+    // helper synthesis initializes the supplied results object, which belongs
+    // exclusively to graph A. The target graph must be a true no-op.
+    RenderGraph sourceSentinelGraph;
+    RenderGraph targetSentinelGraph;
+    sourceSentinelGraph.SetDevice(&device);
+    targetSentinelGraph.SetDevice(&device);
+    auto sourceSentinelTargets = makeTargets(
+        64, "ObjectVelocitySourceSentinelVelocity", "ObjectVelocitySourceSentinelDepth");
+    ASSERT_TRUE(sourceSentinelTargets.first);
+    ASSERT_TRUE(sourceSentinelTargets.second);
+    RenderPassRecordContext sourceSentinel = makeContext(
+        sourceSentinelGraph,
+        sourceSentinelGraph.ImportTexture(sourceSentinelTargets.first.Get(),
+                                          RHIResourceState::RenderTarget),
+        sourceSentinelGraph.ImportTexture(sourceSentinelTargets.second.Get(),
+                                          RHIResourceState::DepthRead),
+        625, 625, true);
+    const RenderPassRecordIdentity sourceSentinelIdentity = sourceSentinel.identity;
+    sourceSentinel.results->directionalShadowOutput.identity = sourceSentinelIdentity;
+    sourceSentinel.results->directionalShadowOutput.enabled = true;
+    sourceSentinel.results->directionalShadowOutput.shadowMapSize = 779;
+    sourceSentinel.results->objectVelocityStats.width = 780;
+    sourceSentinel.results->objectVelocityStats.velocityRecorded = true;
+    sourceSentinel.frameSnapshot.reset();
+    pass.AddToGraph(targetSentinelGraph, sourceSentinel);
+    targetSentinelGraph.Compile();
+    ASSERT_TRUE(targetSentinelGraph.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics targetSentinelDiagnostics =
+        targetSentinelGraph.GetDiagnostics();
+    const auto targetSentinelPass = std::find_if(
+        targetSentinelDiagnostics.passes.begin(), targetSentinelDiagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "ObjectVelocityPass";
+        });
+    ASSERT_NE(targetSentinelDiagnostics.passes.end(), targetSentinelPass);
+    EXPECT_TRUE(targetSentinelPass->usages.empty());
+    RecordingCommandContext targetSentinelCommands;
+    targetSentinelGraph.Execute(targetSentinelCommands);
+    EXPECT_EQ(0u, targetSentinelCommands.beginRenderPassCount);
+    EXPECT_EQ(0u, targetSentinelCommands.drawIndexedCount);
+    EXPECT_EQ(sourceSentinelIdentity, sourceSentinel.results->identity);
+    EXPECT_EQ(sourceSentinelIdentity,
+              sourceSentinel.results->directionalShadowOutput.identity);
+    EXPECT_TRUE(sourceSentinel.results->directionalShadowOutput.enabled);
+    EXPECT_EQ(779u, sourceSentinel.results->directionalShadowOutput.shadowMapSize);
+    EXPECT_EQ(780u, sourceSentinel.results->objectVelocityStats.width);
+    EXPECT_TRUE(sourceSentinel.results->objectVelocityStats.velocityRecorded);
+
+    // A partially initialized foreign identity is still supplied ownership,
+    // not permission for the helper to initialize/overwrite it.
+    RenderGraph partialAttackerGraph;
+    partialAttackerGraph.SetDevice(&device);
+    auto partialForeignResults = std::make_shared<RenderPassRecordResults>();
+    partialForeignResults->identity.graph = &foreignGraph;
+    partialForeignResults->identity.graphIdentity = foreignGraph.GetGraphIdentity();
+    partialForeignResults->identity.graphRecordingGeneration =
+        foreignGraph.GetRecordingGeneration();
+    partialForeignResults->objectVelocityStats.width = 778;
+    partialForeignResults->objectVelocityStats.velocityRecorded = true;
+    RenderPassRecordContext partialAttacker;
+    partialAttacker.view.renderGraph = &partialAttackerGraph;
+    partialAttacker.identity.graph = &partialAttackerGraph;
+    partialAttacker.identity.graphIdentity = partialAttackerGraph.GetGraphIdentity();
+    partialAttacker.identity.graphRecordingGeneration =
+        partialAttackerGraph.GetRecordingGeneration();
+    partialAttacker.identity.frameSequence = 622;
+    partialAttacker.identity.recordEpoch = 622;
+    partialAttacker.results = partialForeignResults;
+    pass.AddToGraph(partialAttackerGraph, partialAttacker);
+    partialAttackerGraph.Compile();
+    ASSERT_TRUE(partialAttackerGraph.GetCompileStats().compileValid);
+    RecordingCommandContext partialAttackerCommands;
+    partialAttackerGraph.Execute(partialAttackerCommands);
+    EXPECT_EQ(0u, partialForeignResults->identity.frameSequence);
+    EXPECT_EQ(0u, partialForeignResults->identity.recordEpoch);
+    EXPECT_EQ(778u, partialForeignResults->objectVelocityStats.width);
+    EXPECT_TRUE(partialForeignResults->objectVelocityStats.velocityRecorded);
+    EXPECT_EQ(0u, partialAttackerCommands.beginRenderPassCount);
+
+    // Handles imported by a different graph are rejected before setup and can
+    // neither issue a render pass nor declare the target graph's output.
+    auto staleTargets = makeTargets(
+        64, "ObjectVelocityStaleVelocity", "ObjectVelocityStaleDepth");
+    ASSERT_TRUE(staleTargets.first);
+    ASSERT_TRUE(staleTargets.second);
+    RenderGraph sourceGraph;
+    RenderGraph staleTargetGraph;
+    sourceGraph.SetDevice(&device);
+    staleTargetGraph.SetDevice(&device);
+    const RGTextureHandle foreignVelocity = sourceGraph.ImportTexture(
+        staleTargets.first.Get(), RHIResourceState::RenderTarget);
+    const RGTextureHandle foreignDepth = sourceGraph.ImportTexture(
+        staleTargets.second.Get(), RHIResourceState::DepthRead);
+    RenderPassRecordContext stale = makeContext(
+        staleTargetGraph, foreignVelocity, foreignDepth, 630, 630, true);
+    pass.AddToGraph(staleTargetGraph, stale);
+    staleTargetGraph.Compile();
+    ASSERT_TRUE(staleTargetGraph.GetCompileStats().compileValid);
+    RecordingCommandContext staleCommands;
+    staleTargetGraph.Execute(staleCommands);
+    EXPECT_EQ(0u, staleCommands.beginRenderPassCount);
+    EXPECT_FALSE(stale.results->objectVelocityStats.outputDeclared);
+    EXPECT_FALSE(stale.results->objectVelocityStats.velocityRecorded);
+
+    // Provenance alone is insufficient: a forged handle can reproduce this
+    // graph's identity and generation while referring past its resource table.
+    // It must be rejected before resource retention or graph declarations.
+    RenderGraph forgedGraph;
+    forgedGraph.SetDevice(&device);
+    RGTextureHandle forgedVelocity;
+    forgedVelocity.index = 0;
+    forgedVelocity.graphIdentity = forgedGraph.GetGraphIdentity();
+    forgedVelocity.recordingGeneration = forgedGraph.GetRecordingGeneration();
+    RGTextureHandle forgedDepth = forgedVelocity;
+    forgedDepth.index = 1;
+    RenderPassRecordContext forged = makeContext(
+        forgedGraph, forgedVelocity, forgedDepth, 635, 635, true);
+    pass.AddToGraph(forgedGraph, forged);
+    forgedGraph.Compile();
+    ASSERT_TRUE(forgedGraph.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics forgedDiagnostics = forgedGraph.GetDiagnostics();
+    const auto forgedPass = std::find_if(
+        forgedDiagnostics.passes.begin(), forgedDiagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "ObjectVelocityPass";
+        });
+    ASSERT_NE(forgedDiagnostics.passes.end(), forgedPass);
+    EXPECT_TRUE(forgedPass->usages.empty());
+    RecordingCommandContext forgedCommands;
+    forgedGraph.Execute(forgedCommands);
+    EXPECT_EQ(0u, forgedCommands.beginRenderPassCount);
+    EXPECT_EQ(0u, forgedCommands.drawIndexedCount);
+    EXPECT_FALSE(forged.results->objectVelocityStats.outputDeclared);
+    EXPECT_FALSE(forged.results->objectVelocityStats.velocityRecorded);
+
+    // A batch that rejects retention is a recording failure before graph
+    // accesses are declared, so no dangling ReadWrite/Read usage remains.
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+    RenderSubmissionResourceBatch sealedBatch;
+    sealedBatch.ReleaseUnsubmitted(retirement);
+    ASSERT_TRUE(sealedBatch.IsSealed());
+    RenderGraph rejectedGraph;
+    rejectedGraph.SetDevice(&device);
+    auto rejectedTargets = makeTargets(
+        64, "ObjectVelocityRejectedVelocity", "ObjectVelocityRejectedDepth");
+    ASSERT_TRUE(rejectedTargets.first);
+    ASSERT_TRUE(rejectedTargets.second);
+    RenderPassRecordContext rejected = makeContext(
+        rejectedGraph,
+        rejectedGraph.ImportTexture(rejectedTargets.first.Get(),
+                                    RHIResourceState::RenderTarget),
+        rejectedGraph.ImportTexture(rejectedTargets.second.Get(),
+                                    RHIResourceState::DepthRead),
+        640, 640, true, &sealedBatch);
+    pass.AddToGraph(rejectedGraph, rejected);
+    rejectedGraph.Compile();
+    ASSERT_TRUE(rejectedGraph.GetCompileStats().compileValid);
+    const RenderGraph::Diagnostics rejectedDiagnostics = rejectedGraph.GetDiagnostics();
+    const auto rejectedPass = std::find_if(
+        rejectedDiagnostics.passes.begin(), rejectedDiagnostics.passes.end(),
+        [](const RenderGraph::PassDiagnostic& diagnostic)
+        {
+            return diagnostic.name == "ObjectVelocityPass";
+        });
+    ASSERT_NE(rejectedDiagnostics.passes.end(), rejectedPass);
+    EXPECT_TRUE(rejectedPass->usages.empty());
+    RecordingCommandContext rejectedCommands;
+    rejectedGraph.Execute(rejectedCommands);
+    EXPECT_EQ(0u, rejectedCommands.beginRenderPassCount);
+    EXPECT_FALSE(rejected.results->objectVelocityStats.outputDeclared);
+    EXPECT_FALSE(rejected.results->objectVelocityStats.velocityRecorded);
+    EXPECT_EQ(GPUCompletionStatus::Completed, retirement.Poll());
+    tracker.Shutdown();
+}
+
 TEST_F(RenderPassValidationFixture, DepthPrepassNoPlanDefaultDoesNotMutateTarget)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();

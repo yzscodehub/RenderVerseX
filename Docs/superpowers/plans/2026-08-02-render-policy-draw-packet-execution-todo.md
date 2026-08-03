@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8, Task 9A, Task 9B-1, and Task 9B-2 complete;
-Task 9B-3 ObjectVelocity recording isolation is the next implementation stage
+**Status:** Tasks 0-8, Task 9A, Task 9B-1, Task 9B-2, and Task 9B-3 complete;
+Task 9B-4 Transparent recording isolation is the next implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -288,7 +288,12 @@ from submitted upper bounds and CPU reference visibility.
 - [x] Migrate RayTracedShadow per-recording handles/output/stats to graph-owned
   data; reserve history during setup, commit only on submitted work, roll back
   unsubmitted reservations, and retain imported history through completion.
-- [ ] Migrate ObjectVelocity scene/list/targets and identity-gated stats.
+- [x] Migrate ObjectVelocity scene/list/targets and identity-gated stats.
+  The pass owns recording-local View/Object/Material CB + descriptor snapshots,
+  immutable planned draws, explicit velocity ReadWrite/depth Read declarations,
+  submission-retained attachment/descriptor resources, and the DefaultLit
+  pipeline/set-layout ownership bridge required by DX12/Vulkan/Metal. Older publication
+  identities cannot regress a newer diagnostic snapshot.
 - [ ] Migrate Transparent scene/list/targets with truthful color ReadWrite and
   depth Read dependencies.
 - [ ] Migrate Skybox targets/configuration and per-recording submission-owned

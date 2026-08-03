@@ -1981,6 +1981,45 @@ TEST_F(PipelineCacheValidationFixture, ObjectConstantBufferUsesAlignedObjectCons
     EXPECT_EQ(objectBinding->range, expectedStride);
 }
 
+TEST_F(PipelineCacheValidationFixture,
+       RasterDrawBindingSnapshotRejectsDynamicOffsetOverflowAndNormalizesZeroCapacity)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::ViewData view;
+    RVX::RasterDrawBindingSnapshot overflowSnapshot;
+    EXPECT_FALSE(cache.CreateRasterDrawBindingSnapshot(
+        view, std::numeric_limits<RVX::uint32>::max(), overflowSnapshot));
+    EXPECT_FALSE(overflowSnapshot.IsValid());
+
+    RVX::RasterDrawBindingSnapshot zeroCapacitySnapshot;
+    ASSERT_TRUE(cache.CreateRasterDrawBindingSnapshot(view, 0, zeroCapacitySnapshot));
+    EXPECT_EQ(1u, zeroCapacitySnapshot.objectCapacity);
+    EXPECT_TRUE(cache.UpdateRasterDrawBindingSnapshotObject(
+        zeroCapacitySnapshot,
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        false,
+        true));
+    EXPECT_FALSE(cache.UpdateRasterDrawBindingSnapshotObject(
+        zeroCapacitySnapshot,
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        false,
+        true));
+}
+
 TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsWorldAndNormalMatrices)
 {
     if (!HasShaderFixtures())
@@ -6333,6 +6372,10 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     const std::string pipelineSource = ReadTextFile(renderRoot / "Private" / "PipelineCache.cpp");
     const std::string passHeader =
         ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "ObjectVelocityPass.h");
+    const std::string recordContextHeader =
+        ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "RenderPassRecordContext.h");
+    const std::string materialHeader =
+        ReadTextFile(renderRoot / "Include" / "Render" / "Material" / "MaterialSystem.h");
     const std::string passSource =
         ReadTextFile(renderRoot / "Private" / "Passes" / "ObjectVelocityPass.cpp");
     const std::string rendererSource = ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
@@ -6356,29 +6399,34 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
               std::string::npos);
 
     EXPECT_NE(passHeader.find("MaterialSystem* materialSystem"), std::string::npos);
-    EXPECT_NE(passHeader.find("maskedDrawItemCount"), std::string::npos);
-    EXPECT_NE(passHeader.find("maskedDrawCount"), std::string::npos);
-    EXPECT_NE(passHeader.find("skippedMissingUVCount"), std::string::npos);
-    EXPECT_NE(passHeader.find("skippedMaterialBindingCount"), std::string::npos);
-    EXPECT_NE(passHeader.find("const std::vector<RenderDrawItem>* maskedDrawItems"), std::string::npos);
+    EXPECT_NE(passHeader.find("RenderPassRecordContext"), std::string::npos);
+    EXPECT_EQ(passHeader.find("SetRenderScene"), std::string::npos);
+    EXPECT_NE(recordContextHeader.find("struct ObjectVelocityPassStats"), std::string::npos);
+    EXPECT_NE(recordContextHeader.find("maskedDrawItemCount"), std::string::npos);
+    EXPECT_NE(recordContextHeader.find("maskedDrawCount"), std::string::npos);
+    EXPECT_NE(recordContextHeader.find("skippedMissingUVCount"), std::string::npos);
+    EXPECT_NE(recordContextHeader.find("skippedMaterialBindingCount"), std::string::npos);
+    EXPECT_NE(materialHeader.find("std::vector<RHITextureRef> textures"), std::string::npos);
 
     EXPECT_NE(passSource.find("GetMaskedObjectVelocityPipeline(RHIFormat::RG16_FLOAT)"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.maskedDrawItemCount"), std::string::npos);
-    EXPECT_NE(passSource.find("MaterialBindingOptions materialOptions;"), std::string::npos);
-    EXPECT_NE(passSource.find("materialOptions.allowNormalMap = false;"), std::string::npos);
-    EXPECT_NE(passSource.find("item.material, view.viewCache, materialOptions"),
+    EXPECT_NE(passSource.find("CreateMaterialBindingSnapshot"), std::string::npos);
+    EXPECT_NE(passSource.find("ObjectVelocityPassStats& stats = data.results->objectVelocityStats"),
               std::string::npos);
-    EXPECT_NE(passSource.find("++m_stats.skippedMissingUVCount"), std::string::npos);
-    EXPECT_NE(passSource.find("++m_stats.skippedMaterialBindingCount"), std::string::npos);
-    EXPECT_NE(passSource.find("ctx.SetDescriptorSet(2, materialBinding.descriptorSet, materialBinding.dynamicOffsets)"),
-              std::string::npos);
-    EXPECT_NE(passSource.find("ctx.SetVertexBuffer(2, buffers.uvBuffer)"), std::string::npos);
-    EXPECT_NE(passSource.find("++m_stats.maskedDrawCount"), std::string::npos);
+    EXPECT_NE(passSource.find("++stats.skippedMissingUVCount"), std::string::npos);
+    EXPECT_NE(passSource.find("++stats.skippedMaterialBindingCount"), std::string::npos);
+    EXPECT_NE(passSource.find("builder.ReadWrite"), std::string::npos);
+    EXPECT_NE(passSource.find("RHIResourceState::DepthRead"), std::string::npos);
+    EXPECT_NE(passSource.find("draw.material.descriptorSet.Get()"), std::string::npos);
+    EXPECT_NE(passSource.find("draw.material.textures"), std::string::npos);
+    EXPECT_NE(passSource.find("velocityViewOwner->GetTexture()"), std::string::npos);
+    EXPECT_NE(passSource.find("depthViewOwner->GetTexture()"), std::string::npos);
+    EXPECT_NE(passSource.find("draw.buffers.uvBuffer"), std::string::npos);
+    EXPECT_NE(passSource.find("++stats.maskedDrawCount"), std::string::npos);
+    EXPECT_NE(passSource.find("data.results->identity != data.identity"), std::string::npos);
 
     EXPECT_NE(rendererSource.find("objectVelocityPass->SetResources("), std::string::npos);
     EXPECT_NE(rendererSource.find("m_materialSystem.get());"), std::string::npos);
-    EXPECT_NE(rendererSource.find("m_objectVelocityPass->SetRenderScene(&m_renderScene, &m_opaqueDrawItems, &m_maskedDrawItems);"),
-              std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_objectVelocityPass->SetRenderScene"), std::string::npos);
 
     EXPECT_NE(shaderSource.find("struct VSMaskedInput"), std::string::npos);
     EXPECT_NE(shaderSource.find("VSMaskedOutput VSMainMasked(VSMaskedInput input)"), std::string::npos);

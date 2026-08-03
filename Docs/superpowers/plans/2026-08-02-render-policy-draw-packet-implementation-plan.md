@@ -1,7 +1,7 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-8, Task 9A, Task 9B-1, and Task 9B-2 complete;
-Task 9B-3 ObjectVelocity recording isolation is the next implementation stage
+**Status:** Tasks 0-8, Task 9A, Task 9B-1, Task 9B-2, and Task 9B-3 complete;
+Task 9B-4 Transparent recording isolation is the next implementation stage
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -674,13 +674,14 @@ Acceptance:
 recording.
 
 **Progress:** Task 9A is complete for the common contract plus Depth/Opaque,
-Task 9B-1 is complete for raster Shadow producer/Opaque consumption, and
+Task 9B-1 is complete for raster Shadow producer/Opaque consumption,
 Task 9B-2 isolates RayTracedShadow per-recording state with a
 completion-aware temporal-history owner. 9B-2 preserves identity-ordered
 submitted diagnostics (including rejection), projects realized full access
 snapshots back to persistent history ownership, and bounds the legacy adapter
-to one pending record. Later 9B slices migrate ObjectVelocity, Transparent,
-and Skybox, then remove the late binder.
+to one pending record. Task 9B-3 isolates ObjectVelocity setup/execute state
+with recording-owned raster/material bindings and monotonic publication.
+Later 9B slices migrate Transparent and Skybox, then remove the late binder.
 
 Proposed files:
 
