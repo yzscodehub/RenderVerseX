@@ -1,7 +1,8 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
-10A/10B/10C, and Tasks 11A/11B are complete and reviewed; Task 11C is next
+10A/10B/10C, Tasks 11A/11B, and Task 11C-1 are complete and reviewed;
+Task 11C-2 is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -650,9 +651,31 @@ retirement. The completed Task 11B acceptance ledger is:
   GPU Scene 24/24, RenderScene 17/17, cache 6/6, GPU-driven 34/34,
   submission 27/27, focused architecture 12/12, and phase gate 1/1.
 
-Task 11C must allocate persistent per-table GPU buffers, derive dirty upload
-ranges from committed Task 11B changes, version CPU-updated data across in-flight
-reads, and attach all retirement/reuse to real multi-domain GPU completion
-tokens. Draw ranges must be reclaimed as whole contiguous generation blocks with
-strict non-wrapping generation advancement. Task 11C remains non-executing;
-Task 11D owns GPU visibility/command generation and Task 10 strategy consumption.
+Task 11C-1 implementation, independent review, remediation, and primary audit
+are complete. The accepted allocator/change-journal ledger is:
+
+- [x] Publish a value-only atomic change set for every successful non-empty
+  commit, with base/committed versions and exact sorted/coalesced dirty ranges
+  for all six tables; failed and empty commits preserve the previous journal.
+- [x] Keep `Clear()` allocation-free and fail closed at version exhaustion while
+  publishing full-table dirtiness for a representable clear.
+- [x] Record retirement versions without inferring completion from frame counts,
+  clocks, or CPU progress; admit reuse only through an explicit safe-version
+  watermark whose real completion-token mapping belongs to Task 11C-2.
+- [x] Reuse primitive/bounds/transform slots independently, but reclaim and
+  reuse draw/material/geometry ranges only as one matching-count contiguous
+  block with one strict non-wrapping generation advancement.
+- [x] Permanently retire generation-exhausted slots/blocks and keep every old
+  typed reference invalid after reuse.
+- [x] Preserve prepared-allocation/noexcept-finalize atomicity and cover all 19
+  actual allocation-failure checkpoints; pass GPU Scene 30/30 and independent
+  review with no unresolved P0-P2.
+
+Task 11C-2 must allocate persistent per-table GPU buffers, consume every
+committed change set without silently skipping a base version, derive per-buffer
+dirty upload ranges, version CPU-updated data across in-flight reads, and map
+safe-version reclamation to real multi-domain GPU completion tokens. A newly
+allocated or capacity-grown buffer set requires a full initialization; an older
+completed set may use accumulated dirty ranges only when its resident-version
+chain is complete. Task 11C remains non-executing; Task 11D owns GPU
+visibility/command generation and Task 10 strategy consumption.

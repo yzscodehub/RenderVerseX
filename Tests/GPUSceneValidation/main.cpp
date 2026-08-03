@@ -589,11 +589,15 @@ TEST(GPUSceneValidation, ClearTombstonesAllIdentityWithoutResettingSlotsOrVersio
 
 TEST(GPUSceneValidation, PreparationAllocationFailuresLeaveCommittedMirrorUntouched)
 {
-    for (int32 checkpoint = 0; checkpoint <= 10; ++checkpoint)
+    constexpr int32 maximumPreparationCheckpoints = 64;
+    bool reachedSuccessfulPreparation = false;
+    for (int32 checkpoint = 0; checkpoint <= maximumPreparationCheckpoints;
+         ++checkpoint)
     {
         GPUSceneDatabase database;
         const GPUScenePrimitiveRef original = AddSingleObject(database, 101);
         const GPUSceneCommittedMirror before = database.GetCommittedMirror();
+        const GPUSceneChangeSet changesBefore = database.GetLastChangeSet();
         const uint64 versionBefore = database.GetCommittedVersion();
         const uint32 objectCountBefore = database.GetObjectCount();
         const uint32 slotCapacityBefore = database.GetSlotCapacity();
@@ -602,6 +606,13 @@ TEST(GPUSceneValidation, PreparationAllocationFailuresLeaveCommittedMirrorUntouc
         transaction.Add(MakeObject(202, 2.0F, 2));
         database.SetPrepareAllocationFailureCountdownForTesting(checkpoint);
         const GPUSceneCommitResult result = database.Commit(transaction);
+
+        if (result.Succeeded())
+        {
+            reachedSuccessfulPreparation = true;
+            EXPECT_TRUE(database.FindPrimitive(202).has_value());
+            break;
+        }
 
         EXPECT_EQ(result.status, GPUSceneCommitStatus::AllocationFailed)
             << "checkpoint=" << checkpoint;
@@ -614,9 +625,11 @@ TEST(GPUSceneValidation, PreparationAllocationFailuresLeaveCommittedMirrorUntouc
         EXPECT_EQ(database.GetCommittedMirror().materials, before.materials);
         EXPECT_EQ(database.GetCommittedMirror().geometries, before.geometries);
         EXPECT_EQ(database.GetCommittedMirror().draws, before.draws);
+        EXPECT_EQ(database.GetLastChangeSet(), changesBefore);
         EXPECT_TRUE(database.IsLive(original));
         EXPECT_FALSE(database.FindPrimitive(202).has_value());
     }
+    EXPECT_TRUE(reachedSuccessfulPreparation);
 }
 
 TEST(GPUSceneValidation, ZeroDrawObjectSupportsAddUpdateAndRemove)
@@ -769,6 +782,221 @@ TEST(GPUSceneValidation, MixedDisjointTransactionCommitsOnlyItsTouchedObjects)
     EXPECT_TRUE(HasGPUSceneRowFlag(
         database.GetCommittedMirror().primitives[second.slot].header.flags,
         GPUSceneRowFlags::Tombstone));
+}
+
+TEST(GPUSceneValidation, ChangeSetPublishesExactMergedRangesAndRemainsAtomic)
+{
+    GPUSceneDatabase database;
+    GPUSceneTransaction initial;
+    initial.Add(MakeObject(101, 1.0F, 2));
+    initial.Add(MakeObject(202, 2.0F, 1));
+    ASSERT_TRUE(database.Commit(initial).Succeeded());
+
+    const GPUSceneChangeSet& initialChanges = database.GetLastChangeSet();
+    EXPECT_EQ(initialChanges.baseVersion, 0U);
+    EXPECT_EQ(initialChanges.committedVersion, 1U);
+    EXPECT_FALSE(initialChanges.primitives.fullTableDirty);
+    EXPECT_EQ(initialChanges.primitives.dirtyRanges,
+              std::vector<GPUSceneDirtyRowRange>({{1, 2}}));
+    EXPECT_EQ(initialChanges.bounds.dirtyRanges,
+              std::vector<GPUSceneDirtyRowRange>({{1, 2}}));
+    EXPECT_EQ(initialChanges.transforms.dirtyRanges,
+              std::vector<GPUSceneDirtyRowRange>({{1, 2}}));
+    EXPECT_EQ(initialChanges.materials.dirtyRanges,
+              std::vector<GPUSceneDirtyRowRange>({{1, 3}}));
+    EXPECT_EQ(initialChanges.geometries.dirtyRanges,
+              std::vector<GPUSceneDirtyRowRange>({{1, 3}}));
+    EXPECT_EQ(initialChanges.draws.dirtyRanges,
+              std::vector<GPUSceneDirtyRowRange>({{1, 3}}));
+
+    const GPUScenePrimitiveRef first = database.FindPrimitive(101).value();
+    GPUSceneTransaction changedDrawCount;
+    changedDrawCount.Update(first, MakeObject(101, 3.0F, 3));
+    ASSERT_TRUE(database.Commit(changedDrawCount).Succeeded());
+    const GPUSceneChangeSet& updatedChanges = database.GetLastChangeSet();
+    EXPECT_EQ(updatedChanges.baseVersion, 1U);
+    EXPECT_EQ(updatedChanges.committedVersion, 2U);
+    EXPECT_EQ(updatedChanges.primitives.dirtyRanges,
+              std::vector<GPUSceneDirtyRowRange>({{1, 1}}));
+    EXPECT_EQ(updatedChanges.materials.dirtyRanges,
+              std::vector<GPUSceneDirtyRowRange>({{1, 2}, {4, 3}}));
+    EXPECT_EQ(updatedChanges.geometries.dirtyRanges,
+              std::vector<GPUSceneDirtyRowRange>({{1, 2}, {4, 3}}));
+    EXPECT_EQ(updatedChanges.draws.dirtyRanges,
+              std::vector<GPUSceneDirtyRowRange>({{1, 2}, {4, 3}}));
+
+    const GPUSceneChangeSet beforeNoOp = updatedChanges;
+    GPUSceneTransaction empty;
+    EXPECT_TRUE(database.Commit(empty).Succeeded());
+    EXPECT_EQ(database.GetLastChangeSet(), beforeNoOp);
+
+    GPUSceneTransaction invalid;
+    invalid.Add(MakeObject(0, 4.0F));
+    EXPECT_EQ(database.Commit(invalid).status, GPUSceneCommitStatus::InvalidObjectId);
+    EXPECT_EQ(database.GetLastChangeSet(), beforeNoOp);
+}
+
+TEST(GPUSceneValidation, CompletionWatermarkDefersReuseAndInvalidatesOldReferences)
+{
+    GPUSceneDatabase database(1, 1);
+    const GPUScenePrimitiveRef first = AddSingleObject(database, 101);
+    const GPUScenePrimitiveRow firstRow = *database.GetRow(first);
+    const GPUSceneDrawMetadataRow firstDraw = *database.GetRow(firstRow.firstDraw);
+
+    GPUSceneTransaction remove;
+    remove.Remove(first);
+    const GPUSceneCommitResult removed = database.Commit(remove);
+    ASSERT_TRUE(removed.Succeeded());
+
+    GPUSceneTransaction beforeCompletion;
+    beforeCompletion.Add(MakeObject(202, 2.0F));
+    EXPECT_EQ(database.Commit(beforeCompletion).status,
+              GPUSceneCommitStatus::CapacityExhausted);
+    ASSERT_TRUE(database.ReclaimRetiredThrough(removed.committedVersion - 1U));
+    EXPECT_EQ(database.Commit(beforeCompletion).status,
+              GPUSceneCommitStatus::CapacityExhausted);
+
+    ASSERT_TRUE(database.ReclaimRetiredThrough(removed.committedVersion));
+    GPUSceneTransaction replacementTransaction;
+    replacementTransaction.Add(MakeObject(202, 2.0F));
+    ASSERT_TRUE(database.Commit(replacementTransaction).Succeeded());
+    const GPUScenePrimitiveRef replacement = database.FindPrimitive(202).value();
+    const GPUScenePrimitiveRow replacementRow = *database.GetRow(replacement);
+    const GPUSceneDrawMetadataRow replacementDraw =
+        *database.GetRow(replacementRow.firstDraw);
+
+    EXPECT_EQ(replacement.slot, first.slot);
+    EXPECT_EQ(replacement.generation, first.generation + 1U);
+    EXPECT_FALSE(database.IsLive(first));
+    EXPECT_FALSE(database.IsLive(firstRow.bounds));
+    EXPECT_FALSE(database.IsLive(firstRow.transform));
+    EXPECT_FALSE(database.IsLive(firstRow.firstDraw));
+    EXPECT_FALSE(database.IsLive(firstDraw.material));
+    EXPECT_FALSE(database.IsLive(firstDraw.geometry));
+    EXPECT_EQ(replacementRow.firstDraw.slot, firstRow.firstDraw.slot);
+    EXPECT_EQ(replacementRow.firstDraw.generation, replacement.generation);
+    EXPECT_EQ(replacementDraw.material.generation, replacement.generation);
+    EXPECT_EQ(replacementDraw.geometry.generation, replacement.generation);
+}
+
+TEST(GPUSceneValidation, DrawBlocksReuseOnlyAsOneGenerationAndMatchingCount)
+{
+    GPUSceneDatabase database(1, 2);
+    GPUSceneTransaction add;
+    add.Add(MakeObject(101, 1.0F, 2));
+    ASSERT_TRUE(database.Commit(add).Succeeded());
+    const GPUScenePrimitiveRef first = database.FindPrimitive(101).value();
+    const GPUScenePrimitiveRow firstRow = *database.GetRow(first);
+    const GPUSceneDrawMetadataRow firstDraw = *database.GetRow(firstRow.firstDraw);
+
+    GPUSceneTransaction remove;
+    remove.Remove(first);
+    const GPUSceneCommitResult removed = database.Commit(remove);
+    ASSERT_TRUE(removed.Succeeded());
+    ASSERT_TRUE(database.ReclaimRetiredThrough(removed.committedVersion));
+
+    GPUSceneTransaction wrongCount;
+    wrongCount.Add(MakeObject(202, 2.0F, 1));
+    EXPECT_EQ(database.Commit(wrongCount).status,
+              GPUSceneCommitStatus::CapacityExhausted);
+
+    GPUSceneTransaction matchingCount;
+    matchingCount.Add(MakeObject(202, 2.0F, 2));
+    ASSERT_TRUE(database.Commit(matchingCount).Succeeded());
+    const GPUScenePrimitiveRef replacement = database.FindPrimitive(202).value();
+    const GPUScenePrimitiveRow replacementRow = *database.GetRow(replacement);
+    const GPUSceneDrawMetadataRow replacementDraw =
+        *database.GetRow(replacementRow.firstDraw);
+
+    EXPECT_EQ(replacementRow.firstDraw.slot, firstRow.firstDraw.slot);
+    EXPECT_EQ(replacementRow.firstDraw.generation, firstRow.firstDraw.generation + 1U);
+    EXPECT_EQ(replacementDraw.material.slot, firstDraw.material.slot);
+    EXPECT_EQ(replacementDraw.geometry.slot, firstDraw.geometry.slot);
+    EXPECT_EQ(replacementDraw.material.generation, replacementRow.firstDraw.generation);
+    EXPECT_EQ(replacementDraw.geometry.generation, replacementRow.firstDraw.generation);
+}
+
+TEST(GPUSceneValidation, MaximumGenerationRemainsPermanentlyRetiredAfterWatermark)
+{
+    GPUSceneDatabase database(std::numeric_limits<uint32>::max(), 1);
+    const GPUScenePrimitiveRef first = AddSingleObject(database, 101);
+    GPUSceneTransaction remove;
+    remove.Remove(first);
+    const GPUSceneCommitResult removed = database.Commit(remove);
+    ASSERT_TRUE(removed.Succeeded());
+    ASSERT_TRUE(database.ReclaimRetiredThrough(removed.committedVersion));
+    EXPECT_EQ(database.GetSlotState(first), GPUSceneSlotState::PermanentlyRetired);
+
+    GPUSceneTransaction replacement;
+    replacement.Add(MakeObject(202, 2.0F));
+    EXPECT_EQ(database.Commit(replacement).status,
+              GPUSceneCommitStatus::CapacityExhausted);
+    EXPECT_FALSE(database.FindPrimitive(202).has_value());
+}
+
+TEST(GPUSceneValidation, ClearPublishesFullDirtyAndUsesTheSameCompletionWatermark)
+{
+    GPUSceneDatabase database(1, 1);
+    const GPUScenePrimitiveRef first = AddSingleObject(database, 101);
+    const uint64 versionBeforeClear = database.GetCommittedVersion();
+    database.Clear();
+
+    const GPUSceneChangeSet& cleared = database.GetLastChangeSet();
+    EXPECT_EQ(cleared.baseVersion, versionBeforeClear);
+    EXPECT_EQ(cleared.committedVersion, versionBeforeClear + 1U);
+    EXPECT_TRUE(cleared.primitives.fullTableDirty);
+    EXPECT_TRUE(cleared.bounds.fullTableDirty);
+    EXPECT_TRUE(cleared.transforms.fullTableDirty);
+    EXPECT_TRUE(cleared.materials.fullTableDirty);
+    EXPECT_TRUE(cleared.geometries.fullTableDirty);
+    EXPECT_TRUE(cleared.draws.fullTableDirty);
+    EXPECT_TRUE(cleared.primitives.dirtyRanges.empty());
+    EXPECT_FALSE(database.IsLive(first));
+
+    GPUSceneTransaction beforeCompletion;
+    beforeCompletion.Add(MakeObject(202, 2.0F));
+    EXPECT_EQ(database.Commit(beforeCompletion).status,
+              GPUSceneCommitStatus::CapacityExhausted);
+    ASSERT_TRUE(database.ReclaimRetiredThrough(cleared.committedVersion));
+    GPUSceneTransaction replacement;
+    replacement.Add(MakeObject(202, 2.0F));
+    ASSERT_TRUE(database.Commit(replacement).Succeeded());
+    EXPECT_EQ(database.FindPrimitive(202)->slot, first.slot);
+
+    GPUSceneDatabase exhausted(
+        1, std::numeric_limits<uint32>::max(),
+        std::numeric_limits<uint64>::max());
+    const GPUSceneChangeSet beforeExhaustedClear = exhausted.GetLastChangeSet();
+    exhausted.Clear();
+    EXPECT_EQ(exhausted.GetCommittedVersion(), std::numeric_limits<uint64>::max());
+    EXPECT_EQ(exhausted.GetLastChangeSet(), beforeExhaustedClear);
+}
+
+TEST(GPUSceneValidation, ReclaimKeepsClearNoexceptRetirementCapacityForLiveDrawBlocks)
+{
+    GPUSceneDatabase database(1, 2);
+    GPUSceneTransaction add;
+    add.Add(MakeObject(101, 1.0F));
+    add.Add(MakeObject(202, 2.0F));
+    ASSERT_TRUE(database.Commit(add).Succeeded());
+    const GPUScenePrimitiveRef first = database.FindPrimitive(101).value();
+    const GPUScenePrimitiveRef second = database.FindPrimitive(202).value();
+
+    GPUSceneTransaction remove;
+    remove.Remove(first);
+    const GPUSceneCommitResult removed = database.Commit(remove);
+    ASSERT_TRUE(removed.Succeeded());
+    ASSERT_TRUE(database.ReclaimRetiredThrough(removed.committedVersion));
+
+    database.Clear();
+    EXPECT_FALSE(database.IsLive(second));
+    EXPECT_TRUE(database.GetLastChangeSet().draws.fullTableDirty);
+    ASSERT_TRUE(database.ReclaimRetiredThrough(database.GetCommittedVersion()));
+
+    GPUSceneTransaction replacement;
+    replacement.Add(MakeObject(303, 3.0F));
+    ASSERT_TRUE(database.Commit(replacement).Succeeded());
+    EXPECT_EQ(database.FindPrimitive(303)->slot, first.slot);
 }
 
 TEST(GPUSceneValidation, PublicationDiffsByObjectIdAndIgnoresAcceptedObjectOrder)

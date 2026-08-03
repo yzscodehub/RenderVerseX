@@ -1,5 +1,6 @@
 #include "GPUScene/GPUSceneDatabase.h"
 
+#include <algorithm>
 #include <limits>
 #include <new>
 #include <unordered_set>
@@ -46,13 +47,17 @@ namespace RVX
         void RetireRow(
             std::vector<Row>& rows,
             std::vector<SlotRecord>& slots,
-            Ref reference)
+            Ref reference,
+            uint64 retireVersion)
         {
             SlotRecord& record = slots[reference.slot];
             WriteTombstoneHeader(rows[reference.slot], record.objectId, record.generation);
             record.state = record.generation == std::numeric_limits<uint32>::max()
                                ? GPUSceneSlotState::PermanentlyRetired
                                : GPUSceneSlotState::Retired;
+            record.retireVersion = record.state == GPUSceneSlotState::Retired
+                                       ? retireVersion
+                                       : 0;
         }
 
         bool CanAppendSlots(size_t currentSize, size_t count, uint32 maxSlotCapacity)
@@ -76,9 +81,25 @@ namespace RVX
             uint32 generation) noexcept
         {
             const uint32 slot = static_cast<uint32>(slots.size());
-            slots.push_back({objectId, generation, GPUSceneSlotState::Live});
+            slots.push_back({objectId, 0, generation, GPUSceneSlotState::Live});
             rows.emplace_back();
             return slot;
+        }
+
+        template <typename Row, typename SlotRecord>
+        void ActivateSlot(
+            std::vector<Row>& rows,
+            std::vector<SlotRecord>& slots,
+            uint32 slot,
+            uint64 objectId,
+            uint32 generation) noexcept
+        {
+            SlotRecord& record = slots[slot];
+            record.objectId = objectId;
+            record.retireVersion = 0;
+            record.generation = generation;
+            record.state = GPUSceneSlotState::Live;
+            rows[slot] = {};
         }
     } // namespace
 
@@ -134,6 +155,8 @@ namespace RVX
         m_state.mirror.geometries.resize(1);
         m_state.mirror.draws.resize(1);
         m_state.mirror.version = initialCommittedVersion;
+        m_lastChangeSet.baseVersion = initialCommittedVersion;
+        m_lastChangeSet.committedVersion = initialCommittedVersion;
     }
 
     GPUSceneCommitResult GPUSceneDatabase::Commit(const GPUSceneTransaction& transaction)
@@ -169,42 +192,183 @@ namespace RVX
             return {GPUSceneCommitStatus::AllocationFailed, m_state.mirror.version};
         }
 
+        const uint64 baseVersion = m_state.mirror.version;
         // Finalization mutates only touched rows. All dynamic allocations,
-        // including map nodes for Adds, completed above; this path is noexcept.
+        // including map nodes, journal storage, and retired-block capacity,
+        // completed above; this path is noexcept.
         FinalizePrepared(prepared);
         ++m_state.mirror.version;
+        prepared.changeSet.baseVersion = baseVersion;
+        prepared.changeSet.committedVersion = m_state.mirror.version;
+        PublishPreparedChangeSet(prepared);
         return {GPUSceneCommitStatus::Success, m_state.mirror.version};
     }
 
     void GPUSceneDatabase::Clear() noexcept
     {
-        const auto tombstone = [](auto& rows, auto& slots)
+        if (m_state.mirror.version == std::numeric_limits<uint64>::max())
+        {
+            return;
+        }
+
+        const uint64 baseVersion = m_state.mirror.version;
+        const uint64 retireVersion = baseVersion + 1U;
+        for (size_t slot = 1; slot < m_state.primitiveSlots.size(); ++slot)
+        {
+            if (m_state.primitiveSlots[slot].state != GPUSceneSlotState::Live)
+            {
+                continue;
+            }
+
+            const GPUScenePrimitiveRef primitive{
+                static_cast<uint32>(slot),
+                m_state.primitiveSlots[slot].generation};
+            const std::optional<DrawReferences> draws =
+                GetDrawReferences(m_state, primitive);
+            if (draws)
+            {
+                RetireDrawReferences(m_state, *draws, retireVersion);
+            }
+
+            const GPUScenePrimitiveRow& primitiveRow =
+                m_state.mirror.primitives[slot];
+            RetireRow(m_state.mirror.bounds, m_state.boundsSlots,
+                      primitiveRow.bounds, retireVersion);
+            RetireRow(m_state.mirror.transforms, m_state.transformSlots,
+                      primitiveRow.transform, retireVersion);
+            RetireRow(m_state.mirror.primitives, m_state.primitiveSlots,
+                      primitive, retireVersion);
+        }
+        m_state.objectToPrimitive.clear();
+        ++m_state.mirror.version;
+        PublishFullChangeSetNoexcept(baseVersion, m_state.mirror.version);
+    }
+
+    bool GPUSceneDatabase::ReclaimRetiredThrough(uint64 safeVersion)
+    {
+        size_t primitiveCount = 0;
+        size_t boundsCount = 0;
+        size_t transformCount = 0;
+        size_t drawBlockCount = 0;
+        const auto countReclaimable = [safeVersion](const auto& slots, size_t& count)
         {
             for (size_t slot = 1; slot < slots.size(); ++slot)
             {
-                if (slots[slot].state != GPUSceneSlotState::Live)
+                const SlotRecord& record = slots[slot];
+                if (record.state == GPUSceneSlotState::Retired &&
+                    record.retireVersion <= safeVersion)
+                {
+                    ++count;
+                }
+            }
+        };
+        countReclaimable(m_state.primitiveSlots, primitiveCount);
+        countReclaimable(m_state.boundsSlots, boundsCount);
+        countReclaimable(m_state.transformSlots, transformCount);
+        for (const DrawBlock& block : m_state.retiredDrawBlocks)
+        {
+            if (block.retireVersion <= safeVersion)
+            {
+                ++drawBlockCount;
+            }
+        }
+
+        if (primitiveCount == 0 && boundsCount == 0 && transformCount == 0 &&
+            drawBlockCount == 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            std::vector<uint32> freePrimitives = m_state.freePrimitiveSlots;
+            std::vector<uint32> freeBounds = m_state.freeBoundsSlots;
+            std::vector<uint32> freeTransforms = m_state.freeTransformSlots;
+            std::vector<DrawBlock> freeDrawBlocks = m_state.freeDrawBlocks;
+            std::vector<DrawBlock> retainedDrawBlocks;
+            freePrimitives.reserve(freePrimitives.size() + primitiveCount);
+            freeBounds.reserve(freeBounds.size() + boundsCount);
+            freeTransforms.reserve(freeTransforms.size() + transformCount);
+            freeDrawBlocks.reserve(freeDrawBlocks.size() + drawBlockCount);
+            // Keep Clear noexcept even after this swap: any remaining live
+            // draw block may have to move back into retired storage at once.
+            retainedDrawBlocks.reserve(m_state.drawSlots.size() - 1U);
+
+            const auto appendReclaimable = [safeVersion](
+                                             const auto& slots,
+                                             auto& freeSlots)
+            {
+                for (uint32 slot = 1; slot < slots.size(); ++slot)
+                {
+                    const SlotRecord& record = slots[slot];
+                    if (record.state == GPUSceneSlotState::Retired &&
+                        record.retireVersion <= safeVersion)
+                    {
+                        freeSlots.push_back(slot);
+                    }
+                }
+            };
+            appendReclaimable(m_state.primitiveSlots, freePrimitives);
+            appendReclaimable(m_state.boundsSlots, freeBounds);
+            appendReclaimable(m_state.transformSlots, freeTransforms);
+            for (const DrawBlock& block : m_state.retiredDrawBlocks)
+            {
+                if (block.retireVersion <= safeVersion)
+                {
+                    freeDrawBlocks.push_back(block);
+                }
+                else
+                {
+                    retainedDrawBlocks.push_back(block);
+                }
+            }
+
+            const auto markFree = [safeVersion](auto& slots)
+            {
+                for (size_t slot = 1; slot < slots.size(); ++slot)
+                {
+                    SlotRecord& record = slots[slot];
+                    if (record.state == GPUSceneSlotState::Retired &&
+                        record.retireVersion <= safeVersion)
+                    {
+                        record.state = GPUSceneSlotState::Free;
+                        record.retireVersion = 0;
+                    }
+                }
+            };
+            markFree(m_state.primitiveSlots);
+            markFree(m_state.boundsSlots);
+            markFree(m_state.transformSlots);
+            for (const DrawBlock& block : m_state.retiredDrawBlocks)
+            {
+                if (block.retireVersion > safeVersion)
                 {
                     continue;
                 }
-                WriteTombstoneHeader(rows[slot], slots[slot].objectId,
-                                     slots[slot].generation);
-                slots[slot].state = slots[slot].generation ==
-                                             std::numeric_limits<uint32>::max()
-                                         ? GPUSceneSlotState::PermanentlyRetired
-                                         : GPUSceneSlotState::Retired;
+                for (uint32 offset = 0; offset < block.count; ++offset)
+                {
+                    m_state.materialSlots[block.firstMaterialSlot + offset].state =
+                        GPUSceneSlotState::Free;
+                    m_state.materialSlots[block.firstMaterialSlot + offset].retireVersion = 0;
+                    m_state.geometrySlots[block.firstGeometrySlot + offset].state =
+                        GPUSceneSlotState::Free;
+                    m_state.geometrySlots[block.firstGeometrySlot + offset].retireVersion = 0;
+                    m_state.drawSlots[block.firstDrawSlot + offset].state =
+                        GPUSceneSlotState::Free;
+                    m_state.drawSlots[block.firstDrawSlot + offset].retireVersion = 0;
+                }
             }
-        };
-        tombstone(m_state.mirror.primitives, m_state.primitiveSlots);
-        tombstone(m_state.mirror.bounds, m_state.boundsSlots);
-        tombstone(m_state.mirror.transforms, m_state.transformSlots);
-        tombstone(m_state.mirror.materials, m_state.materialSlots);
-        tombstone(m_state.mirror.geometries, m_state.geometrySlots);
-        tombstone(m_state.mirror.draws, m_state.drawSlots);
-        m_state.objectToPrimitive.clear();
-        if (m_state.mirror.version != std::numeric_limits<uint64>::max())
-        {
-            ++m_state.mirror.version;
+            m_state.freePrimitiveSlots.swap(freePrimitives);
+            m_state.freeBoundsSlots.swap(freeBounds);
+            m_state.freeTransformSlots.swap(freeTransforms);
+            m_state.freeDrawBlocks.swap(freeDrawBlocks);
+            m_state.retiredDrawBlocks.swap(retainedDrawBlocks);
         }
+        catch (const std::bad_alloc&)
+        {
+            return false;
+        }
+        return true;
     }
 
     void GPUSceneDatabase::SetPrepareAllocationFailureCountdownForTesting(
@@ -234,6 +398,25 @@ namespace RVX
         affectedObjectIds.reserve(transaction.m_operations.size());
         FailPrepareAllocationCheckpoint();
         outPrepared.operations.reserve(transaction.m_operations.size());
+
+        const size_t operationCount = transaction.m_operations.size();
+        if (operationCount > std::numeric_limits<size_t>::max() / 2U)
+        {
+            return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
+        }
+        const size_t maximumRanges = operationCount * 2U;
+        const auto reserveRanges = [maximumRanges](GPUSceneTableChangeSet& table)
+        {
+            table.dirtyRanges.reserve(maximumRanges);
+        };
+        FailPrepareAllocationCheckpoint(); reserveRanges(outPrepared.changeSet.primitives);
+        FailPrepareAllocationCheckpoint(); reserveRanges(outPrepared.changeSet.bounds);
+        FailPrepareAllocationCheckpoint(); reserveRanges(outPrepared.changeSet.transforms);
+        FailPrepareAllocationCheckpoint(); reserveRanges(outPrepared.changeSet.materials);
+        FailPrepareAllocationCheckpoint(); reserveRanges(outPrepared.changeSet.geometries);
+        FailPrepareAllocationCheckpoint(); reserveRanges(outPrepared.changeSet.draws);
+        FailPrepareAllocationCheckpoint();
+        outPrepared.reusedDrawBlockIndices.reserve(operationCount);
 
         const auto addCount = [](size_t& total, size_t value)
         {
@@ -269,35 +452,61 @@ namespace RVX
                     {
                         return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
                     }
-                    const size_t drawCount = operation.object.draws.size();
-                    if (!addCount(outPrepared.delta.primitives, 1) ||
-                        !addCount(outPrepared.delta.bounds, 1) ||
-                        !addCount(outPrepared.delta.transforms, 1) ||
-                        !addCount(outPrepared.delta.materials, drawCount) ||
-                        !addCount(outPrepared.delta.geometries, drawCount) ||
-                        !addCount(outPrepared.delta.draws, drawCount) ||
+                    PreparedOperation prepared;
+                    prepared.operation = &operation;
+                    prepared.objectId = objectId;
+                    uint32 slot = 0;
+                    uint32 generation = 0;
+                    if (!AllocateSingleSlot(
+                            m_state.primitiveSlots, m_state.freePrimitiveSlots,
+                            outPrepared.reusedPrimitiveCount,
+                            outPrepared.delta.primitives, slot, generation,
+                            prepared.appendPrimitive))
+                    {
+                        return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
+                    }
+                    prepared.primitive = {slot, generation};
+                    if (!AllocateSingleSlot(
+                            m_state.boundsSlots, m_state.freeBoundsSlots,
+                            outPrepared.reusedBoundsCount,
+                            outPrepared.delta.bounds, slot, generation,
+                            prepared.appendBounds))
+                    {
+                        return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
+                    }
+                    prepared.bounds = {slot, generation};
+                    if (!AllocateSingleSlot(
+                            m_state.transformSlots, m_state.freeTransformSlots,
+                            outPrepared.reusedTransformCount,
+                            outPrepared.delta.transforms, slot, generation,
+                            prepared.appendTransform))
+                    {
+                        return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
+                    }
+                    prepared.transform = {slot, generation};
+                    if (!AllocateDrawReferences(
+                            m_state, outPrepared,
+                            static_cast<uint32>(operation.object.draws.size()),
+                            prepared.draws) ||
                         !addCount(outPrepared.delta.objects, 1))
                     {
                         return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
                     }
-                    PreparedOperation prepared;
-                    prepared.operation = &operation;
-                    prepared.objectId = objectId;
-                    prepared.primitive = {static_cast<uint32>(m_state.primitiveSlots.size() +
-                                                               outPrepared.delta.primitives - 1),
-                                          m_initialSlotGeneration};
-                    prepared.bounds = {static_cast<uint32>(m_state.boundsSlots.size() +
-                                                            outPrepared.delta.bounds - 1),
-                                       m_initialSlotGeneration};
-                    prepared.transform = {static_cast<uint32>(m_state.transformSlots.size() +
-                                                               outPrepared.delta.transforms - 1),
-                                          m_initialSlotGeneration};
-                    CapacityDelta prior = outPrepared.delta;
-                    prior.materials -= drawCount;
-                    prior.geometries -= drawCount;
-                    prior.draws -= drawCount;
-                    prepared.draws = MakeFutureDrawReferences(
-                        m_state, prior, static_cast<uint32>(drawCount));
+                    MarkDirtyRange(outPrepared.changeSet.primitives,
+                                   prepared.primitive.slot, 1);
+                    MarkDirtyRange(outPrepared.changeSet.bounds,
+                                   prepared.bounds.slot, 1);
+                    MarkDirtyRange(outPrepared.changeSet.transforms,
+                                   prepared.transform.slot, 1);
+                    MarkDirtyRange(outPrepared.changeSet.materials,
+                                   prepared.draws.firstMaterial.slot,
+                                   prepared.draws.count);
+                    MarkDirtyRange(outPrepared.changeSet.geometries,
+                                   prepared.draws.firstGeometry.slot,
+                                   prepared.draws.count);
+                    MarkDirtyRange(outPrepared.changeSet.draws,
+                                   prepared.draws.firstDraw.slot,
+                                   prepared.draws.count);
                     outPrepared.operations.push_back(prepared);
                     break;
                 }
@@ -336,14 +545,8 @@ namespace RVX
                     {
                         return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
                     }
-                    const size_t drawCount = operation.object.draws.size();
-                    if (drawCount != previous->count &&
-                        (!addCount(outPrepared.delta.materials, drawCount) ||
-                         !addCount(outPrepared.delta.geometries, drawCount) ||
-                         !addCount(outPrepared.delta.draws, drawCount)))
-                    {
-                        return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
-                    }
+                    const uint32 drawCount =
+                        static_cast<uint32>(operation.object.draws.size());
                     PreparedOperation prepared;
                     prepared.operation = &operation;
                     prepared.objectId = objectId;
@@ -356,17 +559,46 @@ namespace RVX
                     prepared.replaceDraws = drawCount != previous->count;
                     if (prepared.replaceDraws)
                     {
-                        CapacityDelta prior = outPrepared.delta;
-                        prior.materials -= drawCount;
-                        prior.geometries -= drawCount;
-                        prior.draws -= drawCount;
-                        prepared.draws = MakeFutureDrawReferences(
-                            m_state, prior, static_cast<uint32>(drawCount));
+                        if (!AllocateDrawReferences(
+                                m_state, outPrepared, drawCount,
+                                prepared.draws))
+                        {
+                            return {GPUSceneCommitStatus::CapacityExhausted,
+                                    m_state.mirror.version};
+                        }
+                        if (previous->count != 0)
+                        {
+                            ++outPrepared.retiredDrawBlockCount;
+                        }
+                        MarkDirtyRange(outPrepared.changeSet.materials,
+                                       previous->firstMaterial.slot,
+                                       previous->count);
+                        MarkDirtyRange(outPrepared.changeSet.geometries,
+                                       previous->firstGeometry.slot,
+                                       previous->count);
+                        MarkDirtyRange(outPrepared.changeSet.draws,
+                                       previous->firstDraw.slot,
+                                       previous->count);
                     }
                     else
                     {
                         prepared.draws = *previous;
                     }
+                    MarkDirtyRange(outPrepared.changeSet.primitives,
+                                   prepared.primitive.slot, 1);
+                    MarkDirtyRange(outPrepared.changeSet.bounds,
+                                   prepared.bounds.slot, 1);
+                    MarkDirtyRange(outPrepared.changeSet.transforms,
+                                   prepared.transform.slot, 1);
+                    MarkDirtyRange(outPrepared.changeSet.materials,
+                                   prepared.draws.firstMaterial.slot,
+                                   prepared.draws.count);
+                    MarkDirtyRange(outPrepared.changeSet.geometries,
+                                   prepared.draws.firstGeometry.slot,
+                                   prepared.draws.count);
+                    MarkDirtyRange(outPrepared.changeSet.draws,
+                                   prepared.draws.firstDraw.slot,
+                                   prepared.draws.count);
                     outPrepared.operations.push_back(prepared);
                     break;
                 }
@@ -397,6 +629,25 @@ namespace RVX
                     prepared.bounds = primitiveRow.bounds;
                     prepared.transform = primitiveRow.transform;
                     prepared.previousDraws = *previous;
+                    if (previous->count != 0)
+                    {
+                        ++outPrepared.retiredDrawBlockCount;
+                    }
+                    MarkDirtyRange(outPrepared.changeSet.primitives,
+                                   prepared.primitive.slot, 1);
+                    MarkDirtyRange(outPrepared.changeSet.bounds,
+                                   prepared.bounds.slot, 1);
+                    MarkDirtyRange(outPrepared.changeSet.transforms,
+                                   prepared.transform.slot, 1);
+                    MarkDirtyRange(outPrepared.changeSet.materials,
+                                   previous->firstMaterial.slot,
+                                   previous->count);
+                    MarkDirtyRange(outPrepared.changeSet.geometries,
+                                   previous->firstGeometry.slot,
+                                   previous->count);
+                    MarkDirtyRange(outPrepared.changeSet.draws,
+                                   previous->firstDraw.slot,
+                                   previous->count);
                     outPrepared.operations.push_back(prepared);
                     break;
                 }
@@ -416,6 +667,14 @@ namespace RVX
         {
             return {GPUSceneCommitStatus::CapacityExhausted, m_state.mirror.version};
         }
+        SortAndMergeDirtyRanges(outPrepared.changeSet.primitives);
+        SortAndMergeDirtyRanges(outPrepared.changeSet.bounds);
+        SortAndMergeDirtyRanges(outPrepared.changeSet.transforms);
+        SortAndMergeDirtyRanges(outPrepared.changeSet.materials);
+        SortAndMergeDirtyRanges(outPrepared.changeSet.geometries);
+        SortAndMergeDirtyRanges(outPrepared.changeSet.draws);
+        std::sort(outPrepared.reusedDrawBlockIndices.begin(),
+                  outPrepared.reusedDrawBlockIndices.end());
         return {GPUSceneCommitStatus::Success, m_state.mirror.version};
     }
 
@@ -433,6 +692,11 @@ namespace RVX
         FailPrepareAllocationCheckpoint(); reserveRows(m_state.mirror.materials, m_state.materialSlots, prepared.delta.materials);
         FailPrepareAllocationCheckpoint(); reserveRows(m_state.mirror.geometries, m_state.geometrySlots, prepared.delta.geometries);
         FailPrepareAllocationCheckpoint(); reserveRows(m_state.mirror.draws, m_state.drawSlots, prepared.delta.draws);
+        // Clear is noexcept and can retire every live draw block. Reserve one
+        // retired-block entry per physical draw row, the conservative maximum.
+        FailPrepareAllocationCheckpoint();
+        m_state.retiredDrawBlocks.reserve(
+            (m_state.drawSlots.size() - 1U) + prepared.delta.draws);
         FailPrepareAllocationCheckpoint();
         m_state.objectToPrimitive.reserve(
             m_state.objectToPrimitive.size() + prepared.delta.objects);
@@ -454,6 +718,11 @@ namespace RVX
     const GPUSceneCommittedMirror& GPUSceneDatabase::GetCommittedMirror() const
     {
         return m_state.mirror;
+    }
+
+    const GPUSceneChangeSet& GPUSceneDatabase::GetLastChangeSet() const noexcept
+    {
+        return m_lastChangeSet;
     }
 
     uint64 GPUSceneDatabase::GetCommittedVersion() const
@@ -553,6 +822,7 @@ namespace RVX
 
     void GPUSceneDatabase::FinalizePrepared(PreparedTransaction& prepared) noexcept
     {
+        const uint64 retireVersion = m_state.mirror.version + 1U;
         for (PreparedOperation& preparedOperation : prepared.operations)
         {
             const GPUSceneTransaction::Operation& operation =
@@ -561,14 +831,41 @@ namespace RVX
             switch (operation.type)
             {
                 case GPUSceneTransaction::OperationType::Add:
-                    AppendSlot(m_state.mirror.primitives, m_state.primitiveSlots,
-                               object.objectId, m_initialSlotGeneration);
-                    AppendSlot(m_state.mirror.bounds, m_state.boundsSlots,
-                               object.objectId, m_initialSlotGeneration);
-                    AppendSlot(m_state.mirror.transforms, m_state.transformSlots,
-                               object.objectId, m_initialSlotGeneration);
-                    AppendDrawReferences(m_state, object.objectId,
-                                         preparedOperation.draws);
+                    if (preparedOperation.appendPrimitive)
+                    {
+                        AppendSlot(m_state.mirror.primitives, m_state.primitiveSlots,
+                                   object.objectId, preparedOperation.primitive.generation);
+                    }
+                    else
+                    {
+                        ActivateSlot(m_state.mirror.primitives, m_state.primitiveSlots,
+                                     preparedOperation.primitive.slot, object.objectId,
+                                     preparedOperation.primitive.generation);
+                    }
+                    if (preparedOperation.appendBounds)
+                    {
+                        AppendSlot(m_state.mirror.bounds, m_state.boundsSlots,
+                                   object.objectId, preparedOperation.bounds.generation);
+                    }
+                    else
+                    {
+                        ActivateSlot(m_state.mirror.bounds, m_state.boundsSlots,
+                                     preparedOperation.bounds.slot, object.objectId,
+                                     preparedOperation.bounds.generation);
+                    }
+                    if (preparedOperation.appendTransform)
+                    {
+                        AppendSlot(m_state.mirror.transforms, m_state.transformSlots,
+                                   object.objectId, preparedOperation.transform.generation);
+                    }
+                    else
+                    {
+                        ActivateSlot(m_state.mirror.transforms, m_state.transformSlots,
+                                     preparedOperation.transform.slot, object.objectId,
+                                     preparedOperation.transform.generation);
+                    }
+                    ActivateDrawReferences(m_state, object.objectId,
+                                           preparedOperation.draws);
                     WriteLiveObject(m_state, preparedOperation.primitive,
                                     preparedOperation.bounds,
                                     preparedOperation.transform,
@@ -579,9 +876,10 @@ namespace RVX
                 case GPUSceneTransaction::OperationType::Update:
                     if (preparedOperation.replaceDraws)
                     {
-                        RetireDrawReferences(m_state, preparedOperation.previousDraws);
-                        AppendDrawReferences(m_state, object.objectId,
-                                             preparedOperation.draws);
+                        RetireDrawReferences(m_state, preparedOperation.previousDraws,
+                                             retireVersion);
+                        ActivateDrawReferences(m_state, object.objectId,
+                                               preparedOperation.draws);
                     }
                     WriteLiveObject(m_state, preparedOperation.primitive,
                                     preparedOperation.bounds,
@@ -590,15 +888,31 @@ namespace RVX
                     break;
                 case GPUSceneTransaction::OperationType::Remove:
                     m_state.objectToPrimitive.erase(preparedOperation.objectId);
-                    RetireDrawReferences(m_state, preparedOperation.previousDraws);
+                    RetireDrawReferences(m_state, preparedOperation.previousDraws,
+                                         retireVersion);
                     RetireRow(m_state.mirror.bounds, m_state.boundsSlots,
-                              preparedOperation.bounds);
+                              preparedOperation.bounds, retireVersion);
                     RetireRow(m_state.mirror.transforms, m_state.transformSlots,
-                              preparedOperation.transform);
+                              preparedOperation.transform, retireVersion);
                     RetireRow(m_state.mirror.primitives, m_state.primitiveSlots,
-                              preparedOperation.primitive);
+                              preparedOperation.primitive, retireVersion);
                     break;
             }
+        }
+        m_state.freePrimitiveSlots.erase(
+            m_state.freePrimitiveSlots.begin(),
+            m_state.freePrimitiveSlots.begin() + prepared.reusedPrimitiveCount);
+        m_state.freeBoundsSlots.erase(
+            m_state.freeBoundsSlots.begin(),
+            m_state.freeBoundsSlots.begin() + prepared.reusedBoundsCount);
+        m_state.freeTransformSlots.erase(
+            m_state.freeTransformSlots.begin(),
+            m_state.freeTransformSlots.begin() + prepared.reusedTransformCount);
+        for (auto it = prepared.reusedDrawBlockIndices.rbegin();
+             it != prepared.reusedDrawBlockIndices.rend(); ++it)
+        {
+            m_state.freeDrawBlocks.erase(
+                m_state.freeDrawBlocks.begin() + static_cast<size_t>(*it));
         }
     }
 
@@ -668,22 +982,229 @@ namespace RVX
         return result;
     }
 
-    GPUSceneDatabase::DrawReferences GPUSceneDatabase::MakeFutureDrawReferences(
-        const State& state,
-        const CapacityDelta& priorDelta,
-        uint32 drawCount) const noexcept
+    bool GPUSceneDatabase::AllocateSingleSlot(
+        const std::vector<SlotRecord>& slots,
+        const std::vector<uint32>& freeSlots,
+        size_t& inOutReuseCount,
+        size_t& inOutAppendCount,
+        uint32& outSlot,
+        uint32& outGeneration,
+        bool& outAppended) const noexcept
     {
-        DrawReferences result;
+        if (inOutReuseCount < freeSlots.size())
+        {
+            const uint32 slot = freeSlots[inOutReuseCount];
+            if (slot == 0 || slot >= slots.size())
+            {
+                return false;
+            }
+            const SlotRecord& record = slots[slot];
+            if (record.state != GPUSceneSlotState::Free ||
+                record.generation == std::numeric_limits<uint32>::max())
+            {
+                return false;
+            }
+            ++inOutReuseCount;
+            outSlot = slot;
+            outGeneration = record.generation + 1U;
+            outAppended = false;
+            return true;
+        }
+
+        if (slots.size() > std::numeric_limits<uint32>::max() ||
+            inOutAppendCount > std::numeric_limits<uint32>::max() - slots.size())
+        {
+            return false;
+        }
+        outSlot = static_cast<uint32>(slots.size() + inOutAppendCount);
+        outGeneration = m_initialSlotGeneration;
+        outAppended = true;
+        ++inOutAppendCount;
+        return true;
+    }
+
+    bool GPUSceneDatabase::AllocateDrawReferences(
+        const State& state,
+        PreparedTransaction& prepared,
+        uint32 drawCount,
+        DrawReferences& outReferences)
+    {
+        outReferences = {};
         if (drawCount == 0)
-            return result;
-        result.firstMaterial = {static_cast<uint32>(
-            state.materialSlots.size() + priorDelta.materials), m_initialSlotGeneration};
-        result.firstGeometry = {static_cast<uint32>(
-            state.geometrySlots.size() + priorDelta.geometries), m_initialSlotGeneration};
-        result.firstDraw = {static_cast<uint32>(
-            state.drawSlots.size() + priorDelta.draws), m_initialSlotGeneration};
-        result.count = drawCount;
-        return result;
+        {
+            return true;
+        }
+
+        for (uint32 index = 0; index < state.freeDrawBlocks.size(); ++index)
+        {
+            if (std::find(prepared.reusedDrawBlockIndices.begin(),
+                          prepared.reusedDrawBlockIndices.end(), index) !=
+                prepared.reusedDrawBlockIndices.end())
+            {
+                continue;
+            }
+
+            const DrawBlock& block = state.freeDrawBlocks[index];
+            if (block.count != drawCount ||
+                block.generation == std::numeric_limits<uint32>::max() ||
+                block.firstMaterialSlot == 0 || block.firstGeometrySlot == 0 ||
+                block.firstDrawSlot == 0 ||
+                block.count > state.materialSlots.size() - block.firstMaterialSlot ||
+                block.count > state.geometrySlots.size() - block.firstGeometrySlot ||
+                block.count > state.drawSlots.size() - block.firstDrawSlot)
+            {
+                continue;
+            }
+
+            bool blockIsFree = true;
+            for (uint32 offset = 0; offset < block.count; ++offset)
+            {
+                const SlotRecord& material =
+                    state.materialSlots[block.firstMaterialSlot + offset];
+                const SlotRecord& geometry =
+                    state.geometrySlots[block.firstGeometrySlot + offset];
+                const SlotRecord& draw =
+                    state.drawSlots[block.firstDrawSlot + offset];
+                if (material.state != GPUSceneSlotState::Free ||
+                    geometry.state != GPUSceneSlotState::Free ||
+                    draw.state != GPUSceneSlotState::Free ||
+                    material.generation != block.generation ||
+                    geometry.generation != block.generation ||
+                    draw.generation != block.generation)
+                {
+                    blockIsFree = false;
+                    break;
+                }
+            }
+            if (!blockIsFree)
+            {
+                continue;
+            }
+
+            prepared.reusedDrawBlockIndices.push_back(index);
+            const uint32 generation = block.generation + 1U;
+            outReferences.firstMaterial = {block.firstMaterialSlot, generation};
+            outReferences.firstGeometry = {block.firstGeometrySlot, generation};
+            outReferences.firstDraw = {block.firstDrawSlot, generation};
+            outReferences.count = block.count;
+            outReferences.appended = false;
+            return true;
+        }
+
+        const auto canAppend = [drawCount](size_t existing, size_t appended)
+        {
+            return existing <= std::numeric_limits<uint32>::max() &&
+                   appended <= std::numeric_limits<uint32>::max() - existing &&
+                   drawCount <= std::numeric_limits<uint32>::max() - existing - appended;
+        };
+        if (!canAppend(state.materialSlots.size(), prepared.delta.materials) ||
+            !canAppend(state.geometrySlots.size(), prepared.delta.geometries) ||
+            !canAppend(state.drawSlots.size(), prepared.delta.draws))
+        {
+            return false;
+        }
+
+        outReferences.firstMaterial = {static_cast<uint32>(
+            state.materialSlots.size() + prepared.delta.materials),
+            m_initialSlotGeneration};
+        outReferences.firstGeometry = {static_cast<uint32>(
+            state.geometrySlots.size() + prepared.delta.geometries),
+            m_initialSlotGeneration};
+        outReferences.firstDraw = {static_cast<uint32>(
+            state.drawSlots.size() + prepared.delta.draws),
+            m_initialSlotGeneration};
+        outReferences.count = drawCount;
+        outReferences.appended = true;
+        prepared.delta.materials += drawCount;
+        prepared.delta.geometries += drawCount;
+        prepared.delta.draws += drawCount;
+        return true;
+    }
+
+    void GPUSceneDatabase::MarkDirtyRange(
+        GPUSceneTableChangeSet& table,
+        uint32 firstRow,
+        uint32 rowCount) const
+    {
+        if (rowCount != 0)
+        {
+            table.dirtyRanges.push_back({firstRow, rowCount});
+        }
+    }
+
+    void GPUSceneDatabase::SortAndMergeDirtyRanges(
+        GPUSceneTableChangeSet& table) const noexcept
+    {
+        std::sort(table.dirtyRanges.begin(), table.dirtyRanges.end(),
+                  [](const GPUSceneDirtyRowRange& lhs,
+                     const GPUSceneDirtyRowRange& rhs)
+                  {
+                      return lhs.firstRow < rhs.firstRow;
+                  });
+        size_t writeIndex = 0;
+        for (const GPUSceneDirtyRowRange range : table.dirtyRanges)
+        {
+            if (writeIndex == 0)
+            {
+                table.dirtyRanges[writeIndex++] = range;
+                continue;
+            }
+
+            GPUSceneDirtyRowRange& previous = table.dirtyRanges[writeIndex - 1U];
+            const uint64 previousEnd = static_cast<uint64>(previous.firstRow) +
+                                       static_cast<uint64>(previous.rowCount);
+            const uint64 rangeEnd = static_cast<uint64>(range.firstRow) +
+                                    static_cast<uint64>(range.rowCount);
+            if (static_cast<uint64>(range.firstRow) <= previousEnd)
+            {
+                const uint64 mergedEnd = std::max(previousEnd, rangeEnd);
+                previous.rowCount = static_cast<uint32>(
+                    mergedEnd - static_cast<uint64>(previous.firstRow));
+            }
+            else
+            {
+                table.dirtyRanges[writeIndex++] = range;
+            }
+        }
+        table.dirtyRanges.resize(writeIndex);
+    }
+
+    void GPUSceneDatabase::PublishPreparedChangeSet(
+        PreparedTransaction& prepared) noexcept
+    {
+        m_lastChangeSet.baseVersion = prepared.changeSet.baseVersion;
+        m_lastChangeSet.committedVersion = prepared.changeSet.committedVersion;
+        const auto publishTable = [](GPUSceneTableChangeSet& target,
+                                     GPUSceneTableChangeSet& source)
+        {
+            target.fullTableDirty = source.fullTableDirty;
+            target.dirtyRanges.swap(source.dirtyRanges);
+        };
+        publishTable(m_lastChangeSet.primitives, prepared.changeSet.primitives);
+        publishTable(m_lastChangeSet.bounds, prepared.changeSet.bounds);
+        publishTable(m_lastChangeSet.transforms, prepared.changeSet.transforms);
+        publishTable(m_lastChangeSet.materials, prepared.changeSet.materials);
+        publishTable(m_lastChangeSet.geometries, prepared.changeSet.geometries);
+        publishTable(m_lastChangeSet.draws, prepared.changeSet.draws);
+    }
+
+    void GPUSceneDatabase::PublishFullChangeSetNoexcept(
+        uint64 baseVersion,
+        uint64 committedVersion) noexcept
+    {
+        m_lastChangeSet.baseVersion = baseVersion;
+        m_lastChangeSet.committedVersion = committedVersion;
+        const auto publishFull = [](GPUSceneTableChangeSet& table)
+        {
+            table.fullTableDirty = true;
+            table.dirtyRanges.clear();
+        };
+        publishFull(m_lastChangeSet.primitives);
+        publishFull(m_lastChangeSet.bounds);
+        publishFull(m_lastChangeSet.transforms);
+        publishFull(m_lastChangeSet.materials);
+        publishFull(m_lastChangeSet.geometries);
+        publishFull(m_lastChangeSet.draws);
     }
 
     void GPUSceneDatabase::WriteLiveObject(
@@ -736,37 +1257,70 @@ namespace RVX
         }
     }
 
-    void GPUSceneDatabase::AppendDrawReferences(
+    void GPUSceneDatabase::ActivateDrawReferences(
         State& state,
         uint64 objectId,
         const DrawReferences& draws) const noexcept
     {
         for (uint32 index = 0; index < draws.count; ++index)
         {
-            AppendSlot(state.mirror.materials, state.materialSlots, objectId,
-                       draws.firstMaterial.generation);
-            AppendSlot(state.mirror.geometries, state.geometrySlots, objectId,
-                       draws.firstGeometry.generation);
-            AppendSlot(state.mirror.draws, state.drawSlots, objectId,
-                       draws.firstDraw.generation);
+            if (draws.appended)
+            {
+                AppendSlot(state.mirror.materials, state.materialSlots, objectId,
+                           draws.firstMaterial.generation);
+                AppendSlot(state.mirror.geometries, state.geometrySlots, objectId,
+                           draws.firstGeometry.generation);
+                AppendSlot(state.mirror.draws, state.drawSlots, objectId,
+                           draws.firstDraw.generation);
+            }
+            else
+            {
+                ActivateSlot(state.mirror.materials, state.materialSlots,
+                             draws.firstMaterial.slot + index, objectId,
+                             draws.firstMaterial.generation);
+                ActivateSlot(state.mirror.geometries, state.geometrySlots,
+                             draws.firstGeometry.slot + index, objectId,
+                             draws.firstGeometry.generation);
+                ActivateSlot(state.mirror.draws, state.drawSlots,
+                             draws.firstDraw.slot + index, objectId,
+                             draws.firstDraw.generation);
+            }
         }
     }
 
     void GPUSceneDatabase::RetireDrawReferences(
         State& state,
-        const DrawReferences& draws) const noexcept
+        const DrawReferences& draws,
+        uint64 retireVersion) const noexcept
     {
+        if (draws.count == 0)
+        {
+            return;
+        }
         for (uint32 index = 0; index < draws.count; ++index)
         {
             RetireRow(state.mirror.materials, state.materialSlots,
                       GPUSceneMaterialRef{draws.firstMaterial.slot + index,
-                                          draws.firstMaterial.generation});
+                                          draws.firstMaterial.generation},
+                      retireVersion);
             RetireRow(state.mirror.geometries, state.geometrySlots,
                       GPUSceneGeometryRef{draws.firstGeometry.slot + index,
-                                          draws.firstGeometry.generation});
+                                          draws.firstGeometry.generation},
+                      retireVersion);
             RetireRow(state.mirror.draws, state.drawSlots,
                       GPUSceneDrawRef{draws.firstDraw.slot + index,
-                                      draws.firstDraw.generation});
+                                      draws.firstDraw.generation},
+                      retireVersion);
+        }
+        if (draws.firstDraw.generation != std::numeric_limits<uint32>::max())
+        {
+            state.retiredDrawBlocks.push_back(
+                {retireVersion,
+                 draws.firstMaterial.slot,
+                 draws.firstGeometry.slot,
+                 draws.firstDraw.slot,
+                 draws.count,
+                 draws.firstDraw.generation});
         }
     }
 } // namespace RVX

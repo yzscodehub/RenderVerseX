@@ -105,12 +105,54 @@ namespace RVX
         std::vector<GPUSceneDrawMetadataRow> draws;
     };
 
+    /** @brief One contiguous, zero-based row range changed in a committed table. */
+    struct GPUSceneDirtyRowRange
+    {
+        uint32 firstRow = 0;
+        uint32 rowCount = 0;
+
+        constexpr bool operator==(const GPUSceneDirtyRowRange&) const = default;
+    };
+
+    /** @brief Value-only dirty description for one GPU-scene table. */
+    struct GPUSceneTableChangeSet
+    {
+        /** @brief The consumer must upload the complete current table extent. */
+        bool fullTableDirty = false;
+        std::vector<GPUSceneDirtyRowRange> dirtyRanges;
+
+        bool operator==(const GPUSceneTableChangeSet&) const = default;
+    };
+
+    /**
+     * @brief Atomic value-only delta between two committed CPU-mirror versions.
+     *
+     * A non-empty successful Commit publishes exact sorted/coalesced ranges.
+     * Clear publishes full-table dirtiness so it never needs to allocate while
+     * tombstoning live rows. This is an upload-planning input only; it does not
+     * make GPUScene an execution input.
+     */
+    struct GPUSceneChangeSet
+    {
+        uint64 baseVersion = 0;
+        uint64 committedVersion = 0;
+        GPUSceneTableChangeSet primitives;
+        GPUSceneTableChangeSet bounds;
+        GPUSceneTableChangeSet transforms;
+        GPUSceneTableChangeSet materials;
+        GPUSceneTableChangeSet geometries;
+        GPUSceneTableChangeSet draws;
+
+        bool operator==(const GPUSceneChangeSet&) const = default;
+    };
+
     /** @brief Allocator state for a single typed table slot. */
     enum class GPUSceneSlotState : uint8
     {
         Invalid = 0,
         Live,
         Retired,
+        Free,
         PermanentlyRetired,
     };
 
@@ -118,9 +160,10 @@ namespace RVX
      * @brief Owns the committed CPU mirror and validates atomic scene updates.
      *
      * Every table owns its own allocator; matching slot values across table
-     * types have no semantic meaning. Removed slots are deliberately never
-     * reused in Task 11A. No frame count or CPU-side estimate is treated as GPU
-     * completion; future completion-token reclamation must be introduced later.
+     * types have no semantic meaning. Reuse is possible only after the caller
+     * supplies a version watermark already proven safe by real GPU completion.
+     * The database does not derive completion from frame counts, clocks, or
+     * CPU-side estimates.
      */
     class GPUSceneDatabase : public NonMovable
     {
@@ -149,10 +192,21 @@ namespace RVX
         /** @brief Tombstone live rows without reusing or resetting any identity. */
         void Clear() noexcept;
 
+        /**
+         * @brief Admit retirement records proven safe through @p safeVersion.
+         *
+         * The caller owns conversion from real multi-domain GPU completion
+         * tokens to this committed-version watermark. No automatic reclamation
+         * occurs inside the database. False means an allocation failure left
+         * the allocator state unchanged.
+         */
+        [[nodiscard]] bool ReclaimRetiredThrough(uint64 safeVersion);
+
         /** @brief Render-private deterministic prepare-allocation failure seam. */
         void SetPrepareAllocationFailureCountdownForTesting(int32 countdown) noexcept;
 
         [[nodiscard]] const GPUSceneCommittedMirror& GetCommittedMirror() const;
+        [[nodiscard]] const GPUSceneChangeSet& GetLastChangeSet() const noexcept;
         [[nodiscard]] uint64 GetCommittedVersion() const;
         /** @brief Number of addressable primitive-table slots, excluding slot zero. */
         [[nodiscard]] uint32 GetSlotCapacity() const;
@@ -178,6 +232,7 @@ namespace RVX
         struct SlotRecord
         {
             uint64 objectId = 0;
+            uint64 retireVersion = 0;
             uint32 generation = 0;
             GPUSceneSlotState state = GPUSceneSlotState::Invalid;
         };
@@ -188,6 +243,18 @@ namespace RVX
             GPUSceneMaterialRef firstMaterial;
             GPUSceneGeometryRef firstGeometry;
             uint32 count = 0;
+            bool appended = false;
+        };
+
+        /** @brief One atomically retired material/geometry/draw block. */
+        struct DrawBlock
+        {
+            uint64 retireVersion = 0;
+            uint32 firstMaterialSlot = 0;
+            uint32 firstGeometrySlot = 0;
+            uint32 firstDrawSlot = 0;
+            uint32 count = 0;
+            uint32 generation = 0;
         };
 
         struct State
@@ -200,9 +267,14 @@ namespace RVX
             std::vector<SlotRecord> geometrySlots;
             std::vector<SlotRecord> drawSlots;
             std::unordered_map<uint64, GPUScenePrimitiveRef> objectToPrimitive;
+            std::vector<uint32> freePrimitiveSlots;
+            std::vector<uint32> freeBoundsSlots;
+            std::vector<uint32> freeTransformSlots;
+            std::vector<DrawBlock> retiredDrawBlocks;
+            std::vector<DrawBlock> freeDrawBlocks;
         };
 
-        /** @brief Append-only slots required by a preflighted transaction. */
+        /** @brief Actual append-only slots required after reclaimed reuse. */
         struct CapacityDelta
         {
             size_t primitives = 0;
@@ -223,6 +295,9 @@ namespace RVX
             GPUSceneTransformRef transform;
             DrawReferences previousDraws;
             DrawReferences draws;
+            bool appendPrimitive = false;
+            bool appendBounds = false;
+            bool appendTransform = false;
             bool replaceDraws = false;
         };
 
@@ -230,7 +305,13 @@ namespace RVX
         {
             std::vector<PreparedOperation> operations;
             std::unordered_map<uint64, GPUScenePrimitiveRef> addedPrimitives;
+            GPUSceneChangeSet changeSet;
+            std::vector<uint32> reusedDrawBlockIndices;
             CapacityDelta delta;
+            size_t reusedPrimitiveCount = 0;
+            size_t reusedBoundsCount = 0;
+            size_t reusedTransformCount = 0;
+            size_t retiredDrawBlockCount = 0;
         };
 
         [[nodiscard]] GPUSceneCommitResult PrepareTransaction(
@@ -244,10 +325,26 @@ namespace RVX
         [[nodiscard]] std::optional<DrawReferences> GetDrawReferences(
             const State& state,
             GPUScenePrimitiveRef primitive) const;
-        [[nodiscard]] DrawReferences MakeFutureDrawReferences(
+        [[nodiscard]] bool AllocateDrawReferences(
             const State& state,
-            const CapacityDelta& priorDelta,
-            uint32 drawCount) const noexcept;
+            PreparedTransaction& prepared,
+            uint32 drawCount,
+            DrawReferences& outReferences);
+        [[nodiscard]] bool AllocateSingleSlot(
+            const std::vector<SlotRecord>& slots,
+            const std::vector<uint32>& freeSlots,
+            size_t& inOutReuseCount,
+            size_t& inOutAppendCount,
+            uint32& outSlot,
+            uint32& outGeneration,
+            bool& outAppended) const noexcept;
+        void MarkDirtyRange(
+            GPUSceneTableChangeSet& table,
+            uint32 firstRow,
+            uint32 rowCount) const;
+        void SortAndMergeDirtyRanges(GPUSceneTableChangeSet& table) const noexcept;
+        void PublishPreparedChangeSet(PreparedTransaction& prepared) noexcept;
+        void PublishFullChangeSetNoexcept(uint64 baseVersion, uint64 committedVersion) noexcept;
 
         void WriteLiveObject(
             State& state,
@@ -256,13 +353,17 @@ namespace RVX
             GPUSceneTransformRef transform,
             const DrawReferences& draws,
             const GPUSceneObjectData& object) const noexcept;
-        void AppendDrawReferences(
+        void ActivateDrawReferences(
             State& state,
             uint64 objectId,
             const DrawReferences& draws) const noexcept;
-        void RetireDrawReferences(State& state, const DrawReferences& draws) const noexcept;
+        void RetireDrawReferences(
+            State& state,
+            const DrawReferences& draws,
+            uint64 retireVersion) const noexcept;
 
         State m_state;
+        GPUSceneChangeSet m_lastChangeSet;
         uint32 m_initialSlotGeneration = 1;
         uint32 m_maxSlotCapacity = std::numeric_limits<uint32>::max();
         int32 m_prepareAllocationFailureCountdown = -1;

@@ -46134,3 +46134,81 @@ below.
   slice intentionally creates no GPU path.
 
 ---
+
+### R-SP348 Render-policy Task 11C-1 completion-aware GPU Scene allocator
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11C-1 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP347 (accepted-scene incremental CPU shadow publication).
+- Task 11B publication remains authoritative for CPU mirror contents. This
+  slice adds no RHI buffer, shader consumption, policy branch, or backend path.
+
+**Approved scope:**
+
+- Publish one value-only `GPUSceneChangeSet` for each successful non-empty
+  database commit, including exact sorted/coalesced dirty row ranges for the
+  primitive, bounds, transform, material, geometry, and draw tables.
+- Preserve the prior mirror, version, change set, and reusable allocator state
+  on empty, invalid, capacity, version, and injected-allocation failures.
+- Record the committed retirement version on every tombstoned slot and accept
+  only an externally proven safe-version watermark for reclamation. The
+  database never treats frame count, wall-clock time, or CPU progress as GPU
+  completion.
+- Reuse primitive/bounds/transform slots independently. Reclaim and reuse
+  draw/material/geometry only as one matching-count contiguous block with one
+  shared strict generation increment; generation exhaustion permanently
+  retires the complete affected identity.
+- Keep `Clear()` allocation-free, publish full-table dirtiness, and fail closed
+  without mutation when a new committed version cannot be represented.
+
+**Files changed:**
+
+- `Render/Private/GPUScene/GPUSceneDatabase.h`
+- `Render/Private/GPUScene/GPUSceneDatabase.cpp`
+- `Tests/GPUSceneValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial build of `GPUSceneValidation`: PASS.
+- Primary focused executable: PASS 30/30.
+- All 19 actual prepared-transaction allocation checkpoints are injected; every
+  failed checkpoint preserves the complete logical database state and the next
+  checkpoint proves the success boundary.
+- Targeted `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+- The reviewer verified first-`Clear` retirement capacity, allocation-before-
+  mutation reclaim behavior, inclusive `retireVersion <= safeVersion`
+  semantics, idempotent reclaim, complete three-table block reuse, generation
+  exhaustion, stale-reference rejection, and Task 11B regression coverage.
+- A review suggestion to extend failure injection beyond the former fixed
+  `0..10` range was accepted before the final verdict; the resulting test walks
+  all 19 current checkpoints and fails if no successful boundary is reached.
+
+**Primary review status:**
+
+- PASS after complete diff inspection, independent review/remediation,
+  allocator-boundary adjudication, serial rebuild, 30/30 execution, and
+  whitespace validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, and Python
+  cache changes remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- `GPUSceneChangeSet` intentionally stores only the latest committed delta.
+  Task 11C-2 must consume every successful `Commit`/`Clear` synchronously and
+  verify the base-version chain; a missed generation requires a full upload or
+  a future multi-generation journal, never an unsafe partial upload.
+- Task 11C-2 owns the real multi-domain completion-token to safe-version mapping,
+  versioned persistent GPU buffer sets, RenderGraph copy declarations,
+  unsubmitted rollback, capacity growth, and warm-static zero-upload proof.
+- No execution eligibility is claimed. Task 11D remains the first GPU Scene
+  visibility/command-generation consumer.
+
+---
