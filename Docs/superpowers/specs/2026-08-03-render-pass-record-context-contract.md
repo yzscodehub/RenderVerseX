@@ -1,7 +1,8 @@
 # Render Pass Record Context and Execution Data Contract
 
-**Status:** Task 9A and Tasks 9B-1 through 9B-5 complete, independently
-reviewed, and fully validated; Task 9B-6 binder removal is next
+**Status:** Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A, and Task 9B-6B1
+complete and independently reviewed; Task 9B-6B2a shared directional-light
+snapshot migration is next
 **Date:** 2026-08-03
 **Scope:** Main raster pass chain; frame/view data ownership and RenderGraph
 recording lifetime
@@ -118,9 +119,11 @@ enable async compute.
 ### 9B - Remaining scene pass adapters
 
 **Implementation status:** Raster Shadow, RayTracedShadow (9B-2),
-ObjectVelocity (9B-3), Transparent (9B-4), and Skybox (9B-5) are implemented;
-Skybox passed independent and primary review plus the full validation ledger.
-Binder removal remains pending 9B-6.
+ObjectVelocity (9B-3), Transparent (9B-4), Skybox (9B-5), production binder
+removal (9B-6A), and typed Opaque attachment closure (9B-6B1) are implemented
+and reviewed. The shared primary-directional-light snapshot is pending
+9B-6B2a; remaining standalone Depth/Opaque/Shadow frame setters are pending
+9B-6B2b.
 
 - 9B-1 migrates raster Shadow to an independent graph-owned recorder. Setup
   publishes a producer-neutral `DirectionalShadowRecordOutput` with the current
@@ -179,8 +182,17 @@ Binder removal remains pending 9B-6.
   Transparent/Skybox frame-state setters, and the Skybox frame-packet status
   projection. Every registry pass now enters through the immutable record
   context; the default value-capturing adapter remains for unmigrated passes.
-- 9B-6B removes the remaining Depth/Opaque/Shadow standalone frame-state
-  compatibility setters after their typed recorder and test migration closes.
+- 9B-6B1 requires typed Opaque color/depth attachments to exist in the current
+  graph before setup. Execution resolves only those graph handles, never raw
+  compatibility views, and submission-retains each view plus its parent
+  texture. The execution-data helper and results sink are captured only after
+  exact source/results/snapshot ownership validation, so foreign, stale,
+  incomplete, forged, or reused-slot records are no-op and cannot pollute the
+  source result channel.
+- 9B-6B2a moves the selected primary directional light into the value-owned
+  frame snapshot shared by DefaultLit, raster Shadow, and RayTracedShadow.
+- 9B-6B2b removes the remaining Depth/Opaque/Shadow standalone frame-state
+  compatibility setters after the shared light snapshot closes.
 - Preserve long-lived pass configuration and feature enablement.
 - Add resize, rejected-frame, empty-list, multi-view, and target-replacement
   fixtures for the migrated passes.

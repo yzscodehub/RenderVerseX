@@ -362,30 +362,96 @@ void OpaquePass::AddToGraph(
         bool contextValid = false;
     };
 
-    const RenderPassExecutionData execution =
-        MakeRenderPassExecutionData(context);
+    const auto hasCurrentGraphAttachments = [&graph](
+                                                const ViewData& view,
+                                                const RenderPassRecordIdentity& identity)
+    {
+        const bool colorValid = view.renderGraph == &graph &&
+            view.colorTarget.IsValid() &&
+            HasCurrentGraphProvenance(view.colorTarget, identity) &&
+            graph.GetTextureDesc(view.colorTarget) != nullptr;
+        const bool depthValid = !view.depthTarget.IsValid() ||
+            (HasCurrentGraphProvenance(view.depthTarget, identity) &&
+             graph.GetTextureDesc(view.depthTarget) != nullptr);
+        return colorValid && depthValid;
+    };
+
+    // Do not call the generic execution helper until the supplied context is
+    // proven to be this exact graph's fully paired recording. The helper can
+    // initialize results when a snapshot is absent, which would otherwise
+    // mutate a foreign or stale recording before this pass rejects it.
+    const bool sourcePlanValid = context.executionPlan != nullptr &&
+        context.executionPlan->frameSequence == context.identity.frameSequence &&
+        context.executionPlan->viewOrdinal == context.identity.viewOrdinal;
+    const bool suppliedResultsValid = context.results != nullptr &&
+        context.results->identity == context.identity &&
+        (context.results->executionReport.frameSequence == 0 ||
+         context.results->executionReport.frameSequence ==
+             context.identity.frameSequence);
+    const bool suppliedSnapshotValid = suppliedResultsValid &&
+        context.frameSnapshot != nullptr &&
+        context.frameSnapshot->identity == context.identity &&
+        context.frameSnapshot->executionPlan.frameSequence ==
+            context.identity.frameSequence &&
+        context.frameSnapshot->executionPlan.viewOrdinal ==
+            context.identity.viewOrdinal &&
+        context.frameSnapshot->view.renderGraph == &graph &&
+        context.frameSnapshot->view.renderFrameExecutionPlan ==
+            &context.frameSnapshot->executionPlan &&
+        context.frameSnapshot->view.meshPassPreparation ==
+            &context.frameSnapshot->meshPassPreparation &&
+        context.frameSnapshot->view.renderVisibility ==
+            &context.frameSnapshot->visibility &&
+        context.frameSnapshot->view.renderFrameExecutionReport ==
+            &context.results->executionReport &&
+        hasCurrentGraphAttachments(context.frameSnapshot->view, context.identity);
+    const bool sourceContextValid = !context.legacyAdapter &&
+        context.MatchesTargetGraph(graph) && context.IsFrameIdentityValid() &&
+        sourcePlanValid && suppliedResultsValid && suppliedSnapshotValid &&
+        hasCurrentGraphAttachments(context.view, context.identity);
+
+    RenderPassExecutionData execution;
+    if (sourceContextValid)
+    {
+        execution = MakeRenderPassExecutionData(context);
+    }
+    else
+    {
+        // Keep invalid source state completely out of this graph's callback.
+        execution.view = context.view;
+        execution.identity = context.identity;
+    }
     const RenderFrameExecutionPlan* executionPlan =
         execution.GetExecutionPlan();
     const bool hasPlan = executionPlan != nullptr;
     const bool gpuPlanned = IsGPUDrivenPassPlanned(
         executionPlan, RenderPassKind::Opaque);
-    const RenderPassGPUDrivenInputs gpuInputs = context.opaqueGPUDriven;
+    // Invalid sources must remain true no-ops: do not capture their recorded
+    // GPU state into this graph callback, even if it will later reject them.
+    const RenderPassGPUDrivenInputs gpuInputs = sourceContextValid
+        ? context.opaqueGPUDriven : RenderPassGPUDrivenInputs{};
     const GPUCullingRecordingIdentity gpuRecordingIdentity{
         execution.identity.graphIdentity,
         execution.identity.graphRecordingGeneration,
         execution.identity.frameSequence,
         execution.identity.viewOrdinal,
         execution.identity.recordEpoch};
-    const bool contextValid = !context.legacyAdapter &&
-        context.MatchesTargetGraph(graph) &&
-        context.IsFrameIdentityValid() &&
+    const bool executionAttachmentsValid =
+        hasCurrentGraphAttachments(execution.view, execution.identity);
+    const bool contextValid = sourceContextValid &&
         execution.MatchesTargetGraph(graph) &&
         execution.IsFrameIdentityValid() &&
         execution.frameSnapshot != nullptr && execution.results != nullptr &&
+        executionAttachmentsValid &&
         execution.directionalShadow.IsCompatibleWith(execution.identity) &&
         execution.rayTracedShadow.IsCompatibleWith(execution.identity) &&
         (!gpuPlanned || (gpuInputs.IsCompatibleWith(execution.identity) &&
                          gpuInputs.recordedState->Matches(gpuRecordingIdentity)));
+    const bool resultOwnershipValid = sourceContextValid &&
+        execution.identity.Matches(graph) && execution.results != nullptr &&
+        execution.results->identity == execution.identity &&
+        execution.frameSnapshot != nullptr &&
+        execution.frameSnapshot->identity == execution.identity;
 
     const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
     PipelineCache* const pipelineCache = m_pipelineCache;
@@ -402,8 +468,6 @@ void OpaquePass::AddToGraph(
         execution.frameSnapshot ? &execution.frameSnapshot->opaqueDrawItems : nullptr;
     const std::vector<RenderDrawItem>* const maskedDrawItems =
         execution.frameSnapshot ? &execution.frameSnapshot->maskedDrawItems : nullptr;
-    RHITextureView* const standaloneColorTarget = m_colorTargetView;
-    RHITextureView* const standaloneDepthTarget = m_depthTargetView;
     const bool gpuEnabled = hasPlan ? gpuPlanned : m_gpuDrivenOpaqueIndirectEnabled;
     const RGBufferHandle instanceHandle = hasPlan
         ? gpuInputs.instances : m_gpuDrivenInstanceHandle;
@@ -417,7 +481,8 @@ void OpaquePass::AddToGraph(
         execution.directionalShadow;
     const RayTracedShadowRecordOutput rayTracedShadow =
         execution.rayTracedShadow;
-    const std::shared_ptr<RenderPassRecordResults> results = execution.results;
+    const std::shared_ptr<RenderPassRecordResults> results =
+        resultOwnershipValid ? execution.results : nullptr;
 
     graph.AddPass<GraphPassData>(
         GetName(),
@@ -436,8 +501,6 @@ void OpaquePass::AddToGraph(
          gpuCulling,
          opaqueDrawItems,
          maskedDrawItems,
-         standaloneColorTarget,
-         standaloneDepthTarget,
          gpuEnabled,
          instanceHandle,
          instanceIndexHandle,
@@ -450,8 +513,11 @@ void OpaquePass::AddToGraph(
             data.contextValid = contextValid;
             if (!data.contextValid)
             {
-                PublishOpaqueContextFailure(data.execution, results->opaqueStats);
-                results->opaqueShadowStats = {};
+                if (results != nullptr)
+                {
+                    PublishOpaqueContextFailure(data.execution, results->opaqueStats);
+                    results->opaqueShadowStats = {};
+                }
                 return;
             }
 
@@ -469,17 +535,22 @@ void OpaquePass::AddToGraph(
             data.recorder->SetGPUDrivenRenderGraphResources(
                 instanceHandle, instanceIndexHandle, indirectHandle, drawCountHandle);
             data.recorder->SetGPUDrivenOpaqueIndirectEnabled(gpuEnabled);
-            data.recorder->SetRenderTargets(
-                standaloneColorTarget,
-                standaloneDepthTarget);
+            data.recorder->m_requireGraphOwnedAttachments = true;
             data.recorder->Setup(builder, data.execution.view);
         },
         [results](const GraphPassData& data, RHICommandContext& ctx)
         {
             if (!data.contextValid || !data.recorder)
             {
-                PublishOpaqueContextFailure(data.execution, results->opaqueStats);
-                results->opaqueShadowStats = {};
+                if (results != nullptr)
+                {
+                    PublishOpaqueContextFailure(data.execution, results->opaqueStats);
+                    results->opaqueShadowStats = {};
+                }
+                return;
+            }
+            if (results == nullptr)
+            {
                 return;
             }
             data.recorder->Execute(ctx, data.execution.view);
@@ -1259,9 +1330,16 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    RHITextureView* colorTargetView = m_colorTargetView;
+    RHITextureViewRef colorTargetViewOwner;
+    RHITextureView* colorTargetView = nullptr;
     RHIFormat colorTargetFormat = RHIFormat::Unknown;
-    if (view.renderGraph && view.viewCache && m_colorTargetHandle.IsValid())
+    const bool colorHandleBelongsToCurrentGraph =
+        view.renderGraph != nullptr &&
+        m_colorTargetHandle.IsValid() &&
+        m_colorTargetHandle.graphIdentity == view.renderGraph->GetGraphIdentity() &&
+        m_colorTargetHandle.recordingGeneration ==
+            view.renderGraph->GetRecordingGeneration();
+    if (colorHandleBelongsToCurrentGraph && view.viewCache)
     {
         if (const RHITextureDesc* colorTargetDesc = view.renderGraph->GetTextureDesc(m_colorTargetHandle))
         {
@@ -1269,8 +1347,36 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         }
         if (RHITexture* colorTarget = view.renderGraph->GetTexture(m_colorTargetHandle))
         {
-            colorTargetView = view.viewCache->GetDefaultRTV(colorTarget);
+            colorTargetViewOwner = RHITextureViewRef(
+                view.viewCache->GetDefaultRTV(colorTarget));
+            colorTargetView = colorTargetViewOwner.Get();
         }
+    }
+    else if (!m_requireGraphOwnedAttachments)
+    {
+        colorTargetView = m_colorTargetView;
+    }
+
+    RHITextureViewRef depthTargetViewOwner;
+    RHITextureView* depthTargetView = nullptr;
+    const bool depthHandleBelongsToCurrentGraph =
+        view.renderGraph != nullptr &&
+        m_depthTargetHandle.IsValid() &&
+        m_depthTargetHandle.graphIdentity == view.renderGraph->GetGraphIdentity() &&
+        m_depthTargetHandle.recordingGeneration ==
+            view.renderGraph->GetRecordingGeneration();
+    if (depthHandleBelongsToCurrentGraph && view.viewCache)
+    {
+        if (RHITexture* depthTarget = view.renderGraph->GetTexture(m_depthTargetHandle))
+        {
+            depthTargetViewOwner = RHITextureViewRef(
+                view.viewCache->GetDefaultDSV(depthTarget));
+            depthTargetView = depthTargetViewOwner.Get();
+        }
+    }
+    else if (!m_requireGraphOwnedAttachments)
+    {
+        depthTargetView = m_depthTargetView;
     }
 
     if (!colorTargetView)
@@ -1279,6 +1385,42 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         reportPlannedFailure(opaquePlan != nullptr &&
                              opaquePlan->partition.gpuDrivenPacketCount != 0);
         return;
+    }
+
+    if (m_requireGraphOwnedAttachments &&
+        m_depthTargetHandle.IsValid() && !depthTargetView)
+    {
+        RVX_CORE_WARN("OpaquePass: failed to resolve graph-owned depth target view");
+        reportPlannedFailure(opaquePlan != nullptr &&
+                             opaquePlan->partition.gpuDrivenPacketCount != 0);
+        return;
+    }
+
+    if (m_requireGraphOwnedAttachments)
+    {
+        const bool retainedColorAttachment =
+            colorTargetView->GetTexture() != nullptr &&
+            RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(colorTargetView)) &&
+            RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(colorTargetView->GetTexture()));
+        const bool retainedDepthAttachment = depthTargetView == nullptr ||
+            (depthTargetView->GetTexture() != nullptr &&
+             RetainRenderSubmissionResource(
+                 view.submissionResourceBatch,
+                 Ref<RefCounted>(depthTargetView)) &&
+             RetainRenderSubmissionResource(
+                 view.submissionResourceBatch,
+                 Ref<RefCounted>(depthTargetView->GetTexture())));
+        if (!retainedColorAttachment || !retainedDepthAttachment)
+        {
+            RVX_CORE_WARN("OpaquePass: submission ownership rejected graph-owned attachments");
+            reportPlannedFailure(opaquePlan != nullptr &&
+                                 opaquePlan->partition.gpuDrivenPacketCount != 0);
+            return;
+        }
     }
 
     if (!hasPublishedPlan && !m_gpuDrivenOpaqueIndirectEnabled)
@@ -1540,9 +1682,9 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                                   RHILoadOp::Clear,
                                   RHIStoreOp::Store,
                                   RVX_SCENE_COLOR_CLEAR_VALUE);
-        if (m_depthTargetView)
+        if (depthTargetView)
         {
-            rpDesc.SetDepthStencil(m_depthTargetView,
+            rpDesc.SetDepthStencil(depthTargetView,
                                    RHILoadOp::Clear,
                                    RHIStoreOp::Store,
                                    m_pipelineCache->GetDepthClearValue(),
@@ -1641,9 +1783,9 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                               RHILoadOp::Clear,
                               RHIStoreOp::Store,
                               RVX_SCENE_COLOR_CLEAR_VALUE);
-    if (m_depthTargetView)
+    if (depthTargetView)
     {
-        rpDesc.SetDepthStencil(m_depthTargetView,
+        rpDesc.SetDepthStencil(depthTargetView,
                                RHILoadOp::Clear,
                                RHIStoreOp::Store,
                                m_pipelineCache->GetDepthClearValue(),

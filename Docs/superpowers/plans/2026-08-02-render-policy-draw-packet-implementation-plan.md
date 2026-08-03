@@ -1,7 +1,8 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-8, Task 9A, and Tasks 9B-1 through 9B-5 are complete and
-reviewed; Task 9B-6 binder removal is next.
+**Status:** Tasks 0-8, Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A, and
+Task 9B-6B1 are complete and reviewed; Task 9B-6B2a shared directional-light
+snapshot migration is next.
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -687,8 +688,11 @@ bindings, and completion-aware submission retention. Task 9B-5 isolates
 Skybox with a value-owned, mode-explicit `RenderSkySnapshot`, graph-only
 attachments, private CB/descriptors, and retained sky/pipeline/layout
 ownership. Cubemap, Procedural, SolidColor, Equirectangular tint fallback, and
-Disabled behavior are packet-owned. Independent and primary review plus the
-full validation ledger passed; binder removal is next.
+Disabled behavior are packet-owned. Task 9B-6A removed the production binder
+and bypass. Task 9B-6B1 then closed typed Opaque color/depth attachment
+ownership, fail-closed source validation, and completion retention. Independent
+and primary review passed; the shared primary-directional-light snapshot is
+next.
 
 Proposed files:
 

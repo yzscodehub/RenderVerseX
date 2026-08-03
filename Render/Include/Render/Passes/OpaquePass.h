@@ -127,7 +127,8 @@ namespace RVX
         // =====================================================================
 
         /**
-         * @brief Set render target views for this pass
+         * @brief Set render target views for standalone compatibility rendering.
+         * Typed graph recordings resolve their attachments from RenderGraph handles.
          */
         void SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView);
 
@@ -163,6 +164,8 @@ namespace RVX
         // Render target views
         RHITextureView* m_colorTargetView = nullptr;
         RHITextureView* m_depthTargetView = nullptr;
+        // Typed recordings may only consume the current RenderGraph's handles.
+        bool m_requireGraphOwnedAttachments = false;
 
         // The no-plan GPU submission path is intentionally opt-in.  It exists
         // only for compatibility validation and must never become a Direct

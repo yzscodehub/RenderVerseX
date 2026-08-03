@@ -2303,10 +2303,16 @@ TEST_F(RenderPassValidationFixture, MigratedDepthAndOpaquePassesFailClosedForMis
         context.maskedDrawItems = &emptyDrawItems;
         context.directionalShadow.identity = context.identity;
         context.rayTracedShadow.identity = context.identity;
+        if (passKind == RenderPassKind::Opaque)
+        {
+            context.view.colorTarget = graph.CreateTexture(
+                RHITextureDesc::RenderTarget(4, 4, RHIFormat::RGBA8_UNORM));
+        }
         context.results = std::make_shared<RenderPassRecordResults>();
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(
+            context, *context.results);
         return context;
     };
-
     RenderGraph depthGraph;
     depthGraph.SetDevice(&device);
     RenderFrameExecutionPlan depthPlan;
@@ -2520,6 +2526,94 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(0u, depthCommands.drawIndexedCount);
     EXPECT_EQ(0u, depthCommands.drawIndexedIndirectCount);
 
+    // A malformed pair with a non-null snapshot but missing results must be
+    // rejected before any snapshot/report dereference or graph declaration.
+    RenderGraph missingResultsGraph;
+    missingResultsGraph.SetDevice(&device);
+    RenderFrameExecutionPlan missingResultsPlan;
+    SceneMeshPassPreparation missingResultsPreparation;
+    RenderVisibilityResult missingResultsVisibility;
+    RenderFrameExecutionReport missingResultsReport;
+    RenderPassRecordContext missingResultsContext = makeContext(
+        missingResultsGraph,
+        missingResultsPlan,
+        missingResultsPreparation,
+        missingResultsVisibility,
+        missingResultsReport,
+        RenderPassKind::Opaque);
+    const std::shared_ptr<RenderPassRecordResults> missingResultsOwner =
+        missingResultsContext.results;
+    missingResultsContext.frameSnapshot = MakeRenderPassFrameSnapshot(
+        missingResultsContext, *missingResultsOwner);
+    missingResultsContext.results.reset();
+    OpaquePass missingResultsPass;
+    missingResultsPass.AddToGraph(missingResultsGraph, missingResultsContext);
+    missingResultsGraph.Compile();
+    ASSERT_TRUE(missingResultsGraph.GetCompileStats().compileValid);
+    ASSERT_EQ(1u, missingResultsGraph.GetDiagnostics().passes.size());
+    EXPECT_TRUE(missingResultsGraph.GetDiagnostics().passes[0].usages.empty());
+    RecordingCommandContext missingResultsCommands;
+    missingResultsGraph.Execute(missingResultsCommands);
+    EXPECT_EQ(0u, missingResultsCommands.beginRenderPassCount);
+
+    // A fully paired Opaque source remains owned by its source graph when it
+    // is registered into a different target graph. The generic helper must
+    // not rewrite its results while rejecting the foreign registration.
+    RenderGraph opaqueSourceGraph;
+    RenderGraph opaqueTargetGraph;
+    opaqueSourceGraph.SetDevice(&device);
+    opaqueTargetGraph.SetDevice(&device);
+    RenderFrameExecutionPlan foreignOpaquePlan;
+    SceneMeshPassPreparation foreignOpaquePreparation;
+    RenderVisibilityResult foreignOpaqueVisibility;
+    RenderFrameExecutionReport foreignOpaqueReport;
+    RenderPassRecordContext foreignOpaqueContext = makeContext(
+        opaqueSourceGraph,
+        foreignOpaquePlan,
+        foreignOpaquePreparation,
+        foreignOpaqueVisibility,
+        foreignOpaqueReport,
+        RenderPassKind::Opaque);
+    foreignOpaqueContext.view.colorTarget = opaqueSourceGraph.CreateTexture(
+        RHITextureDesc::RenderTarget(4, 4, RHIFormat::RGBA8_UNORM));
+    opaqueSourceGraph.SetExportState(
+        foreignOpaqueContext.view.colorTarget, RHIResourceState::RenderTarget);
+    foreignOpaqueContext.frameSnapshot = MakeRenderPassFrameSnapshot(
+        foreignOpaqueContext, *foreignOpaqueContext.results);
+    ASSERT_TRUE(foreignOpaqueContext.MatchesTargetGraph(opaqueSourceGraph));
+    ASSERT_TRUE(foreignOpaqueContext.IsFrameIdentityValid());
+    const RenderPassRecordIdentity foreignOpaqueIdentity =
+        foreignOpaqueContext.results->identity;
+    foreignOpaqueContext.results->opaqueStats.directDrawCount = 74;
+    foreignOpaqueContext.results->opaqueStats.failureReason = RenderPolicyReason::None;
+    foreignOpaqueContext.results->opaqueShadowStats.requested = true;
+    foreignOpaqueContext.results->directionalShadowOutput.enabled = true;
+    foreignOpaqueContext.results->directionalShadowOutput.shadowMapSize = 76;
+    foreignOpaqueContext.results->executionReport.status = RenderExecutionStatus::Completed;
+    foreignOpaqueContext.results->executionReport.frameSequence =
+        foreignOpaqueContext.identity.frameSequence;
+    OpaquePass foreignOpaquePass;
+    foreignOpaquePass.AddToGraph(opaqueTargetGraph, foreignOpaqueContext);
+    opaqueTargetGraph.Compile();
+    ASSERT_TRUE(opaqueTargetGraph.GetCompileStats().compileValid);
+    ASSERT_EQ(1u, opaqueTargetGraph.GetDiagnostics().passes.size());
+    EXPECT_TRUE(opaqueTargetGraph.GetDiagnostics().passes[0].usages.empty());
+    RecordingCommandContext foreignOpaqueCommands;
+    opaqueTargetGraph.Execute(foreignOpaqueCommands);
+    EXPECT_EQ(0u, foreignOpaqueCommands.beginRenderPassCount);
+    EXPECT_EQ(foreignOpaqueIdentity, foreignOpaqueContext.results->identity);
+    EXPECT_EQ(74u, foreignOpaqueContext.results->opaqueStats.directDrawCount);
+    EXPECT_EQ(RenderPolicyReason::None,
+              foreignOpaqueContext.results->opaqueStats.failureReason);
+    EXPECT_TRUE(foreignOpaqueContext.results->opaqueShadowStats.requested);
+    EXPECT_TRUE(foreignOpaqueContext.results->directionalShadowOutput.enabled);
+    EXPECT_EQ(76u,
+              foreignOpaqueContext.results->directionalShadowOutput.shadowMapSize);
+    EXPECT_EQ(RenderExecutionStatus::Completed,
+              foreignOpaqueContext.results->executionReport.status);
+    EXPECT_EQ(foreignOpaqueContext.identity.frameSequence,
+              foreignOpaqueContext.results->executionReport.frameSequence);
+
     RenderGraph staleGraph;
     staleGraph.SetDevice(&device);
     RenderFrameExecutionPlan opaquePlan;
@@ -2533,14 +2627,35 @@ TEST_F(RenderPassValidationFixture,
         opaqueVisibility,
         opaqueReport,
         RenderPassKind::Opaque);
+    staleOpaqueContext.view.colorTarget = staleGraph.CreateTexture(
+        RHITextureDesc::RenderTarget(4, 4, RHIFormat::RGBA8_UNORM));
+    staleOpaqueContext.frameSnapshot = MakeRenderPassFrameSnapshot(
+        staleOpaqueContext, *staleOpaqueContext.results);
+    ASSERT_TRUE(staleOpaqueContext.MatchesTargetGraph(staleGraph));
+    ASSERT_TRUE(staleOpaqueContext.IsFrameIdentityValid());
+    // A stale typed source is owned by its original recording. Rejecting it
+    // must not let OpaquePass synthesize a snapshot or overwrite diagnostics.
+    staleOpaqueContext.results->opaqueStats.directDrawCount = 73;
+    staleOpaqueContext.results->opaqueStats.failureReason = RenderPolicyReason::None;
+    staleOpaqueContext.results->opaqueShadowStats.requested = true;
+    staleOpaqueContext.results->executionReport.status = RenderExecutionStatus::Completed;
+    staleOpaqueContext.results->executionReport.frameSequence =
+        staleOpaqueContext.identity.frameSequence;
+    const RenderPassRecordIdentity staleResultsIdentity =
+        staleOpaqueContext.results->identity;
     staleGraph.Clear();
 
     OpaquePass opaquePass;
     opaquePass.AddToGraph(staleGraph, staleOpaqueContext);
-    EXPECT_EQ(RenderPolicyReason::InconsistentFacts,
+    EXPECT_EQ(staleResultsIdentity, staleOpaqueContext.results->identity);
+    EXPECT_EQ(73u, staleOpaqueContext.results->opaqueStats.directDrawCount);
+    EXPECT_EQ(RenderPolicyReason::None,
               staleOpaqueContext.results->opaqueStats.failureReason);
-    EXPECT_EQ(RenderExecutionStatus::Failed,
+    EXPECT_TRUE(staleOpaqueContext.results->opaqueShadowStats.requested);
+    EXPECT_EQ(RenderExecutionStatus::Completed,
               staleOpaqueContext.results->executionReport.status);
+    EXPECT_EQ(staleOpaqueContext.identity.frameSequence,
+              staleOpaqueContext.results->executionReport.frameSequence);
     staleGraph.Compile();
     ASSERT_TRUE(staleGraph.GetCompileStats().compileValid);
     RecordingCommandContext opaqueCommands;
@@ -2591,8 +2706,25 @@ TEST_F(RenderPassValidationFixture,
         context.maskedDrawItems = &emptyDrawItems;
         context.directionalShadow.identity = context.identity;
         context.rayTracedShadow.identity = context.identity;
+        context.view.colorTarget = graph.CreateTexture(
+            RHITextureDesc::RenderTarget(4, 4, RHIFormat::RGBA8_UNORM));
         context.results = std::make_shared<RenderPassRecordResults>();
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(
+            context, *context.results);
         return context;
+    };
+    const auto renewCurrentGraphSource = [](RenderGraph& graph,
+                                            RenderPassRecordContext& context)
+    {
+        context.view.colorTarget = graph.CreateTexture(
+            RHITextureDesc::RenderTarget(4, 4, RHIFormat::RGBA8_UNORM));
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+        context.directionalShadow.identity = context.identity;
+        context.rayTracedShadow.identity = context.identity;
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(
+            context, *context.results);
     };
     const auto expectRejected = [this, &makeContext](
                                     const char* caseName,
@@ -2648,17 +2780,13 @@ TEST_F(RenderPassValidationFixture,
                    });
 
     expectRejected("directional stale",
-                   [shadowDesc](RenderGraph& graph,
-                                RenderPassRecordContext& context)
+                   [shadowDesc, &renewCurrentGraphSource](RenderGraph& graph,
+                                                           RenderPassRecordContext& context)
                    {
                        const RGTextureHandle staleShadow =
                            graph.CreateTexture(shadowDesc);
                        graph.Clear();
-                       context.identity.graphIdentity = graph.GetGraphIdentity();
-                       context.identity.graphRecordingGeneration =
-                           graph.GetRecordingGeneration();
-                       context.directionalShadow.identity = context.identity;
-                       context.rayTracedShadow.identity = context.identity;
+                       renewCurrentGraphSource(graph, context);
                        context.directionalShadow.enabled = true;
                        context.directionalShadow.shadowMap = staleShadow;
                        context.directionalShadow.shadowMapSize = 4;
@@ -2681,17 +2809,13 @@ TEST_F(RenderPassValidationFixture,
                    });
 
     expectRejected("ray traced stale",
-                   [shadowDesc](RenderGraph& graph,
-                                RenderPassRecordContext& context)
+                   [shadowDesc, &renewCurrentGraphSource](RenderGraph& graph,
+                                                           RenderPassRecordContext& context)
                    {
                        const RGTextureHandle staleShadow =
                            graph.CreateTexture(shadowDesc);
                        graph.Clear();
-                       context.identity.graphIdentity = graph.GetGraphIdentity();
-                       context.identity.graphRecordingGeneration =
-                           graph.GetRecordingGeneration();
-                       context.directionalShadow.identity = context.identity;
-                       context.rayTracedShadow.identity = context.identity;
+                       renewCurrentGraphSource(graph, context);
                        context.rayTracedShadow.enabled = true;
                        context.rayTracedShadow.shadowMask = staleShadow;
                    });
@@ -11740,6 +11864,466 @@ TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView
     ASSERT_NE(resolvedView, nullptr);
     EXPECT_NE(resolvedView, colorView.Get());
     EXPECT_NE(resolvedView->GetTexture(), colorTexture.Get());
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassTypedRecordingOwnsGraphColorDepthAttachmentsUntilCompletion)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.SetFenceAutoComplete(false);
+
+    const std::vector<RenderDrawItem> emptyDrawItems;
+    const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        emptyDrawItems, emptyDrawItems);
+    const RenderFramePlanCompileResult compiled = CompileForcedDirectPlan(
+        preparation, 1701);
+    ASSERT_TRUE(compiled.succeeded);
+
+    struct OpaqueTargets
+    {
+        RHITextureRef color;
+        RHITextureRef depth;
+    };
+    const auto makeContext = [this,
+                              &compiled,
+                              &preparation,
+                              &emptyDrawItems](RenderGraph& graph,
+                                               OpaqueTargets& targets,
+                                               RenderSubmissionResourceBatch* batch,
+                                               uint64 recordEpoch)
+    {
+        targets.color = device.CreateTexture(
+            RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+        targets.depth = device.CreateTexture(
+            RHITextureDesc::DepthStencil(
+                64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+        EXPECT_TRUE(targets.color);
+        EXPECT_TRUE(targets.depth);
+
+        RenderPassRecordContext context;
+        context.view = view;
+        context.view.renderGraph = &graph;
+        context.view.viewCache = &viewCache;
+        context.view.submissionResourceBatch = batch;
+        context.view.colorTarget = graph.ImportTexture(
+            targets.color.Get(), RHIResourceState::RenderTarget);
+        context.view.depthTarget = graph.ImportTexture(
+            targets.depth.Get(), RHIResourceState::DepthWrite);
+        context.view.viewportWidth = 64;
+        context.view.viewportHeight = 64;
+        context.view.renderFrameExecutionPlan = &compiled.plan;
+        context.view.meshPassPreparation = &preparation;
+        graph.SetExportState(context.view.colorTarget, RHIResourceState::RenderTarget);
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+        context.identity.frameSequence = compiled.plan.frameSequence;
+        context.identity.viewOrdinal = compiled.plan.viewOrdinal;
+        context.identity.recordEpoch = recordEpoch;
+        context.executionPlan = &compiled.plan;
+        context.meshPassPreparation = &preparation;
+        context.renderScene = &scene;
+        context.opaqueDrawItems = &emptyDrawItems;
+        context.maskedDrawItems = &emptyDrawItems;
+        context.directionalShadow.identity = context.identity;
+        context.rayTracedShadow.identity = context.identity;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(
+            context, *context.results);
+        return context;
+    };
+
+    const auto expectGraphOwnedAttachmentDeclarations = [](
+                                                        const RenderGraph& graph,
+                                                        const RenderPassRecordContext& context)
+    {
+        const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+        ASSERT_EQ(1u, diagnostics.passes.size());
+        const auto passDiagnostic = std::find_if(
+            diagnostics.passes.begin(), diagnostics.passes.end(),
+            [](const RenderGraph::PassDiagnostic& diagnostic)
+            {
+                return diagnostic.name == "OpaquePass";
+            });
+        ASSERT_NE(diagnostics.passes.end(), passDiagnostic);
+        const auto colorUsage = std::find_if(
+            passDiagnostic->usages.begin(), passDiagnostic->usages.end(),
+            [&context](const RenderGraph::ResourceUsageDiagnostic& usage)
+            {
+                return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                       usage.resourceIndex == context.view.colorTarget.index;
+            });
+        const auto depthUsage = std::find_if(
+            passDiagnostic->usages.begin(), passDiagnostic->usages.end(),
+            [&context](const RenderGraph::ResourceUsageDiagnostic& usage)
+            {
+                return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                       usage.resourceIndex == context.view.depthTarget.index;
+            });
+        ASSERT_NE(passDiagnostic->usages.end(), colorUsage);
+        ASSERT_NE(passDiagnostic->usages.end(), depthUsage);
+        EXPECT_EQ(RenderGraph::DiagnosticAccessType::Write, colorUsage->access);
+        EXPECT_EQ(RHIResourceState::RenderTarget, colorUsage->desiredState);
+        EXPECT_EQ(RenderGraph::DiagnosticAccessType::Write, depthUsage->access);
+        EXPECT_EQ(RHIResourceState::DepthWrite, depthUsage->desiredState);
+    };
+    const auto expectNoOpaqueUsages = [](const RenderGraph& graph)
+    {
+        const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+        ASSERT_EQ(1u, diagnostics.passes.size());
+        const auto passDiagnostic = std::find_if(
+            diagnostics.passes.begin(), diagnostics.passes.end(),
+            [](const RenderGraph::PassDiagnostic& diagnostic)
+            {
+                return diagnostic.name == "OpaquePass";
+            });
+        ASSERT_NE(diagnostics.passes.end(), passDiagnostic);
+        EXPECT_TRUE(passDiagnostic->usages.empty());
+    };
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+
+    RHITextureRef rawDepth = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    RHITextureViewRef rawDepthView = device.CreateTextureView(rawDepth.Get());
+    ASSERT_TRUE(rawDepth);
+    ASSERT_TRUE(rawDepthView);
+
+    RenderGraph graphA;
+    RenderGraph graphB;
+    graphA.SetDevice(&device);
+    graphB.SetDevice(&device);
+    RenderSubmissionResourceBatch batchA;
+    RenderSubmissionResourceBatch batchB;
+    OpaqueTargets targetsA;
+    OpaqueTargets targetsB;
+    RenderPassRecordContext contextA = makeContext(graphA, targetsA, &batchA, 1701);
+    RenderPassRecordContext contextB = makeContext(graphB, targetsB, &batchB, 1702);
+
+    OpaquePass pass;
+    ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
+    // These compatibility views deliberately differ from both graph targets.
+    // A typed recording must neither capture nor fall back to them.
+    pass.SetRenderTargets(colorView.Get(), rawDepthView.Get());
+    pass.AddToGraph(graphA, contextA);
+    pass.AddToGraph(graphB, contextB);
+    pass.SetRenderTargets(nullptr, nullptr);
+
+    graphA.Compile();
+    graphB.Compile();
+    ASSERT_TRUE(graphA.GetCompileStats().compileValid);
+    ASSERT_TRUE(graphB.GetCompileStats().compileValid);
+    expectGraphOwnedAttachmentDeclarations(graphA, contextA);
+    expectGraphOwnedAttachmentDeclarations(graphB, contextB);
+
+    const uint32 retainedBeforeB = batchB.GetRetainedObjectCount();
+    RecordingCommandContext commandsB;
+    graphB.Execute(commandsB);
+    ASSERT_EQ(1u, commandsB.renderPasses.size());
+    ASSERT_EQ(1u, commandsB.renderPasses[0].colorAttachmentCount);
+    EXPECT_EQ(targetsB.color.Get(),
+              commandsB.renderPasses[0].colorAttachments[0].view->GetTexture());
+    ASSERT_TRUE(commandsB.renderPasses[0].hasDepthStencil);
+    EXPECT_EQ(targetsB.depth.Get(),
+              commandsB.renderPasses[0].depthStencilAttachment.view->GetTexture());
+    EXPECT_EQ(RHILoadOp::Clear,
+              commandsB.renderPasses[0].depthStencilAttachment.depthLoadOp);
+    EXPECT_EQ(RHIStoreOp::Store,
+              commandsB.renderPasses[0].depthStencilAttachment.depthStoreOp);
+    EXPECT_FALSE(commandsB.renderPasses[0].depthStencilAttachment.readOnly);
+    // The frame descriptor plus both attachment views and parent textures.
+    EXPECT_EQ(retainedBeforeB + 5u, batchB.GetRetainedObjectCount());
+
+    const uint32 retainedBeforeA = batchA.GetRetainedObjectCount();
+    RecordingCommandContext commandsA;
+    graphA.Execute(commandsA);
+    ASSERT_EQ(1u, commandsA.renderPasses.size());
+    ASSERT_EQ(1u, commandsA.renderPasses[0].colorAttachmentCount);
+    EXPECT_EQ(targetsA.color.Get(),
+              commandsA.renderPasses[0].colorAttachments[0].view->GetTexture());
+    ASSERT_TRUE(commandsA.renderPasses[0].hasDepthStencil);
+    EXPECT_EQ(targetsA.depth.Get(),
+              commandsA.renderPasses[0].depthStencilAttachment.view->GetTexture());
+    EXPECT_EQ(RHILoadOp::Clear,
+              commandsA.renderPasses[0].depthStencilAttachment.depthLoadOp);
+    EXPECT_EQ(RHIStoreOp::Store,
+              commandsA.renderPasses[0].depthStencilAttachment.depthStoreOp);
+    EXPECT_FALSE(commandsA.renderPasses[0].depthStencilAttachment.readOnly);
+    EXPECT_EQ(retainedBeforeA + 5u, batchA.GetRetainedObjectCount());
+
+    RHITextureViewRef colorViewProbe(
+        commandsA.renderPasses[0].colorAttachments[0].view);
+    RHITextureViewRef depthViewProbe(
+        commandsA.renderPasses[0].depthStencilAttachment.view);
+    ASSERT_TRUE(colorViewProbe);
+    ASSERT_TRUE(depthViewProbe);
+    RHITextureRef colorTextureProbe(colorViewProbe->GetTexture());
+    RHITextureRef depthTextureProbe(depthViewProbe->GetTexture());
+    ASSERT_TRUE(colorTextureProbe);
+    ASSERT_TRUE(depthTextureProbe);
+
+    GPUCompletionToken completionB;
+    GPUCompletionToken completionA;
+    ASSERT_TRUE(InsertGPUCompletionPoint(completionB, tracker.Submit(&commandsB)));
+    ASSERT_TRUE(InsertGPUCompletionPoint(completionA, tracker.Submit(&commandsA)));
+    graphA.Clear();
+    graphB.Clear();
+    viewCache.Clear();
+    targetsA.color.Reset();
+    targetsA.depth.Reset();
+    targetsB.color.Reset();
+    targetsB.depth.Reset();
+    EXPECT_EQ(2u, colorViewProbe->GetRefCount());
+    EXPECT_EQ(2u, depthViewProbe->GetRefCount());
+    EXPECT_EQ(2u, colorTextureProbe->GetRefCount());
+    EXPECT_EQ(2u, depthTextureProbe->GetRefCount());
+
+    batchB.SealAndTransfer(completionB, retirement);
+    batchA.SealAndTransfer(completionA, retirement);
+    ASSERT_GT(retirement.GetDiagnostics().entryCount, 0u);
+
+    FakeFence* const graphicsFence =
+        device.FindFenceWithSignal(completionA.points[0].value);
+    ASSERT_NE(nullptr, graphicsFence);
+    graphicsFence->Complete(completionB.points[0].value);
+    EXPECT_EQ(GPUCompletionStatus::Pending, retirement.Poll());
+    EXPECT_EQ(2u, colorViewProbe->GetRefCount());
+    EXPECT_EQ(2u, depthViewProbe->GetRefCount());
+    EXPECT_EQ(2u, colorTextureProbe->GetRefCount());
+    EXPECT_EQ(2u, depthTextureProbe->GetRefCount());
+
+    graphicsFence->Complete(completionA.points[0].value);
+    EXPECT_EQ(GPUCompletionStatus::Completed, retirement.Poll());
+    EXPECT_EQ(1u, colorViewProbe->GetRefCount());
+    EXPECT_EQ(1u, depthViewProbe->GetRefCount());
+    EXPECT_EQ(1u, colorTextureProbe->GetRefCount());
+    EXPECT_EQ(1u, depthTextureProbe->GetRefCount());
+    tracker.Shutdown();
+
+    // A typed execution cannot fall back to compatibility views when its
+    // record snapshot lacks the graph's ResourceViewCache.
+    RenderGraph noCacheGraph;
+    noCacheGraph.SetDevice(&device);
+    OpaqueTargets noCacheTargets;
+    RenderPassRecordContext noCache = makeContext(
+        noCacheGraph, noCacheTargets, nullptr, 1703);
+    auto noCacheSnapshot = std::make_shared<RenderPassFrameSnapshot>(
+        *noCache.frameSnapshot);
+    noCacheSnapshot->view.renderGraph = &noCacheGraph;
+    noCacheSnapshot->view.viewCache = nullptr;
+    noCacheSnapshot->view.renderFrameExecutionPlan =
+        &noCacheSnapshot->executionPlan;
+    noCacheSnapshot->view.meshPassPreparation =
+        &noCacheSnapshot->meshPassPreparation;
+    noCacheSnapshot->view.renderVisibility = &noCacheSnapshot->visibility;
+    noCacheSnapshot->view.renderFrameExecutionReport =
+        &noCache.results->executionReport;
+    noCache.frameSnapshot = std::move(noCacheSnapshot);
+    pass.SetRenderTargets(colorView.Get(), rawDepthView.Get());
+    pass.AddToGraph(noCacheGraph, noCache);
+    noCacheGraph.Compile();
+    ASSERT_TRUE(noCacheGraph.GetCompileStats().compileValid);
+    RecordingCommandContext noCacheCommands;
+    noCacheGraph.Execute(noCacheCommands);
+    EXPECT_EQ(0u, noCacheCommands.beginRenderPassCount);
+
+    // Clear advances the graph recording generation. A stale context must not
+    // bind a replacement target that reuses its old resource slot.
+    RenderGraph staleGraph;
+    staleGraph.SetDevice(&device);
+    OpaqueTargets staleTargets;
+    RenderPassRecordContext stale = makeContext(
+        staleGraph, staleTargets, nullptr, 1704);
+    stale.results->opaqueStats.directDrawCount = 83;
+    stale.results->opaqueStats.failureReason = RenderPolicyReason::None;
+    stale.results->executionReport.status = RenderExecutionStatus::Completed;
+    stale.results->executionReport.frameSequence = stale.identity.frameSequence;
+    ASSERT_TRUE(stale.MatchesTargetGraph(staleGraph));
+    ASSERT_TRUE(stale.IsFrameIdentityValid());
+    staleGraph.Clear();
+    RHITextureRef replacementColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(replacementColor);
+    const RGTextureHandle replacementHandle = staleGraph.ImportTexture(
+        replacementColor.Get(), RHIResourceState::RenderTarget);
+    staleGraph.SetExportState(replacementHandle, RHIResourceState::RenderTarget);
+    pass.AddToGraph(staleGraph, stale);
+    staleGraph.Compile();
+    ASSERT_TRUE(staleGraph.GetCompileStats().compileValid);
+    expectNoOpaqueUsages(staleGraph);
+    RecordingCommandContext staleCommands;
+    staleGraph.Execute(staleCommands);
+    EXPECT_EQ(0u, staleCommands.beginRenderPassCount);
+    EXPECT_EQ(83u, stale.results->opaqueStats.directDrawCount);
+    EXPECT_EQ(RenderPolicyReason::None, stale.results->opaqueStats.failureReason);
+    EXPECT_EQ(RenderExecutionStatus::Completed, stale.results->executionReport.status);
+    EXPECT_EQ(stale.identity.frameSequence,
+              stale.results->executionReport.frameSequence);
+
+    // Matching graph provenance is not enough: a current-generation handle
+    // can still be forged beyond the graph resource table. It must not
+    // declare usage, create views, or fall back to compatibility attachments.
+    RenderGraph forgedGraph;
+    forgedGraph.SetDevice(&device);
+    OpaqueTargets forgedTargets;
+    RenderPassRecordContext forged = makeContext(
+        forgedGraph, forgedTargets, nullptr, 1705);
+    RGTextureHandle forgedColor;
+    forgedColor.index = 97;
+    forgedColor.graphIdentity = forgedGraph.GetGraphIdentity();
+    forgedColor.recordingGeneration = forgedGraph.GetRecordingGeneration();
+    RGTextureHandle forgedDepth = forgedColor;
+    forgedDepth.index = 98;
+    forged.view.colorTarget = forgedColor;
+    forged.view.depthTarget = forgedDepth;
+    auto forgedSnapshot = std::make_shared<RenderPassFrameSnapshot>(
+        *forged.frameSnapshot);
+    forgedSnapshot->view.colorTarget = forgedColor;
+    forgedSnapshot->view.depthTarget = forgedDepth;
+    forgedSnapshot->view.renderGraph = &forgedGraph;
+    forgedSnapshot->view.renderFrameExecutionPlan =
+        &forgedSnapshot->executionPlan;
+    forgedSnapshot->view.meshPassPreparation =
+        &forgedSnapshot->meshPassPreparation;
+    forgedSnapshot->view.renderVisibility = &forgedSnapshot->visibility;
+    forgedSnapshot->view.renderFrameExecutionReport =
+        &forged.results->executionReport;
+    forged.frameSnapshot = std::move(forgedSnapshot);
+    ASSERT_TRUE(forged.MatchesTargetGraph(forgedGraph));
+    ASSERT_TRUE(forged.IsFrameIdentityValid());
+    forged.results->opaqueStats.directDrawCount = 84;
+    forged.results->opaqueStats.failureReason = RenderPolicyReason::None;
+    forged.results->opaqueShadowStats.requested = true;
+    forged.results->directionalShadowOutput.enabled = true;
+    forged.results->directionalShadowOutput.shadowMapSize = 86;
+    forged.results->executionReport.status = RenderExecutionStatus::Completed;
+    forged.results->executionReport.frameSequence = forged.identity.frameSequence;
+    pass.SetRenderTargets(colorView.Get(), rawDepthView.Get());
+    pass.AddToGraph(forgedGraph, forged);
+    forgedGraph.Compile();
+    ASSERT_TRUE(forgedGraph.GetCompileStats().compileValid);
+    expectNoOpaqueUsages(forgedGraph);
+    RecordingCommandContext forgedCommands;
+    forgedGraph.Execute(forgedCommands);
+    EXPECT_EQ(0u, forgedCommands.beginRenderPassCount);
+    EXPECT_EQ(84u, forged.results->opaqueStats.directDrawCount);
+    EXPECT_EQ(RenderPolicyReason::None, forged.results->opaqueStats.failureReason);
+    EXPECT_TRUE(forged.results->opaqueShadowStats.requested);
+    EXPECT_TRUE(forged.results->directionalShadowOutput.enabled);
+    EXPECT_EQ(86u, forged.results->directionalShadowOutput.shadowMapSize);
+    EXPECT_EQ(RenderExecutionStatus::Completed, forged.results->executionReport.status);
+    EXPECT_EQ(forged.identity.frameSequence,
+              forged.results->executionReport.frameSequence);
+
+    // A current record can carry stale snapshot attachments from the same
+    // graph after Clear(). The replacement imports reuse their slots, so this
+    // must be rejected by attachment provenance/description validation rather
+    // than by the context, snapshot, or results ownership checks.
+    RenderGraph reusedSlotGraph;
+    reusedSlotGraph.SetDevice(&device);
+    const RGTextureHandle staleColorHandle = reusedSlotGraph.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    const RGTextureHandle staleDepthHandle = reusedSlotGraph.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    reusedSlotGraph.Clear();
+    OpaqueTargets reusedSlotTargets;
+    RenderPassRecordContext reusedSlot = makeContext(
+        reusedSlotGraph, reusedSlotTargets, nullptr, 1708);
+    ASSERT_EQ(staleColorHandle.index, reusedSlot.view.colorTarget.index);
+    ASSERT_EQ(staleDepthHandle.index, reusedSlot.view.depthTarget.index);
+    ASSERT_EQ(staleColorHandle.graphIdentity, reusedSlot.identity.graphIdentity);
+    ASSERT_NE(staleColorHandle.recordingGeneration,
+              reusedSlot.identity.graphRecordingGeneration);
+    ASSERT_EQ(reusedSlot.identity.graphRecordingGeneration,
+              reusedSlot.view.colorTarget.recordingGeneration);
+    ASSERT_EQ(reusedSlot.identity.graphRecordingGeneration,
+              reusedSlot.view.depthTarget.recordingGeneration);
+    auto reusedSlotSnapshot = std::make_shared<RenderPassFrameSnapshot>(
+        *reusedSlot.frameSnapshot);
+    reusedSlotSnapshot->view.colorTarget = staleColorHandle;
+    reusedSlotSnapshot->view.depthTarget = staleDepthHandle;
+    reusedSlotSnapshot->view.renderGraph = &reusedSlotGraph;
+    reusedSlotSnapshot->view.renderFrameExecutionPlan =
+        &reusedSlotSnapshot->executionPlan;
+    reusedSlotSnapshot->view.meshPassPreparation =
+        &reusedSlotSnapshot->meshPassPreparation;
+    reusedSlotSnapshot->view.renderVisibility = &reusedSlotSnapshot->visibility;
+    reusedSlotSnapshot->view.renderFrameExecutionReport =
+        &reusedSlot.results->executionReport;
+    reusedSlot.frameSnapshot = std::move(reusedSlotSnapshot);
+    ASSERT_TRUE(reusedSlot.MatchesTargetGraph(reusedSlotGraph));
+    ASSERT_TRUE(reusedSlot.IsFrameIdentityValid());
+    reusedSlot.results->opaqueStats.directDrawCount = 85;
+    reusedSlot.results->opaqueStats.failureReason = RenderPolicyReason::None;
+    reusedSlot.results->opaqueShadowStats.requested = true;
+    reusedSlot.results->directionalShadowOutput.enabled = true;
+    reusedSlot.results->directionalShadowOutput.shadowMapSize = 87;
+    reusedSlot.results->executionReport.status = RenderExecutionStatus::Completed;
+    reusedSlot.results->executionReport.frameSequence =
+        reusedSlot.identity.frameSequence;
+    pass.SetRenderTargets(colorView.Get(), rawDepthView.Get());
+    pass.AddToGraph(reusedSlotGraph, reusedSlot);
+    reusedSlotGraph.Compile();
+    ASSERT_TRUE(reusedSlotGraph.GetCompileStats().compileValid);
+    expectNoOpaqueUsages(reusedSlotGraph);
+    RecordingCommandContext reusedSlotCommands;
+    reusedSlotGraph.Execute(reusedSlotCommands);
+    EXPECT_EQ(0u, reusedSlotCommands.beginRenderPassCount);
+    EXPECT_EQ(85u, reusedSlot.results->opaqueStats.directDrawCount);
+    EXPECT_EQ(RenderPolicyReason::None,
+              reusedSlot.results->opaqueStats.failureReason);
+    EXPECT_TRUE(reusedSlot.results->opaqueShadowStats.requested);
+    EXPECT_TRUE(reusedSlot.results->directionalShadowOutput.enabled);
+    EXPECT_EQ(87u,
+              reusedSlot.results->directionalShadowOutput.shadowMapSize);
+    EXPECT_EQ(RenderExecutionStatus::Completed,
+              reusedSlot.results->executionReport.status);
+    EXPECT_EQ(reusedSlot.identity.frameSequence,
+              reusedSlot.results->executionReport.frameSequence);
+
+    // First resolve no cached views with creation disabled: the graph-owned
+    // RTV failure must not silently fall back to the compatibility setters.
+    viewCache.Clear();
+    RenderGraph rtvFailureGraph;
+    rtvFailureGraph.SetDevice(&device);
+    OpaqueTargets rtvFailureTargets;
+    RenderPassRecordContext rtvFailure = makeContext(
+        rtvFailureGraph, rtvFailureTargets, nullptr, 1706);
+    pass.SetRenderTargets(colorView.Get(), rawDepthView.Get());
+    pass.AddToGraph(rtvFailureGraph, rtvFailure);
+    rtvFailureGraph.Compile();
+    ASSERT_TRUE(rtvFailureGraph.GetCompileStats().compileValid);
+    expectGraphOwnedAttachmentDeclarations(rtvFailureGraph, rtvFailure);
+    device.textureViewCreationSucceeds = false;
+    RecordingCommandContext rtvFailureCommands;
+    rtvFailureGraph.Execute(rtvFailureCommands);
+    EXPECT_EQ(0u, rtvFailureCommands.beginRenderPassCount);
+    device.textureViewCreationSucceeds = true;
+
+    // Cache only the graph-owned RTV, then deny new view creation. This
+    // isolates the DSV failure path from the previous RTV failure case.
+    viewCache.Clear();
+    RenderGraph dsvFailureGraph;
+    dsvFailureGraph.SetDevice(&device);
+    OpaqueTargets dsvFailureTargets;
+    RenderPassRecordContext dsvFailure = makeContext(
+        dsvFailureGraph, dsvFailureTargets, nullptr, 1707);
+    ASSERT_NE(nullptr, viewCache.GetDefaultRTV(dsvFailureTargets.color.Get()));
+    pass.SetRenderTargets(colorView.Get(), rawDepthView.Get());
+    pass.AddToGraph(dsvFailureGraph, dsvFailure);
+    dsvFailureGraph.Compile();
+    ASSERT_TRUE(dsvFailureGraph.GetCompileStats().compileValid);
+    expectGraphOwnedAttachmentDeclarations(dsvFailureGraph, dsvFailure);
+    device.textureViewCreationSucceeds = false;
+    RecordingCommandContext dsvFailureCommands;
+    dsvFailureGraph.Execute(dsvFailureCommands);
+    EXPECT_EQ(0u, dsvFailureCommands.beginRenderPassCount);
+    device.textureViewCreationSucceeds = true;
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDuringSetup)

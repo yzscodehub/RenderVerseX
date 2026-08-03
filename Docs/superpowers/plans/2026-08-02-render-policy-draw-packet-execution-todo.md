@@ -1,7 +1,8 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8, Task 9A, and Tasks 9B-1 through 9B-5 are complete and
-reviewed; Task 9B-6 binder removal is next
+**Status:** Tasks 0-8, Task 9A, Tasks 9B-1 through 9B-5, Task 9B-6A, and
+Task 9B-6B1 are complete and reviewed; Task 9B-6B2a directional-light
+snapshot migration is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -304,8 +305,17 @@ from submitted upper bounds and CPU reference visibility.
   `ExecutePasses` bypass; route every registry pass through the immutable
   record context; remove migrated Transparent/Skybox frame-state setters and
   Skybox frame-packet setter projection.
-- [ ] Remove the remaining Depth/Opaque/Shadow production compatibility setters
-  after their independent migration closure.
+- [x] Close typed Opaque attachment ownership: validate current graph resource
+  descriptions before declaring usage, resolve color/depth views only from
+  graph handles, and retain both views and parent textures through submission
+  completion. Foreign, stale, forged, incomplete, and view-creation failures
+  declare no attachment usage and never fall back to raw setters.
+- [ ] Move the selected primary directional light into the frame snapshot and
+  make DefaultLit, raster Shadow, and RayTracedShadow consume that one
+  value-owned selection. Keep long-lived feature enablement separate from
+  per-frame shadow eligibility.
+- [ ] Remove the remaining Depth/Opaque/Shadow standalone frame-state
+  compatibility setters after the shared light snapshot migration closes.
 - [ ] Add reverse-order two-graph, caller-mutation, resize/target-replacement,
   rejected-frame, empty-list, stale-context, and in-flight resource fixtures.
 
@@ -607,20 +617,22 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Task 9B-5 implementation, independent re-review, primary audit, and the full
-validation ledger are complete. Start **Task 9B-6** with binder and legacy
-bypass removal. The completed 9B-5 acceptance ledger is:
+Task 9B-6B1 implementation, two independent review iterations, primary audit,
+and affected validation are complete. Start **Task 9B-6B2a** with the shared
+primary-directional-light snapshot. The completed 9B-6B1 acceptance ledger is:
 
-- [x] Version the frame packet to schema v4 and carry an explicit sky mode plus
-  complete cubemap/procedural/solid controls through extraction and sealing.
-- [x] Record Skybox only from the frame snapshot and current graph handles;
-  create private constants/descriptors and retain every command owner through
-  completion.
-- [x] Preserve Cubemap, Procedural, SolidColor, Disabled, and deterministic
-  Equirectangular/cubemap-resolution tint fallback semantics without reading
-  mutable pass setters.
-- [x] Prove reverse A/B isolation, exact descriptor bindings, reverse-Z,
-  Load/Store/read-only attachment contracts, malformed-input rejection, and
-  completion-aware retirement.
-- [x] Refresh the Skybox resource registry on every accepted frame and align
-  stale source-contract tests with typed packet/provenance behavior.
+- [x] Guard the generic execution-data helper behind exact current-graph
+  source, plan, snapshot, results, and attachment validation so rejected
+  foreign/stale sources cannot initialize or overwrite their result channel.
+- [x] Reject forged current-generation and stale-generation color/depth handles
+  before setup declares RenderGraph usage.
+- [x] Resolve typed Opaque RTV/DSV only from current graph handles, preserve
+  color `RenderTarget` and depth `DepthWrite` declarations, and record depth
+  Clear/Store/non-read-only semantics.
+- [x] Retain attachment views and parent textures until the submission
+  completion token retires; prove reverse A/B execution isolation and raw
+  setter non-interference.
+- [x] Cover missing cache, null results, foreign/stale sources, reused slots,
+  forged indices, and actual RTV/DSV creation failure without fallback.
+- [x] Close independent review findings through `0/2/2/0`, `0/0/2/0`, and
+  final P0/P1/P2/P3 `0/0/0/0` gates.

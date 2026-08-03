@@ -45384,3 +45384,89 @@ git diff --check
   depend on a raw target view.
 
 ---
+
+### R-SP340 Render-policy Task 9B-6B1 typed Opaque attachment ownership
+
+**Date:** 2026-08-03
+**Commit:** Included in the Task 9B-6B1 stage commit after the reviewed gate
+below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP339 (production binder and bypass closure).
+- Task 9B-6A identified typed Opaque depth as the remaining raw-view lifetime
+  island before the shared directional-light snapshot migration.
+
+**Approved scope:**
+
+- Validate the exact current graph source, plan, results, snapshot, color
+  target, and optional depth target before invoking execution-data helpers or
+  declaring graph usage.
+- Resolve typed Opaque RTV/DSV only from recorded graph handles; raw
+  `SetRenderTargets` views remain standalone-only and cannot be a typed
+  fallback.
+- Retain attachment views and parent textures in the submission resource batch
+  until GPU completion.
+- Add focused reverse-graph, result-isolation, provenance, view-creation,
+  RenderGraph declaration, render-pass semantic, and retirement coverage.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- Task 9B plan/todo, record-context contract, and this phase record.
+
+**Validation result:**
+
+- Build: PASS for `RVX_Render`, `RenderPassValidation`,
+  `GPUDrivenValidation`, `RenderPolicyValidation`, `ModelViewer`, and
+  `RenderingShowcase`.
+- RenderPassValidation: PASS 184/184.
+- GPUDrivenValidation: PASS 30/30.
+- RenderPolicyValidation: PASS 22/22.
+- Focused final ownership/provenance gate: PASS 2/2.
+- GPU-driven ModelViewer smoke/parity matrix: PASS 5/5.
+- `git diff --check`: PASS.
+- The separate DX11 `ModelViewerShadowSmoke` fails during pre-Opaque
+  PipelineCache initialization with `ResourceBindingVisibilityMismatch` for
+  DefaultLit set 1 binding 0; its golden consumer then has no capture. The
+  failure is preserved and no golden or tolerance was changed. It precedes the
+  Task 9B-6B1 execution path and is tracked for compatibility closure rather
+  than reported as a passing B1 gate.
+
+**Independent review result:**
+
+- Initial review: P0/P1/P2/P3 `0/2/2/0`. It found forged handles were accepted
+  on provenance alone, helper initialization could mutate foreign/stale
+  results, and negative coverage did not prove the intended branches.
+- First resolution added current-resource-description checks, guarded helper
+  staging/results ownership, null-results safety, source-state sanitization,
+  actual RTV/DSV failure coverage, and explicit attachment semantics.
+- Second review: `0/0/2/0`. Production closure was sound, but several sentinels
+  intentionally mismatched the report frame and therefore rejected before the
+  forged/stale attachment checks.
+- Final resolution kept source pairs valid and added a current identity/results/
+  snapshot with same-slot, old-generation attachments after `Clear()`.
+- Final incremental review: PASS; unresolved P0/P1/P2/P3 `0/0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diff/reference review, independent finding adjudication,
+  independent rebuild/test execution, and direct inspection that foreign,
+  forged-index, and stale-generation tests each reach their intended gate.
+- No public RHI, RenderGraph lifetime contract, shader ABI, golden, tolerance,
+  or backend-specific shortcut changed.
+
+**Residual risks / follow-ups:**
+
+- Native Vulkan and Metal runtime validation remain unavailable on this
+  Windows host; shared Render/RHI targets compile, but no promotion claim is
+  made.
+- Task 9B-6B2a must provide one value-owned primary directional-light selection
+  to DefaultLit, raster Shadow, and RayTracedShadow. Task 9B-6B2b then removes
+  the remaining standalone Depth/Opaque/Shadow frame setters.
+- The independent DX11 descriptor-visibility failure remains explicit for the
+  later compatibility-closure stage.
+
+---
