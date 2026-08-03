@@ -32,6 +32,7 @@
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Visibility/RenderVisibility.h"
 #include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderProxy.h"
 #include "RHI/RHICapabilities.h"
@@ -197,6 +198,7 @@ namespace RVX
         bool fallbackUsed = false;
         bool graphPassAdded = false;
         bool graphPassRecorded = false;
+        uint32 gpuCullingGraphPassCount = 0;
         bool gpuExecutionRecorded = false;
         bool executionDecisionAvailable = false;
         GPUCullingExecutionDecision executionDecision;
@@ -207,11 +209,22 @@ namespace RVX
         uint32 cullableOpaqueDrawItemCount = 0;
         uint32 cullableMaskedDrawItemCount = 0;
         uint32 graphInputDrawItemCount = 0;
+        uint32 visibilityCandidateCount = 0;
+        uint32 cpuVisibleCandidateCount = 0;
+        uint32 passVisibilityCandidateCount = 0;
+        uint32 gpuPlannedVisibilityCandidateCount = 0;
+        uint32 invalidVisibilityBoundsCount = 0;
+        uint32 gpuDeferredVisibilityCandidateCount = 0;
+        bool gpuVisibilityReadbackPerformed = false;
+        bool occlusionRequestedButUnavailable = false;
         MeshPassProcessorStats opaqueMeshPassProcessorStats;
         uint32 skippedMissingGpuDataCount = 0;
+        bool gpuVisibilityCountsAvailable = false;
         uint32 visibleCullableDrawItemCount = 0;
         uint32 frustumCulledDrawItemCount = 0;
         uint32 distanceCulledDrawItemCount = 0;
+        uint32 cpuReferenceVisibleCullableDrawItemCount = 0;
+        uint32 cpuReferenceCulledDrawItemCount = 0;
         bool opaqueIndirectRequested = false;
         bool opaqueCullingReady = false;
         bool opaquePipelineReady = false;
@@ -219,14 +232,16 @@ namespace RVX
         bool opaqueIndirectSubmitted = false;
         uint32 opaqueDirectDrawCount = 0;
         uint32 opaqueGpuDrivenIndirectBatchCount = 0;
+        uint32 opaqueGpuDrivenIndirectSubmittedDrawUpperBound = 0;
+        bool opaqueGpuDrivenExecutedDrawCountAvailable = false;
         uint32 opaqueGpuDrivenIndirectDrawCount = 0;
         GPUDrivenDrawFallbackReason opaqueFallbackReason =
             GPUDrivenDrawFallbackReason::Disabled;
     };
 
     inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 2;
-    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 5;
-    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 26;
+    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 6;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 27;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION = 24;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION = 25;
 
@@ -1177,14 +1192,21 @@ namespace RVX
         void SetGPUDrivenCullingConfig(const GPUCullingConfig& config)
         {
             InvalidateRenderFramePlan();
-            if (m_gpuCulling)
+            if (m_depthGPUCulling)
             {
-                m_gpuCulling->SetConfig(config);
+                m_depthGPUCulling->SetConfig(config);
+            }
+            if (m_opaqueGPUCulling)
+            {
+                m_opaqueGPUCulling->SetConfig(config);
             }
         }
         GPUCullingConfig GetGPUDrivenCullingConfig() const
         {
-            return m_gpuCulling ? m_gpuCulling->GetConfig() : GPUCullingConfig{};
+            const GPUCulling* owner = m_opaqueGPUCulling
+                ? m_opaqueGPUCulling.get()
+                : m_depthGPUCulling.get();
+            return owner ? owner->GetConfig() : GPUCullingConfig{};
         }
 
         /// Get runtime ray-tracing scene acceleration-structure statistics.
@@ -1265,9 +1287,7 @@ namespace RVX
         void CompileRenderFramePlan();
         void InvalidateRenderFramePlan();
         void ApplyRenderFramePlanProjection();
-        void ApplyGPUDrivenCullingToDrawLists();
-        void ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>& drawItems,
-                                             uint32& cullableDrawItemCount);
+        void BuildGPUDrivenVisibilityInputs();
         void PrepareGPUDrivenGraphCullInputs();
         void ApplyObjectMotionHistory();
         void UpdateObjectMotionHistory();
@@ -1314,7 +1334,11 @@ namespace RVX
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
-        std::unique_ptr<GPUCulling> m_gpuCulling;
+        // Each GPU-capable pass owns its instance/group/indirect/count stream.
+        // Candidate extraction remains shared, but compaction and resource
+        // lifetime are intentionally pass-local.
+        std::unique_ptr<GPUCulling> m_depthGPUCulling;
+        std::unique_ptr<GPUCulling> m_opaqueGPUCulling;
         struct GPUCullingGraphHandles
         {
             RGBufferHandle constants;
@@ -1333,7 +1357,10 @@ namespace RVX
                        indirectDraws.IsValid() && drawCount.IsValid();
             }
         };
-        GPUCullingGraphHandles m_gpuCullingGraphHandles;
+        GPUCullingGraphHandles m_depthGPUCullingGraphHandles;
+        GPUCullingGraphHandles m_opaqueGPUCullingGraphHandles;
+        bool m_depthGPUCullingFramePrepared = false;
+        bool m_opaqueGPUCullingFramePrepared = false;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
 
@@ -1387,11 +1414,15 @@ namespace RVX
         PostProcessSettings m_postProcessSettings;
         ShadowPassConfig m_shadowPassConfig;
         std::vector<uint32_t> m_visibleObjectIndices;
+        std::vector<uint32_t> m_coarseCandidateObjectIndices;
         std::vector<RenderDrawItem> m_opaqueDrawItems;
         std::vector<RenderDrawItem> m_maskedDrawItems;
         std::vector<RenderDrawItem> m_transparentDrawItems;
+        std::vector<RenderDrawItem> m_coarseOpaqueDrawItems;
+        std::vector<RenderDrawItem> m_coarseMaskedDrawItems;
         SceneMeshPassPreparation m_meshPassPreparation;
-        std::vector<RenderDrawItem> m_gpuCullingScratchDrawItems;
+        RenderCandidateSet m_renderCandidates;
+        RenderVisibilityResult m_renderVisibility;
         std::vector<std::string> m_loggedUnsupportedPassNames;
         std::vector<PreGraphPrepareCallbackEntry> m_preGraphPrepareCallbacks;
 

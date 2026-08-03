@@ -58,15 +58,24 @@ namespace
         }
     }
 
-    void TransitionVisibleMaterialTextures(const std::vector<RenderDrawItem>& drawItems,
-                                           MaterialSystem& materialSystem,
-                                           RHICommandContext& ctx)
+    void TransitionGPUDrivenGroupMaterialTextures(
+        const GPUCulling& gpuCulling,
+        const RenderResourceRegistry* resourceRegistry,
+        MaterialSystem& materialSystem,
+        RHICommandContext& ctx)
     {
-        for (const RenderDrawItem& item : drawItems)
+        for (const GPUCullingDrawGroup& group : gpuCulling.GetDrawGroups())
         {
-            if (!item.material.IsValid())
+            if (!group.material.IsValid())
+            {
                 continue;
-            materialSystem.TransitionMaterialTextures(item.material, ctx);
+            }
+            const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                resourceRegistry, group.mesh);
+            MaterialBindingOptions options;
+            options.allowNormalMap = buffers.HasNormalMapTangentBasis();
+            materialSystem.TransitionMaterialTextures(
+                group.material, ctx, options);
         }
     }
 
@@ -540,6 +549,8 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     }
     const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
     m_drawStats.gpuDrivenEligible = true;
+    m_drawStats.gpuDrivenIndirectExecutedDrawCountAvailable =
+        m_gpuCulling->WasCpuFallbackUsedLastCull();
 
     bool submittedAny = false;
     for (const GPUDrivenOpaqueBatch& batch : batches)
@@ -579,12 +590,19 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         ctx.SetIndexBuffer(batch.buffers.indexBuffer, RHIFormat::R32_UINT);
         ctx.SetDescriptorSet(2, batch.materialBinding.descriptorSet, batch.materialBinding.dynamicOffsets);
 
-        const uint32 submittedDraws = m_gpuCulling->DrawIndexedIndirectGroup(ctx, batch.groupIndex);
-        if (submittedDraws > 0)
+        const GPUIndirectDrawSubmission submission =
+            m_gpuCulling->DrawIndexedIndirectGroup(ctx, batch.groupIndex);
+        if (submission.recorded)
         {
             submittedAny = true;
             ++m_drawStats.gpuDrivenIndirectBatchCount;
-            m_drawStats.gpuDrivenIndirectDrawCount += submittedDraws;
+            m_drawStats.gpuDrivenIndirectSubmittedDrawUpperBound +=
+                submission.submittedDrawUpperBound;
+            if (submission.executedDrawCountAvailable)
+            {
+                m_drawStats.gpuDrivenIndirectDrawCount +=
+                    submission.executedDrawCount;
+            }
         }
     }
 
@@ -627,7 +645,8 @@ bool OpaquePass::BuildPlannedDirectBatch(
     const DirectDrawPacketBatchBuildResult built =
         BuildDirectDrawPacketBatch(*view.renderFrameExecutionPlan,
                                    RenderPassKind::Opaque,
-                                   view.meshPassPreparation->opaque);
+                                   view.meshPassPreparation->opaque,
+                                   view.renderVisibility);
     if (!built.succeeded ||
         built.batch.packets.size() > std::numeric_limits<uint32>::max())
     {
@@ -635,7 +654,18 @@ bool OpaquePass::BuildPlannedDirectBatch(
     }
 
     m_drawStats.planValidated = true;
-    m_drawStats.plannedPacketCount =
+    uint32 plannedPacketCount = 0;
+    for (const RenderPassExecutionPlan& passPlan :
+         view.renderFrameExecutionPlan->passes)
+    {
+        if (passPlan.pass == RenderPassKind::Opaque)
+        {
+            plannedPacketCount = passPlan.directPackets.count;
+            break;
+        }
+    }
+    m_drawStats.plannedPacketCount = plannedPacketCount;
+    m_drawStats.compiledPacketCount =
         static_cast<uint32>(built.batch.packets.size());
 
     outPlannedDraws.reserve(built.batch.packets.size());
@@ -899,10 +929,15 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 gpuLane ? report.gpuDrivenLane : report.directLane;
             lane.status = status;
             lane.reason = reason;
-            lane.executedPacketCount = executedPackets;
-            lane.executedDrawCount = gpuLane
-                ? m_drawStats.gpuDrivenIndirectDrawCount
-                : m_drawStats.directDrawCount;
+            lane.executedCountsAvailable = !gpuLane ||
+                m_drawStats.gpuDrivenIndirectExecutedDrawCountAvailable;
+            lane.executedPacketCount = lane.executedCountsAvailable
+                ? executedPackets
+                : 0;
+            lane.executedDrawCount = lane.executedCountsAvailable
+                ? (gpuLane ? m_drawStats.gpuDrivenIndirectDrawCount
+                           : m_drawStats.directDrawCount)
+                : 0;
             if (status == RenderExecutionStatus::Failed)
             {
                 view.renderFrameExecutionReport->status = status;
@@ -989,16 +1024,10 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     }
 
     if (!hasPublishedPlan && m_gpuDrivenOpaqueIndirectEnabled &&
-        m_materialSystem && m_renderScene)
+        m_materialSystem && m_gpuCulling)
     {
-        if (m_opaqueDrawItems)
-            TransitionVisibleMaterialTextures(*m_opaqueDrawItems,
-                                              *m_materialSystem,
-                                              ctx);
-        if (m_maskedDrawItems)
-            TransitionVisibleMaterialTextures(*m_maskedDrawItems,
-                                              *m_materialSystem,
-                                              ctx);
+        TransitionGPUDrivenGroupMaterialTextures(
+            *m_gpuCulling, m_resourceRegistry, *m_materialSystem, ctx);
     }
 
     ViewData drawView = view;
@@ -1185,23 +1214,18 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         m_drawStats.planValidated = true;
         m_drawStats.plannedPacketCount =
             plannedGPUCount + plannedDirectCount;
+        m_drawStats.compiledPacketCount = plannedGPUCount +
+            static_cast<uint32>(plannedDraws.size());
 
         // The GPU lane retains its established indirect recording path. It
         // deliberately has no Direct fallback once the plan selected it.
-        if (plannedGPU && m_renderScene)
+        if (plannedGPU && m_gpuCulling)
         {
-            if (m_opaqueDrawItems)
-            {
-                TransitionVisibleMaterialTextures(*m_opaqueDrawItems,
-                                                  *m_materialSystem,
-                                                  ctx);
-            }
-            if (m_maskedDrawItems)
-            {
-                TransitionVisibleMaterialTextures(*m_maskedDrawItems,
-                                                  *m_materialSystem,
-                                                  ctx);
-            }
+            // Resource preparation follows the immutable GPU packet groups,
+            // never the CPU-final draw list. Otherwise a GPU-visible boundary
+            // candidate could sample an untransitioned material texture.
+            TransitionGPUDrivenGroupMaterialTextures(
+                *m_gpuCulling, m_resourceRegistry, *m_materialSystem, ctx);
         }
 
         RHIRenderPassDesc rpDesc;
@@ -1266,19 +1290,25 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                     report.gpuDrivenLane.reason = plannedGPU
                         ? m_drawStats.failureReason
                         : RenderPolicyReason::None;
+                    report.gpuDrivenLane.executedCountsAvailable = plannedGPU &&
+                        m_drawStats.gpuDrivenIndirectExecutedDrawCountAvailable;
                     // Preserve honest partial-recording telemetry on a late
                     // group failure. The failed lane is not replayed through
                     // Direct in this frame.
-                    report.gpuDrivenLane.executedPacketCount = plannedGPU
+                    report.gpuDrivenLane.executedPacketCount =
+                        report.gpuDrivenLane.executedCountsAvailable
                         ? m_drawStats.gpuDrivenIndirectDrawCount
                         : 0;
-                    report.gpuDrivenLane.executedDrawCount = plannedGPU
+                    report.gpuDrivenLane.executedDrawCount =
+                        report.gpuDrivenLane.executedCountsAvailable
                         ? m_drawStats.gpuDrivenIndirectDrawCount
                         : 0;
                     report.directLane.status = executeDirectLane
                         ? RenderExecutionStatus::Completed
                         : RenderExecutionStatus::NotAttempted;
                     report.directLane.reason = RenderPolicyReason::None;
+                    report.directLane.executedCountsAvailable =
+                        executeDirectLane;
                     report.directLane.executedPacketCount =
                         m_drawStats.executedPacketCount;
                     report.directLane.executedDrawCount =

@@ -1,5 +1,6 @@
 #include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/Policy/RenderFramePlanCompiler.h"
+#include "Render/Visibility/RenderVisibility.h"
 
 #include <algorithm>
 #include <array>
@@ -131,7 +132,8 @@ namespace
 DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
     const RenderFrameExecutionPlan& plan,
     RenderPassKind pass,
-    const MeshPassPacketStream& stream)
+    const MeshPassPacketStream& stream,
+    const RenderVisibilityResult* visibility)
 {
     DirectDrawPacketBatchBuildResult result;
     if (!IsCanonicalPass(pass) || !IsCanonicalPlan(plan) ||
@@ -148,6 +150,7 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
 
     if (passPlan == nullptr || shape == PacketPlanShape::Invalid ||
         !ValidateMeshPassPacketStream(stream) ||
+        (visibility != nullptr && !visibility->structurallyValid) ||
         passPlan->directPackets.count != passPlan->partition.directPacketCount ||
         !IsRangeInBounds(passPlan->directPackets,
                          plan.packetReferences.size()) ||
@@ -197,6 +200,9 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
                                                   reference,
                                                   source) ||
             !IsValidDirectLayout(source.directLayout) ||
+            (visibility != nullptr &&
+             !visibility->HasDirectPacketSource(pass,
+                                                reference.sourcePacketIndex)) ||
             (source.disposition == MeshPassDisposition::Direct &&
              source.groupKey.layout != source.directLayout))
         {
@@ -204,8 +210,10 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
         }
 
         seenSourceIndices[reference.sourcePacketIndex] = true;
-        if (source.disposition == MeshPassDisposition::Direct ||
-            source.disposition == MeshPassDisposition::GPUCandidate)
+        if ((source.disposition == MeshPassDisposition::Direct ||
+             source.disposition == MeshPassDisposition::GPUCandidate) &&
+            (visibility == nullptr ||
+             visibility->IsDirectPacketVisible(pass, reference.sourcePacketIndex)))
         {
             batch.packets.push_back(DirectDrawPacket{
                 source.packet,

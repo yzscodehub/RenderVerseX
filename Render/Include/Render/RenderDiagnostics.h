@@ -155,11 +155,23 @@ namespace RVX
         bool enabled = false;
         bool graphPassAdded = false;
         bool graphPassRecorded = false;
+        uint32 gpuCullingGraphPassCount = 0;
         bool gpuExecutionRecorded = false;
         uint32 graphInputDrawItemCount = 0;
+        uint32 visibilityCandidateCount = 0;
+        uint32 cpuVisibleCandidateCount = 0;
+        uint32 passVisibilityCandidateCount = 0;
+        uint32 gpuPlannedVisibilityCandidateCount = 0;
+        uint32 invalidVisibilityBoundsCount = 0;
+        uint32 gpuDeferredVisibilityCandidateCount = 0;
+        bool gpuVisibilityReadbackPerformed = false;
+        bool occlusionRequestedButUnavailable = false;
+        bool gpuVisibilityCountsAvailable = false;
         uint32 visibleCullableDrawItemCount = 0;
         uint32 frustumCulledDrawItemCount = 0;
         uint32 distanceCulledDrawItemCount = 0;
+        uint32 cpuReferenceVisibleCullableDrawItemCount = 0;
+        uint32 cpuReferenceCulledDrawItemCount = 0;
         uint32 skippedMissingGpuDataCount = 0;
         bool opaqueIndirectRequested = false;
         bool opaqueCullingReady = false;
@@ -168,6 +180,8 @@ namespace RVX
         bool opaqueIndirectSubmitted = false;
         uint32 opaqueDirectDrawCount = 0;
         uint32 opaqueGpuDrivenIndirectBatchCount = 0;
+        uint32 opaqueGpuDrivenIndirectSubmittedDrawUpperBound = 0;
+        bool opaqueGpuDrivenExecutedDrawCountAvailable = false;
         uint32 opaqueGpuDrivenIndirectDrawCount = 0;
         GPUDrivenDrawFallbackReason opaqueFallbackReason =
             GPUDrivenDrawFallbackReason::Disabled;

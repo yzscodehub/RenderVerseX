@@ -3,6 +3,7 @@
 #include "Render/Policy/RenderPolicyResolver.h"
 #include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/RenderDiagnostics.h"
+#include "Render/Visibility/RenderVisibility.h"
 
 #include <gtest/gtest.h>
 
@@ -1148,6 +1149,23 @@ namespace
                                       preparation.opaque);
         ASSERT_TRUE(batch.succeeded);
         ASSERT_EQ(1u, batch.batch.packets.size());
+
+        // The plan keeps ownership of its Direct packet even when the
+        // frame-owned, pass-aware CPU result filters it before recording.
+        RenderVisibilityResult hiddenDirect;
+        RenderVisibilityPassResult& opaqueVisibility =
+            hiddenDirect.passes[static_cast<size_t>(RenderPassKind::Opaque)];
+        opaqueVisibility.pass = RenderPassKind::Opaque;
+        opaqueVisibility.sourcePacketKnown.resize(3, 0);
+        opaqueVisibility.cpuVisibleBySourcePacket.resize(3, 0);
+        opaqueVisibility.sourcePacketKnown[2] = 1;
+        DirectDrawPacketBatchBuildResult filtered =
+            BuildDirectDrawPacketBatch(first.plan,
+                                       RenderPassKind::Opaque,
+                                       preparation.opaque,
+                                       &hiddenDirect);
+        EXPECT_TRUE(filtered.succeeded);
+        EXPECT_TRUE(filtered.batch.packets.empty());
 
         RenderFrameExecutionPlan invalidReference = first.plan;
         invalidReference.passes[1].directPackets.count = 0;

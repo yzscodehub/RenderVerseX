@@ -18,6 +18,7 @@
 // =============================================================================
 
 #include "Include/BRDF.hlsli"
+#include "Include/GPUInstanceData.hlsli"
 #include "Include/Lighting.hlsli"
 
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
@@ -66,23 +67,6 @@ cbuffer ObjectConstants : register(b0, space1)
     float4 ObjectVelocityParams; // x: previous WVP valid, y: receives shadow
     float4 SkinningParams; // x: enabled, y: matrix count
     float4x4 SkinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
-};
-
-struct GPUInstanceData
-{
-    float4x4 worldMatrix;
-    float4x4 normalMatrix;
-    float4 boundingSphere;
-    float4 aabbMin;
-    float4 aabbMax;
-    uint meshId;
-    uint materialId;
-    uint indexCount;
-    uint firstIndex;
-    int vertexOffset;
-    uint sourceIndex;
-    uint drawGroupIndex;
-    uint drawGroupCommandOffset;
 };
 
 cbuffer LightConstants : register(b3, space0)

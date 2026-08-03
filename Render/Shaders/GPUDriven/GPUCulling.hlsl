@@ -1,19 +1,4 @@
-struct GPUInstanceData
-{
-    float4x4 worldMatrix;
-    float4x4 normalMatrix;
-    float4 boundingSphere;
-    float4 aabbMin;
-    float4 aabbMax;
-    uint meshId;
-    uint materialId;
-    uint indexCount;
-    uint firstIndex;
-    int vertexOffset;
-    uint sourceIndex;
-    uint drawGroupIndex;
-    uint drawGroupCommandOffset;
-};
+#include "../Include/GPUInstanceData.hlsli"
 
 struct IndirectDrawIndexedCommand
 {
@@ -30,6 +15,7 @@ cbuffer CullingConstants : register(b0, space0)
     float4 FrustumPlanes[6];
     float4 CameraPosition;
     float4 Params; // x=maxDistance, y=instanceCount, z=frustumEnabled, w=distanceEnabled
+    float4 Counts; // x=instanceCount, y=drawGroupCount
 };
 
 StructuredBuffer<GPUInstanceData> gInstances : register(t1, space0);
@@ -38,14 +24,19 @@ RWStructuredBuffer<uint> gVisibleInstanceIndices : register(u3, space0);
 RWStructuredBuffer<IndirectDrawIndexedCommand> gIndirectDraws : register(u4, space0);
 RWStructuredBuffer<uint> gDrawCount : register(u5, space0);
 
-bool SphereInsideFrustum(float3 center, float radius)
+bool AABBInsideFrustum(float3 center, float3 extent)
 {
     [unroll]
     for (uint planeIndex = 0; planeIndex < 6; ++planeIndex)
     {
         float4 plane = FrustumPlanes[planeIndex];
+        if (dot(plane.xyz, plane.xyz) <= 1.0e-12f)
+        {
+            continue;
+        }
         float distanceToPlane = dot(plane.xyz, center) + plane.w;
-        if (distanceToPlane < -radius)
+        float projectedRadius = dot(abs(plane.xyz), extent);
+        if (distanceToPlane < -projectedRadius)
         {
             return false;
         }
@@ -69,8 +60,9 @@ IndirectDrawIndexedCommand EmptyCommand()
 void CSFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint instanceIndex = dispatchThreadId.x;
-    uint instanceCount = (uint)Params.y;
-    if (instanceIndex <= instanceCount)
+    uint instanceCount = (uint)Counts.x;
+    uint drawGroupCount = (uint)Counts.y;
+    if (instanceIndex <= drawGroupCount)
     {
         gDrawCount[instanceIndex] = 0;
     }
@@ -83,6 +75,7 @@ void CSFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
     GPUInstanceData instance = gInstances[instanceIndex];
     float3 center = instance.boundingSphere.xyz;
     float radius = max(instance.boundingSphere.w, 0.0f);
+    float3 extent = max((instance.aabbMax.xyz - instance.aabbMin.xyz) * 0.5f, 0.0f);
 
     gVisibility[instanceIndex] = 0;
     gIndirectDraws[instanceIndex] = EmptyCommand();
@@ -93,12 +86,12 @@ void CSFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     bool visible = true;
-    if (Params.z > 0.5f)
+    if (instance.forceVisible == 0 && Params.z > 0.5f)
     {
-        visible = SphereInsideFrustum(center, radius);
+        visible = AABBInsideFrustum(center, extent);
     }
 
-    if (visible && Params.w > 0.5f && Params.x > 0.0f)
+    if (visible && instance.forceVisible == 0 && Params.w > 0.5f && Params.x > 0.0f)
     {
         float distanceToCamera = length(center - CameraPosition.xyz);
         visible = (distanceToCamera - radius) <= Params.x;
@@ -111,7 +104,7 @@ void CSFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
 void CSCompactDraws(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint instanceIndex = dispatchThreadId.x;
-    uint instanceCount = (uint)Params.y;
+    uint instanceCount = (uint)Counts.x;
     if (instanceIndex >= instanceCount || gVisibility[instanceIndex] == 0)
     {
         return;

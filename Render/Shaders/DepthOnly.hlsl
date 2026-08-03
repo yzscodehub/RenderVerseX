@@ -14,6 +14,8 @@
 //   Slot 2: Masked-depth UVs (float2)
 // =============================================================================
 
+#include "Include/GPUInstanceData.hlsli"
+
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
 
 cbuffer ViewConstants : register(b0, space0)
@@ -36,23 +38,6 @@ cbuffer ObjectConstants : register(b0, space1)
     float4 ObjectVelocityParams;
     float4 SkinningParams; // x: enabled, y: matrix count
     float4x4 SkinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
-};
-
-struct GPUInstanceData
-{
-    float4x4 worldMatrix;
-    float4x4 normalMatrix;
-    float4 boundingSphere;
-    float4 aabbMin;
-    float4 aabbMax;
-    uint meshId;
-    uint materialId;
-    uint indexCount;
-    uint firstIndex;
-    int vertexOffset;
-    uint sourceIndex;
-    uint drawGroupIndex;
-    uint drawGroupCommandOffset;
 };
 
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);

@@ -143,6 +143,7 @@ namespace RVX
         uint32 executedPacketCount = 0;
         uint32 executedDrawCount = 0;
         RenderPolicyReason reason = RenderPolicyReason::ConservativeDefault;
+        bool executedCountsAvailable = false;
 
         bool operator==(const RenderPassLaneExecutionReport&) const = default;
     };

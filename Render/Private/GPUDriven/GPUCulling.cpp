@@ -7,6 +7,7 @@
 #include "Core/Log.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/Visibility/RenderVisibility.h"
 #include "Resources/RenderOwnerSnapshotRetirement.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "ShaderCompiler/ShaderManager.h"
@@ -73,10 +74,20 @@ GPUCulling::~GPUCulling()
     Shutdown();
 }
 
-void GPUCulling::Initialize(IRHIDevice* device, const GPUCullingConfig& config)
+void GPUCulling::Initialize(IRHIDevice* device,
+                            const GPUCullingConfig& config,
+                            uint32 frameSlotCount)
 {
     m_device = device;
     m_config = config;
+    m_occlusionRequested = config.enableOcclusionCulling;
+    // HZB production inputs and validation are not implemented yet. Preserve
+    // the request for diagnostics, but never silently run a partial path.
+    m_config.enableOcclusionCulling = false;
+    m_config.twoPhaseOcclusion = false;
+    frameSlotCount = std::clamp(frameSlotCount, 1u, RVX_MAX_FRAME_COUNT);
+    m_frameInputs.resize(frameSlotCount);
+    m_activeFrameSlot = 0;
     m_instances.reserve(config.maxInstances);
     CreateResources();
     CreatePipelineResources();
@@ -84,18 +95,17 @@ void GPUCulling::Initialize(IRHIDevice* device, const GPUCullingConfig& config)
 
 void GPUCulling::Shutdown()
 {
-    m_instanceBuffer.Reset();
     m_instanceIndexBuffer.Reset();
     m_visibilityBuffer.Reset();
     m_visibleInstanceBuffer.Reset();
     m_indirectBuffer.Reset();
     m_drawCountBuffer.Reset();
-    m_cullingConstantsBuffer.Reset();
+    m_frameInputs.clear();
+    m_activeFrameSlot = 0;
     m_frustumCullShader.Reset();
     m_compactShader.Reset();
     m_cullingDescriptorSetLayout.Reset();
     m_cullingPipelineLayout.Reset();
-    m_cullingDescriptorSet.Reset();
     m_frustumCullPipeline.Reset();
     m_occlusionCullPipeline.Reset();
     m_compactPipeline.Reset();
@@ -134,6 +144,9 @@ void GPUCulling::SetConfig(const GPUCullingConfig& config)
 {
     bool needsResize = config.maxInstances != m_config.maxInstances;
     m_config = config;
+    m_occlusionRequested = config.enableOcclusionCulling;
+    m_config.enableOcclusionCulling = false;
+    m_config.twoPhaseOcclusion = false;
 
     if (needsResize)
     {
@@ -142,18 +155,99 @@ void GPUCulling::SetConfig(const GPUCullingConfig& config)
     }
 }
 
+bool GPUCulling::SetFrameSlot(uint32 frameSlot)
+{
+    if (frameSlot >= m_frameInputs.size())
+    {
+        return false;
+    }
+
+    m_activeFrameSlot = frameSlot;
+    RefreshActiveInputAccessSnapshots();
+    return true;
+}
+
+RHIBuffer* GPUCulling::GetInstanceBuffer() const
+{
+    const GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
+    return inputs != nullptr ? inputs->instanceBuffer.Get() : nullptr;
+}
+
+RHIBuffer* GPUCulling::GetCullingConstantsBuffer() const
+{
+    const GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
+    return inputs != nullptr ? inputs->constantsBuffer.Get() : nullptr;
+}
+
+const GPUCullingAccessSnapshots& GPUCulling::GetAccessSnapshots() const
+{
+    return m_accessSnapshots;
+}
+
+void GPUCulling::CommitAccessSnapshots(
+    const GPUCullingAccessSnapshots& snapshots)
+{
+    m_accessSnapshots = snapshots;
+    if (GPUCullingFrameInputs* inputs = GetActiveFrameInputs())
+    {
+        inputs->instanceAccess = snapshots.instances;
+        inputs->constantsAccess = snapshots.constants;
+    }
+}
+
+GPUCulling::GPUCullingFrameInputs* GPUCulling::GetActiveFrameInputs()
+{
+    return m_activeFrameSlot < m_frameInputs.size()
+        ? &m_frameInputs[m_activeFrameSlot]
+        : nullptr;
+}
+
+const GPUCulling::GPUCullingFrameInputs*
+    GPUCulling::GetActiveFrameInputs() const
+{
+    return m_activeFrameSlot < m_frameInputs.size()
+        ? &m_frameInputs[m_activeFrameSlot]
+        : nullptr;
+}
+
+void GPUCulling::RefreshActiveInputAccessSnapshots()
+{
+    if (const GPUCullingFrameInputs* inputs = GetActiveFrameInputs())
+    {
+        m_accessSnapshots.instances = inputs->instanceAccess;
+        m_accessSnapshots.constants = inputs->constantsAccess;
+    }
+}
+
+void GPUCulling::QueueFrameInputRetirements()
+{
+    for (GPUCullingFrameInputs& inputs : m_frameInputs)
+    {
+        QueueRenderOwnerRetirement(
+            inputs.instanceBuffer, m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            inputs.constantsBuffer, m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            inputs.descriptorSet, m_pendingOwnerRetirements);
+    }
+    m_frameInputs.clear();
+}
+
 void GPUCulling::CreateResources()
 {
     if (!m_device) return;
 
-    QueueRenderOwnerRetirement(m_instanceBuffer, m_pendingOwnerRetirements);
+    const uint32 frameSlotCount = std::max(
+        1u, static_cast<uint32>(m_frameInputs.size()));
+    QueueFrameInputRetirements();
+    m_frameInputs.resize(frameSlotCount);
+    m_activeFrameSlot = std::min(m_activeFrameSlot, frameSlotCount - 1u);
+
     QueueRenderOwnerRetirement(m_instanceIndexBuffer, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_visibilityBuffer, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_visibleInstanceBuffer, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_indirectBuffer, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_drawCountBuffer, m_pendingOwnerRetirements);
-    QueueRenderOwnerRetirement(m_cullingConstantsBuffer, m_pendingOwnerRetirements);
-    QueueRenderOwnerRetirement(m_cullingDescriptorSet, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_statsBuffer, m_pendingOwnerRetirements);
     m_accessSnapshots = {};
 
@@ -162,13 +256,26 @@ void GPUCulling::CreateResources()
 
     RHIBufferDesc desc;
 
-    // Instance buffer
+    // Per-flight CPU-written inputs. RenderContext waits the selected frame
+    // slot before SceneRenderer selects it, so writing slot N never races the
+    // GPU consuming slot N from an earlier frame.
     desc.size = m_config.maxInstances * sizeof(GPUInstanceData);
     desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
     desc.memoryType = RHIMemoryType::Upload;
     desc.stride = sizeof(GPUInstanceData);
     desc.debugName = "GPUCulling.InstanceBuffer";
-    m_instanceBuffer = m_device->CreateBuffer(desc);
+    for (GPUCullingFrameInputs& inputs : m_frameInputs)
+    {
+        inputs.instanceBuffer = m_device->CreateBuffer(desc);
+        if (inputs.instanceBuffer)
+        {
+            inputs.instanceAccess = MakeRHIBufferAccessSnapshot(
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Compute,
+                GPUQueueDomain::Graphics,
+                RHIContentValidity::Unknown);
+        }
+    }
 
     // Indirect firstInstance offsets per-instance vertex fetches, but is not
     // folded into SV_InstanceID. Keep an identity stream so GPU vertex shaders
@@ -242,20 +349,24 @@ void GPUCulling::CreateResources()
     desc.debugName = "GPUCulling.DrawCountBuffer";
     m_drawCountBuffer = m_device->CreateBuffer(desc);
 
-    // Culling constants
+    // Per-flight culling constants must not be overwritten while a previous
+    // compute dispatch is still consuming them.
     desc.size = 256;
     desc.usage = RHIBufferUsage::Constant;
     desc.memoryType = RHIMemoryType::Upload;
     desc.stride = 0;
     desc.debugName = "GPUCulling.ConstantsBuffer";
-    m_cullingConstantsBuffer = m_device->CreateBuffer(desc);
-    if (m_instanceBuffer)
+    for (GPUCullingFrameInputs& inputs : m_frameInputs)
     {
-        m_accessSnapshots.instances = MakeRHIBufferAccessSnapshot(
-            RHIResourceState::ShaderResource,
-            RHIShaderStage::Compute,
-            GPUQueueDomain::Graphics,
-            RHIContentValidity::Unknown);
+        inputs.constantsBuffer = m_device->CreateBuffer(desc);
+        if (inputs.constantsBuffer)
+        {
+            inputs.constantsAccess = MakeRHIBufferAccessSnapshot(
+                RHIResourceState::ConstantBuffer,
+                RHIShaderStage::Compute,
+                GPUQueueDomain::Graphics,
+                RHIContentValidity::Unknown);
+        }
     }
     if (m_instanceIndexBuffer)
     {
@@ -265,14 +376,7 @@ void GPUCulling::CreateResources()
             GPUQueueDomain::Graphics,
             RHIContentValidity::Unknown);
     }
-    if (m_cullingConstantsBuffer)
-    {
-        m_accessSnapshots.constants = MakeRHIBufferAccessSnapshot(
-            RHIResourceState::ConstantBuffer,
-            RHIShaderStage::Compute,
-            GPUQueueDomain::Graphics,
-            RHIContentValidity::Unknown);
-    }
+    RefreshActiveInputAccessSnapshots();
 
     // Statistics buffer (optional)
     if (m_statsEnabled)
@@ -293,7 +397,6 @@ void GPUCulling::CreatePipelineResources()
     QueueRenderOwnerRetirement(m_compactShader, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_cullingDescriptorSetLayout, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_cullingPipelineLayout, m_pendingOwnerRetirements);
-    QueueRenderOwnerRetirement(m_cullingDescriptorSet, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_frustumCullPipeline, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_occlusionCullPipeline, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_compactPipeline, m_pendingOwnerRetirements);
@@ -304,13 +407,18 @@ void GPUCulling::CreatePipelineResources()
         return;
     }
 
-    if (!m_instanceBuffer ||
-        !m_instanceIndexBuffer ||
+    const bool hasCompleteFrameInputs =
+        !m_frameInputs.empty() &&
+        std::all_of(m_frameInputs.begin(), m_frameInputs.end(),
+                    [](const GPUCullingFrameInputs& inputs)
+                    {
+                        return inputs.instanceBuffer && inputs.constantsBuffer;
+                    });
+    if (!hasCompleteFrameInputs || !m_instanceIndexBuffer ||
         !m_visibilityBuffer ||
         !m_visibleInstanceBuffer ||
         !m_indirectBuffer ||
-        !m_drawCountBuffer ||
-        !m_cullingConstantsBuffer)
+        !m_drawCountBuffer)
     {
         m_pipelineFallbackReason = GPUCullingFallbackReason::PipelineResourcesUnavailable;
         return;
@@ -410,22 +518,27 @@ void GPUCulling::CreatePipelineResources()
         return;
     }
 
-    RHIDescriptorSetDesc descriptorDesc;
-    descriptorDesc.debugName = "GPUCulling.DescriptorSet";
-    descriptorDesc.SetLayout(m_cullingDescriptorSetLayout.Get())
-        .BindBuffer(0, m_cullingConstantsBuffer.Get())
-        .BindBuffer(1, m_instanceBuffer.Get())
-        .BindBuffer(2, m_visibilityBuffer.Get())
-        .BindBuffer(3, m_visibleInstanceBuffer.Get())
-        .BindBuffer(4, m_indirectBuffer.Get())
-        .BindBuffer(5, m_drawCountBuffer.Get());
-    m_cullingDescriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
-    if (!m_cullingDescriptorSet)
+    for (GPUCullingFrameInputs& inputs : m_frameInputs)
     {
-        RVX_RENDER_WARN("GPUCulling: failed to create descriptor set; CPU fallback remains active");
-        m_frustumCullPipeline.Reset();
-        m_compactPipeline.Reset();
-        m_pipelineFallbackReason = GPUCullingFallbackReason::DescriptorSetCreationFailed;
+        RHIDescriptorSetDesc descriptorDesc;
+        descriptorDesc.debugName = "GPUCulling.DescriptorSet";
+        descriptorDesc.SetLayout(m_cullingDescriptorSetLayout.Get())
+            .BindBuffer(0, inputs.constantsBuffer.Get())
+            .BindBuffer(1, inputs.instanceBuffer.Get())
+            .BindBuffer(2, m_visibilityBuffer.Get())
+            .BindBuffer(3, m_visibleInstanceBuffer.Get())
+            .BindBuffer(4, m_indirectBuffer.Get())
+            .BindBuffer(5, m_drawCountBuffer.Get());
+        inputs.descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
+        if (!inputs.descriptorSet)
+        {
+            RVX_RENDER_WARN("GPUCulling: failed to create frame-slot descriptor set; CPU fallback remains active");
+            m_frustumCullPipeline.Reset();
+            m_compactPipeline.Reset();
+            m_pipelineFallbackReason =
+                GPUCullingFallbackReason::DescriptorSetCreationFailed;
+            return;
+        }
     }
 }
 
@@ -477,7 +590,9 @@ GPUCullingExecutionDecision GPUCulling::EvaluateGpuExecution(bool requirePipelin
         return decision;
     }
 
-    if (!m_frustumCullPipeline || !m_compactPipeline || !m_cullingDescriptorSet)
+    const GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
+    if (!m_frustumCullPipeline || !m_compactPipeline || inputs == nullptr ||
+        !inputs->descriptorSet)
     {
         decision.fallbackReason = GPUCullingFallbackReason::PipelineResourcesUnavailable;
         return decision;
@@ -606,26 +721,34 @@ uint32 GPUCulling::AddDrawItemInstance(const RenderScene& scene,
     }
 
     const RenderObject& object = scene.GetObject(drawItem.objectIndex);
-    if (!object.visible || !object.bounds.IsValid())
+    if (!object.visible)
     {
         return RVX_INVALID_INDEX;
     }
 
-    const Vec3 center = object.bounds.GetCenter();
-    const float radius = length(object.bounds.GetExtent());
+    const RenderVisibilityGPUInput visibilityInput =
+        MakeRenderVisibilityGPUInput(object.bounds);
+    const Vec3 center = visibilityInput.forceVisible == 0
+        ? object.bounds.GetCenter()
+        : Vec3(0.0f);
+    const float radius = visibilityInput.forceVisible == 0
+        ? length(object.bounds.GetExtent())
+        : 0.0f;
 
     GPUInstanceData instance = {};
     instance.worldMatrix = object.worldMatrix;
     instance.normalMatrix = object.normalMatrix;
     instance.boundingSphere = Vec4(center, radius);
-    instance.aabbMin = Vec4(object.bounds.GetMin(), 0.0f);
-    instance.aabbMax = Vec4(object.bounds.GetMax(), 0.0f);
+    instance.aabbMin = visibilityInput.aabbMin;
+    instance.aabbMax = visibilityInput.aabbMax;
     instance.meshId = drawItem.mesh.slot;
     instance.materialId = drawItem.material.slot;
     instance.indexCount = drawDesc.indexCount;
     instance.firstIndex = drawDesc.firstIndex;
     instance.vertexOffset = drawDesc.vertexOffset;
     instance.sourceIndex = sourceIndex;
+    instance.candidateIndex = sourceIndex;
+    instance.forceVisible = visibilityInput.forceVisible;
     if (m_activeDrawGroupIndex == RVX_INVALID_INDEX && m_drawGroups.empty())
     {
         BeginDrawGroup((static_cast<uint64>(drawItem.mesh.slot) << 32U) |
@@ -651,29 +774,90 @@ uint32 GPUCulling::AddDrawItemInstance(const RenderScene& scene,
     return AddInstance(instance);
 }
 
+uint32 GPUCulling::AddVisibilityCandidateInstance(
+    const RenderScene& scene,
+    const RenderVisibilityCandidate& candidate,
+    const RenderDrawPacket& packet,
+    const GPUIndexedDrawDesc& drawDesc)
+{
+    if (candidate.candidateIndex == RVX_INVALID_INDEX ||
+        candidate.sourcePacketIndex == RVX_INVALID_INDEX ||
+        candidate.pass == RenderPassKind::None ||
+        candidate.pass != packet.pass ||
+        packet.primitiveData != candidate.objectIndex ||
+        packet.objectId == 0 ||
+        candidate.objectIndex >= scene.GetObjectCount() ||
+        !candidate.objectVisible || !candidate.drawable ||
+        drawDesc.indexCount == 0 ||
+        drawDesc.indexCount != packet.arguments.indexCount ||
+        drawDesc.firstIndex != packet.arguments.firstIndex ||
+        drawDesc.vertexOffset != packet.arguments.vertexOffset)
+    {
+        return RVX_INVALID_INDEX;
+    }
+
+    const RenderObject& object = scene.GetObject(candidate.objectIndex);
+    if (!object.visible || !object.drawable ||
+        object.entityId != packet.objectId ||
+        object.mesh != packet.geometryKey.mesh)
+    {
+        return RVX_INVALID_INDEX;
+    }
+    const RenderVisibilityGPUInput visibilityInput =
+        MakeRenderVisibilityGPUInput(candidate.worldBounds);
+    const Vec3 center = visibilityInput.forceVisible == 0
+        ? candidate.worldBounds.GetCenter()
+        : Vec3(0.0f);
+    const float radius = visibilityInput.forceVisible == 0
+        ? length(candidate.worldBounds.GetExtent())
+        : 0.0f;
+
+    GPUInstanceData instance{};
+    instance.worldMatrix = object.worldMatrix;
+    instance.normalMatrix = object.normalMatrix;
+    instance.boundingSphere = Vec4(center, radius);
+    instance.aabbMin = visibilityInput.aabbMin;
+    instance.aabbMax = visibilityInput.aabbMax;
+    instance.meshId = packet.geometryKey.mesh.slot;
+    instance.materialId = packet.materialKey.material.slot;
+    instance.indexCount = drawDesc.indexCount;
+    instance.firstIndex = drawDesc.firstIndex;
+    instance.vertexOffset = drawDesc.vertexOffset;
+    instance.sourceIndex = candidate.sourcePacketIndex;
+    instance.candidateIndex = candidate.candidateIndex;
+    instance.forceVisible = visibilityInput.forceVisible;
+    return AddInstance(instance);
+}
+
 void GPUCulling::EndFrame()
 {
     UploadInstances();
 }
 
+
 void GPUCulling::UploadInstances()
 {
-    if (m_instances.empty() || !m_instanceBuffer) return;
+    GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
+    if (m_instances.empty() || inputs == nullptr || !inputs->instanceBuffer)
+    {
+        return;
+    }
 
     // Map and copy instance data
-    void* mapped = m_instanceBuffer->Map();
+    void* mapped = inputs->instanceBuffer->Map();
     if (mapped)
     {
         std::memcpy(mapped, m_instances.data(),
                     m_instances.size() * sizeof(GPUInstanceData));
-        m_instanceBuffer->Unmap();
+        inputs->instanceBuffer->Unmap();
         const GPUQueueDomain lastGpuDomain =
-            m_accessSnapshots.instances.uniformAccess.domain;
-        m_accessSnapshots.instances = MakeRHIBufferAccessSnapshot(
+            inputs->instanceAccess.uniformAccess.domain;
+        inputs->instanceAccess = MakeRHIBufferAccessSnapshot(
             RHIResourceState::ShaderResource,
             RHIShaderStage::Compute,
             lastGpuDomain,
             RHIContentValidity::Valid);
+        m_accessSnapshots.instances = inputs->instanceAccess;
     }
 
     m_stats.totalInstances = m_instanceCount;
@@ -699,17 +883,23 @@ void GPUCulling::BuildCpuCullResults(const Mat4& viewMatrix, const Vec4* frustum
     {
         const GPUInstanceData& instance = m_instances[instanceIndex];
         const Vec3 center(instance.boundingSphere.x, instance.boundingSphere.y, instance.boundingSphere.z);
-        const float radius = std::max(instance.boundingSphere.w, 0.0f);
+        const Vec3 extent = Vec3(instance.aabbMax - instance.aabbMin) * 0.5f;
 
         bool visible = true;
-        if (m_config.enableFrustumCulling)
+        if (m_config.enableFrustumCulling && instance.forceVisible == 0)
         {
             for (uint32 planeIndex = 0; planeIndex < 6; ++planeIndex)
             {
                 const Vec4& plane = frustumPlanes[planeIndex];
                 const float distanceToPlane = plane.x * center.x + plane.y * center.y +
                                               plane.z * center.z + plane.w;
-                if (distanceToPlane < -radius)
+                const Vec3 normal(plane.x, plane.y, plane.z);
+                if (dot(normal, normal) <= 1.0e-12f)
+                {
+                    continue;
+                }
+                const float projectedRadius = dot(glm::abs(normal), extent);
+                if (distanceToPlane < -projectedRadius)
                 {
                     visible = false;
                     ++m_stats.frustumCulled;
@@ -723,8 +913,10 @@ void GPUCulling::BuildCpuCullResults(const Mat4& viewMatrix, const Vec4* frustum
             continue;
         }
 
-        if (m_config.enableDistanceCulling && m_config.maxDrawDistance > 0.0f)
+        if (visible && instance.forceVisible == 0 &&
+            m_config.enableDistanceCulling && m_config.maxDrawDistance > 0.0f)
         {
+            const float radius = std::max(instance.boundingSphere.w, 0.0f);
             const float distanceToCamera = length(center - cameraPosition);
             if (distanceToCamera - radius > m_config.maxDrawDistance)
             {
@@ -954,6 +1146,7 @@ void GPUCulling::Cull(RHICommandContext& ctx,
         Vec4 frustumPlanes[6];
         Vec4 cameraPosition;
         Vec4 params;  // maxDistance, instanceCount, etc.
+        Vec4 counts;  // instanceCount, drawGroupCount
     } constants;
 
     constants.viewProj = viewProj;
@@ -965,10 +1158,16 @@ void GPUCulling::Cull(RHICommandContext& ctx,
         m_config.enableFrustumCulling ? 1.0f : 0.0f,
         m_config.enableDistanceCulling ? 1.0f : 0.0f
     );
+    constants.counts = Vec4(static_cast<float>(m_instanceCount),
+                            static_cast<float>(m_drawGroups.size()),
+                            0.0f,
+                            0.0f);
 
-    if (m_cullingConstantsBuffer)
+    GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
+    if (inputs != nullptr && inputs->constantsBuffer)
     {
-        UploadBufferData(m_cullingConstantsBuffer.Get(), &constants, sizeof(constants), &ctx);
+        UploadBufferData(
+            inputs->constantsBuffer.Get(), &constants, sizeof(constants), &ctx);
     }
 
     const GPUCullingExecutionDecision executionDecision = EvaluateGpuExecution(true);
@@ -986,11 +1185,13 @@ void GPUCulling::Cull(RHICommandContext& ctx,
 
     // Dispatch frustum culling compute shader
     ctx.SetPipeline(m_frustumCullPipeline.Get());
-    ctx.SetDescriptorSet(0, m_cullingDescriptorSet.Get());
-    // CSFrustumCull also clears gDrawCount[instanceCount]. Dispatch one
-    // additional thread at exact 64-instance boundaries so total plus every
-    // possible per-group counter is reset before compaction.
-    uint32 groupCount = (m_instanceCount / 64) + 1;
+    ctx.SetDescriptorSet(0, inputs->descriptorSet.Get());
+    // CSFrustumCull clears total + every per-group counter. Dispatch enough
+    // threads for both the instance stream and a potentially sparse group set.
+    const uint32 clearThreadCount = std::max(
+        m_instanceCount,
+        static_cast<uint32>(m_drawGroups.size()) + 1u);
+    uint32 groupCount = (clearThreadCount + 63u) / 64u;
     ctx.Dispatch(groupCount, 1, 1);
 
     const RHIAccessSnapshot computeUAVAccess = MakeRHIAccessSnapshot(
@@ -1019,7 +1220,7 @@ void GPUCulling::Cull(RHICommandContext& ctx,
 
     // Compact visible instances into draw commands
     ctx.SetPipeline(m_compactPipeline.Get());
-    ctx.SetDescriptorSet(0, m_cullingDescriptorSet.Get());
+    ctx.SetDescriptorSet(0, inputs->descriptorSet.Get());
     ctx.Dispatch(groupCount, 1, 1);
 
     m_usedGpuExecutionLastCull = true;
@@ -1056,16 +1257,19 @@ void GPUCulling::CullCpuFallback(const Mat4& viewMatrix, const Mat4& projMatrix)
     UploadCullOutputs();
 }
 
-uint32 GPUCulling::DrawIndexedIndirect(RHICommandContext& ctx, uint32 maxDrawCount) const
+GPUIndirectDrawSubmission GPUCulling::DrawIndexedIndirect(
+    RHICommandContext& ctx,
+    uint32 maxDrawCount) const
 {
+    GPUIndirectDrawSubmission result;
     if (!m_indirectBuffer)
     {
-        return 0;
+        return result;
     }
 
     if (m_drawGroups.size() > 1)
     {
-        return 0;
+        return result;
     }
 
     if (m_usedGpuExecutionLastCull && m_drawCountBuffer && m_device &&
@@ -1074,7 +1278,7 @@ uint32 GPUCulling::DrawIndexedIndirect(RHICommandContext& ctx, uint32 maxDrawCou
         const uint32 maxGpuDrawCount = maxDrawCount > 0 ? std::min(m_instanceCount, maxDrawCount) : m_instanceCount;
         if (maxGpuDrawCount == 0)
         {
-            return 0;
+            return result;
         }
 
         ctx.DrawIndexedIndirectCount(m_indirectBuffer.Get(),
@@ -1083,38 +1287,49 @@ uint32 GPUCulling::DrawIndexedIndirect(RHICommandContext& ctx, uint32 maxDrawCou
                                      0,
                                      maxGpuDrawCount,
                                      sizeof(IndirectDrawIndexedCommand));
-        return maxGpuDrawCount;
+        result.recorded = true;
+        result.submittedDrawUpperBound = maxGpuDrawCount;
+        return result;
     }
 
+    result.executedDrawCountAvailable = m_usedCpuFallbackLastCull;
     if (m_drawCount == 0)
     {
-        return 0;
+        return result;
     }
 
     const uint32 drawCount = maxDrawCount > 0 ? std::min(m_drawCount, maxDrawCount) : m_drawCount;
     if (drawCount == 0)
     {
-        return 0;
+        return result;
     }
 
     ctx.DrawIndexedIndirect(m_indirectBuffer.Get(),
                             0,
                             drawCount,
                             sizeof(IndirectDrawIndexedCommand));
-    return drawCount;
+    result.recorded = true;
+    result.submittedDrawUpperBound = drawCount;
+    result.executedDrawCountAvailable = true;
+    result.executedDrawCount = drawCount;
+    return result;
 }
 
-uint32 GPUCulling::DrawIndexedIndirectGroup(RHICommandContext& ctx, uint32 groupIndex) const
+GPUIndirectDrawSubmission GPUCulling::DrawIndexedIndirectGroup(
+    RHICommandContext& ctx,
+    uint32 groupIndex) const
 {
+    GPUIndirectDrawSubmission result;
     if (!m_indirectBuffer || groupIndex >= m_drawGroups.size())
     {
-        return 0;
+        return result;
     }
 
     const GPUCullingDrawGroup& group = m_drawGroups[groupIndex];
+    result.executedDrawCountAvailable = m_usedCpuFallbackLastCull;
     if (group.maxDrawCount == 0)
     {
-        return 0;
+        return result;
     }
 
     const uint64 commandOffset =
@@ -1129,19 +1344,26 @@ uint32 GPUCulling::DrawIndexedIndirectGroup(RHICommandContext& ctx, uint32 group
                                      group.countBufferOffset,
                                      group.maxDrawCount,
                                      sizeof(IndirectDrawIndexedCommand));
-        return group.maxDrawCount;
+        result.recorded = true;
+        result.submittedDrawUpperBound = group.maxDrawCount;
+        result.executedDrawCountAvailable = false;
+        return result;
     }
 
     if (group.visibleDrawCount == 0)
     {
-        return 0;
+        return result;
     }
 
     ctx.DrawIndexedIndirect(m_indirectBuffer.Get(),
                             commandOffset,
                             group.visibleDrawCount,
                             sizeof(IndirectDrawIndexedCommand));
-    return group.visibleDrawCount;
+    result.recorded = true;
+    result.submittedDrawUpperBound = group.visibleDrawCount;
+    result.executedDrawCountAvailable = true;
+    result.executedDrawCount = group.visibleDrawCount;
+    return result;
 }
 
 // ============================================================================

@@ -655,13 +655,45 @@ std::string SceneRenderer::ExportToolDiagnosticsText() const
        << ", enabled=" << frame.gpuDrivenCullingStats.enabled
        << ", fallback=" << frame.gpuDrivenCullingStats.fallbackUsed
        << ", decisionAvailable=" << frame.gpuDrivenCullingStats.executionDecisionAvailable
+       << ", graphPasses="
+       << frame.gpuDrivenCullingStats.gpuCullingGraphPassCount
        << ", inputOpaque=" << frame.gpuDrivenCullingStats.inputOpaqueDrawItemCount
        << ", outputOpaque=" << frame.gpuDrivenCullingStats.outputOpaqueDrawItemCount
+       << ", visibilityCandidates="
+       << frame.gpuDrivenCullingStats.visibilityCandidateCount
+       << ", cpuVisibleCandidates="
+       << frame.gpuDrivenCullingStats.cpuVisibleCandidateCount
+       << ", passVisibilityCandidates="
+       << frame.gpuDrivenCullingStats.passVisibilityCandidateCount
+       << ", gpuPlannedCandidates="
+       << frame.gpuDrivenCullingStats.gpuPlannedVisibilityCandidateCount
+       << ", gpuDeferredCandidates="
+       << frame.gpuDrivenCullingStats.gpuDeferredVisibilityCandidateCount
+       << ", invalidBounds="
+       << frame.gpuDrivenCullingStats.invalidVisibilityBoundsCount
+       << ", visibilityReadback="
+       << frame.gpuDrivenCullingStats.gpuVisibilityReadbackPerformed
+       << ", visibilityCountsAvailable="
+       << frame.gpuDrivenCullingStats.gpuVisibilityCountsAvailable
+       << ", cpuReferenceVisible="
+       << frame.gpuDrivenCullingStats.cpuReferenceVisibleCullableDrawItemCount
+       << ", cpuReferenceCulled="
+       << frame.gpuDrivenCullingStats.cpuReferenceCulledDrawItemCount
+       << ", occlusionRequestedButUnavailable="
+       << frame.gpuDrivenCullingStats.occlusionRequestedButUnavailable
        << ", requested=" << frame.gpuDrivenCullingStats.opaqueIndirectRequested
        << ", cullingReady=" << frame.gpuDrivenCullingStats.opaqueCullingReady
        << ", pipelineReady=" << frame.gpuDrivenCullingStats.opaquePipelineReady
        << ", eligible=" << frame.gpuDrivenCullingStats.opaqueIndirectEligible
        << ", submitted=" << frame.gpuDrivenCullingStats.opaqueIndirectSubmitted
+       << ", submittedDrawUpperBound="
+       << frame.gpuDrivenCullingStats
+              .opaqueGpuDrivenIndirectSubmittedDrawUpperBound
+       << ", executedDrawCountAvailable="
+       << frame.gpuDrivenCullingStats
+              .opaqueGpuDrivenExecutedDrawCountAvailable
+       << ", executedDraws="
+       << frame.gpuDrivenCullingStats.opaqueGpuDrivenIndirectDrawCount
        << ", directDraws=" << frame.gpuDrivenCullingStats.opaqueDirectDrawCount
        << ", fallbackReason="
        << GetGPUDrivenDrawFallbackReasonName(

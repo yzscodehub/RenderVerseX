@@ -44441,6 +44441,156 @@ git diff --check
 
 ---
 
+### R-SP332 Render-policy Task 8 candidate visibility separation
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Plan review agent:** Primary architect with the approved Task 8 contract
+**Code review agent:** Independent terra worker; primary review of all findings,
+revisions, runtime evidence, and final diff
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-visibility-contract.md`
+- Task 8 candidate visibility separation; Task 9 pass-context migration and
+  Task 10 submission-strategy/RHI redesign excluded.
+
+**Prerequisite status:** PASS
+
+- Task 7A identity/accounting is committed at `22db718f`.
+- Task 7B hybrid execution is committed at `6ce0fcac`.
+- Direct and GPU lanes already consume mutually exclusive planned packet
+  partitions with late-failure honesty.
+
+**Approved scope:**
+
+- Introduce frame/view-owned `RenderCandidateSet`, canonical CPU visibility,
+  and deferred/no-readback GPU visibility providers.
+- Evaluate scene-object bounds once, then project the resulting dense object
+  masks onto pass-aware packet candidates without a second frustum/distance
+  walk.
+- Feed Direct only CPU-visible packet sources while preserving every coarse
+  Depth/Opaque candidate for GPU fine visibility and stable compaction mapping.
+- Freeze `[0, 1]` clip-depth, world-AABB, boundary-inclusive, reverse-Z,
+  invalid-bounds/fail-open, and C++/HLSL instance-ABI rules.
+- Give Depth and Opaque independent GPUCulling owners, graph passes, resources,
+  failure domains, and execution reports.
+- Keep HZB occlusion unavailable and diagnostic-only.
+- Separate indirect submitted upper bounds from exact executed counts. Without
+  readback, GPU count-buffer execution is explicitly unavailable rather than
+  inferred from a capacity or CPU reference count.
+- Version CPU-writable GPU-culling inputs per in-flight RenderContext slot so a
+  later CPU frame cannot overwrite instance/constants data still read by the
+  GPU. Keep shared outputs on the ordered graphics queue; async compute remains
+  out of scope.
+
+**Files changed:**
+
+- `Core/Include/Core/Math/Frustum.h`
+- `Render/Include/Render/Visibility/RenderVisibility.h`
+- `Render/Private/Visibility/RenderVisibility.cpp`
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- Depth/Opaque/Direct packet pass contracts and implementations
+- render policy execution reports, diagnostics, tool artifacts, and frame
+  diagnostics publication
+- `Render/Shaders/Include/GPUInstanceData.hlsli`, DefaultLit, DepthOnly, and
+  GPUCulling shaders
+- RenderContracts frame schema and ModelViewer honest readiness assertions
+- RenderVisibility, GPUDriven, RHI contract, RenderPolicy, and pass validation
+  tests plus CMake registration
+- visibility contract, execution ledger, and this phase log.
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderVisibilityValidation GPUDrivenValidation RenderPolicyValidation RenderPassValidation RHIContractValidation SpatialComponentValidation SystemIntegrationTest ModelViewer VisualGoldenValidation
+build/win_x64_debug/Tests/Debug/RenderVisibilityValidation.exe
+build/win_x64_debug/Tests/Debug/GPUDrivenValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/RHIContractValidation.exe
+build/win_x64_debug/Tests/Debug/SpatialComponentValidation.exe
+build/win_x64_debug/Tests/Debug/SystemIntegrationTest.exe
+ctest --test-dir build/win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^ModelViewerGPUDrivenGBVSmoke$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries)$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerSmoke|ModelViewerOpenGLPBRMaterialSmoke)$"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for all listed targets, including configured DX11, DX12,
+  OpenGL, and Vulkan backend libraries.
+- Standalone suites: PASS 9/9 RenderVisibility, 28/28 GPUDriven, 22/22
+  RenderPolicy, 159/159 RenderPass, 41/41 RHIContract, 20/20 SpatialComponent,
+  and 4/4 SystemIntegration.
+- Repeated DX12 GPU-driven frame-slot soak: PASS 10/10 runs, eight frames per
+  run, after the slot-ring repair.
+- Synthetic DX12 Debug Layer/Auto/forced-mode/parity gate: PASS 5/5.
+- External Porsche Direct/GPU/parity gate: PASS 3/3.
+- DX12 GPU-Based Validation: PASS 1/1.
+- Resize, frame-plan lifetime, submission-failure, and retirement gate:
+  PASS 6/6.
+- DX11 Direct smoke: PASS. OpenGL shader compilation reaches the new shared
+  instance include, but the registered PBR smoke remains blocked by its known
+  ToneMapping SPIRV-Cross buffer-layout failure and consequent material-ready
+  failure; this is an explicit Task 14 compatibility gate, not a Task 8
+  GPU-visibility regression.
+- The dense 16,384-candidate regression and direct vector lookup contract
+  cover candidate-preparation linearity; the full visibility suite completes
+  within the focused standalone run.
+- `git diff --check`: PASS; line-ending notices only.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for two findings. GPU count-buffer execution
+  was reported as an actual count even though no readback existed, and pass
+  candidates repeated the CPU bounds/distance evaluation already performed for
+  scene candidates.
+- Primary accepted both. Reports now distinguish submitted upper bound from an
+  optional exact count, and pass candidates reuse canonical object masks.
+- Runtime follow-up found no extractor/upload-completion ABBA lock order. It
+  found a P1 lifetime defect: one persistent instance/constants upload pair
+  could be overwritten by frame N+1 while frame N remained in flight. Logging
+  altered timing and explained the earlier two-frame symptom.
+- Primary accepted the finding and required the production repair: per-slot
+  instance/constants buffers, descriptor sets, and input access snapshots,
+  selected only after `WaitForFrame`. A serialization fence wait was rejected.
+- Added behavior coverage proves two slots have independent pointer/content
+  versions, restore their own access snapshots, wrap only onto the selected
+  slot, and reject an invalid slot without changing active state.
+- Final verdict: APPROVE; no remaining P0-P2 findings. The reviewer confirmed
+  SceneRenderer does not use `ExecuteAsync`; future async-compute work must
+  revisit shared output ownership.
+
+**Primary review result:**
+
+- Verdict: PASS. Both initial review findings and the later P1 lifetime finding
+  are valid and fully resolved. The canonical CPU/GPU bounds math agrees,
+  Direct/GPU candidate ownership is separated, no-readback diagnostics are
+  honest, Depth/Opaque owners are isolated, and frame-slot input versions align
+  with RenderContext synchronization.
+- Temporary timing instrumentation was removed before the final build and
+  gates. No runtime artifact or cache is part of the commit scope.
+- Vulkan GPU visibility/submission and Metal ICB runtime qualification remain
+  Tasks 12 and 13. OpenGL ToneMapping compatibility remains Task 14.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 9 immutable frame-owned pass record contexts.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged.
+
+---
+
 ### R-SP: `<id and title>`
 
 **Date:**

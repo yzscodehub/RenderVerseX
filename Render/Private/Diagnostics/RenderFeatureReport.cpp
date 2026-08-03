@@ -291,7 +291,7 @@ SceneRenderFeatureReport SceneRenderer::BuildRenderFeatureReport(
         entry.enabled = gpuDriven.enabled && gpuDriven.gpuExecutionRecorded;
         entry.fallbackUsed = diagnostics.gpuDrivenCullingStats.fallbackUsed;
         entry.renderGraphBacked = diagnostics.gpuDrivenCullingStats.graphPassAdded;
-        entry.graphPassCount = diagnostics.gpuDrivenCullingStats.graphPassAdded ? 1u : 0u;
+        entry.graphPassCount = diagnostics.gpuDrivenCullingStats.gpuCullingGraphPassCount;
         entry.estimatedWorkItems = diagnostics.gpuDrivenCullingStats.graphInputDrawItemCount;
 
         const bool capabilitySupported = capabilities &&

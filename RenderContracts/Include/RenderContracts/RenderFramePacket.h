@@ -211,7 +211,7 @@ namespace RVX
     {
         RenderGPUDrivenMode mode = RenderGPUDrivenMode::Auto;
         uint32 maxVisibleObjects = 65536;
-        bool enableOcclusionCulling = true;
+        bool enableOcclusionCulling = false;
         bool enableDistanceCulling = true;
         float32 maxDrawDistance = 1000.0f;
     };

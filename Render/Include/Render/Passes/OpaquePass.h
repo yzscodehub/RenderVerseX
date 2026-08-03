@@ -51,6 +51,8 @@ namespace RVX
         bool gpuDrivenEligible = false;
         bool gpuDrivenSubmitted = false;
         uint32 gpuDrivenIndirectBatchCount = 0;
+        uint32 gpuDrivenIndirectSubmittedDrawUpperBound = 0;
+        bool gpuDrivenIndirectExecutedDrawCountAvailable = false;
         uint32 gpuDrivenIndirectDrawCount = 0;
         GPUDrivenDrawFallbackReason gpuDrivenFallbackReason =
             GPUDrivenDrawFallbackReason::Disabled;
@@ -59,6 +61,7 @@ namespace RVX
         bool planValidated = false;
         bool directPacketPathUsed = false;
         uint32 plannedPacketCount = 0;
+        uint32 compiledPacketCount = 0;
         uint32 executedPacketCount = 0;
         RenderPolicyReason failureReason =
             RenderPolicyReason::ConservativeDefault;

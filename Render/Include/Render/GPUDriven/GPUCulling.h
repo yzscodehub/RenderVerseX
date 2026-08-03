@@ -12,6 +12,7 @@
 #include "Render/Material/MaterialClassification.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RHI/RHI.h"
+#include <cstddef>
 #include <vector>
 
 namespace RVX
@@ -23,6 +24,8 @@ namespace RVX
     class RenderSubmissionResourceBatch;
     struct GPUCompletionToken;
     struct RenderDrawItem;
+    struct RenderDrawPacket;
+    struct RenderVisibilityCandidate;
 
     /**
      * @brief Indexed draw arguments associated with a render draw item
@@ -52,7 +55,27 @@ namespace RVX
         uint32 sourceIndex = RVX_INVALID_INDEX;
         uint32 drawGroupIndex;
         uint32 drawGroupCommandOffset;
+        uint32 candidateIndex = RVX_INVALID_INDEX;
+        uint32 forceVisible = 0;
     };
+
+    static_assert(sizeof(GPUInstanceData) == 216,
+                  "GPUInstanceData must match GPUInstanceData.hlsli");
+    static_assert(offsetof(GPUInstanceData, worldMatrix) == 0);
+    static_assert(offsetof(GPUInstanceData, normalMatrix) == 64);
+    static_assert(offsetof(GPUInstanceData, boundingSphere) == 128);
+    static_assert(offsetof(GPUInstanceData, aabbMin) == 144);
+    static_assert(offsetof(GPUInstanceData, aabbMax) == 160);
+    static_assert(offsetof(GPUInstanceData, meshId) == 176);
+    static_assert(offsetof(GPUInstanceData, materialId) == 180);
+    static_assert(offsetof(GPUInstanceData, indexCount) == 184);
+    static_assert(offsetof(GPUInstanceData, firstIndex) == 188);
+    static_assert(offsetof(GPUInstanceData, vertexOffset) == 192);
+    static_assert(offsetof(GPUInstanceData, sourceIndex) == 196);
+    static_assert(offsetof(GPUInstanceData, drawGroupIndex) == 200);
+    static_assert(offsetof(GPUInstanceData, drawGroupCommandOffset) == 204);
+    static_assert(offsetof(GPUInstanceData, candidateIndex) == 208);
+    static_assert(offsetof(GPUInstanceData, forceVisible) == 212);
 
     /**
      * @brief Contiguous indirect command range for a mesh-compatible draw group
@@ -77,10 +100,10 @@ namespace RVX
     {
         uint32 maxInstances = 65536;
         bool enableFrustumCulling = true;
-        bool enableOcclusionCulling = true;
+        bool enableOcclusionCulling = false;
         bool enableDistanceCulling = true;
         float maxDrawDistance = 1000.0f;
-        bool twoPhaseOcclusion = true;  // Re-test with HiZ from current frame
+        bool twoPhaseOcclusion = false;  // Re-test with HiZ from current frame
     };
 
     enum class GPUCullingExecutionMode : uint8
@@ -128,6 +151,15 @@ namespace RVX
         bool operator==(const GPUCullingAccessSnapshots&) const = default;
     };
 
+    /** @brief Honest result of recording one indirect submission. */
+    struct GPUIndirectDrawSubmission
+    {
+        bool recorded = false;
+        uint32 submittedDrawUpperBound = 0;
+        bool executedDrawCountAvailable = false;
+        uint32 executedDrawCount = 0;
+    };
+
     /**
      * @brief GPU-driven culling system
      *
@@ -157,7 +189,9 @@ namespace RVX
         // Lifecycle
         // =========================================================================
 
-        void Initialize(IRHIDevice* device, const GPUCullingConfig& config = {});
+        void Initialize(IRHIDevice* device,
+                        const GPUCullingConfig& config = {},
+                        uint32 frameSlotCount = 1);
         void Shutdown();
         bool IsInitialized() const { return m_device != nullptr; }
 
@@ -175,6 +209,21 @@ namespace RVX
 
         const GPUCullingConfig& GetConfig() const { return m_config; }
         void SetConfig(const GPUCullingConfig& config);
+        /** @brief Select the RenderContext frame slot whose completion was awaited. */
+        [[nodiscard]] bool SetFrameSlot(uint32 frameSlot);
+        [[nodiscard]] uint32 GetFrameSlotCount() const
+        {
+            return static_cast<uint32>(m_frameInputs.size());
+        }
+        [[nodiscard]] uint32 GetActiveFrameSlot() const
+        {
+            return m_activeFrameSlot;
+        }
+        [[nodiscard]] bool WasOcclusionRequested() const
+        {
+            return m_occlusionRequested;
+        }
+        [[nodiscard]] bool IsOcclusionAvailable() const { return false; }
 
         // =========================================================================
         // Instance Management
@@ -225,6 +274,16 @@ namespace RVX
                                    uint32 sourceIndex);
 
         /**
+         * @brief Add one stable frame/view candidate without ordinal lookup.
+         * sourceIndex is the pass-local sourcePacketIndex.
+         */
+        uint32 AddVisibilityCandidateInstance(
+            const RenderScene& scene,
+            const RenderVisibilityCandidate& candidate,
+            const RenderDrawPacket& packet,
+            const GPUIndexedDrawDesc& drawDesc);
+
+        /**
          * @brief End instance collection and upload to GPU
          */
         void EndFrame();
@@ -272,7 +331,7 @@ namespace RVX
         /**
          * @brief Get the instance input buffer
          */
-        RHIBuffer* GetInstanceBuffer() const { return m_instanceBuffer.Get(); }
+        RHIBuffer* GetInstanceBuffer() const;
 
         /** @brief Identity per-instance vertex input used to resolve indirect firstInstance. */
         RHIBuffer* GetInstanceIndexBuffer() const { return m_instanceIndexBuffer.Get(); }
@@ -280,7 +339,7 @@ namespace RVX
         /**
          * @brief Get the culling constants buffer
          */
-        RHIBuffer* GetCullingConstantsBuffer() const { return m_cullingConstantsBuffer.Get(); }
+        RHIBuffer* GetCullingConstantsBuffer() const;
 
         /**
          * @brief Get visibility flag buffer
@@ -332,16 +391,10 @@ namespace RVX
          */
         GPUCullingExecutionDecision GetExecutionDecision() const;
 
-        const GPUCullingAccessSnapshots& GetAccessSnapshots() const
-        {
-            return m_accessSnapshots;
-        }
+        const GPUCullingAccessSnapshots& GetAccessSnapshots() const;
 
         /** @brief Commit RenderGraph's realized final buffer accesses. */
-        void CommitAccessSnapshots(const GPUCullingAccessSnapshots& snapshots)
-        {
-            m_accessSnapshots = snapshots;
-        }
+        void CommitAccessSnapshots(const GPUCullingAccessSnapshots& snapshots);
 
         /**
          * @brief Whether the current device/capability/pipeline state can execute GPU culling
@@ -355,15 +408,19 @@ namespace RVX
 
         /**
          * @brief Submit the generated indexed indirect draw buffer
-         * @return Number of indirect draw commands submitted
+         * @return Recording result; GPU count-buffer execution remains unknown
          */
-        uint32 DrawIndexedIndirect(RHICommandContext& ctx, uint32 maxDrawCount = 0) const;
+        GPUIndirectDrawSubmission DrawIndexedIndirect(
+            RHICommandContext& ctx,
+            uint32 maxDrawCount = 0) const;
 
         /**
          * @brief Submit one mesh-compatible indirect draw group
-         * @return Number of indirect draw commands submitted, or max submitted for GPU count draws
+         * @return Recording result with a submitted upper bound and optional exact count
          */
-        uint32 DrawIndexedIndirectGroup(RHICommandContext& ctx, uint32 groupIndex) const;
+        GPUIndirectDrawSubmission DrawIndexedIndirectGroup(
+            RHICommandContext& ctx,
+            uint32 groupIndex) const;
 
         // =========================================================================
         // Statistics
@@ -390,8 +447,21 @@ namespace RVX
         void SetStatisticsEnabled(bool enabled) { m_statsEnabled = enabled; }
 
     private:
+        struct GPUCullingFrameInputs
+        {
+            RHIBufferRef instanceBuffer;
+            RHIBufferRef constantsBuffer;
+            RHIDescriptorSetRef descriptorSet;
+            RHIBufferAccessSnapshot instanceAccess;
+            RHIBufferAccessSnapshot constantsAccess;
+        };
+
         void CreateResources();
         void CreatePipelineResources();
+        void QueueFrameInputRetirements();
+        [[nodiscard]] GPUCullingFrameInputs* GetActiveFrameInputs();
+        [[nodiscard]] const GPUCullingFrameInputs* GetActiveFrameInputs() const;
+        void RefreshActiveInputAccessSnapshots();
         GPUCullingExecutionDecision EvaluateGpuExecution(bool requirePipelineResources) const;
         bool SupportsGpuExecution() const;
         uint32 EnsureDefaultDrawGroup();
@@ -406,6 +476,7 @@ namespace RVX
 
         IRHIDevice* m_device = nullptr;
         GPUCullingConfig m_config;
+        bool m_occlusionRequested = false;
         // CPU-side instance data
         std::vector<GPUInstanceData> m_instances;
         std::vector<uint32> m_visibleInstanceIndices;
@@ -423,14 +494,14 @@ namespace RVX
         std::vector<RHIBufferRef> m_transientUploadBuffers;
         std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
 
-        // GPU buffers
-        RHIBufferRef m_instanceBuffer;           // All instance data
+        // GPU buffers shared by all in-flight frame slots.
         RHIBufferRef m_instanceIndexBuffer;      // Identity uint index fetched through IA firstInstance
         RHIBufferRef m_visibilityBuffer;         // Per-instance visibility flags
         RHIBufferRef m_visibleInstanceBuffer;    // Visible instance indices
         RHIBufferRef m_indirectBuffer;           // Indirect draw commands
         RHIBufferRef m_drawCountBuffer;          // Number of draws
-        RHIBufferRef m_cullingConstantsBuffer;   // View/proj, frustum planes
+        std::vector<GPUCullingFrameInputs> m_frameInputs;
+        uint32 m_activeFrameSlot = 0;
         GPUCullingAccessSnapshots m_accessSnapshots;
 
         // Pipelines
@@ -438,7 +509,6 @@ namespace RVX
         RHIShaderRef m_compactShader;
         RHIDescriptorSetLayoutRef m_cullingDescriptorSetLayout;
         RHIPipelineLayoutRef m_cullingPipelineLayout;
-        RHIDescriptorSetRef m_cullingDescriptorSet;
         RHIPipelineRef m_frustumCullPipeline;
         RHIPipelineRef m_occlusionCullPipeline;
         RHIPipelineRef m_compactPipeline;

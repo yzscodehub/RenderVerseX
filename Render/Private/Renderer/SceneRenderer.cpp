@@ -12,6 +12,7 @@
 #include "Core/PathUtils.h"
 #include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/DepthPrepass.h"
+#include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/Passes/ObjectVelocityPass.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Passes/OpaquePass.h"
@@ -351,6 +352,50 @@ namespace
         }
     }
 
+    RenderPolicyReadiness ResolveGPUResourceReadiness(
+        const GPUCullingExecutionDecision& decision)
+    {
+        return decision.fallbackReason ==
+                       GPUCullingFallbackReason::PipelineResourcesUnavailable
+            ? RenderPolicyReadiness::Unavailable
+            : RenderPolicyReadiness::Ready;
+    }
+
+    bool IsGPUImplementationAvailable(
+        const GPUCullingExecutionDecision& decision)
+    {
+        return decision.fallbackReason != GPUCullingFallbackReason::DeviceMissing &&
+               decision.fallbackReason !=
+                   GPUCullingFallbackReason::ShaderBackendUnsupported;
+    }
+
+    template <typename Resolver>
+    RenderPolicyReadiness ResolveAnyGPUOwnerReadiness(
+        const GPUCulling* depthOwner,
+        const GPUCulling* opaqueOwner,
+        Resolver&& resolver)
+    {
+        RenderPolicyReadiness aggregate = RenderPolicyReadiness::Unavailable;
+        for (const GPUCulling* owner : {depthOwner, opaqueOwner})
+        {
+            if (owner == nullptr)
+            {
+                continue;
+            }
+            const RenderPolicyReadiness readiness =
+                resolver(owner->GetExecutionDecision());
+            if (readiness == RenderPolicyReadiness::Ready)
+            {
+                return RenderPolicyReadiness::Ready;
+            }
+            if (readiness == RenderPolicyReadiness::Pending)
+            {
+                aggregate = RenderPolicyReadiness::Pending;
+            }
+        }
+        return aggregate;
+    }
+
     RenderPassPolicyFacts MakeRenderPassPolicyFacts(
         RenderPassKind pass,
         const IRenderPass* renderPass,
@@ -379,10 +424,7 @@ namespace
             ? RenderPolicyReadiness::Ready
             : RenderPolicyReadiness::Unavailable;
         facts.gpuDrivenResourceReadiness =
-            gpuExecution.fallbackReason ==
-                    GPUCullingFallbackReason::PipelineResourcesUnavailable
-                ? RenderPolicyReadiness::Unavailable
-                : RenderPolicyReadiness::Ready;
+            ResolveGPUResourceReadiness(gpuExecution);
         facts.inputPacketCount = stream.stats.inputPacketCount;
         facts.relevantPacketCount = stream.stats.relevantPacketCount;
         facts.candidatePacketCount = stream.stats.gpuCandidatePacketCount;
@@ -548,13 +590,25 @@ void SceneRenderer::Initialize(
     m_renderGraph = std::make_unique<RenderGraph>();
     m_renderGraph->SetDevice(m_renderContext->GetDevice());
 
-    // Create GPU-driven culling data path. CPU culling remains as a prediction
-    // and fallback data source; the graph path receives the full draw stream.
-    m_gpuCulling = std::make_unique<GPUCulling>();
+    // Candidate extraction is shared, but Depth and Opaque own independent
+    // instance/group/indirect/count streams. This keeps their policy and
+    // failure domains independent until a later GPU-scene compaction stage.
     GPUCullingConfig gpuCullingConfig;
     gpuCullingConfig.enableOcclusionCulling = false;
     gpuCullingConfig.enableDistanceCulling = false;
-    m_gpuCulling->Initialize(m_renderContext->GetDevice(), gpuCullingConfig);
+    const FrameSynchronizer* frameSynchronizer =
+        m_renderContext->GetFrameSynchronizer();
+    const uint32 gpuCullingFrameSlotCount = frameSynchronizer != nullptr
+        ? frameSynchronizer->GetFrameCount()
+        : 1u;
+    m_depthGPUCulling = std::make_unique<GPUCulling>();
+    m_depthGPUCulling->Initialize(
+        m_renderContext->GetDevice(), gpuCullingConfig,
+        gpuCullingFrameSlotCount);
+    m_opaqueGPUCulling = std::make_unique<GPUCulling>();
+    m_opaqueGPUCulling->Initialize(
+        m_renderContext->GetDevice(), gpuCullingConfig,
+        gpuCullingFrameSlotCount);
 
     // Create pipeline cache with shader reflection
     m_pipelineCache = std::make_unique<PipelineCache>();
@@ -772,10 +826,15 @@ void SceneRenderer::Shutdown()
         m_rayTracingSceneManager.reset();
     }
 
-    if (m_gpuCulling)
+    if (m_depthGPUCulling)
     {
-        m_gpuCulling->Shutdown();
-        m_gpuCulling.reset();
+        m_depthGPUCulling->Shutdown();
+        m_depthGPUCulling.reset();
+    }
+    if (m_opaqueGPUCulling)
+    {
+        m_opaqueGPUCulling->Shutdown();
+        m_opaqueGPUCulling.reset();
     }
 
     m_renderGraph.reset();
@@ -1271,10 +1330,6 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     m_viewData.textureIBLIntensity = environment.intensity;
     m_viewData.ambientFloorIntensity = textureIBLReady ? 0.0f : 0.08f;
 
-    m_renderScene.CullAgainstView(m_renderScene.GetView(),
-                                  m_visibleObjectIndices);
-    m_renderScene.SortVisibleObjects(m_visibleObjectIndices,
-                                     m_renderScene.GetView().cameraPosition);
     BuildMaterialDrawLists();
     return result;
 }
@@ -1293,8 +1348,10 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     result.frameSequence = m_renderScene.GetAcceptedHeader().sequence;
     result.referencedResources = m_renderScene.GetReferencedResources();
     Render();
-    if (m_gpuCulling &&
-        !m_gpuCulling->RetainSubmissionResources(*m_submissionBatch))
+    if ((m_depthGPUCulling &&
+         !m_depthGPUCulling->RetainSubmissionResources(*m_submissionBatch)) ||
+        (m_opaqueGPUCulling &&
+         !m_opaqueGPUCulling->RetainSubmissionResources(*m_submissionBatch)))
     {
         result.code = RenderFrameExecutionCode::SubmissionFailed;
         return result;
@@ -1372,9 +1429,13 @@ void SceneRenderer::RetireOwnerSnapshots(
     {
         return;
     }
-    if (m_gpuCulling)
+    if (m_depthGPUCulling)
     {
-        m_gpuCulling->RetireOwnerSnapshots(completion, *m_retirementQueue);
+        m_depthGPUCulling->RetireOwnerSnapshots(completion, *m_retirementQueue);
+    }
+    if (m_opaqueGPUCulling)
+    {
+        m_opaqueGPUCulling->RetireOwnerSnapshots(completion, *m_retirementQueue);
     }
     if (m_pipelineCache)
     {
@@ -1432,12 +1493,60 @@ void SceneRenderer::ResolveRenderTargetExtent(uint32& width, uint32& height) con
 
 void SceneRenderer::BuildMaterialDrawLists()
 {
+    // Direct/Transparent/legacy consumers receive the CPU-final list. GPU
+    // candidates deliberately start from the coarser visible+drawable list so
+    // the GPU lane never inherits a CPU frustum pre-elimination.
+    m_renderCandidates.Clear();
+    for (uint32 objectIndex = 0;
+         objectIndex < static_cast<uint32>(m_renderScene.GetObjectCount());
+         ++objectIndex)
+    {
+        const RenderObject& object = m_renderScene.GetObject(objectIndex);
+        RenderVisibilityCandidate candidate;
+        candidate.objectIndex = objectIndex;
+        candidate.objectVisible = object.visible;
+        candidate.drawable = object.drawable;
+        candidate.worldBounds = object.bounds;
+        (void)m_renderCandidates.Add(candidate);
+    }
+
+    const GPUCullingConfig initialVisibilityConfig =
+        GetGPUDrivenCullingConfig();
+    RenderVisibilityRequest visibilityRequest;
+    visibilityRequest.viewProjection =
+        m_renderScene.GetView().viewProjectionMatrix;
+    visibilityRequest.cameraPosition =
+        m_renderScene.GetView().cameraPosition;
+    visibilityRequest.enableDistanceCulling =
+        initialVisibilityConfig.enableDistanceCulling;
+    visibilityRequest.maxDrawDistance =
+        initialVisibilityConfig.maxDrawDistance;
+    GPUVisibilityProvider visibilityProvider;
+    visibilityProvider.Evaluate(m_renderCandidates,
+                                visibilityRequest,
+                                m_renderVisibility);
+    m_visibleObjectIndices = m_renderVisibility.cpuVisibleObjectIndices;
+    m_coarseCandidateObjectIndices =
+        m_renderVisibility.coarseVisibleObjectIndices;
+    m_renderScene.SortVisibleObjects(m_visibleObjectIndices,
+                                     m_renderScene.GetView().cameraPosition);
+    m_renderScene.SortVisibleObjects(m_coarseCandidateObjectIndices,
+                                     m_renderScene.GetView().cameraPosition);
+
     RVX::BuildMaterialDrawLists(m_renderScene,
                                 m_visibleObjectIndices,
                                 m_viewData.cameraPosition,
                                 m_opaqueDrawItems,
                                 m_maskedDrawItems,
                                 m_transparentDrawItems);
+
+    std::vector<RenderDrawItem> ignoredTransparentCandidates;
+    RVX::BuildMaterialDrawLists(m_renderScene,
+                                m_coarseCandidateObjectIndices,
+                                m_viewData.cameraPosition,
+                                m_coarseOpaqueDrawItems,
+                                m_coarseMaskedDrawItems,
+                                ignoredTransparentCandidates);
 
     PrepareMeshPassPackets();
 
@@ -1472,8 +1581,8 @@ void SceneRenderer::PrepareMeshPassPackets()
             m_meshPassPreparation.opaque.Record(opaqueProcessor.Process(input));
         }
     };
-    prepareMaterialItems(m_opaqueDrawItems);
-    prepareMaterialItems(m_maskedDrawItems);
+    prepareMaterialItems(m_coarseOpaqueDrawItems);
+    prepareMaterialItems(m_coarseMaskedDrawItems);
 
     for (uint32 sourceOrdinal = 0;
          sourceOrdinal < static_cast<uint32>(m_transparentDrawItems.size());
@@ -1530,9 +1639,9 @@ void SceneRenderer::PrepareMeshPassPackets()
             const MeshBatch batch = BuildLegacyShadowBatch(
                 object, objectIndex, submeshIndex, submesh);
             const MeshPassProcessorInput input = MakeMeshPassProcessorInput(
-                BuildLegacyMaterialDrawPacket(batch),
-                m_renderResourceRegistry,
-                shadowSourceOrdinal++,
+               BuildLegacyMaterialDrawPacket(batch),
+               m_renderResourceRegistry,
+               shadowSourceOrdinal++,
                 0.0f);
             m_meshPassPreparation.shadow.Record(
                 shadowProcessor.Process(input));
@@ -1543,6 +1652,59 @@ void SceneRenderer::PrepareMeshPassPackets()
     m_meshPassPreparation.opaque.FinalizeGroups();
     m_meshPassPreparation.transparent.FinalizeGroups();
     m_meshPassPreparation.shadow.FinalizeGroups();
+
+    const uint32 firstPassVisibilityCandidate = static_cast<uint32>(
+        m_renderCandidates.GetCandidates().size());
+    const auto appendVisibilityCandidates = [this](
+                                                RenderPassKind pass,
+                                                const MeshPassPacketStream& stream)
+    {
+        for (uint32 sourcePacketIndex = 0;
+             sourcePacketIndex < static_cast<uint32>(stream.packets.size());
+             ++sourcePacketIndex)
+        {
+            const MeshPassProcessorResult& source =
+                stream.packets[sourcePacketIndex];
+            const RenderDrawPacket& packet = source.packet;
+            if (packet.primitiveData == RVX_INVALID_PRIMITIVE_DATA_INDEX ||
+                packet.primitiveData >= m_renderScene.GetObjectCount())
+            {
+                continue;
+            }
+            const RenderObject& object =
+                m_renderScene.GetObject(packet.primitiveData);
+            if (packet.objectId == 0 || object.entityId != packet.objectId ||
+                object.mesh != packet.geometryKey.mesh)
+            {
+                continue;
+            }
+            RenderVisibilityCandidate candidate;
+            candidate.sourcePacketIndex = sourcePacketIndex;
+            candidate.sourceOrdinal = source.sourceOrdinal;
+            candidate.objectIndex = packet.primitiveData;
+            candidate.pass = pass;
+            candidate.objectVisible = object.visible;
+            candidate.drawable = object.drawable;
+            candidate.worldBounds = object.bounds;
+            (void)m_renderCandidates.Add(candidate);
+        }
+    };
+    appendVisibilityCandidates(RenderPassKind::Depth,
+                               m_meshPassPreparation.depth);
+    appendVisibilityCandidates(RenderPassKind::Opaque,
+                               m_meshPassPreparation.opaque);
+    appendVisibilityCandidates(RenderPassKind::Transparent,
+                               m_meshPassPreparation.transparent);
+    // Shadow/light views are intentionally not governed by camera visibility.
+    GPUVisibilityProvider visibilityProvider;
+    visibilityProvider.AppendPassCandidates(m_renderCandidates,
+                                            firstPassVisibilityCandidate,
+                                            m_renderVisibility);
+    m_renderVisibility.diagnostics.occlusionRequested =
+        (m_depthGPUCulling && m_depthGPUCulling->WasOcclusionRequested()) ||
+        (m_opaqueGPUCulling && m_opaqueGPUCulling->WasOcclusionRequested());
+    m_renderVisibility.diagnostics.occlusionAvailable = false;
+    m_viewData.renderVisibility = &m_renderVisibility;
 
     const auto validateStream = [](const MeshPassPacketStream& stream)
     {
@@ -1562,6 +1724,7 @@ void SceneRenderer::InvalidateRenderFramePlan()
     m_viewData.renderFrameExecutionPlan = nullptr;
     m_viewData.meshPassPreparation = nullptr;
     m_viewData.renderFrameExecutionReport = nullptr;
+    m_viewData.renderVisibility = nullptr;
     m_frameDiagnostics.policy = {};
     m_gpuDrivenCullingEnabled = false;
     m_gpuDrivenPolicyDecision = {};
@@ -1610,11 +1773,12 @@ void SceneRenderer::CompileRenderFramePlan()
     input.qualification = GetGPUDrivenBackendQualification(
         input.capabilities.backend);
 
-    GPUCullingExecutionDecision gpuExecution;
-    if (m_gpuCulling)
-    {
-        gpuExecution = m_gpuCulling->GetExecutionDecision();
-    }
+    const GPUCullingExecutionDecision depthGPUExecution = m_depthGPUCulling
+        ? m_depthGPUCulling->GetExecutionDecision()
+        : GPUCullingExecutionDecision{};
+    const GPUCullingExecutionDecision opaqueGPUExecution = m_opaqueGPUCulling
+        ? m_opaqueGPUCulling->GetExecutionDecision()
+        : GPUCullingExecutionDecision{};
 
     bool depthGPUPipelineReady = false;
     bool opaqueGPUPipelineReady = false;
@@ -1656,49 +1820,62 @@ void SceneRenderer::CompileRenderFramePlan()
     }
     input.view.rendererAllowsGPUDriven = true;
     input.view.viewAllowsGPUDriven = true;
-    input.view.implementationAvailable = m_gpuCulling &&
-        gpuExecution.fallbackReason != GPUCullingFallbackReason::DeviceMissing &&
-        gpuExecution.fallbackReason !=
-            GPUCullingFallbackReason::ShaderBackendUnsupported;
-    const GPUCullingConfig cullingConfig = m_gpuCulling
-        ? m_gpuCulling->GetConfig()
-        : GPUCullingConfig{};
+    input.view.implementationAvailable =
+        (m_depthGPUCulling &&
+         IsGPUImplementationAvailable(depthGPUExecution)) ||
+        (m_opaqueGPUCulling &&
+         IsGPUImplementationAvailable(opaqueGPUExecution));
+    const GPUCullingConfig cullingConfig = GetGPUDrivenCullingConfig();
     input.view.requestedVisibility = cullingConfig.enableDistanceCulling
         ? RenderVisibilityMode::GpuFrustumAndDistance
         : RenderVisibilityMode::GpuFrustum;
-    input.view.visibilityShaderReadiness =
-        ResolveGPUShaderReadiness(gpuExecution);
-    input.view.visibilityPipelineReadiness = gpuExecution.pipelineReady
-        ? RenderPolicyReadiness::Ready
-        : RenderPolicyReadiness::Unavailable;
-    input.view.sharedResourceReadiness =
-        gpuExecution.fallbackReason ==
-                GPUCullingFallbackReason::PipelineResourcesUnavailable
-            ? RenderPolicyReadiness::Unavailable
-            : RenderPolicyReadiness::Ready;
-    input.view.requiredBindingReadiness =
-        ResolveGPUBindingReadiness(gpuExecution);
+    input.view.visibilityShaderReadiness = ResolveAnyGPUOwnerReadiness(
+        m_depthGPUCulling.get(), m_opaqueGPUCulling.get(),
+        [](const GPUCullingExecutionDecision& decision)
+        {
+            return ResolveGPUShaderReadiness(decision);
+        });
+    input.view.visibilityPipelineReadiness = ResolveAnyGPUOwnerReadiness(
+        m_depthGPUCulling.get(), m_opaqueGPUCulling.get(),
+        [](const GPUCullingExecutionDecision& decision)
+        {
+            return decision.pipelineReady
+                ? RenderPolicyReadiness::Ready
+                : RenderPolicyReadiness::Unavailable;
+        });
+    input.view.sharedResourceReadiness = ResolveAnyGPUOwnerReadiness(
+        m_depthGPUCulling.get(), m_opaqueGPUCulling.get(),
+        [](const GPUCullingExecutionDecision& decision)
+        {
+            return ResolveGPUResourceReadiness(decision);
+        });
+    input.view.requiredBindingReadiness = ResolveAnyGPUOwnerReadiness(
+        m_depthGPUCulling.get(), m_opaqueGPUCulling.get(),
+        [](const GPUCullingExecutionDecision& decision)
+        {
+            return ResolveGPUBindingReadiness(decision);
+        });
 
     input.passes = {
         MakeRenderPassPolicyFacts(RenderPassKind::Depth,
                                   m_depthPrepass,
                                   m_meshPassPreparation.depth,
-                                  gpuExecution,
+                                  depthGPUExecution,
                                   depthGPUPipelineReady),
         MakeRenderPassPolicyFacts(RenderPassKind::Opaque,
                                   m_opaquePass,
                                   m_meshPassPreparation.opaque,
-                                  gpuExecution,
+                                  opaqueGPUExecution,
                                   opaqueGPUPipelineReady),
         MakeRenderPassPolicyFacts(RenderPassKind::Shadow,
                                   m_shadowPass,
                                   m_meshPassPreparation.shadow,
-                                  gpuExecution,
+                                  GPUCullingExecutionDecision{},
                                   false),
         MakeRenderPassPolicyFacts(RenderPassKind::Transparent,
                                   m_transparentPass,
                                   m_meshPassPreparation.transparent,
-                                  gpuExecution,
+                                  GPUCullingExecutionDecision{},
                                   false),
     };
 
@@ -1785,178 +1962,328 @@ void SceneRenderer::ApplyRenderFramePlanProjection()
     }
 }
 
-void SceneRenderer::ApplyGPUDrivenCullingToDrawLists()
+void SceneRenderer::BuildGPUDrivenVisibilityInputs()
 {
+    m_depthGPUCullingFramePrepared = false;
+    m_opaqueGPUCullingFramePrepared = false;
     m_gpuDrivenCullingStats = {};
     m_gpuDrivenCullingStats.policyDecisionAvailable = true;
     m_gpuDrivenCullingStats.policyDecision = m_gpuDrivenPolicyDecision;
     m_gpuDrivenCullingStats.enabled = m_gpuDrivenCullingEnabled;
     m_gpuDrivenCullingStats.opaqueMeshPassProcessorStats =
         m_meshPassPreparation.opaque.stats;
-    m_gpuDrivenCullingStats.inputOpaqueDrawItemCount = static_cast<uint32>(m_opaqueDrawItems.size());
-    m_gpuDrivenCullingStats.inputMaskedDrawItemCount = static_cast<uint32>(m_maskedDrawItems.size());
-    if (m_gpuCulling)
+    m_gpuDrivenCullingStats.visibilityCandidateCount =
+        m_renderVisibility.diagnostics.sceneObjectCandidateCount;
+    m_gpuDrivenCullingStats.cpuVisibleCandidateCount =
+        m_renderVisibility.diagnostics.cpuVisibleObjectCount;
+    m_gpuDrivenCullingStats.passVisibilityCandidateCount =
+        m_renderVisibility.diagnostics.passCandidateCount;
+    m_gpuDrivenCullingStats.invalidVisibilityBoundsCount =
+        m_renderVisibility.diagnostics.invalidBoundsCount;
+    m_gpuDrivenCullingStats.gpuDeferredVisibilityCandidateCount =
+        m_renderVisibility.diagnostics.gpuDeferredCandidateCount;
+    m_gpuDrivenCullingStats.gpuVisibilityReadbackPerformed =
+        m_renderVisibility.diagnostics.gpuReadbackPerformed;
+    m_gpuDrivenCullingStats.occlusionRequestedButUnavailable =
+        (m_depthGPUCulling && m_depthGPUCulling->WasOcclusionRequested() &&
+         !m_depthGPUCulling->IsOcclusionAvailable()) ||
+        (m_opaqueGPUCulling && m_opaqueGPUCulling->WasOcclusionRequested() &&
+         !m_opaqueGPUCulling->IsOcclusionAvailable());
+    m_gpuDrivenCullingStats.gpuPlannedVisibilityCandidateCount = 0;
+    if (m_viewData.renderFrameExecutionPlan)
+    {
+        for (const RenderPassExecutionPlan& passPlan :
+             m_viewData.renderFrameExecutionPlan->passes)
+        {
+            if (passPlan.pass == RenderPassKind::Depth ||
+                passPlan.pass == RenderPassKind::Opaque)
+            {
+                m_gpuDrivenCullingStats.gpuPlannedVisibilityCandidateCount +=
+                    passPlan.gpuEligiblePackets.count;
+            }
+            if (passPlan.pass == RenderPassKind::Opaque)
+            {
+                for (uint32 offset = 0;
+                     offset < passPlan.gpuEligiblePackets.count;
+                     ++offset)
+                {
+                    const RenderDrawPacketReference& reference =
+                        m_viewData.renderFrameExecutionPlan->packetReferences[
+                            static_cast<size_t>(
+                                passPlan.gpuEligiblePackets.first + offset)];
+                    if (m_renderVisibility.IsDirectPacketVisible(
+                            RenderPassKind::Opaque,
+                            reference.sourcePacketIndex))
+                    {
+                        ++m_gpuDrivenCullingStats
+                              .cpuReferenceVisibleCullableDrawItemCount;
+                    }
+                    else
+                    {
+                        ++m_gpuDrivenCullingStats
+                              .cpuReferenceCulledDrawItemCount;
+                    }
+                }
+            }
+        }
+    }
+    m_gpuDrivenCullingStats.gpuDeferredVisibilityCandidateCount =
+        m_gpuDrivenCullingStats.gpuPlannedVisibilityCandidateCount;
+    m_renderVisibility.diagnostics.gpuDeferredCandidateCount =
+        m_gpuDrivenCullingStats.gpuDeferredVisibilityCandidateCount;
+    m_gpuDrivenCullingStats.inputOpaqueDrawItemCount =
+        static_cast<uint32>(m_coarseOpaqueDrawItems.size());
+    m_gpuDrivenCullingStats.inputMaskedDrawItemCount =
+        static_cast<uint32>(m_coarseMaskedDrawItems.size());
+    m_gpuDrivenCullingStats.outputOpaqueDrawItemCount =
+        static_cast<uint32>(m_opaqueDrawItems.size());
+    m_gpuDrivenCullingStats.outputMaskedDrawItemCount =
+        static_cast<uint32>(m_maskedDrawItems.size());
+    if (m_viewData.renderFrameExecutionPlan)
+    {
+        for (const RenderPassExecutionPlan& passPlan :
+             m_viewData.renderFrameExecutionPlan->passes)
+        {
+            if (passPlan.pass != RenderPassKind::Opaque)
+            {
+                continue;
+            }
+            for (uint32 offset = 0;
+                 offset < passPlan.gpuEligiblePackets.count;
+                 ++offset)
+            {
+                const size_t referenceIndex = static_cast<size_t>(
+                    passPlan.gpuEligiblePackets.first + offset);
+                if (referenceIndex >=
+                    m_viewData.renderFrameExecutionPlan->packetReferences.size())
+                {
+                    ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+                    break;
+                }
+                const uint32 sourcePacketIndex =
+                    m_viewData.renderFrameExecutionPlan
+                        ->packetReferences[referenceIndex]
+                        .sourcePacketIndex;
+                if (sourcePacketIndex >= m_meshPassPreparation.opaque.packets.size())
+                {
+                    ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+                    break;
+                }
+                const MaterialPipelineVariant variant =
+                    m_meshPassPreparation.opaque.packets[sourcePacketIndex]
+                        .packet.pipelineKey.materialVariant;
+                if (variant == MaterialPipelineVariant::Masked)
+                {
+                    ++m_gpuDrivenCullingStats.cullableMaskedDrawItemCount;
+                }
+                else
+                {
+                    ++m_gpuDrivenCullingStats.cullableOpaqueDrawItemCount;
+                }
+            }
+            break;
+        }
+    }
+    const GPUCulling* diagnosticGPUCulling = nullptr;
+    if (m_viewData.renderFrameExecutionPlan)
+    {
+        for (const RenderPassExecutionPlan& passPlan :
+             m_viewData.renderFrameExecutionPlan->passes)
+        {
+            if (passPlan.gpuEligiblePackets.count == 0)
+            {
+                continue;
+            }
+            if (passPlan.pass == RenderPassKind::Opaque && m_opaqueGPUCulling)
+            {
+                diagnosticGPUCulling = m_opaqueGPUCulling.get();
+            }
+            else if (passPlan.pass == RenderPassKind::Depth &&
+                     m_depthGPUCulling && diagnosticGPUCulling == nullptr)
+            {
+                diagnosticGPUCulling = m_depthGPUCulling.get();
+            }
+        }
+    }
+    if (diagnosticGPUCulling)
     {
         m_gpuDrivenCullingStats.executionDecisionAvailable = true;
-        m_gpuDrivenCullingStats.executionDecision = m_gpuCulling->GetExecutionDecision();
+        m_gpuDrivenCullingStats.executionDecision =
+            diagnosticGPUCulling->GetExecutionDecision();
     }
 
-    if (!m_gpuDrivenCullingEnabled || !m_gpuCulling ||
+    if (!m_gpuDrivenCullingEnabled ||
+        (!m_depthGPUCulling && !m_opaqueGPUCulling) ||
         m_renderResourceRegistry == nullptr)
     {
-        m_gpuDrivenCullingStats.outputOpaqueDrawItemCount = static_cast<uint32>(m_opaqueDrawItems.size());
-        m_gpuDrivenCullingStats.outputMaskedDrawItemCount = static_cast<uint32>(m_maskedDrawItems.size());
         return;
     }
-
-    ApplyGPUDrivenCullingToDrawList(m_opaqueDrawItems, m_gpuDrivenCullingStats.cullableOpaqueDrawItemCount);
-    ApplyGPUDrivenCullingToDrawList(m_maskedDrawItems, m_gpuDrivenCullingStats.cullableMaskedDrawItemCount);
-    m_gpuDrivenCullingStats.outputOpaqueDrawItemCount = static_cast<uint32>(m_opaqueDrawItems.size());
-    m_gpuDrivenCullingStats.outputMaskedDrawItemCount = static_cast<uint32>(m_maskedDrawItems.size());
     PrepareGPUDrivenGraphCullInputs();
-}
-
-void SceneRenderer::ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>& drawItems,
-                                                    uint32& cullableDrawItemCount)
-{
-    cullableDrawItemCount = 0;
-    if (drawItems.empty() || !m_gpuCulling ||
-        m_renderResourceRegistry == nullptr)
-    {
-        return;
-    }
-
-    m_gpuCulling->BeginFrame();
-
-    for (size_t drawIndex = 0; drawIndex < drawItems.size(); ++drawIndex)
-    {
-        const RenderDrawItem& item = drawItems[drawIndex];
-        if (item.objectIndex >= m_renderScene.GetObjectCount())
-        {
-            continue;
-        }
-
-        const RenderObject& object = m_renderScene.GetObject(item.objectIndex);
-        const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-            m_renderResourceRegistry,
-            object.mesh);
-        if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
-        {
-            ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
-            continue;
-        }
-
-        const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
-        GPUIndexedDrawDesc drawDesc;
-        drawDesc.indexCount = submesh.indexCount;
-        drawDesc.firstIndex = submesh.indexOffset;
-        drawDesc.vertexOffset = submesh.baseVertex;
-
-        const uint32 instanceIndex = m_gpuCulling->AddDrawItemInstance(
-            m_renderScene,
-            item,
-            drawDesc,
-            static_cast<uint32>(drawIndex));
-        if (instanceIndex == RVX_INVALID_INDEX)
-        {
-            ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
-            continue;
-        }
-
-        ++cullableDrawItemCount;
-    }
-
-    if (cullableDrawItemCount == 0)
-    {
-        return;
-    }
-
-    m_gpuCulling->EndFrame();
-    m_gpuCulling->CullCpuFallback(m_viewData.viewMatrix, m_viewData.projectionMatrix);
-    m_gpuDrivenCullingStats.fallbackUsed = m_gpuDrivenCullingStats.fallbackUsed ||
-        m_gpuCulling->WasCpuFallbackUsedLastCull();
-
-    const GPUCulling::Statistics cullingStats = m_gpuCulling->GetStatistics();
-    m_gpuDrivenCullingStats.visibleCullableDrawItemCount += cullingStats.visibleInstances;
-    m_gpuDrivenCullingStats.frustumCulledDrawItemCount += cullingStats.frustumCulled;
-    m_gpuDrivenCullingStats.distanceCulledDrawItemCount += cullingStats.distanceCulled;
 }
 
 void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
 {
-    if (!m_gpuDrivenCullingEnabled || !m_gpuCulling ||
+    if (!m_gpuDrivenCullingEnabled ||
+        (!m_depthGPUCulling && !m_opaqueGPUCulling) ||
         m_renderResourceRegistry == nullptr)
     {
         return;
     }
 
     m_gpuDrivenCullingStats.graphInputDrawItemCount = 0;
-    m_gpuCulling->BeginFrame();
-
-    const auto getSourceDrawItem = [this](uint32 sourceOrdinal)
-        -> const RenderDrawItem*
+    const RenderFrameExecutionPlan* framePlan =
+        m_viewData.renderFrameExecutionPlan;
+    if (framePlan == nullptr || !m_renderVisibility.structurallyValid)
     {
-        if (sourceOrdinal < m_opaqueDrawItems.size())
-        {
-            return &m_opaqueDrawItems[sourceOrdinal];
-        }
-        sourceOrdinal -= static_cast<uint32>(m_opaqueDrawItems.size());
-        return sourceOrdinal < m_maskedDrawItems.size()
-                   ? &m_maskedDrawItems[sourceOrdinal]
-                   : nullptr;
-    };
+        return;
+    }
 
-    const MeshPassPacketStream& stream = m_meshPassPreparation.opaque;
-    for (const RenderDrawGroupRange& group : stream.groups)
+    // RenderContext::BeginFrame has already waited this slot's previous
+    // submission before RenderAcceptedFrame reaches SceneRenderer. Select the
+    // matching per-flight CPU-written inputs before either owner uploads data.
+    const uint32 frameSlot = m_renderContext != nullptr
+        ? m_renderContext->GetFrameIndex()
+        : 0u;
+    if ((m_depthGPUCulling && !m_depthGPUCulling->SetFrameSlot(frameSlot)) ||
+        (m_opaqueGPUCulling && !m_opaqueGPUCulling->SetFrameSlot(frameSlot)))
     {
-        const RenderDrawGroupKey& key = group.key;
-        const uint64 meshId =
-            (static_cast<uint64>(key.geometry.mesh.slot) << 32U) |
-            key.geometry.mesh.generation;
-        const uint64 materialId =
-            (static_cast<uint64>(key.material.material.slot) << 32U) |
-            key.material.material.generation;
-        const uint32 groupIndex = m_gpuCulling->BeginDrawGroup(
-            meshId,
-            materialId,
-            key.pipeline.materialVariant,
-            key.geometry.mesh,
-            key.material.material);
-        if (groupIndex == RVX_INVALID_INDEX)
+        ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+        return;
+    }
+
+    const auto preparePass =
+        [this, framePlan](RenderPassKind pass,
+                          const MeshPassPacketStream& stream,
+                          GPUCulling* owner,
+                          bool& outPrepared)
+    {
+        outPrepared = false;
+        if (owner == nullptr)
         {
-            continue;
+            return;
         }
 
-        for (uint32 offset = 0; offset < group.count; ++offset)
+        const RenderPassExecutionPlan* passPlan = nullptr;
+        for (const RenderPassExecutionPlan& candidatePlan : framePlan->passes)
         {
-            const MeshPassProcessorResult& result =
-                stream.sortedGPUCandidates[group.first + offset];
-            const RenderDrawItem* item = getSourceDrawItem(
-                result.sourceOrdinal);
-            if (item == nullptr ||
-                item->objectIndex >= m_renderScene.GetObjectCount())
+            if (candidatePlan.pass == pass)
             {
-                continue;
+                passPlan = &candidatePlan;
+                break;
+            }
+        }
+        if (passPlan == nullptr || passPlan->gpuEligiblePackets.count == 0)
+        {
+            return;
+        }
+        if (!ValidatePlannedGPUDrivenPacketRange(*framePlan, pass, stream) ||
+            passPlan->gpuEligiblePackets.count > owner->GetConfig().maxInstances)
+        {
+            ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+            return;
+        }
+
+        // Complete structural preflight occurs before the per-pass owner is
+        // reset. A malformed Depth plan therefore cannot touch Opaque state,
+        // and vice versa.
+        for (uint32 offset = 0;
+             offset < passPlan->gpuEligiblePackets.count;
+             ++offset)
+        {
+            const uint32 sourcePacketIndex =
+                stream.sortedGPUCandidatePacketIndices[offset];
+            const RenderDrawPacketReference& reference =
+                framePlan->packetReferences[static_cast<size_t>(
+                    passPlan->gpuEligiblePackets.first + offset)];
+            const RenderVisibilityCandidate* visibilityCandidate =
+                m_renderCandidates.Find(pass, sourcePacketIndex);
+            if (reference.sourcePacketIndex != sourcePacketIndex ||
+                visibilityCandidate == nullptr ||
+                !visibilityCandidate->objectVisible ||
+                !visibilityCandidate->drawable ||
+                visibilityCandidate->objectIndex >= m_renderScene.GetObjectCount() ||
+                sourcePacketIndex >= stream.packets.size() ||
+                stream.packets[sourcePacketIndex].packet.arguments.indexCount == 0)
+            {
+                ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+                return;
+            }
+        }
+
+        owner->BeginFrame();
+        uint32 plannedOffset = 0;
+        for (const RenderDrawGroupRange& group : stream.groups)
+        {
+            const RenderDrawGroupKey& key = group.key;
+            const uint64 meshId =
+                (static_cast<uint64>(key.geometry.mesh.slot) << 32U) |
+                key.geometry.mesh.generation;
+            const uint64 materialId =
+                (static_cast<uint64>(key.material.material.slot) << 32U) |
+                key.material.material.generation;
+            const uint32 groupIndex = owner->BeginDrawGroup(
+                meshId,
+                materialId,
+                key.pipeline.materialVariant,
+                key.geometry.mesh,
+                key.material.material);
+            if (groupIndex == RVX_INVALID_INDEX)
+            {
+                ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+                owner->EndFrame();
+                return;
             }
 
-            GPUIndexedDrawDesc drawDesc;
-            drawDesc.indexCount = result.packet.arguments.indexCount;
-            drawDesc.firstIndex = result.packet.arguments.firstIndex;
-            drawDesc.vertexOffset = result.packet.arguments.vertexOffset;
-            m_gpuCulling->AddDrawItemInstance(
-                m_renderScene,
-                *item,
-                drawDesc,
-                result.sourceOrdinal);
+            for (uint32 offset = 0; offset < group.count; ++offset)
+            {
+                const uint32 sourcePacketIndex =
+                    stream.sortedGPUCandidatePacketIndices[group.first + offset];
+                const MeshPassProcessorResult& result =
+                    stream.packets[sourcePacketIndex];
+                const RenderVisibilityCandidate* visibilityCandidate =
+                    m_renderCandidates.Find(pass, sourcePacketIndex);
+                GPUIndexedDrawDesc drawDesc;
+                drawDesc.indexCount = result.packet.arguments.indexCount;
+                drawDesc.firstIndex = result.packet.arguments.firstIndex;
+                drawDesc.vertexOffset = result.packet.arguments.vertexOffset;
+                if (visibilityCandidate == nullptr ||
+                    owner->AddVisibilityCandidateInstance(
+                        m_renderScene,
+                        *visibilityCandidate,
+                        result.packet,
+                        drawDesc) == RVX_INVALID_INDEX)
+                {
+                    ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+                    owner->EndDrawGroup();
+                    owner->EndFrame();
+                    return;
+                }
+                ++plannedOffset;
+            }
+            owner->EndDrawGroup();
         }
-        m_gpuCulling->EndDrawGroup();
-    }
-    m_gpuDrivenCullingStats.graphInputDrawItemCount = m_gpuCulling->GetInstanceCount();
 
-    if (m_gpuDrivenCullingStats.graphInputDrawItemCount > 0)
-    {
-        m_gpuCulling->EndFrame();
-    }
+        if (plannedOffset != passPlan->gpuEligiblePackets.count ||
+            owner->GetInstanceCount() != passPlan->gpuEligiblePackets.count)
+        {
+            ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+            owner->EndFrame();
+            return;
+        }
+        owner->EndFrame();
+        outPrepared = true;
+        m_gpuDrivenCullingStats.graphInputDrawItemCount +=
+            owner->GetInstanceCount();
+    };
+
+    preparePass(RenderPassKind::Depth,
+                m_meshPassPreparation.depth,
+                m_depthGPUCulling.get(),
+                m_depthGPUCullingFramePrepared);
+    preparePass(RenderPassKind::Opaque,
+                m_meshPassPreparation.opaque,
+                m_opaqueGPUCulling.get(),
+                m_opaqueGPUCullingFramePrepared);
 }
 
 void SceneRenderer::ApplyObjectMotionHistory()
@@ -2449,7 +2776,7 @@ void SceneRenderer::Render()
     // Freeze the per-view policy after pass configuration is stable and before
     // any RenderGraph construction or command-recording decisions occur.
     CompileRenderFramePlan();
-    ApplyGPUDrivenCullingToDrawLists();
+    BuildGPUDrivenVisibilityInputs();
 
     // Clear the render graph for this frame
     m_renderGraph->Clear();
@@ -2502,10 +2829,32 @@ void SceneRenderer::Render()
             m_gpuDrivenCullingStats.opaqueDirectDrawCount = opaqueStats.directDrawCount;
             m_gpuDrivenCullingStats.opaqueGpuDrivenIndirectBatchCount =
                 opaqueStats.gpuDrivenIndirectBatchCount;
+            m_gpuDrivenCullingStats
+                .opaqueGpuDrivenIndirectSubmittedDrawUpperBound =
+                opaqueStats.gpuDrivenIndirectSubmittedDrawUpperBound;
+            m_gpuDrivenCullingStats
+                .opaqueGpuDrivenExecutedDrawCountAvailable =
+                opaqueStats.gpuDrivenIndirectExecutedDrawCountAvailable;
             m_gpuDrivenCullingStats.opaqueGpuDrivenIndirectDrawCount =
                 opaqueStats.gpuDrivenIndirectDrawCount;
             m_gpuDrivenCullingStats.opaqueFallbackReason =
                 opaqueStats.gpuDrivenFallbackReason;
+        }
+        if (m_opaqueGPUCulling && m_opaqueGPUCullingFramePrepared)
+        {
+            m_gpuDrivenCullingStats.gpuVisibilityCountsAvailable =
+                m_opaqueGPUCulling->WasCpuFallbackUsedLastCull();
+            if (m_gpuDrivenCullingStats.gpuVisibilityCountsAvailable)
+            {
+                const GPUCulling::Statistics cullingStats =
+                    m_opaqueGPUCulling->GetStatistics();
+                m_gpuDrivenCullingStats.visibleCullableDrawItemCount =
+                    cullingStats.visibleInstances;
+                m_gpuDrivenCullingStats.frustumCulledDrawItemCount =
+                    cullingStats.frustumCulled;
+                m_gpuDrivenCullingStats.distanceCulledDrawItemCount =
+                    cullingStats.distanceCulled;
+            }
         }
     }
     else
@@ -3505,7 +3854,8 @@ void SceneRenderer::AddRayTracingSceneBuildPass()
 
 void SceneRenderer::AddGPUDrivenCullingPass()
 {
-    m_gpuCullingGraphHandles = {};
+    m_depthGPUCullingGraphHandles = {};
+    m_opaqueGPUCullingGraphHandles = {};
     if (m_depthPrepass)
     {
         m_depthPrepass->SetGPUDrivenRenderGraphResources({}, {}, {}, {});
@@ -3515,21 +3865,7 @@ void SceneRenderer::AddGPUDrivenCullingPass()
         m_opaquePass->SetGPUDrivenRenderGraphResources({}, {}, {}, {});
     }
 
-    if (!m_renderGraph || !m_gpuDrivenCullingEnabled || !m_gpuCulling ||
-        m_gpuCulling->GetInstanceCount() == 0)
-    {
-        return;
-    }
-
-    RHIBuffer* constantsBuffer = m_gpuCulling->GetCullingConstantsBuffer();
-    RHIBuffer* instanceBuffer = m_gpuCulling->GetInstanceBuffer();
-    RHIBuffer* instanceIndexBuffer = m_gpuCulling->GetInstanceIndexBuffer();
-    RHIBuffer* visibilityBuffer = m_gpuCulling->GetVisibilityBuffer();
-    RHIBuffer* visibleInstanceBuffer = m_gpuCulling->GetVisibleInstanceBuffer();
-    RHIBuffer* indirectDrawBuffer = m_gpuCulling->GetIndirectBuffer();
-    RHIBuffer* drawCountBuffer = m_gpuCulling->GetDrawCountBuffer();
-    if (!constantsBuffer || !instanceBuffer || !instanceIndexBuffer || !visibilityBuffer ||
-        !visibleInstanceBuffer || !indirectDrawBuffer || !drawCountBuffer)
+    if (!m_renderGraph || !m_gpuDrivenCullingEnabled)
     {
         return;
     }
@@ -3545,18 +3881,6 @@ void SceneRenderer::AddGPUDrivenCullingPass()
         RGBufferHandle drawCount;
     };
 
-    const GPUCullingAccessSnapshots& accessSnapshots =
-        m_gpuCulling->GetAccessSnapshots();
-    GPUDrivenCullPassData handles;
-    handles.constants = m_renderGraph->ImportBuffer(constantsBuffer, accessSnapshots.constants);
-    handles.instances = m_renderGraph->ImportBuffer(instanceBuffer, accessSnapshots.instances);
-    handles.instanceIndices = m_renderGraph->ImportBuffer(
-        instanceIndexBuffer, accessSnapshots.instanceIndices);
-    handles.visibility = m_renderGraph->ImportBuffer(visibilityBuffer, accessSnapshots.visibility);
-    handles.visibleInstances = m_renderGraph->ImportBuffer(visibleInstanceBuffer, accessSnapshots.visibleInstances);
-    handles.indirectDraws = m_renderGraph->ImportBuffer(indirectDrawBuffer, accessSnapshots.indirectDraws);
-    handles.drawCount = m_renderGraph->ImportBuffer(drawCountBuffer, accessSnapshots.drawCount);
-
     GPUQueueDomain graphicsDomain = GPUQueueDomain::Graphics;
     IRHIDevice* device = m_renderContext ? m_renderContext->GetDevice() : nullptr;
     const RHIQueueTopology queueTopology = device
@@ -3569,132 +3893,194 @@ void SceneRenderer::AddGPUDrivenCullingPass()
     // SceneRenderer currently submits RenderGraph through Execute(graphicsCtx),
     // so compute shader execution still belongs to the graphics physical domain.
     const GPUQueueDomain computeExecutionDomain = graphicsDomain;
-    m_renderGraph->SetExportAccess(
-        handles.constants,
-        MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer,
-                              RHIShaderStage::Compute,
-                              computeExecutionDomain));
-    m_renderGraph->SetExportAccess(
-        handles.instances,
-        MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
-                              RHIShaderStage::AllGraphics,
-                              graphicsDomain));
-    m_renderGraph->SetExportAccess(
-        handles.instanceIndices,
-        MakeRHIAccessSnapshot(RHIResourceState::VertexBuffer,
-                              RHIShaderStage::Vertex,
-                              graphicsDomain));
-    m_renderGraph->SetExportAccess(
-        handles.visibility,
-        MakeRHIAccessSnapshot(RHIResourceState::UnorderedAccess,
-                              RHIShaderStage::Compute,
-                              computeExecutionDomain));
-    m_renderGraph->SetExportAccess(
-        handles.visibleInstances,
-        MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
-                              RHIShaderStage::AllGraphics,
-                              graphicsDomain));
-    m_renderGraph->SetExportAccess(
-        handles.indirectDraws,
-        MakeRHIAccessSnapshot(RHIResourceState::IndirectArgument,
-                              RHIShaderStage::None,
-                              graphicsDomain));
-    m_renderGraph->SetExportAccess(
-        handles.drawCount,
-        MakeRHIAccessSnapshot(RHIResourceState::IndirectArgument,
-                              RHIShaderStage::None,
-                              graphicsDomain));
-    m_gpuCullingGraphHandles = {
-        handles.constants,
-        handles.instances,
-        handles.instanceIndices,
-        handles.visibility,
-        handles.visibleInstances,
-        handles.indirectDraws,
-        handles.drawCount};
-    if (m_depthPrepass)
+    const auto addPass =
+        [this, graphicsDomain, computeExecutionDomain](
+            const char* name,
+            GPUCulling* owner,
+            bool framePrepared,
+            GPUCullingGraphHandles& outHandles) -> bool
     {
+        if (!framePrepared || owner == nullptr ||
+            owner->GetInstanceCount() == 0)
+        {
+            return false;
+        }
+
+        RHIBuffer* constantsBuffer = owner->GetCullingConstantsBuffer();
+        RHIBuffer* instanceBuffer = owner->GetInstanceBuffer();
+        RHIBuffer* instanceIndexBuffer = owner->GetInstanceIndexBuffer();
+        RHIBuffer* visibilityBuffer = owner->GetVisibilityBuffer();
+        RHIBuffer* visibleInstanceBuffer = owner->GetVisibleInstanceBuffer();
+        RHIBuffer* indirectDrawBuffer = owner->GetIndirectBuffer();
+        RHIBuffer* drawCountBuffer = owner->GetDrawCountBuffer();
+        if (!constantsBuffer || !instanceBuffer || !instanceIndexBuffer ||
+            !visibilityBuffer || !visibleInstanceBuffer ||
+            !indirectDrawBuffer || !drawCountBuffer)
+        {
+            return false;
+        }
+
+        const GPUCullingAccessSnapshots& accessSnapshots =
+            owner->GetAccessSnapshots();
+        GPUDrivenCullPassData handles;
+        handles.constants = m_renderGraph->ImportBuffer(
+            constantsBuffer, accessSnapshots.constants);
+        handles.instances = m_renderGraph->ImportBuffer(
+            instanceBuffer, accessSnapshots.instances);
+        handles.instanceIndices = m_renderGraph->ImportBuffer(
+            instanceIndexBuffer, accessSnapshots.instanceIndices);
+        handles.visibility = m_renderGraph->ImportBuffer(
+            visibilityBuffer, accessSnapshots.visibility);
+        handles.visibleInstances = m_renderGraph->ImportBuffer(
+            visibleInstanceBuffer, accessSnapshots.visibleInstances);
+        handles.indirectDraws = m_renderGraph->ImportBuffer(
+            indirectDrawBuffer, accessSnapshots.indirectDraws);
+        handles.drawCount = m_renderGraph->ImportBuffer(
+            drawCountBuffer, accessSnapshots.drawCount);
+
+        m_renderGraph->SetExportAccess(
+            handles.constants,
+            MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer,
+                                  RHIShaderStage::Compute,
+                                  computeExecutionDomain));
+        m_renderGraph->SetExportAccess(
+            handles.instances,
+            MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                  RHIShaderStage::AllGraphics,
+                                  graphicsDomain));
+        m_renderGraph->SetExportAccess(
+            handles.instanceIndices,
+            MakeRHIAccessSnapshot(RHIResourceState::VertexBuffer,
+                                  RHIShaderStage::Vertex,
+                                  graphicsDomain));
+        m_renderGraph->SetExportAccess(
+            handles.visibility,
+            MakeRHIAccessSnapshot(RHIResourceState::UnorderedAccess,
+                                  RHIShaderStage::Compute,
+                                  computeExecutionDomain));
+        m_renderGraph->SetExportAccess(
+            handles.visibleInstances,
+            MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                  RHIShaderStage::AllGraphics,
+                                  graphicsDomain));
+        m_renderGraph->SetExportAccess(
+            handles.indirectDraws,
+            MakeRHIAccessSnapshot(RHIResourceState::IndirectArgument,
+                                  RHIShaderStage::None,
+                                  graphicsDomain));
+        m_renderGraph->SetExportAccess(
+            handles.drawCount,
+            MakeRHIAccessSnapshot(RHIResourceState::IndirectArgument,
+                                  RHIShaderStage::None,
+                                  graphicsDomain));
+        outHandles = {handles.constants,
+                      handles.instances,
+                      handles.instanceIndices,
+                      handles.visibility,
+                      handles.visibleInstances,
+                      handles.indirectDraws,
+                      handles.drawCount};
+
+        m_renderGraph->AddPass<GPUDrivenCullPassData>(
+            name,
+            RenderGraphPassType::Compute,
+            [handles, computeExecutionDomain](RenderGraphBuilder& builder,
+                                               GPUDrivenCullPassData& data)
+            {
+                data = handles;
+                data.constants = builder.Read(
+                    data.constants,
+                    MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer,
+                                          RHIShaderStage::Compute,
+                                          computeExecutionDomain));
+                data.instances = builder.Read(
+                    data.instances,
+                    MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                          RHIShaderStage::Compute,
+                                          computeExecutionDomain));
+                const RHIAccessSnapshot unorderedAccess = MakeRHIAccessSnapshot(
+                    RHIResourceState::UnorderedAccess,
+                    RHIShaderStage::Compute,
+                    computeExecutionDomain);
+                data.visibility = builder.Write(data.visibility, unorderedAccess);
+                data.visibleInstances = builder.Write(
+                    data.visibleInstances, unorderedAccess);
+                data.indirectDraws = builder.Write(data.indirectDraws, unorderedAccess);
+                data.drawCount = builder.Write(data.drawCount, unorderedAccess);
+            },
+            [this, owner](const GPUDrivenCullPassData&, RHICommandContext& ctx)
+            {
+                owner->Cull(ctx, m_viewData.viewMatrix, m_viewData.projectionMatrix);
+                m_gpuDrivenCullingStats.graphPassRecorded = true;
+                m_gpuDrivenCullingStats.executionDecisionAvailable = true;
+                m_gpuDrivenCullingStats.executionDecision =
+                    owner->GetExecutionDecision();
+                m_gpuDrivenCullingStats.gpuExecutionRecorded =
+                    m_gpuDrivenCullingStats.gpuExecutionRecorded ||
+                    owner->WasGpuExecutionUsedLastCull();
+                m_gpuDrivenCullingStats.fallbackUsed =
+                    m_gpuDrivenCullingStats.fallbackUsed ||
+                    owner->WasCpuFallbackUsedLastCull();
+            });
+        return true;
+    };
+
+    const bool depthAdded = addPass("GPUDrivenDepthCull",
+                                    m_depthGPUCulling.get(),
+                                    m_depthGPUCullingFramePrepared,
+                                    m_depthGPUCullingGraphHandles);
+    const bool opaqueAdded = addPass("GPUDrivenOpaqueCull",
+                                     m_opaqueGPUCulling.get(),
+                                     m_opaqueGPUCullingFramePrepared,
+                                     m_opaqueGPUCullingGraphHandles);
+    if (depthAdded && m_depthPrepass)
+    {
+        const GPUCullingGraphHandles& handles = m_depthGPUCullingGraphHandles;
         m_depthPrepass->SetGPUDrivenRenderGraphResources(
             handles.instances,
             handles.instanceIndices,
             handles.indirectDraws,
             handles.drawCount);
     }
-    if (m_opaquePass)
+    if (opaqueAdded && m_opaquePass)
     {
+        const GPUCullingGraphHandles& handles = m_opaqueGPUCullingGraphHandles;
         m_opaquePass->SetGPUDrivenRenderGraphResources(
             handles.instances,
             handles.instanceIndices,
             handles.indirectDraws,
             handles.drawCount);
     }
-
-    m_gpuDrivenCullingStats.graphPassAdded = true;
-    m_renderGraph->AddPass<GPUDrivenCullPassData>(
-        "GPUDrivenCull",
-        RenderGraphPassType::Compute,
-        [handles, computeExecutionDomain](RenderGraphBuilder& builder, GPUDrivenCullPassData& data)
-        {
-            data = handles;
-            data.constants = builder.Read(
-                data.constants,
-                MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer,
-                                      RHIShaderStage::Compute,
-                                      computeExecutionDomain));
-            data.instances = builder.Read(
-                data.instances,
-                MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
-                                      RHIShaderStage::Compute,
-                                      computeExecutionDomain));
-            const RHIAccessSnapshot unorderedAccess = MakeRHIAccessSnapshot(
-                RHIResourceState::UnorderedAccess,
-                RHIShaderStage::Compute,
-                computeExecutionDomain);
-            data.visibility = builder.Write(data.visibility, unorderedAccess);
-            data.visibleInstances = builder.Write(data.visibleInstances, unorderedAccess);
-            data.indirectDraws = builder.Write(data.indirectDraws, unorderedAccess);
-            data.drawCount = builder.Write(data.drawCount, unorderedAccess);
-        },
-        [this](const GPUDrivenCullPassData&, RHICommandContext& ctx)
-        {
-            if (!m_gpuCulling)
-            {
-                return;
-            }
-
-            m_gpuCulling->Cull(ctx, m_viewData.viewMatrix, m_viewData.projectionMatrix);
-            m_gpuDrivenCullingStats.graphPassRecorded = true;
-            m_gpuDrivenCullingStats.executionDecisionAvailable = true;
-            m_gpuDrivenCullingStats.executionDecision = m_gpuCulling->GetExecutionDecision();
-            m_gpuDrivenCullingStats.gpuExecutionRecorded = m_gpuCulling->WasGpuExecutionUsedLastCull();
-            m_gpuDrivenCullingStats.fallbackUsed = m_gpuDrivenCullingStats.fallbackUsed ||
-                m_gpuCulling->WasCpuFallbackUsedLastCull();
-        });
+    m_gpuDrivenCullingStats.graphPassAdded = depthAdded || opaqueAdded;
+    m_gpuDrivenCullingStats.gpuCullingGraphPassCount =
+        (depthAdded ? 1u : 0u) + (opaqueAdded ? 1u : 0u);
 }
 
 void SceneRenderer::CommitGPUDrivenAccessSnapshots()
 {
-    if (!m_renderGraph || !m_gpuCulling || !m_gpuCullingGraphHandles.IsValid())
+    if (!m_renderGraph)
     {
         return;
     }
-
-    GPUCullingAccessSnapshots snapshots;
-    snapshots.constants = m_renderGraph->GetRealizedAccess(
-        m_gpuCullingGraphHandles.constants);
-    snapshots.instances = m_renderGraph->GetRealizedAccess(
-        m_gpuCullingGraphHandles.instances);
-    snapshots.instanceIndices = m_renderGraph->GetRealizedAccess(
-        m_gpuCullingGraphHandles.instanceIndices);
-    snapshots.visibility = m_renderGraph->GetRealizedAccess(
-        m_gpuCullingGraphHandles.visibility);
-    snapshots.visibleInstances = m_renderGraph->GetRealizedAccess(
-        m_gpuCullingGraphHandles.visibleInstances);
-    snapshots.indirectDraws = m_renderGraph->GetRealizedAccess(
-        m_gpuCullingGraphHandles.indirectDraws);
-    snapshots.drawCount = m_renderGraph->GetRealizedAccess(
-        m_gpuCullingGraphHandles.drawCount);
-    m_gpuCulling->CommitAccessSnapshots(snapshots);
+    const auto commit = [this](GPUCulling* owner,
+                               const GPUCullingGraphHandles& handles)
+    {
+        if (owner == nullptr || !handles.IsValid())
+        {
+            return;
+        }
+        GPUCullingAccessSnapshots snapshots;
+        snapshots.constants = m_renderGraph->GetRealizedAccess(handles.constants);
+        snapshots.instances = m_renderGraph->GetRealizedAccess(handles.instances);
+        snapshots.instanceIndices = m_renderGraph->GetRealizedAccess(handles.instanceIndices);
+        snapshots.visibility = m_renderGraph->GetRealizedAccess(handles.visibility);
+        snapshots.visibleInstances = m_renderGraph->GetRealizedAccess(handles.visibleInstances);
+        snapshots.indirectDraws = m_renderGraph->GetRealizedAccess(handles.indirectDraws);
+        snapshots.drawCount = m_renderGraph->GetRealizedAccess(handles.drawCount);
+        owner->CommitAccessSnapshots(snapshots);
+    };
+    commit(m_depthGPUCulling.get(), m_depthGPUCullingGraphHandles);
+    commit(m_opaqueGPUCulling.get(), m_opaqueGPUCullingGraphHandles);
 }
 
 void SceneRenderer::BuildRenderGraph()
@@ -4207,7 +4593,7 @@ void SceneRenderer::SetupDefaultPasses()
     depthPrepass->SetResources(m_pipelineCache.get());
     depthPrepass->SetMaterialSystem(m_materialSystem.get());
     depthPrepass->SetResourceRegistry(m_renderResourceRegistry);
-    depthPrepass->SetGPUDrivenCullingSource(m_gpuCulling.get());
+    depthPrepass->SetGPUDrivenCullingSource(m_depthGPUCulling.get());
     depthPrepass->SetGPUDrivenDepthIndirectEnabled(m_gpuDrivenCullingEnabled);
     m_depthPrepass = depthPrepass.get();
     AddPass(std::move(depthPrepass));
@@ -4274,7 +4660,7 @@ void SceneRenderer::SetupDefaultPasses()
                              m_lightManager.get(),
                              m_clusteredLighting.get());
     opaquePass->SetResourceRegistry(m_renderResourceRegistry);
-    opaquePass->SetGPUDrivenCullingSource(m_gpuCulling.get());
+    opaquePass->SetGPUDrivenCullingSource(m_opaqueGPUCulling.get());
     opaquePass->SetGPUDrivenOpaqueIndirectEnabled(m_gpuDrivenCullingEnabled);
     m_opaquePass = opaquePass.get();
     AddPass(std::move(opaquePass));

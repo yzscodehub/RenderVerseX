@@ -366,6 +366,15 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME RenderVisibilityValidation
+    SOURCES RenderVisibilityValidation/main.cpp
+    LIBS RVX::Core RVX::Render
+    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    LABELS "unit;architecture;visibility"
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME RenderFrameExtractionValidation
     SOURCES RenderFrameExtractionValidation/main.cpp
     LIBS
@@ -808,6 +817,7 @@ rvx_add_gtest(
     SOURCES
         GPUDrivenValidation/main.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/GPUDriven/GPUCulling.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Visibility/RenderVisibility.cpp
     LIBS
         RVX::Core
         RVX::RHI

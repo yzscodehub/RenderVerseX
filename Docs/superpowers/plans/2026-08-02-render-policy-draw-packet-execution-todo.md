@@ -1,7 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-7 complete; Task 8 candidate visibility separation is the
-next implementation stage
+**Status:** Tasks 0-8 complete; Task 9 frame-owned pass contexts is the next
+implementation stage
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -232,24 +232,31 @@ accounting is green under failure injection.
 
 ### Task 8 - Candidate Visibility Separation
 
-- [ ] Define `RenderCandidateSet` as coarse scene candidates, distinct from
+- [x] Define `RenderCandidateSet` as coarse scene candidates, distinct from
   final visible packet streams.
-- [ ] Define `IRenderVisibilityProvider` with CPU and GPU implementations.
-- [ ] Establish one canonical bounds, transform, frustum plane, handedness,
+- [x] Define `IRenderVisibilityProvider` with CPU and GPU implementations.
+- [x] Establish one canonical bounds, transform, frustum plane, handedness,
   clip-depth, reverse-Z, and invalid-bounds contract shared by CPU reference and
   GPU shader code.
-- [ ] Feed Direct plans through CPU fine visibility.
-- [ ] Feed GPU plans coarse candidates and perform final frustum/distance
+- [x] Feed Direct plans through CPU fine visibility.
+- [x] Feed GPU plans coarse candidates and perform final frustum/distance
   visibility on the GPU without CPU pre-elimination.
-- [ ] Preserve stable packet/source mapping through compaction.
-- [ ] Remove duplicate diagnostic culls and repeated production
+- [x] Preserve stable packet/source mapping through compaction.
+- [x] Remove duplicate diagnostic culls and repeated production
   `GPUCulling::BeginFrame` rebuilds.
-- [ ] Keep HZB occlusion disabled and report that it is unavailable by design.
-- [ ] Add boundary-touching, non-finite, behind-camera, near/far plane,
+- [x] Keep HZB occlusion disabled and report that it is unavailable by design.
+- [x] Add boundary-touching, non-finite, behind-camera, near/far plane,
   zero-object, and CPU/GPU parity fixtures.
-- [ ] Assert GPU candidate input may exceed final visible count and requires no
+- [x] Assert GPU candidate input may exceed final visible count and requires no
   pre-submission readback.
-- [ ] Benchmark candidate preparation to confirm no quadratic regression.
+- [x] Benchmark candidate preparation to confirm no quadratic regression.
+
+Task 8 additionally closes a review-discovered cross-frame ownership defect:
+Depth and Opaque each use per-in-flight-slot instance/constants upload buffers,
+descriptor sets, and input access snapshots. The selected slot is written only
+after `RenderContext::BeginFrame` waits for its previous submission. Exact GPU
+executed counts remain unavailable without readback and are reported separately
+from submitted upper bounds and CPU reference visibility.
 
 ### Task 9 - Frame-Owned Pass Record Contexts
 

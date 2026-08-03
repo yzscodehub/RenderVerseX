@@ -27,6 +27,8 @@ namespace RVX
     {
         uint32 directDrawCount = 0;
         uint32 gpuDrivenIndirectBatchCount = 0;
+        uint32 gpuDrivenIndirectSubmittedDrawUpperBound = 0;
+        bool gpuDrivenIndirectExecutedDrawCountAvailable = false;
         uint32 gpuDrivenIndirectDrawCount = 0;
         bool gpuDrivenRequested = false;
         bool gpuDrivenEligible = false;

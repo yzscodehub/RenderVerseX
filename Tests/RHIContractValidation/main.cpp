@@ -432,7 +432,9 @@ namespace RVX::Tests
         EXPECT_NE(poolHeader.find("TransientTextureLease"), std::string::npos);
         EXPECT_NE(poolHeader.find("RHITextureAccessSnapshot accessSnapshot"), std::string::npos);
         EXPECT_NE(poolSource.find("pooled.accessSnapshot = finalAccess"), std::string::npos);
-        EXPECT_NE(sceneRenderer.find("m_gpuCulling->GetAccessSnapshots()"), std::string::npos);
+        EXPECT_NE(sceneRenderer.find("owner->GetAccessSnapshots()"), std::string::npos);
+        EXPECT_NE(sceneRenderer.find("m_depthGPUCullingGraphHandles"), std::string::npos);
+        EXPECT_NE(sceneRenderer.find("m_opaqueGPUCullingGraphHandles"), std::string::npos);
         EXPECT_NE(sceneRenderer.find("CommitGPUDrivenAccessSnapshots()"), std::string::npos);
         EXPECT_EQ(sceneRenderer.find(
                       "ImportBuffer(visibilityBuffer, RHIResourceState::Common)"),

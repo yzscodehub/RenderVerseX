@@ -21,6 +21,7 @@ namespace RVX
     class RenderSubmissionResourceBatch;
     struct RenderFrameExecutionPlan;
     struct RenderFrameExecutionReport;
+    struct RenderVisibilityResult;
     struct SceneMeshPassPreparation;
 
     /**
@@ -205,6 +206,8 @@ namespace RVX
         const RenderFrameExecutionPlan* renderFrameExecutionPlan = nullptr;
         const SceneMeshPassPreparation* meshPassPreparation = nullptr;
         RenderFrameExecutionReport* renderFrameExecutionReport = nullptr;
+        /// Borrowed frame/view-owned visibility output. Passes must not retain it.
+        const RenderVisibilityResult* renderVisibility = nullptr;
 
         // =====================================================================
         // Frame Info

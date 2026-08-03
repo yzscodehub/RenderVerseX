@@ -330,6 +330,8 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     }
 
     const auto& groups = m_gpuCulling->GetDrawGroups();
+    m_drawStats.gpuDrivenIndirectExecutedDrawCountAvailable =
+        m_gpuCulling->WasCpuFallbackUsedLastCull();
     bool submittedAnyGroup = false;
     for (uint32 groupIndex = 0; groupIndex < static_cast<uint32>(groups.size()); ++groupIndex)
     {
@@ -353,16 +355,27 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         }
         ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
 
-        const uint32 submittedDraws = m_gpuCulling->DrawIndexedIndirectGroup(ctx, groupIndex);
-        if (submittedDraws > 0)
+        const GPUIndirectDrawSubmission submission =
+            m_gpuCulling->DrawIndexedIndirectGroup(ctx, groupIndex);
+        if (submission.recorded)
         {
             submittedAnyGroup = true;
             ++m_drawStats.gpuDrivenIndirectBatchCount;
-            m_drawStats.gpuDrivenIndirectDrawCount += submittedDraws;
+            m_drawStats.gpuDrivenIndirectSubmittedDrawUpperBound +=
+                submission.submittedDrawUpperBound;
+            if (submission.executedDrawCountAvailable)
+            {
+                m_drawStats.gpuDrivenIndirectDrawCount +=
+                    submission.executedDrawCount;
+            }
         }
     }
 
-    return submittedAnyGroup;
+    // A CPU fallback may correctly compact every planned candidate away. The
+    // GPU lane was recorded successfully even though it submitted no draws.
+    return submittedAnyGroup ||
+        (m_gpuCulling->WasCpuFallbackUsedLastCull() &&
+         m_gpuCulling->GetDrawCount() == 0);
 }
 
 bool DepthPrepass::BuildPlannedDirectBatch(
@@ -384,7 +397,8 @@ bool DepthPrepass::BuildPlannedDirectBatch(
     const DirectDrawPacketBatchBuildResult built =
         BuildDirectDrawPacketBatch(*view.renderFrameExecutionPlan,
                                    RenderPassKind::Depth,
-                                   view.meshPassPreparation->depth);
+                                   view.meshPassPreparation->depth,
+                                   view.renderVisibility);
     if (!built.succeeded)
     {
         m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
@@ -392,11 +406,21 @@ bool DepthPrepass::BuildPlannedDirectBatch(
     }
 
     m_drawStats.planValidated = true;
-    m_drawStats.plannedPacketCount =
+    uint32 plannedPacketCount = 0;
+    for (const RenderPassExecutionPlan& passPlan :
+         view.renderFrameExecutionPlan->passes)
+    {
+        if (passPlan.pass == RenderPassKind::Depth)
+        {
+            plannedPacketCount = passPlan.directPackets.count;
+            break;
+        }
+    }
+    m_drawStats.plannedPacketCount = plannedPacketCount;
+    m_drawStats.compiledPacketCount =
         built.batch.packets.size() > std::numeric_limits<uint32>::max()
             ? 0
             : static_cast<uint32>(built.batch.packets.size());
-    m_drawStats.compiledPacketCount = m_drawStats.plannedPacketCount;
     outPlannedDraws.reserve(built.batch.packets.size());
     for (const DirectDrawPacket& draw : built.batch.packets)
     {
@@ -650,10 +674,15 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
                 gpuLane ? report.gpuDrivenLane : report.directLane;
             lane.status = status;
             lane.reason = reason;
-            lane.executedPacketCount = executedPackets;
-            lane.executedDrawCount = gpuLane
-                ? m_drawStats.gpuDrivenIndirectDrawCount
-                : m_drawStats.directDrawCount;
+            lane.executedCountsAvailable = !gpuLane ||
+                m_drawStats.gpuDrivenIndirectExecutedDrawCountAvailable;
+            lane.executedPacketCount = lane.executedCountsAvailable
+                ? executedPackets
+                : 0;
+            lane.executedDrawCount = lane.executedCountsAvailable
+                ? (gpuLane ? m_drawStats.gpuDrivenIndirectDrawCount
+                           : m_drawStats.directDrawCount)
+                : 0;
             if (status == RenderExecutionStatus::Failed)
             {
                 view.renderFrameExecutionReport->status = status;
@@ -748,7 +777,8 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
         m_drawStats.planValidated = true;
         m_drawStats.plannedPacketCount =
             plannedGPUCount + plannedDirectCount;
-        m_drawStats.compiledPacketCount = m_drawStats.plannedPacketCount;
+        m_drawStats.compiledPacketCount = plannedGPUCount +
+            static_cast<uint32>(plannedDraws.size());
 
         RHIRenderPassDesc rpDesc;
         rpDesc.SetDepthStencil(depthTargetView,
@@ -803,20 +833,25 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
                 report.gpuDrivenLane.reason = plannedGPU
                     ? m_drawStats.failureReason
                     : RenderPolicyReason::None;
+                report.gpuDrivenLane.executedCountsAvailable = plannedGPU &&
+                    m_drawStats.gpuDrivenIndirectExecutedDrawCountAvailable;
                 // A late group failure does not erase commands already
                 // recorded by earlier groups. Report the actual submitted
                 // prefix while marking the lane failed; never claim zero or
                 // replay that prefix through Direct.
-                report.gpuDrivenLane.executedPacketCount = plannedGPU
+                report.gpuDrivenLane.executedPacketCount =
+                    report.gpuDrivenLane.executedCountsAvailable
                     ? m_drawStats.gpuDrivenIndirectDrawCount
                     : 0;
-                report.gpuDrivenLane.executedDrawCount = plannedGPU
+                report.gpuDrivenLane.executedDrawCount =
+                    report.gpuDrivenLane.executedCountsAvailable
                     ? m_drawStats.gpuDrivenIndirectDrawCount
                     : 0;
                 report.directLane.status = executeDirectLane
                     ? RenderExecutionStatus::Completed
                     : RenderExecutionStatus::NotAttempted;
                 report.directLane.reason = RenderPolicyReason::None;
+                report.directLane.executedCountsAvailable = executeDirectLane;
                 report.directLane.executedPacketCount =
                     m_drawStats.executedPacketCount;
                 report.directLane.executedDrawCount =

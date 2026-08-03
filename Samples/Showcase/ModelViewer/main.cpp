@@ -2687,10 +2687,20 @@ namespace
                ", opaqueIndirectSubmitted=" + BoolText(stats.opaqueIndirectSubmitted) +
                ", opaqueDirectDraws=" + std::to_string(stats.opaqueDirectDrawCount) +
                ", opaqueIndirectBatches=" + std::to_string(stats.opaqueGpuDrivenIndirectBatchCount) +
-               ", opaqueIndirectDraws=" + std::to_string(stats.opaqueGpuDrivenIndirectDrawCount) +
+               ", opaqueIndirectSubmittedUpperBound=" +
+                   std::to_string(stats.opaqueGpuDrivenIndirectSubmittedDrawUpperBound) +
+               ", opaqueExecutedDrawCountAvailable=" +
+                   BoolText(stats.opaqueGpuDrivenExecutedDrawCountAvailable) +
+               ", opaqueExecutedDraws=" +
+                   std::to_string(stats.opaqueGpuDrivenIndirectDrawCount) +
                ", opaqueFallbackReason=" +
                    GetGPUDrivenDrawFallbackReasonName(stats.opaqueFallbackReason) +
                ", visibleCullableDrawItemCount=" + std::to_string(stats.visibleCullableDrawItemCount) +
+               ", gpuVisibilityCountsAvailable=" + BoolText(stats.gpuVisibilityCountsAvailable) +
+               ", cpuReferenceVisibleCullableDrawItemCount=" +
+                   std::to_string(stats.cpuReferenceVisibleCullableDrawItemCount) +
+               ", cpuReferenceCulledDrawItemCount=" +
+                   std::to_string(stats.cpuReferenceCulledDrawItemCount) +
                ", frustumCulledDrawItemCount=" + std::to_string(stats.frustumCulledDrawItemCount) +
                ", distanceCulledDrawItemCount=" + std::to_string(stats.distanceCulledDrawItemCount) +
                ", skippedMissingGpuDataCount=" + std::to_string(stats.skippedMissingGpuDataCount);
@@ -2708,9 +2718,14 @@ namespace
 
         const RenderGPUDrivenCullingDiagnostics& stats =
             sceneRenderer->gpuDrivenCulling;
-        const bool cullAffectsDrawCount =
-            stats.graphInputDrawItemCount > stats.visibleCullableDrawItemCount &&
-            (stats.frustumCulledDrawItemCount > 0 || stats.distanceCulledDrawItemCount > 0);
+        // Runtime readback is intentionally absent. The CPU reference proves
+        // that this deterministic scene contains a cullable candidate; the
+        // paired visual golden proves the GPU result without a frame stall.
+        const bool cullAffectsReferenceCount =
+            stats.cpuReferenceCulledDrawItemCount > 0 &&
+            stats.graphInputDrawItemCount ==
+                stats.cpuReferenceVisibleCullableDrawItemCount +
+                    stats.cpuReferenceCulledDrawItemCount;
         const bool ready = stats.policyDecisionAvailable &&
                            stats.policyDecision.enabled &&
                            stats.policyDecision.reason == GPUDrivenPolicyReason::None &&
@@ -2725,8 +2740,9 @@ namespace
                            stats.opaqueIndirectEligible &&
                            stats.opaqueIndirectSubmitted &&
                            stats.opaqueGpuDrivenIndirectBatchCount > 0 &&
-                           stats.opaqueGpuDrivenIndirectDrawCount > 0 &&
-                           (!requireCullAffectsDrawCount || cullAffectsDrawCount);
+                           stats.opaqueGpuDrivenIndirectSubmittedDrawUpperBound > 0 &&
+                           (!requireCullAffectsDrawCount ||
+                            cullAffectsReferenceCount);
         if (ready)
         {
             outReason.clear();
@@ -2760,6 +2776,7 @@ namespace
                            !stats.opaqueIndirectRequested &&
                            !stats.opaqueIndirectEligible &&
                            !stats.opaqueIndirectSubmitted &&
+                           stats.opaqueGpuDrivenIndirectSubmittedDrawUpperBound == 0 &&
                            stats.opaqueGpuDrivenIndirectDrawCount == 0 &&
                            stats.opaqueDirectDrawCount > 0 &&
                            stats.opaqueFallbackReason ==
@@ -2788,7 +2805,7 @@ namespace
         const bool ready = sceneRenderer->visibleObjectCount > 1 &&
                            stats.graphInputDrawItemCount > 1 &&
                            stats.opaqueGpuDrivenIndirectBatchCount > 1 &&
-                           stats.opaqueGpuDrivenIndirectDrawCount > 1 &&
+                           stats.opaqueGpuDrivenIndirectSubmittedDrawUpperBound > 1 &&
                            stats.opaqueDirectDrawCount == 0;
         if (ready)
         {
@@ -4567,11 +4584,12 @@ int main(int argc, char* argv[])
                     const RenderGPUDrivenCullingDiagnostics& stats =
                         sceneRenderer->gpuDrivenCulling;
                     RVX_CORE_INFO("ModelViewer smoke GPU-driven culling ready: graphInput={}, "
-                                  "visibleCullable={}, opaqueIndirectBatches={}, opaqueIndirectDraws={}",
+                                  "cpuReferenceVisible={}, opaqueIndirectBatches={}, "
+                                  "opaqueSubmittedUpperBound={}",
                                   stats.graphInputDrawItemCount,
-                                  stats.visibleCullableDrawItemCount,
+                                  stats.cpuReferenceVisibleCullableDrawItemCount,
                                   stats.opaqueGpuDrivenIndirectBatchCount,
-                                  stats.opaqueGpuDrivenIndirectDrawCount);
+                                  stats.opaqueGpuDrivenIndirectSubmittedDrawUpperBound);
                 }
             }
 
@@ -5068,10 +5086,10 @@ int main(int argc, char* argv[])
                     const RenderGPUDrivenCullingDiagnostics& stats =
                         sceneRenderer->gpuDrivenCulling;
                     RVX_CORE_INFO("ModelViewer smoke GPU-driven multi-batch asset ready: "
-                                  "visibleObjects={}, batches={}, indirectDraws={}",
+                                  "visibleObjects={}, batches={}, submittedUpperBound={}",
                                   sceneRenderer->visibleObjectCount,
                                   stats.opaqueGpuDrivenIndirectBatchCount,
-                                  stats.opaqueGpuDrivenIndirectDrawCount);
+                                  stats.opaqueGpuDrivenIndirectSubmittedDrawUpperBound);
                 }
             }
 

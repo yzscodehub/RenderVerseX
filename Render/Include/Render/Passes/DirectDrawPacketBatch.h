@@ -12,6 +12,7 @@
 
 namespace RVX
 {
+    struct RenderVisibilityResult;
     /** @brief One source packet copied into a Direct recording batch. */
     struct DirectDrawPacket
     {
@@ -53,7 +54,8 @@ namespace RVX
     [[nodiscard]] DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
         const RenderFrameExecutionPlan& plan,
         RenderPassKind pass,
-        const MeshPassPacketStream& stream);
+        const MeshPassPacketStream& stream,
+        const RenderVisibilityResult* visibility = nullptr);
 
     /**
      * @brief Validate planned GPU/Direct lane selections against a prepared stream.

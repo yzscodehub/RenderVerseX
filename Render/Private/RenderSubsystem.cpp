@@ -326,11 +326,23 @@ namespace
             RVX_COPY_GPU_CULLING_FIELD(enabled);
             RVX_COPY_GPU_CULLING_FIELD(graphPassAdded);
             RVX_COPY_GPU_CULLING_FIELD(graphPassRecorded);
+            RVX_COPY_GPU_CULLING_FIELD(gpuCullingGraphPassCount);
             RVX_COPY_GPU_CULLING_FIELD(gpuExecutionRecorded);
             RVX_COPY_GPU_CULLING_FIELD(graphInputDrawItemCount);
+            RVX_COPY_GPU_CULLING_FIELD(visibilityCandidateCount);
+            RVX_COPY_GPU_CULLING_FIELD(cpuVisibleCandidateCount);
+            RVX_COPY_GPU_CULLING_FIELD(passVisibilityCandidateCount);
+            RVX_COPY_GPU_CULLING_FIELD(gpuPlannedVisibilityCandidateCount);
+            RVX_COPY_GPU_CULLING_FIELD(invalidVisibilityBoundsCount);
+            RVX_COPY_GPU_CULLING_FIELD(gpuDeferredVisibilityCandidateCount);
+            RVX_COPY_GPU_CULLING_FIELD(gpuVisibilityReadbackPerformed);
+            RVX_COPY_GPU_CULLING_FIELD(occlusionRequestedButUnavailable);
+            RVX_COPY_GPU_CULLING_FIELD(gpuVisibilityCountsAvailable);
             RVX_COPY_GPU_CULLING_FIELD(visibleCullableDrawItemCount);
             RVX_COPY_GPU_CULLING_FIELD(frustumCulledDrawItemCount);
             RVX_COPY_GPU_CULLING_FIELD(distanceCulledDrawItemCount);
+            RVX_COPY_GPU_CULLING_FIELD(cpuReferenceVisibleCullableDrawItemCount);
+            RVX_COPY_GPU_CULLING_FIELD(cpuReferenceCulledDrawItemCount);
             RVX_COPY_GPU_CULLING_FIELD(skippedMissingGpuDataCount);
             RVX_COPY_GPU_CULLING_FIELD(opaqueIndirectRequested);
             RVX_COPY_GPU_CULLING_FIELD(opaqueCullingReady);
@@ -339,6 +351,8 @@ namespace
             RVX_COPY_GPU_CULLING_FIELD(opaqueIndirectSubmitted);
             RVX_COPY_GPU_CULLING_FIELD(opaqueDirectDrawCount);
             RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectBatchCount);
+            RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectSubmittedDrawUpperBound);
+            RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenExecutedDrawCountAvailable);
             RVX_COPY_GPU_CULLING_FIELD(opaqueGpuDrivenIndirectDrawCount);
             RVX_COPY_GPU_CULLING_FIELD(opaqueFallbackReason);
 #undef RVX_COPY_GPU_CULLING_FIELD

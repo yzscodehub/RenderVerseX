@@ -1,7 +1,7 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-4 complete; Task 5 resolver/contracts complete; frame-plan
-compiler and SceneRenderer integration are next
+**Status:** Tasks 0-8 complete; Task 9 frame-owned pass contexts is the next
+implementation stage
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
