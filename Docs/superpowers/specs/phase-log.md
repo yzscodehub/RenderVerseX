@@ -45161,66 +45161,130 @@ git diff --check
 
 ---
 
-### R-SP: `<id and title>`
+### R-SP338 Render-policy Task 9B-5 Skybox recording isolation
 
-**Date:**
-**Commit:**
-**Spark plan review agent:**
-**Spark code review agent:**
+**Date:** 2026-08-03
+**Commit:** Included in the Task 9B-5 stage commit after the reviewed gate below.
 
-**Plan source:**
+**Prerequisite status:** PASS
 
-- Document:
-- Section:
-- Lines checked:
-
-**Prerequisite status:** PASS / BLOCKED
-
-- Previous R-SP:
-- Evidence:
+- Previous R-SP: R-SP337 (Transparent recording isolation).
+- Evidence: the shared record-context contract already supplies an identity,
+  paired snapshot/results, graph provenance, and completion-aware submission
+  batch.
 
 **Approved scope:**
 
--
+- Copy `RenderScene::GetSky()` into `RenderPassFrameSnapshot::sky`.
+- Define the schema-v4 `RenderSkyMode` value contract and carry complete sky
+  controls (mode, texture, tint, sun, gradient, blur, and scattering) from
+  world extraction through sealing.
+- Make Skybox typed recording value-owned: snapshot sky, graph-only color/depth
+  handles, private constant buffer/descriptor set, exact-registry cubemap
+  resolution with packet-owned Cubemap/Procedural/SolidColor behavior,
+  Equirectangular tint fallback, Disabled no-op, and strong ownership of all
+  command resources through completion.
+- Keep SceneRenderer pre-graph setters only for current status compatibility;
+  route Skybox through the typed context and inject the resource registry.
+- Add focused exact-registry cubemap, reverse A/B, mutation, descriptor/layout,
+  provenance-negative, and retirement fixtures.
 
 **Out of scope:**
 
--
+- PipelineCache snapshot APIs, RHI contracts, RenderFrameResourceBinder/CMake,
+  Task 9B-6 binder deletion, Editor work, and backend-specific feature work.
 
 **Files changed:**
 
--
+- `Render/Include/Render/Passes/RenderPassRecordContext.h`
+- `RenderContracts/Include/RenderContracts/RenderFramePacket.h`
+- `RenderExtraction/Private/RenderFrameExtractor.cpp`
+- `RenderExtraction/Private/RenderFramePacketBuilder.cpp`
+- `Render/Include/Render/Passes/SkyboxPass.h`
+- `Render/Private/Passes/SkyboxPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderFrameExtractionValidation/main.cpp`
+- `Tests/RenderContractsValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+- Task 9B plan/todo and record-context contract documents.
 
 **Validation commands:**
 
 ```powershell
-
+[Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+& 'D:\Program Files\CMake\bin\cmake.exe' --build build\win_x64_debug --config Debug --target RenderContractsValidation RenderFrameExtractionValidation RenderSceneValidation RenderPassValidation PipelineCacheValidation RHIContractValidation RenderGraphValidation RenderPolicyValidation GPUDrivenValidation RenderHonestyValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build\win_x64_debug\Tests\Debug\RenderContractsValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderFrameExtractionValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderSceneValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RHIContractValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderGraphValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderPolicyValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\GPUDrivenValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe --gtest_brief=1
+ctest --test-dir build\win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug -R "<Task 9B-5 integration matrix>" --output-on-failure
+git diff --check
 ```
 
 **Validation result:**
 
-- Build:
-- Tests:
-- Visual gate: PASS / BLOCKED / N/A
+- Build: PASS, all 13 affected validation/sample targets.
+- RenderContractsValidation: PASS, 211/211.
+- RenderFrameExtractionValidation: PASS, 5/5.
+- RenderSceneValidation: PASS, 14/14.
+- Focused Skybox tests: PASS, 11/11.
+- Full RenderPassValidation: PASS, 181/181.
+- PipelineCacheValidation: PASS, 130/130.
+- RHIContractValidation: PASS, 41/41.
+- RenderGraphValidation: PASS, 50/50.
+- RenderPolicyValidation: PASS, 22/22.
+- GPUDrivenValidation: PASS, 30/30.
+- RenderHonestyValidation: PASS, 75/75.
+- Full unit/contract ledger: PASS, 759/759.
+- GPU stability smoke: PASS, 10/10 consecutive runs.
+- Integration/visual matrix: PASS, 16/16, including Direct/GPU parity,
+  external Porsche, DX12 GBV, completion-aware retirement, resize ownership,
+  and DX11 compatibility.
 
 **Artifacts:**
 
-- Logs:
-- Screenshots:
-- Diffs:
+- Logs: console output only; no generated capture retained.
+- Screenshots: none.
+- Diffs: reviewed; `git diff --check` PASS.
 
-**Spark plan review result:**
+**Independent review result:**
 
-- Verdict:
-- Blockers resolved:
+- Initial review: one P1 and two P2 findings. The P1 identified lost
+  procedural/blur semantics at the frame-packet boundary. The P2 findings
+  required exact A/B descriptor proof plus reverse-Z and attachment
+  Load/Store evidence.
+- Re-review: PASS after schema-v4 mode/value transport and the exact fixtures;
+  unresolved P0/P1/P2/P3: `0/0/0/0`.
+- Incremental review of the GPUDriven/RenderHonesty source-contract updates:
+  PASS. The tests now assert typed packet ordering and provenance-sanitized
+  diagnostics rather than obsolete setter or raw-index behavior; no assertion
+  was weakened.
 
-**Spark code review result:**
+**Primary review status:**
 
-- Verdict:
-- Blockers resolved:
+- PASS after complete source/diff review, acceptance of all independent
+  findings, and closure of the additional registry-replacement defect.
+- The primary agent independently built all affected targets, ran the 759
+  unit/contract tests, repeated GPU smoke 10 times, and passed the 16-test
+  integration/visual matrix. Unresolved P0/P1/P2/P3: `0/0/0/0`.
 
-**Notes / follow-ups:**
+**Residual risks / follow-ups:**
 
--
+- Native Vulkan and Metal execution are unavailable on this Windows host; no
+  qualification claim is made beyond shared Render/RHI contract coverage.
+- Equirectangular input intentionally uses deterministic tint/intensity
+  fallback. Conversion to a cubemap needs a separately designed RHI/shader
+  feature and is not implied by this recording-isolation change.
+- Skybox compatibility setters remain status-only until Task 9B-6 removes the
+  binder and obsolete setter phase.
 
 ---

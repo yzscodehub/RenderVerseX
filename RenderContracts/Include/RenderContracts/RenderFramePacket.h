@@ -16,13 +16,23 @@
 namespace RVX
 {
     inline constexpr uint32 RVX_RENDER_FRAME_PACKET_SCHEMA_ID = 0x52565846U;
-    inline constexpr uint32 RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION = 3;
+    inline constexpr uint32 RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION = 4;
 
     enum class RenderLightType : uint8
     {
         Directional = 0,
         Point = 1,
         Spot = 2
+    };
+
+    /** @brief Immutable sky rendering mode carried by a render-frame packet. */
+    enum class RenderSkyMode : uint8
+    {
+        Disabled = 0,
+        Cubemap = 1,
+        Equirectangular = 2,
+        Procedural = 3,
+        SolidColor = 4
     };
 
     enum class RenderFrameCaptureKind : uint8
@@ -124,10 +134,18 @@ namespace RVX
 
     struct RenderSkySnapshot
     {
+        RenderSkyMode mode = RenderSkyMode::Disabled;
         RenderResourceHandle skyTexture;
         Vec3 tint{1.0f};
+        Vec3 sunDirection{0.0f, 1.0f, 0.0f};
+        Vec3 sunColor{1.0f};
+        Vec3 zenithColor{0.2f, 0.4f, 0.8f};
+        Vec3 horizonColor{0.7f, 0.8f, 0.9f};
+        Vec3 groundColor{0.3f, 0.25f, 0.2f};
         float32 intensity = 1.0f;
         float32 rotationRadians = 0.0f;
+        float32 blurLevel = 0.0f;
+        float32 scatteringIntensity = 1.0f;
     };
 
     struct RenderEnvironmentSnapshot

@@ -1,8 +1,7 @@
 # Render Pass Record Context and Execution Data Contract
 
-**Status:** Task 9A and Tasks 9B-1 through 9B-4 implemented and focused-
-validated; Task 9B-4 awaits primary review/commit, then Task 9B-5 Skybox
-migration is next
+**Status:** Task 9A and Tasks 9B-1 through 9B-5 complete, independently
+reviewed, and fully validated; Task 9B-6 binder removal is next
 **Date:** 2026-08-03
 **Scope:** Main raster pass chain; frame/view data ownership and RenderGraph
 recording lifetime
@@ -119,8 +118,9 @@ enable async compute.
 ### 9B - Remaining scene pass adapters
 
 **Implementation status:** Raster Shadow, RayTracedShadow (9B-2),
-ObjectVelocity (9B-3), and Transparent (9B-4) complete; Skybox and binder
-removal remain pending.
+ObjectVelocity (9B-3), Transparent (9B-4), and Skybox (9B-5) are implemented;
+Skybox passed independent and primary review plus the full validation ledger.
+Binder removal remains pending 9B-6.
 
 - 9B-1 migrates raster Shadow to an independent graph-owned recorder. Setup
   publishes a producer-neutral `DirectionalShadowRecordOutput` with the current
@@ -161,8 +161,17 @@ removal remain pending.
   pass. Legacy setters are no-op adapters; malformed, foreign, stale, forged,
   incomplete, empty, and sealed records declare no resources and execute no
   commands.
-- 9B-5 migrates Skybox scene/list/target/configuration inputs to typed graph
-  pass data.
+- 9B-5 copies `RenderScene::GetSky()` into `RenderPassFrameSnapshot::sky` and
+  migrates Skybox to typed graph pass data. `RenderSkyMode` makes Disabled,
+  Cubemap, Equirectangular, Procedural, and SolidColor packet values explicit;
+  extraction copies all sky controls and sealing rejects non-finite controls or
+  an undeclared mode. Recording creates a private CB and descriptor set,
+  resolves only Cubemap snapshot textures through the exact registry, and uses
+  packet tint/intensity for SolidColor, Equirectangular, and cubemap-resolution
+  fallback. Disabled declares no usage. It retains all command owners through
+  completion and resolves attachments only from current graph handles. Legacy
+  Setup/Execute/SetRenderTargets/ViewData paths are inert or fail closed; pass
+  setters remain status-only compatibility until 9B-6.
 - Resolve targets from declared graph handles instead of post-build raw view
   injection.
 - 9B-6 removes `RenderFrameResourceBinder`, the late `UpdatePassResources`

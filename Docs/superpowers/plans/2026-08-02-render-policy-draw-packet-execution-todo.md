@@ -1,8 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
-**Status:** Tasks 0-8, Task 9A, and Tasks 9B-1 through 9B-4 complete;
-Task 9B-5 Skybox recording isolation begins only after the Task 9B-4
-review/commit gate
+**Status:** Tasks 0-8, Task 9A, and Tasks 9B-1 through 9B-5 are complete and
+reviewed; Task 9B-6 binder removal is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -295,10 +294,12 @@ from submitted upper bounds and CPU reference visibility.
   submission-retained attachment/descriptor resources, and the DefaultLit
   pipeline/set-layout ownership bridge required by DX12/Vulkan/Metal. Older publication
   identities cannot regress a newer diagnostic snapshot.
-- [ ] Migrate Transparent scene/list/targets with truthful color ReadWrite and
+- [x] Migrate Transparent scene/list/targets with truthful color ReadWrite and
   depth Read dependencies.
-- [ ] Migrate Skybox targets/configuration and per-recording submission-owned
-  constants/descriptors/resources.
+- [x] Migrate Skybox to a typed record that owns value-copied sky state,
+  graph-only targets, private constants/descriptors, and completion-retained
+  pipeline/layout/view/texture resources. Legacy Setup/Execute/targets and
+  ViewData recording fail closed.
 - [ ] Remove `RenderFrameResourceBinder`, `UpdatePassResources`, the direct
   `ExecutePasses` bypass, and remaining production frame-state setters.
 - [ ] Add reverse-order two-graph, caller-mutation, resize/target-replacement,
@@ -602,24 +603,20 @@ Apply this checklist to every implementation slice:
 
 ## 11. Immediate Next Slice
 
-Task 9B-4 implementation and focused validation are complete; primary review,
-full validation, and commit remain the stage gate. Start **Task 9B-5** only
-after that gate. The completed 9B-4 acceptance ledger is:
+Task 9B-5 implementation, independent re-review, primary audit, and the full
+validation ledger are complete. Start **Task 9B-6** with binder and legacy
+bypass removal. The completed 9B-5 acceptance ledger is:
 
-- [x] Copy Transparent scene/list inputs into the typed frame snapshot, retain
-  renderer-provided back-to-front order, and remove persistent scene/target
-  mailboxes from the production pass path.
-- [x] Resolve color/depth only from current graph handles; declare color
-  `ReadWrite(RenderTarget)` and optional depth `Read(DepthRead)` only after
-  record inputs and submission retention have succeeded.
-- [x] Build per-record view/object/frame descriptor snapshots, including local
-  copies of all six mutable light/cluster upload buffers and a private instance
-  fallback when reflection requires it.
-- [x] Bind fallback directional/ray shadow resources with matching disabled
-  view constants, without mutating caller `ViewData` or global descriptors.
-- [x] Retain attachment views/parent textures, geometry, material bindings,
-  pipelines, descriptors, and DefaultLit layout owners through completion.
-- [x] Prove reverse A/B recording, caller/source mutation isolation, blend
-  order/dynamic offsets, graph usage, and completion-aware retirement.
-- [x] Prove empty, legacy, foreign, stale, forged, incomplete, and sealed
-  inputs fail closed without usage declarations or command recording.
+- [x] Version the frame packet to schema v4 and carry an explicit sky mode plus
+  complete cubemap/procedural/solid controls through extraction and sealing.
+- [x] Record Skybox only from the frame snapshot and current graph handles;
+  create private constants/descriptors and retain every command owner through
+  completion.
+- [x] Preserve Cubemap, Procedural, SolidColor, Disabled, and deterministic
+  Equirectangular/cubemap-resolution tint fallback semantics without reading
+  mutable pass setters.
+- [x] Prove reverse A/B isolation, exact descriptor bindings, reverse-Z,
+  Load/Store/read-only attachment contracts, malformed-input rejection, and
+  completion-aware retirement.
+- [x] Refresh the Skybox resource registry on every accepted frame and align
+  stale source-contract tests with typed packet/provenance behavior.

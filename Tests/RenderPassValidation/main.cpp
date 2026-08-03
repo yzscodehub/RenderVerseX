@@ -68,6 +68,7 @@
 #include "Render/Policy/RenderPolicyResolver.h"
 #include "Render/SwapChainManager.h"
 #include "Renderer/RenderPassRegistry.h"
+#include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderSubmissionTracker.h"
@@ -1517,6 +1518,50 @@ namespace
         return context;
     }
 
+    RenderPassRecordContext MakeSkyboxRecordContext(
+        RenderGraph& graph,
+        ViewData view,
+        const RenderScene& scene,
+        const RenderSkySnapshot& sky,
+        uint64 frameSequence,
+        uint64 recordEpoch,
+        RenderSubmissionResourceBatch* batch = nullptr)
+    {
+        RenderPassRecordContext context;
+        context.view = view;
+        context.view.renderGraph = &graph;
+        context.view.submissionResourceBatch = batch;
+        context.executionPlan = context.view.renderFrameExecutionPlan;
+        context.meshPassPreparation = context.view.meshPassPreparation;
+        context.visibility = context.view.renderVisibility;
+        context.executionReport = context.view.renderFrameExecutionReport;
+        context.identity.graph = &graph;
+        context.identity.graphIdentity = graph.GetGraphIdentity();
+        context.identity.graphRecordingGeneration = graph.GetRecordingGeneration();
+        context.identity.frameSequence = frameSequence;
+        context.identity.viewOrdinal = 0;
+        context.identity.recordEpoch = recordEpoch;
+        context.renderScene = &scene;
+        context.results = std::make_shared<RenderPassRecordResults>();
+        context.frameSnapshot = MakeRenderPassFrameSnapshot(context, *context.results);
+
+        // Tests deliberately alter only the value-owned sky while preserving
+        // the internal self-references that make a copied frame snapshot valid.
+        auto frameSnapshot = std::make_shared<RenderPassFrameSnapshot>(
+            *context.frameSnapshot);
+        frameSnapshot->sky = sky;
+        frameSnapshot->view.renderGraph = &graph;
+        frameSnapshot->view.renderFrameExecutionPlan =
+            &frameSnapshot->executionPlan;
+        frameSnapshot->view.meshPassPreparation =
+            &frameSnapshot->meshPassPreparation;
+        frameSnapshot->view.renderVisibility = &frameSnapshot->visibility;
+        frameSnapshot->view.renderFrameExecutionReport =
+            &context.results->executionReport;
+        context.frameSnapshot = std::move(frameSnapshot);
+        return context;
+    }
+
     Resource::TextureHandle CreateTextureResource(Resource::ResourceId id)
     {
         auto* texture = new Resource::TextureResource();
@@ -1530,6 +1575,23 @@ namespace
         metadata.isSRGB = false;
 
         texture->SetData({255, 255, 255, 255}, metadata);
+        return Resource::TextureHandle(texture);
+    }
+
+    Resource::TextureHandle CreateCubemapTextureResource(Resource::ResourceId id)
+    {
+        auto* texture = new Resource::TextureResource();
+        texture->SetId(id);
+        texture->SetName("RenderPassCubemap");
+
+        Resource::TextureMetadata metadata;
+        metadata.width = 1;
+        metadata.height = 1;
+        metadata.arrayLayers = 6;
+        metadata.format = Resource::TextureFormat::RGBA8;
+        metadata.isCubemap = true;
+        metadata.isSRGB = false;
+        texture->SetData(std::vector<uint8>(24, 255), metadata);
         return Resource::TextureHandle(texture);
     }
 
@@ -1679,7 +1741,9 @@ namespace
 
         void SetUp() override {}
 
-        void Initialize(bool bufferMapSucceeds = true, bool rayTracingSupported = false)
+        void Initialize(bool bufferMapSucceeds = true,
+                        bool rayTracingSupported = false,
+                        bool reverseZ = false)
         {
             const fs::path shaderDir = FindShaderDirectory();
             if (shaderDir.empty())
@@ -1693,6 +1757,9 @@ namespace
                 device.EnableRayTracing();
             }
 
+            PipelineCacheConfig pipelineCacheConfig = pipelineCache.GetConfig();
+            pipelineCacheConfig.reverseZ = reverseZ;
+            pipelineCache.SetConfig(pipelineCacheConfig);
             ASSERT_TRUE(pipelineCache.Initialize(&device, shaderDir.string())) << pipelineCache.GetLastError();
 
             ASSERT_TRUE(gpuResources.Initialize(&device));
@@ -4958,15 +5025,17 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
     RenderGraph graph;
     graph.SetDevice(&device);
 
-    RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
-    sceneColorDesc.debugName = "GraphSceneColorForSkyboxPass";
-    view.colorTarget = graph.CreateTexture(sceneColorDesc);
-    graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
-
-    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
-    depthDesc.debugName = "GraphDepthForSkyboxPass";
-    view.depthTarget = graph.CreateTexture(depthDesc);
-    graph.SetExportState(view.depthTarget, RHIResourceState::DepthRead);
+    RHITextureRef graphColor = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    RHITextureRef graphDepth = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(graphColor);
+    ASSERT_TRUE(graphDepth);
+    view.colorTarget = graph.ImportTexture(
+        graphColor.Get(), RHIResourceState::RenderTarget);
+    view.depthTarget = graph.ImportTexture(
+        graphDepth.Get(), RHIResourceState::DepthRead);
 
     view.renderGraph = &graph;
     view.viewCache = &viewCache;
@@ -4975,7 +5044,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
     pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
                                 Vec3{0.12f, 0.24f, 0.55f},
                                 Vec3{0.6f, 0.72f, 0.88f});
@@ -4983,21 +5052,19 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
     ASSERT_TRUE(pass.IsEnabled());
 
-    struct SkyboxTestData
-    {
-    };
-
-    graph.AddPass<SkyboxTestData>(
-        "SkyboxPassTest",
-        RenderGraphPassType::Graphics,
-        [this, &pass](RenderGraphBuilder& builder, SkyboxTestData&)
-        {
-            pass.Setup(builder, view);
-        },
-        [this, &pass](const SkyboxTestData&, RHICommandContext& ctx)
-        {
-            pass.Execute(ctx, view);
-        });
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::Procedural;
+    sky.tint = Vec3{0.12f, 0.24f, 0.55f};
+    sky.sunDirection = Vec3{0.25f, 0.8f, 0.35f};
+    sky.sunColor = Vec3{0.95f, 0.8f, 0.65f};
+    sky.zenithColor = Vec3{0.12f, 0.24f, 0.55f};
+    sky.horizonColor = Vec3{0.6f, 0.72f, 0.88f};
+    sky.groundColor = Vec3{0.1f, 0.12f, 0.16f};
+    sky.intensity = 1.25f;
+    sky.scatteringIntensity = 1.5f;
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, view, scene, sky, 901, 901);
+    pass.AddToGraph(graph, context);
 
     graph.Compile();
     RecordingCommandContext ctx;
@@ -5025,7 +5092,8 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
         device.createdDescriptorSetDescs.end(),
         [](const RHIDescriptorSetDesc& desc)
         {
-            return desc.debugName && std::string(desc.debugName) == "SkyboxDescriptorSet";
+            return desc.debugName &&
+                   std::string(desc.debugName) == "SkyboxRecordDescriptorSet";
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
     ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
@@ -5036,24 +5104,73 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
     EXPECT_EQ(descriptorIt->bindings[1].textureView->GetTexture()->GetDimension(), RHITextureDimension::TextureCube);
     EXPECT_EQ(descriptorIt->bindings[2].binding, 2u);
     EXPECT_NE(descriptorIt->bindings[2].sampler, nullptr);
+    ASSERT_EQ(device.createdDescriptorSetDescs.size(),
+              device.createdDescriptorSets.size());
+    const size_t descriptorIndex = static_cast<size_t>(
+        std::distance(device.createdDescriptorSetDescs.begin(), descriptorIt));
+    EXPECT_EQ(pipelineCache.GetSkyboxSetLayout(), descriptorIt->layout);
+    EXPECT_EQ(pipelineCache.GetSkyboxSetLayout(),
+              device.createdDescriptorSets[descriptorIndex]->GetLayoutIdentity());
+    EXPECT_TRUE(device.createdDescriptorSets[descriptorIndex]->IsReadyForBinding(
+        pipelineCache.GetSkyboxSetLayout()));
+
+    struct SkyboxConstantsProbe
+    {
+        float zenithColor[4];
+        float horizonColor[4];
+        float groundColor[4];
+        float sunDirection[4];
+        float sunColor[4];
+        float textureParams[4];
+    };
+    const FakeBuffer* constantsBuffer = FindCreatedBuffer(
+        device, "SkyboxRecordConstants");
+    ASSERT_NE(constantsBuffer, nullptr);
+    SkyboxConstantsProbe constants{};
+    std::memcpy(&constants,
+                constantsBuffer->GetStorage().data(),
+                sizeof(constants));
+    EXPECT_FLOAT_EQ(0.12f, constants.zenithColor[0]);
+    EXPECT_FLOAT_EQ(1.25f, constants.zenithColor[3]);
+    EXPECT_FLOAT_EQ(0.6f, constants.horizonColor[0]);
+    EXPECT_FLOAT_EQ(1.5f, constants.horizonColor[3]);
+    EXPECT_FLOAT_EQ(0.1f, constants.groundColor[0]);
+    EXPECT_FLOAT_EQ(0.999f, constants.groundColor[3]);
+    EXPECT_FLOAT_EQ(0.25f, constants.sunDirection[0]);
+    EXPECT_FLOAT_EQ(1.0f, constants.sunDirection[3]);
+    EXPECT_FLOAT_EQ(0.95f, constants.sunColor[0]);
+    EXPECT_FLOAT_EQ(0.0f, constants.textureParams[0]);
 }
 
 TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDepthTarget)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
     view.viewportWidth = 64;
     view.viewportHeight = 64;
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
     pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
                                 Vec3{0.12f, 0.24f, 0.55f},
                                 Vec3{0.6f, 0.72f, 0.88f});
 
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::Procedural;
+    sky.tint = Vec3{0.12f, 0.24f, 0.55f};
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, view, scene, sky, 902, 902);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+
     RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
+    graph.Execute(ctx);
 
     ASSERT_EQ(ctx.beginRenderPassCount, 1u);
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
@@ -5068,27 +5185,43 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
     view.viewportWidth = 64;
     view.viewportHeight = 64;
     view.viewCache = &viewCache;
 
-    RHITextureDesc cubemapDesc = RHITextureDesc::Texture2D(16, 16, RHIFormat::RGBA8_UNORM);
-    cubemapDesc.dimension = RHITextureDimension::TextureCube;
-    cubemapDesc.arraySize = 1;
-    auto cubemap = device.CreateTexture(cubemapDesc);
+    Resource::TextureHandle cubemapResource = CreateCubemapTextureResource(910);
+    const RenderResourceHandle cubemapHandle =
+        gpuResources.ResolveOrUpload(cubemapResource.Get());
+    ASSERT_TRUE(cubemapHandle.IsValid());
+    RHITexture* cubemap = gpuResources.GetRegistry().ResolveTextureObject(cubemapHandle);
     ASSERT_NE(cubemap, nullptr);
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-    pass.SetCubemap(cubemap.Get(), 1.25f, 0.35f, 1.0f);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    pass.SetCubemap(cubemap, 1.25f, 0.35f, 1.0f);
 
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
     ASSERT_TRUE(pass.IsCubemapSelected());
-    EXPECT_EQ(pass.GetSelectedCubemap(), cubemap.Get());
+    EXPECT_EQ(pass.GetSelectedCubemap(), cubemap);
+
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::Cubemap;
+    sky.skyTexture = cubemapHandle;
+    sky.intensity = 1.25f;
+    sky.rotationRadians = 0.35f;
+    sky.blurLevel = 1.0f;
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, view, scene, sky, 903, 903);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
 
     RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
+    graph.Execute(ctx);
 
     ASSERT_EQ(ctx.beginRenderPassCount, 1u);
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
@@ -5101,7 +5234,8 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
         device.createdDescriptorSetDescs.end(),
         [](const RHIDescriptorSetDesc& desc)
         {
-            return desc.debugName && std::string(desc.debugName) == "SkyboxDescriptorSet";
+            return desc.debugName &&
+                   std::string(desc.debugName) == "SkyboxRecordDescriptorSet";
         });
     ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
     ASSERT_EQ(descriptorIt->bindings.size(), static_cast<size_t>(3));
@@ -5109,74 +5243,684 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
     EXPECT_NE(descriptorIt->bindings[0].buffer, nullptr);
     EXPECT_EQ(descriptorIt->bindings[1].binding, 1u);
     ASSERT_NE(descriptorIt->bindings[1].textureView, nullptr);
-    EXPECT_EQ(descriptorIt->bindings[1].textureView->GetTexture(), cubemap.Get());
+    EXPECT_EQ(descriptorIt->bindings[1].textureView->GetTexture(), cubemap);
     EXPECT_EQ(descriptorIt->bindings[2].binding, 2u);
     EXPECT_NE(descriptorIt->bindings[2].sampler, nullptr);
 }
 
-TEST_F(RenderPassValidationFixture, SkyboxPassSkipsCubemapDrawWhenSRVCreationFails)
+TEST_F(RenderPassValidationFixture, SkyboxPassFallsBackToTintWhenCubemapSRVCreationFails)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
-    RHITextureDesc cubemapDesc = RHITextureDesc::Texture2D(16, 16, RHIFormat::RGBA8_UNORM);
-    cubemapDesc.dimension = RHITextureDimension::TextureCube;
-    cubemapDesc.arraySize = 1;
-    auto cubemap = device.CreateTexture(cubemapDesc);
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+
+    Resource::TextureHandle cubemapResource = CreateCubemapTextureResource(911);
+    const RenderResourceHandle cubemapHandle =
+        gpuResources.ResolveOrUpload(cubemapResource.Get());
+    ASSERT_TRUE(cubemapHandle.IsValid());
+    RHITexture* cubemap = gpuResources.GetRegistry().ResolveTextureObject(cubemapHandle);
     ASSERT_NE(cubemap, nullptr);
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
-    pass.SetCubemap(cubemap.Get());
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    // Ensure the immutable fallback view exists before the selected cubemap
+    // SRV path is made to fail.
+    pass.SetSolidColor(Vec3{0.2f, 0.4f, 0.7f}, 0.8f);
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    ASSERT_NE(viewCache.GetDefaultRTV(colorTexture.Get()), nullptr);
 
     device.textureViewCreationSucceeds = false;
 
-    RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::Cubemap;
+    sky.skyTexture = cubemapHandle;
+    sky.tint = Vec3{0.2f, 0.4f, 0.7f};
+    sky.intensity = 0.8f;
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, view, scene, sky, 904, 904);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
 
-    EXPECT_TRUE(ctx.pipelineSequence.empty());
-    EXPECT_EQ(ctx.drawCount, 0u);
+    RecordingCommandContext ctx;
+    graph.Execute(ctx);
+
+    // A valid handle whose SRV cannot be resolved is a solid fallback, not a
+    // cross-frame failure or a direct read of SetCubemap state.
+    EXPECT_EQ(1u, ctx.drawCount);
+    ASSERT_EQ(1u, ctx.renderPasses.size());
+    const auto descriptorIt = std::find_if(
+        device.createdDescriptorSetDescs.begin(),
+        device.createdDescriptorSetDescs.end(),
+        [](const RHIDescriptorSetDesc& desc)
+        {
+            return desc.debugName &&
+                   std::string(desc.debugName) == "SkyboxRecordDescriptorSet";
+        });
+    ASSERT_NE(descriptorIt, device.createdDescriptorSetDescs.end());
+    ASSERT_GE(descriptorIt->bindings.size(), static_cast<size_t>(2));
+    EXPECT_NE(descriptorIt->bindings[1].textureView->GetTexture(), cubemap);
+}
+
+TEST_F(RenderPassValidationFixture,
+       SkyboxPassUsesTintFallbackForEquirectangularSnapshot)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    view.colorTarget = graph.ImportTexture(
+        colorTexture.Get(), RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    pass.SetSolidColor(Vec3{0.1f, 0.2f, 0.3f}, 1.0f);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::Equirectangular;
+    sky.skyTexture = RenderResourceHandle{900, 1};
+    sky.tint = Vec3{0.3f, 0.45f, 0.6f};
+    sky.intensity = 0.75f;
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, view, scene, sky, 907, 907);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+
+    RecordingCommandContext commands;
+    graph.Execute(commands);
+    ASSERT_EQ(1u, commands.drawCount);
+
+    const FakeBuffer* constantsBuffer = FindCreatedBuffer(
+        device, "SkyboxRecordConstants");
+    ASSERT_NE(constantsBuffer, nullptr);
+    struct EquirectangularFallbackConstants
+    {
+        float zenithColor[4];
+        float horizonColor[4];
+        float groundColor[4];
+        float sunDirection[4];
+        float sunColor[4];
+        float textureParams[4];
+    } constants{};
+    std::memcpy(&constants,
+                constantsBuffer->GetStorage().data(),
+                sizeof(constants));
+    EXPECT_FLOAT_EQ(0.3f, constants.zenithColor[0]);
+    EXPECT_FLOAT_EQ(0.75f, constants.zenithColor[3]);
+    EXPECT_FLOAT_EQ(0.45f, constants.horizonColor[1]);
+    EXPECT_FLOAT_EQ(0.0f, constants.horizonColor[3]);
+    EXPECT_FLOAT_EQ(0.0f, constants.textureParams[0]);
 }
 
 TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenSamplerCannotBeCreated)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
     device.samplerCreationSucceeds = false;
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
     pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
                                 Vec3{0.12f, 0.24f, 0.55f},
                                 Vec3{0.6f, 0.72f, 0.88f});
 
     EXPECT_FALSE(pass.IsSupported());
 
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::Procedural;
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, view, scene, sky, 905, 905);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+
     RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
+    graph.Execute(ctx);
 
     EXPECT_TRUE(ctx.pipelineSequence.empty());
     EXPECT_EQ(ctx.drawCount, 0u);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(1u, diagnostics.passes.size());
+    EXPECT_TRUE(diagnostics.passes[0].usages.empty());
 }
 
 TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenConstantsCannotMap)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    view.renderGraph = &graph;
+    view.viewCache = &viewCache;
+
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
-    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
     pass.SetProceduralSkyParams(Vec3{0.25f, 0.8f, 0.35f},
                                 Vec3{0.12f, 0.24f, 0.55f},
                                 Vec3{0.6f, 0.72f, 0.88f});
 
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::Procedural;
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, view, scene, sky, 906, 906);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+
     RecordingCommandContext ctx;
-    pass.Execute(ctx, view);
+    graph.Execute(ctx);
 
     EXPECT_TRUE(ctx.pipelineSequence.empty());
     EXPECT_EQ(ctx.drawCount, 0u);
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(1u, diagnostics.passes.size());
+    EXPECT_TRUE(diagnostics.passes[0].usages.empty());
+}
+
+TEST_F(RenderPassValidationFixture,
+       SkyboxPassTypedRecordingOwnsReverseSnapshotsConstantsAndAttachments)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(true, false, true);
+
+    struct SkyboxConstantsProbe
+    {
+        float zenithColor[4];
+        float horizonColor[4];
+        float groundColor[4];
+        float sunDirection[4];
+        float sunColor[4];
+        float textureParams[4];
+        float cameraPosition[4];
+        Mat4 inverseViewProjection;
+    };
+
+    const auto makeTargets = [this](uint32 extent, bool withDepth)
+    {
+        RHITextureRef color = device.CreateTexture(
+            RHITextureDesc::RenderTarget(extent, extent, RHIFormat::RGBA8_UNORM));
+        RHITextureRef depth = withDepth ? device.CreateTexture(
+            RHITextureDesc::DepthStencil(
+                extent, extent, PipelineCache::GetDefaultDepthStencilFormat()))
+            : RHITextureRef{};
+        return std::pair<RHITextureRef, RHITextureRef>(std::move(color), std::move(depth));
+    };
+    auto targetsA = makeTargets(64, true);
+    auto targetsB = makeTargets(128, false);
+    ASSERT_TRUE(targetsA.first);
+    ASSERT_TRUE(targetsA.second);
+    ASSERT_TRUE(targetsB.first);
+
+    Resource::TextureHandle cubemapResource = CreateCubemapTextureResource(912);
+    const RenderResourceHandle cubemapHandle =
+        gpuResources.ResolveOrUpload(cubemapResource.Get());
+    ASSERT_TRUE(cubemapHandle.IsValid());
+    RHITexture* cubemap = gpuResources.GetRegistry().ResolveTextureObject(cubemapHandle);
+    ASSERT_NE(cubemap, nullptr);
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    pass.SetSolidColor(Vec3{0.1f, 0.2f, 0.3f});
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    RenderGraph graphA;
+    RenderGraph graphB;
+    graphA.SetDevice(&device);
+    graphB.SetDevice(&device);
+    ViewData viewA = view;
+    viewA.renderGraph = &graphA;
+    viewA.viewCache = &viewCache;
+    viewA.colorTarget = graphA.ImportTexture(
+        targetsA.first.Get(), RHIResourceState::RenderTarget);
+    viewA.depthTarget = graphA.ImportTexture(
+        targetsA.second.Get(), RHIResourceState::DepthRead);
+    viewA.viewportWidth = 64;
+    viewA.viewportHeight = 64;
+    viewA.cameraPosition = Vec3{2.0f, 3.0f, 4.0f};
+    ViewData viewB = view;
+    viewB.renderGraph = &graphB;
+    viewB.viewCache = &viewCache;
+    viewB.colorTarget = graphB.ImportTexture(
+        targetsB.first.Get(), RHIResourceState::RenderTarget);
+    viewB.viewportWidth = 128;
+    viewB.viewportHeight = 128;
+    viewB.cameraPosition = Vec3{9.0f, 8.0f, 7.0f};
+
+    RenderSkySnapshot skyA;
+    skyA.mode = RenderSkyMode::SolidColor;
+    skyA.tint = Vec3{0.15f, 0.25f, 0.35f};
+    skyA.intensity = 1.5f;
+    RenderSkySnapshot skyB;
+    skyB.mode = RenderSkyMode::Cubemap;
+    skyB.skyTexture = cubemapHandle;
+    skyB.tint = Vec3{0.8f, 0.7f, 0.6f};
+    skyB.intensity = 0.75f;
+    skyB.rotationRadians = 0.55f;
+    skyB.blurLevel = 2.0f;
+    RenderPassRecordContext contextA = MakeSkyboxRecordContext(
+        graphA, viewA, scene, skyA, 920, 920);
+    RenderPassRecordContext contextB = MakeSkyboxRecordContext(
+        graphB, viewB, scene, skyB, 921, 921);
+    pass.AddToGraph(graphA, contextA);
+    pass.AddToGraph(graphB, contextB);
+
+    // Neither pass mutable state nor a caller replacement of the source
+    // context can change already-registered graph recording input.
+    pass.SetCubemap(cubemap, 99.0f, 2.0f, 4.0f);
+    auto replacementSnapshot = std::make_shared<RenderPassFrameSnapshot>(
+        *contextA.frameSnapshot);
+    replacementSnapshot->sky.tint = Vec3{9.0f, 9.0f, 9.0f};
+    replacementSnapshot->view.renderFrameExecutionPlan =
+        &replacementSnapshot->executionPlan;
+    replacementSnapshot->view.meshPassPreparation =
+        &replacementSnapshot->meshPassPreparation;
+    replacementSnapshot->view.renderVisibility = &replacementSnapshot->visibility;
+    replacementSnapshot->view.renderFrameExecutionReport =
+        &contextA.results->executionReport;
+    contextA.frameSnapshot = std::move(replacementSnapshot);
+
+    graphA.Compile();
+    graphB.Compile();
+    ASSERT_TRUE(graphA.GetCompileStats().compileValid);
+    ASSERT_TRUE(graphB.GetCompileStats().compileValid);
+    const auto expectAccesses = [](const RenderGraph& graph,
+                                   RGTextureHandle color,
+                                   RGTextureHandle depth,
+                                   bool expectsDepth)
+    {
+        const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+        ASSERT_EQ(1u, diagnostics.passes.size());
+        const auto colorUsage = std::find_if(
+            diagnostics.passes[0].usages.begin(), diagnostics.passes[0].usages.end(),
+            [color](const RenderGraph::ResourceUsageDiagnostic& usage)
+            {
+                return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                       usage.resourceIndex == color.index;
+            });
+        ASSERT_NE(diagnostics.passes[0].usages.end(), colorUsage);
+        EXPECT_EQ(RenderGraph::DiagnosticAccessType::ReadWrite, colorUsage->access);
+        EXPECT_EQ(RHIResourceState::RenderTarget, colorUsage->desiredState);
+        if (expectsDepth)
+        {
+            const auto depthUsage = std::find_if(
+                diagnostics.passes[0].usages.begin(), diagnostics.passes[0].usages.end(),
+                [depth](const RenderGraph::ResourceUsageDiagnostic& usage)
+                {
+                    return usage.type == RenderGraph::DiagnosticResourceType::Texture &&
+                           usage.resourceIndex == depth.index;
+                });
+            ASSERT_NE(diagnostics.passes[0].usages.end(), depthUsage);
+            EXPECT_EQ(RenderGraph::DiagnosticAccessType::Read, depthUsage->access);
+            EXPECT_EQ(RHIResourceState::DepthRead, depthUsage->desiredState);
+        }
+    };
+    expectAccesses(graphA, contextA.view.colorTarget, contextA.view.depthTarget, true);
+    expectAccesses(graphB, contextB.view.colorTarget, contextB.view.depthTarget, false);
+
+    std::vector<FakeBuffer*> recordConstants;
+    for (size_t index = 0; index < device.createdBuffers.size(); ++index)
+    {
+        const char* name = device.createdBufferDescs[index].debugName;
+        if (name && std::string(name) == "SkyboxRecordConstants")
+        {
+            recordConstants.push_back(device.createdBuffers[index]);
+        }
+    }
+    ASSERT_EQ(2u, recordConstants.size());
+    SkyboxConstantsProbe constantsA{};
+    SkyboxConstantsProbe constantsB{};
+    std::memcpy(&constantsA, recordConstants[0]->GetStorage().data(), sizeof(constantsA));
+    std::memcpy(&constantsB, recordConstants[1]->GetStorage().data(), sizeof(constantsB));
+    EXPECT_FLOAT_EQ(0.15f, constantsA.zenithColor[0]);
+    EXPECT_FLOAT_EQ(1.5f, constantsA.zenithColor[3]);
+    EXPECT_FLOAT_EQ(0.0f, constantsA.textureParams[0]);
+    EXPECT_FLOAT_EQ(0.001f, constantsA.groundColor[3]);
+    EXPECT_FLOAT_EQ(2.0f, constantsA.cameraPosition[0]);
+    EXPECT_FLOAT_EQ(1.0f, constantsB.textureParams[0]);
+    EXPECT_FLOAT_EQ(2.0f, constantsB.textureParams[1]);
+    EXPECT_FLOAT_EQ(0.55f, constantsB.textureParams[2]);
+    EXPECT_FLOAT_EQ(9.0f, constantsB.cameraPosition[0]);
+
+    std::vector<size_t> recordDescriptorIndices;
+    for (size_t index = 0; index < device.createdDescriptorSetDescs.size(); ++index)
+    {
+        const char* name = device.createdDescriptorSetDescs[index].debugName;
+        if (name && std::string(name) == "SkyboxRecordDescriptorSet")
+        {
+            recordDescriptorIndices.push_back(index);
+        }
+    }
+    ASSERT_EQ(2u, recordDescriptorIndices.size());
+    const RHIDescriptorSetDesc& descriptorA =
+        device.createdDescriptorSetDescs[recordDescriptorIndices[0]];
+    const RHIDescriptorSetDesc& descriptorB =
+        device.createdDescriptorSetDescs[recordDescriptorIndices[1]];
+    ASSERT_EQ(3u, descriptorA.bindings.size());
+    ASSERT_EQ(3u, descriptorB.bindings.size());
+    EXPECT_EQ(0u, descriptorA.bindings[0].binding);
+    EXPECT_EQ(0u, descriptorB.bindings[0].binding);
+    EXPECT_NE(descriptorA.bindings[0].buffer, descriptorB.bindings[0].buffer);
+    EXPECT_EQ(1u, descriptorA.bindings[1].binding);
+    EXPECT_EQ(1u, descriptorB.bindings[1].binding);
+    ASSERT_NE(descriptorA.bindings[1].textureView, nullptr);
+    ASSERT_NE(descriptorB.bindings[1].textureView, nullptr);
+    EXPECT_NE(cubemap, descriptorA.bindings[1].textureView->GetTexture());
+    EXPECT_EQ(cubemap, descriptorB.bindings[1].textureView->GetTexture());
+    EXPECT_EQ(2u, descriptorA.bindings[2].binding);
+    EXPECT_EQ(2u, descriptorB.bindings[2].binding);
+    EXPECT_NE(descriptorA.bindings[2].sampler, nullptr);
+    EXPECT_NE(descriptorB.bindings[2].sampler, nullptr);
+    EXPECT_EQ(pipelineCache.GetSkyboxSetLayout(), descriptorA.layout);
+    EXPECT_EQ(pipelineCache.GetSkyboxSetLayout(), descriptorB.layout);
+    EXPECT_TRUE(device.createdDescriptorSets[recordDescriptorIndices[0]]
+                    ->IsReadyForBinding(pipelineCache.GetSkyboxSetLayout()));
+    EXPECT_TRUE(device.createdDescriptorSets[recordDescriptorIndices[1]]
+                    ->IsReadyForBinding(pipelineCache.GetSkyboxSetLayout()));
+
+    RecordingCommandContext commandsB;
+    RecordingCommandContext commandsA;
+    graphB.Execute(commandsB);
+    graphA.Execute(commandsA);
+    ASSERT_EQ(1u, commandsA.drawCount);
+    ASSERT_EQ(1u, commandsB.drawCount);
+    ASSERT_EQ(1u, commandsA.renderPasses.size());
+    ASSERT_EQ(1u, commandsB.renderPasses.size());
+    EXPECT_EQ(targetsA.first.Get(),
+              commandsA.renderPasses[0].colorAttachments[0].view->GetTexture());
+    EXPECT_EQ(targetsB.first.Get(),
+              commandsB.renderPasses[0].colorAttachments[0].view->GetTexture());
+    EXPECT_EQ(RHILoadOp::Load,
+              commandsA.renderPasses[0].colorAttachments[0].loadOp);
+    EXPECT_EQ(RHIStoreOp::Store,
+              commandsA.renderPasses[0].colorAttachments[0].storeOp);
+    EXPECT_TRUE(commandsA.renderPasses[0].hasDepthStencil);
+    EXPECT_EQ(RHILoadOp::Load,
+              commandsA.renderPasses[0].depthStencilAttachment.depthLoadOp);
+    EXPECT_EQ(RHIStoreOp::Store,
+              commandsA.renderPasses[0].depthStencilAttachment.depthStoreOp);
+    EXPECT_TRUE(commandsA.renderPasses[0].depthStencilAttachment.readOnly);
+    EXPECT_FALSE(commandsB.renderPasses[0].hasDepthStencil);
+}
+
+TEST_F(RenderPassValidationFixture,
+       SkyboxPassTypedPathFailsClosedForLegacyAndMalformedRecordings)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    pass.SetSolidColor(Vec3{0.3f, 0.4f, 0.5f});
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+
+    const auto makeColor = [this](uint32 extent)
+    {
+        return device.CreateTexture(
+            RHITextureDesc::RenderTarget(extent, extent, RHIFormat::RGBA8_UNORM));
+    };
+    const auto makeContext = [&](RenderGraph& graph,
+                                 RHITexture* color,
+                                 uint64 sequence,
+                                 RenderSubmissionResourceBatch* batch = nullptr)
+    {
+        ViewData recordView = view;
+        recordView.renderGraph = &graph;
+        recordView.viewCache = &viewCache;
+        recordView.colorTarget = graph.ImportTexture(
+            color, RHIResourceState::RenderTarget);
+        RenderSkySnapshot sky;
+        sky.mode = RenderSkyMode::SolidColor;
+        sky.tint = Vec3{0.3f, 0.4f, 0.5f};
+        return MakeSkyboxRecordContext(
+            graph, recordView, scene, sky, sequence, sequence, batch);
+    };
+    const auto expectNoUsageOrCommands = [](RenderGraph& graph,
+                                             RecordingCommandContext& commands)
+    {
+        graph.Compile();
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+        ASSERT_EQ(1u, diagnostics.passes.size());
+        EXPECT_TRUE(diagnostics.passes[0].usages.empty());
+        graph.Execute(commands);
+        EXPECT_EQ(0u, commands.beginRenderPassCount);
+        EXPECT_EQ(0u, commands.drawCount);
+    };
+
+    // Legacy setters and the ViewData overload cannot recover an execution
+    // mailbox, and the old Setup/Execute entry points are inert too.
+    RenderGraph legacyGraph;
+    legacyGraph.SetDevice(&device);
+    RHITextureRef legacyColor = makeColor(64);
+    ASSERT_TRUE(legacyColor);
+    ViewData legacyView = view;
+    legacyView.renderGraph = &legacyGraph;
+    legacyView.viewCache = &viewCache;
+    legacyView.colorTarget = legacyGraph.ImportTexture(
+        legacyColor.Get(), RHIResourceState::RenderTarget);
+    pass.SetRenderTargets(colorView.Get(), nullptr);
+    pass.AddToGraph(legacyGraph, legacyView);
+    RecordingCommandContext legacyCommands;
+    expectNoUsageOrCommands(legacyGraph, legacyCommands);
+    RecordingCommandContext legacyHookCommands;
+    pass.Execute(legacyHookCommands, legacyView);
+    EXPECT_EQ(0u, legacyHookCommands.drawCount);
+
+    // A missing color target and a disabled pass do not publish attachments.
+    RenderGraph missingColorGraph;
+    missingColorGraph.SetDevice(&device);
+    ViewData missingColorView = view;
+    missingColorView.renderGraph = &missingColorGraph;
+    missingColorView.viewCache = &viewCache;
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::SolidColor;
+    RenderPassRecordContext missingColor = MakeSkyboxRecordContext(
+        missingColorGraph, missingColorView, scene, sky, 930, 930);
+    pass.AddToGraph(missingColorGraph, missingColor);
+    RecordingCommandContext missingColorCommands;
+    expectNoUsageOrCommands(missingColorGraph, missingColorCommands);
+
+    pass.SetEnabled(false);
+    RenderGraph disabledGraph;
+    disabledGraph.SetDevice(&device);
+    RHITextureRef disabledColor = makeColor(64);
+    ASSERT_TRUE(disabledColor);
+    RenderPassRecordContext disabled = makeContext(
+        disabledGraph, disabledColor.Get(), 931);
+    pass.AddToGraph(disabledGraph, disabled);
+    RecordingCommandContext disabledCommands;
+    expectNoUsageOrCommands(disabledGraph, disabledCommands);
+    pass.SetEnabled(true);
+
+    // A disabled packet is a complete, explicit no-op even while the
+    // compatibility bridge has a supported sky configured from another frame.
+    RenderGraph disabledSkyGraph;
+    disabledSkyGraph.SetDevice(&device);
+    RHITextureRef disabledSkyColor = makeColor(64);
+    ASSERT_TRUE(disabledSkyColor);
+    ViewData disabledSkyView = view;
+    disabledSkyView.renderGraph = &disabledSkyGraph;
+    disabledSkyView.viewCache = &viewCache;
+    disabledSkyView.colorTarget = disabledSkyGraph.ImportTexture(
+        disabledSkyColor.Get(), RHIResourceState::RenderTarget);
+    RenderSkySnapshot disabledSky;
+    disabledSky.mode = RenderSkyMode::Disabled;
+    RenderPassRecordContext disabledSkyContext = MakeSkyboxRecordContext(
+        disabledSkyGraph, disabledSkyView, scene, disabledSky, 937, 937);
+    pass.AddToGraph(disabledSkyGraph, disabledSkyContext);
+    RecordingCommandContext disabledSkyCommands;
+    expectNoUsageOrCommands(disabledSkyGraph, disabledSkyCommands);
+
+    // Foreign result/snapshot pairing, stale and forged handles, and a
+    // self-graph incomplete snapshot all fail before any graph declaration.
+    RenderGraph sourceGraph;
+    RenderGraph foreignGraph;
+    sourceGraph.SetDevice(&device);
+    foreignGraph.SetDevice(&device);
+    RHITextureRef sourceColor = makeColor(64);
+    ASSERT_TRUE(sourceColor);
+    RenderPassRecordContext foreign = makeContext(
+        sourceGraph, sourceColor.Get(), 932);
+    foreign.results->opaqueStats.directDrawCount = 777;
+    foreign.frameSnapshot.reset();
+    pass.AddToGraph(foreignGraph, foreign);
+    RecordingCommandContext foreignCommands;
+    expectNoUsageOrCommands(foreignGraph, foreignCommands);
+    EXPECT_EQ(777u, foreign.results->opaqueStats.directDrawCount);
+    EXPECT_EQ(foreign.identity, foreign.results->identity);
+
+    RenderGraph staleSourceGraph;
+    RenderGraph staleGraph;
+    staleSourceGraph.SetDevice(&device);
+    staleGraph.SetDevice(&device);
+    RHITextureRef staleColor = makeColor(64);
+    ASSERT_TRUE(staleColor);
+    ViewData staleView = view;
+    staleView.renderGraph = &staleGraph;
+    staleView.viewCache = &viewCache;
+    staleView.colorTarget = staleSourceGraph.ImportTexture(
+        staleColor.Get(), RHIResourceState::RenderTarget);
+    RenderPassRecordContext stale = MakeSkyboxRecordContext(
+        staleGraph, staleView, scene, sky, 933, 933);
+    pass.AddToGraph(staleGraph, stale);
+    RecordingCommandContext staleCommands;
+    expectNoUsageOrCommands(staleGraph, staleCommands);
+
+    RenderGraph forgedGraph;
+    forgedGraph.SetDevice(&device);
+    RGTextureHandle forgedColor;
+    forgedColor.index = 0;
+    forgedColor.graphIdentity = forgedGraph.GetGraphIdentity();
+    forgedColor.recordingGeneration = forgedGraph.GetRecordingGeneration();
+    ViewData forgedView = view;
+    forgedView.renderGraph = &forgedGraph;
+    forgedView.viewCache = &viewCache;
+    forgedView.colorTarget = forgedColor;
+    RenderPassRecordContext forged = MakeSkyboxRecordContext(
+        forgedGraph, forgedView, scene, sky, 934, 934);
+    pass.AddToGraph(forgedGraph, forged);
+    RecordingCommandContext forgedCommands;
+    expectNoUsageOrCommands(forgedGraph, forgedCommands);
+
+    RenderGraph incompleteGraph;
+    incompleteGraph.SetDevice(&device);
+    RHITextureRef incompleteColor = makeColor(64);
+    ASSERT_TRUE(incompleteColor);
+    RenderPassRecordContext incomplete = makeContext(
+        incompleteGraph, incompleteColor.Get(), 935);
+    incomplete.frameSnapshot.reset();
+    pass.AddToGraph(incompleteGraph, incomplete);
+    RecordingCommandContext incompleteCommands;
+    expectNoUsageOrCommands(incompleteGraph, incompleteCommands);
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+    RenderSubmissionResourceBatch sealedBatch;
+    sealedBatch.ReleaseUnsubmitted(retirement);
+    ASSERT_TRUE(sealedBatch.IsSealed());
+    RenderGraph sealedGraph;
+    sealedGraph.SetDevice(&device);
+    RHITextureRef sealedColor = makeColor(64);
+    ASSERT_TRUE(sealedColor);
+    RenderPassRecordContext sealed = makeContext(
+        sealedGraph, sealedColor.Get(), 936, &sealedBatch);
+    pass.AddToGraph(sealedGraph, sealed);
+    RecordingCommandContext sealedCommands;
+    expectNoUsageOrCommands(sealedGraph, sealedCommands);
+    EXPECT_EQ(GPUCompletionStatus::Completed, retirement.Poll());
+    tracker.Shutdown();
+}
+
+TEST_F(RenderPassValidationFixture,
+       SkyboxPassSubmissionRetainsRecordingResourcesUntilCompletion)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+    device.SetFenceAutoComplete(false);
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+
+    SkyboxPass pass;
+    pass.SetResources(&pipelineCache);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    pass.SetSolidColor(Vec3{0.25f, 0.5f, 0.75f}, 1.25f);
+    ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
+    RHIPipelineLayoutRef layoutProbe(pipelineCache.GetSkyboxLayout());
+    ASSERT_TRUE(layoutProbe);
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    RHITextureRef color = device.CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    RHITextureRef depth = device.CreateTexture(
+        RHITextureDesc::DepthStencil(
+            64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
+    ASSERT_TRUE(color);
+    ASSERT_TRUE(depth);
+    ViewData recordView = view;
+    recordView.renderGraph = &graph;
+    recordView.viewCache = &viewCache;
+    recordView.colorTarget = graph.ImportTexture(
+        color.Get(), RHIResourceState::RenderTarget);
+    recordView.depthTarget = graph.ImportTexture(
+        depth.Get(), RHIResourceState::DepthRead);
+    recordView.viewportWidth = 64;
+    recordView.viewportHeight = 64;
+    RenderSubmissionResourceBatch batch;
+    RenderSkySnapshot sky;
+    sky.mode = RenderSkyMode::SolidColor;
+    sky.tint = Vec3{0.25f, 0.5f, 0.75f};
+    sky.intensity = 1.25f;
+    RenderPassRecordContext context = MakeSkyboxRecordContext(
+        graph, recordView, scene, sky, 940, 940, &batch);
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    ASSERT_GT(batch.GetRetainedObjectCount(), 0u);
+
+    const uint32 retainedBeforeExecute = batch.GetRetainedObjectCount();
+    RecordingCommandContext commands;
+    graph.Execute(commands);
+    EXPECT_EQ(1u, commands.beginRenderPassCount);
+    EXPECT_EQ(1u, commands.drawCount);
+    EXPECT_GT(batch.GetRetainedObjectCount(), retainedBeforeExecute);
+
+    GPUCompletionToken completion;
+    ASSERT_TRUE(InsertGPUCompletionPoint(completion, tracker.Submit(&commands)));
+    batch.SealAndTransfer(completion, retirement);
+    EXPECT_TRUE(batch.IsSealed());
+    EXPECT_EQ(0u, batch.GetRetainedObjectCount());
+    ASSERT_GT(retirement.GetDiagnostics().entryCount, 0u);
+
+    graph.Clear();
+    pipelineCache.Shutdown();
+    EXPECT_GT(layoutProbe->GetRefCount(), 1u);
+    FakeFence* const completionFence =
+        device.FindFenceWithSignal(completion.points[0].value);
+    ASSERT_NE(completionFence, nullptr);
+    completionFence->Complete(completion.points[0].value);
+    EXPECT_EQ(GPUCompletionStatus::Completed, retirement.Poll());
+    EXPECT_EQ(1u, layoutProbe->GetRefCount());
+    tracker.Shutdown();
 }
 
 TEST_F(RenderPassValidationFixture, ToneMappingRequiresResourcesBeforeReportingSupported)

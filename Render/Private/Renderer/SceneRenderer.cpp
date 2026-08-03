@@ -1122,6 +1122,10 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     {
         m_transparentPass->SetResourceRegistry(&registry);
     }
+    if (m_skyboxPass)
+    {
+        m_skyboxPass->SetResourceRegistry(&registry);
+    }
     if (m_rayTracedShadowPass)
     {
         m_rayTracedShadowPass->SetResourceRegistry(&registry);
@@ -1277,20 +1281,48 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     if (m_skyboxPass)
     {
         const RenderSkySnapshot& sky = m_renderScene.GetSky();
-        RHITexture* texture = sky.skyTexture.IsValid()
-                                  ? registry.ResolveTextureObject(
-                                        sky.skyTexture)
-                                  : nullptr;
-        if (texture != nullptr)
+        switch (sky.mode)
         {
-            m_skyboxPass->SetCubemap(texture,
-                                     sky.intensity,
-                                     sky.rotationRadians,
-                                     0.0f);
-        }
-        else
-        {
-            m_skyboxPass->SetSolidColor(sky.tint, sky.intensity);
+            case RenderSkyMode::Cubemap:
+            {
+                RHITexture* texture = sky.skyTexture.IsValid()
+                    ? registry.ResolveTextureObject(sky.skyTexture)
+                    : nullptr;
+                if (texture != nullptr)
+                {
+                    m_skyboxPass->SetCubemap(texture,
+                                              sky.intensity,
+                                              sky.rotationRadians,
+                                              sky.blurLevel);
+                }
+                else
+                {
+                    m_skyboxPass->SetSolidColor(sky.tint, sky.intensity);
+                }
+                break;
+            }
+            case RenderSkyMode::Procedural:
+                m_skyboxPass->SetProceduralSkyParams(
+                    sky.sunDirection,
+                    sky.zenithColor,
+                    sky.horizonColor,
+                    sky.groundColor,
+                    sky.sunColor,
+                    sky.intensity,
+                    sky.scatteringIntensity);
+                break;
+            case RenderSkyMode::SolidColor:
+                m_skyboxPass->SetSolidColor(sky.tint, sky.intensity);
+                break;
+            case RenderSkyMode::Equirectangular:
+                // Equirectangular-to-cubemap conversion is not part of the
+                // current RHI/shader contract. Preserve a deterministic packet
+                // fallback instead of silently selecting stale cubemap state.
+                m_skyboxPass->SetSolidColor(sky.tint, sky.intensity);
+                break;
+            case RenderSkyMode::Disabled:
+                m_skyboxPass->ClearSkybox("SkyboxDisabledByFramePacket");
+                break;
         }
     }
 
@@ -4495,12 +4527,13 @@ void SceneRenderer::BuildRenderGraph()
             }
         }
 
-        // Shadow/Depth/Opaque/ObjectVelocity/Transparent consume the explicit
+        // Shadow/Depth/Opaque/Skybox/ObjectVelocity/Transparent consume the explicit
         // graph-owned record context; remaining passes retain the Task 9B
         // compatibility adapter.
         if (pass.get() == m_shadowPass || pass.get() == m_depthPrepass ||
             pass.get() == m_rayTracedShadowPass || pass.get() == m_opaquePass ||
-            pass.get() == m_objectVelocityPass || pass.get() == m_transparentPass)
+            pass.get() == m_skyboxPass || pass.get() == m_objectVelocityPass ||
+            pass.get() == m_transparentPass)
         {
             pass->AddToGraph(*m_renderGraph, passRecordContext);
         }
@@ -4813,6 +4846,7 @@ void SceneRenderer::SetupDefaultPasses()
 
     auto skyboxPass = std::make_unique<SkyboxPass>();
     skyboxPass->SetResources(m_pipelineCache.get());
+    skyboxPass->SetResourceRegistry(m_renderResourceRegistry);
     m_skyboxPass = skyboxPass.get();
     AddPass(std::move(skyboxPass));
 

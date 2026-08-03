@@ -1185,7 +1185,7 @@ TEST_F(GPUDrivenValidationFixture, DrawItemsMapBackThroughVisibleSourceIndices)
     EXPECT_EQ(1u, stats.distanceCulled);
 }
 
-TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourceBinding)
+TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforePassResourceBinding)
 {
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
@@ -1232,18 +1232,18 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresGpuCullingBeforePassResourc
 
     const size_t buildDrawLists = source.find("void SceneRenderer::BuildMaterialDrawLists()");
     ASSERT_NE(buildDrawLists, std::string::npos);
-    const size_t prepareMeshPasses = source.find("PrepareMeshPassPackets();", buildDrawLists);
-    const size_t objectVelocityBind = source.find("m_objectVelocityPass->SetRenderScene", buildDrawLists);
     const size_t prepareMeshDefinition =
         source.find("void SceneRenderer::PrepareMeshPassPackets()", buildDrawLists);
-    ASSERT_NE(prepareMeshPasses, std::string::npos);
-    ASSERT_NE(objectVelocityBind, std::string::npos);
     ASSERT_NE(prepareMeshDefinition, std::string::npos);
-    EXPECT_LT(prepareMeshPasses, objectVelocityBind);
-    EXPECT_EQ(source.substr(buildDrawLists,
-                            prepareMeshDefinition - buildDrawLists)
-                  .find("BuildGPUDrivenVisibilityInputs();"),
-              std::string::npos);
+    const std::string buildMaterialSegment =
+        source.substr(buildDrawLists, prepareMeshDefinition - buildDrawLists);
+    const size_t prepareMeshPasses = buildMaterialSegment.find("PrepareMeshPassPackets();");
+    ASSERT_NE(prepareMeshPasses, std::string::npos);
+    EXPECT_LT(prepareMeshPasses, prepareMeshDefinition - buildDrawLists);
+    EXPECT_EQ(buildMaterialSegment.find("BuildGPUDrivenVisibilityInputs();"), std::string::npos);
+    EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetRenderScene"), std::string::npos);
+    EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetRenderTargets"), std::string::npos);
+    EXPECT_EQ(buildMaterialSegment.find("m_objectVelocityPass->SetDrawItems"), std::string::npos);
 
     const size_t renderDefinition = source.find("void SceneRenderer::Render()");
     const size_t compileCall = source.find("CompileRenderFramePlan();", renderDefinition);

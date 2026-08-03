@@ -236,9 +236,34 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
     SceneSkyboxSnapshot extractedSky;
     if (SceneSkyboxPassBridge{}.Extract(input.world, extractedSky))
     {
+        switch (extractedSky.mode)
+        {
+            case SceneSkyboxSnapshotMode::Disabled:
+                sky.mode = RenderSkyMode::Disabled;
+                break;
+            case SceneSkyboxSnapshotMode::Cubemap:
+                sky.mode = RenderSkyMode::Cubemap;
+                break;
+            case SceneSkyboxSnapshotMode::Equirectangular:
+                sky.mode = RenderSkyMode::Equirectangular;
+                break;
+            case SceneSkyboxSnapshotMode::Procedural:
+                sky.mode = RenderSkyMode::Procedural;
+                break;
+            case SceneSkyboxSnapshotMode::SolidColor:
+                sky.mode = RenderSkyMode::SolidColor;
+                break;
+        }
         sky.tint = extractedSky.tint;
+        sky.sunDirection = extractedSky.sunDirection;
+        sky.sunColor = extractedSky.sunColor;
+        sky.zenithColor = extractedSky.zenithColor;
+        sky.horizonColor = extractedSky.horizonColor;
+        sky.groundColor = extractedSky.groundColor;
         sky.intensity = extractedSky.intensity;
         sky.rotationRadians = extractedSky.rotationRadians;
+        sky.blurLevel = extractedSky.blurLevel;
+        sky.scatteringIntensity = extractedSky.scatteringIntensity;
         if (extractedSky.textureAssetId.IsValid())
         {
             const Resource::RenderResourceResolveResult resolved =

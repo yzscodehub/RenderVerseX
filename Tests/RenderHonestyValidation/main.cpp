@@ -3293,12 +3293,14 @@ TEST_F(RenderHonestyValidationFixture, RenderGraphCompileDiagnosticsExposeInvali
 
     const auto& diagnostics = graph.GetCompileDiagnostics();
     ASSERT_FALSE(diagnostics.empty());
+    const std::string invalidHandleText = std::string("invalid texture handle ") +
+                                         std::to_string(RVX::RVX_INVALID_INDEX);
     EXPECT_NE(std::find_if(diagnostics.begin(),
                            diagnostics.end(),
-                           [](const std::string& diagnostic)
+                           [invalidHandleText](const std::string& diagnostic)
                            {
                                return diagnostic.find("InvalidDiagnosticPass") != std::string::npos &&
-                                      diagnostic.find("invalid texture handle 99") != std::string::npos;
+                                      diagnostic.find(invalidHandleText) != std::string::npos;
                            }),
               diagnostics.end());
 }

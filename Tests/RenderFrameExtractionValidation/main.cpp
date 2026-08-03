@@ -413,6 +413,13 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
     sky->SetCubemap(SceneTextureHandle(unresolvedHandle));
     sky->SetExposure(1.75f);
     sky->SetRotation(0.5f);
+    sky->SetBlurLevel(2.25f);
+    sky->SetSunDirection(Vec3{0.0f, 1.0f, 0.0f});
+    sky->SetSunColor(Vec3{0.9f, 0.8f, 0.7f});
+    sky->SetZenithColor(Vec3{0.15f, 0.35f, 0.75f});
+    sky->SetHorizonColor(Vec3{0.65f, 0.75f, 0.85f});
+    sky->SetGroundColor(Vec3{0.25f, 0.2f, 0.15f});
+    sky->SetScatteringIntensity(1.5f);
 
     RenderFrameExtractor extractor;
     RenderFrameExtractionResult extraction =
@@ -451,9 +458,27 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
     EXPECT_FLOAT_EQ(packet->GetLights()[0].intensity, 4.0f);
     EXPECT_TRUE(packet->GetLights()[0].castsShadows);
     EXPECT_FALSE(packet->GetLights()[0].shadowResource.IsValid());
+    EXPECT_EQ(packet->GetSky().mode, RenderSkyMode::Cubemap);
     EXPECT_FALSE(packet->GetSky().skyTexture.IsValid());
     EXPECT_FLOAT_EQ(packet->GetSky().intensity, 1.75f);
     EXPECT_FLOAT_EQ(packet->GetSky().rotationRadians, 0.5f);
+    EXPECT_FLOAT_EQ(packet->GetSky().blurLevel, 2.25f);
+    EXPECT_FLOAT_EQ(packet->GetSky().sunDirection.x, 0.0f);
+    EXPECT_FLOAT_EQ(packet->GetSky().sunDirection.y, 1.0f);
+    EXPECT_FLOAT_EQ(packet->GetSky().sunDirection.z, 0.0f);
+    EXPECT_FLOAT_EQ(packet->GetSky().sunColor.x, 0.9f);
+    EXPECT_FLOAT_EQ(packet->GetSky().sunColor.y, 0.8f);
+    EXPECT_FLOAT_EQ(packet->GetSky().sunColor.z, 0.7f);
+    EXPECT_FLOAT_EQ(packet->GetSky().zenithColor.x, 0.15f);
+    EXPECT_FLOAT_EQ(packet->GetSky().zenithColor.y, 0.35f);
+    EXPECT_FLOAT_EQ(packet->GetSky().zenithColor.z, 0.75f);
+    EXPECT_FLOAT_EQ(packet->GetSky().horizonColor.x, 0.65f);
+    EXPECT_FLOAT_EQ(packet->GetSky().horizonColor.y, 0.75f);
+    EXPECT_FLOAT_EQ(packet->GetSky().horizonColor.z, 0.85f);
+    EXPECT_FLOAT_EQ(packet->GetSky().groundColor.x, 0.25f);
+    EXPECT_FLOAT_EQ(packet->GetSky().groundColor.y, 0.2f);
+    EXPECT_FLOAT_EQ(packet->GetSky().groundColor.z, 0.15f);
+    EXPECT_FLOAT_EQ(packet->GetSky().scatteringIntensity, 1.5f);
     EXPECT_FALSE(packet->GetEnvironment().irradianceTexture.IsValid());
     EXPECT_EQ(packet->GetFeatures().particles.items[0].systemName,
               "owned-particle");

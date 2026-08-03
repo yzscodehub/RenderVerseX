@@ -1227,6 +1227,86 @@ namespace
             NumericFamilyCase::Environment,
             NumericFamilyCase::Settings));
 
+    enum class SkyExtendedNumericField : uint8
+    {
+        SunDirection,
+        SunColor,
+        ZenithColor,
+        HorizonColor,
+        GroundColor,
+        BlurLevel,
+        ScatteringIntensity
+    };
+
+    class RenderContractsValidationSkyExtendedNumerics :
+        public testing::TestWithParam<SkyExtendedNumericField>
+    {
+    };
+
+    TEST_P(RenderContractsValidationSkyExtendedNumerics,
+           RejectsNonFiniteSkySnapshotFields)
+    {
+        RenderFramePacketBuilder builder;
+        PopulateCompletePacketBuilder(builder);
+        RenderSkySnapshot sky;
+        sky.mode = RenderSkyMode::Procedural;
+        const float32 nan = std::numeric_limits<float32>::quiet_NaN();
+
+        switch (GetParam())
+        {
+            case SkyExtendedNumericField::SunDirection:
+                sky.sunDirection.x = nan;
+                break;
+            case SkyExtendedNumericField::SunColor:
+                sky.sunColor.y = nan;
+                break;
+            case SkyExtendedNumericField::ZenithColor:
+                sky.zenithColor.z = nan;
+                break;
+            case SkyExtendedNumericField::HorizonColor:
+                sky.horizonColor.x = nan;
+                break;
+            case SkyExtendedNumericField::GroundColor:
+                sky.groundColor.y = nan;
+                break;
+            case SkyExtendedNumericField::BlurLevel:
+                sky.blurLevel = nan;
+                break;
+            case SkyExtendedNumericField::ScatteringIntensity:
+                sky.scatteringIntensity = nan;
+                break;
+        }
+
+        ASSERT_TRUE(builder.SetSky(sky));
+        EXPECT_FALSE(builder.Seal());
+        EXPECT_EQ(builder.GetLastSealCode(),
+                  RenderFrameSealCode::InvalidNumericValue);
+    }
+
+    INSTANTIATE_TEST_SUITE_P(
+        AllExtendedSkyFields,
+        RenderContractsValidationSkyExtendedNumerics,
+        testing::Values(SkyExtendedNumericField::SunDirection,
+                        SkyExtendedNumericField::SunColor,
+                        SkyExtendedNumericField::ZenithColor,
+                        SkyExtendedNumericField::HorizonColor,
+                        SkyExtendedNumericField::GroundColor,
+                        SkyExtendedNumericField::BlurLevel,
+                        SkyExtendedNumericField::ScatteringIntensity));
+
+    TEST(RenderContractsValidation, BuilderRejectsUndeclaredSkyMode)
+    {
+        RenderFramePacketBuilder builder;
+        PopulateCompletePacketBuilder(builder);
+        RenderSkySnapshot sky;
+        sky.mode = static_cast<RenderSkyMode>(255);
+        ASSERT_TRUE(builder.SetSky(sky));
+
+        EXPECT_FALSE(builder.Seal());
+        EXPECT_EQ(builder.GetLastSealCode(),
+                  RenderFrameSealCode::InvalidNumericValue);
+    }
+
     enum class NumericConstraintCase : uint8
     {
         ViewBounds,
@@ -1727,9 +1807,9 @@ namespace
     }
 
     TEST(RenderContractsValidation,
-         UsesSchemaThreeOwnedCanonicalSubmeshMaterialBindings)
+         UsesSchemaFourOwnedCanonicalSubmeshMaterialBindings)
     {
-        EXPECT_EQ(RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION, 3U);
+        EXPECT_EQ(RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION, 4U);
 
         RenderFramePacketBuilder builder;
         PopulateCompletePacketBuilder(builder);

@@ -272,6 +272,9 @@ namespace RVX
         SceneMeshPassPreparation meshPassPreparation{};
         RenderVisibilityResult visibility{};
         RenderScene scene{};
+        // Skybox recording must consume the frame-owned value rather than the
+        // mutable SkyboxPass compatibility setters used before graph recording.
+        RenderSkySnapshot sky{};
         std::vector<RenderDrawItem> opaqueDrawItems{};
         std::vector<RenderDrawItem> maskedDrawItems{};
         // Transparent work must preserve the renderer's back-to-front order.
@@ -538,6 +541,7 @@ namespace RVX
         }
         if (context.renderScene != nullptr)
         {
+            snapshot->sky = context.renderScene->GetSky();
             for (const RenderObject& object : context.renderScene->GetObjects())
             {
                 snapshot->scene.AddObject(object);

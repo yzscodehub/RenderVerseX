@@ -89,6 +89,25 @@ namespace
                IsFinite(light.outerConeRadians);
     }
 
+    bool IsDeclared(RenderSkyMode mode)
+    {
+        return mode == RenderSkyMode::Disabled ||
+               mode == RenderSkyMode::Cubemap ||
+               mode == RenderSkyMode::Equirectangular ||
+               mode == RenderSkyMode::Procedural ||
+               mode == RenderSkyMode::SolidColor;
+    }
+
+    bool HasValidSkyNumerics(const RenderSkySnapshot& sky)
+    {
+        return IsDeclared(sky.mode) && IsFinite(sky.tint) &&
+               IsFinite(sky.sunDirection) && IsFinite(sky.sunColor) &&
+               IsFinite(sky.zenithColor) && IsFinite(sky.horizonColor) &&
+               IsFinite(sky.groundColor) && IsFinite(sky.intensity) &&
+               IsFinite(sky.rotationRadians) && IsFinite(sky.blurLevel) &&
+               IsFinite(sky.scatteringIntensity);
+    }
+
     bool HasValidNumerics(
         const RenderViewSnapshot& view,
         const std::vector<RenderPrimitiveSnapshot>& primitives,
@@ -97,9 +116,7 @@ namespace
         const RenderEnvironmentSnapshot& environment,
         const RenderFrameSettings& settings)
     {
-        if (!HasValidViewNumerics(view) ||
-            !IsFinite(sky.tint) || !IsFinite(sky.intensity) ||
-            !IsFinite(sky.rotationRadians) ||
+        if (!HasValidViewNumerics(view) || !HasValidSkyNumerics(sky) ||
             !IsFinite(environment.intensity) ||
             !IsValidRenderFrameSettings(settings))
         {

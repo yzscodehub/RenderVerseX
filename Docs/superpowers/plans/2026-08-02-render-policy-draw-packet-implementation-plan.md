@@ -1,8 +1,7 @@
 # Render Policy, Draw Packet, and GPU-Driven Architecture Implementation Plan
 
-**Status:** Tasks 0-8, Task 9A, and Tasks 9B-1 through 9B-4 complete;
-Task 9B-5 Skybox recording isolation is next after the Task 9B-4
-review/commit gate
+**Status:** Tasks 0-8, Task 9A, and Tasks 9B-1 through 9B-5 are complete and
+reviewed; Task 9B-6 binder removal is next.
 **Date:** 2026-08-02
 **Scope:** Engine-core rendering architecture for DX12, Vulkan, and Metal;
 DX11 and OpenGL remain compatibility paths; Editor work is out of scope
@@ -68,8 +67,8 @@ It is not yet a GPU-resident scene. The important current limitations are:
 - GPU-driven eligibility is checked partly in `SceneRenderer` and partly in
   Depth/Opaque execution;
 - one ineligible group can force an entire pass to Direct;
-- Transparent, Shadow, ObjectVelocity, and Skybox still receive frame state
-  through mutable pass setters pending Task 9B;
+- Skybox compatibility setters still maintain pass status until Task 9B-6, but
+  typed Skybox recording consumes only the frame snapshot and graph-owned data;
 - GPU execution is intentionally hard-limited to DX12;
 - Vulkan does not yet expose or implement indirect-count submission through
   the RHI contract;
@@ -684,8 +683,12 @@ to one pending record. Task 9B-3 isolates ObjectVelocity setup/execute state
 with recording-owned raster/material bindings and monotonic publication.
 Task 9B-4 isolates Transparent with a value-owned ordered draw list,
 graph-handle-only targets, private per-record view/object/light/cluster
-bindings, and completion-aware submission retention. Skybox remains the next
-pass migration before the late binder is removed.
+bindings, and completion-aware submission retention. Task 9B-5 isolates
+Skybox with a value-owned, mode-explicit `RenderSkySnapshot`, graph-only
+attachments, private CB/descriptors, and retained sky/pipeline/layout
+ownership. Cubemap, Procedural, SolidColor, Equirectangular tint fallback, and
+Disabled behavior are packet-owned. Independent and primary review plus the
+full validation ledger passed; binder removal is next.
 
 Proposed files:
 

@@ -15,6 +15,7 @@
 namespace RVX
 {
     class PipelineCache;
+    class RenderResourceRegistry;
 
     /**
      * @brief Skybox render pass
@@ -45,6 +46,9 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
 
         // =========================================================================
         // Configuration
@@ -54,6 +58,10 @@ namespace RVX
          * @brief Set resources needed for rendering
          */
         void SetResources(PipelineCache* pipelineCache);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
 
         /**
          * @brief Set render targets
@@ -113,19 +121,15 @@ namespace RVX
 
         void RefreshSupport();
         bool EnsureRuntimeResources();
-        RHITextureView* ResolveCubemapView(const ViewData& view);
-        bool UpdateConstants(const ViewData& view);
 
         bool m_enabled = true;
         bool m_drawReady = false;
         bool m_skySelected = false;
         std::string m_unsupportedReason = "No supported SkyboxComponent selected";
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         IRHIDevice* m_resourceDevice = nullptr;
-        RHITextureView* m_colorTargetView = nullptr;
-        RHITextureView* m_depthTargetView = nullptr;
         RHITexture* m_cubemap = nullptr;
-        RHIBufferRef m_constantBuffer;
         RHITextureRef m_fallbackCubemap;
         RHITextureViewRef m_fallbackCubemapView;
         RHISamplerRef m_sampler;
@@ -141,10 +145,6 @@ namespace RVX
         float m_rotation = 0.0f;
         float m_blurLevel = 0.0f;
         SkyboxDrawMode m_drawMode = SkyboxDrawMode::None;
-
-        // RenderGraph handles
-        RGTextureHandle m_colorTargetHandle;
-        RGTextureHandle m_depthTargetHandle;
     };
 
 } // namespace RVX
