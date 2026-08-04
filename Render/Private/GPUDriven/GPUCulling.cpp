@@ -323,6 +323,43 @@ RHIBuffer* GPUCulling::GetGPUSceneCandidateBuffer() const
     return inputs != nullptr ? inputs->gpuSceneCandidateBuffer.Get() : nullptr;
 }
 
+GPUSceneRasterResourceSnapshot
+GPUCulling::GetGPUSceneRasterResourceSnapshot() const
+{
+    GPUSceneRasterResourceSnapshot snapshot;
+    const GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
+    constexpr uint32 primitiveTableIndex =
+        static_cast<uint32>(GPUSceneResidentTable::Primitives);
+    constexpr uint32 transformTableIndex =
+        static_cast<uint32>(GPUSceneResidentTable::Transforms);
+    if (!m_gpuSceneEnabled || !HasCompleteGPUSceneCandidates() ||
+        m_gpuSceneLeaseVersion == 0 ||
+        m_gpuSceneLeaseVersion != m_gpuSceneCandidateVersion ||
+        inputs == nullptr || !inputs->gpuSceneCandidateBuffer ||
+        inputs->gpuSceneCandidateAccess.uniformAccess.contentValidity !=
+            RHIContentValidity::Valid ||
+        !m_gpuSceneTableBuffers[primitiveTableIndex] ||
+        !m_gpuSceneTableBuffers[transformTableIndex] ||
+        m_gpuSceneTableCapacities[primitiveTableIndex] == 0 ||
+        m_gpuSceneTableCapacities[transformTableIndex] == 0)
+    {
+        return snapshot;
+    }
+
+    snapshot.m_candidates = inputs->gpuSceneCandidateBuffer;
+    snapshot.m_primitives = m_gpuSceneTableBuffers[primitiveTableIndex];
+    snapshot.m_transforms = m_gpuSceneTableBuffers[transformTableIndex];
+    snapshot.m_candidateCount = m_instanceCount;
+    snapshot.m_candidateCapacity =
+        static_cast<uint32>(inputs->gpuSceneCandidateBuffer->GetSize() /
+                            sizeof(GPUSceneCullingCandidate));
+    snapshot.m_primitiveCapacity = m_gpuSceneTableCapacities[primitiveTableIndex];
+    snapshot.m_transformCapacity = m_gpuSceneTableCapacities[transformTableIndex];
+    snapshot.m_leaseVersion = m_gpuSceneLeaseVersion;
+    snapshot.m_exactLeaseVersion = m_gpuSceneLeaseVersion;
+    return snapshot;
+}
+
 RHIBuffer* GPUCulling::GetCullingConstantsBuffer() const
 {
     const GPUCullingFrameInputs* inputs = GetActiveFrameInputs();

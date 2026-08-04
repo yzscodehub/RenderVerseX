@@ -1,5 +1,6 @@
 #include "Common/DeterministicShaderCompiler.h"
 #include "Core/Log.h"
+#include "Render/GPUDriven/GPUCulling.h"
 #include "Render/PipelineCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
@@ -19,6 +20,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -209,6 +211,59 @@ namespace
         }
     };
 
+    class GPUSceneDepthPermutationRejectingCompiler final : public RVX::IShaderCompiler
+    {
+    public:
+        GPUSceneDepthPermutationRejectingCompiler()
+            : m_delegate(RVX::Tests::CreateDeterministicShaderCompiler())
+        {
+        }
+
+        RVX::ShaderCompileSupport QuerySupport(
+            const RVX::ShaderCompileOptions& options) const override
+        {
+            return m_delegate->QuerySupport(options);
+        }
+
+        RVX::ShaderCompileResult Compile(
+            const RVX::ShaderCompileOptions& options) override
+        {
+            const bool gpuScenePermutation = options.entryPoint != nullptr &&
+                std::string(options.entryPoint) == "VSMainGPUScene" &&
+                std::any_of(options.defines.begin(), options.defines.end(),
+                    [](const RVX::ShaderMacro& define)
+                    {
+                        return define.name == "RVX_GPU_SCENE_RASTER" &&
+                               define.value == "1";
+                    });
+            const bool depthOnlyShader = options.sourcePath != nullptr &&
+                std::filesystem::path(options.sourcePath).filename() == "DepthOnly.hlsl";
+            if (gpuScenePermutation && depthOnlyShader)
+            {
+                RVX::ShaderCompileResult rejected;
+                rejected.errorMessage = "GPU-scene DepthOnly permutation rejected by test compiler";
+                return rejected;
+            }
+            return m_delegate->Compile(options);
+        }
+
+    private:
+        std::unique_ptr<RVX::IShaderCompiler> m_delegate;
+    };
+
+    class GPUSceneDepthPermutationRejectingPipelineCache final : public RVX::PipelineCache
+    {
+    public:
+        GPUSceneDepthPermutationRejectingPipelineCache()
+            : RVX::PipelineCache(
+                  []()
+                  {
+                      return std::make_unique<GPUSceneDepthPermutationRejectingCompiler>();
+                  })
+        {
+        }
+    };
+
     class FakePipeline final : public RVX::RHIPipeline
     {
     public:
@@ -289,6 +344,11 @@ namespace
         RVX::RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(const RVX::RHIDescriptorSetLayoutDesc& desc) override
         {
             capturedSetLayouts.push_back(desc);
+            if (rejectGPUSceneRasterObjectSetLayout && desc.debugName &&
+                std::string(desc.debugName) == "GPUSceneRasterObjectSetLayout")
+            {
+                return {};
+            }
             return RVX::MakeRef<FakeDescriptorSetLayout>(desc);
         }
 
@@ -343,6 +403,7 @@ namespace
         RVX::uint32 failShaderCreationAtIndex = std::numeric_limits<RVX::uint32>::max();
         bool failPipelineLayoutCreation = false;
         bool failPipelineCreation = false;
+        bool rejectGPUSceneRasterObjectSetLayout = false;
         RVX::uint32 failPipelineCreationAtIndex = std::numeric_limits<RVX::uint32>::max();
         RVX::uint32 shaderCreateCount = 0;
         RVX::uint32 capturedPipelineLayoutSetCount = 0;
@@ -362,6 +423,43 @@ namespace
         RVX::RHIBackendType m_backend = RVX::RHIBackendType::DX12;
         RVX::RHICapabilities m_capabilities;
     };
+
+    void ExpectGPUSceneRasterUnavailablePreservesBaseCache(
+        RVX::PipelineCache& cache,
+        std::string_view expectedReason)
+    {
+        EXPECT_TRUE(cache.IsInitialized());
+        EXPECT_TRUE(cache.GetLastError().empty());
+        EXPECT_FALSE(cache.IsGPUSceneRasterReady());
+        EXPECT_NE(cache.GetGPUSceneRasterUnavailableReason().find(expectedReason),
+                  std::string::npos);
+        EXPECT_EQ(nullptr, cache.GetGPUSceneRasterLayout());
+        EXPECT_EQ(nullptr, cache.GetGPUSceneRasterObjectSetLayout());
+        EXPECT_EQ(nullptr, cache.GetGPUScenePipelineForVariant(
+                               RVX::MaterialPipelineVariant::Opaque,
+                               RVX::RHIFormat::RGBA8_UNORM));
+        EXPECT_EQ(nullptr, cache.GetGPUSceneDepthOnlyPipeline());
+
+        RVX::GPUSceneRasterResourceSnapshot emptyResources;
+        RVX::ObjectConstants objectConstants{};
+        RVX::GPUSceneRasterBindingSnapshot binding;
+        EXPECT_FALSE(cache.CreateGPUSceneRasterBindingSnapshot(
+            emptyResources, objectConstants, binding));
+        EXPECT_FALSE(binding.IsReadyForBinding());
+        EXPECT_TRUE(cache.GetLastError().empty());
+
+        ASSERT_NE(nullptr, cache.GetDefaultLayout());
+        ASSERT_NE(nullptr, cache.GetObjectSetLayout());
+        ASSERT_NE(nullptr, cache.GetObjectDescriptorSet());
+        EXPECT_EQ(2u, cache.GetObjectSetLayout()->GetEntries().size());
+        EXPECT_EQ(2u, cache.GetObjectDescriptorSet()->GetDescriptorSnapshot().size());
+        EXPECT_NE(nullptr, cache.GetOpaquePipeline());
+        EXPECT_NE(nullptr, cache.GetDepthOnlyPipeline());
+        EXPECT_NE(nullptr, cache.GetGPUDrivenPipelineForVariant(
+                               RVX::MaterialPipelineVariant::Opaque,
+                               RVX::RHIFormat::RGBA8_UNORM));
+        EXPECT_TRUE(cache.GetLastError().empty());
+    }
 
     const RVX::RHIBindingLayoutEntry* FindBinding(
         const RVX::RHIDescriptorSetLayoutDesc& desc,
@@ -1431,18 +1529,54 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     PipelineCacheForValidation cache;
 
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
-    ASSERT_GE(device.capturedSetLayouts.size(), 6u);
-    ASSERT_GE(device.capturedPipelineLayoutSetCounts.size(), 3u);
-    EXPECT_EQ(device.capturedPipelineLayoutSetCounts[0], 3u);
-    EXPECT_EQ(device.capturedPipelineLayoutSetCounts[1], 1u);
-    EXPECT_EQ(device.capturedPipelineLayoutSetCounts[2], 1u);
+    const auto findSetLayout = [&device](const char* debugName)
+    {
+        return std::find_if(device.capturedSetLayouts.begin(),
+                            device.capturedSetLayouts.end(),
+                            [debugName](const RVX::RHIDescriptorSetLayoutDesc& desc)
+                            {
+                                return desc.debugName && std::string(desc.debugName) == debugName;
+                            });
+    };
+    const auto findPipelineLayout = [&device](const char* debugName)
+    {
+        return std::find_if(device.capturedPipelineLayoutDescs.begin(),
+                            device.capturedPipelineLayoutDescs.end(),
+                            [debugName](const RVX::RHIPipelineLayoutDesc& desc)
+                            {
+                                return desc.debugName && std::string(desc.debugName) == debugName;
+                            });
+    };
 
-    const auto& frameLayout = device.capturedSetLayouts[0];
-    const auto& objectLayout = device.capturedSetLayouts[1];
-    const auto& materialLayout = device.capturedSetLayouts[2];
-    const auto& postProcessLayout = device.capturedSetLayouts[3];
-    const auto& uiLayout = device.capturedSetLayouts[4];
-    const auto& skyboxLayout = device.capturedSetLayouts[5];
+    const auto defaultPipelineLayout = findPipelineLayout("DefaultLitPipelineLayout");
+    const auto postProcessPipelineLayout = findPipelineLayout("PostProcessPipelineLayout");
+    const auto uiPipelineLayout = findPipelineLayout("UIPipelineLayout");
+    ASSERT_NE(defaultPipelineLayout, device.capturedPipelineLayoutDescs.end());
+    ASSERT_NE(postProcessPipelineLayout, device.capturedPipelineLayoutDescs.end());
+    ASSERT_NE(uiPipelineLayout, device.capturedPipelineLayoutDescs.end());
+    EXPECT_EQ(defaultPipelineLayout->setLayouts.size(), 3u);
+    EXPECT_EQ(postProcessPipelineLayout->setLayouts.size(), 1u);
+    EXPECT_EQ(uiPipelineLayout->setLayouts.size(), 1u);
+
+    const auto frameLayoutIt = findSetLayout("DefaultFrameSetLayout");
+    const auto objectLayoutIt = findSetLayout("DefaultObjectSetLayout");
+    const auto materialLayoutIt = findSetLayout("DefaultMaterialSetLayout");
+    const auto postProcessLayoutIt = findSetLayout("PostProcessSetLayout");
+    const auto uiLayoutIt = findSetLayout("UITextureSetLayout");
+    const auto skyboxLayoutIt = findSetLayout("SkyboxSetLayout");
+    ASSERT_NE(frameLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(objectLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(materialLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(postProcessLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(uiLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(skyboxLayoutIt, device.capturedSetLayouts.end());
+
+    const auto& frameLayout = *frameLayoutIt;
+    const auto& objectLayout = *objectLayoutIt;
+    const auto& materialLayout = *materialLayoutIt;
+    const auto& postProcessLayout = *postProcessLayoutIt;
+    const auto& uiLayout = *uiLayoutIt;
+    const auto& skyboxLayout = *skyboxLayoutIt;
 
     const auto* frame = FindBinding(frameLayout, 0);
     ASSERT_NE(frame, nullptr);
@@ -7063,6 +7197,157 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_EQ(uiPipelineLayoutIt->pushConstantSize, 16u);
     EXPECT_TRUE(RVX::HasFlag(uiPipelineLayoutIt->pushConstantStages, RVX::RHIShaderStage::Vertex));
     EXPECT_TRUE(RVX::HasFlag(uiPipelineLayoutIt->pushConstantStages, RVX::RHIShaderStage::Pixel));
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       GPUSceneRasterUsesIndependentObjectSetAndPurposeSeparatedPipelines)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    ASSERT_NE(cache.GetDefaultLayout(), nullptr);
+    ASSERT_NE(cache.GetObjectSetLayout(), nullptr);
+    ASSERT_TRUE(cache.IsGPUSceneRasterReady());
+    ASSERT_NE(cache.GetGPUSceneRasterLayout(), nullptr);
+    ASSERT_NE(cache.GetGPUSceneRasterObjectSetLayout(), nullptr);
+    EXPECT_NE(cache.GetDefaultLayout(), cache.GetGPUSceneRasterLayout());
+    EXPECT_NE(cache.GetObjectSetLayout(), cache.GetGPUSceneRasterObjectSetLayout());
+
+    const auto gpuSceneLayoutIt = std::find_if(
+        device.capturedSetLayouts.begin(), device.capturedSetLayouts.end(),
+        [](const RVX::RHIDescriptorSetLayoutDesc& desc)
+        {
+            return desc.debugName &&
+                   std::string(desc.debugName) == "GPUSceneRasterObjectSetLayout";
+        });
+    ASSERT_NE(gpuSceneLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_EQ(4u, gpuSceneLayoutIt->entries.size());
+    const RVX::RHIBindingLayoutEntry* objectConstants = FindBinding(*gpuSceneLayoutIt, 0u);
+    ASSERT_NE(objectConstants, nullptr);
+    EXPECT_EQ(RVX::RHIBindingType::DynamicUniformBuffer, objectConstants->type);
+    EXPECT_TRUE(objectConstants->isDynamic);
+    EXPECT_TRUE(RVX::HasFlag(objectConstants->visibility, RVX::RHIShaderStage::Vertex));
+    EXPECT_TRUE(RVX::HasFlag(objectConstants->visibility, RVX::RHIShaderStage::Pixel));
+    for (RVX::uint32 binding = 1u; binding <= 3u; ++binding)
+    {
+        const RVX::RHIBindingLayoutEntry* entry = FindBinding(*gpuSceneLayoutIt, binding);
+        ASSERT_NE(entry, nullptr);
+        EXPECT_EQ(RVX::RHIBindingType::ShaderResourceBuffer, entry->type);
+        EXPECT_EQ(RVX::RHIShaderStage::Vertex, entry->visibility);
+        EXPECT_EQ(RVX::RHIResourceDataVolatility::Immutable,
+                  entry->resourceDataVolatility);
+    }
+
+    const auto& directObjectEntries = cache.GetObjectSetLayout()->GetEntries();
+    ASSERT_EQ(2u, directObjectEntries.size());
+    EXPECT_NE(nullptr, FindBinding(*gpuSceneLayoutIt, 2u));
+    EXPECT_EQ(directObjectEntries.end(), std::find_if(
+        directObjectEntries.begin(), directObjectEntries.end(),
+        [](const RVX::RHIBindingLayoutEntry& entry) { return entry.binding == 2u; }));
+
+    const size_t preGPUScenePipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* opaque = cache.GetGPUScenePipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque, RVX::RHIFormat::RGBA8_UNORM);
+    ASSERT_NE(opaque, nullptr);
+    const RVX::uint64 opaqueHash = cache.GetStats().lastPipelineStateHash;
+    RVX::RHIPipeline* masked = cache.GetGPUScenePipelineForVariant(
+        RVX::MaterialPipelineVariant::Masked, RVX::RHIFormat::RGBA8_UNORM);
+    ASSERT_NE(masked, nullptr);
+    const RVX::uint64 maskedHash = cache.GetStats().lastPipelineStateHash;
+    RVX::RHIPipeline* depth = cache.GetGPUSceneDepthOnlyPipeline();
+    ASSERT_NE(depth, nullptr);
+    const RVX::uint64 depthHash = cache.GetStats().lastPipelineStateHash;
+    EXPECT_EQ(nullptr, cache.GetGPUScenePipelineForVariant(
+                           RVX::MaterialPipelineVariant::Transparent,
+                           RVX::RHIFormat::RGBA8_UNORM));
+    EXPECT_NE(opaqueHash, maskedHash);
+    EXPECT_NE(opaqueHash, depthHash);
+    EXPECT_NE(maskedHash, depthHash);
+    ASSERT_EQ(preGPUScenePipelineCount + 3u, device.capturedGraphicsPipelines.size());
+
+    const auto& opaqueDesc = device.capturedGraphicsPipelines[preGPUScenePipelineCount];
+    const auto& maskedDesc = device.capturedGraphicsPipelines[preGPUScenePipelineCount + 1u];
+    const auto& depthDesc = device.capturedGraphicsPipelines[preGPUScenePipelineCount + 2u];
+    EXPECT_EQ(cache.GetGPUSceneRasterLayout(), opaqueDesc.pipelineLayout);
+    EXPECT_EQ(cache.GetGPUSceneRasterLayout(), maskedDesc.pipelineLayout);
+    EXPECT_EQ(cache.GetGPUSceneRasterLayout(), depthDesc.pipelineLayout);
+    EXPECT_STREQ("GPUSceneOpaquePipeline", opaqueDesc.debugName);
+    EXPECT_STREQ("GPUSceneMaskedPipeline", maskedDesc.debugName);
+    EXPECT_STREQ("GPUSceneDepthOnlyPipeline", depthDesc.debugName);
+    EXPECT_NE(nullptr, opaqueDesc.pixelShader);
+    EXPECT_NE(nullptr, maskedDesc.pixelShader);
+    EXPECT_EQ(nullptr, depthDesc.pixelShader);
+    ASSERT_FALSE(opaqueDesc.inputLayout.elements.empty());
+    const auto instanceElement = std::find_if(
+        opaqueDesc.inputLayout.elements.begin(), opaqueDesc.inputLayout.elements.end(),
+        [](const RVX::RHIInputElement& element)
+        {
+            return std::string(element.semanticName) == "INSTANCE_INDEX";
+        });
+    ASSERT_NE(instanceElement, opaqueDesc.inputLayout.elements.end());
+    EXPECT_EQ(6u, instanceElement->inputSlot);
+    EXPECT_TRUE(instanceElement->perInstance);
+    EXPECT_EQ(1u, instanceElement->instanceDataStepRate);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       GPUSceneRasterShaderPermutationFailureLeavesBaseCacheUsable)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    GPUSceneDepthPermutationRejectingPipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    ExpectGPUSceneRasterUnavailablePreservesBaseCache(cache, "DepthOnly");
+
+    cache.Shutdown();
+    EXPECT_TRUE(cache.GetGPUSceneRasterUnavailableReason().empty());
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    ExpectGPUSceneRasterUnavailablePreservesBaseCache(cache, "DepthOnly");
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       GPUSceneRasterLayoutFailureLeavesBaseCacheUsableAndCanRetry)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.rejectGPUSceneRasterObjectSetLayout = true;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    ExpectGPUSceneRasterUnavailablePreservesBaseCache(
+        cache, "object descriptor layout");
+
+    cache.Shutdown();
+    EXPECT_TRUE(cache.GetGPUSceneRasterUnavailableReason().empty());
+    device.rejectGPUSceneRasterObjectSetLayout = false;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    EXPECT_TRUE(cache.IsGPUSceneRasterReady());
+    EXPECT_TRUE(cache.GetGPUSceneRasterUnavailableReason().empty());
+    EXPECT_NE(nullptr, cache.GetGPUSceneRasterLayout());
+    EXPECT_NE(nullptr, cache.GetGPUSceneRasterObjectSetLayout());
+    EXPECT_NE(nullptr, cache.GetOpaquePipeline());
+    EXPECT_NE(nullptr, cache.GetGPUDrivenPipelineForVariant(
+                           RVX::MaterialPipelineVariant::Opaque,
+                           RVX::RHIFormat::RGBA8_UNORM));
+    EXPECT_TRUE(cache.GetLastError().empty());
 }
 
 TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearConvention)

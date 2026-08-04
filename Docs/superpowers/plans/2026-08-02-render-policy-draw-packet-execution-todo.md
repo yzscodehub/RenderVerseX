@@ -2,7 +2,8 @@
 
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
 10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a,
-Task 11D-D1b-a, and Task 11D-D1b-b are complete, and Task 11D-D2 is next
+Task 11D-D1b-a, Task 11D-D1b-b, and Task 11D-D2a are complete, and
+Task 11D-D2b is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -783,9 +784,35 @@ re-review, and primary audit are complete. The accepted execution bridge is:
   pass GPU-driven 40/40, GPU Scene upload 17/17, GPU Scene 31/31, RenderGraph
   50/50, Render Submission 27/27, Render Pass 194/194, and the architecture gate.
 
-Start **Task 11D-D2** next: make raster transform fetch consume the exact stable
-GPU Scene transform identity used by D1b-b, bind and declare the required raster
-table reads for Depth/Opaque, and prove visual/semantic parity with the existing
-per-recording instance stream. Keep per-group material/geometry submission and
-public `GPUResidentScene` selection unchanged; D3/D4 still own the backend-neutral
-capability contract and DX12 qualification.
+Task 11D-D2a implementation, one independent review/remediation round, final
+re-review, and primary audit are complete. The accepted raster substrate is:
+
+- [x] Preserve the existing indirect/compact ABI and resolve raster transforms
+  through `INSTANCE_INDEX == rasterInstanceIndex == candidateIndex`, then exact
+  candidate -> primitive -> transform stable references.
+- [x] Add independent DefaultLit and DepthOnly GPU Scene vertex permutations
+  that validate capacity, schema, generation, object identity, live/tombstone,
+  transform identity, and normal validity before explicit row-dot transforms.
+  Invalid rows produce finite fail-closed clip/varying outputs.
+- [x] Keep the complete `ObjectConstants` b0 prefix, append sealed table counts,
+  and create a private set 1 with b0 plus immutable candidate/primitive/transform
+  SRVs. The original Direct/Tier1 set, descriptor, layout, and pipeline remain
+  unchanged.
+- [x] Freeze an immutable binding snapshot that owns b0, all three SRVs, the
+  descriptor, set/pipeline layouts, opaque/masked/depth pipelines, exact lease
+  version, counts, and submission-retention references.
+- [x] Treat this still-unselected substrate as optional. Shader, layout, or
+  partial pipeline creation failure disables only GPU Scene raster readiness,
+  records an independent reason, cleans partial cache entries, and leaves base
+  PipelineCache initialization and Direct/Tier1 behavior available.
+- [x] Finish final independent re-review with READY and no unresolved P0-P2;
+  pass PipelineCache 133/133, GPU-driven 41/41, Render Pass 196/196, and the
+  architecture phase gate in the primary audit.
+
+Start **Task 11D-D2b** next: propagate the same sealed candidate/primitive/
+transform handles and immutable binding snapshot into Depth/Opaque, declare
+their Vertex SRV reads on the already-acquired exact lease, select GPU Scene
+raster only for an actual successful GPU Scene seal, and prove semantic/parity
+behavior. Do not reacquire the lease, rebuild descriptors in passes, change
+Task 10 per-group submission, or select public `GPUResidentScene`; D3/D4 still
+own the backend-neutral capability contract and DX12 qualification.

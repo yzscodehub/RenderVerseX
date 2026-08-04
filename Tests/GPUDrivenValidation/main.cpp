@@ -2429,6 +2429,22 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_EQ(RHIContentValidity::Valid,
               recorded->GetAccessSnapshots().constants.uniformAccess.contentValidity);
 
+    const GPUSceneRasterResourceSnapshot rasterResources =
+        recorded->GetGPUSceneRasterResourceSnapshot();
+    ASSERT_TRUE(rasterResources.IsValid());
+    EXPECT_EQ(candidateBuffer, rasterResources.GetCandidates());
+    EXPECT_EQ(lease.buffers[static_cast<uint32>(GPUSceneResidentTable::Primitives)].Get(),
+              rasterResources.GetPrimitives());
+    EXPECT_EQ(lease.buffers[static_cast<uint32>(GPUSceneResidentTable::Transforms)].Get(),
+              rasterResources.GetTransforms());
+    EXPECT_EQ(2u, rasterResources.GetCandidateCount());
+    EXPECT_EQ(config.maxInstances, rasterResources.GetCandidateCapacity());
+    EXPECT_EQ(capacities[static_cast<uint32>(GPUSceneResidentTable::Primitives)],
+              rasterResources.GetPrimitiveCapacity());
+    EXPECT_EQ(capacities[static_cast<uint32>(GPUSceneResidentTable::Transforms)],
+              rasterResources.GetTransformCapacity());
+    EXPECT_EQ(19u, rasterResources.GetLeaseVersion());
+
     GPUSceneResidentGraphLease staleLease = lease;
     staleLease.version = 18u;
     EXPECT_TRUE(staleLease.IsValid());
@@ -2464,6 +2480,7 @@ TEST_F(GPUDrivenValidationFixture,
     const std::shared_ptr<GPUCullingRecordedState> normalRecorded =
         culling.SealForGraph(identity);
     ASSERT_NE(nullptr, normalRecorded);
+    EXPECT_FALSE(normalRecorded->GetGPUSceneRasterResourceSnapshot().IsValid());
     RenderSubmissionResourceBatch normalBatch;
     ASSERT_TRUE(normalRecorded->RetainSubmissionResources(normalBatch));
     const uint32 normalResourceCount = normalBatch.GetRetainedObjectCount();
@@ -2483,6 +2500,7 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_FALSE(culling.HasCompleteGPUSceneCandidates());
     EXPECT_EQ(2u, culling.GetInstanceCount());
     EXPECT_TRUE(recorded->GetCulling().HasCompleteGPUSceneCandidates());
+    EXPECT_TRUE(rasterResources.IsValid());
 }
 
 TEST_F(GPUDrivenValidationFixture,
@@ -2874,4 +2892,153 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
 
     compileVertexEntry(root / "Render" / "Shaders" / "DefaultLit.hlsl");
     compileVertexEntry(root / "Render" / "Shaders" / "DepthOnly.hlsl");
+
+    const auto compileGPUSceneVertexEntry = [&compiler](const std::filesystem::path& shaderPath)
+    {
+        const std::string shader = ReadTextFile(shaderPath);
+        ASSERT_FALSE(shader.empty());
+
+        const std::string shaderPathString = shaderPath.string();
+        ShaderCompileOptions options;
+        options.stage = RHIShaderStage::Vertex;
+        options.sourceCode = shader.c_str();
+        options.sourcePath = shaderPathString.c_str();
+        options.targetBackend = RHIBackendType::DX12;
+        options.targetProfile = "vs_6_0";
+        options.entryPoint = "VSMainGPUScene";
+        options.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
+        options.enableDebugInfo = false;
+        options.enableOptimization = true;
+
+        const ShaderCompileSupport support = compiler->QuerySupport(options);
+        if (!support.IsSupported())
+        {
+            GTEST_SKIP() << support.reason;
+        }
+
+        const ShaderCompileResult result = compiler->Compile(options);
+        ASSERT_TRUE(result.success) << result.errorMessage;
+        EXPECT_FALSE(result.bytecode.empty());
+        EXPECT_FALSE(result.sourceInfo.IsEmpty());
+
+        const auto containsInclude = [&result](const char* filename)
+        {
+            return std::any_of(
+                result.sourceInfo.includeFiles.begin(), result.sourceInfo.includeFiles.end(),
+                [filename](const std::string& includePath)
+                {
+                    return std::filesystem::path(includePath).filename() == filename;
+                });
+        };
+        EXPECT_TRUE(containsInclude("GPUSceneRaster.hlsli"));
+        EXPECT_TRUE(containsInclude("GPUSceneCulling.hlsli"));
+    };
+
+    compileGPUSceneVertexEntry(root / "Render" / "Shaders" / "DefaultLit.hlsl");
+    compileGPUSceneVertexEntry(root / "Render" / "Shaders" / "DepthOnly.hlsl");
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       GPUSceneRasterShaderUsesExactRowMajorTransformAndFailClosedResolution)
+{
+    const std::filesystem::path root = FindWorkspaceRoot();
+    ASSERT_FALSE(root.empty());
+    const std::string rasterInclude = ReadTextFile(
+        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneRaster.hlsli");
+    const std::string sharedSchema = ReadTextFile(
+        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
+    const std::string defaultLit = ReadTextFile(
+        root / "Render" / "Shaders" / "DefaultLit.hlsl");
+    const std::string depthOnly = ReadTextFile(
+        root / "Render" / "Shaders" / "DepthOnly.hlsl");
+    ASSERT_FALSE(rasterInclude.empty());
+    ASSERT_FALSE(sharedSchema.empty());
+    ASSERT_FALSE(defaultLit.empty());
+    ASSERT_FALSE(depthOnly.empty());
+
+    EXPECT_NE(rasterInclude.find("candidate.rasterInstanceIndex != rasterInstanceIndex"),
+              std::string::npos);
+    EXPECT_NE(rasterInclude.find("GPUSceneIsLiveHeader(primitive.header"),
+              std::string::npos);
+    EXPECT_NE(rasterInclude.find("GPUSceneIsLiveHeader(transform.header"),
+              std::string::npos);
+    EXPECT_NE(sharedSchema.find("RVX_GPU_SCENE_ROW_FLAG_TOMBSTONE"),
+              std::string::npos);
+    EXPECT_NE(rasterInclude.find("dot(transform.worldFromLocal[0]"),
+              std::string::npos);
+    EXPECT_NE(rasterInclude.find("dot(transform.normalFromLocal[0].xyz"),
+              std::string::npos);
+    EXPECT_NE(rasterInclude.find("GPUSceneInvalidClipPosition"), std::string::npos);
+    EXPECT_NE(defaultLit.find("PSInput VSMainGPUScene"), std::string::npos);
+    EXPECT_NE(depthOnly.find("VSOutput VSMainGPUScene"), std::string::npos);
+    EXPECT_NE(defaultLit.find("output.WorldTangent = float4(0.0f"), std::string::npos);
+    EXPECT_NE(defaultLit.find("GPUSceneTransformNormal"), std::string::npos);
+    EXPECT_NE(defaultLit.find("GPUSceneTransformTangent"), std::string::npos);
+
+    const auto assertGPUSceneHelperIsPermutationOnly =
+        [](const std::string& shaderSource)
+    {
+        const size_t helperInclude = shaderSource.find(
+            "#include \"GPUDriven/GPUSceneRaster.hlsli\"");
+        ASSERT_NE(std::string::npos, helperInclude);
+        const size_t includeGuard = shaderSource.rfind(
+            "#if defined(RVX_GPU_SCENE_RASTER)", helperInclude);
+        ASSERT_NE(std::string::npos, includeGuard);
+        EXPECT_LT(includeGuard, helperInclude);
+        EXPECT_NE(std::string::npos, shaderSource.find("#endif", helperInclude));
+
+        const size_t gpuSceneEntry = shaderSource.find("VSMainGPUScene");
+        ASSERT_NE(std::string::npos, gpuSceneEntry);
+        const size_t entryGuard = shaderSource.rfind(
+            "#if defined(RVX_GPU_SCENE_RASTER)", gpuSceneEntry);
+        ASSERT_NE(std::string::npos, entryGuard);
+        EXPECT_LT(entryGuard, gpuSceneEntry);
+        EXPECT_EQ(std::string::npos,
+                  shaderSource.substr(0, entryGuard).find(
+                      "GPUSceneResolveRasterTransform"));
+    };
+    assertGPUSceneHelperIsPermutationOnly(defaultLit);
+    assertGPUSceneHelperIsPermutationOnly(depthOnly);
+
+    // GPUSceneUpdate packs GLM's column-major Mat4 into explicit rows.  The
+    // row-dot contract below therefore matches Tier1's matrix * vector path,
+    // including a non-uniform normal transform.
+    Mat4 world = Mat4Identity();
+    world[0][0] = 2.0f;
+    world[1][1] = 3.0f;
+    world[2][2] = 4.0f;
+    world[3][0] = 5.0f;
+    world[3][1] = -2.0f;
+    world[3][2] = 7.0f;
+    const Vec4 position(1.5f, -2.0f, 0.25f, 1.0f);
+    const Vec4 tierOnePosition = world * position;
+    const Vec4 gpuScenePosition(
+        world[0][0] * position.x + world[1][0] * position.y +
+            world[2][0] * position.z + world[3][0] * position.w,
+        world[0][1] * position.x + world[1][1] * position.y +
+            world[2][1] * position.z + world[3][1] * position.w,
+        world[0][2] * position.x + world[1][2] * position.y +
+            world[2][2] * position.z + world[3][2] * position.w,
+        1.0f);
+    EXPECT_FLOAT_EQ(tierOnePosition.x, gpuScenePosition.x);
+    EXPECT_FLOAT_EQ(tierOnePosition.y, gpuScenePosition.y);
+    EXPECT_FLOAT_EQ(tierOnePosition.z, gpuScenePosition.z);
+    EXPECT_FLOAT_EQ(tierOnePosition.w, gpuScenePosition.w);
+
+    Mat4 normal = Mat4Identity();
+    normal[0][0] = 0.5f;
+    normal[1][1] = 1.0f / 3.0f;
+    normal[2][2] = 0.25f;
+    const Vec4 inputNormal(0.25f, 0.5f, -0.75f, 0.0f);
+    const Vec4 tierOneNormal = normal * inputNormal;
+    const Vec3 gpuSceneNormal(
+        normal[0][0] * inputNormal.x + normal[1][0] * inputNormal.y +
+            normal[2][0] * inputNormal.z,
+        normal[0][1] * inputNormal.x + normal[1][1] * inputNormal.y +
+            normal[2][1] * inputNormal.z,
+        normal[0][2] * inputNormal.x + normal[1][2] * inputNormal.y +
+            normal[2][2] * inputNormal.z);
+    EXPECT_FLOAT_EQ(tierOneNormal.x, gpuSceneNormal.x);
+    EXPECT_FLOAT_EQ(tierOneNormal.y, gpuSceneNormal.y);
+    EXPECT_FLOAT_EQ(tierOneNormal.z, gpuSceneNormal.z);
 }

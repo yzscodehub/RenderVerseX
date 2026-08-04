@@ -18,6 +18,7 @@
 #include "RHI/RHI.h"
 
 #include <array>
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <limits>
@@ -32,9 +33,11 @@ namespace RVX
     // Forward declarations
     struct GPUCompletionToken;
     class IShaderCompiler;
+    class RenderSubmissionResourceBatch;
     class RenderRetirementQueue;
     class ShaderManager;
     struct ShaderCompileResult;
+    struct GPUSceneRasterResourceSnapshot;
     struct ViewData;
 
     constexpr uint32 RVX_MAX_OBJECT_SKINNING_MATRICES = 128;
@@ -167,6 +170,54 @@ namespace RVX
         Vec4 objectVelocityParams;
         Vec4 skinningParams;
         Mat4 skinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
+    };
+
+    /**
+     * @brief Private set-1 b0 payload for a sealed GPU-scene raster record.
+     *
+     * The ObjectConstants prefix is intentionally exact because DefaultLit's
+     * pixel shader still reads ObjectVelocityParams from b0.  Only the trailing
+     * counts are GPU-scene specific and they are filled by PipelineCache from a
+     * sealed resource snapshot.
+     */
+    struct alignas(16) GPUSceneRasterObjectConstants
+    {
+        ObjectConstants objectConstants{};
+        std::array<uint32, 4> gpuSceneRasterCounts{};
+    };
+
+    static_assert(offsetof(GPUSceneRasterObjectConstants, objectConstants) == 0);
+    static_assert(offsetof(GPUSceneRasterObjectConstants, gpuSceneRasterCounts) ==
+                  sizeof(ObjectConstants));
+
+    /**
+     * @brief Strongly-owned private GPU-scene raster binding state for one seal.
+     *
+     * This has no route-selection behavior.  It only preserves the resources
+     * that a later renderer pass must bind at set 1 and retain for submission.
+     */
+    struct GPUSceneRasterBindingSnapshot
+    {
+        RHIBufferRef objectConstantBuffer;
+        RHIBufferRef candidateBuffer;
+        RHIBufferRef primitiveBuffer;
+        RHIBufferRef transformBuffer;
+        RHIDescriptorSetRef objectDescriptorSet;
+        RHIDescriptorSetLayoutRef frameSetLayout;
+        RHIDescriptorSetLayoutRef objectSetLayout;
+        RHIDescriptorSetLayoutRef materialSetLayout;
+        RHIPipelineLayoutRef pipelineLayout;
+        RHIPipelineRef opaquePipeline;
+        RHIPipelineRef maskedPipeline;
+        RHIPipelineRef depthPipeline;
+        uint64 leaseVersion = 0;
+        uint32 candidateCount = 0;
+        uint32 primitiveCapacity = 0;
+        uint32 transformCapacity = 0;
+
+        [[nodiscard]] bool IsReadyForBinding() const;
+        [[nodiscard]] bool RetainSubmissionResources(
+            RenderSubmissionResourceBatch& batch) const;
     };
 
     /**
@@ -327,6 +378,15 @@ namespace RVX
         RHIPipeline* GetGPUDrivenPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
 
         /**
+         * @brief Get the GPU-scene raster pipeline for opaque or masked materials.
+         *
+         * This uses a private set-1 layout and never mutates the Direct/Tier1
+         * object descriptor set or its instance-buffer binding.
+         */
+        RHIPipeline* GetGPUScenePipelineForVariant(MaterialPipelineVariant variant,
+                                                    RHIFormat renderTargetFormat);
+
+        /**
          * @brief Get the depth-only pipeline for depth prepass
          * @return Depth-only pipeline or nullptr if not available
          */
@@ -337,6 +397,16 @@ namespace RVX
             return m_maskedDepthOnlyPipeline.Get();
         }
         RHIPipeline* GetGPUDrivenDepthOnlyPipeline();
+        /** @brief Get the GPU-scene depth-only raster pipeline. */
+        RHIPipeline* GetGPUSceneDepthOnlyPipeline();
+
+        /** @brief Whether the independent GPU-scene raster shader/layout substrate is usable. */
+        [[nodiscard]] bool IsGPUSceneRasterReady() const;
+        /** @brief Why the optional GPU-scene raster substrate is unavailable. Empty when ready. */
+        [[nodiscard]] const std::string& GetGPUSceneRasterUnavailableReason() const
+        {
+            return m_gpuSceneRasterUnavailableReason;
+        }
 
         /**
          * @brief Get the shadow-map depth-only pipeline for caster raster bias
@@ -462,6 +532,17 @@ namespace RVX
          * @brief Get the default pipeline layout
          */
         RHIPipelineLayout* GetDefaultLayout() const { return m_pipelineLayout.Get(); }
+
+        /** @brief Get the GPU-scene raster layout (frame, private object, material). */
+        RHIPipelineLayout* GetGPUSceneRasterLayout() const
+        {
+            return m_gpuSceneRasterPipelineLayout.Get();
+        }
+        /** @brief Get the private set-1 b0 + candidate/primitive/transform layout. */
+        RHIDescriptorSetLayout* GetGPUSceneRasterObjectSetLayout() const
+        {
+            return m_gpuSceneRasterObjectSetLayout.Get();
+        }
 
         /**
          * @brief Get the post-process fullscreen pipeline layout
@@ -626,6 +707,17 @@ namespace RVX
                                              RasterDrawBindingSnapshot& outSnapshot) const;
 
         /**
+         * @brief Create the independent set-1 binding for one sealed GPU-scene raster view.
+         *
+         * The snapshot supplies its own strong b0/descriptor/table references;
+         * this never updates the cache's normal object buffer or descriptor.
+         */
+        bool CreateGPUSceneRasterBindingSnapshot(
+            const GPUSceneRasterResourceSnapshot& resources,
+            const ObjectConstants& objectConstants,
+            GPUSceneRasterBindingSnapshot& outSnapshot);
+
+        /**
          * @brief Create isolated transparent frame/object bindings.
          *
          * Local-light and cluster buffers are single mutable upload allocations.
@@ -750,6 +842,7 @@ namespace RVX
 
         bool CompileShaders();
         bool CreatePipelineLayout();
+        bool CreateGPUSceneRasterPipelineLayout();
         bool CreatePostProcessPipelineLayout();
         bool CreateUIPipelineLayout();
         bool CreateRayTracedReflectionDenoisePipelineLayout();
@@ -769,9 +862,15 @@ namespace RVX
                                                               const RHIDepthStencilState& depthStencilState,
                                                               const RHIBlendState& blendState,
                                                               RHIFormat renderTargetFormat);
+        RHIPipelineRef GetOrCreateGPUSceneDefaultLitPipeline(MaterialPipelineVariant variant,
+                                                              const char* debugName,
+                                                              const RHIDepthStencilState& depthStencilState,
+                                                              const RHIBlendState& blendState,
+                                                              RHIFormat renderTargetFormat);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateMaskedDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateGPUDrivenDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateGPUSceneDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateShadowDepthPipeline(const ShadowDepthBiasState& biasState);
         RHIPipelineRef GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
                                                  bool depthTest = true,
@@ -802,9 +901,14 @@ namespace RVX
                                                                      const RHIDepthStencilState& depthStencilState,
                                                                      const RHIBlendState& blendState,
                                                                      RHIFormat renderTargetFormat) const;
+        RHIGraphicsPipelineDesc BuildGPUSceneDefaultLitPipelineDesc(const char* debugName,
+                                                                     const RHIDepthStencilState& depthStencilState,
+                                                                     const RHIBlendState& blendState,
+                                                                     RHIFormat renderTargetFormat) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildMaskedDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildGPUDrivenDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildGPUSceneDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildShadowDepthPipelineDesc(const ShadowDepthBiasState& biasState) const;
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
@@ -842,6 +946,8 @@ namespace RVX
         bool ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSetLayoutDesc>& layouts);
         void ProcessPipelineManifest();
         void SetLastError(std::string message);
+        void ResetGPUSceneRasterState();
+        void DisableGPUSceneRaster(std::string reason);
         uint64 ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc, MaterialPipelineVariant variant) const;
         uint64 ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc,
                                         MaterialPipelineVariant variant,
@@ -855,6 +961,7 @@ namespace RVX
         PipelineCacheConfig m_config;
         PipelineCacheStats m_stats;
         std::string m_lastError;
+        std::string m_gpuSceneRasterUnavailableReason;
 
         // Shader manager
         ShaderCompilerFactory m_shaderCompilerFactory;
@@ -864,11 +971,13 @@ namespace RVX
         RHIShaderRef m_vertexShader;
         RHIShaderRef m_rigidVertexShader;
         RHIShaderRef m_gpuDrivenVertexShader;
+        RHIShaderRef m_gpuSceneVertexShader;
         RHIShaderRef m_pixelShader;
         RHIShaderRef m_depthOnlyVertexShader;
         RHIShaderRef m_maskedDepthOnlyVertexShader;
         RHIShaderRef m_maskedDepthOnlyPixelShader;
         RHIShaderRef m_gpuDrivenDepthOnlyVertexShader;
+        RHIShaderRef m_gpuSceneDepthOnlyVertexShader;
         RHIShaderRef m_skyboxVertexShader;
         RHIShaderRef m_skyboxPixelShader;
         RHIShaderRef m_toneMappingVertexShader;
@@ -909,11 +1018,13 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_rigidVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuDrivenVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_gpuSceneVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuDrivenDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_gpuSceneDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_skyboxVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_skyboxPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_toneMappingVsCompileResult;
@@ -955,6 +1066,8 @@ namespace RVX
         // Descriptor set layouts and pipeline layout
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;
         RHIPipelineLayoutRef m_pipelineLayout;
+        RHIDescriptorSetLayoutRef m_gpuSceneRasterObjectSetLayout;
+        RHIPipelineLayoutRef m_gpuSceneRasterPipelineLayout;
         RHIDescriptorSetLayoutRef m_postProcessSetLayout;
         RHIPipelineLayoutRef m_postProcessPipelineLayout;
         RHIDescriptorSetLayoutRef m_uiTextureSetLayout;
@@ -975,6 +1088,9 @@ namespace RVX
         RHIPipelineRef m_depthOnlyPipeline;
         RHIPipelineRef m_maskedDepthOnlyPipeline;
         RHIPipelineRef m_gpuDrivenDepthOnlyPipeline;
+        RHIPipelineRef m_gpuSceneOpaquePipeline;
+        RHIPipelineRef m_gpuSceneMaskedPipeline;
+        RHIPipelineRef m_gpuSceneDepthOnlyPipeline;
         RHIPipelineRef m_skyboxPipeline;
         RHIPipelineRef m_toneMappingPipeline;
         RHIPipelineRef m_bloomPipeline;

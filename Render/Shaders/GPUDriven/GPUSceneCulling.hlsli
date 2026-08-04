@@ -10,6 +10,7 @@
 #define RVX_GPU_SCENE_ROW_FLAG_TOMBSTONE 2u
 #define RVX_GPU_SCENE_BOUNDS_FLAG_FORCE_VISIBLE 1u
 #define RVX_GPU_SCENE_BOUNDS_FLAG_INVALID 2u
+#define RVX_GPU_SCENE_TRANSFORM_FLAG_NORMAL_VALID 2u
 
 // 40 bytes; mirrors RVX::GPUSceneCullingCandidate.
 struct GPUSceneCullingCandidate

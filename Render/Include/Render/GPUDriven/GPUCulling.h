@@ -20,6 +20,7 @@
 namespace RVX
 {
     class IRHIDevice;
+    class PipelineCache;
     class RHICommandContext;
     class RenderRetirementQueue;
     class RenderScene;
@@ -213,6 +214,76 @@ namespace RVX
         RHIBufferAccessSnapshot drawCount;
 
         bool operator==(const GPUCullingAccessSnapshots&) const = default;
+    };
+
+    /**
+     * @brief Renderer-private, sealed raster view of the GPU-scene resources.
+     *
+     * The refs intentionally keep exactly the candidate/primitive/transform
+     * buffers alive after the uploader's caller drops its lease.  No public RHI
+     * contract is introduced; a later render-pass owner must still import and
+     * retain these resources through the established RenderGraph path.
+     */
+    struct GPUSceneRasterResourceSnapshot
+    {
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return m_candidates && m_primitives && m_transforms &&
+                   m_candidateCount != 0 && m_primitiveCapacity != 0 &&
+                   m_transformCapacity != 0 &&
+                   m_candidateCapacity >= m_candidateCount &&
+                   m_leaseVersion != 0 &&
+                   m_leaseVersion == m_exactLeaseVersion;
+        }
+
+        [[nodiscard]] RHIBuffer* GetCandidates() const noexcept
+        {
+            return m_candidates.Get();
+        }
+        [[nodiscard]] RHIBuffer* GetPrimitives() const noexcept
+        {
+            return m_primitives.Get();
+        }
+        [[nodiscard]] RHIBuffer* GetTransforms() const noexcept
+        {
+            return m_transforms.Get();
+        }
+        [[nodiscard]] uint32 GetCandidateCount() const noexcept
+        {
+            return m_candidateCount;
+        }
+        [[nodiscard]] uint32 GetCandidateCapacity() const noexcept
+        {
+            return m_candidateCapacity;
+        }
+        [[nodiscard]] uint32 GetPrimitiveCapacity() const noexcept
+        {
+            return m_primitiveCapacity;
+        }
+        [[nodiscard]] uint32 GetTransformCapacity() const noexcept
+        {
+            return m_transformCapacity;
+        }
+        [[nodiscard]] uint64 GetLeaseVersion() const noexcept
+        {
+            return m_leaseVersion;
+        }
+
+    private:
+        friend class GPUCulling;
+        friend class PipelineCache;
+
+        RHIBufferRef m_candidates;
+        RHIBufferRef m_primitives;
+        RHIBufferRef m_transforms;
+        uint32 m_candidateCount = 0;
+        uint32 m_candidateCapacity = 0;
+        uint32 m_primitiveCapacity = 0;
+        uint32 m_transformCapacity = 0;
+        uint64 m_leaseVersion = 0;
+        // A caller can copy this sealed value but cannot manufacture or alter
+        // one. PipelineCache requires it to match the exposed lease version.
+        uint64 m_exactLeaseVersion = 0;
     };
 
     /** @brief Backend-neutral culling output for one indexed indirect submission. */
@@ -455,6 +526,10 @@ namespace RVX
         /** @brief GPU-scene candidate input for a sealed GPU-scene compute pass. */
         RHIBuffer* GetGPUSceneCandidateBuffer() const;
 
+        /** @brief Get the exact sealed GPU-scene resources required by raster. */
+        [[nodiscard]] GPUSceneRasterResourceSnapshot
+            GetGPUSceneRasterResourceSnapshot() const;
+
         /** @brief Identity per-instance vertex input used to resolve indirect firstInstance. */
         RHIBuffer* GetInstanceIndexBuffer() const { return m_instanceIndexBuffer.Get(); }
 
@@ -674,6 +749,11 @@ namespace RVX
         [[nodiscard]] const GPUCullingAccessSnapshots& GetAccessSnapshots() const
         {
             return m_culling.GetAccessSnapshots();
+        }
+        [[nodiscard]] GPUSceneRasterResourceSnapshot
+            GetGPUSceneRasterResourceSnapshot() const
+        {
+            return m_culling.GetGPUSceneRasterResourceSnapshot();
         }
         void CommitAccessSnapshots(const GPUCullingAccessSnapshots& snapshots)
         {

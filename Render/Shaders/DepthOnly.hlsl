@@ -14,9 +14,12 @@
 //   Slot 2: Masked-depth UVs (float2)
 // =============================================================================
 
-#include "Include/GPUInstanceData.hlsli"
-
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
+
+#include "Include/GPUInstanceData.hlsli"
+#if defined(RVX_GPU_SCENE_RASTER)
+#include "GPUDriven/GPUSceneRaster.hlsli"
+#endif
 
 cbuffer ViewConstants : register(b0, space0)
 {
@@ -30,6 +33,7 @@ cbuffer ViewConstants : register(b0, space0)
 #define LightDirection LightDirection_Padding.xyz
 #define Padding LightDirection_Padding.w
 
+#if !defined(RVX_GPU_SCENE_RASTER)
 cbuffer ObjectConstants : register(b0, space1)
 {
     float4x4 World;
@@ -39,8 +43,11 @@ cbuffer ObjectConstants : register(b0, space1)
     float4 SkinningParams; // x: enabled, y: matrix count
     float4x4 SkinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
 };
+#endif
 
+#if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
+#endif
 
 struct VSInput
 {
@@ -124,6 +131,7 @@ VSOutput VSMain(VSInput input)
     return output;
 }
 
+#if !defined(RVX_GPU_SCENE_RASTER)
 VSOutput VSMainGPUDriven(
     RigidVSInput input)
 {
@@ -133,6 +141,24 @@ VSOutput VSMainGPUDriven(
     output.Position = mul(ViewProjection, worldPosition);
     return output;
 }
+#endif
+
+#if defined(RVX_GPU_SCENE_RASTER)
+VSOutput VSMainGPUScene(RigidVSInput input)
+{
+    VSOutput output;
+    GPUSceneTransformRow transform;
+    if (!GPUSceneResolveRasterTransform(input.InstanceIndex, transform))
+    {
+        output.Position = GPUSceneInvalidClipPosition();
+        return output;
+    }
+
+    const float4 worldPosition = GPUSceneTransformPosition(transform, input.Position);
+    output.Position = mul(ViewProjection, worldPosition);
+    return output;
+}
+#endif
 
 MaskedVSOutput VSMainMasked(MaskedVSInput input)
 {

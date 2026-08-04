@@ -20,13 +20,14 @@
 
 #define private public
 #include "Render/PipelineCache.h"
+#include "Render/GPUDriven/GPUCulling.h"
 #undef private
 
 #include "Common/DeterministicShaderCompiler.h"
 #include "Common/RenderRuntimeTestHarness.h"
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
-#include "Render/GPUDriven/GPUCulling.h"
+#include "Render/GPUScene/GPUSceneSchema.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
@@ -163,6 +164,8 @@ namespace
 
         const std::vector<uint8>& GetStorage() const { return m_storage; }
         void SetMapSucceeds(bool succeeds) { m_mapSucceeds = succeeds; }
+        void SetReportedSize(uint64 size) { m_desc.size = size; }
+        void SetReportedStride(uint32 stride) { m_desc.stride = stride; }
 
     private:
         RHIBufferDesc m_desc;
@@ -776,6 +779,8 @@ namespace
 
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc) override
         {
+            createdGraphicsPipelineDebugNames.emplace_back(
+                desc.debugName ? desc.debugName : "");
             if (!failGraphicsPipelineDebugName.empty() && desc.debugName &&
                 failGraphicsPipelineDebugName == desc.debugName)
             {
@@ -1007,6 +1012,7 @@ namespace
         std::vector<RHIAccelerationStructureDesc> createdAccelerationStructureDescs;
         std::vector<RHIDescriptorSetDesc> createdDescriptorSetDescs;
         std::vector<FakeDescriptorSet*> createdDescriptorSets;
+        std::vector<std::string> createdGraphicsPipelineDebugNames;
         std::vector<RHIQueryPoolDesc> createdQueryPoolDescs;
         std::vector<RHITextureDesc> createdTextureDescs;
         std::vector<RHITextureViewDesc> createdTextureViewDescs;
@@ -2288,6 +2294,278 @@ namespace
         ViewData view;
     };
 } // namespace
+
+TEST_F(RenderPassValidationFixture,
+     PrivateBindingSnapshotUsesSealedTablesAndRetainsIndependentPipelineState)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice testDevice;
+    PipelineCache cache{RVX::Tests::CreateDeterministicShaderCompiler};
+    ASSERT_TRUE(cache.Initialize(&testDevice, shaderDir.string())) << cache.GetLastError();
+    RHIDescriptorSet* const directObjectSet = cache.GetObjectDescriptorSet();
+    RHIDescriptorSetLayout* const directObjectLayout = cache.GetObjectSetLayout();
+    ASSERT_NE(nullptr, directObjectSet);
+    ASSERT_NE(nullptr, directObjectLayout);
+
+    const auto makeStructuredBuffer = [&testDevice](uint32 capacity, uint32 stride,
+                                                const char* debugName)
+    {
+        RHIBufferDesc desc;
+        desc.size = static_cast<uint64>(capacity) * stride;
+        desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+        desc.memoryType = RHIMemoryType::Upload;
+        desc.stride = stride;
+        desc.debugName = debugName;
+        return testDevice.CreateBuffer(desc);
+    };
+
+    // The test has private test access only to create a representative sealed
+    // record. Production callers receive this state exclusively from GPUCulling.
+    GPUSceneRasterResourceSnapshot resources;
+    resources.m_candidateCount = 2u;
+    resources.m_candidateCapacity = 4u;
+    resources.m_primitiveCapacity = 7u;
+    resources.m_transformCapacity = 9u;
+    resources.m_leaseVersion = 71u;
+    resources.m_exactLeaseVersion = 71u;
+    resources.m_candidates = makeStructuredBuffer(
+        resources.m_candidateCapacity, sizeof(GPUSceneCullingCandidate),
+        "GPUSceneRasterBindingValidation.Candidates");
+    resources.m_primitives = makeStructuredBuffer(
+        resources.m_primitiveCapacity, sizeof(GPUScenePrimitiveRow),
+        "GPUSceneRasterBindingValidation.Primitives");
+    resources.m_transforms = makeStructuredBuffer(
+        resources.m_transformCapacity, sizeof(GPUSceneTransformRow),
+        "GPUSceneRasterBindingValidation.Transforms");
+    ASSERT_TRUE(resources.IsValid());
+
+    ObjectConstants objectConstants{};
+    objectConstants.world[3] = Vec4(5.0f, 6.0f, 7.0f, 1.0f);
+    objectConstants.normalMatrix[0][0] = 0.5f;
+    objectConstants.previousWorldViewProjection[1][2] = 3.0f;
+    objectConstants.objectVelocityParams = Vec4(1.0f, 0.0f, 1.0f, 0.0f);
+    objectConstants.skinningParams = Vec4(4.0f, 3.0f, 2.0f, 1.0f);
+    objectConstants.skinningMatrices[3][2][1] = 8.0f;
+
+    FakeBuffer* const candidateBuffer =
+        static_cast<FakeBuffer*>(resources.m_candidates.Get());
+    ASSERT_NE(nullptr, candidateBuffer);
+    const uint32 candidateStride = candidateBuffer->GetStride();
+    const uint64 candidateSize = candidateBuffer->GetSize();
+    const size_t descriptorCountBeforeFailure = testDevice.createdDescriptorSetDescs.size();
+    GPUSceneRasterBindingSnapshot rejected;
+    candidateBuffer->SetReportedStride(candidateStride + 4u);
+    EXPECT_FALSE(cache.CreateGPUSceneRasterBindingSnapshot(
+        resources, objectConstants, rejected));
+    EXPECT_FALSE(rejected.IsReadyForBinding());
+    EXPECT_EQ(descriptorCountBeforeFailure, testDevice.createdDescriptorSetDescs.size());
+    candidateBuffer->SetReportedStride(candidateStride);
+    candidateBuffer->SetReportedSize(candidateSize - candidateStride);
+    EXPECT_FALSE(cache.CreateGPUSceneRasterBindingSnapshot(
+        resources, objectConstants, rejected));
+    EXPECT_FALSE(rejected.IsReadyForBinding());
+    EXPECT_EQ(descriptorCountBeforeFailure, testDevice.createdDescriptorSetDescs.size());
+    candidateBuffer->SetReportedSize(candidateSize);
+    resources.m_exactLeaseVersion = resources.m_leaseVersion - 1u;
+    EXPECT_FALSE(cache.CreateGPUSceneRasterBindingSnapshot(
+        resources, objectConstants, rejected));
+    EXPECT_FALSE(rejected.IsReadyForBinding());
+    resources.m_exactLeaseVersion = resources.m_leaseVersion;
+
+    GPUSceneRasterBindingSnapshot binding;
+    ASSERT_TRUE(cache.CreateGPUSceneRasterBindingSnapshot(
+        resources, objectConstants, binding)) << cache.GetLastError();
+    ASSERT_TRUE(binding.IsReadyForBinding());
+    EXPECT_EQ(resources.m_leaseVersion, binding.leaseVersion);
+    EXPECT_EQ(resources.m_candidateCount, binding.candidateCount);
+    EXPECT_EQ(resources.m_primitiveCapacity, binding.primitiveCapacity);
+    EXPECT_EQ(resources.m_transformCapacity, binding.transformCapacity);
+    EXPECT_NE(nullptr, binding.objectConstantBuffer.Get());
+    EXPECT_NE(directObjectSet, binding.objectDescriptorSet.Get());
+    EXPECT_NE(directObjectLayout, binding.objectSetLayout.Get());
+    EXPECT_EQ(directObjectSet, cache.GetObjectDescriptorSet());
+    EXPECT_EQ(directObjectLayout, cache.GetObjectSetLayout());
+
+    const auto findBinding = [](const std::vector<RHIDescriptorBinding>& bindings,
+                                uint32 bindingIndex) -> const RHIDescriptorBinding*
+    {
+        const auto it = std::find_if(
+            bindings.begin(), bindings.end(),
+            [bindingIndex](const RHIDescriptorBinding& binding)
+            {
+                return binding.binding == bindingIndex;
+            });
+        return it == bindings.end() ? nullptr : &(*it);
+    };
+    const auto& bindings = binding.objectDescriptorSet->GetDescriptorSnapshot();
+    const RHIDescriptorBinding* const b0 = findBinding(bindings, 0u);
+    const RHIDescriptorBinding* const t1 = findBinding(bindings, 1u);
+    const RHIDescriptorBinding* const t2 = findBinding(bindings, 2u);
+    const RHIDescriptorBinding* const t3 = findBinding(bindings, 3u);
+    ASSERT_NE(nullptr, b0);
+    ASSERT_NE(nullptr, t1);
+    ASSERT_NE(nullptr, t2);
+    ASSERT_NE(nullptr, t3);
+    EXPECT_EQ(binding.objectConstantBuffer.Get(), b0->buffer);
+    EXPECT_EQ(resources.m_candidates.Get(), t1->buffer);
+    EXPECT_EQ(resources.m_primitives.Get(), t2->buffer);
+    EXPECT_EQ(resources.m_transforms.Get(), t3->buffer);
+    EXPECT_EQ(((sizeof(GPUSceneRasterObjectConstants) + 255ull) & ~255ull),
+              b0->range);
+
+    const FakeBuffer* const privateConstants =
+        static_cast<const FakeBuffer*>(binding.objectConstantBuffer.Get());
+    ASSERT_GE(privateConstants->GetStorage().size(),
+              sizeof(GPUSceneRasterObjectConstants));
+    GPUSceneRasterObjectConstants uploaded{};
+    std::memcpy(&uploaded, privateConstants->GetStorage().data(), sizeof(uploaded));
+    EXPECT_EQ(0, std::memcmp(&objectConstants, &uploaded.objectConstants,
+                             sizeof(objectConstants)));
+    EXPECT_EQ(resources.m_candidateCount, uploaded.gpuSceneRasterCounts[0]);
+    EXPECT_EQ(resources.m_primitiveCapacity, uploaded.gpuSceneRasterCounts[1]);
+    EXPECT_EQ(resources.m_transformCapacity, uploaded.gpuSceneRasterCounts[2]);
+    EXPECT_EQ(0u, uploaded.gpuSceneRasterCounts[3]);
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&testDevice));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+    RenderSubmissionResourceBatch batch;
+    ASSERT_TRUE(binding.RetainSubmissionResources(batch));
+    EXPECT_EQ(12u, batch.GetRetainedObjectCount());
+    batch.ReleaseUnsubmitted(retirement);
+    EXPECT_EQ(0u, batch.GetRetainedObjectCount());
+
+    resources = {};
+    cache.Shutdown();
+    EXPECT_TRUE(binding.IsReadyForBinding());
+    EXPECT_NE(nullptr, binding.objectDescriptorSet.Get());
+    EXPECT_NE(nullptr, binding.opaquePipeline.Get());
+    EXPECT_NE(nullptr, binding.maskedPipeline.Get());
+    EXPECT_NE(nullptr, binding.depthPipeline.Get());
+}
+
+TEST_F(RenderPassValidationFixture,
+       GPUSceneRasterPipelineFailureClearsPartialStateAndRecoversOnReinitialize)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice testDevice;
+    PipelineCache cache{RVX::Tests::CreateDeterministicShaderCompiler};
+    ASSERT_TRUE(cache.Initialize(&testDevice, shaderDir.string())) << cache.GetLastError();
+    ASSERT_TRUE(cache.IsGPUSceneRasterReady());
+    ASSERT_TRUE(cache.GetLastError().empty());
+
+    const auto makeStructuredBuffer = [&testDevice](uint32 capacity,
+                                                    uint32 stride,
+                                                    const char* debugName)
+    {
+        RHIBufferDesc desc;
+        desc.size = static_cast<uint64>(capacity) * stride;
+        desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+        desc.memoryType = RHIMemoryType::Upload;
+        desc.stride = stride;
+        desc.debugName = debugName;
+        return testDevice.CreateBuffer(desc);
+    };
+
+    GPUSceneRasterResourceSnapshot resources;
+    resources.m_candidateCount = 1u;
+    resources.m_candidateCapacity = 1u;
+    resources.m_primitiveCapacity = 1u;
+    resources.m_transformCapacity = 1u;
+    resources.m_leaseVersion = 97u;
+    resources.m_exactLeaseVersion = 97u;
+    resources.m_candidates = makeStructuredBuffer(
+        resources.m_candidateCapacity, sizeof(GPUSceneCullingCandidate),
+        "GPUSceneRasterPipelineFailure.Candidates");
+    resources.m_primitives = makeStructuredBuffer(
+        resources.m_primitiveCapacity, sizeof(GPUScenePrimitiveRow),
+        "GPUSceneRasterPipelineFailure.Primitives");
+    resources.m_transforms = makeStructuredBuffer(
+        resources.m_transformCapacity, sizeof(GPUSceneTransformRow),
+        "GPUSceneRasterPipelineFailure.Transforms");
+    ASSERT_TRUE(resources.IsValid());
+
+    // The binding factory creates opaque before masked. Reject only masked so
+    // cleanup must remove the successfully cached opaque GPU-scene pipeline.
+    testDevice.failGraphicsPipelineDebugName = "GPUSceneMaskedPipeline";
+    GPUSceneRasterBindingSnapshot rejected;
+    ObjectConstants objectConstants{};
+    EXPECT_FALSE(cache.CreateGPUSceneRasterBindingSnapshot(
+        resources, objectConstants, rejected));
+    EXPECT_FALSE(rejected.IsReadyForBinding());
+
+    const auto opaqueIt = std::find(
+        testDevice.createdGraphicsPipelineDebugNames.begin(),
+        testDevice.createdGraphicsPipelineDebugNames.end(),
+        "GPUSceneOpaquePipeline");
+    const auto maskedIt = std::find(
+        testDevice.createdGraphicsPipelineDebugNames.begin(),
+        testDevice.createdGraphicsPipelineDebugNames.end(),
+        "GPUSceneMaskedPipeline");
+    ASSERT_NE(opaqueIt, testDevice.createdGraphicsPipelineDebugNames.end());
+    ASSERT_NE(maskedIt, testDevice.createdGraphicsPipelineDebugNames.end());
+    EXPECT_LT(std::distance(testDevice.createdGraphicsPipelineDebugNames.begin(), opaqueIt),
+              std::distance(testDevice.createdGraphicsPipelineDebugNames.begin(), maskedIt));
+
+    EXPECT_TRUE(cache.GetLastError().empty());
+    EXPECT_FALSE(cache.IsGPUSceneRasterReady());
+    EXPECT_NE(std::string::npos,
+              cache.GetGPUSceneRasterUnavailableReason().find("masked pipeline"));
+    EXPECT_EQ(nullptr, cache.GetGPUSceneRasterLayout());
+    EXPECT_EQ(nullptr, cache.GetGPUSceneRasterObjectSetLayout());
+    EXPECT_EQ(nullptr, cache.GetGPUScenePipelineForVariant(
+                           MaterialPipelineVariant::Opaque, RHIFormat::RGBA8_UNORM));
+    EXPECT_EQ(nullptr, cache.GetGPUSceneDepthOnlyPipeline());
+    EXPECT_EQ(nullptr, cache.m_gpuSceneOpaquePipeline.Get());
+    EXPECT_EQ(nullptr, cache.m_gpuSceneMaskedPipeline.Get());
+    EXPECT_EQ(nullptr, cache.m_gpuSceneDepthOnlyPipeline.Get());
+    EXPECT_EQ(nullptr, cache.m_gpuSceneVertexShader.Get());
+    EXPECT_EQ(nullptr, cache.m_gpuSceneDepthOnlyVertexShader.Get());
+    EXPECT_EQ(nullptr, cache.m_gpuSceneRasterObjectSetLayout.Get());
+    EXPECT_EQ(nullptr, cache.m_gpuSceneRasterPipelineLayout.Get());
+    EXPECT_TRUE(std::none_of(
+        cache.m_pipelineCache.begin(), cache.m_pipelineCache.end(),
+        [](const auto& entry)
+        {
+            const auto* pipeline = static_cast<const FakePipeline*>(entry.second.Get());
+            return pipeline && (pipeline->debugName == "GPUSceneOpaquePipeline" ||
+                                pipeline->debugName == "GPUSceneMaskedPipeline" ||
+                                pipeline->debugName == "GPUSceneDepthOnlyPipeline");
+        }));
+
+    // Optional GPU-scene failure must leave Direct and Tier1 submission usable.
+    EXPECT_NE(nullptr, cache.GetDefaultLayout());
+    EXPECT_NE(nullptr, cache.GetObjectSetLayout());
+    EXPECT_NE(nullptr, cache.GetObjectDescriptorSet());
+    EXPECT_NE(nullptr, cache.GetPipelineForVariant(
+                           MaterialPipelineVariant::Opaque, RHIFormat::RGBA8_UNORM));
+    EXPECT_NE(nullptr, cache.GetGPUDrivenPipelineForVariant(
+                           MaterialPipelineVariant::Opaque, RHIFormat::RGBA8_UNORM));
+    EXPECT_TRUE(cache.GetLastError().empty());
+
+    cache.Shutdown();
+    EXPECT_TRUE(cache.GetGPUSceneRasterUnavailableReason().empty());
+    testDevice.failGraphicsPipelineDebugName.clear();
+    ASSERT_TRUE(cache.Initialize(&testDevice, shaderDir.string())) << cache.GetLastError();
+    ASSERT_TRUE(cache.IsGPUSceneRasterReady());
+    ASSERT_TRUE(cache.GetLastError().empty());
+
+    GPUSceneRasterBindingSnapshot recovered;
+    ASSERT_TRUE(cache.CreateGPUSceneRasterBindingSnapshot(
+        resources, objectConstants, recovered));
+    EXPECT_TRUE(recovered.IsReadyForBinding());
+}
 
 TEST(RenderPassStatusValidation, DefaultImplementedPassReportsEnabledAndSupported)
 {

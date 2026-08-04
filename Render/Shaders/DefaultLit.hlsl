@@ -17,11 +17,14 @@
 //   Slot 6: GPU-driven global instance index buffer (uint)
 // =============================================================================
 
+#define RVX_MAX_OBJECT_SKINNING_MATRICES 128
+
 #include "Include/BRDF.hlsli"
 #include "Include/GPUInstanceData.hlsli"
 #include "Include/Lighting.hlsli"
-
-#define RVX_MAX_OBJECT_SKINNING_MATRICES 128
+#if defined(RVX_GPU_SCENE_RASTER)
+#include "GPUDriven/GPUSceneRaster.hlsli"
+#endif
 
 #define MATERIAL_TEXTURE_BASE_COLOR 0x01
 #define MATERIAL_TEXTURE_NORMAL 0x02
@@ -59,6 +62,7 @@ cbuffer ViewConstants : register(b0, space0)
     float4 RayTracedShadowParams; // x: enabled, y: screen-space filter radius in pixels, z: composition mode
 };
 
+#if !defined(RVX_GPU_SCENE_RASTER)
 cbuffer ObjectConstants : register(b0, space1)
 {
     float4x4 World;
@@ -68,6 +72,7 @@ cbuffer ObjectConstants : register(b0, space1)
     float4 SkinningParams; // x: enabled, y: matrix count
     float4x4 SkinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
 };
+#endif
 
 cbuffer LightConstants : register(b3, space0)
 {
@@ -150,7 +155,9 @@ StructuredBuffer<SpotLight> SpotLights : register(t5, space0);
 Texture2D<float> RayTracedShadowMaskTexture : register(t6, space0);
 StructuredBuffer<GPUCluster> ClusterData : register(t8, space0);
 StructuredBuffer<uint> ClusterLightIndices : register(t9, space0);
+#if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
+#endif
 
 // =============================================================================
 // Vertex Shader Input/Output
@@ -280,6 +287,7 @@ PSInput VSMainRigid(RigidDirectVSInput input)
     return output;
 }
 
+#if !defined(RVX_GPU_SCENE_RASTER)
 PSInput VSMainGPUDriven(
     RigidVSInput input)
 {
@@ -296,6 +304,37 @@ PSInput VSMainGPUDriven(
 
     return output;
 }
+#endif
+
+#if defined(RVX_GPU_SCENE_RASTER)
+PSInput VSMainGPUScene(RigidVSInput input)
+{
+    PSInput output;
+    GPUSceneTransformRow transform;
+    if (!GPUSceneResolveRasterTransform(input.InstanceIndex, transform))
+    {
+        output.Position = GPUSceneInvalidClipPosition();
+        output.WorldPos = float3(0.0f, 0.0f, 0.0f);
+        output.WorldNormal = float3(0.0f, 0.0f, 0.0f);
+        output.TexCoord = float2(0.0f, 0.0f);
+        output.WorldTangent = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        return output;
+    }
+
+    const float4 worldPos = GPUSceneTransformPosition(transform, input.Position);
+    output.WorldPos = worldPos.xyz;
+    output.Position = mul(ViewProjection, worldPos);
+    output.WorldNormal = GPUSceneSafeNormalize(
+        GPUSceneTransformNormal(transform, input.Normal),
+        float3(0.0f, 0.0f, 1.0f));
+    output.TexCoord = input.TexCoord;
+    output.WorldTangent = float4(
+        GPUSceneSafeNormalize(GPUSceneTransformTangent(transform, input.Tangent.xyz),
+                               float3(1.0f, 0.0f, 0.0f)),
+        input.Tangent.w);
+    return output;
+}
+#endif
 
 // =============================================================================
 // Pixel Shader

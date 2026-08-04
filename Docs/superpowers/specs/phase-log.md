@@ -46598,3 +46598,97 @@ below.
   established grouped-indirect strategy.
 
 ---
+
+### R-SP353 Render-policy Task 11D-D2a stable GPU Scene raster substrate
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D2a stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP352 (GPU Scene culling graph execution).
+- D1b-b generated exact stable-ref commands but raster still fetched world and
+  normal transforms from the transient per-recording instance buffer.
+
+**Approved scope:**
+
+- Preserve the established compact/indirect ABI and use its identity instance
+  index to resolve the sealed candidate, primitive, and transform rows.
+- Add independent DefaultLit and DepthOnly GPU Scene vertex permutations. Use
+  explicit row-dot affine transforms and fail closed on range, schema,
+  generation, object-id, live/tombstone, transform, or normal-valid mismatch.
+- Preserve the complete `ObjectConstants` b0 prefix used by the shared pixel
+  shader, append only sealed raster counts, and define an independent set 1
+  containing b0 plus candidate/primitive/transform Vertex SRVs.
+- Create an immutable renderer-private binding snapshot that strongly owns its
+  b0, descriptor, three table buffers, set layouts, pipeline layout, opaque/
+  masked/depth pipelines, exact version, counts, and submission retention.
+- Keep D2a unselected. Treat shader, layout, or partial graphics-pipeline
+  creation failure as optional unavailability with complete D2a cleanup,
+  independent diagnostics, and unchanged Direct/Tier1 initialization.
+- Do not change SceneRenderer, Depth/Opaque production passes, RenderGraph
+  scheduling, Task 10 submission, public RHI capabilities, backend code, or
+  public `GPUResidentScene` policy selection.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Render/Shaders/GPUDriven/GPUSceneCulling.hlsli`
+- `Render/Shaders/GPUDriven/GPUSceneRaster.hlsli`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial builds: PASS for `PipelineCacheValidation`,
+  `GPUDrivenValidation`, and `RenderPassValidation`.
+- Primary focused executables: PASS 133/133, 41/41, and 196/196
+  (370/370 total).
+- `Architecture.PhaseGates`: PASS 1/1. Both GPU Scene raster vertex entries
+  compile for DX12 Shader Model 6.0 and report the raster/schema includes in
+  their actual compile source information.
+- Executable negative fixtures prove optional shader/layout failure leaves the
+  base cache usable and a masked-pipeline failure after opaque creation removes
+  partial D2a cache state while preserving Direct/Tier1 and retry behavior.
+
+**Independent review result:**
+
+- Initial design review found four P1 requirements: retain the complete b0
+  prefix used by DefaultLit's pixel stage, keep a distinct three-set layout and
+  purpose hash, freeze all recording-owned resources, and use the shared schema
+  with finite fail-closed shader outputs.
+- Code review then found one P1: the unselected substrate was a mandatory
+  PipelineCache initialization dependency. Remediation isolated shader/layout/
+  pipeline failure behind optional readiness and independent diagnostics.
+- Final P2 closure added partial graphics-pipeline cleanup behavior and actual
+  compiler include-tracking tests. Final verdict READY; unresolved P0/P1/P2:
+  `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diff/ABI/lifetime review, independent rejection and
+  re-review, serial rebuild, independent 370/370 tests, architecture phase
+  gate, and whitespace/scope validation.
+- The new `GPUSceneRaster.hlsli` is included in this stage commit. Unrelated
+  `Engine/Private/Engine.cpp`, runtime diagnostics output, and Python cache
+  remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- D2b must carry the same exact graph handles and immutable binding snapshot
+  into Depth/Opaque, declare Vertex SRV reads without a second lease acquisition,
+  and select the path only after an actual successful GPU Scene seal.
+- Actual raster output and invalid-row suppression have not yet run on a real
+  GPU. DX12 warm-frame visual/depth/normal/tangent parity remains D2b/D4 evidence;
+  Vulkan and Metal shader/pipeline qualification remain Tasks 12 and 13.
+- D3/D4 are still required before public `GPUResidentScene` selection. D2a
+  changes no current frame-plan or sample behavior.
+
+---

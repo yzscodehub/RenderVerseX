@@ -5,11 +5,14 @@
 
 #include "Render/PipelineCache.h"
 #include "Core/Log.h"
+#include "Render/GPUDriven/GPUCulling.h"
+#include "Render/GPUScene/GPUSceneSchema.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resources/RenderOwnerSnapshotRetirement.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "ShaderCompiler/ShaderLayout.h"
 #include "ShaderCompiler/ShaderManager.h"
@@ -38,9 +41,11 @@ namespace
     constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 13;
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEFAULT = 0x47444546u; // GDEF
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_DEFAULT = 0x47534446u; // GSDF
     constexpr uint32 RVX_PIPELINE_PURPOSE_SHADOW_DEPTH = 0x53484457u; // SHDW
     constexpr uint32 RVX_PIPELINE_PURPOSE_OBJECT_VELOCITY = 0x4F56454Cu; // OVEL
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEPTH = 0x47444550u; // GDEP
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_DEPTH = 0x47534450u; // GSDP
     constexpr uint32 RVX_PIPELINE_PURPOSE_MASKED_DEPTH = 0x4D444550u; // MDEP
     constexpr uint32 RVX_PIPELINE_PURPOSE_UI = 0x5549504Cu; // UIPL
     constexpr float RVX_MAX_SHADOW_CASTER_DEPTH_BIAS = 10000.0f;
@@ -697,6 +702,40 @@ namespace
     }
 } // namespace
 
+bool GPUSceneRasterBindingSnapshot::IsReadyForBinding() const
+{
+    return objectConstantBuffer && candidateBuffer && primitiveBuffer &&
+           transformBuffer && objectDescriptorSet && frameSetLayout &&
+           objectSetLayout && materialSetLayout && pipelineLayout &&
+           opaquePipeline && maskedPipeline && depthPipeline &&
+           leaseVersion != 0 && candidateCount != 0 &&
+           primitiveCapacity != 0 && transformCapacity != 0 &&
+           objectDescriptorSet->IsReadyForBinding(objectSetLayout.Get());
+}
+
+bool GPUSceneRasterBindingSnapshot::RetainSubmissionResources(
+    RenderSubmissionResourceBatch& batch) const
+{
+    if (!IsReadyForBinding())
+    {
+        return false;
+    }
+
+    const auto retain = [&batch]<typename T>(const Ref<T>& object,
+                                             uint64 estimatedBytes = 0)
+    {
+        return object && batch.Retain(object, estimatedBytes);
+    };
+    return retain(objectConstantBuffer, objectConstantBuffer->GetSize()) &&
+           retain(candidateBuffer, candidateBuffer->GetSize()) &&
+           retain(primitiveBuffer, primitiveBuffer->GetSize()) &&
+           retain(transformBuffer, transformBuffer->GetSize()) &&
+           retain(objectDescriptorSet) && retain(frameSetLayout) &&
+           retain(objectSetLayout) && retain(materialSetLayout) &&
+           retain(pipelineLayout) && retain(opaquePipeline) &&
+           retain(maskedPipeline) && retain(depthPipeline);
+}
+
 PipelineCache::PipelineCache() = default;
 
 PipelineCache::PipelineCache(ShaderCompilerFactory shaderCompilerFactory)
@@ -765,6 +804,8 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
     m_lastError.clear();
     m_stats = {};
     m_pipelineCache.clear();
+    ResetGPUSceneRasterState();
+    m_gpuSceneRasterUnavailableReason.clear();
 
     if (!device)
     {
@@ -813,6 +854,15 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
             SetLastError("Failed to create pipeline layout");
         }
         return false;
+    }
+
+    if (m_gpuSceneVertexShader && m_gpuSceneDepthOnlyVertexShader &&
+        !CreateGPUSceneRasterPipelineLayout())
+    {
+        if (m_gpuSceneRasterUnavailableReason.empty())
+        {
+            DisableGPUSceneRaster("Failed to create GPU-scene raster pipeline layout");
+        }
     }
 
     if (!CreatePostProcessPipelineLayout())
@@ -907,7 +957,13 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
 void PipelineCache::Shutdown()
 {
     if (!m_initialized)
+    {
+        ResetGPUSceneRasterState();
+        m_gpuSceneRasterUnavailableReason.clear();
         return;
+    }
+
+    ResetGPUSceneRasterState();
 
     m_opaquePipeline.Reset();
     m_maskedPipeline.Reset();
@@ -915,6 +971,9 @@ void PipelineCache::Shutdown()
     m_depthOnlyPipeline.Reset();
     m_maskedDepthOnlyPipeline.Reset();
     m_gpuDrivenDepthOnlyPipeline.Reset();
+    m_gpuSceneOpaquePipeline.Reset();
+    m_gpuSceneMaskedPipeline.Reset();
+    m_gpuSceneDepthOnlyPipeline.Reset();
     m_skyboxPipeline.Reset();
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
@@ -971,16 +1030,20 @@ void PipelineCache::Shutdown()
     m_rayTracedShadowSetLayout.Reset();
     m_rayTracedReflectionPipelineLayout.Reset();
     m_rayTracedReflectionSetLayout.Reset();
+    m_gpuSceneRasterPipelineLayout.Reset();
+    m_gpuSceneRasterObjectSetLayout.Reset();
     m_pipelineLayout.Reset();
     m_setLayouts.clear();
     m_vertexShader.Reset();
     m_rigidVertexShader.Reset();
     m_gpuDrivenVertexShader.Reset();
+    m_gpuSceneVertexShader.Reset();
     m_pixelShader.Reset();
     m_depthOnlyVertexShader.Reset();
     m_maskedDepthOnlyVertexShader.Reset();
     m_maskedDepthOnlyPixelShader.Reset();
     m_gpuDrivenDepthOnlyVertexShader.Reset();
+    m_gpuSceneDepthOnlyVertexShader.Reset();
     m_skyboxVertexShader.Reset();
     m_skyboxPixelShader.Reset();
     m_toneMappingVertexShader.Reset();
@@ -1021,11 +1084,13 @@ void PipelineCache::Shutdown()
     m_vsCompileResult.reset();
     m_rigidVsCompileResult.reset();
     m_gpuDrivenVsCompileResult.reset();
+    m_gpuSceneVsCompileResult.reset();
     m_psCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
     m_maskedDepthOnlyVsCompileResult.reset();
     m_maskedDepthOnlyPsCompileResult.reset();
     m_gpuDrivenDepthOnlyVsCompileResult.reset();
+    m_gpuSceneDepthOnlyVsCompileResult.reset();
     m_skyboxVsCompileResult.reset();
     m_skyboxPsCompileResult.reset();
     m_toneMappingVsCompileResult.reset();
@@ -1075,6 +1140,7 @@ void PipelineCache::Shutdown()
     m_shaderManager.reset();
     m_device = nullptr;
     m_initialized = false;
+    m_gpuSceneRasterUnavailableReason.clear();
 
     RVX_CORE_DEBUG("PipelineCache shutdown");
 }
@@ -1472,6 +1538,47 @@ bool PipelineCache::CompileShaders()
     m_gpuDrivenDepthOnlyVertexShader = gpuDrivenDepthVsResult.shader;
     m_gpuDrivenDepthOnlyVsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(gpuDrivenDepthVsResult.compileResult));
+
+    ShaderLoadDesc gpuSceneVsDesc = vsDesc;
+    gpuSceneVsDesc.entryPoint = "VSMainGPUScene";
+    gpuSceneVsDesc.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
+    auto gpuSceneVsResult = m_shaderManager->LoadFromFile(m_device, gpuSceneVsDesc);
+    if (!gpuSceneVsResult.compileResult.success)
+    {
+        DisableGPUSceneRaster("Failed to compile GPU-scene DefaultLit vertex shader: " +
+                              gpuSceneVsResult.compileResult.errorMessage);
+    }
+    else if (!gpuSceneVsResult.shader)
+    {
+        DisableGPUSceneRaster("Failed to create GPU-scene DefaultLit vertex shader");
+    }
+    else
+    {
+        ShaderLoadDesc gpuSceneDepthVsDesc = depthVsDesc;
+        gpuSceneDepthVsDesc.entryPoint = "VSMainGPUScene";
+        gpuSceneDepthVsDesc.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
+        auto gpuSceneDepthVsResult = m_shaderManager->LoadFromFile(
+            m_device, gpuSceneDepthVsDesc);
+        if (!gpuSceneDepthVsResult.compileResult.success)
+        {
+            DisableGPUSceneRaster(
+                "Failed to compile GPU-scene DepthOnly vertex shader: " +
+                gpuSceneDepthVsResult.compileResult.errorMessage);
+        }
+        else if (!gpuSceneDepthVsResult.shader)
+        {
+            DisableGPUSceneRaster("Failed to create GPU-scene DepthOnly vertex shader");
+        }
+        else
+        {
+            m_gpuSceneVertexShader = gpuSceneVsResult.shader;
+            m_gpuSceneVsCompileResult = std::make_unique<ShaderCompileResult>(
+                std::move(gpuSceneVsResult.compileResult));
+            m_gpuSceneDepthOnlyVertexShader = gpuSceneDepthVsResult.shader;
+            m_gpuSceneDepthOnlyVsCompileResult = std::make_unique<ShaderCompileResult>(
+                std::move(gpuSceneDepthVsResult.compileResult));
+        }
+    }
 
     ShaderLoadDesc toneMappingVsDesc = vsDesc;
     toneMappingVsDesc.path = toneMappingShaderPath;
@@ -2342,6 +2449,54 @@ bool PipelineCache::CreatePipelineLayout()
     return true;
 }
 
+bool PipelineCache::CreateGPUSceneRasterPipelineLayout()
+{
+    if (m_setLayouts.size() != 3 || !m_setLayouts[0] || !m_setLayouts[2])
+    {
+        DisableGPUSceneRaster(
+            "Cannot create GPU-scene raster layout without frame/material layouts");
+        return false;
+    }
+
+    RHIDescriptorSetLayoutDesc objectSetDesc;
+    objectSetDesc.debugName = "GPUSceneRasterObjectSetLayout";
+    // b0 deliberately preserves the complete ObjectConstants prefix for the
+    // DefaultLit pixel shader.  The three immutable VS SRVs are an independent
+    // replacement for Tier1's t1 instance table.
+    objectSetDesc
+        .AddDynamicBinding(0, RHIBindingType::UniformBuffer,
+                           RHIShaderStage::Vertex | RHIShaderStage::Pixel)
+        .AddBinding(1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex,
+                    1, RHIResourceDataVolatility::Immutable)
+        .AddBinding(2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex,
+                    1, RHIResourceDataVolatility::Immutable)
+        .AddBinding(3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex,
+                    1, RHIResourceDataVolatility::Immutable);
+    m_gpuSceneRasterObjectSetLayout =
+        m_device->CreateDescriptorSetLayout(objectSetDesc);
+    if (!m_gpuSceneRasterObjectSetLayout)
+    {
+        DisableGPUSceneRaster(
+            "Failed to create GPU-scene raster object descriptor layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "GPUSceneRasterPipelineLayout";
+    layoutDesc.setLayouts = {
+        m_setLayouts[0].Get(),
+        m_gpuSceneRasterObjectSetLayout.Get(),
+        m_setLayouts[2].Get()};
+    m_gpuSceneRasterPipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_gpuSceneRasterPipelineLayout)
+    {
+        DisableGPUSceneRaster("Failed to create GPU-scene raster pipeline layout");
+        return false;
+    }
+
+    return true;
+}
+
 bool PipelineCache::CreatePostProcessPipelineLayout()
 {
     RHIDescriptorSetLayoutDesc setLayoutDesc;
@@ -3182,6 +3337,118 @@ bool PipelineCache::CreateRasterDrawBindingSnapshot(
         view, objectCapacity, nullptr, outSnapshot);
 }
 
+bool PipelineCache::CreateGPUSceneRasterBindingSnapshot(
+    const GPUSceneRasterResourceSnapshot& resources,
+    const ObjectConstants& objectConstants,
+    GPUSceneRasterBindingSnapshot& outSnapshot)
+{
+    outSnapshot = {};
+    if (!m_device || !IsGPUSceneRasterReady() || m_setLayouts.size() != 3 ||
+        !m_setLayouts[0] || !m_setLayouts[2] || !resources.IsValid() ||
+        resources.m_leaseVersion != resources.m_exactLeaseVersion ||
+        resources.m_candidateCapacity < resources.m_candidateCount)
+    {
+        return false;
+    }
+
+    const auto hasExactStructuredStorage = [](const RHIBufferRef& buffer,
+                                               uint32 capacity,
+                                               uint32 stride)
+    {
+        return buffer && capacity != 0 && buffer->GetStride() == stride &&
+               capacity <= std::numeric_limits<uint64>::max() / stride &&
+               buffer->GetSize() == static_cast<uint64>(capacity) * stride;
+    };
+    if (!hasExactStructuredStorage(resources.m_candidates,
+                                   resources.m_candidateCapacity,
+                                   sizeof(GPUSceneCullingCandidate)) ||
+        !hasExactStructuredStorage(resources.m_primitives,
+                                   resources.m_primitiveCapacity,
+                                   sizeof(GPUScenePrimitiveRow)) ||
+        !hasExactStructuredStorage(resources.m_transforms,
+                                   resources.m_transformCapacity,
+                                   sizeof(GPUSceneTransformRow)))
+    {
+        return false;
+    }
+
+    RHIPipeline* opaquePipeline = GetGPUScenePipelineForVariant(
+        MaterialPipelineVariant::Opaque, m_renderTargetFormat);
+    RHIPipeline* maskedPipeline = GetGPUScenePipelineForVariant(
+        MaterialPipelineVariant::Masked, m_renderTargetFormat);
+    RHIPipeline* depthPipeline = GetGPUSceneDepthOnlyPipeline();
+    if (!opaquePipeline || !maskedPipeline || !depthPipeline)
+    {
+        return false;
+    }
+
+    GPUSceneRasterObjectConstants constants;
+    constants.objectConstants = objectConstants;
+    constants.gpuSceneRasterCounts = {
+        resources.m_candidateCount,
+        resources.m_primitiveCapacity,
+        resources.m_transformCapacity,
+        0u};
+    const uint64 constantBufferSize =
+        AlignConstantBufferSize(sizeof(GPUSceneRasterObjectConstants));
+    RHIBufferDesc constantBufferDesc;
+    constantBufferDesc.size = constantBufferSize;
+    constantBufferDesc.usage = RHIBufferUsage::Constant;
+    constantBufferDesc.memoryType = RHIMemoryType::Upload;
+    constantBufferDesc.debugName = "GPUSceneRasterObjectConstants";
+    RHIBufferRef constantBuffer = m_device->CreateBuffer(constantBufferDesc);
+    if (!constantBuffer)
+    {
+        return false;
+    }
+    void* mapped = constantBuffer->Map();
+    if (!mapped)
+    {
+        return false;
+    }
+    std::memcpy(mapped, &constants, sizeof(constants));
+    constantBuffer->Unmap();
+
+    RHIDescriptorSetDesc descriptorDesc;
+    descriptorDesc.debugName = "GPUSceneRasterObjectDescriptorSet";
+    descriptorDesc.SetLayout(m_gpuSceneRasterObjectSetLayout.Get())
+        .BindBuffer(0, constantBuffer.Get(), 0, constantBufferSize)
+        .BindBuffer(1, resources.m_candidates.Get())
+        .BindBuffer(2, resources.m_primitives.Get())
+        .BindBuffer(3, resources.m_transforms.Get());
+    RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptorSet ||
+        !descriptorSet->IsReadyForBinding(m_gpuSceneRasterObjectSetLayout.Get()))
+    {
+        return false;
+    }
+
+    GPUSceneRasterBindingSnapshot snapshot;
+    snapshot.objectConstantBuffer = std::move(constantBuffer);
+    snapshot.candidateBuffer = resources.m_candidates;
+    snapshot.primitiveBuffer = resources.m_primitives;
+    snapshot.transformBuffer = resources.m_transforms;
+    snapshot.objectDescriptorSet = std::move(descriptorSet);
+    snapshot.frameSetLayout = m_setLayouts[0];
+    snapshot.objectSetLayout = m_gpuSceneRasterObjectSetLayout;
+    snapshot.materialSetLayout = m_setLayouts[2];
+    snapshot.pipelineLayout = m_gpuSceneRasterPipelineLayout;
+    snapshot.opaquePipeline = m_gpuSceneOpaquePipeline;
+    snapshot.maskedPipeline = m_gpuSceneMaskedPipeline;
+    snapshot.depthPipeline = m_gpuSceneDepthOnlyPipeline;
+    snapshot.leaseVersion = resources.m_leaseVersion;
+    snapshot.candidateCount = resources.m_candidateCount;
+    snapshot.primitiveCapacity = resources.m_primitiveCapacity;
+    snapshot.transformCapacity = resources.m_transformCapacity;
+    if (!snapshot.IsReadyForBinding())
+    {
+        return false;
+    }
+
+    outSnapshot = std::move(snapshot);
+    return true;
+}
+
 bool PipelineCache::CreateTransparentRasterDrawBindingSnapshot(
     const ViewData& view,
     uint32 objectCapacity,
@@ -3747,6 +4014,129 @@ RHIPipeline* PipelineCache::GetGPUDrivenDepthOnlyPipeline()
 
     m_gpuDrivenDepthOnlyPipeline = GetOrCreateGPUDrivenDepthOnlyPipeline();
     return m_gpuDrivenDepthOnlyPipeline.Get();
+}
+
+bool PipelineCache::IsGPUSceneRasterReady() const
+{
+    return m_initialized && m_gpuSceneRasterObjectSetLayout &&
+           m_gpuSceneRasterPipelineLayout && m_gpuSceneVertexShader &&
+           m_gpuSceneDepthOnlyVertexShader &&
+           m_gpuSceneRasterUnavailableReason.empty();
+}
+
+RHIPipeline* PipelineCache::GetGPUScenePipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat)
+{
+    if (!IsGPUSceneRasterReady())
+    {
+        return nullptr;
+    }
+    if (renderTargetFormat == RHIFormat::Unknown)
+    {
+        renderTargetFormat = m_renderTargetFormat;
+    }
+
+    const RHIDepthStencilState writableDepthState =
+        BuildDepthStencilState(m_config.reverseZ, true);
+    switch (variant)
+    {
+        case MaterialPipelineVariant::Masked:
+        {
+            RHIPipelineRef pipeline = GetOrCreateGPUSceneDefaultLitPipeline(
+                MaterialPipelineVariant::Masked,
+                "GPUSceneMaskedPipeline",
+                writableDepthState,
+                RHIBlendState::Default(),
+                renderTargetFormat);
+            if (!pipeline)
+            {
+                DisableGPUSceneRaster("Failed to create GPU-scene masked pipeline");
+                return nullptr;
+            }
+            m_gpuSceneMaskedPipeline = std::move(pipeline);
+            return m_gpuSceneMaskedPipeline.Get();
+        }
+        case MaterialPipelineVariant::Transparent:
+            // D2 does not establish transparent GPU-scene raster semantics.
+            return nullptr;
+        case MaterialPipelineVariant::Opaque:
+        default:
+        {
+            RHIPipelineRef pipeline = GetOrCreateGPUSceneDefaultLitPipeline(
+                MaterialPipelineVariant::Opaque,
+                "GPUSceneOpaquePipeline",
+                writableDepthState,
+                RHIBlendState::Default(),
+                renderTargetFormat);
+            if (!pipeline)
+            {
+                DisableGPUSceneRaster("Failed to create GPU-scene opaque pipeline");
+                return nullptr;
+            }
+            m_gpuSceneOpaquePipeline = std::move(pipeline);
+            return m_gpuSceneOpaquePipeline.Get();
+        }
+    }
+}
+
+void PipelineCache::ResetGPUSceneRasterState()
+{
+    const auto isGPUScenePipeline = [this](const RHIPipelineRef& pipeline)
+    {
+        const RHIPipeline* const candidate = pipeline.Get();
+        return candidate && (candidate == m_gpuSceneOpaquePipeline.Get() ||
+                             candidate == m_gpuSceneMaskedPipeline.Get() ||
+                             candidate == m_gpuSceneDepthOnlyPipeline.Get());
+    };
+    for (auto it = m_pipelineCache.begin(); it != m_pipelineCache.end();)
+    {
+        if (isGPUScenePipeline(it->second))
+        {
+            it = m_pipelineCache.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    m_gpuSceneOpaquePipeline.Reset();
+    m_gpuSceneMaskedPipeline.Reset();
+    m_gpuSceneDepthOnlyPipeline.Reset();
+    m_gpuSceneRasterPipelineLayout.Reset();
+    m_gpuSceneRasterObjectSetLayout.Reset();
+    m_gpuSceneVertexShader.Reset();
+    m_gpuSceneDepthOnlyVertexShader.Reset();
+    m_gpuSceneVsCompileResult.reset();
+    m_gpuSceneDepthOnlyVsCompileResult.reset();
+}
+
+void PipelineCache::DisableGPUSceneRaster(std::string reason)
+{
+    ResetGPUSceneRasterState();
+    m_gpuSceneRasterUnavailableReason = std::move(reason);
+    RVX_RENDER_WARN("PipelineCache: GPU-scene raster unavailable: {}",
+                    m_gpuSceneRasterUnavailableReason);
+}
+
+RHIPipeline* PipelineCache::GetGPUSceneDepthOnlyPipeline()
+{
+    if (!IsGPUSceneRasterReady())
+    {
+        return nullptr;
+    }
+    if (!m_gpuSceneDepthOnlyPipeline)
+    {
+        RHIPipelineRef pipeline = GetOrCreateGPUSceneDepthOnlyPipeline();
+        if (!pipeline)
+        {
+            DisableGPUSceneRaster("Failed to create GPU-scene depth-only pipeline");
+            return nullptr;
+        }
+        m_gpuSceneDepthOnlyPipeline = std::move(pipeline);
+    }
+    return m_gpuSceneDepthOnlyPipeline.Get();
 }
 
 ShadowDepthBiasState PipelineCache::SanitizeShadowDepthBiasState(const ShadowDepthBiasState& biasState)
@@ -4947,6 +5337,45 @@ RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline()
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDefaultLitPipeline(
+    MaterialPipelineVariant variant,
+    const char* debugName,
+    const RHIDepthStencilState& depthStencilState,
+    const RHIBlendState& blendState,
+    RHIFormat renderTargetFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUSceneDefaultLitPipelineDesc(
+        debugName, depthStencilState, blendState, renderTargetFormat);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets == 0 ||
+        pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown ||
+        pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, variant, RVX_PIPELINE_PURPOSE_GPU_SCENE_DEFAULT);
+    m_stats.lastPipelineStateHash = stateHash;
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIPipelineRef PipelineCache::GetOrCreateMaskedDepthOnlyPipeline()
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildMaskedDepthOnlyPipelineDesc();
@@ -5029,6 +5458,39 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUDrivenDepthOnlyPipeline()
     if (!pipeline)
     {
         SetLastError("Backend failed to create GPU-driven depth-only pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDepthOnlyPipeline()
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUSceneDepthOnlyPipelineDesc();
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pipelineLayout ||
+        pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Opaque,
+        RVX_PIPELINE_PURPOSE_GPU_SCENE_DEPTH);
+    m_stats.lastPipelineStateHash = stateHash;
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
         return {};
     }
 
@@ -5960,6 +6422,19 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDefaultLitPipelineDesc(
+    const char* debugName,
+    const RHIDepthStencilState& depthStencilState,
+    const RHIBlendState& blendState,
+    RHIFormat renderTargetFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUDrivenDefaultLitPipelineDesc(
+        debugName, depthStencilState, blendState, renderTargetFormat);
+    pipelineDesc.vertexShader = m_gpuSceneVertexShader.Get();
+    pipelineDesc.pipelineLayout = m_gpuSceneRasterPipelineLayout.Get();
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildMaskedDepthOnlyPipelineDesc() const
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
@@ -6174,6 +6649,15 @@ RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(RHI
         2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
     pipelineDesc.inputLayout.AddElementAtLocation(
         3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDepthOnlyPipelineDesc() const
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUDrivenDepthOnlyPipelineDesc();
+    pipelineDesc.vertexShader = m_gpuSceneDepthOnlyVertexShader.Get();
+    pipelineDesc.pipelineLayout = m_gpuSceneRasterPipelineLayout.Get();
+    pipelineDesc.debugName = "GPUSceneDepthOnlyPipeline";
     return pipelineDesc;
 }
 
@@ -6433,6 +6917,8 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_rigidVsCompileResult.get());
         if (shader == m_gpuDrivenVertexShader.Get())
             return ComputeShaderHash(m_gpuDrivenVsCompileResult.get());
+        if (shader == m_gpuSceneVertexShader.Get())
+            return ComputeShaderHash(m_gpuSceneVsCompileResult.get());
         if (shader == m_pixelShader.Get())
             return ComputeShaderHash(m_psCompileResult.get());
         if (shader == m_depthOnlyVertexShader.Get())
@@ -6443,6 +6929,8 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_maskedDepthOnlyPsCompileResult.get());
         if (shader == m_gpuDrivenDepthOnlyVertexShader.Get())
             return ComputeShaderHash(m_gpuDrivenDepthOnlyVsCompileResult.get());
+        if (shader == m_gpuSceneDepthOnlyVertexShader.Get())
+            return ComputeShaderHash(m_gpuSceneDepthOnlyVsCompileResult.get());
         if (shader == m_toneMappingVertexShader.Get())
             return ComputeShaderHash(m_toneMappingVsCompileResult.get());
         if (shader == m_toneMappingPixelShader.Get())
@@ -6543,6 +7031,22 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             HashValue(hash, entry.visibility);
             HashValue(hash, entry.count);
             HashValue(hash, entry.isDynamic);
+        }
+    }
+
+    if (desc.pipelineLayout == m_gpuSceneRasterPipelineLayout.Get() &&
+        m_gpuSceneRasterObjectSetLayout)
+    {
+        const auto& entries = m_gpuSceneRasterObjectSetLayout->GetEntries();
+        HashValue(hash, static_cast<uint32>(entries.size()));
+        for (const RHIBindingLayoutEntry& entry : entries)
+        {
+            HashValue(hash, entry.binding);
+            HashValue(hash, entry.type);
+            HashValue(hash, entry.visibility);
+            HashValue(hash, entry.count);
+            HashValue(hash, entry.isDynamic);
+            HashValue(hash, entry.resourceDataVolatility);
         }
     }
 
@@ -6732,6 +7236,7 @@ bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
     {
         return false;
     }
+
     std::memcpy(static_cast<uint8*>(mapped) + offset, &constants, sizeof(ObjectConstants));
     m_objectConstantBuffer->Unmap();
     return true;
