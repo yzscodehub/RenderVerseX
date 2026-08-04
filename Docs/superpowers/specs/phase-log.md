@@ -46315,3 +46315,99 @@ below.
   Metal strategy qualification remain Tasks 12 and 13.
 
 ---
+
+### R-SP350 Render-policy Task 11D-D1a exact GPU Scene consumer foundation
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D1a stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP349 (persistent GPU Scene upload lifecycle).
+- The uploader owns multiple versioned buffer sets and real completion tokens,
+  but its former version-only read marker could not identify the exact set a
+  future graph consumer would read. GPU Scene publication also lacked an exact
+  accepted-packet to stable-table-reference lookup.
+
+**Approved scope:**
+
+- Add one renderer-private exact resident lease containing the current version,
+  all six strong buffer references, their imported RenderGraph handles, and
+  table capacities. No RHI object is exposed through the public Render API.
+- Grant a lease only with no pending upload and when one clean complete set has
+  `resident == covered == desired == observed == committed mirror version`.
+  Device loss, stale/mismatched state, incomplete tables, or an outstanding
+  lease fails closed.
+- Retain the leased buffers in the submission batch, commit their realized read
+  access only after graph execution, require that access commit before accepting
+  the submission token, and restore prior snapshots for invalid or unsubmitted
+  work.
+- Remove the ambiguous version-only read-use API. Completion/lifetime state is
+  now attached only to the exact set selected by the lease.
+- Resolve one accepted candidate/packet to a committed-version-tagged primitive
+  and draw reference only after live/schema/generation, contiguous draw-block,
+  primitive back-reference, geometry/material identity, arguments, and pass-mask
+  checks all succeed.
+- Keep the slice non-executing: no GPU culling or raster shader consumes the
+  lease yet, and no RHI, backend, Task 10 strategy, policy tier, or Auto behavior
+  changes.
+
+**Files changed:**
+
+- `Render/Private/GPUScene/GPUSceneUploader.h`
+- `Render/Private/GPUScene/GPUSceneUploader.cpp`
+- `Render/Private/GPUScene/GPUSceneUpdate.h`
+- `Render/Private/GPUScene/GPUSceneUpdate.cpp`
+- `Tests/GPUSceneUploadValidation/main.cpp`
+- `Tests/GPUSceneValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial builds: PASS for `GPUSceneUploadValidation`,
+  `GPUSceneValidation`, `RenderGraphValidation`, and
+  `RenderSubmissionValidation`.
+- Primary focused executables: PASS 16/16, 31/31, 50/50, and 27/27.
+- Coverage includes exact six-table retention/import, one outstanding lease,
+  pending/version mismatch, realized-access commit, valid and invalid tokens,
+  omitted commit, unsubmitted rollback, multi-domain read completion, accepted
+  lookup, pass/packet mismatch, clear/tombstone, reclaim, and generation reuse.
+
+**Independent review result:**
+
+- Initial verdict NOT READY found three P1 issues: the old version-only marking
+  API remained available, a valid token could resolve a lease without realized
+  access having been committed, and lookup refs were not tied to a committed
+  mirror version. It also noted the global one-lease invariant lacked a true
+  implementation guard.
+- Remediation removed the ambiguous API, made committed realized access a token
+  prerequisite, tagged lookup results with committed version, expanded stale/
+  reuse and valid/invalid/omitted-commit coverage, and globally rejected a
+  second outstanding lease.
+- Final verdict READY; unresolved P0/P1: `0/0`. One P2 remains: the fake
+  multi-domain test records one lease after a synthetic token submission, so its
+  ordering is less production-faithful than the dedicated normal lease test.
+
+**Primary review status:**
+
+- PASS after full six-file diff inspection, independent finding adjudication,
+  serial rebuild, independent 124/124 focused executable tests, and whitespace/
+  scope validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, and Python
+  cache changes remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- D1b must compare `GPUSceneAcceptedDrawLookup::committedVersion` with the exact
+  lease version and must not recover a stale candidate by CPU ordinal guessing.
+- D1b owns the HLSL row ABI, generation/tombstone validation, stable-ref
+  candidate buffer, exact lease binding, and GPU Scene bounds/draw-argument
+  consumption while preserving existing per-group Task 10 submission.
+- D1a/D1b do not justify public `GPUResidentScene` selection. D3 must first
+  freeze a backend-neutral dynamic resource-table and geometry-execution
+  capability; D4 must implement and qualify it on DX12.
+- Partial submission-batch retention on an injected mid-retain failure may keep
+  extra references alive until batch release. This is conservative and safe but
+  remains a Task 11E diagnostics/pressure-fixture opportunity.
+
+---

@@ -9,6 +9,7 @@
 #include "Render/GPUScene/GPUScenePublication.h"
 #include "RenderContracts/RenderIdentity.h"
 
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -16,6 +17,21 @@ namespace RVX
 {
     class RenderResourceRegistry;
     class RenderScene;
+    struct RenderDrawPacket;
+    struct RenderVisibilityCandidate;
+
+    /** @brief Exact CPU-side stable table references for one accepted draw packet. */
+    struct GPUSceneAcceptedDrawLookup
+    {
+        uint64 committedVersion = 0;
+        GPUScenePrimitiveRef primitive;
+        GPUSceneDrawRef draw;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return committedVersion != 0 && primitive.IsValid() && draw.IsValid();
+        }
+    };
 
     /**
      * @brief Maintains a non-executable, exact-generation CPU mirror.
@@ -83,6 +99,19 @@ namespace RVX
         {
             return m_database.ReclaimRetiredThrough(safeVersion);
         }
+
+        /**
+         * @brief Resolve one accepted pass candidate to exact live scene-table refs.
+         *
+         * This is a renderer-private value lookup only. It validates packet,
+         * primitive, contiguous draw-block, and typed row linkage without
+         * exposing RHI/backend state to callers.
+         */
+        [[nodiscard]] std::optional<GPUSceneAcceptedDrawLookup>
+            ResolveAcceptedDraw(
+                const RenderScene& scene,
+                const RenderVisibilityCandidate& candidate,
+                const RenderDrawPacket& packet) const noexcept;
 
     private:
         [[nodiscard]] GPUScenePublicationStats PublishImpl(

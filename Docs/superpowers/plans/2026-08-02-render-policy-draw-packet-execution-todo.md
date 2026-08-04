@@ -1,7 +1,8 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
-10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D is next
+10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a is
+complete and Task 11D-D1b is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -705,3 +706,36 @@ without CPU readback, mark every consumed resident version for completion-aware
 lifetime tracking, and route the resulting command streams through the Task 10
 submission strategies. Tier 1 remains the per-group fallback when the required
 table-indexing capabilities are unavailable.
+
+Task 11D-D1a implementation, independent review/remediation, and primary audit
+are complete. The accepted private-consumer foundation is:
+
+- [x] Acquire one exact fully current resident buffer set only when all six
+  tables are clean and `resident == covered == desired == observed`; pending,
+  stale, incomplete, dirty, or device-lost state returns no lease.
+- [x] Return six strong buffer references, RenderGraph handles, capacities, and
+  submission-batch retention for the selected set while keeping all RHI objects
+  renderer-private.
+- [x] Allow one outstanding lease globally, commit its realized read access only
+  after graph execution, and require that commit before a completion token can
+  resolve the lease. Invalid/unsubmitted work restores prior snapshots and
+  fails closed.
+- [x] Remove ambiguous version-only read-use marking so completion ownership is
+  attached only to the exact leased set.
+- [x] Resolve an accepted object/batch packet to one live, generation-checked
+  primitive/draw pair with exact contiguous-range, back-reference, geometry,
+  material, pass-mask, and committed-version validation.
+- [x] Cover current/pending/mismatched versions, valid/invalid/omitted-commit
+  submission, rollback, multi-domain reads, tombstones, clear, reclaim, and
+  generation reuse; pass Upload 16/16, GPU Scene 31/31, RenderGraph 50/50, and
+  Submission 27/27 in the primary gate.
+- [x] Keep `GPUResidentScene` unselected and `executionEligible == false`; this
+  foundation changes no culling shader, raster behavior, Task 10 strategy,
+  shared RHI contract, backend implementation, or Auto policy.
+
+Start **Task 11D-D1b** next: add the compact stable-ref candidate ABI, bind the
+exact lease into the sealed GPU culling recording, validate GPU Scene rows in
+HLSL, source bounds and indexed draw arguments from those rows, and feed the
+existing per-group Task 10 indirect-count submission. If no exact current lease
+or mapping exists, preserve the existing `IndirectGrouped` input path. Public
+`GPUResidentScene` selection remains forbidden until D3/D4.

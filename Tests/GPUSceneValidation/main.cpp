@@ -1,6 +1,7 @@
 #include "GPUScene/GPUSceneDatabase.h"
 #include "GPUScene/GPUSceneUpdate.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/Visibility/RenderVisibility.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Runtime/RenderResourceGateway.h"
@@ -1053,6 +1054,91 @@ TEST(GPUSceneValidation, PublicationDiffsByObjectIdAndIgnoresAcceptedObjectOrder
     EXPECT_GT(update.GetStats().committedVersion, committedVersion);
     EXPECT_EQ(update.GetStats().publishedObjectCount, 0U);
     EXPECT_EQ(update.GetStats().publishedDrawCount, 0U);
+}
+
+TEST(GPUSceneValidation, AcceptedDrawLookupRequiresOneLiveContiguousGenerationCheckedRow)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle mesh = resources.AddReadyMesh({505});
+    GPUSceneUpdate update;
+    RenderScene scene;
+    scene.AddObject(MakePublishedRenderObject(17, mesh, 1.0F));
+    ASSERT_TRUE(update.Publish(scene, resources.registry).complete);
+
+    RenderDrawPacket packet =
+        BuildLegacyMaterialDrawPacket(scene.GetObject(0).meshBatches[0]);
+    packet.pass = RenderPassKind::Depth;
+    RenderVisibilityCandidate candidate;
+    candidate.candidateIndex = 3;
+    candidate.sourcePacketIndex = 5;
+    candidate.objectIndex = 0;
+    candidate.pass = packet.pass;
+    candidate.objectVisible = true;
+    candidate.drawable = true;
+    candidate.worldBounds = scene.GetObject(0).bounds;
+
+    const std::optional<GPUSceneAcceptedDrawLookup> resolved =
+        update.ResolveAcceptedDraw(scene, candidate, packet);
+    ASSERT_TRUE(resolved.has_value());
+    EXPECT_TRUE(resolved->IsValid());
+    EXPECT_EQ(resolved->committedVersion, update.GetStats().committedVersion);
+    EXPECT_LT(resolved->primitive.slot,
+              update.GetCommittedMirrorForTesting().primitives.size());
+    EXPECT_EQ(resolved->primitive.generation,
+              update.GetCommittedMirrorForTesting().primitives[resolved->primitive.slot]
+                  .header.generation);
+    EXPECT_EQ(resolved->draw.generation,
+              update.GetCommittedMirrorForTesting().draws[resolved->draw.slot]
+                  .header.generation);
+
+    RenderDrawPacket outOfRangePacket = packet;
+    outOfRangePacket.submeshIndex = 9;
+    EXPECT_FALSE(update.ResolveAcceptedDraw(scene, candidate, outOfRangePacket).has_value());
+    RenderDrawPacket wrongPassPacket = packet;
+    wrongPassPacket.pass = RenderPassKind::Transparent;
+    RenderVisibilityCandidate wrongPassCandidate = candidate;
+    wrongPassCandidate.pass = wrongPassPacket.pass;
+    EXPECT_FALSE(update.ResolveAcceptedDraw(
+        scene, wrongPassCandidate, wrongPassPacket).has_value());
+
+    RenderScene updatedScene;
+    updatedScene.AddObject(MakePublishedRenderObject(17, mesh, 3.0F));
+    ASSERT_TRUE(update.Publish(updatedScene, resources.registry).complete);
+    RenderDrawPacket updatedPacket =
+        BuildLegacyMaterialDrawPacket(updatedScene.GetObject(0).meshBatches[0]);
+    updatedPacket.pass = RenderPassKind::Depth;
+    RenderVisibilityCandidate updatedCandidate = candidate;
+    updatedCandidate.worldBounds = updatedScene.GetObject(0).bounds;
+    const std::optional<GPUSceneAcceptedDrawLookup> updated =
+        update.ResolveAcceptedDraw(updatedScene, updatedCandidate, updatedPacket);
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_GT(updated->committedVersion, resolved->committedVersion);
+    // The stable refs may remain live across an in-place update, but their old
+    // committed-version snapshot must never be mixed with a newer lease.
+    EXPECT_NE(updated->committedVersion, resolved->committedVersion);
+
+    update.Clear();
+    // Clearing tombstones its primitive and contiguous draw block;
+    // stale accepted packets must never resolve a replacement row.
+    EXPECT_FALSE(update.ResolveAcceptedDraw(scene, candidate, packet).has_value());
+
+    const uint64 clearedVersion = update.GetStats().committedVersion;
+    ASSERT_TRUE(update.ReclaimRetiredThrough(clearedVersion));
+    RenderScene replacementScene;
+    replacementScene.AddObject(MakePublishedRenderObject(17, mesh, 5.0F));
+    ASSERT_TRUE(update.Publish(replacementScene, resources.registry).complete);
+    RenderDrawPacket replacementPacket = BuildLegacyMaterialDrawPacket(
+        replacementScene.GetObject(0).meshBatches[0]);
+    replacementPacket.pass = RenderPassKind::Depth;
+    RenderVisibilityCandidate replacementCandidate = candidate;
+    replacementCandidate.worldBounds = replacementScene.GetObject(0).bounds;
+    const std::optional<GPUSceneAcceptedDrawLookup> replacement =
+        update.ResolveAcceptedDraw(
+            replacementScene, replacementCandidate, replacementPacket);
+    ASSERT_TRUE(replacement.has_value());
+    EXPECT_GT(replacement->committedVersion, clearedVersion);
+    EXPECT_NE(replacement->primitive, resolved->primitive);
+    EXPECT_NE(replacement->draw, resolved->draw);
 }
 
 TEST(GPUSceneValidation, PublicationFailureKeepsActualCommittedIdentityAndAttemptCounters)

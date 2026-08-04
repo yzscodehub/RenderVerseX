@@ -7,6 +7,7 @@
 
 #include "Render/Renderer/RenderDrawPacket.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/Visibility/RenderVisibility.h"
 #include "Resources/RenderResourceRegistry.h"
 
 #include <algorithm>
@@ -20,6 +21,37 @@ namespace RVX
 namespace
 {
     constexpr float32 RVX_GPU_SCENE_AFFINE_EPSILON = 0.0001F;
+
+    [[nodiscard]] bool IsLiveSchemaHeader(
+        const GPUSceneRowHeader& header,
+        uint32 generation,
+        uint64 objectId) noexcept
+    {
+        const uint32 flags = header.flags;
+        return header.schemaVersion == RVX_GPU_SCENE_SCHEMA_VERSION &&
+               header.generation == generation &&
+               UnpackGPUSceneUint64(header.objectId) == objectId &&
+               (flags & static_cast<uint32>(GPUSceneRowFlags::Live)) != 0 &&
+               (flags & static_cast<uint32>(GPUSceneRowFlags::Tombstone)) == 0;
+    }
+
+    [[nodiscard]] uint32 GetGPUScenePassMask(RenderPassKind pass) noexcept
+    {
+        switch (pass)
+        {
+            case RenderPassKind::Depth:
+                return static_cast<uint32>(GPUScenePassMask::Depth);
+            case RenderPassKind::Opaque:
+                return static_cast<uint32>(GPUScenePassMask::Opaque);
+            case RenderPassKind::Shadow:
+                return static_cast<uint32>(GPUScenePassMask::Shadow);
+            case RenderPassKind::Transparent:
+                return static_cast<uint32>(GPUScenePassMask::Transparent);
+            case RenderPassKind::None:
+            default:
+                return 0;
+        }
+    }
 
     struct BuildPublishedObjectResult
     {
@@ -363,6 +395,166 @@ void GPUSceneUpdate::SetDatabasePrepareAllocationFailureCountdownForTesting(
 void GPUSceneUpdate::SetThrowOnPublishForTesting(bool enabled) noexcept
 {
     m_throwOnPublishForTesting = enabled;
+}
+
+std::optional<GPUSceneAcceptedDrawLookup>
+GPUSceneUpdate::ResolveAcceptedDraw(
+    const RenderScene& scene,
+    const RenderVisibilityCandidate& candidate,
+    const RenderDrawPacket& packet) const noexcept
+{
+    if (candidate.candidateIndex == RVX_INVALID_INDEX ||
+        candidate.sourcePacketIndex == RVX_INVALID_INDEX ||
+        candidate.pass == RenderPassKind::None ||
+        candidate.pass != packet.pass ||
+        packet.objectId == 0 ||
+        packet.primitiveData != candidate.objectIndex ||
+        candidate.objectIndex >= scene.GetObjectCount() ||
+        !candidate.objectVisible || !candidate.drawable ||
+        packet.arguments.indexCount == 0)
+    {
+        return std::nullopt;
+    }
+
+    const RenderObject& object = scene.GetObject(candidate.objectIndex);
+    if (!object.drawable || !object.visible || object.entityId != packet.objectId ||
+        object.mesh != packet.geometryKey.mesh)
+    {
+        return std::nullopt;
+    }
+
+    bool matchedAcceptedBatch = false;
+    for (const MeshBatch& batch : object.meshBatches)
+    {
+        const RenderDrawPacket acceptedPacket = BuildLegacyMaterialDrawPacket(batch);
+        if (batch.objectId == packet.objectId &&
+            acceptedPacket.submeshIndex == packet.submeshIndex &&
+            acceptedPacket.geometryKey == packet.geometryKey &&
+            acceptedPacket.materialKey == packet.materialKey &&
+            acceptedPacket.pipelineKey == packet.pipelineKey &&
+            acceptedPacket.arguments == packet.arguments)
+        {
+            matchedAcceptedBatch = true;
+            break;
+        }
+    }
+    if (!matchedAcceptedBatch)
+    {
+        return std::nullopt;
+    }
+
+    const auto publishedObject = m_publishedObjects.find(packet.objectId);
+    const std::optional<GPUScenePrimitiveRef> primitive =
+        m_database.FindPrimitive(packet.objectId);
+    if (publishedObject == m_publishedObjects.end() || !primitive ||
+        !m_database.IsLive(*primitive))
+    {
+        return std::nullopt;
+    }
+
+    const GPUScenePrimitiveRow* primitiveRow = m_database.GetRow(*primitive);
+    if (primitiveRow == nullptr ||
+        !IsLiveSchemaHeader(primitiveRow->header,
+                            primitive->generation,
+                            packet.objectId) ||
+        !m_database.IsLive(primitiveRow->bounds) ||
+        !m_database.IsLive(primitiveRow->transform) ||
+        primitiveRow->drawCount == 0 || !primitiveRow->firstDraw.IsValid())
+    {
+        return std::nullopt;
+    }
+
+    const GPUSceneBoundsRow* boundsRow = m_database.GetRow(primitiveRow->bounds);
+    const GPUSceneTransformRow* transformRow =
+        m_database.GetRow(primitiveRow->transform);
+    if (boundsRow == nullptr || transformRow == nullptr ||
+        !IsLiveSchemaHeader(boundsRow->header,
+                            primitiveRow->bounds.generation,
+                            packet.objectId) ||
+        !IsLiveSchemaHeader(transformRow->header,
+                            primitiveRow->transform.generation,
+                            packet.objectId))
+    {
+        return std::nullopt;
+    }
+
+    const GPUSceneCommittedMirror& mirror = m_database.GetCommittedMirror();
+    const uint64 firstDrawSlot = primitiveRow->firstDraw.slot;
+    const uint64 drawEnd = firstDrawSlot + primitiveRow->drawCount;
+    if (firstDrawSlot == 0 || drawEnd < firstDrawSlot ||
+        drawEnd > mirror.draws.size())
+    {
+        return std::nullopt;
+    }
+
+    const uint32 requiredPassMask = GetGPUScenePassMask(packet.pass);
+    if (requiredPassMask == 0)
+    {
+        return std::nullopt;
+    }
+
+    std::optional<GPUSceneAcceptedDrawLookup> result;
+    for (uint64 slot = firstDrawSlot; slot < drawEnd; ++slot)
+    {
+        const GPUSceneDrawRef draw{
+            static_cast<uint32>(slot), primitiveRow->firstDraw.generation};
+        if (!m_database.IsLive(draw))
+        {
+            return std::nullopt;
+        }
+        const GPUSceneDrawMetadataRow* drawRow = m_database.GetRow(draw);
+        if (drawRow == nullptr ||
+            !IsLiveSchemaHeader(drawRow->header, draw.generation, packet.objectId) ||
+            drawRow->primitive != *primitive ||
+            !m_database.IsLive(drawRow->material) ||
+            !m_database.IsLive(drawRow->geometry))
+        {
+            return std::nullopt;
+        }
+
+        const GPUSceneMaterialRow* materialRow =
+            m_database.GetRow(drawRow->material);
+        const GPUSceneGeometryRow* geometryRow =
+            m_database.GetRow(drawRow->geometry);
+        if (materialRow == nullptr || geometryRow == nullptr ||
+            !IsLiveSchemaHeader(materialRow->header,
+                                drawRow->material.generation,
+                                packet.objectId) ||
+            !IsLiveSchemaHeader(geometryRow->header,
+                                drawRow->geometry.generation,
+                                packet.objectId))
+        {
+            return std::nullopt;
+        }
+
+        const bool packetMatchesRow =
+            (drawRow->passMask & requiredPassMask) != 0 &&
+            geometryRow->resourceSlot == packet.geometryKey.mesh.slot &&
+            geometryRow->resourceGeneration == packet.geometryKey.mesh.generation &&
+            geometryRow->submeshIndex == packet.submeshIndex &&
+            geometryRow->indexCount == packet.arguments.indexCount &&
+            geometryRow->firstIndex == packet.arguments.firstIndex &&
+            geometryRow->vertexOffset == packet.arguments.vertexOffset &&
+            materialRow->resourceSlot == packet.materialKey.material.slot &&
+            materialRow->resourceGeneration == packet.materialKey.material.generation &&
+            drawRow->indexCount == packet.arguments.indexCount &&
+            drawRow->firstIndex == packet.arguments.firstIndex &&
+            drawRow->vertexOffset == packet.arguments.vertexOffset;
+        if (!packetMatchesRow)
+        {
+            continue;
+        }
+
+        if (result)
+        {
+            // A packet must map to one exact draw row. Ambiguous duplicate
+            // batches are intentionally not guessed by ordinal.
+            return std::nullopt;
+        }
+        result = GPUSceneAcceptedDrawLookup{
+            m_database.GetCommittedVersion(), *primitive, draw};
+    }
+    return result;
 }
 
 void GPUSceneUpdate::RecordFailure(

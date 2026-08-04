@@ -7,9 +7,13 @@
 
 #include "Core/Types.h"
 #include "GPUScene/GPUSceneDatabase.h"
+#include "Render/Graph/RenderGraph.h"
 #include "Render/GPUScene/GPUScenePublication.h"
+#include "RHI/RHIResources.h"
 
+#include <array>
 #include <memory>
+#include <optional>
 
 namespace RVX
 {
@@ -18,6 +22,58 @@ namespace RVX
     class RenderSubmissionResourceBatch;
     class RenderSubmissionTracker;
     struct GPUCompletionToken;
+
+    /** @brief Renderer-private fixed ordering of one GPU-scene resident table set. */
+    enum class GPUSceneResidentTable : uint8
+    {
+        Primitives = 0,
+        Bounds,
+        Transforms,
+        Materials,
+        Geometries,
+        Draws,
+        Count,
+    };
+
+    constexpr uint32 GPU_SCENE_RESIDENT_TABLE_COUNT =
+        static_cast<uint32>(GPUSceneResidentTable::Count);
+
+    /**
+     * @brief Exact one-recording view of one fully current uploader buffer set.
+     *
+     * This renderer-private value deliberately owns all six buffers. Consumers
+     * must use only its imported handles, then let GPUSceneUploader commit the
+     * realized accesses and submission ownership for this exact set.
+     */
+    struct GPUSceneResidentGraphLease
+    {
+        uint64 version = 0;
+        std::array<RHIBufferRef, GPU_SCENE_RESIDENT_TABLE_COUNT> buffers;
+        std::array<RGBufferHandle, GPU_SCENE_RESIDENT_TABLE_COUNT> handles;
+        std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT> capacities{};
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            if (version == 0)
+            {
+                return false;
+            }
+            for (uint32 tableIndex = 0;
+                 tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+                 ++tableIndex)
+            {
+                if (!buffers[tableIndex] || !handles[tableIndex].IsValid())
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+    private:
+        friend class GPUSceneUploader;
+        uint32 m_bufferSetIndex = RVX_INVALID_INDEX;
+    };
 
     /**
      * @brief Uploads the CPU GPU-scene mirror through RenderGraph copy passes.
@@ -47,22 +103,26 @@ namespace RVX
             RenderGraph& graph,
             RenderSubmissionResourceBatch* submissionBatch) noexcept;
 
-        /** @brief Commit realized access snapshots only after graph execution. */
+        /**
+         * @brief Acquire one exact fully-current resident set for graph reads.
+         *
+         * Pending uploads, stale versions, dirty state, incomplete table sets,
+         * and a second outstanding lease all fail closed. The returned handles
+         * are imported with their prior realized snapshots; the consumer owns
+         * declaring ShaderResource reads in its graph pass.
+         */
+        [[nodiscard]] std::optional<GPUSceneResidentGraphLease>
+            AcquireCurrentGraphLease(
+                RenderGraph& graph,
+                RenderSubmissionResourceBatch* submissionBatch) noexcept;
+
+        /** @brief Commit upload and exact-lease realized accesses after graph execution. */
         void CommitRealizedAccess(const RenderGraph& graph) noexcept;
 
         /** @brief Associate recorded upload resources with the actual submission token. */
         void NotifySubmission(const GPUCompletionToken& completion) noexcept;
         /** @brief Discard one recorded-but-never-submitted upload plan. */
         void ReleaseUnsubmittedFrame() noexcept;
-
-        /**
-         * @brief Record a future non-upload read of one resident GPU-scene version.
-         *
-         * Task 11C never calls this from shaders. Task 11D must call it while
-         * recording any consumer and then use this uploader's Notify/Release
-         * pair so all reads merge into the actual multi-domain submission token.
-         */
-        [[nodiscard]] bool MarkResidentVersionUsed(uint64 version) noexcept;
 
         /**
          * @brief Poll true multi-domain completion and return the safe version.
