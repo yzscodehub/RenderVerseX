@@ -997,7 +997,10 @@ namespace
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             createdBufferDescs.push_back(desc);
-            auto buffer = RHIBufferRef(new FakeBuffer(desc, bufferMapSucceeds));
+            const bool mapSucceeds = bufferMapSucceeds &&
+                (failMapBufferDebugName.empty() || desc.debugName == nullptr ||
+                 failMapBufferDebugName != desc.debugName);
+            auto buffer = RHIBufferRef(new FakeBuffer(desc, mapSucceeds));
             createdBuffers.push_back(static_cast<FakeBuffer*>(buffer.Get()));
             return buffer;
         }
@@ -1269,6 +1272,7 @@ namespace
         }
 
         bool bufferMapSucceeds = true;
+        std::string failMapBufferDebugName;
         bool textureViewCreationSucceeds = true;
         bool failDirectionalShadowSRVCreation = false;
         std::string failGraphicsPipelineDebugName;
@@ -6630,8 +6634,10 @@ TEST_F(RenderPassValidationFixture,
               commandsB.descriptorSetPointers.end());
     const std::shared_ptr<FakeDescriptorSetLifetimeState> frameSetBLifetime =
         static_cast<FakeDescriptorSet*>(frameSetB)->lifetime;
-    // Each batch owns the frame set, shadow-mask view, color view, and texture.
-    EXPECT_EQ(4u, batchB.GetRetainedObjectCount());
+    // Each batch owns the frame set, shadow-mask view, color view, texture,
+    // the material constant page plus its descriptor pair, and the object
+    // constant page, fallback instance buffer, and descriptor set.
+    EXPECT_EQ(9u, batchB.GetRetainedObjectCount());
 
     graphA.Execute(commandsA);
     ASSERT_FALSE(commandsA.descriptorSetPointers.empty());
@@ -6641,7 +6647,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_NE(std::find(commandsA.descriptorSetPointers.begin(),
                         commandsA.descriptorSetPointers.end(), frameSetA),
               commandsA.descriptorSetPointers.end());
-    EXPECT_EQ(4u, batchA.GetRetainedObjectCount());
+    EXPECT_EQ(9u, batchA.GetRetainedObjectCount());
 
     GPUCompletionToken completionA;
     GPUCompletionToken completionB;
@@ -12529,10 +12535,7 @@ TEST_F(RenderPassValidationFixture,
     view.meshPassPreparation = &preparation;
     view.renderFrameExecutionReport = &report;
 
-    auto* objectConstantBuffer = static_cast<FakeBuffer*>(
-        pipelineCache.m_objectConstantBuffer.Get());
-    ASSERT_NE(objectConstantBuffer, nullptr);
-    objectConstantBuffer->SetMapSucceeds(false);
+    device.failMapBufferDebugName = "ObjectConstantUpload";
 
     DepthPrepass pass;
     pass.SetEnabled(true);
@@ -12552,7 +12555,7 @@ TEST_F(RenderPassValidationFixture,
 }
 
 TEST_F(RenderPassValidationFixture,
-       DepthPrepassDoesNotReplayDirectAfterPlannedGPULateFailure)
+       DepthPrepassRejectsGPUObjectPagePreflightFailureWithoutAttachmentMutation)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -12615,10 +12618,7 @@ TEST_F(RenderPassValidationFixture,
     view.meshPassPreparation = &preparation;
     view.renderFrameExecutionReport = &report;
 
-    auto* objectConstantBuffer = static_cast<FakeBuffer*>(
-        pipelineCache.m_objectConstantBuffer.Get());
-    ASSERT_NE(objectConstantBuffer, nullptr);
-    objectConstantBuffer->SetMapSucceeds(false);
+    device.failMapBufferDebugName = "ObjectConstantUpload";
 
     DepthPrepass pass;
     pass.SetEnabled(true);
@@ -12628,8 +12628,8 @@ TEST_F(RenderPassValidationFixture,
         pass, view, opaqueItems, maskedItems, compiled.plan, preparation,
         report, depthView.Get(), &culling, ctx);
 
-    EXPECT_EQ(1u, ctx.beginRenderPassCount);
-    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(0u, ctx.beginRenderPassCount);
+    EXPECT_EQ(0u, ctx.endRenderPassCount);
     EXPECT_EQ(0u, ctx.drawIndexedCount);
     EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
     EXPECT_EQ(RenderPolicyReason::UnexpectedRecordingFailure,
@@ -13097,7 +13097,7 @@ TEST_F(RenderPassValidationFixture,
     }
 
     const FakeBuffer* objectConstantsBuffer =
-        FindCreatedBuffer(device, "ObjectConstantBuffer");
+        FindCreatedBuffer(device, "ObjectConstantUpload");
     ASSERT_NE(objectConstantsBuffer, nullptr);
     ASSERT_GE(objectConstantsBuffer->GetStorage().size(),
               sizeof(ObjectConstants));
@@ -13519,10 +13519,7 @@ TEST_F(RenderPassValidationFixture,
     view.meshPassPreparation = &preparation;
     view.renderFrameExecutionReport = &report;
 
-    FakeBuffer* materialConstants =
-        FindMutableCreatedBuffer(device, "MaterialConstantBuffer");
-    ASSERT_NE(materialConstants, nullptr);
-    materialConstants->SetMapSucceeds(false);
+    device.failMapBufferDebugName = "MaterialConstantUpload";
 
     OpaquePass pass;
     ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
@@ -13536,11 +13533,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(RenderPolicyReason::UnexpectedRecordingFailure,
               pass.GetDrawStats().failureReason);
 
-    materialConstants->SetMapSucceeds(true);
-    auto* objectConstants = static_cast<FakeBuffer*>(
-        pipelineCache.m_objectConstantBuffer.Get());
-    ASSERT_NE(objectConstants, nullptr);
-    objectConstants->SetMapSucceeds(false);
+    device.failMapBufferDebugName = "ObjectConstantUpload";
     RenderFrameExecutionReport objectFailureReport =
         MakeExecutionReport(compiled.plan);
     view.renderFrameExecutionReport = &objectFailureReport;
@@ -13711,7 +13704,7 @@ TEST_F(RenderPassValidationFixture,
 }
 
 TEST_F(RenderPassValidationFixture,
-       OpaquePassDoesNotReplayDirectAfterPlannedGPULateFailure)
+       OpaquePassRejectsGPUObjectPagePreflightFailureWithoutAttachmentMutation)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
@@ -13762,10 +13755,7 @@ TEST_F(RenderPassValidationFixture,
     culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
     ASSERT_TRUE(culling.WasCpuFallbackUsedLastCull());
 
-    auto* objectConstants = static_cast<FakeBuffer*>(
-        pipelineCache.m_objectConstantBuffer.Get());
-    ASSERT_NE(objectConstants, nullptr);
-    objectConstants->SetMapSucceeds(false);
+    device.failMapBufferDebugName = "ObjectConstantUpload";
     view.viewCache = &viewCache;
     view.renderFrameExecutionPlan = &compiled.plan;
     view.meshPassPreparation = &preparation;
@@ -13778,8 +13768,8 @@ TEST_F(RenderPassValidationFixture,
         pass, view, opaqueItems, maskedItems, compiled.plan, preparation,
         report, colorView.Get(), nullptr, &culling, ctx);
 
-    EXPECT_EQ(1u, ctx.beginRenderPassCount);
-    EXPECT_EQ(1u, ctx.endRenderPassCount);
+    EXPECT_EQ(0u, ctx.beginRenderPassCount);
+    EXPECT_EQ(0u, ctx.endRenderPassCount);
     EXPECT_EQ(0u, ctx.drawIndexedCount);
     EXPECT_EQ(0u, ctx.drawIndexedIndirectCount);
     EXPECT_EQ(RenderPolicyReason::UnexpectedRecordingFailure,
@@ -14147,7 +14137,9 @@ TEST_F(RenderPassValidationFixture, OpaqueAndTransparentPassGateNormalMapsOnTang
     const std::string transparentPass = ReadTextFile(passesDir / "TransparentPass.cpp");
 
     EXPECT_NE(opaquePass.find("MaterialBindingOptions materialOptions;"), std::string::npos);
-    EXPECT_NE(opaquePass.find("materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis()"),
+    EXPECT_NE(opaquePass.find("const bool allowNormalMap = buffers.HasNormalMapTangentBasis()"),
+              std::string::npos);
+    EXPECT_NE(opaquePass.find("materialOptions.allowNormalMap = allowNormalMap"),
               std::string::npos);
     EXPECT_NE(opaquePass.find("packet.materialKey.material, view.viewCache, materialOptions"),
               std::string::npos);

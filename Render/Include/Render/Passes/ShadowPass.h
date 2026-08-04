@@ -22,6 +22,7 @@ namespace RVX
     class RenderResourceRegistry;
     class RenderScene;
     class PipelineCache;
+    struct ObjectConstantBinding;
 
     /**
      * @brief Cascade info for CSM
@@ -76,7 +77,7 @@ namespace RVX
     {
     public:
         ShadowPass();
-        ~ShadowPass() override = default;
+        ~ShadowPass() override;
 
         // =========================================================================
         // IRenderPass Interface
@@ -132,6 +133,8 @@ namespace RVX
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
     private:
+        struct PlannedShadowDraw;
+
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
         void InitializeGraphRecorder(const RenderScene* scene);
@@ -148,6 +151,7 @@ namespace RVX
                            const ViewData& view,
                            uint32_t cascadeIndex,
                            const PrimaryDirectionalLightRecordInput& primaryLight);
+        bool BuildPlannedShadowDraws(const ViewData& view);
 
         bool m_enabled = false;
         mutable std::string m_unsupportedReason = "ShadowPass has not been configured";
@@ -163,6 +167,8 @@ namespace RVX
         RGTextureHandle m_shadowMapTextureHandle;
         std::vector<RGTextureHandle> m_cascadeTextureHandles;
         std::vector<RHITextureViewRef> m_cascadeViews;
+        std::vector<PlannedShadowDraw> m_plannedShadowDraws;
+        bool m_shadowDrawPreflightValid = false;
         ShadowPassStats m_stats;
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
     };

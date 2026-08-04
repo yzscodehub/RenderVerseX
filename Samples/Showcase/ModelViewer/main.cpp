@@ -65,6 +65,9 @@ using namespace RVX;
 
 constexpr uint32 kDefaultModelReadyTimeoutMs = 120000;
 constexpr uint32 kMinimumModelReadyTimeoutMs = 1000;
+constexpr uint32 kDefaultSmokeFrameTimeoutMs = 10000;
+constexpr uint32 kMinimumSmokeFrameTimeoutMs = 1000;
+constexpr uint32 kMaximumSmokeFrameTimeoutMs = 300000;
 
 // Orbit camera controller state
 struct OrbitCamera
@@ -116,11 +119,13 @@ struct ModelViewerOptions
     std::string screenshotPath;
     std::string renderPolicyReportPath;
     std::string gpuSceneTier2EvidenceReportPath;
+    std::string gpuSceneM3EvidenceReportPath;
     std::string hdriPath;
     RHIBackendType backend = RHIBackendType::Auto;
     uint32 width = 1280;
     uint32 height = 720;
     uint32 frames = 0;
+    uint32 gpuSceneWorkloadPrimitives = 0;
     bool smoke = false;
     bool enableProceduralIBL = true;
     bool expectIBLReady = false;
@@ -154,6 +159,8 @@ struct ModelViewerOptions
     bool waitModelReady = false;
     uint32 modelReadyTimeoutMs = kDefaultModelReadyTimeoutMs;
     bool modelReadyTimeoutSet = false;
+    uint32 smokeFrameTimeoutMs = kDefaultSmokeFrameTimeoutMs;
+    bool smokeFrameTimeoutSet = false;
     bool expectParticlesReady = false;
     bool gpuDrivenCullingTestScene = false;
     bool gpuDrivenZeroVisibleScene = false;
@@ -487,12 +494,15 @@ namespace
             << "  --smoke              Run bounded deterministic visual gate mode\n"
             << "  --model <path>       Model path to load\n"
             << "  --frames <count>     Number of frames in smoke mode\n"
+            << "  --smoke-frame-timeout-ms <ms>  Per-frame render wait (default 10000, range 1000-300000)\n"
             << "  --width <pixels>     Window width\n"
             << "  --height <pixels>    Window height\n"
             << "  --backend <name>     auto, dx11, dx12, vulkan, metal, opengl\n"
             << "  --screenshot <path>  Write final smoke frame as binary PPM\n"
             << "  --render-policy-report <path> Write RVX.RenderPolicyMeasurement v1 JSON from public diagnostics\n"
             << "  --gpu-scene-tier2-evidence-report <path> Write per-accepted-frame GPU scene Tier 2 evidence JSON\n"
+            << "  --gpu-scene-m3-evidence-report <path> Write non-gating GPU-scene workload evidence JSON\n"
+            << "  --gpu-scene-workload-primitives <100|1000|10000|50000> Instantiate a deterministic source-primitive workload\n"
             << "  --camera-fit <auto|fixed> Fit the camera to model bounds or use the deterministic fixed camera\n"
             << "  --hdri <path>        Use an HDR/EXR environment for skybox and texture IBL\n"
             << "  --no-ibl             Disable procedural ModelViewer IBL wiring\n"
@@ -958,6 +968,25 @@ namespace
                 }
                 options.framesSet = true;
             }
+            else if (arg == "--smoke-frame-timeout-ms")
+            {
+                const char* value = requireValue("--smoke-frame-timeout-ms");
+                uint32 parsed = 0;
+                if (!ParseUInt(value, parsed) ||
+                    parsed < kMinimumSmokeFrameTimeoutMs ||
+                    parsed > kMaximumSmokeFrameTimeoutMs)
+                {
+                    RVX_CORE_ERROR(
+                        "Invalid --smoke-frame-timeout-ms value: {} "
+                        "(expected integer range [{}, {}])",
+                        value ? value : "",
+                        kMinimumSmokeFrameTimeoutMs,
+                        kMaximumSmokeFrameTimeoutMs);
+                    return false;
+                }
+                options.smokeFrameTimeoutMs = parsed;
+                options.smokeFrameTimeoutSet = true;
+            }
             else if (arg == "--width")
             {
                 const char* value = requireValue("--width");
@@ -1005,6 +1034,22 @@ namespace
                 const char* value = requireValue("--gpu-scene-tier2-evidence-report");
                 if (!value) return false;
                 options.gpuSceneTier2EvidenceReportPath = value;
+            }
+            else if (arg == "--gpu-scene-m3-evidence-report")
+            {
+                const char* value = requireValue("--gpu-scene-m3-evidence-report");
+                if (!value) return false;
+                options.gpuSceneM3EvidenceReportPath = value;
+            }
+            else if (arg == "--gpu-scene-workload-primitives")
+            {
+                const char* value = requireValue("--gpu-scene-workload-primitives");
+                if (!value || !ParseUInt(value, options.gpuSceneWorkloadPrimitives))
+                {
+                    RVX_CORE_ERROR("Invalid --gpu-scene-workload-primitives value: {}",
+                                   value ? value : "");
+                    return false;
+                }
             }
             else if (arg == "--camera-fit")
             {
@@ -1638,6 +1683,28 @@ namespace
             return false;
         }
 
+        if (!options.gpuSceneM3EvidenceReportPath.empty() && !options.smoke)
+        {
+            RVX_CORE_ERROR("--gpu-scene-m3-evidence-report requires --smoke");
+            return false;
+        }
+
+        if (options.gpuSceneWorkloadPrimitives != 0 &&
+            options.gpuSceneWorkloadPrimitives != 100 &&
+            options.gpuSceneWorkloadPrimitives != 1000 &&
+            options.gpuSceneWorkloadPrimitives != 10000 &&
+            options.gpuSceneWorkloadPrimitives != 50000)
+        {
+            RVX_CORE_ERROR("--gpu-scene-workload-primitives accepts 100, 1000, 10000, or 50000");
+            return false;
+        }
+
+        if (options.gpuSceneWorkloadPrimitives != 0 && !options.smoke)
+        {
+            RVX_CORE_ERROR("--gpu-scene-workload-primitives requires --smoke");
+            return false;
+        }
+
         if (options.expectGPUSceneTier2Candidate)
         {
             if (!options.smoke || options.backend != RHIBackendType::DX12 ||
@@ -1669,6 +1736,12 @@ namespace
         {
             RVX_CORE_ERROR(
                 "--model-ready-timeout-ms requires --wait-model-ready");
+            return false;
+        }
+
+        if (options.smokeFrameTimeoutSet && !options.smoke)
+        {
+            RVX_CORE_ERROR("--smoke-frame-timeout-ms requires --smoke");
             return false;
         }
 
@@ -2799,6 +2872,76 @@ namespace
         return value ? "true" : "false";
     }
 
+    std::string EscapeJsonString(const std::string& value)
+    {
+        std::string escaped;
+        escaped.reserve(value.size());
+        constexpr char hex[] = "0123456789ABCDEF";
+        for (const unsigned char character : value)
+        {
+            switch (character)
+            {
+                case '"': escaped += "\\\""; break;
+                case '\\': escaped += "\\\\"; break;
+                case '\b': escaped += "\\b"; break;
+                case '\f': escaped += "\\f"; break;
+                case '\n': escaped += "\\n"; break;
+                case '\r': escaped += "\\r"; break;
+                case '\t': escaped += "\\t"; break;
+                default:
+                    if (character < 0x20U)
+                    {
+                        escaped += "\\u00";
+                        escaped += hex[(character >> 4U) & 0x0FU];
+                        escaped += hex[character & 0x0FU];
+                    }
+                    else
+                    {
+                        escaped += static_cast<char>(character);
+                    }
+                    break;
+            }
+        }
+        return escaped;
+    }
+
+    const char* GetGPUScenePublicationFailureName(
+        GPUScenePublicationFailureReason reason)
+    {
+        switch (reason)
+        {
+            case GPUScenePublicationFailureReason::None: return "None";
+            case GPUScenePublicationFailureReason::RegistryUnavailable: return "RegistryUnavailable";
+            case GPUScenePublicationFailureReason::InvalidObject: return "InvalidObject";
+            case GPUScenePublicationFailureReason::ResourceUnavailable: return "ResourceUnavailable";
+            case GPUScenePublicationFailureReason::ResourceResolutionFailed: return "ResourceResolutionFailed";
+            case GPUScenePublicationFailureReason::DependencyUnavailable: return "DependencyUnavailable";
+            case GPUScenePublicationFailureReason::DependencyCycle: return "DependencyCycle";
+            case GPUScenePublicationFailureReason::DatabaseCommitFailed: return "DatabaseCommitFailed";
+            case GPUScenePublicationFailureReason::AllocationFailed: return "AllocationFailed";
+            case GPUScenePublicationFailureReason::UnexpectedFailure: return "UnexpectedFailure";
+        }
+        return "Unknown";
+    }
+
+    const char* GetGPUSceneUploadFailureName(GPUSceneUploadFailureReason reason)
+    {
+        switch (reason)
+        {
+            case GPUSceneUploadFailureReason::None: return "None";
+            case GPUSceneUploadFailureReason::NotInitialized: return "NotInitialized";
+            case GPUSceneUploadFailureReason::ContinuityLost: return "ContinuityLost";
+            case GPUSceneUploadFailureReason::BufferCreationFailed: return "BufferCreationFailed";
+            case GPUSceneUploadFailureReason::StagingCreationFailed: return "StagingCreationFailed";
+            case GPUSceneUploadFailureReason::StagingMapFailed: return "StagingMapFailed";
+            case GPUSceneUploadFailureReason::SubmissionRetentionFailed: return "SubmissionRetentionFailed";
+            case GPUSceneUploadFailureReason::InvalidCompletionToken: return "InvalidCompletionToken";
+            case GPUSceneUploadFailureReason::DeviceLost: return "DeviceLost";
+            case GPUSceneUploadFailureReason::UnexpectedFailure: return "UnexpectedFailure";
+        }
+        return "Unknown";
+    }
+
     /** @brief Value-only record captured after one accepted smoke frame. */
     struct GPUSceneTier2EvidenceFrame
     {
@@ -3039,6 +3182,164 @@ namespace
         if (!output)
         {
             RVX_CORE_ERROR("ModelViewer could not write GPU-scene evidence report '{}'",
+                           path.string());
+            return false;
+        }
+        return true;
+    }
+
+    bool WriteGPUSceneM3EvidenceJson(
+        const std::string& filename,
+        uint32 requestedWorkloadPrimitives,
+        size_t sourcePrimitiveCount,
+        const std::vector<GPUSceneTier2EvidenceFrame>& frames,
+        const RenderDiagnosticsSnapshot& diagnostics)
+    {
+        const std::filesystem::path path(filename);
+        const std::filesystem::path parent = path.parent_path();
+        std::error_code error;
+        if (!parent.empty())
+        {
+            std::filesystem::create_directories(parent, error);
+        }
+        if (error)
+        {
+            RVX_CORE_ERROR("ModelViewer could not create M3 GPU-scene evidence directory '{}': {}",
+                           parent.string(), error.message());
+            return false;
+        }
+        std::ofstream output(path, std::ios::out | std::ios::trunc);
+        if (!output)
+        {
+            RVX_CORE_ERROR("ModelViewer could not open M3 GPU-scene evidence report '{}'",
+                           path.string());
+            return false;
+        }
+
+        const RenderFrameFeatureDiagnostics& frame = diagnostics.frameFeatures;
+        const GPUSceneDiagnostics& gpuScene = frame.gpuScene;
+        const RenderPolicyMeasurement& measurement = frame.policy.measurement;
+        output << "{\n"
+               << "  \"schema\": \"RVX.GPUSceneM3Evidence\",\n"
+               << "  \"schemaVersion\": 1,\n"
+               << "  \"nonGating\": true,\n"
+               << "  \"usedForAutoDecision\": false,\n"
+               << "  \"backend\": \"" << EscapeJsonString(ToString(diagnostics.backend)) << "\",\n"
+               << "  \"adapterName\": \"" << EscapeJsonString(diagnostics.adapterName) << "\",\n"
+               << "  \"driverVersion\": \"" << EscapeJsonString(diagnostics.driverVersion) << "\",\n"
+               << "  \"workload\": {\"requestedPrimitiveCount\": "
+               << requestedWorkloadPrimitives
+               << ", \"sourceStaticMeshPrimitiveCount\": " << sourcePrimitiveCount
+               << ", \"sourceSceneObjectCount\": " << gpuScene.attemptedObjectCount
+               << ", \"publishedObjectCount\": " << gpuScene.publishedObjectCount
+               << ", \"passPacketCount\": " << measurement.candidatePacketCount
+               << "},\n"
+               << "  \"timing\": {\"cpuPlanTimingAvailable\": "
+               << BoolText(gpuScene.timing.cpuPlanTimingAvailable)
+               << ", \"cpuPlanMilliseconds\": " << gpuScene.timing.cpuPlanMilliseconds
+               << ", \"cpuSubmissionTimingAvailable\": "
+               << BoolText(gpuScene.timing.cpuSubmissionTimingAvailable)
+               << ", \"cpuSubmissionMilliseconds\": "
+               << gpuScene.timing.cpuSubmissionMilliseconds
+               << ", \"delayedGpuTimingAvailable\": "
+               << BoolText(gpuScene.timing.delayedGpuTimingAvailable)
+               << ", \"delayedGpuMilliseconds\": "
+               << gpuScene.timing.delayedGpuMilliseconds
+               << ", \"nonGating\": true, \"usedForAutoDecision\": false},\n"
+               << "  \"gpuScene\": {\"available\": "
+               << BoolText(gpuScene.available)
+               << ", \"informationalOnly\": "
+               << BoolText(gpuScene.informationalOnly)
+               << ", \"publicationAttempted\": "
+               << BoolText(gpuScene.publicationAttempted)
+               << ", \"publicationCandidate\": " << BoolText(gpuScene.publicationCandidate)
+               << ", \"publicationPublished\": " << BoolText(gpuScene.publicationPublished)
+               << ", \"publicationFailed\": " << BoolText(gpuScene.publicationFailed)
+               << ", \"publicationComplete\": " << BoolText(gpuScene.publicationComplete)
+               << ", \"publicationFailureReason\": \""
+               << GetGPUScenePublicationFailureName(gpuScene.publicationFailureReason)
+               << "\", \"uploadFailureReason\": \""
+               << GetGPUSceneUploadFailureName(gpuScene.uploadFailureReason)
+               << "\", \"addCount\": " << gpuScene.addCount
+               << ", \"updateCount\": " << gpuScene.updateCount
+               << ", \"removeCount\": " << gpuScene.removeCount
+               << ", \"noOpCount\": " << gpuScene.noOpCount
+               << ", \"committedVersion\": "
+               << gpuScene.committedVersion
+               << ", \"residentVersion\": " << gpuScene.residentVersion
+               << ", \"safeReclaimVersion\": " << gpuScene.safeReclaimVersion
+               << ", \"requiredResidentVersion\": " << gpuScene.requiredResidentVersion
+               << ", \"leaseVersion\": " << gpuScene.leaseVersion
+               << ", \"cpuPayloadBytes\": " << gpuScene.cpuPayloadBytes
+               << ", \"cpuReservedBytes\": " << gpuScene.cpuReservedBytes
+               << ", \"gpuAllocationBytes\": " << gpuScene.gpuAllocationBytes
+               << ", \"frameUploadBytes\": " << gpuScene.frameUploadBytes
+               << ", \"cumulativeUploadBytes\": " << gpuScene.cumulativeUploadBytes
+               << ", \"peakFrameUploadBytes\": " << gpuScene.peakFrameUploadBytes
+               << ", \"frameUploadRangeCount\": " << gpuScene.frameUploadRangeCount
+               << ", \"cumulativeUploadRangeCount\": " << gpuScene.cumulativeUploadRangeCount
+               << ", \"currentBufferSetCount\": " << gpuScene.currentBufferSetCount
+               << ", \"peakBufferSetCount\": " << gpuScene.peakBufferSetCount
+               << ", \"pendingBufferSetCount\": " << gpuScene.pendingBufferSetCount
+               << ", \"inFlightBufferSetCount\": " << gpuScene.inFlightBufferSetCount
+               << ", \"unusableBufferSetCount\": " << gpuScene.unusableBufferSetCount
+               << ", \"fullUpload\": " << BoolText(gpuScene.fullUpload)
+               << ", \"slots\": {\"liveSlotCount\": " << gpuScene.slots.liveSlotCount
+               << ", \"freeSlotCount\": " << gpuScene.slots.freeSlotCount
+               << ", \"retiredSlotCount\": " << gpuScene.slots.retiredSlotCount
+               << ", \"permanentlyRetiredSlotCount\": " << gpuScene.slots.permanentlyRetiredSlotCount
+               << ", \"liveDrawBlockCount\": " << gpuScene.slots.liveDrawBlockCount
+               << ", \"freeDrawBlockCount\": " << gpuScene.slots.freeDrawBlockCount
+               << ", \"retiredDrawBlockCount\": " << gpuScene.slots.retiredDrawBlockCount
+               << ", \"reclaimedSlotCount\": " << gpuScene.slots.reclaimedSlotCount
+               << ", \"reclaimedDrawBlockCount\": " << gpuScene.slots.reclaimedDrawBlockCount
+               << ", \"conservativeReusePressureCount\": "
+               << gpuScene.slots.conservativeReusePressureCount << "}"
+               << ", \"tables\": [\n";
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_DIAGNOSTICS_TABLE_COUNT;
+             ++tableIndex)
+        {
+            const GPUSceneTableDiagnostics& table = gpuScene.tables[tableIndex];
+            output << "    {\"payloadRowCount\": " << table.payloadRowCount
+                   << ", \"cpuRowCapacity\": " << table.cpuRowCapacity
+                   << ", \"residentCapacity\": " << table.residentCapacity
+                   << ", \"stride\": " << table.stride
+                   << ", \"cpuPayloadBytes\": " << table.cpuPayloadBytes
+                   << ", \"cpuReservedBytes\": " << table.cpuReservedBytes
+                   << ", \"residentBytes\": " << table.residentBytes
+                   << ", \"frameUploadBytes\": " << table.frameUploadBytes
+                   << ", \"cumulativeUploadBytes\": " << table.cumulativeUploadBytes
+                   << ", \"peakFrameUploadBytes\": " << table.peakFrameUploadBytes
+                   << ", \"frameUploadRangeCount\": " << table.frameUploadRangeCount
+                   << ", \"cumulativeUploadRangeCount\": " << table.cumulativeUploadRangeCount
+                   << ", \"resident\": " << BoolText(table.resident)
+                   << ", \"fullUpload\": " << BoolText(table.fullUpload) << "}"
+                   << (tableIndex + 1u == GPU_SCENE_DIAGNOSTICS_TABLE_COUNT ? "\n" : ",\n");
+        }
+        output << "  ]},\n"
+               << "  \"frames\": [\n";
+        for (size_t index = 0; index < frames.size(); ++index)
+        {
+            const GPUSceneTier2EvidenceFrame& evidence = frames[index];
+            output << "    {\"smokeFrameOrdinal\": " << evidence.smokeFrameOrdinal
+                   << ", \"frameSequence\": " << evidence.frameSequence
+                   << ", \"accepted\": " << BoolText(evidence.accepted)
+                   << ", \"selectedTier\": \"" << GetGPUDrivenTierName(evidence.selectedTier)
+                   << "\", \"executedTier\": \"" << GetGPUDrivenTierName(evidence.executedTier)
+                   << "\", \"executionStatus\": \""
+                   << GetRenderExecutionStatusName(evidence.executionStatus)
+                   << "\", \"tierFallbackReason\": \""
+                   << GetRenderPolicyReasonName(evidence.tierFallbackReason)
+                   << "\", \"requiredResidentVersion\": " << evidence.requiredResidentVersion
+                   << ", \"residentVersion\": " << evidence.residentVersion
+                   << ", \"leaseVersion\": " << evidence.leaseVersion << "}"
+                   << (index + 1u == frames.size() ? "\n" : ",\n");
+        }
+        output << "  ]\n}\n";
+        if (!output)
+        {
+            RVX_CORE_ERROR("ModelViewer could not write M3 GPU-scene evidence report '{}'",
                            path.string());
             return false;
         }
@@ -4659,6 +4960,36 @@ int main(int argc, char* argv[])
                                   culledEntity->GetPosition().y,
                                   culledEntity->GetPosition().z);
                 }
+
+                if (options.gpuSceneWorkloadPrimitives > 1u)
+                {
+                    constexpr uint32 columns = 256u;
+                    for (uint32 primitiveIndex = 1u;
+                         primitiveIndex < options.gpuSceneWorkloadPrimitives;
+                         ++primitiveIndex)
+                    {
+                        SceneEntity* instance = modelHandle->Instantiate(sceneManager);
+                        if (!instance)
+                        {
+                            RVX_CORE_ERROR(
+                                "ModelViewer failed to instantiate GPU-scene workload primitive {}",
+                                primitiveIndex);
+                            engine.Shutdown();
+                            return -1;
+                        }
+                        const uint32 row = primitiveIndex / columns;
+                        const uint32 column = primitiveIndex % columns;
+                        // Fixed grid placement avoids randomized scene input;
+                        // culling is allowed to decide visibility normally.
+                        instance->SetPosition(Vec3(
+                            (static_cast<float32>(column) - 128.0F) * 1.5F,
+                            0.0F,
+                            -static_cast<float32>(row) * 1.5F));
+                    }
+                    RVX_CORE_INFO(
+                        "ModelViewer GPU-scene workload instantiated {} requested primitives",
+                        options.gpuSceneWorkloadPrimitives);
+                }
             }
             else
             {
@@ -4930,10 +5261,11 @@ int main(int argc, char* argv[])
             RuntimeFrameWaitRequest waitRequest;
             waitRequest.minimumPresentedSequence = nextPresentedSequence;
             waitRequest.captureRequestId = captureFrame ? captureRequestId : 0;
-            waitRequest.maxTicks = options.enableGPUValidation ? 120000 : 5000;
-            waitRequest.timeout = options.enableGPUValidation
-                                      ? std::chrono::milliseconds(120000)
-                                      : std::chrono::milliseconds(5000);
+            const uint32 frameTimeoutMs = options.enableGPUValidation
+                ? 120000u
+                : options.smokeFrameTimeoutMs;
+            waitRequest.maxTicks = frameTimeoutMs;
+            waitRequest.timeout = std::chrono::milliseconds(frameTimeoutMs);
             waitRequest.advanceEngine = false;
             const RuntimeFrameWaitResult waitResult =
                 frameDriver.WaitFor(waitRequest);
@@ -4953,7 +5285,8 @@ int main(int argc, char* argv[])
             }
             const RenderFrameFeatureDiagnostics* sceneRenderer =
                 &lastDiagnostics.frameFeatures;
-            if (!options.gpuSceneTier2EvidenceReportPath.empty())
+            if (!options.gpuSceneTier2EvidenceReportPath.empty() ||
+                !options.gpuSceneM3EvidenceReportPath.empty())
             {
                 gpuSceneTier2EvidenceFrames.push_back(
                     CaptureGPUSceneTier2EvidenceFrame(
@@ -5692,6 +6025,17 @@ int main(int argc, char* argv[])
         if (!options.renderPolicyReportPath.empty() &&
             !WriteRenderPolicyMeasurementJson(
                 options.renderPolicyReportPath, lastDiagnostics.frameFeatures))
+        {
+            smokeSucceeded = false;
+        }
+
+        if (!options.gpuSceneM3EvidenceReportPath.empty() &&
+            !WriteGPUSceneM3EvidenceJson(
+                options.gpuSceneM3EvidenceReportPath,
+                options.gpuSceneWorkloadPrimitives,
+                staticMeshPrimitiveCount,
+                gpuSceneTier2EvidenceFrames,
+                lastDiagnostics))
         {
             smokeSucceeded = false;
         }

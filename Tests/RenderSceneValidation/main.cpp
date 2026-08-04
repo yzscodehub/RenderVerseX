@@ -7,6 +7,7 @@
 #include "RenderExtraction/RenderFramePacketBuilder.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderRetirementQueue.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "Runtime/RenderResourceGateway.h"
 
 #include <algorithm>
@@ -64,6 +65,57 @@ namespace RVX
         {
             renderer.FinalizeRenderExecutionReportStatus(graphExecuted);
         }
+
+        static void SetSubmissionReadyDiagnostics(
+            SceneRenderer& renderer) noexcept
+        {
+            renderer.m_frameDiagnostics.rendered = true;
+            renderer.m_frameDiagnostics.graphCompileValid = true;
+        }
+
+        static bool HasSubmissionFailure(const SceneRenderer& renderer) noexcept
+        {
+            return renderer.HasSubmissionFailure();
+        }
+
+        static void SetPersistentAccessSnapshots(
+            SceneRenderer& renderer,
+            const RHITextureAccessSnapshot& depthAccess,
+            std::vector<RHITextureAccessSnapshot> backBufferAccesses,
+            uint32 activeBackBufferIndex)
+        {
+            renderer.m_depthAccessSnapshot = depthAccess;
+            renderer.m_backBufferAccessSnapshots = std::move(backBufferAccesses);
+            renderer.m_activeBackBufferIndex = activeBackBufferIndex;
+        }
+
+        static void PublishProvisionalAccessSnapshots(
+            SceneRenderer& renderer,
+            const RHITextureAccessSnapshot& depthAccess,
+            const RHITextureAccessSnapshot& backBufferAccess) noexcept
+        {
+            renderer.PublishProvisionalFrameAccessSnapshots(
+                &depthAccess, &backBufferAccess);
+        }
+
+        static const RHITextureAccessSnapshot& GetDepthAccessSnapshot(
+            const SceneRenderer& renderer) noexcept
+        {
+            return renderer.m_depthAccessSnapshot;
+        }
+
+        static const RHITextureAccessSnapshot& GetBackBufferAccessSnapshot(
+            const SceneRenderer& renderer,
+            uint32 index) noexcept
+        {
+            return renderer.m_backBufferAccessSnapshots[index];
+        }
+
+        static bool HasProvisionalAccessSnapshots(
+            const SceneRenderer& renderer) noexcept
+        {
+            return renderer.m_frameAccessSnapshotRollback.pending;
+        }
     };
 } // namespace RVX
 
@@ -71,6 +123,75 @@ using namespace RVX;
 
 namespace
 {
+    TEST(RenderSceneValidation,
+         AbortedFrameRestoresProvisionalDepthAndActiveBackBufferAccessSnapshots)
+    {
+        SceneRenderer renderer;
+        const RHITextureAccessSnapshot previousDepth =
+            MakeRHITextureAccessSnapshot(RHIResourceState::DepthWrite,
+                                         RHIShaderStage::None,
+                                         GPUQueueDomain::Graphics,
+                                         RHIContentValidity::Valid);
+        const RHITextureAccessSnapshot previousBackBuffer0 =
+            MakeRHITextureAccessSnapshot(RHIResourceState::Present,
+                                         RHIShaderStage::None,
+                                         GPUQueueDomain::Graphics,
+                                         RHIContentValidity::Valid);
+        const RHITextureAccessSnapshot previousBackBuffer1 =
+            MakeRHITextureAccessSnapshot(RHIResourceState::RenderTarget,
+                                         RHIShaderStage::Pixel,
+                                         GPUQueueDomain::Graphics,
+                                         RHIContentValidity::Valid);
+        const RHITextureAccessSnapshot realizedDepth =
+            MakeRHITextureAccessSnapshot(RHIResourceState::ShaderResource,
+                                         RHIShaderStage::Pixel,
+                                         GPUQueueDomain::Graphics,
+                                         RHIContentValidity::Valid);
+        const RHITextureAccessSnapshot realizedBackBuffer =
+            MakeRHITextureAccessSnapshot(RHIResourceState::Present,
+                                         RHIShaderStage::None,
+                                         GPUQueueDomain::Graphics,
+                                         RHIContentValidity::Valid);
+
+        SceneRendererTestAccess::SetPersistentAccessSnapshots(
+            renderer,
+            previousDepth,
+            {previousBackBuffer0, previousBackBuffer1},
+            1u);
+        SceneRendererTestAccess::PublishProvisionalAccessSnapshots(
+            renderer, realizedDepth, realizedBackBuffer);
+        EXPECT_TRUE(SceneRendererTestAccess::HasProvisionalAccessSnapshots(renderer));
+        EXPECT_EQ(realizedDepth,
+                  SceneRendererTestAccess::GetDepthAccessSnapshot(renderer));
+        EXPECT_EQ(previousBackBuffer0,
+                  SceneRendererTestAccess::GetBackBufferAccessSnapshot(renderer, 0u));
+        EXPECT_EQ(realizedBackBuffer,
+                  SceneRendererTestAccess::GetBackBufferAccessSnapshot(renderer, 1u));
+
+        // This is the same release path used after RenderAcceptedFrame fails
+        // or EndFrame returns a zero submission point.
+        renderer.ReleaseUnsubmittedFrame();
+        EXPECT_FALSE(SceneRendererTestAccess::HasProvisionalAccessSnapshots(renderer));
+        EXPECT_EQ(previousDepth,
+                  SceneRendererTestAccess::GetDepthAccessSnapshot(renderer));
+        EXPECT_EQ(previousBackBuffer0,
+                  SceneRendererTestAccess::GetBackBufferAccessSnapshot(renderer, 0u));
+        EXPECT_EQ(previousBackBuffer1,
+                  SceneRendererTestAccess::GetBackBufferAccessSnapshot(renderer, 1u));
+
+        SceneRendererTestAccess::PublishProvisionalAccessSnapshots(
+            renderer, realizedDepth, realizedBackBuffer);
+        GPUCompletionToken completion;
+        ASSERT_TRUE(InsertGPUCompletionPoint(
+            completion, {GPUQueueDomain::Graphics, 1u}));
+        renderer.NotifySubmission(completion);
+        EXPECT_FALSE(SceneRendererTestAccess::HasProvisionalAccessSnapshots(renderer));
+        EXPECT_EQ(realizedDepth,
+                  SceneRendererTestAccess::GetDepthAccessSnapshot(renderer));
+        EXPECT_EQ(realizedBackBuffer,
+                  SceneRendererTestAccess::GetBackBufferAccessSnapshot(renderer, 1u));
+    }
+
     class RegistryFixture final
     {
     public:
@@ -347,6 +468,20 @@ TEST(RenderSceneValidation, ShadowPublicationFailureCannotRejectAnAppliedFrame)
     EXPECT_EQ(failed.publishedObjectCount, before.publishedObjectCount);
     EXPECT_EQ(failed.publishedDrawCount, before.publishedDrawCount);
     EXPECT_FALSE(failed.executionEligible);
+
+    const GPUSceneDiagnostics snapshot = renderer.GetGPUSceneDiagnostics();
+    EXPECT_TRUE(snapshot.available);
+    EXPECT_TRUE(snapshot.informationalOnly);
+    EXPECT_TRUE(snapshot.publicationAttempted);
+    EXPECT_TRUE(snapshot.publicationFailed);
+    EXPECT_FALSE(snapshot.publicationPublished);
+    EXPECT_FALSE(snapshot.publicationComplete);
+    EXPECT_EQ(snapshot.publicationFailureReason,
+              GPUScenePublicationFailureReason::AllocationFailed);
+    EXPECT_EQ(snapshot.committedVersion, before.committedVersion);
+    const GPUSceneDiagnostics copied = snapshot;
+    EXPECT_EQ(copied.committedVersion, snapshot.committedVersion);
+    EXPECT_EQ(copied.publicationPublished, snapshot.publicationPublished);
 }
 
 TEST(RenderSceneValidation, GPUSceneTier2DiagnosticVersionsAreValueOnlyAndResetWithFramePlan)
@@ -391,6 +526,34 @@ TEST(RenderSceneValidation,
               RenderExecutionStatus::Completed);
     EXPECT_EQ(diagnostics.executionReport.passes[1].status,
               RenderExecutionStatus::NotAttempted);
+}
+
+TEST(RenderSceneValidation,
+     FrameExecutionStatusFailsAtomicallyWhenAnyRecordedPassFails)
+{
+    SceneRenderer renderer;
+    RenderPassExecutionReport completed;
+    completed.pass = RenderPassKind::Depth;
+    completed.status = RenderExecutionStatus::Completed;
+    RenderPassExecutionReport failed;
+    failed.pass = RenderPassKind::Opaque;
+    failed.status = RenderExecutionStatus::Failed;
+
+    SceneRendererTestAccess::SetExecutionReport(renderer, {completed, failed});
+    SceneRendererTestAccess::FinalizeExecutionReport(renderer, true);
+
+    const RenderPolicyDiagnostics& diagnostics =
+        renderer.GetRenderPolicyDiagnostics();
+    EXPECT_TRUE(diagnostics.reportAvailable);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              diagnostics.executionReport.status);
+    SceneRendererTestAccess::SetSubmissionReadyDiagnostics(renderer);
+    EXPECT_TRUE(SceneRendererTestAccess::HasSubmissionFailure(renderer));
+    ASSERT_EQ(2U, diagnostics.executionReport.passes.size());
+    EXPECT_EQ(RenderExecutionStatus::Completed,
+              diagnostics.executionReport.passes[0].status);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              diagnostics.executionReport.passes[1].status);
 }
 
 TEST(RenderSceneValidation,

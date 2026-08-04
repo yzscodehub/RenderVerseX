@@ -11,8 +11,10 @@
 #include "Render/Lighting/LightManager.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resources/FrameConstantUploadArena.h"
 #include "Resources/RenderOwnerSnapshotRetirement.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "ShaderCompiler/ShaderLayout.h"
 #include "ShaderCompiler/ShaderManager.h"
@@ -991,6 +993,12 @@ void PipelineCache::Shutdown()
     m_pipelineCache.clear();
     m_frameDescriptorSet.Reset();
     m_objectDescriptorSet.Reset();
+    m_objectPageDescriptorCache.clear();
+    if (m_objectConstantUploadArena)
+    {
+        m_objectConstantUploadArena->Shutdown();
+        m_objectConstantUploadArena.reset();
+    }
     m_pendingOwnerRetirements.clear();
     m_viewConstantBuffer.Reset();
     m_objectConstantBuffer.Reset();
@@ -2449,6 +2457,30 @@ bool PipelineCache::CreatePipelineLayout()
     return true;
 }
 
+void PipelineCache::SetObjectConstantSubmissionTracker(
+    RenderSubmissionTracker* tracker) noexcept
+{
+    if (m_objectConstantUploadArena)
+    {
+        m_objectConstantUploadArena->SetSubmissionTracker(tracker);
+    }
+}
+
+bool PipelineCache::NotifyObjectConstantSubmission(
+    const GPUCompletionToken& completion) noexcept
+{
+    return !m_objectConstantUploadArena ||
+           m_objectConstantUploadArena->NotifySubmission(completion);
+}
+
+void PipelineCache::ReleaseUnsubmittedObjectConstants() noexcept
+{
+    if (m_objectConstantUploadArena)
+    {
+        m_objectConstantUploadArena->ReleaseUnsubmittedFrame();
+    }
+}
+
 bool PipelineCache::CreateGPUSceneRasterPipelineLayout()
 {
     if (m_setLayouts.size() != 3 || !m_setLayouts[0] || !m_setLayouts[2])
@@ -3008,6 +3040,10 @@ void PipelineCache::BeginFrame()
 {
     m_objectConstantCursor = 0;
     m_currentObjectConstantOffset = 0;
+    if (m_objectConstantUploadArena)
+    {
+        m_objectConstantUploadArena->PollCompletions();
+    }
 
     if (m_frameResourceBindingsDirty && m_frameDescriptorSet)
     {
@@ -3313,6 +3349,153 @@ bool PipelineCache::UpdateObjectInstanceBuffer(RHIBuffer* instanceBuffer)
         m_objectDescriptorSet, m_pendingOwnerRetirements);
     m_objectDescriptorSet = std::move(replacement);
     return true;
+}
+
+RHIDescriptorSetRef PipelineCache::CreateObjectConstantPageDescriptor(
+    uint64 pageIdentity,
+    RHIBuffer* constantBuffer,
+    RHIBuffer* instanceBuffer,
+    bool cacheFallbackInstance)
+{
+    if (pageIdentity == 0 || constantBuffer == nullptr || m_device == nullptr)
+    {
+        return {};
+    }
+    RHIDescriptorSetLayout* objectLayout = GetObjectSetLayout();
+    if (objectLayout == nullptr)
+    {
+        return {};
+    }
+
+    const ObjectPageDescriptorKey key{pageIdentity, instanceBuffer};
+    if (cacheFallbackInstance)
+    {
+        if (const auto existing = m_objectPageDescriptorCache.find(key);
+            existing != m_objectPageDescriptorCache.end())
+        {
+            return existing->second;
+        }
+    }
+
+    RHIDescriptorSetDesc descriptorDesc;
+    descriptorDesc.layout = objectLayout;
+    descriptorDesc.debugName = "PagedObjectConstantDescriptorSet";
+    descriptorDesc.BindBuffer(0, constantBuffer, 0, m_objectConstantStride);
+    if (FindRHIBindingLayoutEntry(*objectLayout, 1))
+    {
+        if (instanceBuffer == nullptr)
+        {
+            return {};
+        }
+        descriptorDesc.BindBuffer(1, instanceBuffer);
+    }
+    RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptorSet)
+    {
+        return {};
+    }
+    if (cacheFallbackInstance)
+    {
+        m_objectPageDescriptorCache.emplace(key, descriptorSet);
+    }
+    return descriptorSet;
+}
+
+bool PipelineCache::CreateObjectConstantBinding(
+    const Mat4& worldMatrix,
+    const Mat4& normalMatrix,
+    const Mat4& previousWorldMatrix,
+    const Mat4& previousViewProjectionMatrix,
+    bool previousWorldViewProjectionValid,
+    bool receivesShadow,
+    std::span<const Mat4> skinningMatrices,
+    RHIBuffer* instanceBuffer,
+    ObjectConstantBinding& outBinding)
+{
+    outBinding = {};
+    if (!m_objectConstantUploadArena || !m_initialized)
+    {
+        return false;
+    }
+
+    RHIDescriptorSetLayout* const objectLayout = GetObjectSetLayout();
+    if (objectLayout == nullptr)
+    {
+        return false;
+    }
+
+    const bool requiresInstanceBuffer =
+        FindRHIBindingLayoutEntry(*objectLayout, 1) != nullptr;
+    RHIBufferRef resolvedInstanceBuffer;
+    if (requiresInstanceBuffer)
+    {
+        if (instanceBuffer != nullptr)
+        {
+            resolvedInstanceBuffer = RHIBufferRef(instanceBuffer);
+        }
+        else
+        {
+            if (!EnsureObjectInstanceFallbackBuffer())
+            {
+                return false;
+            }
+            resolvedInstanceBuffer = m_objectInstanceFallbackBuffer;
+        }
+
+        if (!resolvedInstanceBuffer)
+        {
+            return false;
+        }
+    }
+
+    ObjectConstants constants{};
+    constants.world = worldMatrix;
+    constants.normalMatrix = normalMatrix;
+    const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
+    constants.previousWorldViewProjection = previousWorldViewProjectionValid
+        ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) * previousWorldMatrix
+        : Mat4Identity();
+    constants.objectVelocityParams = Vec4(previousWorldViewProjectionValid ? 1.0f : 0.0f,
+                                          receivesShadow ? 1.0f : 0.0f,
+                                          0.0f,
+                                          0.0f);
+    const uint32 skinningMatrixCount = static_cast<uint32>(
+        std::min<size_t>(skinningMatrices.size(), RVX_MAX_OBJECT_SKINNING_MATRICES));
+    constants.skinningParams = Vec4(skinningMatrixCount != 0 ? 1.0f : 0.0f,
+                                    static_cast<float>(skinningMatrixCount),
+                                    0.0f,
+                                    0.0f);
+    for (uint32 index = 0; index < skinningMatrixCount; ++index)
+    {
+        constants.skinningMatrices[index] = skinningMatrices[index];
+    }
+
+    FrameConstantUploadAllocation allocation;
+    if (!m_objectConstantUploadArena->Allocate(
+            &constants, sizeof(constants), allocation))
+    {
+        return false;
+    }
+    RHIDescriptorSetRef descriptorSet = CreateObjectConstantPageDescriptor(
+        allocation.pageIdentity,
+        allocation.buffer.Get(),
+        resolvedInstanceBuffer.Get(),
+        instanceBuffer == nullptr);
+    if (!descriptorSet)
+    {
+        // This page cannot safely be handed to a later frame after descriptor
+        // creation failed during recording.  Keep it in the recording set so
+        // ReleaseUnsubmittedFrame() frees it only if the enclosing frame aborts.
+        return false;
+    }
+
+    outBinding.constantBuffer = std::move(allocation.buffer);
+    outBinding.instanceBuffer = std::move(resolvedInstanceBuffer);
+    outBinding.descriptorSet = std::move(descriptorSet);
+    outBinding.pageIdentity = allocation.pageIdentity;
+    outBinding.dynamicOffsets = {allocation.dynamicOffset};
+    outBinding.requiresInstanceBuffer = requiresInstanceBuffer;
+    return outBinding.IsValid();
 }
 
 RHIDescriptorSetLayout* PipelineCache::GetMaterialSetLayout() const
@@ -4410,6 +4593,20 @@ bool PipelineCache::CreateObjectConstantBuffer()
     if (!m_objectConstantBuffer)
     {
         RVX_CORE_ERROR("PipelineCache: Failed to create object constant buffer");
+        return false;
+    }
+
+    // The legacy buffer remains available to compatibility callers, while
+    // graph-recorded Direct and Tier1 work uses completion-tracked pages.
+    m_objectConstantUploadArena = std::make_unique<FrameConstantUploadArena>();
+    if (!m_objectConstantUploadArena->Initialize(
+            m_device,
+            m_objectConstantStride,
+            static_cast<uint32>(RVX_MAX_DRAW_CONSTANTS_PER_FRAME),
+            "ObjectConstantUpload"))
+    {
+        m_objectConstantUploadArena.reset();
+        RVX_CORE_ERROR("PipelineCache: Failed to initialize paged object constant upload arena");
         return false;
     }
 
@@ -7144,12 +7341,11 @@ uint64 PipelineCache::AllocateObjectConstantSlot()
     if (m_objectConstantCursor >= RVX_MAX_DRAW_CONSTANTS_PER_FRAME)
     {
         RVX_VERIFY(false,
-                   "PipelineCache: Object constant buffer exhausted for this frame (max {} draws). "
-                   "Reusing the final slot to avoid wrapping over earlier draw constants.",
+                   "PipelineCache: legacy object constant buffer exhausted for this frame (max {} draws). "
+                   "Recording must use completion-tracked object pages.",
                    RVX_MAX_DRAW_CONSTANTS_PER_FRAME);
-        const uint64 offset = (RVX_MAX_DRAW_CONSTANTS_PER_FRAME - 1) * m_objectConstantStride;
-        m_currentObjectConstantOffset = offset;
-        return offset;
+        m_currentObjectConstantOffset = std::numeric_limits<uint64>::max();
+        return m_currentObjectConstantOffset;
     }
 
     const uint64 offset = m_objectConstantCursor * m_objectConstantStride;
@@ -7231,6 +7427,10 @@ bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
     }
 
     const uint64 offset = AllocateObjectConstantSlot();
+    if (offset == std::numeric_limits<uint64>::max())
+    {
+        return false;
+    }
     void* mapped = m_objectConstantBuffer->Map();
     if (mapped == nullptr)
     {

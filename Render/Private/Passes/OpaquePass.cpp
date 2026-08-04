@@ -252,12 +252,19 @@ struct OpaquePass::PlannedOpaqueDraw
     SubmeshGPUInfo submesh;
     RHIPipeline* pipeline = nullptr;
     RHIDescriptorSet* frameSet = nullptr;
-    RHIDescriptorSet* objectSet = nullptr;
-    std::array<uint32, 1> objectDynamicOffsets{};
+    ObjectConstantBinding objectBinding;
     MaterialBindingResult materialBinding;
     bool allowNormalMap = false;
     bool previousWorldViewProjectionValid = false;
     bool skinned = false;
+};
+
+struct OpaquePass::PlannedGPUDrivenOpaqueDraw
+{
+    uint32 groupIndex = 0;
+    MeshGPUBuffers buffers;
+    RHIPipeline* pipeline = nullptr;
+    MaterialBindingResult materialBinding;
 };
 
 void OpaquePass::OnAdd(IRHIDevice* device)
@@ -690,10 +697,9 @@ bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(
 }
 
 bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
-                                          const ViewData& view,
-                                          RHIFormat colorTargetFormat,
                                           RHIDescriptorSet* frameSet,
-                                          bool requireObjectConstantUpload,
+                                          const ObjectConstantBinding* tier1ObjectBinding,
+                                          std::span<const PlannedGPUDrivenOpaqueDraw> plannedBatches,
                                           uint32 expectedPacketCount,
                                           uint32 expectedGroupCount)
 {
@@ -737,77 +743,15 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     }
     m_drawStats.gpuDrivenCullingReady = true;
 
-    uint32 drawItemCount = 0;
-    if (!AreGPUDrivenOpaqueGroupsDrawable(expectedPacketCount,
-                                          expectedGroupCount,
-                                          drawItemCount))
+    const auto& groups = m_gpuCulling->GetDrawGroups();
+    if ((expectedGroupCount != 0 && groups.size() != expectedGroupCount) ||
+        plannedBatches.size() != groups.size() ||
+        (expectedPacketCount != 0 &&
+         m_gpuCulling->GetInstanceCount() != expectedPacketCount))
     {
         m_drawStats.gpuDrivenFallbackReason =
             GPUDrivenDrawFallbackReason::DrawGroupsUnavailable;
         return false;
-    }
-
-    struct GPUDrivenOpaqueBatch
-    {
-        uint32 groupIndex = 0;
-        MeshGPUBuffers buffers;
-        RHIPipeline* pipeline = nullptr;
-        MaterialBindingResult materialBinding;
-    };
-
-    const auto& groups = m_gpuCulling->GetDrawGroups();
-    std::vector<GPUDrivenOpaqueBatch> batches;
-    batches.reserve(groups.size());
-
-    for (uint32 groupIndex = 0; groupIndex < static_cast<uint32>(groups.size()); ++groupIndex)
-    {
-        const GPUCullingDrawGroup& group = groups[groupIndex];
-        MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-            m_resourceRegistry, group.mesh);
-        if (!buffers.IsValid())
-        {
-            m_drawStats.gpuDrivenFallbackReason =
-                GPUDrivenDrawFallbackReason::MeshResourcesUnavailable;
-            return false;
-        }
-
-        RHIPipeline* pipeline = nullptr;
-        if (usesGPUSceneRaster)
-        {
-            pipeline = group.pipelineVariant == MaterialPipelineVariant::Masked
-                ? m_gpuSceneRasterBinding->maskedPipeline.Get()
-                : m_gpuSceneRasterBinding->opaquePipeline.Get();
-        }
-        else
-        {
-            pipeline = m_pipelineCache->GetGPUDrivenPipelineForVariant(
-                group.pipelineVariant, colorTargetFormat);
-        }
-        if (!pipeline)
-        {
-            m_drawStats.gpuDrivenFallbackReason =
-                GPUDrivenDrawFallbackReason::PipelineUnavailable;
-            return false;
-        }
-
-        MaterialBindingOptions materialOptions;
-        materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
-        MaterialBindingResult materialBinding =
-            m_materialSystem->PrepareMaterialBinding(
-                group.material, view.viewCache, materialOptions);
-        if (!materialBinding.IsDrawable())
-        {
-            m_drawStats.gpuDrivenFallbackReason =
-                GPUDrivenDrawFallbackReason::MaterialBindingUnavailable;
-            return false;
-        }
-
-        GPUDrivenOpaqueBatch batch;
-        batch.groupIndex = groupIndex;
-        batch.buffers = std::move(buffers);
-        batch.pipeline = pipeline;
-        batch.materialBinding = std::move(materialBinding);
-        batches.push_back(std::move(batch));
     }
     m_drawStats.gpuDrivenPipelineReady = true;
 
@@ -820,20 +764,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
 
     if (!usesGPUSceneRaster)
     {
-        const bool objectConstantsUpdated =
-            m_pipelineCache->UpdateObjectConstants(
-                Mat4Identity(),
-                Mat4Identity(),
-                Mat4Identity(),
-                view.previousViewProjectionMatrix,
-                false);
-        if (requireObjectConstantUpload && !objectConstantsUpdated)
-        {
-            m_drawStats.gpuDrivenFallbackReason =
-                GPUDrivenDrawFallbackReason::ObjectBindingUnavailable;
-            return false;
-        }
-        if (!m_pipelineCache->UpdateObjectInstanceBuffer(m_gpuCulling->GetInstanceBuffer()))
+        if (tier1ObjectBinding == nullptr || !tier1ObjectBinding->IsValid())
         {
             m_drawStats.gpuDrivenFallbackReason =
                 GPUDrivenDrawFallbackReason::ObjectBindingUnavailable;
@@ -843,7 +774,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
 
     RHIDescriptorSet* objectSet = usesGPUSceneRaster
         ? m_gpuSceneRasterBinding->objectDescriptorSet.Get()
-        : m_pipelineCache->GetObjectDescriptorSet();
+        : tier1ObjectBinding->descriptorSet.Get();
     if (!objectSet)
     {
         m_drawStats.gpuDrivenFallbackReason =
@@ -853,13 +784,13 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     static constexpr std::array<uint32, 1> gpuSceneObjectOffsets{0u};
     const auto objectDynamicOffsets = usesGPUSceneRaster
         ? gpuSceneObjectOffsets
-        : m_pipelineCache->GetCurrentObjectDynamicOffset();
+        : tier1ObjectBinding->dynamicOffsets;
     m_drawStats.gpuDrivenEligible = true;
     m_drawStats.gpuDrivenIndirectExecutedDrawCountAvailable =
         m_gpuCulling->WasCpuFallbackUsedLastCull();
 
     bool submittedAny = false;
-    for (const GPUDrivenOpaqueBatch& batch : batches)
+    for (const PlannedGPUDrivenOpaqueDraw& batch : plannedBatches)
     {
         ctx.SetPipeline(batch.pipeline);
         if (frameSet)
@@ -1122,6 +1053,16 @@ bool OpaquePass::BuildPlannedDirectBatch(
             outPlannedDraws.clear();
             return false;
         }
+        if (!RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(materialBinding.constantBuffer)) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(materialBinding.descriptorSetRef)))
+        {
+            outPlannedDraws.clear();
+            return false;
+        }
 
         PlannedOpaqueDraw planned;
         planned.packet = draw;
@@ -1130,33 +1071,42 @@ bool OpaquePass::BuildPlannedDirectBatch(
         planned.submesh = submesh;
         planned.pipeline = pipeline;
         planned.frameSet = frameSet;
-        planned.objectSet = m_pipelineCache->GetObjectDescriptorSet();
         planned.materialBinding = std::move(materialBinding);
         planned.allowNormalMap = allowNormalMap;
         planned.previousWorldViewProjectionValid =
             previousWorldViewProjectionValid;
         planned.skinned = skinned;
-        if (planned.frameSet == nullptr || planned.objectSet == nullptr ||
+        if (planned.frameSet == nullptr ||
             planned.materialBinding.descriptorSet == nullptr)
         {
             outPlannedDraws.clear();
             return false;
         }
 
-        if (!m_pipelineCache->UpdateObjectConstants(
+        if (!m_pipelineCache->CreateObjectConstantBinding(
                 planned.object.worldMatrix,
                 planned.object.normalMatrix,
                 planned.object.previousWorldMatrix,
                 view.previousViewProjectionMatrix,
                 planned.previousWorldViewProjectionValid,
                 planned.object.receivesShadow,
-                ResolveSkinningMatrices(planned.object, planned.buffers)))
+                ResolveSkinningMatrices(planned.object, planned.buffers),
+                nullptr,
+                planned.objectBinding) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(planned.objectBinding.constantBuffer)) ||
+            (planned.objectBinding.instanceBuffer &&
+             !RetainRenderSubmissionResource(
+                 view.submissionResourceBatch,
+                 Ref<RefCounted>(planned.objectBinding.instanceBuffer))) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(planned.objectBinding.descriptorSet)))
         {
             outPlannedDraws.clear();
             return false;
         }
-        planned.objectDynamicOffsets =
-            m_pipelineCache->GetCurrentObjectDynamicOffset();
         outPlannedDraws.push_back(std::move(planned));
     }
 
@@ -1172,7 +1122,9 @@ bool OpaquePass::TryDrawPlannedDirect(
     {
         ctx.SetPipeline(planned.pipeline);
         ctx.SetDescriptorSet(0, planned.frameSet);
-        ctx.SetDescriptorSet(1, planned.objectSet, planned.objectDynamicOffsets);
+        ctx.SetDescriptorSet(1,
+                             planned.objectBinding.descriptorSet.Get(),
+                             planned.objectBinding.dynamicOffsets);
         ctx.SetDescriptorSet(2,
                              planned.materialBinding.descriptorSet,
                              planned.materialBinding.dynamicOffsets);
@@ -1628,6 +1580,103 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             return;
         }
 
+        // Tier1 and Tier2 group resources are fully materialized before an
+        // attachment is mutated.  The recording function below only emits
+        // commands from these immutable bindings.
+        ObjectConstantBinding tier1ObjectBinding;
+        std::vector<PlannedGPUDrivenOpaqueDraw> plannedGPUBatches;
+        bool gpuPreflightReady = plannedGPU;
+        if (plannedGPU)
+        {
+            const bool usesGPUSceneRaster = m_gpuSceneRasterEnabled;
+            uint32 gpuDrawItemCount = 0;
+            if (!m_gpuCulling || !m_materialSystem || !m_pipelineCache ||
+                (!usesGPUSceneRaster && !m_gpuCulling->GetInstanceBuffer()) ||
+                !m_gpuCulling->GetInstanceIndexBuffer() ||
+                !AreGPUDrivenOpaqueGroupsDrawable(
+                    plannedGPUCount,
+                     opaquePlan->partition.drawGroupCount,
+                     gpuDrawItemCount))
+            {
+                gpuPreflightReady = false;
+            }
+            if (gpuPreflightReady && !usesGPUSceneRaster)
+            {
+                if (!m_pipelineCache->CreateObjectConstantBinding(
+                        Mat4Identity(),
+                        Mat4Identity(),
+                        Mat4Identity(),
+                        drawView.previousViewProjectionMatrix,
+                        false,
+                        true,
+                        {},
+                        m_gpuCulling->GetInstanceBuffer(),
+                        tier1ObjectBinding) ||
+                    !RetainRenderSubmissionResource(
+                        view.submissionResourceBatch,
+                        Ref<RefCounted>(tier1ObjectBinding.constantBuffer)) ||
+                    (tier1ObjectBinding.instanceBuffer &&
+                     !RetainRenderSubmissionResource(
+                         view.submissionResourceBatch,
+                         Ref<RefCounted>(tier1ObjectBinding.instanceBuffer))) ||
+                    !RetainRenderSubmissionResource(
+                        view.submissionResourceBatch,
+                        Ref<RefCounted>(tier1ObjectBinding.descriptorSet)))
+                {
+                    gpuPreflightReady = false;
+                }
+            }
+            if (gpuPreflightReady)
+            {
+                const auto& groups = m_gpuCulling->GetDrawGroups();
+                plannedGPUBatches.reserve(groups.size());
+                for (uint32 groupIndex = 0;
+                     groupIndex < static_cast<uint32>(groups.size());
+                     ++groupIndex)
+                {
+                    const GPUCullingDrawGroup& group = groups[groupIndex];
+                    const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                        m_resourceRegistry, group.mesh);
+                    RHIPipeline* pipeline = usesGPUSceneRaster
+                        ? (group.pipelineVariant == MaterialPipelineVariant::Masked
+                            ? (m_gpuSceneRasterBinding ? m_gpuSceneRasterBinding->maskedPipeline.Get() : nullptr)
+                            : (m_gpuSceneRasterBinding ? m_gpuSceneRasterBinding->opaquePipeline.Get() : nullptr))
+                        : m_pipelineCache->GetGPUDrivenPipelineForVariant(
+                            group.pipelineVariant, colorTargetFormat);
+                    MaterialBindingOptions options;
+                    options.allowNormalMap = buffers.HasNormalMapTangentBasis();
+                    MaterialBindingResult binding = m_materialSystem->PrepareMaterialBinding(
+                        group.material, view.viewCache, options);
+                    if (!buffers.IsValid() || pipeline == nullptr || !binding.IsDrawable() ||
+                        !RetainRenderSubmissionResource(
+                            view.submissionResourceBatch, Ref<RefCounted>(binding.constantBuffer)) ||
+                        !RetainRenderSubmissionResource(
+                            view.submissionResourceBatch, Ref<RefCounted>(binding.descriptorSetRef)))
+                    {
+                        gpuPreflightReady = false;
+                        break;
+                    }
+                    PlannedGPUDrivenOpaqueDraw planned;
+                    planned.groupIndex = groupIndex;
+                    planned.buffers = buffers;
+                    planned.pipeline = pipeline;
+                    planned.materialBinding = std::move(binding);
+                    plannedGPUBatches.emplace_back(std::move(planned));
+                }
+            }
+        }
+
+        if (plannedGPU && !gpuPreflightReady && !executeDirectLane)
+        {
+            m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
+            updatePlanReport(RenderExecutionStatus::Failed,
+                             m_drawStats.failureReason,
+                             0,
+                             true,
+                             opaquePlan->visibility);
+            return;
+        }
+
         // Only preflighted Direct packet values determine their texture
         // transitions. These happen before attachment mutation.
         for (const PlannedOpaqueDraw& planned : plannedDraws)
@@ -1648,7 +1697,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 
         // The GPU lane retains its established indirect recording path. It
         // deliberately has no Direct fallback once the plan selected it.
-        if (plannedGPU && m_gpuCulling)
+        if (plannedGPU && gpuPreflightReady && m_gpuCulling)
         {
             // Resource preparation follows the immutable GPU packet groups,
             // never the CPU-final draw list. Otherwise a GPU-visible boundary
@@ -1679,12 +1728,11 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         if (plannedGPU)
         {
             const auto laneStart = std::chrono::steady_clock::now();
-            gpuRecorded = TryDrawGPUDrivenIndirect(
+            gpuRecorded = gpuPreflightReady && TryDrawGPUDrivenIndirect(
                 ctx,
-                drawView,
-                colorTargetFormat,
                 frameDescriptorSet.Get(),
-                true,
+                m_gpuSceneRasterEnabled ? nullptr : &tier1ObjectBinding,
+                plannedGPUBatches,
                 plannedGPUCount,
                 opaquePlan->partition.drawGroupCount);
             if (!gpuRecorded && m_gpuSceneRasterEnabled &&

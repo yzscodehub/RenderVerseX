@@ -73,6 +73,12 @@ namespace RVX
             return m_stats;
         }
 
+        /** @brief Value-only CPU mirror and allocator lifecycle snapshot. */
+        [[nodiscard]] GPUSceneDiagnostics GetDiagnostics() const noexcept
+        {
+            return m_database.GetDiagnostics();
+        }
+
         /** @brief Render-private validation view; never an execution input. */
         [[nodiscard]] const GPUSceneCommittedMirror&
             GetCommittedMirrorForTesting() const noexcept

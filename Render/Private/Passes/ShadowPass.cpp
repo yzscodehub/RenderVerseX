@@ -188,10 +188,18 @@ namespace
 
 } // namespace
 
+struct ShadowPass::PlannedShadowDraw
+{
+    MeshGPUBuffers buffers;
+    ObjectConstantBinding objectBinding;
+};
+
 ShadowPass::ShadowPass()
 {
     m_cascades.resize(4);  // Default 4 cascades
 }
+
+ShadowPass::~ShadowPass() = default;
 
 void ShadowPass::SetResources(PipelineCache* pipelineCache)
 {
@@ -489,6 +497,8 @@ void ShadowPass::Setup(
     m_shadowMapTextureHandle = {};
     m_cascadeTextureHandles.clear();
     m_cascadeViews.clear();
+    m_plannedShadowDraws.clear();
+    m_shadowDrawPreflightValid = false;
     m_cascades.resize(std::max(1u, m_config.numCascades));
 
     if (!view.renderGraph)
@@ -522,6 +532,76 @@ void ShadowPass::Setup(
     }
 
     m_stats.declaredCascadeResourceCount = static_cast<uint32_t>(m_cascadeTextureHandles.size());
+
+    // All caster constant pages and set-1 descriptors are fixed while the
+    // graph is built. Execute() therefore has no allocation path after an
+    // attachment is bound.
+    m_shadowDrawPreflightValid = BuildPlannedShadowDraws(view);
+    if (!m_shadowDrawPreflightValid)
+    {
+        RVX_RENDER_ERROR("ShadowPass: caster/page preflight failed; no shadow attachment will be recorded");
+        m_shadowMapTextureHandle = {};
+        m_cascadeTextureHandles.clear();
+        m_cascadeViews.clear();
+        m_stats.declaredCascadeResourceCount = 0;
+    }
+}
+
+bool ShadowPass::BuildPlannedShadowDraws(const ViewData& view)
+{
+    m_plannedShadowDraws.clear();
+    if (!m_pipelineCache || !m_renderScene || m_resourceRegistry == nullptr ||
+        m_pipelineCache->GetShadowDepthPipeline(MakeShadowDepthBiasState(m_config)) == nullptr)
+    {
+        return false;
+    }
+
+    m_plannedShadowDraws.reserve(m_renderScene->GetObjectCount());
+    for (size_t index = 0; index < m_renderScene->GetObjectCount(); ++index)
+    {
+        const RenderObject& object = m_renderScene->GetObject(index);
+        if (!object.castsShadow)
+        {
+            continue;
+        }
+
+        MeshGPUBuffers buffers = ResolveRenderMeshBuffers(m_resourceRegistry, object.mesh);
+        if (!buffers.IsValid() || buffers.positionBuffer == nullptr ||
+            buffers.indexBuffer == nullptr || buffers.submeshes.empty())
+        {
+            return false;
+        }
+
+        PlannedShadowDraw planned;
+        planned.buffers = std::move(buffers);
+        if (!m_pipelineCache->CreateObjectConstantBinding(
+                object.worldMatrix,
+                object.normalMatrix,
+                object.previousWorldMatrix,
+                view.previousViewProjectionMatrix,
+                object.previousWorldMatrixValid != 0 &&
+                    view.previousViewProjectionValid != 0 &&
+                    !view.resetTemporalHistory,
+                true,
+                ResolveSkinningMatrices(object, planned.buffers),
+                nullptr,
+                planned.objectBinding) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(planned.objectBinding.constantBuffer)) ||
+            (planned.objectBinding.instanceBuffer &&
+             !RetainRenderSubmissionResource(
+                 view.submissionResourceBatch,
+                 Ref<RefCounted>(planned.objectBinding.instanceBuffer))) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(planned.objectBinding.descriptorSet)))
+        {
+            return false;
+        }
+        m_plannedShadowDraws.emplace_back(std::move(planned));
+    }
+    return true;
 }
 
 void ShadowPass::Execute(
@@ -544,7 +624,7 @@ void ShadowPass::Execute(
     }
 
     if (!m_pipelineCache || !m_renderScene ||
-        m_resourceRegistry == nullptr)
+        m_resourceRegistry == nullptr || !m_shadowDrawPreflightValid)
     {
         return;
     }
@@ -665,56 +745,28 @@ void ShadowPass::RenderCascade(
         ctx.SetDescriptorSet(0, frameSet);
     }
 
-    // Draw all shadow-casting objects
-    for (size_t i = 0; i < m_renderScene->GetObjectCount(); ++i)
+    // All page constants/descriptors were preflighted during graph setup.
+    for (const PlannedShadowDraw& planned : m_plannedShadowDraws)
     {
-        const RenderObject& obj = m_renderScene->GetObject(i);
-        
-        if (!obj.castsShadow)
-            continue;
-
-        MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-            m_resourceRegistry,
-            obj.mesh);
-        if (!buffers.IsValid())
-            continue;
-
         ++m_stats.shadowCasterCount;
-
-        // Update per-object constants
-        if (m_pipelineCache)
-        {
-            m_pipelineCache->UpdateObjectConstants(obj.worldMatrix,
-                                                   obj.normalMatrix,
-                                                   obj.previousWorldMatrix,
-                                                   view.previousViewProjectionMatrix,
-                                                   obj.previousWorldMatrixValid != 0 &&
-                                                       view.previousViewProjectionValid != 0 &&
-                                                       !view.resetTemporalHistory,
-                                                   ResolveSkinningMatrices(obj, buffers));
-        }
-
-        RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
-        if (objectSet)
-        {
-            const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
-            ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
-        }
+        ctx.SetDescriptorSet(1,
+                             planned.objectBinding.descriptorSet.Get(),
+                             planned.objectBinding.dynamicOffsets);
 
         // Bind vertex buffers
-        ctx.SetVertexBuffer(0, buffers.positionBuffer);
-        if (buffers.boneIndicesBuffer)
+        ctx.SetVertexBuffer(0, planned.buffers.positionBuffer);
+        if (planned.buffers.boneIndicesBuffer)
         {
-            ctx.SetVertexBuffer(4, buffers.boneIndicesBuffer);
+            ctx.SetVertexBuffer(4, planned.buffers.boneIndicesBuffer);
         }
-        if (buffers.boneWeightsBuffer)
+        if (planned.buffers.boneWeightsBuffer)
         {
-            ctx.SetVertexBuffer(5, buffers.boneWeightsBuffer);
+            ctx.SetVertexBuffer(5, planned.buffers.boneWeightsBuffer);
         }
-        ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
+        ctx.SetIndexBuffer(planned.buffers.indexBuffer, RHIFormat::R32_UINT);
 
         // Draw
-        for (const SubmeshGPUInfo& submesh : buffers.submeshes)
+        for (const SubmeshGPUInfo& submesh : planned.buffers.submeshes)
         {
             ctx.DrawIndexed(submesh.indexCount, 1, submesh.indexOffset, submesh.baseVertex, 0);
             ++m_stats.drawCount;

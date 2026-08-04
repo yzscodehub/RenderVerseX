@@ -357,6 +357,7 @@ namespace
             RVX_COPY_GPU_CULLING_FIELD(opaqueFallbackReason);
 #undef RVX_COPY_GPU_CULLING_FIELD
             features.policy = frame.policy;
+            features.gpuScene = m_sceneRenderer->GetGPUSceneDiagnostics();
 
             const ParticleFeaturePassStats& particles =
                 m_sceneRenderer->GetParticleFeaturePassStats();

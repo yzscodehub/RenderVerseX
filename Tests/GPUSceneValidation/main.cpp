@@ -23,6 +23,10 @@ namespace
     static_assert(!std::is_convertible_v<GPUSceneDrawRef, GPUScenePrimitiveRef>);
     static_assert(!std::is_move_constructible_v<GPUSceneDatabase>);
     static_assert(!std::is_move_assignable_v<GPUSceneDatabase>);
+    static_assert(std::is_trivially_copyable_v<GPUSceneDiagnostics>);
+    static_assert(std::is_trivially_copyable_v<GPUSceneTableDiagnostics>);
+    static_assert(std::is_trivially_copyable_v<GPUSceneSlotLifecycleDiagnostics>);
+    static_assert(std::is_trivially_copyable_v<GPUSceneTimingDiagnostics>);
 
     GPUSceneMatrix4x4 MakeAffineMatrix(float32 marker)
     {
@@ -1470,4 +1474,46 @@ TEST(GPUSceneValidation, AffineRowsAreRowMajorAndInvalidTransformsAreExcluded)
     EXPECT_EQ(packed.rows[0], (GPUSceneFloat4{1.0F, 4.0F, 7.0F, 10.0F}));
     EXPECT_EQ(packed.rows[1], (GPUSceneFloat4{2.0F, 5.0F, 8.0F, 11.0F}));
     EXPECT_EQ(packed.rows[2], (GPUSceneFloat4{3.0F, 6.0F, 9.0F, 12.0F}));
+}
+
+TEST(GPUSceneValidation, DiagnosticsUseActualMirrorCapacityAndCompletionGatedLifecycle)
+{
+    const GPUSceneDiagnostics reset{};
+    EXPECT_FALSE(reset.available);
+    EXPECT_TRUE(reset.informationalOnly);
+    EXPECT_EQ(reset.gpuAllocationBytes, 0U);
+    EXPECT_EQ(reset.slots.liveSlotCount, 0U);
+
+    GPUSceneDatabase database(1, 1);
+    const GPUScenePrimitiveRef first = AddSingleObject(database, 801);
+
+    const GPUSceneDiagnostics warm = database.GetDiagnostics();
+    const GPUSceneTableDiagnostics& primitiveTable = warm.tables[
+        static_cast<uint32>(GPUSceneDiagnosticsTable::Primitives)];
+    EXPECT_EQ(primitiveTable.payloadRowCount,
+              database.GetCommittedMirror().primitives.size());
+    EXPECT_GE(primitiveTable.cpuRowCapacity, primitiveTable.payloadRowCount);
+    EXPECT_EQ(primitiveTable.cpuPayloadBytes,
+              static_cast<uint64>(database.GetCommittedMirror().primitives.size()) *
+                  sizeof(GPUScenePrimitiveRow));
+    EXPECT_EQ(warm.slots.liveSlotCount, 6U);
+    EXPECT_EQ(warm.slots.retiredSlotCount, 0U);
+    EXPECT_EQ(warm.slots.reclaimedSlotCount, 0U);
+
+    GPUSceneTransaction remove;
+    remove.Remove(first);
+    ASSERT_TRUE(database.Commit(remove).Succeeded());
+    const GPUSceneDiagnostics retired = database.GetDiagnostics();
+    EXPECT_EQ(retired.slots.liveSlotCount, 0U);
+    EXPECT_EQ(retired.slots.retiredSlotCount, 6U);
+    EXPECT_EQ(retired.slots.conservativeReusePressureCount, 6U);
+    EXPECT_EQ(retired.slots.retiredDrawBlockCount, 1U);
+
+    ASSERT_TRUE(database.ReclaimRetiredThrough(database.GetCommittedVersion()));
+    const GPUSceneDiagnostics reclaimed = database.GetDiagnostics();
+    EXPECT_EQ(reclaimed.slots.freeSlotCount, 6U);
+    EXPECT_EQ(reclaimed.slots.retiredSlotCount, 0U);
+    EXPECT_EQ(reclaimed.slots.reclaimedSlotCount, 6U);
+    EXPECT_EQ(reclaimed.slots.reclaimedDrawBlockCount, 1U);
+    EXPECT_EQ(reclaimed.slots.conservativeReusePressureCount, 0U);
 }

@@ -904,6 +904,9 @@ namespace RVX
         [[nodiscard]] const GPUSceneUploadDiagnostics&
             GetGPUSceneUploadDiagnostics() const noexcept;
 
+        /** @brief Backend-neutral, informational GPU-scene frame snapshot. */
+        [[nodiscard]] GPUSceneDiagnostics GetGPUSceneDiagnostics() const noexcept;
+
         /** @brief Explicitly discard the non-executable GPU-scene shadow. */
         void ClearGPUSceneShadow();
 
@@ -1295,6 +1298,11 @@ namespace RVX
         friend class SceneRendererTestAccess;
 
         void RetireOwnerSnapshots(const GPUCompletionToken& completion);
+        void PublishProvisionalFrameAccessSnapshots(
+            const RHITextureAccessSnapshot* depthAccess,
+            const RHITextureAccessSnapshot* backBufferAccess) noexcept;
+        void ConfirmProvisionalFrameAccessSnapshots() noexcept;
+        void RestoreProvisionalFrameAccessSnapshots() noexcept;
         void BuildRenderGraph();
         void SynchronizeGPUSceneUploader() noexcept;
         void ReclaimGPUSceneRetiredRows() noexcept;
@@ -1312,6 +1320,7 @@ namespace RVX
         void PrepareGPUDrivenGraphCullInputs();
         void ConfirmGPUDrivenActualTier();
         void FinalizeRenderExecutionReportStatus(bool graphExecuted) noexcept;
+        [[nodiscard]] bool HasSubmissionFailure() const noexcept;
         void MarkGPUDrivenFrameFailure() noexcept;
         void ApplyObjectMotionHistory();
         void UpdateObjectMotionHistory();
@@ -1533,8 +1542,18 @@ namespace RVX
         uint32_t m_depthHeight = 0;
 
         // Back buffer state tracking
+        struct FrameAccessSnapshotRollback
+        {
+            bool pending = false;
+            bool restoreDepth = false;
+            RHITextureAccessSnapshot depthAccess;
+            uint32 backBufferIndex = RVX_INVALID_INDEX;
+            RHITextureAccessSnapshot backBufferAccess;
+        };
+
         std::vector<RHITextureAccessSnapshot> m_backBufferAccessSnapshots;
         RHITextureAccessSnapshot m_depthAccessSnapshot;
+        FrameAccessSnapshotRollback m_frameAccessSnapshotRollback;
         RGTextureHandle m_depthGraphHandle;
         RGTextureHandle m_backBufferGraphHandle;
         uint32 m_activeBackBufferIndex = RVX_INVALID_INDEX;

@@ -361,6 +361,110 @@ GPUSceneUploader::~GPUSceneUploader()
     Shutdown();
 }
 
+const GPUSceneUploadDiagnostics& GPUSceneUploader::GetDiagnostics() const noexcept
+{
+    RefreshDiagnostics();
+    return m_diagnostics;
+}
+
+void GPUSceneUploader::RefreshDiagnostics() const noexcept
+{
+    if (!m_impl)
+    {
+        return;
+    }
+
+    m_diagnostics.bufferSetCount = static_cast<uint32>(m_impl->sets.size());
+    m_diagnostics.peakBufferSetCount = std::max(
+        m_diagnostics.peakBufferSetCount, m_diagnostics.bufferSetCount);
+    m_diagnostics.pendingSetCount = m_impl->pending ? 1U : 0U;
+    m_diagnostics.inFlightSetCount = 0;
+    m_diagnostics.unusableSetCount = 0;
+    m_diagnostics.gpuAllocationBytes = 0;
+    m_diagnostics.persistentBytes = 0;
+    m_diagnostics.cpuPayloadBytes = 0;
+    m_diagnostics.cpuReservedBytes = 0;
+
+    const Impl::BufferSet* newestResidentSet = nullptr;
+    for (const Impl::BufferSet& set : m_impl->sets)
+    {
+        if (set.unusable)
+        {
+            ++m_diagnostics.unusableSetCount;
+        }
+        if (set.frameReadUse)
+        {
+            ++m_diagnostics.pendingSetCount;
+        }
+        if (set.hasLastUse && m_impl->tracker &&
+            m_impl->tracker->Query(set.lastUse) == GPUCompletionStatus::Pending)
+        {
+            ++m_diagnostics.inFlightSetCount;
+        }
+        if (!set.unusable && set.residentVersion != 0 &&
+            (newestResidentSet == nullptr ||
+             newestResidentSet->residentVersion < set.residentVersion))
+        {
+            newestResidentSet = &set;
+        }
+        for (const Impl::TableState& table : set.tables)
+        {
+            const uint64 bytes = static_cast<uint64>(table.capacity) * table.stride;
+            m_diagnostics.gpuAllocationBytes += bytes;
+            m_diagnostics.persistentBytes += bytes;
+        }
+    }
+
+    if (m_impl->observedMirror != nullptr)
+    {
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+             ++tableIndex)
+        {
+            GPUSceneTableDiagnostics& diagnostics =
+                m_diagnostics.tables[tableIndex];
+            const TableSource source = GetTableSource(
+                *m_impl->observedMirror,
+                static_cast<GPUSceneUploadTable>(tableIndex));
+            diagnostics.payloadRowCount = source.rowCount;
+            diagnostics.stride = source.stride;
+            diagnostics.cpuPayloadBytes =
+                static_cast<uint64>(source.rowCount) * source.stride;
+            // The committed mirror vector capacity is not exposed through the
+            // table-source view.  CPU reserved bytes therefore remain a
+            // database-owned value rather than an uploader estimate.
+            diagnostics.cpuReservedBytes = 0;
+            m_diagnostics.cpuPayloadBytes += diagnostics.cpuPayloadBytes;
+            if (newestResidentSet != nullptr)
+            {
+                const Impl::TableState& table = newestResidentSet->tables[tableIndex];
+                diagnostics.residentCapacity = table.capacity;
+                diagnostics.stride = table.stride;
+                diagnostics.residentBytes =
+                    static_cast<uint64>(table.capacity) * table.stride;
+                diagnostics.resident = table.buffer != nullptr &&
+                    !newestResidentSet->unusable;
+            }
+            else
+            {
+                diagnostics.residentCapacity = 0;
+                diagnostics.residentBytes = 0;
+                diagnostics.resident = false;
+            }
+        }
+    }
+    m_diagnostics.residentVersion = newestResidentSet != nullptr
+        ? newestResidentSet->residentVersion
+        : 0;
+    m_diagnostics.peakFrameUploadBytes = std::max(
+        m_diagnostics.peakFrameUploadBytes, m_diagnostics.frameUploadBytes);
+    for (GPUSceneTableDiagnostics& table : m_diagnostics.tables)
+    {
+        table.peakFrameUploadBytes = std::max(
+            table.peakFrameUploadBytes, table.frameUploadBytes);
+    }
+}
+
 bool GPUSceneUploader::Initialize(
     IRHIDevice* device,
     RenderSubmissionTracker* submissionTracker) noexcept
@@ -507,6 +611,12 @@ void GPUSceneUploader::BuildRenderGraph(
     m_diagnostics.frameUploadRangeCount = 0;
     m_diagnostics.fullUpload = false;
     m_diagnostics.rollbackPending = false;
+    for (GPUSceneTableDiagnostics& table : m_diagnostics.tables)
+    {
+        table.frameUploadBytes = 0;
+        table.frameUploadRangeCount = 0;
+        table.fullUpload = false;
+    }
     if (!m_impl->initialized || !m_impl->observedMirror)
     {
         return;
@@ -685,6 +795,7 @@ void GPUSceneUploader::BuildRenderGraph(
                 mirror, static_cast<GPUSceneUploadTable>(tableIndex));
             std::vector<GPUSceneDirtyRowRange> ranges;
             const bool fullUpload = table.fullDirty;
+            m_diagnostics.tables[tableIndex].fullUpload = fullUpload;
             if (fullUpload)
             {
                 // Initialize the whole allocated capacity, not merely the live
@@ -764,7 +875,13 @@ void GPUSceneUploader::BuildRenderGraph(
                                        bytes});
                 stagingOffset += bytes;
                 m_diagnostics.frameUploadBytes += bytes;
+                m_diagnostics.cumulativeUploadBytes += bytes;
+                m_diagnostics.tables[tableIndex].frameUploadBytes += bytes;
+                m_diagnostics.tables[tableIndex].cumulativeUploadBytes += bytes;
                 ++m_diagnostics.frameUploadRangeCount;
+                ++m_diagnostics.cumulativeUploadRangeCount;
+                ++m_diagnostics.tables[tableIndex].frameUploadRangeCount;
+                ++m_diagnostics.tables[tableIndex].cumulativeUploadRangeCount;
             }
             staging->Unmap();
 
@@ -883,6 +1000,13 @@ void GPUSceneUploader::BuildRenderGraph(
     }
 
     m_diagnostics.fullUpload = pending.fullUpload;
+    m_diagnostics.peakFrameUploadBytes = std::max(
+        m_diagnostics.peakFrameUploadBytes, m_diagnostics.frameUploadBytes);
+    for (GPUSceneTableDiagnostics& table : m_diagnostics.tables)
+    {
+        table.peakFrameUploadBytes = std::max(
+            table.peakFrameUploadBytes, table.frameUploadBytes);
+    }
     // The plan now owns an immutable dirty snapshot. Later Observe calls may
     // append newer deltas directly to the set while this upload is pending.
     for (const Impl::TableUploadPlan& plan : pending.tables)

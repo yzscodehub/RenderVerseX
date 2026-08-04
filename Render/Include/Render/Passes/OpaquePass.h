@@ -29,6 +29,8 @@ namespace RVX
     class PipelineCache;
     class RenderScene;
     class ShadowPass;
+    struct MaterialBindingResult;
+    struct ObjectConstantBinding;
     struct GPUCullingDrawGroup;
     struct GPUSceneRasterBindingSnapshot;
 
@@ -93,6 +95,7 @@ namespace RVX
         }
     private:
         struct PlannedOpaqueDraw;
+        struct PlannedGPUDrivenOpaqueDraw;
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
@@ -143,10 +146,9 @@ namespace RVX
             uint32 expectedGroupCount,
             uint32& outDrawItemCount) const;
         bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
-                                      const ViewData& view,
-                                      RHIFormat colorTargetFormat,
                                       RHIDescriptorSet* frameSet,
-                                      bool requireObjectConstantUpload,
+                                      const ObjectConstantBinding* tier1ObjectBinding,
+                                      std::span<const PlannedGPUDrivenOpaqueDraw> plannedBatches,
                                       uint32 expectedPacketCount = 0,
                                       uint32 expectedGroupCount = 0);
         bool TryDrawPlannedDirect(

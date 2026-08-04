@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <new>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 
@@ -250,6 +251,7 @@ namespace RVX
         size_t boundsCount = 0;
         size_t transformCount = 0;
         size_t drawBlockCount = 0;
+        uint64 reclaimedDrawSlots = 0;
         const auto countReclaimable = [safeVersion](const auto& slots, size_t& count)
         {
             for (size_t slot = 1; slot < slots.size(); ++slot)
@@ -270,6 +272,7 @@ namespace RVX
             if (block.retireVersion <= safeVersion)
             {
                 ++drawBlockCount;
+                reclaimedDrawSlots += static_cast<uint64>(block.count) * 3U;
             }
         }
 
@@ -368,6 +371,12 @@ namespace RVX
         {
             return false;
         }
+        // Each reclaimed draw block owns exactly one material, geometry, and
+        // draw slot per entry; all terms were measured before the transition.
+        m_reclaimedSlotCount +=
+            static_cast<uint64>(primitiveCount + boundsCount + transformCount) +
+            reclaimedDrawSlots;
+        m_reclaimedDrawBlockCount += static_cast<uint64>(drawBlockCount);
         return true;
     }
 
@@ -738,6 +747,81 @@ namespace RVX
     uint32 GPUSceneDatabase::GetObjectCount() const
     {
         return static_cast<uint32>(m_state.objectToPrimitive.size());
+    }
+
+    GPUSceneDiagnostics GPUSceneDatabase::GetDiagnostics() const noexcept
+    {
+        GPUSceneDiagnostics diagnostics;
+        diagnostics.available = true;
+        diagnostics.informationalOnly = true;
+
+        const auto summarizeTable = [&diagnostics](uint32 tableIndex,
+                                                    const auto& rows)
+        {
+            GPUSceneTableDiagnostics& table = diagnostics.tables[tableIndex];
+            table.payloadRowCount = static_cast<uint32>(rows.size());
+            table.cpuRowCapacity = static_cast<uint32>(rows.capacity());
+            table.stride = static_cast<uint32>(sizeof(typename std::decay_t<decltype(rows)>::value_type));
+            table.cpuPayloadBytes = static_cast<uint64>(rows.size()) * table.stride;
+            table.cpuReservedBytes = static_cast<uint64>(rows.capacity()) * table.stride;
+            diagnostics.cpuPayloadBytes += table.cpuPayloadBytes;
+            diagnostics.cpuReservedBytes += table.cpuReservedBytes;
+        };
+        summarizeTable(static_cast<uint32>(GPUSceneDiagnosticsTable::Primitives),
+                       m_state.mirror.primitives);
+        summarizeTable(static_cast<uint32>(GPUSceneDiagnosticsTable::Bounds),
+                       m_state.mirror.bounds);
+        summarizeTable(static_cast<uint32>(GPUSceneDiagnosticsTable::Transforms),
+                       m_state.mirror.transforms);
+        summarizeTable(static_cast<uint32>(GPUSceneDiagnosticsTable::Materials),
+                       m_state.mirror.materials);
+        summarizeTable(static_cast<uint32>(GPUSceneDiagnosticsTable::Geometries),
+                       m_state.mirror.geometries);
+        summarizeTable(static_cast<uint32>(GPUSceneDiagnosticsTable::Draws),
+                       m_state.mirror.draws);
+
+        const auto summarizeSlots = [&diagnostics](const auto& slots)
+        {
+            for (size_t index = 1; index < slots.size(); ++index)
+            {
+                switch (slots[index].state)
+                {
+                    case GPUSceneSlotState::Live: ++diagnostics.slots.liveSlotCount; break;
+                    case GPUSceneSlotState::Free: ++diagnostics.slots.freeSlotCount; break;
+                    case GPUSceneSlotState::Retired:
+                        ++diagnostics.slots.retiredSlotCount;
+                        ++diagnostics.slots.conservativeReusePressureCount;
+                        break;
+                    case GPUSceneSlotState::PermanentlyRetired:
+                        ++diagnostics.slots.permanentlyRetiredSlotCount;
+                        ++diagnostics.slots.conservativeReusePressureCount;
+                        break;
+                    case GPUSceneSlotState::Invalid: break;
+                }
+            }
+        };
+        summarizeSlots(m_state.primitiveSlots);
+        summarizeSlots(m_state.boundsSlots);
+        summarizeSlots(m_state.transformSlots);
+        summarizeSlots(m_state.materialSlots);
+        summarizeSlots(m_state.geometrySlots);
+        summarizeSlots(m_state.drawSlots);
+
+        for (size_t index = 1; index < m_state.primitiveSlots.size(); ++index)
+        {
+            if (m_state.primitiveSlots[index].state == GPUSceneSlotState::Live &&
+                m_state.mirror.primitives[index].drawCount != 0)
+            {
+                ++diagnostics.slots.liveDrawBlockCount;
+            }
+        }
+        diagnostics.slots.freeDrawBlockCount =
+            static_cast<uint32>(m_state.freeDrawBlocks.size());
+        diagnostics.slots.retiredDrawBlockCount =
+            static_cast<uint32>(m_state.retiredDrawBlocks.size());
+        diagnostics.slots.reclaimedSlotCount = m_reclaimedSlotCount;
+        diagnostics.slots.reclaimedDrawBlockCount = m_reclaimedDrawBlockCount;
+        return diagnostics;
     }
 
     std::optional<GPUScenePrimitiveRef> GPUSceneDatabase::FindPrimitive(uint64 objectId) const

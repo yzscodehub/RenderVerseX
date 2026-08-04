@@ -6,6 +6,7 @@
  */
 
 #include "Render/GPUScene/GPUSceneSchema.h"
+#include "Render/GPUScene/GPUSceneDiagnostics.h"
 
 #include <limits>
 #include <optional>
@@ -211,6 +212,8 @@ namespace RVX
         /** @brief Number of addressable primitive-table slots, excluding slot zero. */
         [[nodiscard]] uint32 GetSlotCapacity() const;
         [[nodiscard]] uint32 GetObjectCount() const;
+        /** @brief Exact CPU-container and allocator lifecycle snapshot. */
+        [[nodiscard]] GPUSceneDiagnostics GetDiagnostics() const noexcept;
         [[nodiscard]] std::optional<GPUScenePrimitiveRef> FindPrimitive(uint64 objectId) const;
 
         [[nodiscard]] GPUSceneSlotState GetSlotState(GPUScenePrimitiveRef primitive) const;
@@ -367,5 +370,7 @@ namespace RVX
         uint32 m_initialSlotGeneration = 1;
         uint32 m_maxSlotCapacity = std::numeric_limits<uint32>::max();
         int32 m_prepareAllocationFailureCountdown = -1;
+        uint64 m_reclaimedSlotCount = 0;
+        uint64 m_reclaimedDrawBlockCount = 0;
     };
 } // namespace RVX

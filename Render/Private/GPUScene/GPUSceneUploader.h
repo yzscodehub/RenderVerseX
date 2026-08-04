@@ -185,14 +185,12 @@ namespace RVX
         void ConfirmReclaimedThrough(uint64 version) noexcept;
 
         [[nodiscard]] const GPUSceneUploadDiagnostics&
-            GetDiagnostics() const noexcept
-        {
-            return m_diagnostics;
-        }
+            GetDiagnostics() const noexcept;
 
     private:
         class Impl;
+        void RefreshDiagnostics() const noexcept;
         std::unique_ptr<Impl> m_impl;
-        GPUSceneUploadDiagnostics m_diagnostics;
+        mutable GPUSceneUploadDiagnostics m_diagnostics;
     };
 } // namespace RVX

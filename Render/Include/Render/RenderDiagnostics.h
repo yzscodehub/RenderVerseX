@@ -8,6 +8,7 @@
 #include "Render/RenderRuntimeTypes.h"
 #include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/GPUDriven/GPUDrivenPolicy.h"
+#include "Render/GPUScene/GPUSceneDiagnostics.h"
 #include "Render/Policy/RenderPolicyDiagnostics.h"
 #include "RenderContracts/RenderFramePacket.h"
 
@@ -363,6 +364,7 @@ namespace RVX
         RenderPassFeatureDiagnostics skybox{};
         RenderDirectionalShadowDiagnostics directionalShadow{};
         RenderGPUDrivenCullingDiagnostics gpuDrivenCulling{};
+        GPUSceneDiagnostics gpuScene{};
         RenderPolicyDiagnostics policy{};
         RenderParticleFeatureDiagnostics particles{};
         RenderMaterialFeatureDiagnostics material{};

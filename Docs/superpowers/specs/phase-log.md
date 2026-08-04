@@ -47196,3 +47196,99 @@ below.
 - Vulkan and Metal remain unqualified and are owned by Tasks 12 and 13.
 
 ---
+
+### R-SP360 Render-policy Task 11E GPU Scene M3 diagnostics and workload exit
+
+**Date:** 2026-08-05
+**Commit:** Included in the Task 11E stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP359 (real DX12 Tier 2 candidate evidence).
+- D4c proved one hermetic Tier 2 candidate path, but the engine still lacked a
+  complete value-only GPU Scene accounting contract, completion-tracked
+  material/object constant pages, and deterministic 100/1k/10k/50k exit
+  evidence.
+
+**Approved scope:**
+
+- Expose backend-neutral publication, table capacity/bytes, dirty upload,
+  buffer-set, slot/draw retirement, exact-version, and optional timing
+  diagnostics. Keep them informational, non-gating, and disconnected from
+  policy and `Auto` decisions.
+- Replace fixed material/object constant overwrite limits with paged upload
+  arenas whose reuse requires the exact current Graphics completion point.
+  Invalid, stale, multi-domain, unissued, or lost evidence fails closed.
+- Preflight draw bindings and retain exact page, descriptor, and instance
+  resources through the submission batch. Treat any failed planned pass as an
+  atomic failed frame; roll back provisional depth/backbuffer access state on
+  abort and confirm it only after actual submission.
+- Cache object page descriptors only for the stable fallback instance buffer.
+  External per-frame GPU-culling instance buffers receive fresh immutable
+  descriptors and strong ownership.
+- Add deterministic ModelViewer workload/evidence switches and a runner for
+  100/1k/10k/50k Direct/GPU execution, exact pixel parity, engine error scan,
+  raw DX12 InfoQueue checks, lifecycle/accounting validation, and provenance.
+  Do not add guessed thresholds or promote Candidate/`Auto`.
+
+**Files changed:**
+
+- GPU Scene diagnostics/publication/database/uploader implementation under
+  `Render/Include/Render/GPUScene` and `Render/Private/GPUScene`.
+- Completion-tracked constants and binding ownership in `Render/Private/Resources`,
+  `MaterialSystem`, `PipelineCache`, `DepthPrepass`, `OpaquePass`, and
+  `ShadowPass`.
+- Frame failure/access-state closure in `SceneRenderer` and diagnostics
+  projection through `RenderSubsystem`.
+- `Samples/Showcase/ModelViewer/main.cpp`,
+  `Scripts/run_m3_gpu_scene_exit.ps1`, focused validation executables, CMake,
+  the execution ledger, and this phase record.
+
+**Validation result:**
+
+- Primary serial build: PASS for MaterialSystemValidation,
+  PipelineCacheValidation, RenderPassValidation, RenderSceneValidation,
+  GPUSceneValidation, GPUSceneUploadValidation, GPUDrivenValidation, and
+  ModelViewer.
+- Primary focused tests: PASS 495/495: Material 37, Pipeline 137, Render Pass
+  203, Render Scene 23, GPU Scene 33, GPU Scene Upload 20, and GPU-driven 42.
+  One initial aggregate invocation reported the upload capacity-growth case;
+  its immediate filtered rerun and complete 20-test rerun both passed, and the
+  full native gate remained clean.
+- Architecture.PhaseGates: PASS 1/1. PowerShell AST and `git diff --check`:
+  PASS apart from existing CRLF conversion notices.
+- Complete native M3 runner: PASS in 625.2 seconds on NVIDIA GeForce RTX 4070
+  Ti, driver 610.62. Each of 100/1k/10k/50k completed Direct 4 frames and GPU
+  12 frames; every GPU run observed ordered cold `IndirectGrouped` followed by
+  warm `GPUResidentScene`.
+- Exact Direct/GPU P6 parity passed with zero differing pixel bytes at all four
+  workloads. All eight DX12 InfoQueue reports were available, read-complete,
+  and had zero error/corruption messages. No failure manifest or orphaned
+  ModelViewer process remained.
+
+**Independent review result:**
+
+- Earlier reviews identified partial-frame submission, provisional access
+  snapshot leakage, permissive/lost completion tokens, and a stale external
+  instance-buffer descriptor cache. Each was remediated with focused tests and
+  then exercised by the real-DX12 workload gate.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diagnostics, allocator, token, descriptor cache,
+  submission ownership, pass preflight, failure rollback, runner, evidence,
+  and test-honesty review.
+- Unrelated `Engine/Private/Engine.cpp`, runtime fatal diagnostics, Python
+  caches, and build artifacts remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- Native Task 11E evidence covers DX12 on one NVIDIA adapter. Vulkan and Metal
+  remain unqualified and are owned by Tasks 12 and 13.
+- Delayed GPU timing was unavailable and is truthfully recorded as zero,
+  `nonGating=true`, and `usedForAutoDecision=false`. Task 15 must add reviewed
+  GPU timing evidence before any measured threshold, hysteresis, or `Auto`
+  promotion.
+
+---

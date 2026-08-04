@@ -32,7 +32,9 @@ namespace RVX
 {
     // Forward declarations
     struct GPUCompletionToken;
+    class FrameConstantUploadArena;
     class IShaderCompiler;
+    class RenderSubmissionTracker;
     class RenderSubmissionResourceBatch;
     class RenderRetirementQueue;
     class ShaderManager;
@@ -248,6 +250,23 @@ namespace RVX
         }
     };
 
+    /** @brief One page-local object binding captured while a graph is recorded. */
+    struct ObjectConstantBinding
+    {
+        RHIBufferRef constantBuffer;
+        RHIBufferRef instanceBuffer;
+        RHIDescriptorSetRef descriptorSet;
+        uint64 pageIdentity = 0;
+        std::array<uint32, 1> dynamicOffsets = {0};
+        bool requiresInstanceBuffer = false;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return constantBuffer && descriptorSet && pageIdentity != 0 &&
+                   (!requiresInstanceBuffer || instanceBuffer);
+        }
+    };
+
     struct PipelineCacheConfig
     {
         RHIFormat renderTargetFormat = RHIFormat::RGBA8_UNORM;
@@ -322,6 +341,11 @@ namespace RVX
         /** @brief Transfer replaced descriptor snapshots using exact submission evidence. */
         void RetireOwnerSnapshots(const GPUCompletionToken& completion,
                                   RenderRetirementQueue& retirement);
+
+        /** @brief Completion evidence for the private paged object upload arena. */
+        void SetObjectConstantSubmissionTracker(RenderSubmissionTracker* tracker) noexcept;
+        [[nodiscard]] bool NotifyObjectConstantSubmission(const GPUCompletionToken& completion) noexcept;
+        void ReleaseUnsubmittedObjectConstants() noexcept;
 
         /**
          * @brief Check if initialized
@@ -692,6 +716,23 @@ namespace RVX
         bool UpdateObjectInstanceBuffer(RHIBuffer* instanceBuffer);
 
         /**
+         * @brief Allocate one completion-tracked page-local object constant record.
+         *
+         * The returned binding owns b0 from the selected page and preserves
+         * set-1/b1 as either the supplied instance buffer or the stable fallback.
+         */
+        bool CreateObjectConstantBinding(
+            const Mat4& worldMatrix,
+            const Mat4& normalMatrix,
+            const Mat4& previousWorldMatrix,
+            const Mat4& previousViewProjectionMatrix,
+            bool previousWorldViewProjectionValid,
+            bool receivesShadow,
+            std::span<const Mat4> skinningMatrices,
+            RHIBuffer* instanceBuffer,
+            ObjectConstantBinding& outBinding);
+
+        /**
          * @brief Get the material descriptor set layout (set 2)
          */
         RHIDescriptorSetLayout* GetMaterialSetLayout() const;
@@ -942,6 +983,11 @@ namespace RVX
             const FrameLightResources* transparentLightResources,
             RasterDrawBindingSnapshot& outSnapshot) const;
         uint64 AllocateObjectConstantSlot();
+        RHIDescriptorSetRef CreateObjectConstantPageDescriptor(
+            uint64 pageIdentity,
+            RHIBuffer* constantBuffer,
+            RHIBuffer* instanceBuffer,
+            bool cacheFallbackInstance);
         bool BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSetLayoutDesc>& outLayouts);
         bool ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSetLayoutDesc>& layouts);
         void ProcessPipelineManifest();
@@ -1119,6 +1165,27 @@ namespace RVX
         RHIBufferRef m_objectInstanceFallbackBuffer;
         RHIDescriptorSetRef m_frameDescriptorSet;
         RHIDescriptorSetRef m_objectDescriptorSet;
+        std::unique_ptr<FrameConstantUploadArena> m_objectConstantUploadArena;
+        struct ObjectPageDescriptorKey
+        {
+            uint64 pageIdentity = 0;
+            RHIBuffer* instanceBuffer = nullptr;
+            bool operator==(const ObjectPageDescriptorKey& other) const noexcept
+            {
+                return pageIdentity == other.pageIdentity && instanceBuffer == other.instanceBuffer;
+            }
+        };
+        struct ObjectPageDescriptorKeyHash
+        {
+            size_t operator()(const ObjectPageDescriptorKey& key) const noexcept
+            {
+                return std::hash<uint64>{}(key.pageIdentity) ^
+                    (std::hash<RHIBuffer*>{}(key.instanceBuffer) << 1);
+            }
+        };
+        std::unordered_map<ObjectPageDescriptorKey,
+                           RHIDescriptorSetRef,
+                           ObjectPageDescriptorKeyHash> m_objectPageDescriptorCache;
         std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
         RHITextureRef m_fallbackDirectionalShadowTexture;
         RHITextureViewRef m_fallbackDirectionalShadowView;

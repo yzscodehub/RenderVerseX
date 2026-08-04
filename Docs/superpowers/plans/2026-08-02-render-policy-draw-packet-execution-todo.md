@@ -1,10 +1,8 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
-10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a,
-Task 11D-D1b-a, Task 11D-D1b-b, Task 11D-D2a, and Task 11D-D2b are complete,
-Task 11D-D3, Task 11D-D4a, Task 11D-D4b1, Task 11D-D4b2, and Task 11D-D4c
-are complete, and Task 11E is next
+10A/10B/10C, and every Task 11 slice through Task 11E are complete and
+reviewed; Task 12 is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -388,14 +386,14 @@ formal submission interface with clean validation and parity.
   stale GPU references.
 - [x] Move GPU visibility and command generation to stable GPU Scene indices.
 - [x] Compact visible indices and commands without synchronous CPU readback.
-- [ ] Route Tier 2 output through the Task 10 submission strategies.
-- [ ] Keep Tier 1 per-group binding on devices without required table-indexing
+- [x] Route Tier 2 output through the Task 10 submission strategies.
+- [x] Keep Tier 1 per-group binding on devices without required table-indexing
   capabilities.
-- [ ] Add memory, capacity, dirty-byte, full-upload, churn, and retirement
+- [x] Add memory, capacity, dirty-byte, full-upload, churn, and retirement
   diagnostics.
-- [ ] Add warm static, high churn, generation reuse, resource eviction,
+- [x] Add warm static, high churn, generation reuse, resource eviction,
   in-flight update, and capacity growth fixtures.
-- [ ] Re-run two-view, rejected-frame, resize, and in-flight failure injection
+- [x] Re-run two-view, rejected-frame, resize, and in-flight failure injection
   against persistent Tier 2 buffers and generation retirement.
 - [x] Prove unchanged static scenes perform no full-scene upload after warm-up.
 - [ ] Benchmark 100/1k/10k/50k candidates and record CPU/GPU costs; do not tune
@@ -999,7 +997,48 @@ candidate evidence slice is:
   independently reran the complete hardware gate with 16/16 candidate frames,
   10/10 GBV frames, exact parity, and four clean InfoQueues.
 
-Start **Task 11E** next: add truthful GPU Scene memory, capacity, dirty-upload,
-publication, retirement, and lifetime diagnostics; then collect deterministic
-non-gating Direct/Tier 1/Tier 2 workload evidence. Measurements must remain
-informational and must not introduce guessed `Auto` thresholds.
+Task 11E implementation, three independent review/remediation rounds, final
+re-review, and primary audit are complete. The accepted M3 diagnostics and
+workload-evidence slice is:
+
+- [x] Add a backend-neutral, value-only GPU Scene diagnostics contract for
+  publication, CPU mirror capacity, resident allocation, dirty upload bytes and
+  ranges, buffer-set lifecycle, slot/draw retirement, exact versions, and
+  optional timing. Diagnostics remain informational and are never resolver or
+  `Auto` inputs.
+- [x] Replace fixed per-frame material/object constant overwrite behavior with
+  completion-tracked upload pages. Reject non-current, multi-domain, unissued,
+  stale, or lost completion evidence and release only explicitly unsubmitted
+  recordings.
+- [x] Preflight Direct and GPU draw bindings before attachment mutation, retain
+  exact page/descriptor/instance resources through submission, and abort a
+  frame atomically when any planned pass fails. Realized depth/backbuffer state
+  is provisional until the exact graphics submission is confirmed.
+- [x] Restrict the long-lived object descriptor cache to the stable fallback
+  instance buffer. External GPU-culling instance buffers use immutable
+  per-recording descriptors and strong submission ownership, eliminating the
+  DX12 stale-SRV address-reuse failure found by the 1k workload gate.
+- [x] Add deterministic ModelViewer workloads at 100/1k/10k/50k and a
+  fail-closed runner that validates Direct/Tier 1/Tier 2 frame truth, exact
+  resident/lease versions, six-table accounting, lifecycle state, engine logs,
+  raw DX12 InfoQueue output, provenance, and exact P6 pixel parity.
+- [x] Complete the native DX12 gate on NVIDIA GeForce RTX 4070 Ti, driver
+  610.62: Direct 4 frames and GPU 12 frames at every workload, cold Tier 1 then
+  warm Tier 2, eight clean InfoQueues, and zero differing pixel bytes.
+- [x] Finish independent final review with READY and no unresolved P0-P2; pass
+  Material 37/37, Pipeline 137/137, Render Pass 203/203, Render Scene 23/23,
+  GPU Scene 33/33, GPU Scene Upload 20/20, GPU-driven 42/42, and the
+  Architecture.PhaseGates 1/1 primary audit.
+
+The remaining unchecked benchmark item is intentionally not an M3 correctness
+blocker: CPU plan/submission timings were recorded for all workloads, while the
+delayed GPU timer was truthfully unavailable and reported as zero,
+`nonGating=true`, and `usedForAutoDecision=false`. Task 15 owns measured GPU
+timing, thresholds, hysteresis, and any future `Auto` promotion.
+
+Start **Task 12** next: qualify a Vulkan Tier 1 submission strategy from enabled
+device state, with explicit core/KHR count-command selection, fixed-count or
+Direct fallback, synchronization/ownership validation, negative capability
+fixtures, validation-layer evidence, parity, resize, and in-flight lifetime
+gates. Keep Vulkan Candidate until the independent qualification revision is
+reviewed.

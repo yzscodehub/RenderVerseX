@@ -6,24 +6,10 @@
  */
 
 #include "Core/Types.h"
+#include "Render/GPUScene/GPUSceneDiagnostics.h"
 
 namespace RVX
 {
-    /** @brief Why an accepted scene could not be mirrored completely. */
-    enum class GPUScenePublicationFailureReason : uint8
-    {
-        None = 0,
-        RegistryUnavailable,
-        InvalidObject,
-        ResourceUnavailable,
-        ResourceResolutionFailed,
-        DependencyUnavailable,
-        DependencyCycle,
-        DatabaseCommitFailed,
-        AllocationFailed,
-        UnexpectedFailure,
-    };
-
     /**
      * @brief Value-only diagnostics for the most recent shadow publication attempt.
      *
@@ -34,6 +20,8 @@ namespace RVX
      */
     struct GPUScenePublicationStats
     {
+        /** @brief True only for the publication attempt represented by this snapshot. */
+        bool attempted = false;
         /** @brief Sequence observed for this attempted publication. */
         uint64 sourceSequence = 0;
         /** @brief Actual persistent CPU-shadow version, never a candidate version. */
@@ -66,21 +54,6 @@ namespace RVX
 
     static_assert(static_cast<uint8>(GPUScenePublicationFailureReason::None) == 0);
 
-    /** @brief Non-authoritative GPU-scene upload planner failure reason. */
-    enum class GPUSceneUploadFailureReason : uint8
-    {
-        None = 0,
-        NotInitialized,
-        ContinuityLost,
-        BufferCreationFailed,
-        StagingCreationFailed,
-        StagingMapFailed,
-        SubmissionRetentionFailed,
-        InvalidCompletionToken,
-        DeviceLost,
-        UnexpectedFailure,
-    };
-
     /**
      * @brief Value-only diagnostics for the renderer-private GPU-scene uploader.
      *
@@ -94,9 +67,20 @@ namespace RVX
         uint64 safeReclaimVersion = 0;
         uint64 persistentBytes = 0;
         uint64 frameUploadBytes = 0;
+        uint64 cumulativeUploadBytes = 0;
+        uint64 peakFrameUploadBytes = 0;
+        uint64 cumulativeUploadRangeCount = 0;
+        uint64 cpuPayloadBytes = 0;
+        uint64 cpuReservedBytes = 0;
+        uint64 gpuAllocationBytes = 0;
         uint32 bufferSetCount = 0;
+        uint32 peakBufferSetCount = 0;
         uint32 frameUploadRangeCount = 0;
         uint32 pendingSetCount = 0;
+        uint32 inFlightSetCount = 0;
+        uint32 unusableSetCount = 0;
+        std::array<GPUSceneTableDiagnostics,
+                   GPU_SCENE_DIAGNOSTICS_TABLE_COUNT> tables{};
         GPUSceneUploadFailureReason failureReason = GPUSceneUploadFailureReason::None;
         bool fullUpload = false;
         bool continuityLost = false;

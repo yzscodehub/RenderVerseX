@@ -8,8 +8,10 @@
 #include "Render/GPUUploadService.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialBinder.h"
+#include "Resources/FrameConstantUploadArena.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderOwnerSnapshotRetirement.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHICommandContext.h"
 
 #include <algorithm>
@@ -79,7 +81,8 @@ bool MaterialSystem::Initialize(IRHIDevice* device,
     defaultTextures.prefilteredEnvironment = m_defaultBlackCubemapView.Get();
     defaultTextures.brdfLUT = m_defaultBlackTextureView.Get();
 
-    m_defaultMaterialSet = CreateMaterialDescriptorSet(defaultTextures);
+    m_defaultMaterialSet = CreateMaterialDescriptorSet(
+        defaultTextures, m_materialConstantBuffer.Get());
     if (!m_defaultMaterialSet)
     {
         RVX_CORE_ERROR("MaterialSystem: Failed to create default material descriptor set");
@@ -109,6 +112,11 @@ void MaterialSystem::Shutdown()
     m_defaultBlackTexture.Reset();
     m_defaultBlackCubemap.Reset();
     m_materialConstantBuffer.Reset();
+    if (m_materialConstantUploadArena)
+    {
+        m_materialConstantUploadArena->Shutdown();
+        m_materialConstantUploadArena.reset();
+    }
     m_environmentIBL = {};
     m_materialSetLayout = nullptr;
     m_resourceRegistry = nullptr;
@@ -123,6 +131,10 @@ void MaterialSystem::BeginFrame()
     m_materialConstantCursor = 0;
     m_currentMaterialConstantOffset = 0;
     m_lastBindingResult = {};
+    if (m_materialConstantUploadArena)
+    {
+        m_materialConstantUploadArena->PollCompletions();
+    }
 }
 
 void MaterialSystem::RetireOwnerSnapshots(
@@ -131,6 +143,30 @@ void MaterialSystem::RetireOwnerSnapshots(
 {
     FlushRenderOwnerRetirements(
         m_pendingOwnerRetirements, completion, retirement);
+}
+
+void MaterialSystem::SetMaterialConstantSubmissionTracker(
+    RenderSubmissionTracker* tracker) noexcept
+{
+    if (m_materialConstantUploadArena)
+    {
+        m_materialConstantUploadArena->SetSubmissionTracker(tracker);
+    }
+}
+
+bool MaterialSystem::NotifyMaterialConstantSubmission(
+    const GPUCompletionToken& completion) noexcept
+{
+    return !m_materialConstantUploadArena ||
+           m_materialConstantUploadArena->NotifySubmission(completion);
+}
+
+void MaterialSystem::ReleaseUnsubmittedMaterialConstants() noexcept
+{
+    if (m_materialConstantUploadArena)
+    {
+        m_materialConstantUploadArena->ReleaseUnsubmittedFrame();
+    }
 }
 
 void MaterialSystem::QueueMaterialDescriptorCacheRetirement()
@@ -307,8 +343,10 @@ MaterialBindingResult MaterialSystem::PrepareResolvedMaterialBinding(
     source.textureFlags = textures.textureFlags;
     const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(source);
 
-    void* mapped = m_materialConstantBuffer->Map();
-    if (!mapped)
+    FrameConstantUploadAllocation allocation;
+    if (!m_materialConstantUploadArena ||
+        !m_materialConstantUploadArena->Allocate(
+            &constants, sizeof(constants), allocation))
     {
         MaterialBindingResult result;
         result.status = MaterialBindingStatus::Error;
@@ -316,15 +354,14 @@ MaterialBindingResult MaterialSystem::PrepareResolvedMaterialBinding(
         result.fallbackTextureFlags = textures.fallbackTextureFlags;
         result.usedFallback = textures.usedFallback;
         result.materialName = materialName;
-        result.message = "Failed to map material constant buffer";
+        result.message = "Failed to allocate a completion-tracked material constant page";
         return SetLastBindingResult(std::move(result));
     }
 
-    const uint64 offset = AllocateMaterialConstantSlot();
-    std::memcpy(static_cast<uint8*>(mapped) + offset, &constants, sizeof(MaterialGPUConstants));
-    m_materialConstantBuffer->Unmap();
-
-    MaterialSetResolveResult setResult = GetOrCreateMaterialSetForResolved(textures);
+    ResolvedMaterialTextures pageTextures = textures;
+    pageTextures.pageIdentity = allocation.pageIdentity;
+    MaterialSetResolveResult setResult = GetOrCreateMaterialSetForResolved(
+        pageTextures, allocation.buffer);
     if (!setResult.descriptorSet)
     {
         MaterialBindingResult result;
@@ -344,7 +381,9 @@ MaterialBindingResult MaterialSystem::PrepareResolvedMaterialBinding(
     result.status = (textures.usedFallback || setResult.usedFallback) ? MaterialBindingStatus::Fallback
                                                                       : MaterialBindingStatus::Ready;
     result.descriptorSet = setResult.descriptorSet;
-    result.dynamicOffsets = GetCurrentMaterialDynamicOffset();
+    result.constantBuffer = std::move(allocation.buffer);
+    result.descriptorSetRef = std::move(setResult.descriptorSetRef);
+    result.dynamicOffsets = {allocation.dynamicOffset};
     result.constantsUpdated = true;
     result.textureFlags = constants.textureFlags;
     result.fallbackTextureFlags = textures.fallbackTextureFlags;
@@ -474,6 +513,7 @@ size_t MaterialSystem::MaterialDescriptorKeyHash::operator()(const MaterialDescr
     HashCombine(seed, std::hash<RHITextureView*>{}(key.prefilteredEnvironment));
     HashCombine(seed, std::hash<RHITextureView*>{}(key.brdfLUT));
     HashCombine(seed, std::hash<uint64>{}(key.viewGeneration));
+    HashCombine(seed, std::hash<uint64>{}(key.pageIdentity));
     HashCombine(seed, std::hash<bool>{}(key.textureIBLEnabled));
     return seed;
 }
@@ -489,7 +529,22 @@ bool MaterialSystem::CreateConstantBuffer()
     cbDesc.debugName = "MaterialConstantBuffer";
 
     m_materialConstantBuffer = m_device->CreateBuffer(cbDesc);
-    return m_materialConstantBuffer != nullptr;
+    if (!m_materialConstantBuffer)
+    {
+        return false;
+    }
+
+    m_materialConstantUploadArena = std::make_unique<FrameConstantUploadArena>();
+    if (!m_materialConstantUploadArena->Initialize(
+            m_device,
+            m_materialConstantStride,
+            static_cast<uint32>(RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME),
+            "MaterialConstantUpload"))
+    {
+        m_materialConstantUploadArena.reset();
+        return false;
+    }
+    return true;
 }
 
 bool MaterialSystem::CreateDefaultResources()
@@ -741,7 +796,8 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
 }
 
 MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetForResolved(
-    const ResolvedMaterialTextures& textures)
+    const ResolvedMaterialTextures& textures,
+    const RHIBufferRef& constantBuffer)
 {
     MaterialSetResolveResult result;
 
@@ -762,6 +818,7 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
     key.prefilteredEnvironment = textures.prefilteredEnvironment;
     key.brdfLUT = textures.brdfLUT;
     key.viewGeneration = textures.viewGeneration;
+    key.pageIdentity = textures.pageIdentity;
     key.textureIBLEnabled = textures.textureIBLEnabled;
 
     if (m_materialDescriptorCacheGeneration != textures.viewGeneration)
@@ -774,6 +831,7 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
     if (it != m_materialDescriptorCache.end())
     {
         result.descriptorSet = it->second.Get();
+        result.descriptorSetRef = it->second;
         result.usedFallback = textures.usedFallback;
         result.status = textures.usedFallback ? MaterialBindingStatus::Fallback
                                               : MaterialBindingStatus::Ready;
@@ -782,25 +840,20 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
         return result;
     }
 
-    RHIDescriptorSetRef descriptorSet = CreateMaterialDescriptorSet(textures);
+    RHIDescriptorSetRef descriptorSet = CreateMaterialDescriptorSet(
+        textures, constantBuffer.Get());
     if (!descriptorSet)
     {
-        result.usedFallback = true;
-        result.descriptorSet = GetDefaultMaterialSet();
-        if (result.descriptorSet)
-        {
-            result.status = MaterialBindingStatus::Fallback;
-            result.message = "Material descriptor creation failed; default material set used as explicit fallback";
-        }
-        else
-        {
-            result.status = MaterialBindingStatus::Error;
-            result.message = "Material descriptor creation failed and default material set is unavailable";
-        }
+        // A legacy default set is bound to its legacy upload buffer. Pairing
+        // it with this page's dynamic offset would silently read unrelated
+        // constants, so recording fails closed instead of changing buffers.
+        result.status = MaterialBindingStatus::Error;
+        result.message = "Material page descriptor creation failed";
         return result;
     }
 
     result.descriptorSet = descriptorSet.Get();
+    result.descriptorSetRef = descriptorSet;
     result.usedFallback = textures.usedFallback;
     result.status = textures.usedFallback ? MaterialBindingStatus::Fallback
                                           : MaterialBindingStatus::Ready;
@@ -810,9 +863,11 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
     return result;
 }
 
-RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(const ResolvedMaterialTextures& textures)
+RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(
+    const ResolvedMaterialTextures& textures,
+    RHIBuffer* constantBuffer)
 {
-    if (!m_materialSetLayout || !m_materialConstantBuffer || !m_defaultSampler ||
+    if (!m_materialSetLayout || constantBuffer == nullptr || !m_defaultSampler ||
         !textures.baseColor || !textures.normal || !textures.metallicRoughness ||
         !textures.occlusion || !textures.emissive || !textures.irradiance ||
         !textures.prefilteredEnvironment || !textures.brdfLUT)
@@ -823,7 +878,7 @@ RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(const ResolvedMa
     RHIDescriptorSetDesc descSetDesc;
     descSetDesc.layout = m_materialSetLayout;
     descSetDesc.debugName = "MaterialDescriptorSet";
-    descSetDesc.BindBuffer(0, m_materialConstantBuffer.Get(), 0, m_materialConstantStride);
+    descSetDesc.BindBuffer(0, constantBuffer, 0, m_materialConstantStride);
     descSetDesc.BindTexture(1, textures.baseColor);
     descSetDesc.BindTexture(2, textures.normal);
     descSetDesc.BindTexture(3, textures.metallicRoughness);
@@ -851,12 +906,11 @@ uint64 MaterialSystem::AllocateMaterialConstantSlot()
     if (m_materialConstantCursor >= RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME)
     {
         RVX_VERIFY(false,
-                   "MaterialSystem: Material constant buffer exhausted for this frame (max {} material updates). "
-                   "Reusing the final slot to avoid wrapping over earlier material constants.",
+                   "MaterialSystem: legacy material constant buffer exhausted for this frame (max {} material updates). "
+                   "Recording must use completion-tracked material pages.",
                    RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME);
-        const uint64 offset = (RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME - 1) * m_materialConstantStride;
-        m_currentMaterialConstantOffset = offset;
-        return offset;
+        m_currentMaterialConstantOffset = std::numeric_limits<uint64>::max();
+        return m_currentMaterialConstantOffset;
     }
 
     const uint64 offset = m_materialConstantCursor * m_materialConstantStride;

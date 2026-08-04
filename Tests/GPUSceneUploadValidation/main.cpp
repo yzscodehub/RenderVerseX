@@ -1396,4 +1396,61 @@ namespace
                     uploader.GetDiagnostics().failureReason ==
                         GPUSceneUploadFailureReason::DeviceLost);
     }
+
+    TEST(GPUSceneUploadValidation,
+         DiagnosticsReportExactUploadAllocationAndWarmStaticZeroCopy)
+    {
+        FakeDevice device;
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        GPUSceneUploader uploader;
+        ASSERT_TRUE(uploader.Initialize(&device, &tracker));
+        GPUSceneDatabase database;
+        GPUSceneTransaction add;
+        add.Add(MakeObject(41, 1.0F));
+        ASSERT_TRUE(database.Commit(add).Succeeded());
+        uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+        const GPUSceneUploadDiagnostics beforeUpload = uploader.GetDiagnostics();
+        EXPECT_GT(beforeUpload.cpuPayloadBytes, 0U);
+        EXPECT_EQ(beforeUpload.gpuAllocationBytes, 0U);
+        EXPECT_EQ(beforeUpload.frameUploadBytes, 0U);
+
+        FakeCommandContext context;
+        RecordAndExecute(uploader, device, context);
+        const GPUSceneUploadDiagnostics recorded = uploader.GetDiagnostics();
+        EXPECT_GT(recorded.frameUploadBytes, 0U);
+        EXPECT_EQ(recorded.frameUploadBytes, recorded.cumulativeUploadBytes);
+        EXPECT_EQ(recorded.frameUploadBytes, recorded.peakFrameUploadBytes);
+        EXPECT_GT(recorded.gpuAllocationBytes, 0U);
+        EXPECT_EQ(recorded.bufferSetCount, 1U);
+        EXPECT_TRUE(recorded.fullUpload);
+        for (const GPUSceneTableDiagnostics& table : recorded.tables)
+        {
+            EXPECT_GT(table.frameUploadBytes, 0U);
+            EXPECT_TRUE(table.fullUpload);
+        }
+
+        const GPUCompletionPoint submitted = tracker.Submit(&context);
+        GPUCompletionToken token;
+        ASSERT_TRUE(InsertGPUCompletionPoint(token, submitted));
+        uploader.NotifySubmission(token);
+        CompleteToken(device, token);
+        ASSERT_GE(uploader.PollSafeReclaimVersion(), database.GetCommittedVersion());
+
+        RenderGraph warmGraph;
+        warmGraph.SetDevice(&device);
+        uploader.BuildRenderGraph(warmGraph, nullptr);
+        warmGraph.Compile();
+        ASSERT_TRUE(warmGraph.GetCompileStats().compileValid);
+        const GPUSceneUploadDiagnostics warm = uploader.GetDiagnostics();
+        EXPECT_EQ(warm.frameUploadBytes, 0U);
+        EXPECT_EQ(warm.frameUploadRangeCount, 0U);
+        EXPECT_EQ(warm.cumulativeUploadBytes, recorded.cumulativeUploadBytes);
+        EXPECT_GE(warm.peakFrameUploadBytes, recorded.peakFrameUploadBytes);
+        EXPECT_EQ(warm.tables[static_cast<uint32>(GPUSceneDiagnosticsTable::Primitives)].
+                      residentCapacity,
+                  2U);
+        EXPECT_FALSE(warm.executionEligible);
+    }
 } // namespace

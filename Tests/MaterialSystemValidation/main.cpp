@@ -5,6 +5,8 @@
 #include "Render/Material/MaterialClassification.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Material/MaterialTemplate.h"
+#include "Resources/FrameConstantUploadArena.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/ShaderResource.h"
@@ -375,7 +377,10 @@ namespace
                 return 0;
 
             const uint64 value = m_nextFenceValue++;
-            signalFence->Signal(value);
+            if (!deferFenceCompletion)
+            {
+                signalFence->Signal(value);
+            }
             return value;
         }
 
@@ -419,7 +424,7 @@ namespace
         void BeginResourceGroup(const char*) override {}
         void EndResourceGroup() override {}
         const RHICapabilities& GetCapabilities() const override { return capabilities; }
-        RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
+        RHIBackendType GetBackendType() const override { return backendType; }
 
         FakeBuffer* FindBuffer(const std::string& debugName) const
         {
@@ -445,6 +450,8 @@ namespace
         bool failBufferCreation = false;
         bool failDescriptorSetCreation = false;
         bool bufferMapSucceeds = true;
+        bool deferFenceCompletion = false;
+        RHIBackendType backendType = RHIBackendType::DX12;
         RHICommandQueueType lastCommandQueueType = RHICommandQueueType::Graphics;
         FakeCommandContext* lastCommandContext = nullptr;
         FakeBuffer* lastCreatedBuffer = nullptr;
@@ -729,6 +736,303 @@ namespace
         return source;
     }
 
+    TEST(FrameConstantUploadArenaValidation,
+         Slots8191And8192UseDifferentPagesAndPreserveRecordedBytes)
+    {
+        FakeDevice device;
+        FrameConstantUploadArena arena;
+        ASSERT_TRUE(arena.Initialize(&device, 256, 8192, "FrameConstantArenaTest"));
+
+        FrameConstantUploadAllocation slot8191;
+        FrameConstantUploadAllocation slot8192;
+        for (uint32 index = 0; index != 8193; ++index)
+        {
+            const uint32 marker = 0xA0000000u + index;
+            FrameConstantUploadAllocation allocation;
+            ASSERT_TRUE(arena.Allocate(&marker, sizeof(marker), allocation));
+            if (index == 8191)
+            {
+                slot8191 = allocation;
+            }
+            else if (index == 8192)
+            {
+                slot8192 = allocation;
+            }
+        }
+
+        ASSERT_TRUE(slot8191.IsValid());
+        ASSERT_TRUE(slot8192.IsValid());
+        EXPECT_NE(slot8191.pageIdentity, slot8192.pageIdentity);
+        EXPECT_GT(slot8191.dynamicOffset, 0u);
+        EXPECT_EQ(0u, slot8192.dynamicOffset);
+        const auto* firstPage = static_cast<const FakeBuffer*>(slot8191.buffer.Get());
+        ASSERT_NE(nullptr, firstPage);
+        const std::vector<uint8>& firstPageBytes = firstPage->GetStorage();
+        uint32 retainedMarker = 0;
+        std::memcpy(&retainedMarker,
+                    firstPageBytes.data() + slot8191.dynamicOffset,
+                    sizeof(retainedMarker));
+        EXPECT_EQ(0xA0001FFFu, retainedMarker);
+    }
+
+    TEST(FrameConstantUploadArenaValidation,
+         CompletionTrackedPagesRejectUnissuedAndStaleTokensAndReuseOnlyAfterCompletion)
+    {
+        FakeDevice device;
+        device.deferFenceCompletion = true;
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+
+        FrameConstantUploadArena arena;
+        ASSERT_TRUE(arena.Initialize(&device, 256, 2, "FrameConstantArenaCompletion"));
+        arena.SetSubmissionTracker(&tracker);
+        const uint32 value = 1;
+        FrameConstantUploadAllocation first;
+        FrameConstantUploadAllocation firstPeer;
+        ASSERT_TRUE(arena.Allocate(&value, sizeof(value), first));
+        ASSERT_TRUE(arena.Allocate(&value, sizeof(value), firstPeer));
+        EXPECT_EQ(first.pageIdentity, firstPeer.pageIdentity);
+        EXPECT_NE(first.dynamicOffset, firstPeer.dynamicOffset);
+
+        FakeCommandContext submittedContext;
+        const GPUCompletionPoint firstSubmission = tracker.Submit(&submittedContext);
+        ASSERT_EQ(GPUQueueDomain::Graphics, firstSubmission.domain);
+        ASSERT_NE(0u, firstSubmission.value);
+        GPUCompletionToken completion;
+        ASSERT_TRUE(InsertGPUCompletionPoint(completion, firstSubmission));
+        ASSERT_TRUE(arena.NotifySubmission(completion));
+
+        FrameConstantUploadAllocation pending;
+        ASSERT_TRUE(arena.Allocate(&value, sizeof(value), pending));
+        EXPECT_NE(first.pageIdentity, pending.pageIdentity)
+            << "pending completion must not reuse the submitted page";
+
+        ASSERT_FALSE(device.retainedFences.empty());
+        static_cast<FakeFence*>(device.retainedFences.front().Get())->Signal(
+            firstSubmission.value);
+        arena.PollCompletions();
+        FrameConstantUploadAllocation completed;
+        ASSERT_TRUE(arena.Allocate(&value, sizeof(value), completed));
+        EXPECT_EQ(first.pageIdentity, completed.pageIdentity);
+        EXPECT_EQ(0u, completed.dynamicOffset);
+
+        FrameConstantUploadArena rollbackArena;
+        ASSERT_TRUE(rollbackArena.Initialize(&device, 256, 2, "FrameConstantArenaRollback"));
+        rollbackArena.SetSubmissionTracker(&tracker);
+        FrameConstantUploadAllocation rejected;
+        FrameConstantUploadAllocation rejectedPeer;
+        ASSERT_TRUE(rollbackArena.Allocate(&value, sizeof(value), rejected));
+        ASSERT_TRUE(rollbackArena.Allocate(&value, sizeof(value), rejectedPeer));
+        EXPECT_EQ(rejected.pageIdentity, rejectedPeer.pageIdentity);
+        rollbackArena.ReleaseUnsubmittedFrame();
+        FrameConstantUploadAllocation retry;
+        ASSERT_TRUE(rollbackArena.Allocate(&value, sizeof(value), retry));
+        EXPECT_EQ(rejected.pageIdentity, retry.pageIdentity);
+        EXPECT_EQ(0u, retry.dynamicOffset);
+
+        FrameConstantUploadArena missingTrackerArena;
+        ASSERT_TRUE(missingTrackerArena.Initialize(
+            &device, 256, 2, "FrameConstantArenaMissingTracker"));
+        FrameConstantUploadAllocation missingTracker;
+        ASSERT_TRUE(missingTrackerArena.Allocate(
+            &value, sizeof(value), missingTracker));
+        EXPECT_FALSE(missingTrackerArena.NotifySubmission(completion));
+        EXPECT_EQ(1u, missingTrackerArena.GetUnusablePageCount());
+
+        FrameConstantUploadArena unissuedArena;
+        ASSERT_TRUE(unissuedArena.Initialize(&device, 256, 2, "FrameConstantArenaUnissued"));
+        unissuedArena.SetSubmissionTracker(&tracker);
+        FrameConstantUploadAllocation unissued;
+        ASSERT_TRUE(unissuedArena.Allocate(&value, sizeof(value), unissued));
+        GPUCompletionToken unissuedCompletion;
+        ASSERT_TRUE(InsertGPUCompletionPoint(
+            unissuedCompletion,
+            {GPUQueueDomain::Graphics, firstSubmission.value + 1u}));
+        EXPECT_FALSE(unissuedArena.NotifySubmission(unissuedCompletion));
+        EXPECT_EQ(1u, unissuedArena.GetUnusablePageCount());
+        FrameConstantUploadAllocation afterInvalid;
+        ASSERT_TRUE(unissuedArena.Allocate(&value, sizeof(value), afterInvalid));
+        EXPECT_NE(unissued.pageIdentity, afterInvalid.pageIdentity);
+
+        const GPUCompletionPoint secondSubmission = tracker.Submit(&submittedContext);
+        ASSERT_EQ(GPUQueueDomain::Graphics, secondSubmission.domain);
+        ASSERT_GT(secondSubmission.value, firstSubmission.value);
+        FrameConstantUploadArena staleArena;
+        ASSERT_TRUE(staleArena.Initialize(&device, 256, 2, "FrameConstantArenaStale"));
+        staleArena.SetSubmissionTracker(&tracker);
+        FrameConstantUploadAllocation stale;
+        ASSERT_TRUE(staleArena.Allocate(&value, sizeof(value), stale));
+        EXPECT_FALSE(staleArena.NotifySubmission(completion));
+        EXPECT_EQ(1u, staleArena.GetUnusablePageCount());
+        FrameConstantUploadAllocation afterStale;
+        ASSERT_TRUE(staleArena.Allocate(&value, sizeof(value), afterStale));
+        EXPECT_NE(stale.pageIdentity, afterStale.pageIdentity);
+
+        FakeCommandContext computeContext(RHICommandQueueType::Compute);
+        const GPUCompletionPoint computeSubmission = tracker.Submit(&computeContext);
+        ASSERT_EQ(GPUQueueDomain::Compute, computeSubmission.domain);
+        ASSERT_NE(0u, computeSubmission.value);
+        FrameConstantUploadArena extraDomainArena;
+        ASSERT_TRUE(extraDomainArena.Initialize(
+            &device, 256, 2, "FrameConstantArenaExtraDomain"));
+        extraDomainArena.SetSubmissionTracker(&tracker);
+        FrameConstantUploadAllocation extraDomain;
+        ASSERT_TRUE(extraDomainArena.Allocate(&value, sizeof(value), extraDomain));
+        GPUCompletionToken extraDomainCompletion;
+        ASSERT_TRUE(InsertGPUCompletionPoint(
+            extraDomainCompletion, secondSubmission));
+        ASSERT_TRUE(InsertGPUCompletionPoint(
+            extraDomainCompletion, computeSubmission));
+        EXPECT_FALSE(extraDomainArena.NotifySubmission(extraDomainCompletion));
+        EXPECT_EQ(1u, extraDomainArena.GetUnusablePageCount());
+
+        FakeDevice lostBeforeNotifyDevice;
+        lostBeforeNotifyDevice.deferFenceCompletion = true;
+        RenderSubmissionTracker lostBeforeNotifyTracker;
+        ASSERT_TRUE(lostBeforeNotifyTracker.Initialize(&lostBeforeNotifyDevice));
+        const GPUCompletionPoint lostBeforeNotifySubmission =
+            lostBeforeNotifyTracker.Submit(&submittedContext);
+        ASSERT_EQ(GPUQueueDomain::Graphics, lostBeforeNotifySubmission.domain);
+        ASSERT_NE(0u, lostBeforeNotifySubmission.value);
+        FrameConstantUploadArena lostBeforeNotifyArena;
+        ASSERT_TRUE(lostBeforeNotifyArena.Initialize(
+            &lostBeforeNotifyDevice, 256, 2, "FrameConstantArenaLostBeforeNotify"));
+        lostBeforeNotifyArena.SetSubmissionTracker(&lostBeforeNotifyTracker);
+        FrameConstantUploadAllocation lostBeforeNotify;
+        ASSERT_TRUE(lostBeforeNotifyArena.Allocate(
+            &value, sizeof(value), lostBeforeNotify));
+        GPUCompletionToken lostBeforeNotifyCompletion;
+        ASSERT_TRUE(InsertGPUCompletionPoint(
+            lostBeforeNotifyCompletion, lostBeforeNotifySubmission));
+        lostBeforeNotifyTracker.MarkDeviceLost();
+        EXPECT_FALSE(lostBeforeNotifyArena.NotifySubmission(
+            lostBeforeNotifyCompletion));
+        EXPECT_EQ(1u, lostBeforeNotifyArena.GetUnusablePageCount());
+
+        FrameConstantUploadArena lostArena;
+        ASSERT_TRUE(lostArena.Initialize(&device, 256, 2, "FrameConstantArenaLost"));
+        lostArena.SetSubmissionTracker(&tracker);
+        FrameConstantUploadAllocation lost;
+        ASSERT_TRUE(lostArena.Allocate(&value, sizeof(value), lost));
+        GPUCompletionToken currentCompletion;
+        ASSERT_TRUE(InsertGPUCompletionPoint(currentCompletion, secondSubmission));
+        ASSERT_TRUE(lostArena.NotifySubmission(currentCompletion));
+        tracker.MarkDeviceLost();
+        lostArena.PollCompletions();
+        FrameConstantUploadAllocation afterLost;
+        ASSERT_TRUE(lostArena.Allocate(&value, sizeof(value), afterLost));
+        EXPECT_NE(lost.pageIdentity, afterLost.pageIdentity);
+        EXPECT_EQ(1u, lostArena.GetUnusablePageCount());
+    }
+
+    TEST(FrameConstantUploadArenaValidation,
+         CompatibilityWaitIdleCompletionEvidenceRemainsUsable)
+    {
+        FakeDevice device;
+        device.backendType = RHIBackendType::DX11;
+        device.capabilities.backendType = RHIBackendType::DX11;
+        device.capabilities.supportsAsyncCompute = false;
+        device.capabilities.emulatesQueueFences = true;
+        device.capabilities.queueTopology.completionMode =
+            RHIQueueCompletionMode::CompatibilityWaitIdle;
+        device.capabilities.queueTopology.logicalQueueDomains = {
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics};
+        device.capabilities.queueTopology.activeDomainCount = 1;
+
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        FrameConstantUploadArena arena;
+        ASSERT_TRUE(arena.Initialize(
+            &device, 256, 2, "FrameConstantArenaCompatibility"));
+        arena.SetSubmissionTracker(&tracker);
+        const uint32 value = 1;
+        FrameConstantUploadAllocation first;
+        ASSERT_TRUE(arena.Allocate(&value, sizeof(value), first));
+
+        FakeCommandContext submittedContext;
+        const GPUCompletionPoint submission = tracker.Submit(&submittedContext);
+        ASSERT_EQ(GPUQueueDomain::Graphics, submission.domain);
+        ASSERT_NE(0u, submission.value);
+        GPUCompletionToken completion;
+        ASSERT_TRUE(InsertGPUCompletionPoint(completion, submission));
+        ASSERT_EQ(GPUCompletionStatus::CompatibilityWaitIdle,
+                  tracker.Wait(completion));
+        ASSERT_TRUE(arena.NotifySubmission(completion));
+        arena.PollCompletions();
+
+        FrameConstantUploadAllocation reused;
+        ASSERT_TRUE(arena.Allocate(&value, sizeof(value), reused));
+        EXPECT_EQ(first.pageIdentity, reused.pageIdentity);
+        EXPECT_EQ(0u, reused.dynamicOffset);
+    }
+
+    TEST(FrameConstantUploadArenaValidation, BufferAndMapFailuresAreFailClosed)
+    {
+        const uint32 value = 1;
+        {
+            FakeDevice device;
+            device.failBufferCreation = true;
+            FrameConstantUploadArena arena;
+            ASSERT_TRUE(arena.Initialize(&device, 256, 2, "FrameConstantArenaCreateFail"));
+            FrameConstantUploadAllocation allocation;
+            EXPECT_FALSE(arena.Allocate(&value, sizeof(value), allocation));
+            EXPECT_FALSE(allocation.IsValid());
+        }
+        {
+            FakeDevice device;
+            device.bufferMapSucceeds = false;
+            FrameConstantUploadArena arena;
+            ASSERT_TRUE(arena.Initialize(&device, 256, 2, "FrameConstantArenaMapFail"));
+            FrameConstantUploadAllocation allocation;
+            EXPECT_FALSE(arena.Allocate(&value, sizeof(value), allocation));
+            EXPECT_FALSE(allocation.IsValid());
+        }
+    }
+
+    TEST(MaterialSystemValidation,
+         PagedMaterialConstantsStartThe8193rdUpdateAtANewPageOffsetZero)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        MaterialBindingResult slot8191;
+        MaterialBindingResult slot8192;
+        for (uint32 index = 0; index != 8193; ++index)
+        {
+            MaterialBindingResult binding = materialSystem.PrepareMaterialBinding({}, nullptr);
+            ASSERT_TRUE(binding.IsDrawable());
+            ASSERT_TRUE(binding.constantBuffer);
+            ASSERT_TRUE(binding.descriptorSetRef);
+            if (index == 8191)
+            {
+                slot8191 = std::move(binding);
+            }
+            else if (index == 8192)
+            {
+                slot8192 = std::move(binding);
+            }
+        }
+
+        ASSERT_TRUE(slot8191.constantBuffer);
+        ASSERT_TRUE(slot8192.constantBuffer);
+        EXPECT_GT(slot8191.dynamicOffsets[0], 0u);
+        EXPECT_EQ(0u, slot8192.dynamicOffsets[0]);
+        EXPECT_NE(slot8191.constantBuffer.Get(), slot8192.constantBuffer.Get());
+        const RHIDescriptorBinding* pageBinding = FindBinding(slot8192.descriptorSet, 0);
+        ASSERT_NE(nullptr, pageBinding);
+        EXPECT_EQ(slot8192.constantBuffer.Get(), pageBinding->buffer);
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
+    }
+
     TEST(MaterialSystemValidation, ClassifiesMaterialAlphaModes)
     {
         auto opaque = std::make_shared<Material>();
@@ -1004,14 +1308,14 @@ namespace
         EXPECT_FALSE(result.IsDrawable());
         EXPECT_FALSE(result.constantsUpdated);
         EXPECT_TRUE(result.usedFallback);
-        EXPECT_TRUE(Contains(result.message, "map material constant buffer"));
+        EXPECT_TRUE(Contains(result.message, "completion-tracked material constant page"));
         EXPECT_EQ(MaterialBindingStatus::Error, materialSystem.GetLastBindingResult().status);
 
         materialSystem.Shutdown();
         gpuResources.Shutdown();
     }
 
-    TEST(MaterialSystemValidation, MaterialBindingDescriptorFailureUsesExplicitDefaultFallback)
+    TEST(MaterialSystemValidation, MaterialBindingDescriptorFailureFailsClosedForPagedOffset)
     {
         FakeDevice device;
         RenderRuntimeTestHarness gpuResources;
@@ -1024,12 +1328,12 @@ namespace
         device.failDescriptorSetCreation = true;
         const MaterialBindingResult result = materialSystem.PrepareMaterialBinding({}, nullptr);
 
-        EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
-        EXPECT_TRUE(result.IsDrawable());
+        EXPECT_EQ(MaterialBindingStatus::Error, result.status);
+        EXPECT_FALSE(result.IsDrawable());
         EXPECT_TRUE(result.constantsUpdated);
         EXPECT_TRUE(result.usedFallback);
-        EXPECT_EQ(materialSystem.GetDefaultMaterialSet(), result.descriptorSet);
-        EXPECT_TRUE(Contains(result.message, "default material set"));
+        EXPECT_EQ(nullptr, result.descriptorSet);
+        EXPECT_TRUE(Contains(result.message, "page descriptor creation failed"));
 
         materialSystem.Shutdown();
         gpuResources.Shutdown();
@@ -1173,9 +1477,9 @@ namespace
         EXPECT_EQ(0u, result.textureFlags & normalFlag);
         EXPECT_EQ(normalFlag, result.fallbackTextureFlags & normalFlag);
         EXPECT_TRUE(Contains(result.message, "normal map disabled"));
-        FakeBuffer* materialConstants = device.FindBuffer("MaterialConstantBuffer");
-        ASSERT_NE(materialConstants, nullptr);
-        const MaterialGPUConstants constants = ReadMaterialConstants(*materialConstants);
+        ASSERT_NE(result.constantBuffer, nullptr);
+        const MaterialGPUConstants constants =
+            ReadMaterialConstants(*static_cast<FakeBuffer*>(result.constantBuffer.Get()));
         EXPECT_EQ(0u, constants.textureFlags & normalFlag);
 
         materialSystem.Shutdown();
@@ -1482,9 +1786,9 @@ namespace
                   metallicRoughnessBinding->textureView->GetTexture());
         EXPECT_EQ(RHIFormat::BC3_UNORM, metallicRoughnessBinding->textureView->GetFormat());
 
-        FakeBuffer* materialConstants = device.FindBuffer("MaterialConstantBuffer");
-        ASSERT_NE(materialConstants, nullptr);
-        const MaterialGPUConstants constants = ReadMaterialConstants(*materialConstants);
+        ASSERT_NE(result.constantBuffer, nullptr);
+        const MaterialGPUConstants constants =
+            ReadMaterialConstants(*static_cast<FakeBuffer*>(result.constantBuffer.Get()));
         EXPECT_EQ(expectedFlags, constants.textureFlags);
 
         materialSystem.Shutdown();

@@ -14,6 +14,7 @@
 
 #include <array>
 #include <limits>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -21,7 +22,9 @@
 namespace RVX
 {
     class RenderRetirementQueue;
+    class FrameConstantUploadArena;
     class RenderResourceRegistry;
+    class RenderSubmissionTracker;
     class ResourceViewCache;
     class RHICommandContext;
     struct GPUCompletionToken;
@@ -40,6 +43,9 @@ namespace RVX
     {
         MaterialBindingStatus status = MaterialBindingStatus::None;
         RHIDescriptorSet* descriptorSet = nullptr;
+        // Keep the exact page resources alive through planned-draw ownership.
+        RHIBufferRef constantBuffer;
+        RHIDescriptorSetRef descriptorSetRef;
         std::array<uint32, 1> dynamicOffsets = {0};
         uint32 textureFlags = 0;
         uint32 fallbackTextureFlags = 0;
@@ -120,6 +126,9 @@ namespace RVX
         /** @brief Transfer descriptor replacements using the prior-submit snapshot. */
         void RetireOwnerSnapshots(const GPUCompletionToken& completion,
                                   RenderRetirementQueue& retirement);
+        void SetMaterialConstantSubmissionTracker(RenderSubmissionTracker* tracker) noexcept;
+        [[nodiscard]] bool NotifyMaterialConstantSubmission(const GPUCompletionToken& completion) noexcept;
+        void ReleaseUnsubmittedMaterialConstants() noexcept;
 
         // =====================================================================
         // Material Binding Data
@@ -196,6 +205,7 @@ namespace RVX
             uint32 textureFlags = 0;
             uint32 fallbackTextureFlags = 0;
             uint64 viewGeneration = 0;
+            uint64 pageIdentity = 0;
             bool textureIBLEnabled = false;
             bool usedFallback = false;
             bool normalMapDisabled = false;
@@ -212,6 +222,7 @@ namespace RVX
             RHITextureView* prefilteredEnvironment = nullptr;
             RHITextureView* brdfLUT = nullptr;
             uint64 viewGeneration = 0;
+            uint64 pageIdentity = 0;
             bool textureIBLEnabled = false;
 
             bool operator==(const MaterialDescriptorKey& other) const
@@ -225,6 +236,7 @@ namespace RVX
                        prefilteredEnvironment == other.prefilteredEnvironment &&
                        brdfLUT == other.brdfLUT &&
                        viewGeneration == other.viewGeneration &&
+                       pageIdentity == other.pageIdentity &&
                        textureIBLEnabled == other.textureIBLEnabled;
             }
         };
@@ -237,6 +249,7 @@ namespace RVX
         struct MaterialSetResolveResult
         {
             RHIDescriptorSet* descriptorSet = nullptr;
+            RHIDescriptorSetRef descriptorSetRef;
             bool usedFallback = false;
             MaterialBindingStatus status = MaterialBindingStatus::None;
             std::string message;
@@ -251,8 +264,12 @@ namespace RVX
             MaterialSourceData source,
             const ResolvedMaterialTextures& textures,
             std::string materialName);
-        MaterialSetResolveResult GetOrCreateMaterialSetForResolved(const ResolvedMaterialTextures& textures);
-        RHIDescriptorSetRef CreateMaterialDescriptorSet(const ResolvedMaterialTextures& textures);
+        MaterialSetResolveResult GetOrCreateMaterialSetForResolved(
+            const ResolvedMaterialTextures& textures,
+            const RHIBufferRef& constantBuffer);
+        RHIDescriptorSetRef CreateMaterialDescriptorSet(
+            const ResolvedMaterialTextures& textures,
+            RHIBuffer* constantBuffer);
         const MaterialBindingResult& SetLastBindingResult(MaterialBindingResult result);
         uint64 AllocateMaterialConstantSlot();
 
@@ -262,6 +279,7 @@ namespace RVX
         bool m_initialized = false;
 
         RHIBufferRef m_materialConstantBuffer;
+        std::unique_ptr<FrameConstantUploadArena> m_materialConstantUploadArena;
         uint64 m_materialConstantStride = 0;
         uint64 m_materialConstantCursor = 0;
         uint64 m_currentMaterialConstantOffset = 0;

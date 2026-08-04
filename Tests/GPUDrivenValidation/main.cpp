@@ -2711,7 +2711,7 @@ TEST_F(GPUDrivenValidationFixture,
         "RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()");
     const size_t rendererRenderCall = source.find("Render();", acceptedRendererFrame);
     const size_t rendererFailureReturn = source.find(
-        "if (!m_frameDiagnostics.rendered ||", rendererRenderCall);
+        "if (HasSubmissionFailure())", rendererRenderCall);
     const size_t cullingRetain = source.find(
         "m_depthGPUCulling->RetainSubmissionResources", rendererRenderCall);
     ASSERT_NE(std::string::npos, acceptedRendererFrame);

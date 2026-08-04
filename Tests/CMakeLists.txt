@@ -810,6 +810,7 @@ rvx_add_gtest(
     INCLUDES
         ${CMAKE_SOURCE_DIR}/Tests
         ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private
         ${CMAKE_SOURCE_DIR}/RHI/Include
     LABELS unit
     TIMEOUT 120
@@ -2585,6 +2586,23 @@ if(RVX_ENABLE_DX12 AND TARGET ModelViewer)
             )
             set_tests_properties(DX12GPUSceneTier2Candidate PROPERTIES
                 LABELS "nightly;native;gpu;gpu-driven;tier2;candidate;gbv;parity;resize"
+                TIMEOUT 600
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            )
+
+            add_test(
+                NAME DX12GPUSceneM3EvidenceSmoke
+                COMMAND ${RVX_D4C_POWERSHELL_EXECUTABLE}
+                    -NoProfile
+                    -ExecutionPolicy Bypass
+                    -File "${CMAKE_SOURCE_DIR}/Scripts/run_m3_gpu_scene_exit.ps1"
+                    -ModelViewer "$<TARGET_FILE:ModelViewer>"
+                    -Model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/R7Triangle.gltf"
+                    -OutputDirectory "${CMAKE_BINARY_DIR}/M3Exit/$<CONFIG>/Task11E"
+                    -Workloads 100
+            )
+            set_tests_properties(DX12GPUSceneM3EvidenceSmoke PROPERTIES
+                LABELS "nightly;native;gpu;gpu-driven;diagnostics;m3;non-gating"
                 TIMEOUT 600
                 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
             )

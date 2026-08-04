@@ -99,6 +99,7 @@ target_sources(RVX_Render PRIVATE
     Private/Policy/RenderPolicyResolver.cpp
     # Submission
     Private/Submission/RenderSubmissionStrategy.cpp
+    Private/Resources/FrameConstantUploadArena.cpp
     # Diagnostics
     Private/Diagnostics/RenderFeatureReport.cpp
     Private/Diagnostics/RenderToolArtifacts.cpp

@@ -211,11 +211,16 @@ struct DepthPrepass::PlannedDepthDraw
     SubmeshGPUInfo submesh;
     RHIPipeline* pipeline = nullptr;
     RHIDescriptorSet* frameSet = nullptr;
-    RHIDescriptorSet* objectSet = nullptr;
-    std::array<uint32, 1> objectDynamicOffsets{};
+    ObjectConstantBinding objectBinding;
     MaterialBindingResult materialBinding;
     bool masked = false;
     bool skinned = false;
+};
+
+struct DepthPrepass::PlannedGPUDrivenDepthDraw
+{
+    uint32 groupIndex = 0;
+    MeshGPUBuffers buffers;
 };
 
 DepthPrepass::DepthPrepass()
@@ -540,7 +545,10 @@ bool DepthPrepass::AreGPUDrivenDepthGroupsDrawable(
 }
 
 bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
-                                            const ViewData& view,
+                                            RHIDescriptorSet* frameSet,
+                                            const ObjectConstantBinding* tier1ObjectBinding,
+                                            RHIPipeline* pipeline,
+                                            std::span<const PlannedGPUDrivenDepthDraw> plannedBatches,
                                             uint32 expectedPacketCount,
                                             uint32 expectedGroupCount)
 {
@@ -560,37 +568,29 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         return false;
     }
 
-    uint32 drawItemCount = 0;
-    if (!AreGPUDrivenDepthGroupsDrawable(expectedPacketCount,
-                                         expectedGroupCount,
-                                         drawItemCount))
+    const auto& groups = m_gpuCulling->GetDrawGroups();
+    if ((expectedGroupCount != 0 && groups.size() != expectedGroupCount) ||
+        plannedBatches.size() != groups.size() ||
+        (expectedPacketCount != 0 &&
+         m_gpuCulling->GetInstanceCount() != expectedPacketCount))
     {
         return false;
     }
     m_drawStats.gpuDrivenEligible = true;
 
-    RHIPipeline* pipeline = usesGPUSceneRaster
-        ? m_gpuSceneRasterBinding->depthPipeline.Get()
-        : m_pipelineCache->GetGPUDrivenDepthOnlyPipeline();
     if (!pipeline)
     {
         return false;
     }
 
     if (!usesGPUSceneRaster &&
-        (!m_pipelineCache->UpdateObjectConstants(Mat4Identity(),
-                                                  Mat4Identity(),
-                                                  Mat4Identity(),
-                                                  view.previousViewProjectionMatrix,
-                                                  false) ||
-         !m_pipelineCache->UpdateObjectInstanceBuffer(m_gpuCulling->GetInstanceBuffer())))
+        (tier1ObjectBinding == nullptr || !tier1ObjectBinding->IsValid()))
     {
         return false;
     }
 
     ctx.SetPipeline(pipeline);
 
-    RHIDescriptorSet* const frameSet = m_pipelineCache->GetFrameDescriptorSet();
     if (usesGPUSceneRaster && !frameSet)
     {
         return false;
@@ -607,44 +607,32 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                              m_gpuSceneRasterBinding->objectDescriptorSet.Get(),
                              gpuSceneObjectOffsets);
     }
-    else if (RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet())
+    else if (tier1ObjectBinding != nullptr)
     {
-        const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
-        ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
+        ctx.SetDescriptorSet(1,
+                             tier1ObjectBinding->descriptorSet.Get(),
+                             tier1ObjectBinding->dynamicOffsets);
     }
 
-    const auto& groups = m_gpuCulling->GetDrawGroups();
     m_drawStats.gpuDrivenIndirectExecutedDrawCountAvailable =
         m_gpuCulling->WasCpuFallbackUsedLastCull();
     bool submittedAnyGroup = false;
-    for (uint32 groupIndex = 0; groupIndex < static_cast<uint32>(groups.size()); ++groupIndex)
+    for (const PlannedGPUDrivenDepthDraw& batch : plannedBatches)
     {
-        const GPUCullingDrawGroup& group = groups[groupIndex];
-        MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-            m_resourceRegistry, group.mesh);
-        if (!buffers.IsValid())
-        {
-            return false;
-        }
-        if (usesGPUSceneRaster &&
-            group.pipelineVariant != MaterialPipelineVariant::Opaque)
-        {
-            return false;
-        }
-        ctx.SetVertexBuffer(0, buffers.positionBuffer);
+        ctx.SetVertexBuffer(0, batch.buffers.positionBuffer);
         ctx.SetVertexBuffer(6, m_gpuCulling->GetInstanceIndexBuffer());
-        if (buffers.boneIndicesBuffer)
+        if (batch.buffers.boneIndicesBuffer)
         {
-            ctx.SetVertexBuffer(4, buffers.boneIndicesBuffer);
+            ctx.SetVertexBuffer(4, batch.buffers.boneIndicesBuffer);
         }
-        if (buffers.boneWeightsBuffer)
+        if (batch.buffers.boneWeightsBuffer)
         {
-            ctx.SetVertexBuffer(5, buffers.boneWeightsBuffer);
+            ctx.SetVertexBuffer(5, batch.buffers.boneWeightsBuffer);
         }
-        ctx.SetIndexBuffer(buffers.indexBuffer, RHIFormat::R32_UINT);
+        ctx.SetIndexBuffer(batch.buffers.indexBuffer, RHIFormat::R32_UINT);
 
         const GPUCullingIndexedIndirectSubmission cullingSubmission =
-            m_gpuCulling->BuildIndexedIndirectGroupSubmission(groupIndex);
+            m_gpuCulling->BuildIndexedIndirectGroupSubmission(batch.groupIndex);
         RenderSubmissionRequest request;
         request.kind = RenderSubmissionKind::IndexedIndirect;
         request.indexedIndirect = cullingSubmission.execution;
@@ -853,6 +841,17 @@ bool DepthPrepass::BuildPlannedDirectBatch(
                 outPlannedDraws.clear();
                 return false;
             }
+            if (!RetainRenderSubmissionResource(
+                    view.submissionResourceBatch,
+                    Ref<RefCounted>(materialBinding.constantBuffer)) ||
+                !RetainRenderSubmissionResource(
+                    view.submissionResourceBatch,
+                    Ref<RefCounted>(materialBinding.descriptorSetRef)))
+            {
+                m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
+                outPlannedDraws.clear();
+                return false;
+            }
         }
 
         PlannedDepthDraw planned;
@@ -862,17 +861,16 @@ bool DepthPrepass::BuildPlannedDirectBatch(
         planned.submesh = submesh;
         planned.pipeline = pipeline;
         planned.frameSet = m_pipelineCache->GetFrameDescriptorSet();
-        planned.objectSet = m_pipelineCache->GetObjectDescriptorSet();
         planned.materialBinding = std::move(materialBinding);
         planned.masked = masked;
         planned.skinned = skinned;
-        if (planned.frameSet == nullptr || planned.objectSet == nullptr)
+        if (planned.frameSet == nullptr)
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
             outPlannedDraws.clear();
             return false;
         }
-        if (!m_pipelineCache->UpdateObjectConstants(
+        if (!m_pipelineCache->CreateObjectConstantBinding(
                 planned.object.worldMatrix,
                 planned.object.normalMatrix,
                 planned.object.previousWorldMatrix,
@@ -880,14 +878,25 @@ bool DepthPrepass::BuildPlannedDirectBatch(
                 planned.object.previousWorldMatrixValid != 0 &&
                     view.previousViewProjectionValid != 0 &&
                     !view.resetTemporalHistory,
-                ResolveSkinningMatrices(planned.object, planned.buffers)))
+                true,
+                ResolveSkinningMatrices(planned.object, planned.buffers),
+                nullptr,
+                planned.objectBinding) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(planned.objectBinding.constantBuffer)) ||
+            (planned.objectBinding.instanceBuffer &&
+             !RetainRenderSubmissionResource(
+                 view.submissionResourceBatch,
+                 Ref<RefCounted>(planned.objectBinding.instanceBuffer))) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(planned.objectBinding.descriptorSet)))
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
             outPlannedDraws.clear();
             return false;
         }
-        planned.objectDynamicOffsets =
-            m_pipelineCache->GetCurrentObjectDynamicOffset();
         outPlannedDraws.push_back(std::move(planned));
     }
 
@@ -903,7 +912,9 @@ bool DepthPrepass::TryDrawPlannedDirect(
     {
         ctx.SetPipeline(planned.pipeline);
         ctx.SetDescriptorSet(0, planned.frameSet);
-        ctx.SetDescriptorSet(1, planned.objectSet, planned.objectDynamicOffsets);
+        ctx.SetDescriptorSet(1,
+                             planned.objectBinding.descriptorSet.Get(),
+                             planned.objectBinding.dynamicOffsets);
         ctx.SetVertexBuffer(0, planned.buffers.positionBuffer);
         if (planned.masked)
         {
@@ -1121,6 +1132,104 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
             return;
         }
 
+        ObjectConstantBinding tier1ObjectBinding;
+        RHIPipeline* gpuPipeline = nullptr;
+        RHIDescriptorSetRef gpuFrameDescriptorSet;
+        std::vector<PlannedGPUDrivenDepthDraw> plannedGPUBatches;
+        bool gpuPreflightReady = plannedGPU;
+        if (plannedGPU)
+        {
+            const bool usesGPUSceneRaster = m_gpuSceneRasterEnabled;
+            uint32 gpuDrawItemCount = 0;
+            if (!m_gpuCulling || !m_pipelineCache ||
+                (!usesGPUSceneRaster && !m_gpuCulling->GetInstanceBuffer()) ||
+                !m_gpuCulling->GetInstanceIndexBuffer() ||
+                !AreGPUDrivenDepthGroupsDrawable(
+                    plannedGPUCount,
+                    depthPlan->partition.drawGroupCount,
+                    gpuDrawItemCount) ||
+                (!usesGPUSceneRaster &&
+                 m_pipelineCache->GetGPUDrivenDepthOnlyPipeline() == nullptr) ||
+                 (usesGPUSceneRaster &&
+                  (!m_gpuSceneRasterBinding ||
+                   !m_gpuSceneRasterBinding->IsReadyForBinding() ||
+                   !m_gpuSceneRasterBinding->depthPipeline)))
+            {
+                gpuPreflightReady = false;
+            }
+            if (gpuPreflightReady)
+            {
+                gpuPipeline = usesGPUSceneRaster
+                    ? m_gpuSceneRasterBinding->depthPipeline.Get()
+                    : m_pipelineCache->GetGPUDrivenDepthOnlyPipeline();
+                gpuFrameDescriptorSet = m_pipelineCache->GetFrameDescriptorSetSnapshot();
+                const auto& groups = m_gpuCulling->GetDrawGroups();
+                plannedGPUBatches.reserve(groups.size());
+                for (uint32 groupIndex = 0;
+                     groupIndex < static_cast<uint32>(groups.size());
+                     ++groupIndex)
+                {
+                    const GPUCullingDrawGroup& group = groups[groupIndex];
+                    const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                        m_resourceRegistry, group.mesh);
+                    if (!buffers.IsValid() ||
+                        (usesGPUSceneRaster &&
+                         group.pipelineVariant != MaterialPipelineVariant::Opaque))
+                    {
+                        gpuPreflightReady = false;
+                        break;
+                    }
+                    PlannedGPUDrivenDepthDraw planned;
+                    planned.groupIndex = groupIndex;
+                    planned.buffers = buffers;
+                    plannedGPUBatches.emplace_back(std::move(planned));
+                }
+            }
+            if (gpuPreflightReady &&
+                (gpuPipeline == nullptr || !gpuFrameDescriptorSet ||
+                !RetainRenderSubmissionResource(
+                    view.submissionResourceBatch,
+                    Ref<RefCounted>(gpuFrameDescriptorSet))))
+            {
+                gpuPreflightReady = false;
+            }
+            if (gpuPreflightReady && !usesGPUSceneRaster &&
+                (!m_pipelineCache->CreateObjectConstantBinding(
+                     Mat4Identity(),
+                     Mat4Identity(),
+                     Mat4Identity(),
+                     view.previousViewProjectionMatrix,
+                     false,
+                     true,
+                     {},
+                     m_gpuCulling->GetInstanceBuffer(),
+                     tier1ObjectBinding) ||
+                 !RetainRenderSubmissionResource(
+                     view.submissionResourceBatch,
+                     Ref<RefCounted>(tier1ObjectBinding.constantBuffer)) ||
+                 (tier1ObjectBinding.instanceBuffer &&
+                  !RetainRenderSubmissionResource(
+                      view.submissionResourceBatch,
+                      Ref<RefCounted>(tier1ObjectBinding.instanceBuffer))) ||
+                 !RetainRenderSubmissionResource(
+                     view.submissionResourceBatch,
+                     Ref<RefCounted>(tier1ObjectBinding.descriptorSet))))
+            {
+                gpuPreflightReady = false;
+            }
+        }
+
+        if (plannedGPU && !gpuPreflightReady && !executeDirectLane)
+        {
+            m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
+            updatePlanReport(RenderExecutionStatus::Failed,
+                             m_drawStats.failureReason,
+                             0,
+                             true,
+                             depthPlan->visibility);
+            return;
+        }
+
         m_drawStats.planValidated = true;
         m_drawStats.plannedPacketCount =
             plannedGPUCount + plannedDirectCount;
@@ -1142,9 +1251,12 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
         if (plannedGPU)
         {
             const auto laneStart = std::chrono::steady_clock::now();
-            gpuRecorded = TryDrawGPUDrivenIndirect(
+            gpuRecorded = gpuPreflightReady && TryDrawGPUDrivenIndirect(
                 ctx,
-                view,
+                gpuFrameDescriptorSet.Get(),
+                m_gpuSceneRasterEnabled ? nullptr : &tier1ObjectBinding,
+                gpuPipeline,
+                plannedGPUBatches,
                 plannedGPUCount,
                 depthPlan->partition.drawGroupCount);
             if (!gpuRecorded && m_gpuSceneRasterEnabled &&

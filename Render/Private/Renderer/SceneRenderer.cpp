@@ -786,6 +786,8 @@ void SceneRenderer::Initialize(
     RVX_CORE_INFO("SceneRenderer: Initializing PipelineCache...");
     if (!shaderDir.empty() && m_pipelineCache->Initialize(m_renderContext->GetDevice(), shaderDir))
     {
+        m_pipelineCache->SetObjectConstantSubmissionTracker(
+            RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext));
         RVX_CORE_INFO("SceneRenderer: PipelineCache initialized successfully!");
         RVX_CORE_INFO("  OpaquePipeline: {}", m_pipelineCache->GetOpaquePipeline() ? "created" : "null");
     }
@@ -803,6 +805,11 @@ void SceneRenderer::Initialize(
                 m_renderResourceRegistry))
         {
             RVX_CORE_ERROR("SceneRenderer: MaterialSystem failed to initialize");
+        }
+        else
+        {
+            m_materialSystem->SetMaterialConstantSubmissionTracker(
+                RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext));
         }
     }
 
@@ -1468,8 +1475,7 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     result.frameSequence = m_renderScene.GetAcceptedHeader().sequence;
     result.referencedResources = m_renderScene.GetReferencedResources();
     Render();
-    if (!m_frameDiagnostics.rendered ||
-        !m_frameDiagnostics.graphCompileValid)
+    if (HasSubmissionFailure())
     {
         result.code = RenderFrameExecutionCode::SubmissionFailed;
         return result;
@@ -1497,6 +1503,14 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
 
 void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
 {
+    if (m_pipelineCache && !m_pipelineCache->NotifyObjectConstantSubmission(completion))
+    {
+        RVX_RENDER_ERROR("SceneRenderer: object constant pages rejected invalid completion evidence");
+    }
+    if (m_materialSystem && !m_materialSystem->NotifyMaterialConstantSubmission(completion))
+    {
+        RVX_RENDER_ERROR("SceneRenderer: material constant pages rejected invalid completion evidence");
+    }
     if (m_gpuSceneUploader)
     {
         m_gpuSceneUploader->NotifySubmission(completion);
@@ -1524,10 +1538,27 @@ void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
         m_submissionBatch.reset();
         m_viewData.submissionResourceBatch = nullptr;
     }
+    // RenderSubsystem calls this only after EndFrame produced the exact
+    // graphics completion point. The provisional RenderGraph access state now
+    // describes submitted GPU work and must survive into the next frame.
+    ConfirmProvisionalFrameAccessSnapshots();
 }
 
 void SceneRenderer::ReleaseUnsubmittedFrame()
 {
+    // RenderGraph execution may have realized final depth/back-buffer states,
+    // but those states are not persistent until EndFrame submits the frame.
+    // Restore the import snapshots first so a failed recording or zero
+    // submission cannot poison the next frame's barrier planning.
+    RestoreProvisionalFrameAccessSnapshots();
+    if (m_pipelineCache)
+    {
+        m_pipelineCache->ReleaseUnsubmittedObjectConstants();
+    }
+    if (m_materialSystem)
+    {
+        m_materialSystem->ReleaseUnsubmittedMaterialConstants();
+    }
     if (m_gpuSceneUploader)
     {
         m_gpuSceneUploader->ReleaseUnsubmittedFrame();
@@ -1563,6 +1594,60 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
         m_submissionBatch.reset();
         m_viewData.submissionResourceBatch = nullptr;
     }
+}
+
+void SceneRenderer::PublishProvisionalFrameAccessSnapshots(
+    const RHITextureAccessSnapshot* depthAccess,
+    const RHITextureAccessSnapshot* backBufferAccess) noexcept
+{
+    RVX_ASSERT_MSG(!m_frameAccessSnapshotRollback.pending,
+                   "Previous frame access snapshots were not resolved");
+
+    if (depthAccess != nullptr)
+    {
+        m_frameAccessSnapshotRollback.depthAccess = m_depthAccessSnapshot;
+        m_frameAccessSnapshotRollback.restoreDepth = true;
+        m_frameAccessSnapshotRollback.pending = true;
+        m_depthAccessSnapshot = *depthAccess;
+    }
+
+    if (backBufferAccess != nullptr &&
+        m_activeBackBufferIndex < m_backBufferAccessSnapshots.size())
+    {
+        m_frameAccessSnapshotRollback.backBufferIndex =
+            m_activeBackBufferIndex;
+        m_frameAccessSnapshotRollback.backBufferAccess =
+            m_backBufferAccessSnapshots[m_activeBackBufferIndex];
+        m_frameAccessSnapshotRollback.pending = true;
+        m_backBufferAccessSnapshots[m_activeBackBufferIndex] =
+            *backBufferAccess;
+    }
+}
+
+void SceneRenderer::ConfirmProvisionalFrameAccessSnapshots() noexcept
+{
+    m_frameAccessSnapshotRollback = {};
+}
+
+void SceneRenderer::RestoreProvisionalFrameAccessSnapshots() noexcept
+{
+    if (!m_frameAccessSnapshotRollback.pending)
+    {
+        return;
+    }
+
+    if (m_frameAccessSnapshotRollback.restoreDepth)
+    {
+        m_depthAccessSnapshot = m_frameAccessSnapshotRollback.depthAccess;
+    }
+    if (m_frameAccessSnapshotRollback.backBufferIndex <
+        m_backBufferAccessSnapshots.size())
+    {
+        m_backBufferAccessSnapshots[
+            m_frameAccessSnapshotRollback.backBufferIndex] =
+            m_frameAccessSnapshotRollback.backBufferAccess;
+    }
+    m_frameAccessSnapshotRollback = {};
 }
 
 void SceneRenderer::RetireOwnerSnapshots(
@@ -1631,6 +1716,102 @@ SceneRenderer::GetGPUSceneUploadDiagnostics() const noexcept
     return m_gpuSceneUploader
         ? m_gpuSceneUploader->GetDiagnostics()
         : unavailableDiagnostics;
+}
+
+GPUSceneDiagnostics SceneRenderer::GetGPUSceneDiagnostics() const noexcept
+{
+    GPUSceneDiagnostics diagnostics;
+    diagnostics.informationalOnly = true;
+    if (m_gpuSceneUpdate)
+    {
+        diagnostics = m_gpuSceneUpdate->GetDiagnostics();
+        const GPUScenePublicationStats& publication = m_gpuSceneUpdate->GetStats();
+        diagnostics.available = true;
+        diagnostics.publicationAttempted = publication.attempted;
+        diagnostics.publicationCandidate =
+            publication.candidateObjectCount != 0 ||
+            (diagnostics.publicationAttempted &&
+             publication.excludedObjectCount == 0 &&
+             publication.excludedDrawCount == 0);
+        diagnostics.publicationPublished = publication.attempted &&
+            publication.complete &&
+            publication.failureReason == GPUScenePublicationFailureReason::None &&
+            publication.committedSourceSequence == publication.sourceSequence;
+        diagnostics.publicationFailed =
+            publication.failureReason != GPUScenePublicationFailureReason::None;
+        diagnostics.publicationComplete = publication.complete;
+        diagnostics.publicationFailureReason = publication.failureReason;
+        diagnostics.attemptedObjectCount = publication.attemptedObjectCount;
+        diagnostics.attemptedDrawCount = publication.attemptedDrawCount;
+        diagnostics.candidateObjectCount = publication.candidateObjectCount;
+        diagnostics.candidateDrawCount = publication.candidateDrawCount;
+        diagnostics.publishedObjectCount = publication.publishedObjectCount;
+        diagnostics.publishedDrawCount = publication.publishedDrawCount;
+        diagnostics.addCount = publication.addCount;
+        diagnostics.updateCount = publication.updateCount;
+        diagnostics.removeCount = publication.removeCount;
+        diagnostics.noOpCount = publication.noOpCount;
+        diagnostics.committedVersion = publication.committedVersion;
+    }
+
+    if (m_gpuSceneUploader)
+    {
+        const GPUSceneUploadDiagnostics& upload =
+            m_gpuSceneUploader->GetDiagnostics();
+        diagnostics.available = true;
+        diagnostics.residentVersion = upload.residentVersion;
+        diagnostics.safeReclaimVersion = upload.safeReclaimVersion;
+        diagnostics.gpuAllocationBytes = upload.gpuAllocationBytes;
+        diagnostics.frameUploadBytes = upload.frameUploadBytes;
+        diagnostics.cumulativeUploadBytes = upload.cumulativeUploadBytes;
+        diagnostics.peakFrameUploadBytes = upload.peakFrameUploadBytes;
+        diagnostics.frameUploadRangeCount = upload.frameUploadRangeCount;
+        diagnostics.cumulativeUploadRangeCount = upload.cumulativeUploadRangeCount;
+        diagnostics.currentBufferSetCount = upload.bufferSetCount;
+        diagnostics.peakBufferSetCount = upload.peakBufferSetCount;
+        diagnostics.pendingBufferSetCount = upload.pendingSetCount;
+        diagnostics.inFlightBufferSetCount = upload.inFlightSetCount;
+        diagnostics.unusableBufferSetCount = upload.unusableSetCount;
+        diagnostics.fullUpload = upload.fullUpload;
+        diagnostics.uploadFailureReason = upload.failureReason;
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_DIAGNOSTICS_TABLE_COUNT;
+             ++tableIndex)
+        {
+            GPUSceneTableDiagnostics& target = diagnostics.tables[tableIndex];
+            const GPUSceneTableDiagnostics& source = upload.tables[tableIndex];
+            target.residentCapacity = source.residentCapacity;
+            target.stride = source.stride != 0 ? source.stride : target.stride;
+            target.residentBytes = source.residentBytes;
+            target.frameUploadBytes = source.frameUploadBytes;
+            target.cumulativeUploadBytes = source.cumulativeUploadBytes;
+            target.peakFrameUploadBytes = source.peakFrameUploadBytes;
+            target.frameUploadRangeCount = source.frameUploadRangeCount;
+            target.cumulativeUploadRangeCount = source.cumulativeUploadRangeCount;
+            target.resident = source.resident;
+            target.fullUpload = source.fullUpload;
+        }
+    }
+
+    // This is a projection of an already selected plan, never an input back
+    // into the resolver.  It keeps evidence aligned with the frozen frame.
+    if (m_renderPolicyDiagnostics.planAvailable)
+    {
+        diagnostics.requiredResidentVersion =
+            m_renderPolicyDiagnostics.selectedPlan.viewPolicy.requiredResidentVersion;
+    }
+    diagnostics.leaseVersion = m_renderPolicyDiagnostics.gpuSceneLeaseVersion;
+    diagnostics.timing.cpuPlanTimingAvailable =
+        m_renderPolicyDiagnostics.measurement.planCpuTimingAvailable;
+    diagnostics.timing.cpuSubmissionTimingAvailable =
+        m_renderPolicyDiagnostics.measurement.submissionCpuTimingAvailable;
+    diagnostics.timing.cpuPlanMilliseconds = static_cast<float64>(
+        m_renderPolicyDiagnostics.measurement.planCpuNanoseconds) / 1000000.0;
+    diagnostics.timing.cpuSubmissionMilliseconds = static_cast<float64>(
+        m_renderPolicyDiagnostics.measurement.submissionCpuNanoseconds) / 1000000.0;
+    diagnostics.timing.nonGating = true;
+    diagnostics.timing.usedForAutoDecision = false;
+    return diagnostics;
 }
 
 void SceneRenderer::SynchronizeGPUSceneUploader() noexcept
@@ -3145,6 +3326,21 @@ void SceneRenderer::FinalizeRenderExecutionReportStatus(bool graphExecuted) noex
                                          : RenderExecutionStatus::NotAttempted);
 }
 
+bool SceneRenderer::HasSubmissionFailure() const noexcept
+{
+    if (!m_frameDiagnostics.rendered ||
+        !m_frameDiagnostics.graphCompileValid)
+    {
+        return true;
+    }
+
+    // Passes may have recorded work before a later lane fails.  Submission is
+    // atomic at the accepted-frame boundary: never present a partial hybrid
+    // frame just because the graph itself compiled and executed.
+    return m_renderPolicyDiagnostics.executionReport.status ==
+        RenderExecutionStatus::Failed;
+}
+
 void SceneRenderer::Render()
 {
     if (!m_initialized || !m_renderGraph || !m_renderContext)
@@ -3411,17 +3607,25 @@ void SceneRenderer::Render()
                         m_activeRenderPassIdentity);
                 }
             }
+            RHITextureAccessSnapshot realizedDepthAccess;
+            const RHITextureAccessSnapshot* realizedDepthAccessPtr = nullptr;
             if (m_depthTexture && m_depthGraphHandle.IsValid())
             {
-                m_depthAccessSnapshot = m_renderGraph->GetRealizedAccess(
+                realizedDepthAccess = m_renderGraph->GetRealizedAccess(
                     m_depthGraphHandle);
+                realizedDepthAccessPtr = &realizedDepthAccess;
             }
+            RHITextureAccessSnapshot realizedBackBufferAccess;
+            const RHITextureAccessSnapshot* realizedBackBufferAccessPtr = nullptr;
             if (m_backBufferGraphHandle.IsValid() &&
                 m_activeBackBufferIndex < m_backBufferAccessSnapshots.size())
             {
-                m_backBufferAccessSnapshots[m_activeBackBufferIndex] =
-                    m_renderGraph->GetRealizedAccess(m_backBufferGraphHandle);
+                realizedBackBufferAccess = m_renderGraph->GetRealizedAccess(
+                    m_backBufferGraphHandle);
+                realizedBackBufferAccessPtr = &realizedBackBufferAccess;
             }
+            PublishProvisionalFrameAccessSnapshots(realizedDepthAccessPtr,
+                                                   realizedBackBufferAccessPtr);
             if (m_opaquePass)
             {
                 const OpaquePassDrawStats& opaqueStats = m_opaquePass->GetDrawStats();

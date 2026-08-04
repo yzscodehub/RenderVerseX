@@ -562,6 +562,7 @@ void GPUSceneUpdate::RecordFailure(
     GPUScenePublicationFailureReason reason) noexcept
 {
     GPUScenePublicationStats stats;
+    stats.attempted = true;
     stats.sourceSequence = sourceSequence;
     PopulateCommittedIdentity(stats);
     stats.failureReason = reason;
@@ -746,6 +747,7 @@ GPUScenePublicationStats GPUSceneUpdate::PublishImpl(
     const RenderResourceRegistry& registry)
 {
     GPUScenePublicationStats stats;
+    stats.attempted = true;
     stats.sourceSequence = scene.GetAcceptedHeader().sequence;
     stats.attemptedObjectCount = static_cast<uint32>(scene.GetObjectCount());
     stats.acceptedObjectCount = stats.attemptedObjectCount;

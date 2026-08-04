@@ -6,6 +6,7 @@
 #include "Render/Lighting/LightManager.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHI.h"
 
 #include <gtest/gtest.h>
@@ -2277,7 +2278,7 @@ TEST_F(PipelineCacheValidationFixture, DrawPassesUploadRenderObjectNormalMatrix)
     EXPECT_NE(opaquePass.find("planned.object.previousWorldMatrix"), std::string::npos);
     EXPECT_NE(transparentPass.find("object.previousWorldMatrix"), std::string::npos);
     EXPECT_NE(depthPrepass.find("planned.object.previousWorldMatrix"), std::string::npos);
-    EXPECT_NE(shadowPass.find("obj.previousWorldMatrix"), std::string::npos);
+    EXPECT_NE(shadowPass.find("object.previousWorldMatrix"), std::string::npos);
     EXPECT_NE(opaquePass.find("view.previousViewProjectionMatrix"), std::string::npos);
     EXPECT_NE(transparentPass.find("view.previousViewProjectionMatrix"), std::string::npos);
     EXPECT_NE(depthPrepass.find("view.previousViewProjectionMatrix"), std::string::npos);
@@ -2285,7 +2286,7 @@ TEST_F(PipelineCacheValidationFixture, DrawPassesUploadRenderObjectNormalMatrix)
     EXPECT_NE(opaquePass.find("ResolveSkinningMatrices(planned.object, planned.buffers)"), std::string::npos);
     EXPECT_NE(transparentPass.find("ResolveSkinningMatrices(object, buffers)"), std::string::npos);
     EXPECT_NE(depthPrepass.find("ResolveSkinningMatrices(planned.object, planned.buffers)"), std::string::npos);
-    EXPECT_NE(shadowPass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
+    EXPECT_NE(shadowPass.find("ResolveSkinningMatrices(object, planned.buffers)"), std::string::npos);
     EXPECT_NE(objectVelocityPass.find("ResolveSkinningMatrices(object, buffers)"), std::string::npos);
 }
 
@@ -8604,4 +8605,244 @@ TEST_F(PipelineCacheValidationFixture,
               std::string::npos);
     EXPECT_EQ(rendererSource.find("m_shadowPass->GetCascades"),
               std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       PagedObjectConstantsPreserveSlot8191AndStartSlot8192AtZero)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    RVX::ObjectConstantBinding first;
+    RVX::ObjectConstantBinding finalFirstPage;
+    RVX::ObjectConstantBinding firstSecondPage;
+    for (RVX::uint32 index = 0; index != 8193; ++index)
+    {
+        RVX::Mat4 world = RVX::Mat4Identity();
+        world[3][0] = static_cast<float>(index);
+        RVX::ObjectConstantBinding binding;
+        ASSERT_TRUE(cache.CreateObjectConstantBinding(
+            world,
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            false,
+            true,
+            {},
+            nullptr,
+            binding));
+        if (index == 0)
+        {
+            first = binding;
+        }
+        else if (index == 8191)
+        {
+            finalFirstPage = binding;
+        }
+        else if (index == 8192)
+        {
+            firstSecondPage = binding;
+        }
+    }
+
+    ASSERT_TRUE(first.IsValid());
+    ASSERT_TRUE(finalFirstPage.IsValid());
+    ASSERT_TRUE(firstSecondPage.IsValid());
+    EXPECT_EQ(first.pageIdentity, finalFirstPage.pageIdentity);
+    EXPECT_NE(first.pageIdentity, firstSecondPage.pageIdentity);
+    EXPECT_EQ(0u, first.dynamicOffsets[0]);
+    EXPECT_EQ(0u, firstSecondPage.dynamicOffsets[0]);
+    EXPECT_GT(finalFirstPage.dynamicOffsets[0], first.dynamicOffsets[0]);
+    EXPECT_NE(first.constantBuffer.Get(), firstSecondPage.constantBuffer.Get());
+    const auto* firstPage = static_cast<const FakeBuffer*>(finalFirstPage.constantBuffer.Get());
+    ASSERT_NE(nullptr, firstPage);
+    RVX::ObjectConstants retainedConstants{};
+    std::memcpy(&retainedConstants,
+                firstPage->GetStorage().data() + finalFirstPage.dynamicOffsets[0],
+                sizeof(retainedConstants));
+    EXPECT_FLOAT_EQ(8191.0f, retainedConstants.world[3][0]);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       RejectedObjectConstantRecordingReleasesItsPageWithoutOverwrite)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    RVX::ObjectConstantBinding rejected;
+    ASSERT_TRUE(cache.CreateObjectConstantBinding(
+        RVX::Mat4Identity(), RVX::Mat4Identity(), RVX::Mat4Identity(),
+        RVX::Mat4Identity(), false, true, {}, nullptr, rejected));
+    cache.ReleaseUnsubmittedObjectConstants();
+
+    RVX::ObjectConstantBinding retry;
+    ASSERT_TRUE(cache.CreateObjectConstantBinding(
+        RVX::Mat4Identity(), RVX::Mat4Identity(), RVX::Mat4Identity(),
+        RVX::Mat4Identity(), false, true, {}, nullptr, retry));
+    EXPECT_EQ(rejected.pageIdentity, retry.pageIdentity);
+    EXPECT_EQ(0u, retry.dynamicOffsets[0]);
+    EXPECT_FALSE(cache.NotifyObjectConstantSubmission(RVX::GPUCompletionToken{}));
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       ExternalObjectConstantDescriptorsAreFreshAndRetainTheirInstanceBuffer)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    const auto countPagedObjectDescriptors = [&device]()
+    {
+        return static_cast<size_t>(std::count_if(
+            device.capturedDescriptorSetDescs.begin(),
+            device.capturedDescriptorSetDescs.end(),
+            [](const RVX::RHIDescriptorSetDesc& desc)
+            {
+                return desc.debugName != nullptr &&
+                       std::string_view(desc.debugName) ==
+                           "PagedObjectConstantDescriptorSet";
+            }));
+    };
+    const auto createBinding = [&cache](RVX::RHIBuffer* instanceBuffer,
+                                        RVX::ObjectConstantBinding& outBinding)
+    {
+        return cache.CreateObjectConstantBinding(
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            false,
+            true,
+            {},
+            instanceBuffer,
+            outBinding);
+    };
+
+    RVX::RHIBufferDesc instanceDesc;
+    instanceDesc.size = 256;
+    instanceDesc.usage = RVX::RHIBufferUsage::Structured |
+                         RVX::RHIBufferUsage::ShaderResource;
+    instanceDesc.memoryType = RVX::RHIMemoryType::Upload;
+    instanceDesc.stride = 16;
+    instanceDesc.debugName = "ValidationExternalInstance";
+    RVX::RHIBufferRef external = device.CreateBuffer(instanceDesc);
+    ASSERT_TRUE(external);
+
+    RVX::ObjectConstantBinding first;
+    const RVX::uint32 initialReferenceCount = external->GetRefCount();
+    ASSERT_TRUE(createBinding(external.Get(), first));
+    ASSERT_TRUE(first.IsValid());
+    EXPECT_TRUE(first.requiresInstanceBuffer);
+    EXPECT_EQ(external.Get(), first.instanceBuffer.Get());
+    EXPECT_EQ(initialReferenceCount + 1u, external->GetRefCount());
+    const size_t descriptorsAfterFirst = countPagedObjectDescriptors();
+
+    RVX::ObjectConstantBinding second;
+    ASSERT_TRUE(createBinding(external.Get(), second));
+    EXPECT_EQ(first.pageIdentity, second.pageIdentity);
+    EXPECT_NE(first.descriptorSet.Get(), second.descriptorSet.Get());
+    EXPECT_EQ(descriptorsAfterFirst + 1u, countPagedObjectDescriptors());
+
+    RVX::RHIBuffer* const firstExternal = external.Get();
+    external.Reset();
+    EXPECT_EQ(firstExternal, first.instanceBuffer.Get());
+    EXPECT_EQ(firstExternal, second.instanceBuffer.Get());
+
+    const RVX::uint64 reusedPageIdentity = first.pageIdentity;
+    first = {};
+    second = {};
+    cache.ReleaseUnsubmittedObjectConstants();
+
+    RVX::RHIBufferRef replacement = device.CreateBuffer(instanceDesc);
+    ASSERT_TRUE(replacement);
+    const size_t descriptorsBeforeReplacement = countPagedObjectDescriptors();
+    RVX::ObjectConstantBinding replacementBinding;
+    ASSERT_TRUE(createBinding(replacement.Get(), replacementBinding));
+    EXPECT_EQ(reusedPageIdentity, replacementBinding.pageIdentity);
+    EXPECT_EQ(descriptorsBeforeReplacement + 1u, countPagedObjectDescriptors());
+    EXPECT_EQ(replacement.Get(), replacementBinding.instanceBuffer.Get());
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       FallbackObjectConstantDescriptorsRemainCachedAcrossPageReuse)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    const auto countPagedObjectDescriptors = [&device]()
+    {
+        return static_cast<size_t>(std::count_if(
+            device.capturedDescriptorSetDescs.begin(),
+            device.capturedDescriptorSetDescs.end(),
+            [](const RVX::RHIDescriptorSetDesc& desc)
+            {
+                return desc.debugName != nullptr &&
+                       std::string_view(desc.debugName) ==
+                           "PagedObjectConstantDescriptorSet";
+            }));
+    };
+    const auto createFallbackBinding = [&cache](RVX::ObjectConstantBinding& outBinding)
+    {
+        return cache.CreateObjectConstantBinding(
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            false,
+            true,
+            {},
+            nullptr,
+            outBinding);
+    };
+
+    RVX::ObjectConstantBinding first;
+    ASSERT_TRUE(createFallbackBinding(first));
+    ASSERT_TRUE(first.IsValid());
+    ASSERT_TRUE(first.instanceBuffer);
+    const size_t descriptorsAfterFirst = countPagedObjectDescriptors();
+
+    RVX::ObjectConstantBinding second;
+    ASSERT_TRUE(createFallbackBinding(second));
+    EXPECT_EQ(first.pageIdentity, second.pageIdentity);
+    EXPECT_EQ(first.descriptorSet.Get(), second.descriptorSet.Get());
+    EXPECT_EQ(descriptorsAfterFirst, countPagedObjectDescriptors());
+
+    const RVX::uint64 reusedPageIdentity = first.pageIdentity;
+    RVX::RHIDescriptorSet* const cachedDescriptor = first.descriptorSet.Get();
+    first = {};
+    second = {};
+    cache.ReleaseUnsubmittedObjectConstants();
+
+    RVX::ObjectConstantBinding reused;
+    ASSERT_TRUE(createFallbackBinding(reused));
+    EXPECT_EQ(reusedPageIdentity, reused.pageIdentity);
+    EXPECT_EQ(cachedDescriptor, reused.descriptorSet.Get());
+    EXPECT_EQ(descriptorsAfterFirst, countPagedObjectDescriptors());
 }

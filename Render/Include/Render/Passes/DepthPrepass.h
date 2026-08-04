@@ -24,6 +24,7 @@ namespace RVX
     class GPUCulling;
     class RenderScene;
     class MaterialSystem;
+    struct ObjectConstantBinding;
     struct GPUSceneRasterBindingSnapshot;
 
     /**
@@ -99,6 +100,7 @@ namespace RVX
 
     private:
         struct PlannedDepthDraw;
+        struct PlannedGPUDrivenDepthDraw;
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
@@ -115,7 +117,10 @@ namespace RVX
             uint32 expectedGroupCount,
             uint32& outDrawItemCount) const;
         bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
-                                      const ViewData& view,
+                                      RHIDescriptorSet* frameSet,
+                                      const ObjectConstantBinding* tier1ObjectBinding,
+                                      RHIPipeline* pipeline,
+                                      std::span<const PlannedGPUDrivenDepthDraw> plannedBatches,
                                       uint32 expectedPacketCount = 0,
                                       uint32 expectedGroupCount = 0);
         bool TryDrawPlannedDirect(
