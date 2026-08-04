@@ -61,10 +61,14 @@ namespace
         RHIMemoryType GetMemoryType() const override { return m_desc.memoryType; }
         uint32 GetStride() const override { return m_desc.stride; }
 
-        void* Map() override { return m_storage.empty() ? nullptr : m_storage.data(); }
+        void* Map() override
+        {
+            return !m_mapSucceeds || m_storage.empty() ? nullptr : m_storage.data();
+        }
         void Unmap() override {}
 
         const std::vector<uint8>& GetStorage() const { return m_storage; }
+        void SetMapSucceeds(bool succeeds) { m_mapSucceeds = succeeds; }
         void CopyFrom(const FakeBuffer& source, uint64 sourceOffset, uint64 destinationOffset, uint64 size)
         {
             if (sourceOffset + size > source.m_storage.size() ||
@@ -82,6 +86,7 @@ namespace
         RHIBufferDesc m_desc;
         std::vector<uint8> m_storage;
         std::shared_ptr<BufferLifetimeState> m_lifetimeState;
+        bool m_mapSucceeds = true;
     };
 
     class FakeShader final : public RHIShader
@@ -200,11 +205,19 @@ namespace
         void EndBarrier(const RHITextureBarrier&) override {}
         void BeginRenderPass(const RHIRenderPassDesc&) override {}
         void EndRenderPass() override {}
-        void SetPipeline(RHIPipeline*) override {}
+        void SetPipeline(RHIPipeline* pipeline) override
+        {
+            pipelines.push_back(pipeline);
+        }
         void SetVertexBuffer(uint32, RHIBuffer*, uint64 = 0) override {}
         void SetVertexBuffers(uint32, std::span<RHIBuffer* const>, std::span<const uint64> = {}) override {}
         void SetIndexBuffer(RHIBuffer*, RHIFormat, uint64 = 0) override {}
-        void SetDescriptorSet(uint32, RHIDescriptorSet*, std::span<const uint32> = {}) override {}
+        void SetDescriptorSet(uint32,
+                              RHIDescriptorSet* descriptorSet,
+                              std::span<const uint32> = {}) override
+        {
+            descriptorSets.push_back(descriptorSet);
+        }
         void SetPushConstants(const void*, uint32, uint32 = 0) override {}
         void SetViewport(const RHIViewport&) override {}
         void SetViewports(std::span<const RHIViewport>) override {}
@@ -301,6 +314,8 @@ namespace
         uint32 lastIndirectStride = 0;
         std::vector<RHIBufferBarrier> bufferBarriers;
         std::vector<std::array<uint32, 3>> dispatches;
+        std::vector<RHIPipeline*> pipelines;
+        std::vector<RHIDescriptorSet*> descriptorSets;
     };
 
     class FakeDevice final : public IRHIDevice
@@ -327,7 +342,13 @@ namespace
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             RHIBufferRef buffer(new FakeBuffer(desc, bufferLifetimeState));
-            createdBuffers.push_back(static_cast<FakeBuffer*>(buffer.Get()));
+            auto* fakeBuffer = static_cast<FakeBuffer*>(buffer.Get());
+            if (failTransientUploadMap && desc.debugName != nullptr &&
+                std::string(desc.debugName) == "GPUCulling.TransientUpload")
+            {
+                fakeBuffer->SetMapSucceeds(false);
+            }
+            createdBuffers.push_back(fakeBuffer);
             return buffer;
         }
 
@@ -449,6 +470,7 @@ namespace
         std::vector<FakeBuffer*> createdBuffers;
         std::vector<RHIFenceRef> fences;
         std::shared_ptr<BufferLifetimeState> bufferLifetimeState;
+        bool failTransientUploadMap = false;
 
     private:
         bool m_enablePipelineObjects = false;
@@ -2459,7 +2481,226 @@ TEST_F(GPUDrivenValidationFixture,
 
     culling.InvalidateGPUSceneCandidates();
     EXPECT_FALSE(culling.HasCompleteGPUSceneCandidates());
+    EXPECT_EQ(2u, culling.GetInstanceCount());
     EXPECT_TRUE(recorded->GetCulling().HasCompleteGPUSceneCandidates());
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       GPUSceneCullingDispatchesTwoComputePassesWithoutImplicitFallback)
+{
+    FakeDevice device;
+    device.EnableTimelineRetirement();
+    device.EnableGPUScenePipelineObjects();
+    GPUCullingConfig config;
+    config.maxInstances = 4;
+    GPUCulling culling;
+    culling.Initialize(&device, config);
+    ASSERT_TRUE(culling.IsGPUSceneExecutionReady());
+
+    culling.BeginFrame();
+    ASSERT_EQ(0u, culling.AddInstance(
+        MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 36)));
+    GPUSceneCullingCandidate candidate;
+    candidate.primitiveSlot = 1u;
+    candidate.primitiveGeneration = 7u;
+    candidate.drawSlot = 1u;
+    candidate.drawGeneration = 7u;
+    candidate.objectIdLow = 42u;
+    candidate.requiredPassMask = 2u;
+    candidate.drawGroupIndex = 0u;
+    candidate.drawGroupCommandOffset = 0u;
+    candidate.rasterInstanceIndex = 0u;
+    ASSERT_TRUE(culling.AddGPUSceneCandidate(candidate, 29u));
+    culling.EndFrame();
+
+    const std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT> capacities{
+        8u, 9u, 10u, 11u, 12u, 13u};
+    const GPUCullingRecordingIdentity identity{401u, 13u, 101u, 0u, 8u};
+    const std::shared_ptr<GPUCullingRecordedState> gpuSceneRecorded =
+        culling.SealForGPUSceneGraph(
+            identity, MakeGPUSceneLease(device, 29u, capacities));
+    ASSERT_NE(nullptr, gpuSceneRecorded);
+
+    const Mat4 view = TestView();
+    const Mat4 projection = TestProjection();
+    FakeCommandContext gpuSceneContext;
+    EXPECT_TRUE(gpuSceneRecorded->CullGPUScene(
+        gpuSceneContext, view, projection));
+    ASSERT_EQ(2u, gpuSceneContext.dispatches.size());
+    EXPECT_EQ((std::array<uint32, 3>{1u, 1u, 1u}),
+              gpuSceneContext.dispatches[0]);
+    EXPECT_EQ((std::array<uint32, 3>{1u, 1u, 1u}),
+              gpuSceneContext.dispatches[1]);
+    EXPECT_EQ(3u, gpuSceneContext.bufferBarriers.size());
+    ASSERT_EQ(2u, gpuSceneContext.pipelines.size());
+    ASSERT_EQ(2u, gpuSceneContext.descriptorSets.size());
+    EXPECT_NE(gpuSceneContext.pipelines[0], gpuSceneContext.pipelines[1]);
+    EXPECT_EQ(gpuSceneContext.descriptorSets[0],
+              gpuSceneContext.descriptorSets[1]);
+    EXPECT_TRUE(gpuSceneRecorded->GetCulling().WasGpuExecutionUsedLastCull());
+    EXPECT_FALSE(gpuSceneRecorded->GetCulling().WasCpuFallbackUsedLastCull());
+    EXPECT_TRUE(gpuSceneRecorded->GetCulling().GetVisibleInstanceIndices().empty());
+
+    const FakeBuffer* constantsBuffer = static_cast<const FakeBuffer*>(
+        gpuSceneRecorded->GetCulling().GetCullingConstantsBuffer());
+    ASSERT_NE(nullptr, constantsBuffer);
+    const GPUCullingConstants constants =
+        ReadBufferValue<GPUCullingConstants>(*constantsBuffer);
+    const Mat4 expectedViewProjection = projection * view;
+    for (uint32 column = 0; column < 4; ++column)
+    {
+        for (uint32 row = 0; row < 4; ++row)
+        {
+            EXPECT_FLOAT_EQ(expectedViewProjection[column][row],
+                            constants.viewProj[column][row]);
+        }
+    }
+    EXPECT_FLOAT_EQ(config.maxDrawDistance, constants.params.x);
+    EXPECT_FLOAT_EQ(1.0f, constants.params.z);
+    EXPECT_FLOAT_EQ(1.0f, constants.params.w);
+    EXPECT_EQ(1u, constants.counts[0]);
+    EXPECT_EQ(1u, constants.counts[1]);
+    for (uint32 tableIndex = 0; tableIndex < 4; ++tableIndex)
+    {
+        EXPECT_EQ(capacities[tableIndex], constants.gpuSceneTableCounts0[tableIndex]);
+    }
+    EXPECT_EQ(capacities[4], constants.gpuSceneTableCounts1[0]);
+    EXPECT_EQ(capacities[5], constants.gpuSceneTableCounts1[1]);
+
+    auto* mutableConstantsBuffer = static_cast<FakeBuffer*>(
+        gpuSceneRecorded->GetCulling().GetCullingConstantsBuffer());
+    ASSERT_NE(nullptr, mutableConstantsBuffer);
+    mutableConstantsBuffer->SetMapSucceeds(false);
+    device.failTransientUploadMap = true;
+    FakeCommandContext failedGPUSceneContext;
+    EXPECT_FALSE(gpuSceneRecorded->CullGPUScene(
+        failedGPUSceneContext, view, projection));
+    EXPECT_TRUE(failedGPUSceneContext.dispatches.empty());
+    EXPECT_FALSE(gpuSceneRecorded->GetCulling().WasGpuExecutionUsedLastCull());
+    EXPECT_FALSE(gpuSceneRecorded->GetCulling().WasCpuFallbackUsedLastCull());
+    device.failTransientUploadMap = false;
+    mutableConstantsBuffer->SetMapSucceeds(true);
+
+    const std::shared_ptr<GPUCullingRecordedState> normalRecorded =
+        culling.SealForGraph(identity);
+    ASSERT_NE(nullptr, normalRecorded);
+    FakeCommandContext rejectedGPUSceneContext;
+    EXPECT_FALSE(normalRecorded->CullGPUScene(
+        rejectedGPUSceneContext, view, projection));
+    EXPECT_TRUE(rejectedGPUSceneContext.dispatches.empty());
+    EXPECT_FALSE(normalRecorded->GetCulling().WasGpuExecutionUsedLastCull());
+    EXPECT_FALSE(normalRecorded->GetCulling().WasCpuFallbackUsedLastCull());
+
+    // The caller-selected normal seal remains available as the per-pass
+    // fallback; the failed GPU-scene recording never invoked it implicitly.
+    FakeCommandContext normalContext;
+    normalRecorded->Cull(normalContext, view, projection);
+    EXPECT_EQ(2u, normalContext.dispatches.size());
+    ASSERT_EQ(2u, normalContext.pipelines.size());
+    ASSERT_EQ(2u, normalContext.descriptorSets.size());
+    EXPECT_NE(gpuSceneContext.pipelines[0], normalContext.pipelines[0]);
+    EXPECT_NE(gpuSceneContext.pipelines[1], normalContext.pipelines[1]);
+    EXPECT_NE(gpuSceneContext.descriptorSets[0], normalContext.descriptorSets[0]);
+    EXPECT_TRUE(normalRecorded->GetCulling().WasGpuExecutionUsedLastCull());
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       SceneRendererGPUSceneLeaseWiringUsesOneAcquireAndPerPassFallback)
+{
+    const std::filesystem::path root = FindWorkspaceRoot();
+    ASSERT_FALSE(root.empty());
+    const std::string source = ReadTextFile(
+        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string uploaderHeader = ReadTextFile(
+        root / "Render" / "Private" / "GPUScene" / "GPUSceneUploader.h");
+    const std::string subsystemSource = ReadTextFile(
+        root / "Render" / "Private" / "RenderSubsystem.cpp");
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(uploaderHeader.empty());
+    ASSERT_FALSE(subsystemSource.empty());
+
+    size_t acquireCount = 0;
+    size_t acquireOffset = source.find("AcquireCurrentGraphLease(");
+    while (acquireOffset != std::string::npos)
+    {
+        ++acquireCount;
+        acquireOffset = source.find("AcquireCurrentGraphLease(", acquireOffset + 1);
+    }
+    EXPECT_EQ(1u, acquireCount);
+    EXPECT_NE(source.find("m_gpuSceneUploader->BuildRenderGraph("),
+              std::string::npos);
+    EXPECT_NE(source.find("owner->SealForGPUSceneGraph("), std::string::npos);
+    EXPECT_NE(source.find("if (!recordedState)"), std::string::npos);
+    EXPECT_NE(source.find("owner->SealForGraph(cullingIdentity)"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_gpuSceneUploader->CancelCurrentGraphLease()"),
+              std::string::npos);
+    EXPECT_NE(source.find("data.gpuSceneCandidates = builder.Read("),
+              std::string::npos);
+    EXPECT_NE(source.find("data.gpuSceneTables[tableIndex] = builder.Read("),
+              std::string::npos);
+    EXPECT_NE(source.find("recordedState->CullGPUScene("), std::string::npos);
+    EXPECT_NE(source.find("if (!recordedState->CullGPUScene("),
+              std::string::npos);
+    EXPECT_NE(source.find("m_gpuSceneCullingCommandRecordingFailed"),
+              std::string::npos);
+    EXPECT_NE(source.find("GPU-scene culling command recording failed"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_gpuSceneUpdate->ResolveAcceptedDraw("),
+              std::string::npos);
+    EXPECT_NE(source.find("owner->InvalidateGPUSceneCandidates()"),
+              std::string::npos);
+    EXPECT_NE(uploaderHeader.find("CancelCurrentGraphLease"),
+              std::string::npos);
+
+    const size_t renderStart = source.find("void SceneRenderer::Render()");
+    const size_t graphExecute = source.find("m_renderGraph->Execute(*ctx);", renderStart);
+    const size_t failedFrameGate = source.find(
+        "graphExecuted = !m_gpuSceneCullingCommandRecordingFailed;", graphExecute);
+    const size_t uploaderCommit = source.find(
+        "m_gpuSceneUploader->CommitRealizedAccess(*m_renderGraph);", graphExecute);
+    const size_t cullingCommit = source.find(
+        "CommitGPUDrivenAccessSnapshots();", graphExecute);
+    ASSERT_NE(std::string::npos, renderStart);
+    ASSERT_NE(std::string::npos, graphExecute);
+    ASSERT_NE(std::string::npos, failedFrameGate);
+    ASSERT_NE(std::string::npos, uploaderCommit);
+    ASSERT_NE(std::string::npos, cullingCommit);
+    EXPECT_LT(graphExecute, failedFrameGate);
+    EXPECT_LT(failedFrameGate, uploaderCommit);
+    EXPECT_LT(failedFrameGate, cullingCommit);
+    const size_t commitSuccessGuard = source.rfind(
+        "if (graphExecuted)", uploaderCommit);
+    ASSERT_NE(std::string::npos, commitSuccessGuard);
+    EXPECT_LT(failedFrameGate, commitSuccessGuard);
+    EXPECT_LT(commitSuccessGuard, uploaderCommit);
+
+    const size_t acceptedRendererFrame = source.find(
+        "RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()");
+    const size_t rendererRenderCall = source.find("Render();", acceptedRendererFrame);
+    const size_t rendererFailureReturn = source.find(
+        "if (!m_frameDiagnostics.rendered ||", rendererRenderCall);
+    const size_t cullingRetain = source.find(
+        "m_depthGPUCulling->RetainSubmissionResources", rendererRenderCall);
+    ASSERT_NE(std::string::npos, acceptedRendererFrame);
+    ASSERT_NE(std::string::npos, rendererRenderCall);
+    ASSERT_NE(std::string::npos, rendererFailureReturn);
+    ASSERT_NE(std::string::npos, cullingRetain);
+    EXPECT_LT(rendererRenderCall, rendererFailureReturn);
+    EXPECT_LT(rendererFailureReturn, cullingRetain);
+
+    const size_t acceptedFrame = subsystemSource.find("m_sceneRenderer->RenderAcceptedFrame()");
+    const size_t releaseUnsubmitted = subsystemSource.find(
+        "m_sceneRenderer->ReleaseUnsubmittedFrame();", acceptedFrame);
+    const size_t abortFrame = subsystemSource.find("m_context->AbortFrame();", acceptedFrame);
+    const size_t submitFrame = subsystemSource.find("m_context->EndFrame();", acceptedFrame);
+    ASSERT_NE(std::string::npos, acceptedFrame);
+    ASSERT_NE(std::string::npos, releaseUnsubmitted);
+    ASSERT_NE(std::string::npos, abortFrame);
+    ASSERT_NE(std::string::npos, submitFrame);
+    EXPECT_LT(acceptedFrame, releaseUnsubmitted);
+    EXPECT_LT(releaseUnsubmitted, abortFrame);
+    EXPECT_LT(abortFrame, submitFrame);
 }
 
 TEST_F(GPUDrivenValidationFixture,

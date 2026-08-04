@@ -182,6 +182,7 @@ void GPUCulling::Shutdown()
     m_gpuSceneDescriptorSet.Reset();
     m_gpuSceneTableBuffers = {};
     m_gpuSceneTableCapacities = {};
+    m_gpuSceneLeaseVersion = 0;
     m_gpuSceneCandidates.clear();
     m_gpuSceneCandidateVersion = 0;
     m_gpuSceneEnabled = false;
@@ -562,6 +563,7 @@ void GPUCulling::CreatePipelineResources()
     QueueRenderOwnerRetirement(m_gpuSceneDescriptorSet, m_pendingOwnerRetirements);
     m_gpuSceneTableBuffers = {};
     m_gpuSceneTableCapacities = {};
+    m_gpuSceneLeaseVersion = 0;
     m_gpuSceneEnabled = false;
 
     if (!SupportsGpuExecution())
@@ -1792,7 +1794,120 @@ bool GPUCulling::ConfigureGPUSceneRecording(
 
     m_gpuSceneTableBuffers = lease.buffers;
     m_gpuSceneTableCapacities = lease.capacities;
+    m_gpuSceneLeaseVersion = lease.version;
     m_gpuSceneEnabled = true;
+    return true;
+}
+
+bool GPUCulling::CullGPUScene(RHICommandContext& ctx,
+                               const Mat4& viewMatrix,
+                               const Mat4& projMatrix)
+{
+    m_visibleInstanceIndices.clear();
+    m_visibleSourceIndices.clear();
+    m_indirectCommands.clear();
+    std::fill(m_groupDrawCounts.begin(), m_groupDrawCounts.end(), 0);
+    for (GPUCullingDrawGroup& group : m_drawGroups)
+    {
+        group.visibleDrawCount = 0;
+    }
+    m_drawCount = 0;
+    m_usedCpuFallbackLastCull = false;
+    m_usedGpuExecutionLastCull = false;
+    m_lastFallbackReason = GPUCullingFallbackReason::PipelineResourcesUnavailable;
+
+    GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
+    if (!m_gpuSceneEnabled || !HasCompleteGPUSceneCandidates() ||
+        m_gpuSceneLeaseVersion == 0 ||
+        m_gpuSceneLeaseVersion != m_gpuSceneCandidateVersion ||
+        !IsGPUSceneExecutionReady() || !m_gpuSceneDescriptorSet ||
+        inputs == nullptr || !inputs->constantsBuffer ||
+        !inputs->gpuSceneCandidateBuffer ||
+        inputs->gpuSceneCandidateAccess.uniformAccess.contentValidity !=
+            RHIContentValidity::Valid ||
+        !m_visibilityBuffer || !m_visibleInstanceBuffer || !m_indirectBuffer ||
+        !m_drawCountBuffer)
+    {
+        return false;
+    }
+
+    for (uint32 tableIndex = 0;
+         tableIndex < RVX_GPU_SCENE_CULLING_TABLE_COUNT;
+         ++tableIndex)
+    {
+        if (!m_gpuSceneTableBuffers[tableIndex] ||
+            m_gpuSceneTableCapacities[tableIndex] == 0)
+        {
+            return false;
+        }
+    }
+
+    const Mat4 viewProj = projMatrix * viewMatrix;
+    GPUCullingConstants constants = MakeDefaultGPUCullingConstants();
+    constants.viewProj = viewProj;
+    ExtractFrustumPlanes(viewProj, constants.frustumPlanes);
+    constants.cameraPosition = Vec4(inverse(viewMatrix)[3]);
+    constants.params = Vec4(
+        m_config.maxDrawDistance,
+        0.0f,
+        m_config.enableFrustumCulling ? 1.0f : 0.0f,
+        m_config.enableDistanceCulling ? 1.0f : 0.0f);
+    constants.counts[0] = m_instanceCount;
+    constants.counts[1] = static_cast<uint32>(m_drawGroups.size());
+    for (uint32 tableIndex = 0;
+         tableIndex < RVX_GPU_SCENE_CULLING_TABLE_COUNT;
+         ++tableIndex)
+    {
+        if (tableIndex < 4)
+        {
+            constants.gpuSceneTableCounts0[tableIndex] =
+                m_gpuSceneTableCapacities[tableIndex];
+        }
+        else
+        {
+            constants.gpuSceneTableCounts1[tableIndex - 4] =
+                m_gpuSceneTableCapacities[tableIndex];
+        }
+    }
+
+    if (!UploadBufferData(
+            inputs->constantsBuffer.Get(), &constants, sizeof(constants), &ctx))
+    {
+        return false;
+    }
+    const GPUQueueDomain lastGpuDomain =
+        inputs->constantsAccess.uniformAccess.domain;
+    inputs->constantsAccess = MakeRHIBufferAccessSnapshot(
+        RHIResourceState::ConstantBuffer,
+        RHIShaderStage::Compute,
+        lastGpuDomain,
+        RHIContentValidity::Valid);
+    m_accessSnapshots.constants = inputs->constantsAccess;
+
+    const uint32 clearThreadCount = std::max(
+        m_instanceCount,
+        static_cast<uint32>(m_drawGroups.size()) + 1u);
+    const uint32 groupCount = (clearThreadCount + 63u) / 64u;
+
+    ctx.SetPipeline(m_gpuSceneFrustumCullPipeline.Get());
+    ctx.SetDescriptorSet(0, m_gpuSceneDescriptorSet.Get());
+    ctx.Dispatch(groupCount, 1, 1);
+
+    const RHIAccessSnapshot computeUAVAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::UnorderedAccess,
+        RHIShaderStage::Compute,
+        GPUQueueDomain::Graphics);
+    ctx.BufferBarrier(m_visibilityBuffer.Get(), computeUAVAccess, computeUAVAccess);
+    ctx.BufferBarrier(m_indirectBuffer.Get(), computeUAVAccess, computeUAVAccess);
+    ctx.BufferBarrier(m_drawCountBuffer.Get(), computeUAVAccess, computeUAVAccess);
+
+    ctx.SetPipeline(m_gpuSceneCompactPipeline.Get());
+    ctx.SetDescriptorSet(0, m_gpuSceneDescriptorSet.Get());
+    ctx.Dispatch(groupCount, 1, 1);
+
+    m_usedGpuExecutionLastCull = true;
+    m_lastFallbackReason = GPUCullingFallbackReason::None;
+    m_stats.totalInstances = m_instanceCount;
     return true;
 }
 

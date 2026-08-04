@@ -963,6 +963,46 @@ GPUSceneUploader::AcquireCurrentGraphLease(
     return lease;
 }
 
+bool GPUSceneUploader::CancelCurrentGraphLease() noexcept
+{
+    if (!m_impl || !m_impl->initialized || m_impl->deviceLost || m_impl->pending)
+    {
+        return false;
+    }
+
+    Impl::BufferSet* leasedSet = nullptr;
+    for (Impl::BufferSet& set : m_impl->sets)
+    {
+        if (!set.frameReadUse)
+        {
+            continue;
+        }
+        if (leasedSet != nullptr || set.frameReadAccessCommitted)
+        {
+            return false;
+        }
+        leasedSet = &set;
+    }
+
+    if (leasedSet == nullptr)
+    {
+        return false;
+    }
+
+    for (uint32 tableIndex = 0;
+         tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+         ++tableIndex)
+    {
+        leasedSet->tables[tableIndex].access =
+            leasedSet->frameReadPreviousAccess[tableIndex];
+    }
+    leasedSet->frameReadUse = false;
+    leasedSet->frameReadAccessCommitted = false;
+    leasedSet->frameReadHandles = {};
+    leasedSet->frameReadPreviousAccess = {};
+    return true;
+}
+
 void GPUSceneUploader::CommitRealizedAccess(const RenderGraph& graph) noexcept
 {
     if (!m_impl)

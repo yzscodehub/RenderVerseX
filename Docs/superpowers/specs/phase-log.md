@@ -46507,3 +46507,94 @@ below.
   pressure diagnostics remain Task 11E work.
 
 ---
+
+### R-SP352 Render-policy Task 11D-D1b-b GPU Scene culling graph execution
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D1b-b stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP351 (stable GPU Scene culling ABI and sealed inputs).
+- D1b-a could validate and retain exact stable candidates and a six-table lease,
+  but SceneRenderer never constructed that candidate stream, acquired a graph
+  lease, declared its reads, or dispatched the separate GPU Scene pipelines.
+
+**Approved scope:**
+
+- Resolve optional GPU Scene candidates immediately after authoritative Tier 1
+  instance insertion. Preserve exact committed versions and draw-group command
+  offsets; invalidate the optional stream without guessing CPU ordinals.
+- Acquire one exact current resident lease per graph/view, share it between
+  Depth and Opaque, and declare the candidate plus all six resident tables as
+  compute reads for every GPU Scene consumer.
+- Dispatch the separately sealed GPU Scene frustum and compaction kernels, with
+  exact per-view constants and lease capacities, into the established culling
+  outputs consumed by Task 10 per-group indirect-count submission.
+- Commit candidate/table realized accesses only for successfully recorded work.
+  Cancel a zero-consumer lease and retain the existing exact rollback and
+  completion-token ownership rules for unsubmitted work.
+- Treat callback-time GPU Scene culling failure as a failed frame recording.
+  Do not replay normal GPU, CPU, or Direct work, do not commit realized access,
+  and let the existing runtime release and abort the frame before submission.
+- Keep raster transform fetch, public `GPUResidentScene` selection, shared RHI
+  capabilities, backend implementations, and Auto behavior unchanged.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Private/GPUScene/GPUSceneUploader.cpp`
+- `Render/Private/GPUScene/GPUSceneUploader.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/GPUSceneUploadValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial builds: PASS for `GPUDrivenValidation`,
+  `GPUSceneUploadValidation`, `GPUSceneValidation`, `RenderGraphValidation`,
+  `RenderSubmissionValidation`, and `RenderPassValidation`.
+- Primary focused executables: PASS 40/40, 17/17, 31/31, 50/50, 27/27,
+  and 194/194 (359/359 total).
+- `Architecture.PhaseGates`: PASS 1/1. Both GPU Scene compute entries continue
+  to compile for the current DX12 Shader Model 6.0 architecture gate.
+- Fault coverage forces candidate-constant mapping failure and proves false
+  return, zero dispatch, and no CPU/normal fallback. Integration guards verify
+  single-lease scheduling, dual table consumers, fail-before-commit ordering,
+  and runtime release/abort before any `EndFrame` submission.
+
+**Independent review result:**
+
+- Initial verdict NOT READY found one P1: the graph callback discarded a legal
+  `CullGPUScene(false)` result after constant Map/staging failure, so the frame
+  could be reported and submitted as rendered despite missing GPU-only draws.
+- Remediation added one private frame-local recording-failure state, propagated
+  callback failure before both realized-access commits, moved the accepted-frame
+  success gate before submission retention, and added focused fault/regression
+  coverage without a same-frame fallback.
+- Final independent verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diff and lifetime review, independent rejection and final
+  re-review, serial rebuild, independent 359/359 focused executable tests,
+  architecture phase gate, and whitespace/scope validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, Python
+  cache, and generated shader-cache contents remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- The constant Map fault is executable at the culling boundary; the concrete
+  SceneRenderer has no device-injection seam, so the renderer/runtime handoff is
+  additionally guarded structurally rather than by a full end-to-end fault test.
+- Raster shaders still fetch transforms from the per-recording instance stream.
+  D2 must bind the exact resident transform identity used by culling and prove
+  Depth/Opaque semantic and visual parity without changing Task 10 submission.
+- D3/D4 remain required before public `GPUResidentScene` selection or Tier 2
+  qualification. D1/D2 are still an internal stable-input evolution of the
+  established grouped-indirect strategy.
+
+---

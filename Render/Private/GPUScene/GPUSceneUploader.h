@@ -116,6 +116,15 @@ namespace RVX
                 RenderGraph& graph,
                 RenderSubmissionResourceBatch* submissionBatch) noexcept;
 
+        /**
+         * @brief Cancel an acquired lease before any graph consumer registers it.
+         *
+         * This restores the pre-recording snapshots without marking the table
+         * set as GPU-used. It is intentionally unavailable after access commit
+         * or while an upload plan is pending.
+         */
+        [[nodiscard]] bool CancelCurrentGraphLease() noexcept;
+
         /** @brief Commit upload and exact-lease realized accesses after graph execution. */
         void CommitRealizedAccess(const RenderGraph& graph) noexcept;
 

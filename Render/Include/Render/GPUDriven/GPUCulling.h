@@ -423,6 +423,17 @@ namespace RVX
                   RHITexture* hiZTexture = nullptr);
 
         /**
+         * @brief Dispatch the separately sealed GPU-scene culling pipelines.
+         *
+         * This path never falls back to CPU or normal Tier 1 culling after a
+         * recording-time failure. Callers must choose that fallback before
+         * graph recording by sealing the normal path instead.
+         */
+        [[nodiscard]] bool CullGPUScene(RHICommandContext& ctx,
+                                        const Mat4& viewMatrix,
+                                        const Mat4& projMatrix);
+
+        /**
          * @brief Perform CPU fallback culling and upload the same output buffers
          *
          * This is used until compute culling/compaction pipelines are available,
@@ -636,6 +647,7 @@ namespace RVX
             m_gpuSceneTableBuffers;
         std::array<uint32, RVX_GPU_SCENE_CULLING_TABLE_COUNT>
             m_gpuSceneTableCapacities{};
+        uint64 m_gpuSceneLeaseVersion = 0;
         bool m_gpuSceneEnabled = false;
 
         // Statistics
@@ -673,6 +685,12 @@ namespace RVX
                   RHITexture* hiZTexture = nullptr)
         {
             m_culling.Cull(ctx, viewMatrix, projectionMatrix, hiZTexture);
+        }
+        [[nodiscard]] bool CullGPUScene(RHICommandContext& ctx,
+                                        const Mat4& viewMatrix,
+                                        const Mat4& projectionMatrix)
+        {
+            return m_culling.CullGPUScene(ctx, viewMatrix, projectionMatrix);
         }
         [[nodiscard]] bool RetainSubmissionResources(
             RenderSubmissionResourceBatch& batch)

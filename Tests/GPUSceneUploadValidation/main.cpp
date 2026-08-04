@@ -342,8 +342,11 @@ namespace
         {
             return false;
         }
+        const auto addLeaseReadPass =
+            [&graph, &lease](const char* name)
+        {
         graph.AddPass<GPUSceneLeaseReadPassData>(
-            "GPUSceneLeaseRead",
+            name,
             RenderGraphPassType::Compute,
             [lease](RenderGraphBuilder& builder, GPUSceneLeaseReadPassData& data)
             {
@@ -358,6 +361,11 @@ namespace
                 }
             },
             [](const GPUSceneLeaseReadPassData&, RHICommandContext&) {});
+        };
+        // One exact lease can feed independent Depth/Opaque-like consumers;
+        // no second AcquireCurrentGraphLease call is permitted for this graph.
+        addLeaseReadPass("GPUSceneLeaseReadA");
+        addLeaseReadPass("GPUSceneLeaseReadB");
         graph.Compile();
         if (!graph.GetCompileStats().compileValid)
         {
@@ -547,8 +555,11 @@ namespace
         {
             std::array<RGBufferHandle, GPU_SCENE_RESIDENT_TABLE_COUNT> handles;
         };
+        const auto addLeaseReadPass =
+            [&graph, &lease](const char* name)
+        {
         graph.AddPass<LeaseReadPassData>(
-            "GPUSceneLeaseRead",
+            name,
             RenderGraphPassType::Compute,
             [lease](RenderGraphBuilder& builder, LeaseReadPassData& data)
             {
@@ -563,10 +574,15 @@ namespace
                 }
             },
             [](const LeaseReadPassData&, RHICommandContext&) {});
+        };
+        addLeaseReadPass("GPUSceneLeaseReadA");
+        addLeaseReadPass("GPUSceneLeaseReadB");
         graph.Compile();
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        EXPECT_EQ(2u, graph.GetCompileStats().totalPasses);
         graph.Execute(context);
         uploader.CommitRealizedAccess(graph);
+        EXPECT_FALSE(uploader.CancelCurrentGraphLease());
         for (uint32 tableIndex = 0;
              tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
              ++tableIndex)
@@ -583,6 +599,41 @@ namespace
         EXPECT_TRUE(uploader.AcquireCurrentGraphLease(retryGraph, nullptr).has_value());
         uploader.ReleaseUnsubmittedFrame();
         batch.ReleaseUnsubmitted(retirement);
+    }
+
+    TEST(GPUSceneUploadValidation,
+         ExactCurrentLeaseCanBeCancelledOnlyBeforeConsumerAccessCommits)
+    {
+        FakeDevice device;
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        GPUSceneUploader uploader;
+        ASSERT_TRUE(uploader.Initialize(&device, &tracker));
+        EXPECT_FALSE(uploader.CancelCurrentGraphLease());
+        GPUSceneDatabase database;
+        GPUSceneTransaction add;
+        add.Add(MakeObject(1, 1.0F));
+        ASSERT_TRUE(database.Commit(add).Succeeded());
+        uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+        FakeCommandContext context;
+        RecordAndExecute(uploader, device, context);
+        const GPUCompletionPoint uploadPoint = tracker.Submit(&context);
+        GPUCompletionToken uploadToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(uploadToken, uploadPoint));
+        uploader.NotifySubmission(uploadToken);
+        CompleteToken(device, uploadToken);
+
+        RenderGraph unusedGraph;
+        unusedGraph.SetDevice(&device);
+        ASSERT_TRUE(uploader.AcquireCurrentGraphLease(unusedGraph, nullptr).has_value());
+        EXPECT_TRUE(uploader.CancelCurrentGraphLease());
+        EXPECT_FALSE(uploader.CancelCurrentGraphLease());
+
+        RenderGraph retryGraph;
+        retryGraph.SetDevice(&device);
+        EXPECT_TRUE(uploader.AcquireCurrentGraphLease(retryGraph, nullptr).has_value());
+        uploader.ReleaseUnsubmittedFrame();
     }
 
     TEST(GPUSceneUploadValidation, ExactCurrentLeaseRejectsPendingAndObservedVersionMismatch)
@@ -656,6 +707,7 @@ namespace
         GPUCompletionToken readToken;
         ASSERT_TRUE(InsertGPUCompletionPoint(readToken, readPoint));
         uploader.NotifySubmission(readToken);
+        EXPECT_FALSE(uploader.CancelCurrentGraphLease());
         EXPECT_EQ(uploader.GetDiagnostics().failureReason,
                   GPUSceneUploadFailureReason::None);
         EXPECT_EQ(uploader.PollSafeReclaimVersion(), 0U);

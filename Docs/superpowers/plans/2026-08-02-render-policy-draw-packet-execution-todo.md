@@ -1,8 +1,8 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
-10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a and
-Task 11D-D1b-a are complete, and Task 11D-D1b-b is next
+10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a,
+Task 11D-D1b-a, and Task 11D-D1b-b are complete, and Task 11D-D2 is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -384,8 +384,8 @@ formal submission interface with clean validation and parity.
   reads.
 - [x] Handle add/remove/transform/material/mesh/reload/evict operations without
   stale GPU references.
-- [ ] Move GPU visibility and command generation to stable GPU Scene indices.
-- [ ] Compact visible indices and commands without synchronous CPU readback.
+- [x] Move GPU visibility and command generation to stable GPU Scene indices.
+- [x] Compact visible indices and commands without synchronous CPU readback.
 - [ ] Route Tier 2 output through the Task 10 submission strategies.
 - [ ] Keep Tier 1 per-group binding on devices without required table-indexing
   capabilities.
@@ -760,10 +760,32 @@ and primary audit are complete. The accepted non-executing foundation is:
   RenderGraph 50/50, Render Submission 27/27, and the architecture phase gate
   in the primary audit.
 
-Start **Task 11D-D1b-b** next: build candidates from exact accepted lookups,
-acquire one current lease per recorded view, declare all candidate/table/output
-RenderGraph accesses, dispatch GPU Scene frustum/compaction for Depth and Opaque,
-commit or roll back the lease with graph/submission outcomes, and feed the
-existing per-group Task 10 indirect-count submission. Any missing or stale
-lookup/lease/readiness must preserve the existing `IndirectGrouped` inputs.
-Public `GPUResidentScene` selection remains forbidden until D3/D4.
+Task 11D-D1b-b implementation, one independent review/remediation round, final
+re-review, and primary audit are complete. The accepted execution bridge is:
+
+- [x] Build the optional stable-ref candidate stream only after authoritative
+  Tier 1 insertion, using exact accepted-draw lookups and one committed version.
+  Missing or stale lookups invalidate only the optional stream; no ordinal is
+  guessed and the existing `IndirectGrouped` inputs remain intact.
+- [x] Acquire one exact current lease per graph/view and share its same six
+  table handles between Depth and Opaque GPU Scene cull consumers. Each consumer
+  declares candidate/table compute reads and the established culling UAV writes.
+- [x] Dispatch the separately sealed GPU Scene frustum and compaction pipelines,
+  refresh exact view/constants/capacities, and feed their per-group outputs into
+  the unchanged Task 10 indirect-count submission without CPU readback.
+- [x] Commit candidate and resident-table realized accesses only after successful
+  graph command recording; cancel an acquired zero-consumer lease and roll back
+  every unsubmitted/invalid-completion path.
+- [x] Fail the entire recording if a registered GPU Scene callback fails. Do not
+  replay normal GPU, CPU, or Direct work in the same frame, and do not commit
+  realized access or call `EndFrame` for that failed recording.
+- [x] Finish final independent re-review with READY and no unresolved P0-P2;
+  pass GPU-driven 40/40, GPU Scene upload 17/17, GPU Scene 31/31, RenderGraph
+  50/50, Render Submission 27/27, Render Pass 194/194, and the architecture gate.
+
+Start **Task 11D-D2** next: make raster transform fetch consume the exact stable
+GPU Scene transform identity used by D1b-b, bind and declare the required raster
+table reads for Depth/Opaque, and prove visual/semantic parity with the existing
+per-recording instance stream. Keep per-group material/geometry submission and
+public `GPUResidentScene` selection unchanged; D3/D4 still own the backend-neutral
+capability contract and DX12 qualification.

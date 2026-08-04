@@ -1361,6 +1361,7 @@ namespace RVX
         {
             RGBufferHandle constants;
             RGBufferHandle instances;
+            RGBufferHandle gpuSceneCandidates;
             RGBufferHandle instanceIndices;
             RGBufferHandle visibility;
             RGBufferHandle visibleInstances;
@@ -1381,6 +1382,7 @@ namespace RVX
         std::shared_ptr<GPUCullingRecordedState> m_opaqueGPUCullingRecordedState;
         bool m_depthGPUCullingFramePrepared = false;
         bool m_opaqueGPUCullingFramePrepared = false;
+        bool m_gpuSceneCullingCommandRecordingFailed = false;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
         std::unique_ptr<GPUSceneUpdate> m_gpuSceneUpdate;
