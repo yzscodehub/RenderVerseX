@@ -386,6 +386,17 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME GPUSceneUploadValidation
+    SOURCES GPUSceneUploadValidation/main.cpp
+    LIBS RVX::Render RVX_RenderRuntimeCore
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private
+    LABELS "unit;architecture;gpu-scene"
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME RenderFrameExtractionValidation
     SOURCES RenderFrameExtractionValidation/main.cpp
     LIBS

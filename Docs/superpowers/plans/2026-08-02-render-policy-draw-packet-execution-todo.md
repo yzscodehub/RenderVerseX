@@ -1,8 +1,7 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
-10A/10B/10C, Tasks 11A/11B, and Task 11C-1 are complete and reviewed;
-Task 11C-2 is next
+10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -375,14 +374,14 @@ formal submission interface with clean validation and parity.
 
 - [x] Freeze GPU Scene table schemas for primitive, bounds, transform,
   material, geometry, draw metadata, and generation/version data.
-- [ ] Define stable generation-checked indices and completion-aware free-list
+- [x] Define stable generation-checked indices and completion-aware free-list
   reuse.
 - [x] Define publication rules: entries become visible only after dependent
   mesh/material generations are resident.
-- [ ] Implement persistent buffers and dirty-range upload planning.
-- [ ] Double-buffer or version CPU-updated data that may overlap in-flight GPU
+- [x] Implement persistent buffers and dirty-range upload planning.
+- [x] Double-buffer or version CPU-updated data that may overlap in-flight GPU
   reads.
-- [ ] Handle add/remove/transform/material/mesh/reload/evict operations without
+- [x] Handle add/remove/transform/material/mesh/reload/evict operations without
   stale GPU references.
 - [ ] Move GPU visibility and command generation to stable GPU Scene indices.
 - [ ] Compact visible indices and commands without synchronous CPU readback.
@@ -395,7 +394,7 @@ formal submission interface with clean validation and parity.
   in-flight update, and capacity growth fixtures.
 - [ ] Re-run two-view, rejected-frame, resize, and in-flight failure injection
   against persistent Tier 2 buffers and generation retirement.
-- [ ] Prove unchanged static scenes perform no full-scene upload after warm-up.
+- [x] Prove unchanged static scenes perform no full-scene upload after warm-up.
 - [ ] Benchmark 100/1k/10k/50k candidates and record CPU/GPU costs; do not tune
   Auto until Task 15.
 
@@ -671,11 +670,38 @@ are complete. The accepted allocator/change-journal ledger is:
   actual allocation-failure checkpoints; pass GPU Scene 30/30 and independent
   review with no unresolved P0-P2.
 
-Task 11C-2 must allocate persistent per-table GPU buffers, consume every
-committed change set without silently skipping a base version, derive per-buffer
-dirty upload ranges, version CPU-updated data across in-flight reads, and map
-safe-version reclamation to real multi-domain GPU completion tokens. A newly
-allocated or capacity-grown buffer set requires a full initialization; an older
-completed set may use accumulated dirty ranges only when its resident-version
-chain is complete. Task 11C remains non-executing; Task 11D owns GPU
-visibility/command generation and Task 10 strategy consumption.
+Task 11C-2 implementation, two independent review/remediation rounds, final
+re-review, and primary audit are complete. The accepted persistent-upload
+ledger is:
+
+- [x] Allocate six persistent Default-memory structured buffer tables and use
+  Upload-memory staging plus declared RenderGraph copy ranges; never map a
+  Default buffer.
+- [x] Fully initialize every new or capacity-grown allocation, including the
+  zeroed capacity tail, and export only valid ShaderResource contents.
+- [x] Consume exact version-linked deltas, coalesce multiple observed updates,
+  retain changes that arrive while an upload is pending, and force a full
+  upload when the base-version chain is missed.
+- [x] Keep warm static resident data zero-copy even while its prior use is in
+  flight; select or allocate another set before overwriting GPU-visible data.
+- [x] Roll back recorded-but-unsubmitted access and dirty snapshots, retain
+  upload resources through the submission batch, and advance residency only
+  after graph execution plus a structurally valid tracker-issued completion
+  token.
+- [x] Merge multi-domain upload and future-read completion tokens, fail closed
+  on lost completion evidence, and confirm allocator reclamation only after the
+  database accepts the computed safe-version watermark.
+- [x] Reject CPU table sizes that exceed the uint32 row-index ABI and calculate
+  retained persistent-buffer byte counts in uint64.
+- [x] Keep the result non-executing and backend-neutral: no shader binding,
+  visibility, policy, submission strategy, or fallback behavior changed.
+- [x] Finish independent re-review with READY and no unresolved P0-P2; pass
+  GPU Scene Upload 12/12, GPU Scene 30/30, RenderGraph 50/50, and Render
+  Submission 27/27 in the primary gate.
+
+Start **Task 11D** next. It must make stable GPU Scene indices the authoritative
+Tier 2 visibility/command-generation input, compact visible indices and commands
+without CPU readback, mark every consumed resident version for completion-aware
+lifetime tracking, and route the resulting command streams through the Task 10
+submission strategies. Tier 1 remains the per-group fallback when the required
+table-indexing capabilities are unavailable.

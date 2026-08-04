@@ -65,4 +65,45 @@ namespace RVX
     };
 
     static_assert(static_cast<uint8>(GPUScenePublicationFailureReason::None) == 0);
+
+    /** @brief Non-authoritative GPU-scene upload planner failure reason. */
+    enum class GPUSceneUploadFailureReason : uint8
+    {
+        None = 0,
+        NotInitialized,
+        ContinuityLost,
+        BufferCreationFailed,
+        StagingCreationFailed,
+        StagingMapFailed,
+        SubmissionRetentionFailed,
+        InvalidCompletionToken,
+        DeviceLost,
+        UnexpectedFailure,
+    };
+
+    /**
+     * @brief Value-only diagnostics for the renderer-private GPU-scene uploader.
+     *
+     * Task 11C still does not bind these buffers or alter rendering policy. The
+     * counters therefore describe upload planning and lifetime only.
+     */
+    struct GPUSceneUploadDiagnostics
+    {
+        uint64 observedVersion = 0;
+        uint64 residentVersion = 0;
+        uint64 safeReclaimVersion = 0;
+        uint64 persistentBytes = 0;
+        uint64 frameUploadBytes = 0;
+        uint32 bufferSetCount = 0;
+        uint32 frameUploadRangeCount = 0;
+        uint32 pendingSetCount = 0;
+        GPUSceneUploadFailureReason failureReason = GPUSceneUploadFailureReason::None;
+        bool fullUpload = false;
+        bool continuityLost = false;
+        bool deviceLost = false;
+        bool rollbackPending = false;
+        bool executionEligible = false;
+    };
+
+    static_assert(static_cast<uint8>(GPUSceneUploadFailureReason::None) == 0);
 } // namespace RVX

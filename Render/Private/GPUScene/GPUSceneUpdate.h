@@ -64,6 +64,26 @@ namespace RVX
             return m_database.GetCommittedMirror();
         }
 
+        /** @brief Renderer-private upload input; never a shader or policy input. */
+        [[nodiscard]] const GPUSceneCommittedMirror&
+            GetCommittedMirrorForUpload() const noexcept
+        {
+            return m_database.GetCommittedMirror();
+        }
+
+        /** @brief Exact delta for the current committed mirror generation. */
+        [[nodiscard]] const GPUSceneChangeSet&
+            GetLastChangeSetForUpload() const noexcept
+        {
+            return m_database.GetLastChangeSet();
+        }
+
+        /** @brief Admit retired identities only after real GPU completion. */
+        [[nodiscard]] bool ReclaimRetiredThrough(uint64 safeVersion)
+        {
+            return m_database.ReclaimRetiredThrough(safeVersion);
+        }
+
     private:
         [[nodiscard]] GPUScenePublicationStats PublishImpl(
             const RenderScene& scene,

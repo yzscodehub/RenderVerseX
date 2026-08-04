@@ -70,6 +70,7 @@ namespace RVX
     class RenderResourceRegistry;
     class RenderSubmissionResourceBatch;
     class GPUSceneUpdate;
+    class GPUSceneUploader;
     class RayTracedReflectionCompositePass;
     class RayTracedReflectionDenoisePass;
     class RayTracedReflectionPass;
@@ -898,6 +899,10 @@ namespace RVX
         [[nodiscard]] const GPUScenePublicationStats&
             GetGPUScenePublicationStats() const noexcept;
 
+        /** @brief Value-only diagnostics for Task 11C's non-executing upload path. */
+        [[nodiscard]] const GPUSceneUploadDiagnostics&
+            GetGPUSceneUploadDiagnostics() const noexcept;
+
         /** @brief Explicitly discard the non-executable GPU-scene shadow. */
         void ClearGPUSceneShadow();
 
@@ -1290,6 +1295,8 @@ namespace RVX
 
         void RetireOwnerSnapshots(const GPUCompletionToken& completion);
         void BuildRenderGraph();
+        void SynchronizeGPUSceneUploader() noexcept;
+        void ReclaimGPUSceneRetiredRows() noexcept;
         void PrepareRayTracingScene();
         void AddRayTracingSceneBuildPass();
         void AddGPUDrivenCullingPass(
@@ -1377,6 +1384,7 @@ namespace RVX
         std::unique_ptr<PostProcessStack> m_postProcessStack;
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
         std::unique_ptr<GPUSceneUpdate> m_gpuSceneUpdate;
+        std::unique_ptr<GPUSceneUploader> m_gpuSceneUploader;
 
         ViewData m_viewData;
         PrimaryDirectionalLightRecordInput m_primaryDirectionalLight;

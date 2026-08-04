@@ -6,6 +6,7 @@
 #include "Render/Renderer/SceneRenderer.h"
 #include "Context/RenderContextInternal.h"
 #include "GPUScene/GPUSceneUpdate.h"
+#include "GPUScene/GPUSceneUploader.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Core/Assert.h"
@@ -657,6 +658,15 @@ void SceneRenderer::Initialize(
     // Create render graph
     m_renderGraph = std::make_unique<RenderGraph>();
     m_renderGraph->SetDevice(m_renderContext->GetDevice());
+    m_gpuSceneUploader = std::make_unique<GPUSceneUploader>();
+    if (!m_gpuSceneUploader->Initialize(
+            m_renderContext->GetDevice(),
+            RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext)))
+    {
+        // GPU-scene upload is diagnostics/future Tier 2 preparation only. A
+        // failure here must never make the authoritative RenderScene fail.
+        RVX_RENDER_WARN("SceneRenderer: GPUSceneUploader unavailable");
+    }
 
     // Candidate extraction is shared, but Depth and Opaque own independent
     // instance/group/indirect/count streams. This keeps their policy and
@@ -816,6 +826,12 @@ void SceneRenderer::Initialize(
 void SceneRenderer::Shutdown()
 {
     InvalidateRenderFramePlan();
+    if (m_gpuSceneUploader)
+    {
+        m_gpuSceneUploader->ReleaseUnsubmittedFrame();
+        m_gpuSceneUploader->Shutdown();
+        m_gpuSceneUploader.reset();
+    }
     if (m_gpuSceneUpdate)
     {
         m_gpuSceneUpdate->Clear();
@@ -1219,6 +1235,7 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
         try
         {
             static_cast<void>(m_gpuSceneUpdate->Publish(m_renderScene, registry));
+            SynchronizeGPUSceneUploader();
         }
         catch (const std::bad_alloc&)
         {
@@ -1438,6 +1455,7 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
         {
             static_cast<void>(
                 m_gpuSceneUpdate->Revalidate(*m_renderResourceRegistry));
+            SynchronizeGPUSceneUploader();
         }
         catch (const std::bad_alloc&)
         {
@@ -1451,6 +1469,7 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
                 m_renderScene.GetAcceptedHeader().sequence);
         }
     }
+    ReclaimGPUSceneRetiredRows();
     RVX_ASSERT_MSG(!m_submissionBatch,
                    "Previous frame submission ownership was not resolved");
     m_submissionBatch = std::make_unique<RenderSubmissionResourceBatch>();
@@ -1487,6 +1506,11 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
 
 void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
 {
+    if (m_gpuSceneUploader)
+    {
+        m_gpuSceneUploader->NotifySubmission(completion);
+        ReclaimGPUSceneRetiredRows();
+    }
     if (m_rayTracedShadowPass)
     {
         m_rayTracedShadowPass->NotifySubmission(
@@ -1513,6 +1537,10 @@ void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
 
 void SceneRenderer::ReleaseUnsubmittedFrame()
 {
+    if (m_gpuSceneUploader)
+    {
+        m_gpuSceneUploader->ReleaseUnsubmittedFrame();
+    }
     if (m_rayTracedShadowPass)
     {
         m_rayTracedShadowPass->ReleaseUnsubmittedFrame(
@@ -1605,11 +1633,50 @@ SceneRenderer::GetGPUScenePublicationStats() const noexcept
     return m_gpuSceneUpdate ? m_gpuSceneUpdate->GetStats() : unavailableStats;
 }
 
+const GPUSceneUploadDiagnostics&
+SceneRenderer::GetGPUSceneUploadDiagnostics() const noexcept
+{
+    static const GPUSceneUploadDiagnostics unavailableDiagnostics{};
+    return m_gpuSceneUploader
+        ? m_gpuSceneUploader->GetDiagnostics()
+        : unavailableDiagnostics;
+}
+
+void SceneRenderer::SynchronizeGPUSceneUploader() noexcept
+{
+    if (!m_gpuSceneUploader || !m_gpuSceneUpdate)
+    {
+        return;
+    }
+
+    m_gpuSceneUploader->Observe(
+        m_gpuSceneUpdate->GetCommittedMirrorForUpload(),
+        m_gpuSceneUpdate->GetLastChangeSetForUpload());
+}
+
+void SceneRenderer::ReclaimGPUSceneRetiredRows() noexcept
+{
+    if (!m_gpuSceneUploader || !m_gpuSceneUpdate)
+    {
+        return;
+    }
+
+    const uint64 safeVersion = m_gpuSceneUploader->PollSafeReclaimVersion();
+    if (safeVersion != 0)
+    {
+        if (m_gpuSceneUpdate->ReclaimRetiredThrough(safeVersion))
+        {
+            m_gpuSceneUploader->ConfirmReclaimedThrough(safeVersion);
+        }
+    }
+}
+
 void SceneRenderer::ClearGPUSceneShadow()
 {
     if (m_gpuSceneUpdate)
     {
         m_gpuSceneUpdate->Clear();
+        SynchronizeGPUSceneUploader();
     }
 }
 
@@ -2950,6 +3017,10 @@ void SceneRenderer::Render()
     {
         m_renderGraph->Execute(*ctx);
         graphExecuted = true;
+        if (m_gpuSceneUploader)
+        {
+            m_gpuSceneUploader->CommitRealizedAccess(*m_renderGraph);
+        }
         CommitGPUDrivenAccessSnapshots();
         if (m_activeRenderPassResults &&
             m_activeRenderPassResults->identity == m_activeRenderPassIdentity)
@@ -4123,6 +4194,14 @@ void SceneRenderer::BuildRenderGraph()
     m_externalRenderTargetStats = {};
     m_externalRenderTargetStats.requested =
         m_externalRenderTarget.colorTarget != nullptr || m_externalRenderTarget.depthTarget != nullptr;
+
+    // Record the private CPU-shadow upload before a future Task 11D consumer
+    // could import the buffers. It does not bind or schedule an execution path.
+    if (m_gpuSceneUploader)
+    {
+        m_gpuSceneUploader->BuildRenderGraph(
+            *m_renderGraph, m_submissionBatch.get());
+    }
 
     RGTextureHandle backBufferTarget;
     RGTextureHandle sceneColorTarget;

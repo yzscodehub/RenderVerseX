@@ -46212,3 +46212,106 @@ below.
   visibility/command-generation consumer.
 
 ---
+
+### R-SP349 Render-policy Task 11C-2 persistent GPU Scene upload lifecycle
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11C-2 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP348 (completion-aware GPU Scene allocator).
+- Task 11B remains the authoritative accepted-scene CPU mirror and Task 11C-1
+  remains the only source of stable indices, exact deltas, and retirement
+  versions. This slice consumes those contracts without changing scene meaning.
+
+**Approved scope:**
+
+- Allocate six renderer-private persistent Default-memory structured buffers,
+  retain matching Upload-memory staging resources through the submission batch,
+  and declare all copy ranges through RenderGraph.
+- Fully initialize each new or capacity-grown allocation, including zeroed tail
+  capacity, then export only ShaderResource/Valid access snapshots. Default
+  buffers are never CPU mapped.
+- Track covered, desired, and resident versions per buffer set. Accumulate exact
+  dirty ranges across continuous generations, preserve later deltas while a
+  prior upload is pending, and force full initialization after any missed base.
+- Keep a clean current resident set zero-copy even while its prior use is in
+  flight. Reuse for writes only after real completion; otherwise select or
+  allocate another set.
+- Restore consumed dirty ranges and prior access state for recorded-but-
+  unsubmitted work. Promote residency only after graph execution and a
+  structurally valid completion token that was actually issued by the active
+  submission tracker.
+- Merge upload and future-consumer read uses across queue domains. Translate
+  completed/compatibility-wait-idle evidence into a safe version, fail closed on
+  lost evidence, and confirm the watermark only after database reclamation
+  succeeds.
+- Reject mirrors beyond the uint32 row-index ABI and calculate persistent
+  resource retention sizes in uint64. Expose value-only diagnostics without RHI
+  handles or backend policy.
+
+**Files changed:**
+
+- `Render/Private/GPUScene/GPUSceneUploader.h`
+- `Render/Private/GPUScene/GPUSceneUploader.cpp`
+- `Render/Private/GPUScene/GPUSceneUpdate.h`
+- `Render/Include/Render/GPUScene/GPUScenePublication.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- Render and test CMake registration plus
+  `Tests/GPUSceneUploadValidation/main.cpp`.
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial build of `GPUSceneUploadValidation`, `GPUSceneValidation`,
+  `RenderGraphValidation`, and `RenderSubmissionValidation`: PASS.
+- Primary focused executables: PASS 12/12, 30/30, 50/50, and 27/27.
+- Coverage includes full/incremental copies, warm-static zero upload, in-flight
+  clean reuse, pending-delta preservation, multi-generation coalescing,
+  capacity growth, missed continuity, multi-domain completion, future read-use,
+  invalid/unissued/future tokens, creation/map failures, compatibility wait-idle,
+  and device loss.
+
+**Independent review result:**
+
+- Initial verdict NOT READY found warm-static writes blocked by an unnecessary
+  completion probe, loss of a later delta while an earlier upload was pending,
+  insufficient token provenance validation, and missing lifetime/coverage
+  fixtures.
+- First remediation separated immutable pending snapshots from later dirty
+  state, added the future-read seam and tracker-issued token validation, and
+  expanded the focused suite.
+- Second verdict NOT READY found device loss could be hidden by the warm-static
+  fast path and inactive/future-domain completion points could be accepted.
+- Final remediation moved device status ahead of the fast path, validated every
+  point against active topology and last-submitted values, and rejected row
+  counts beyond the public uint32 ABI.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`. The reviewer also accepted
+  the primary audit's explicit uint64 retained-byte calculation.
+
+**Primary review status:**
+
+- PASS after complete diff inspection, adjudication of every independent
+  finding, one additional uint32 multiplication-overflow correction, serial
+  rebuild, independent 119/119 focused executable tests, and whitespace/scope
+  validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, and Python
+  cache changes remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- This remains deliberately non-executing: buffers are uploaded but not bound
+  to visibility or drawing, and `executionEligible` remains false. Task 11D
+  owns the first GPU consumer, visible-index/command compaction, and Task 10
+  strategy handoff.
+- Task 11D must call `MarkResidentVersionUsed` for every recorded consumer and
+  preserve the uploader's Notify/Release symmetry; otherwise completion-aware
+  reuse must fail closed.
+- Task 11E still owns full memory/capacity/churn diagnostics, the 100/1k/10k/50k
+  benchmark matrix, and measured evidence. No Auto threshold is tuned here.
+- DX12 Tier 2 runtime qualification remains open until Task 11D/11E. Vulkan and
+  Metal strategy qualification remain Tasks 12 and 13.
+
+---
