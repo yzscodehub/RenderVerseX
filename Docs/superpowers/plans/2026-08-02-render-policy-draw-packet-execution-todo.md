@@ -2,8 +2,8 @@
 
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
 10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a,
-Task 11D-D1b-a, Task 11D-D1b-b, and Task 11D-D2a are complete, and
-Task 11D-D2b is next
+Task 11D-D1b-a, Task 11D-D1b-b, Task 11D-D2a, and Task 11D-D2b are complete,
+and Task 11D-D3/D4 is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -816,3 +816,39 @@ raster only for an actual successful GPU Scene seal, and prove semantic/parity
 behavior. Do not reacquire the lease, rebuild descriptors in passes, change
 Task 10 per-group submission, or select public `GPUResidentScene`; D3/D4 still
 own the backend-neutral capability contract and DX12 qualification.
+
+Task 11D-D2b implementation, independent review, remediation, final re-review,
+and primary audit are complete. The accepted production-pass integration is:
+
+- [x] Create the immutable raster binding only after a successful exact GPU
+  Scene seal, verify its version and candidate/primitive/transform resources,
+  retain it in the submission batch, and fall back before graph mutation when
+  the optional binding cannot be formed.
+- [x] Propagate the same candidate handle and the already-acquired lease's exact
+  primitive/transform handles into Depth and Opaque. Both passes declare Vertex
+  SRV reads without importing the buffers again or acquiring another lease.
+- [x] Select the GPU Scene object descriptor and opaque/masked/depth raster
+  pipelines only for sealed GPU Scene inputs while preserving the existing
+  identity instance-index stream, mesh/material binding, and Task 10 per-group
+  indirect-count submission.
+- [x] Preserve current depth eligibility: opaque depth may use GPU Scene, while
+  masked depth remains in its planned Direct lane. Do not add an unreachable
+  fourth masked-depth GPU Scene pipeline or change MeshPassProcessor semantics.
+- [x] Carry `receivesShadow` through the published primitive flag into the GPU
+  Scene vertex permutation while preserving Direct/Tier1 object-constant
+  behavior and shared pixel-shader semantics.
+- [x] Treat any registered GPU Scene pass failure, including a failed hybrid
+  Direct lane after GPU work, as a failed frame recording. Do not submit,
+  commit realized access, or replay another lane for that frame.
+- [x] Prove Graphics/Vertex realized access for candidate/primitive/transform,
+  exact-lease rollback/reacquisition, primitive-flag publication, typed-input
+  rejection, and pass dependency failure.
+- [x] Finish independent final review with READY and no unresolved P0-P2; pass
+  GPU-driven 42/42, PipelineCache 133/133, Render Pass 198/198, GPU Scene upload
+  17/17, GPU Scene 32/32, Render Submission 27/27, and the architecture gate.
+
+Start **Task 11D-D3/D4** next: define the backend-neutral table-indexed GPU
+resident-scene capability and qualification contract without weakening Tier 1,
+then implement and qualify the DX12 path before allowing the unchanged frame
+plan resolver to select public `GPUResidentScene`. Real-device evidence must
+distinguish warm resident Tier 2 execution from first-frame Tier 1 fallback.

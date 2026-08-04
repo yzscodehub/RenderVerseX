@@ -8,6 +8,7 @@
 #include "Render/Graph/RenderGraph.h"
 #include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/Passes/MeshPassProcessor.h"
+#include "Render/PipelineCache.h"
 #include "Render/Policy/RenderFrameExecutionPlan.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
@@ -239,27 +240,53 @@ namespace RVX
         RenderPassRecordIdentity identity{};
         std::shared_ptr<GPUCullingRecordedState> recordedState;
         RGBufferHandle instances{};
+        RGBufferHandle gpuSceneCandidates{};
+        RGBufferHandle gpuScenePrimitives{};
+        RGBufferHandle gpuSceneTransforms{};
         RGBufferHandle instanceIndices{};
         RGBufferHandle indirectDraws{};
         RGBufferHandle drawCount{};
+        std::shared_ptr<const GPUSceneRasterBindingSnapshot> gpuSceneRasterBinding;
+        std::shared_ptr<std::atomic_bool> gpuSceneRecordingFailure;
+        uint64 gpuSceneLeaseVersion = 0;
+        bool gpuSceneRasterEnabled = false;
 
         [[nodiscard]] bool HasCompleteHandles() const noexcept
         {
-            return instances.IsValid() && instanceIndices.IsValid() &&
-                   indirectDraws.IsValid() && drawCount.IsValid();
+            const bool commonHandles = instanceIndices.IsValid() &&
+                indirectDraws.IsValid() && drawCount.IsValid();
+            if (!gpuSceneRasterEnabled)
+            {
+                return commonHandles && instances.IsValid();
+            }
+            return commonHandles && gpuSceneCandidates.IsValid() &&
+                gpuScenePrimitives.IsValid() && gpuSceneTransforms.IsValid() &&
+                gpuSceneRasterBinding != nullptr &&
+                gpuSceneRecordingFailure != nullptr && gpuSceneLeaseVersion != 0;
         }
 
         [[nodiscard]] bool IsCompatibleWith(
             const RenderPassRecordIdentity& expected) const noexcept
         {
-            return recordedState != nullptr &&
-                   identity == expected &&
-                   instances.IsValid() && instanceIndices.IsValid() &&
-                   indirectDraws.IsValid() && drawCount.IsValid() &&
-                   HasCurrentGraphProvenance(instances, expected) &&
-                   HasCurrentGraphProvenance(instanceIndices, expected) &&
-                   HasCurrentGraphProvenance(indirectDraws, expected) &&
-                   HasCurrentGraphProvenance(drawCount, expected);
+            if (recordedState == nullptr || identity != expected ||
+                !HasCompleteHandles() ||
+                !HasCurrentGraphProvenance(instanceIndices, expected) ||
+                !HasCurrentGraphProvenance(indirectDraws, expected) ||
+                !HasCurrentGraphProvenance(drawCount, expected))
+            {
+                return false;
+            }
+
+            if (!gpuSceneRasterEnabled)
+            {
+                return HasCurrentGraphProvenance(instances, expected);
+            }
+
+            return gpuSceneRasterBinding->IsReadyForBinding() &&
+                gpuSceneRasterBinding->leaseVersion == gpuSceneLeaseVersion &&
+                HasCurrentGraphProvenance(gpuSceneCandidates, expected) &&
+                HasCurrentGraphProvenance(gpuScenePrimitives, expected) &&
+                HasCurrentGraphProvenance(gpuSceneTransforms, expected);
         }
     };
 

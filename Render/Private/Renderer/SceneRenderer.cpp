@@ -3084,11 +3084,13 @@ void SceneRenderer::Render()
     if (ctx && graphCompileValid)
     {
         m_renderGraph->Execute(*ctx);
-        graphExecuted = !m_gpuSceneCullingCommandRecordingFailed;
+        graphExecuted = !m_gpuSceneCullingCommandRecordingFailed &&
+            (!m_gpuSceneRasterCommandRecordingFailed ||
+             !m_gpuSceneRasterCommandRecordingFailed->load());
         if (!graphExecuted)
         {
             executionSkippedReason =
-                "GPU-scene culling command recording failed";
+                "GPU-scene command recording failed";
         }
         if (graphExecuted)
         {
@@ -4023,6 +4025,8 @@ void SceneRenderer::AddGPUDrivenCullingPass(
     m_depthGPUCullingRecordedState.reset();
     m_opaqueGPUCullingRecordedState.reset();
     m_gpuSceneCullingCommandRecordingFailed = false;
+    m_gpuSceneRasterCommandRecordingFailed =
+        std::make_shared<std::atomic_bool>(false);
 
     if (!m_renderGraph || !m_gpuDrivenCullingEnabled || !recordIdentity.IsValid())
     {
@@ -4117,12 +4121,56 @@ void SceneRenderer::AddGPUDrivenCullingPass(
                 recordIdentity.recordEpoch};
         bool usesGPUScene = false;
         std::shared_ptr<GPUCullingRecordedState> recordedState;
+        std::shared_ptr<const GPUSceneRasterBindingSnapshot> gpuSceneBinding;
+        uint64 gpuSceneLeaseVersion = 0;
         if (gpuSceneLease && owner->IsGPUSceneExecutionReady() &&
-            owner->HasCompleteGPUSceneCandidates())
+            owner->HasCompleteGPUSceneCandidates() && m_pipelineCache &&
+            m_submissionBatch)
         {
             recordedState = owner->SealForGPUSceneGraph(
                 cullingIdentity, *gpuSceneLease);
             usesGPUScene = recordedState != nullptr && recordedState->IsValid();
+            if (usesGPUScene)
+            {
+                const GPUSceneRasterResourceSnapshot rasterResources =
+                    recordedState->GetGPUSceneRasterResourceSnapshot();
+                ObjectConstants objectConstants{};
+                objectConstants.world = Mat4Identity();
+                objectConstants.normalMatrix = Mat4Identity();
+                objectConstants.previousWorldViewProjection = Mat4Identity();
+                objectConstants.objectVelocityParams = Vec4(0.0f);
+                objectConstants.skinningParams = Vec4(0.0f);
+
+                GPUSceneRasterBindingSnapshot binding;
+                if (!rasterResources.IsValid() ||
+                    rasterResources.GetLeaseVersion() != gpuSceneLease->version ||
+                    !m_pipelineCache->CreateGPUSceneRasterBindingSnapshot(
+                        rasterResources, objectConstants, binding) ||
+                    !binding.IsReadyForBinding() ||
+                    binding.leaseVersion != gpuSceneLease->version ||
+                    binding.candidateBuffer.Get() != rasterResources.GetCandidates() ||
+                    binding.primitiveBuffer.Get() != rasterResources.GetPrimitives() ||
+                    binding.transformBuffer.Get() != rasterResources.GetTransforms())
+                {
+                    recordedState.reset();
+                    usesGPUScene = false;
+                }
+                else
+                {
+                    gpuSceneBinding = std::make_shared<GPUSceneRasterBindingSnapshot>(
+                        std::move(binding));
+                    if (!gpuSceneBinding->RetainSubmissionResources(*m_submissionBatch))
+                    {
+                        gpuSceneBinding.reset();
+                        recordedState.reset();
+                        usesGPUScene = false;
+                    }
+                    else
+                    {
+                        gpuSceneLeaseVersion = gpuSceneLease->version;
+                    }
+                }
+            }
         }
         if (!recordedState)
         {
@@ -4141,7 +4189,9 @@ void SceneRenderer::AddGPUDrivenCullingPass(
         const GPUCulling& recordedCulling = recordedState->GetCulling();
 
         RHIBuffer* constantsBuffer = recordedCulling.GetCullingConstantsBuffer();
-        RHIBuffer* instanceBuffer = recordedCulling.GetInstanceBuffer();
+        RHIBuffer* instanceBuffer = usesGPUScene
+            ? nullptr
+            : recordedCulling.GetInstanceBuffer();
         RHIBuffer* gpuSceneCandidateBuffer = usesGPUScene
             ? recordedCulling.GetGPUSceneCandidateBuffer()
             : nullptr;
@@ -4150,9 +4200,10 @@ void SceneRenderer::AddGPUDrivenCullingPass(
         RHIBuffer* visibleInstanceBuffer = recordedCulling.GetVisibleInstanceBuffer();
         RHIBuffer* indirectDrawBuffer = recordedCulling.GetIndirectBuffer();
         RHIBuffer* drawCountBuffer = recordedCulling.GetDrawCountBuffer();
-        if (!constantsBuffer || !instanceBuffer || !instanceIndexBuffer ||
+        if (!constantsBuffer || !instanceIndexBuffer ||
             !visibilityBuffer || !visibleInstanceBuffer ||
             !indirectDrawBuffer || !drawCountBuffer ||
+            (!usesGPUScene && !instanceBuffer) ||
             (usesGPUScene && !gpuSceneCandidateBuffer))
         {
             return false;
@@ -4163,14 +4214,17 @@ void SceneRenderer::AddGPUDrivenCullingPass(
         GPUDrivenCullPassData handles;
         handles.constants = m_renderGraph->ImportBuffer(
             constantsBuffer, accessSnapshots.constants);
-        handles.instances = m_renderGraph->ImportBuffer(
-            instanceBuffer, accessSnapshots.instances);
         if (usesGPUScene)
         {
             handles.gpuSceneCandidates = m_renderGraph->ImportBuffer(
                 gpuSceneCandidateBuffer, accessSnapshots.gpuSceneCandidates);
             handles.gpuSceneTables = gpuSceneLease->handles;
             handles.usesGPUScene = true;
+        }
+        else
+        {
+            handles.instances = m_renderGraph->ImportBuffer(
+                instanceBuffer, accessSnapshots.instances);
         }
         handles.instanceIndices = m_renderGraph->ImportBuffer(
             instanceIndexBuffer, accessSnapshots.instanceIndices);
@@ -4188,18 +4242,21 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             MakeRHIAccessSnapshot(RHIResourceState::ConstantBuffer,
                                   RHIShaderStage::Compute,
                                   computeExecutionDomain));
-        m_renderGraph->SetExportAccess(
-            handles.instances,
-            MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
-                                  RHIShaderStage::AllGraphics,
-                                  graphicsDomain));
+        if (!usesGPUScene)
+        {
+            m_renderGraph->SetExportAccess(
+                handles.instances,
+                MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                      RHIShaderStage::AllGraphics,
+                                      graphicsDomain));
+        }
         if (usesGPUScene)
         {
             m_renderGraph->SetExportAccess(
                 handles.gpuSceneCandidates,
                 MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
-                                      RHIShaderStage::Compute,
-                                      computeExecutionDomain));
+                                      RHIShaderStage::Vertex,
+                                      graphicsDomain));
         }
         m_renderGraph->SetExportAccess(
             handles.instanceIndices,
@@ -4226,14 +4283,27 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             MakeRHIAccessSnapshot(RHIResourceState::IndirectArgument,
                                   RHIShaderStage::None,
                                   graphicsDomain));
-        outHandles = {handles.constants,
-                      handles.instances,
-                      handles.gpuSceneCandidates,
-                      handles.instanceIndices,
-                      handles.visibility,
-                      handles.visibleInstances,
-                      handles.indirectDraws,
-                      handles.drawCount};
+        outHandles = {};
+        outHandles.constants = handles.constants;
+        outHandles.instances = handles.instances;
+        outHandles.gpuSceneCandidates = handles.gpuSceneCandidates;
+        if (usesGPUScene)
+        {
+            constexpr uint32 primitiveTableIndex =
+                static_cast<uint32>(GPUSceneResidentTable::Primitives);
+            constexpr uint32 transformTableIndex =
+                static_cast<uint32>(GPUSceneResidentTable::Transforms);
+            outHandles.gpuScenePrimitives = handles.gpuSceneTables[primitiveTableIndex];
+            outHandles.gpuSceneTransforms = handles.gpuSceneTables[transformTableIndex];
+            outHandles.gpuSceneRasterBinding = std::move(gpuSceneBinding);
+            outHandles.gpuSceneLeaseVersion = gpuSceneLeaseVersion;
+            outHandles.gpuSceneRasterEnabled = true;
+        }
+        outHandles.instanceIndices = handles.instanceIndices;
+        outHandles.visibility = handles.visibility;
+        outHandles.visibleInstances = handles.visibleInstances;
+        outHandles.indirectDraws = handles.indirectDraws;
+        outHandles.drawCount = handles.drawCount;
         outRecordedState = recordedState;
         outGPUSceneRegistered = usesGPUScene;
 
@@ -4365,7 +4435,9 @@ void SceneRenderer::CommitGPUDrivenAccessSnapshots()
         }
         GPUCullingAccessSnapshots snapshots;
         snapshots.constants = m_renderGraph->GetRealizedAccess(handles.constants);
-        snapshots.instances = m_renderGraph->GetRealizedAccess(handles.instances);
+        snapshots.instances = handles.instances.IsValid()
+            ? m_renderGraph->GetRealizedAccess(handles.instances)
+            : recordedState->GetAccessSnapshots().instances;
         snapshots.gpuSceneCandidates = handles.gpuSceneCandidates.IsValid()
             ? m_renderGraph->GetRealizedAccess(handles.gpuSceneCandidates)
             : recordedState->GetAccessSnapshots().gpuSceneCandidates;
@@ -4661,17 +4733,29 @@ void SceneRenderer::BuildRenderGraph()
         passRecordContext, *passRecordContext.results);
     m_activeRenderPassResults = passRecordContext.results;
     m_activeRenderPassIdentity = passRecordContext.identity;
+    const std::shared_ptr<std::atomic_bool> gpuSceneRasterRecordingFailure =
+        m_gpuSceneRasterCommandRecordingFailed;
     const auto makeGPUDrivenInputs =
-        [&passRecordContext](const std::shared_ptr<GPUCullingRecordedState>& recordedState,
-                             const GPUCullingGraphHandles& handles)
+        [&passRecordContext,
+         gpuSceneRasterRecordingFailure](
+            const std::shared_ptr<GPUCullingRecordedState>& recordedState,
+            const GPUCullingGraphHandles& handles)
     {
         RenderPassGPUDrivenInputs inputs;
         inputs.identity = passRecordContext.identity;
         inputs.recordedState = handles.IsValid() ? recordedState : nullptr;
         inputs.instances = handles.instances;
+        inputs.gpuSceneCandidates = handles.gpuSceneCandidates;
+        inputs.gpuScenePrimitives = handles.gpuScenePrimitives;
+        inputs.gpuSceneTransforms = handles.gpuSceneTransforms;
         inputs.instanceIndices = handles.instanceIndices;
         inputs.indirectDraws = handles.indirectDraws;
         inputs.drawCount = handles.drawCount;
+        inputs.gpuSceneRasterBinding = handles.gpuSceneRasterBinding;
+        inputs.gpuSceneRecordingFailure =
+            handles.gpuSceneRasterEnabled ? gpuSceneRasterRecordingFailure : nullptr;
+        inputs.gpuSceneLeaseVersion = handles.gpuSceneLeaseVersion;
+        inputs.gpuSceneRasterEnabled = handles.gpuSceneRasterEnabled;
         return inputs;
     };
     passRecordContext.depthGPUDriven = makeGPUDrivenInputs(

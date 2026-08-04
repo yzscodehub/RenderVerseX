@@ -1056,6 +1056,29 @@ TEST(GPUSceneValidation, PublicationDiffsByObjectIdAndIgnoresAcceptedObjectOrder
     EXPECT_EQ(update.GetStats().publishedDrawCount, 0U);
 }
 
+TEST(GPUSceneValidation, PublishedReceivesShadowPrimitiveFlagSurvivesCommitMirror)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle mesh = resources.AddReadyMesh({504});
+    GPUSceneUpdate update;
+    RenderScene scene;
+    RenderObject object = MakePublishedRenderObject(1, mesh, 1.0F);
+    object.flags = static_cast<uint32>(GPUScenePrimitiveFlags::ReceivesShadow);
+    scene.AddObject(std::move(object));
+
+    const GPUScenePublicationStats stats = update.Publish(scene, resources.registry);
+    ASSERT_EQ(stats.failureReason, GPUScenePublicationFailureReason::None);
+    ASSERT_TRUE(stats.complete);
+    ASSERT_NE(stats.committedVersion, 0U);
+
+    const GPUSceneCommittedMirror& mirror = update.GetCommittedMirrorForTesting();
+    ASSERT_EQ(mirror.primitives.size(), 2U);
+    const GPUScenePrimitiveRow& primitive = mirror.primitives[1];
+    EXPECT_TRUE(HasGPUSceneRowFlag(primitive.header.flags, GPUSceneRowFlags::Live));
+    EXPECT_TRUE(HasGPUScenePrimitiveFlag(
+        primitive.primitiveFlags, GPUScenePrimitiveFlags::ReceivesShadow));
+}
+
 TEST(GPUSceneValidation, AcceptedDrawLookupRequiresOneLiveContiguousGenerationCheckedRow)
 {
     PublicationRegistryFixture resources;

@@ -555,6 +555,12 @@ namespace
         {
             std::array<RGBufferHandle, GPU_SCENE_RESIDENT_TABLE_COUNT> handles;
         };
+        struct RasterLeaseReadPassData
+        {
+            RGBufferHandle candidate;
+            RGBufferHandle primitive;
+            RGBufferHandle transform;
+        };
         const auto addLeaseReadPass =
             [&graph, &lease](const char* name)
         {
@@ -577,9 +583,43 @@ namespace
         };
         addLeaseReadPass("GPUSceneLeaseReadA");
         addLeaseReadPass("GPUSceneLeaseReadB");
+
+        RHIBufferDesc candidateDesc;
+        candidateDesc.size = sizeof(uint32);
+        candidateDesc.stride = sizeof(uint32);
+        candidateDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+        candidateDesc.memoryType = RHIMemoryType::Default;
+        candidateDesc.debugName = "GPUSceneLeaseRasterCandidate";
+        const RHIBufferRef candidateBuffer = device.CreateBuffer(candidateDesc);
+        ASSERT_NE(candidateBuffer, nullptr);
+        const RGBufferHandle candidateHandle = graph.ImportBuffer(
+            candidateBuffer.Get(),
+            MakeRHIBufferAccessSnapshot(RHIResourceState::ShaderResource,
+                                        RHIShaderStage::Vertex));
+        ASSERT_TRUE(candidateHandle.IsValid());
+        graph.AddPass<RasterLeaseReadPassData>(
+            "GPUSceneLeaseRasterRead",
+            RenderGraphPassType::Graphics,
+            [candidateHandle, lease](RenderGraphBuilder& builder,
+                                     RasterLeaseReadPassData& data)
+            {
+                data.candidate = builder.Read(
+                    candidateHandle,
+                    MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                          RHIShaderStage::Vertex));
+                data.primitive = builder.Read(
+                    lease->handles[static_cast<uint32>(GPUSceneResidentTable::Primitives)],
+                    MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                          RHIShaderStage::Vertex));
+                data.transform = builder.Read(
+                    lease->handles[static_cast<uint32>(GPUSceneResidentTable::Transforms)],
+                    MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                          RHIShaderStage::Vertex));
+            },
+            [](const RasterLeaseReadPassData&, RHICommandContext&) {});
         graph.Compile();
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
-        EXPECT_EQ(2u, graph.GetCompileStats().totalPasses);
+        EXPECT_EQ(3u, graph.GetCompileStats().totalPasses);
         graph.Execute(context);
         uploader.CommitRealizedAccess(graph);
         EXPECT_FALSE(uploader.CancelCurrentGraphLease());
@@ -590,6 +630,19 @@ namespace
             EXPECT_EQ(ProjectRHIResourceState(
                           graph.GetRealizedAccess(lease->handles[tableIndex]).uniformAccess),
                       RHIResourceState::ShaderResource);
+        }
+        for (const RGBufferHandle handle : {
+                 candidateHandle,
+                 lease->handles[static_cast<uint32>(GPUSceneResidentTable::Primitives)],
+                 lease->handles[static_cast<uint32>(GPUSceneResidentTable::Transforms)]})
+        {
+            const RHIBufferAccessSnapshot realized = graph.GetRealizedAccess(handle);
+            EXPECT_EQ(ProjectRHIResourceState(realized.uniformAccess),
+                      RHIResourceState::ShaderResource);
+            EXPECT_NE(static_cast<uint32>(
+                          realized.uniformAccess.executionScope &
+                          RHIExecutionScope::VertexShader),
+                      0U);
         }
 
         uploader.ReleaseUnsubmittedFrame();

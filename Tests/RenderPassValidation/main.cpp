@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -1794,6 +1795,80 @@ namespace
             recorded.GetIndirectBuffer(), access.indirectDraws);
         inputs.drawCount = graph.ImportBuffer(
             recorded.GetDrawCountBuffer(), access.drawCount);
+        return inputs;
+    }
+
+    RenderPassGPUDrivenInputs MakeSyntheticGPUSceneRasterInputs(
+        RenderGraph& graph,
+        FakeDevice& device,
+        PipelineCache& pipelineCache,
+        RenderPassGPUDrivenInputs inputs)
+    {
+        if (!inputs.recordedState || !inputs.recordedState->IsValid())
+        {
+            return {};
+        }
+
+        const auto makeStructuredBuffer = [&device](
+                                              uint32 capacity,
+                                              uint32 stride,
+                                              const char* debugName)
+        {
+            RHIBufferDesc desc;
+            desc.size = static_cast<uint64>(capacity) * stride;
+            desc.usage = RHIBufferUsage::Structured |
+                RHIBufferUsage::ShaderResource;
+            desc.memoryType = RHIMemoryType::Upload;
+            desc.stride = stride;
+            desc.debugName = debugName;
+            return device.CreateBuffer(desc);
+        };
+
+        constexpr uint32 capacity = 4u;
+        constexpr uint64 leaseVersion = 91u;
+        GPUSceneRasterResourceSnapshot resources;
+        resources.m_candidateCount =
+            inputs.recordedState->GetCulling().GetInstanceCount();
+        resources.m_candidateCapacity = capacity;
+        resources.m_primitiveCapacity = capacity;
+        resources.m_transformCapacity = capacity;
+        resources.m_leaseVersion = leaseVersion;
+        resources.m_exactLeaseVersion = leaseVersion;
+        resources.m_candidates = makeStructuredBuffer(
+            capacity, sizeof(GPUSceneCullingCandidate),
+            "SyntheticGPUSceneRaster.Candidates");
+        resources.m_primitives = makeStructuredBuffer(
+            capacity, sizeof(GPUScenePrimitiveRow),
+            "SyntheticGPUSceneRaster.Primitives");
+        resources.m_transforms = makeStructuredBuffer(
+            capacity, sizeof(GPUSceneTransformRow),
+            "SyntheticGPUSceneRaster.Transforms");
+        if (!resources.IsValid())
+        {
+            return {};
+        }
+
+        GPUSceneRasterBindingSnapshot binding;
+        ObjectConstants objectConstants{};
+        if (!pipelineCache.CreateGPUSceneRasterBindingSnapshot(
+                resources, objectConstants, binding))
+        {
+            return {};
+        }
+
+        inputs.instances = {};
+        inputs.gpuSceneCandidates = graph.ImportBuffer(
+            resources.GetCandidates(), RHIResourceState::ShaderResource);
+        inputs.gpuScenePrimitives = graph.ImportBuffer(
+            resources.GetPrimitives(), RHIResourceState::ShaderResource);
+        inputs.gpuSceneTransforms = graph.ImportBuffer(
+            resources.GetTransforms(), RHIResourceState::ShaderResource);
+        inputs.gpuSceneRasterBinding =
+            std::make_shared<GPUSceneRasterBindingSnapshot>(std::move(binding));
+        inputs.gpuSceneRecordingFailure =
+            std::make_shared<std::atomic_bool>(false);
+        inputs.gpuSceneLeaseVersion = leaseVersion;
+        inputs.gpuSceneRasterEnabled = true;
         return inputs;
     }
 
@@ -11805,6 +11880,99 @@ TEST_F(RenderPassValidationFixture,
 }
 
 TEST_F(RenderPassValidationFixture,
+       DepthPrepassGPUSceneInputMismatchSignalsFrameAbort)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).entityId = 7601;
+    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_FALSE(buffers.submeshes.empty());
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.packet = MakeDepthPacket(
+        scene, 0, 0, buffers, item.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+    SceneMeshPassPreparation preparation = PrepareDepthPackets(
+        opaqueItems, maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedGPUPlan(preparation, 7601);
+    ASSERT_TRUE(compiled.succeeded);
+    const auto plannedDepth = std::find_if(
+        compiled.plan.passes.begin(), compiled.plan.passes.end(),
+        [](const RenderPassExecutionPlan& passPlan)
+        {
+            return passPlan.pass == RenderPassKind::Depth;
+        });
+    ASSERT_NE(plannedDepth, compiled.plan.passes.end());
+    ASSERT_EQ(1u, plannedDepth->partition.gpuDrivenPacketCount);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    GPUCulling culling;
+    GPUCullingConfig cullingConfig;
+    cullingConfig.maxInstances = 4;
+    cullingConfig.enableOcclusionCulling = false;
+    cullingConfig.enableDistanceCulling = false;
+    culling.Initialize(&device, cullingConfig);
+    culling.BeginFrame();
+    GPUIndexedDrawDesc drawDesc;
+    drawDesc.indexCount = buffers.submeshes[0].indexCount;
+    drawDesc.firstIndex = buffers.submeshes[0].indexOffset;
+    drawDesc.vertexOffset = buffers.submeshes[0].baseVertex;
+    ASSERT_EQ(0u, culling.BeginDrawGroup(
+        meshResource->GetId(), item.material.slot,
+        MaterialPipelineVariant::Opaque, item.mesh, item.material));
+    ASSERT_NE(RVX_INVALID_INDEX,
+              culling.AddDrawItemInstance(scene, item, drawDesc, 0));
+    culling.EndDrawGroup();
+    culling.EndFrame();
+    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    RHITextureRef depthTexture = device.CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
+    ASSERT_TRUE(depthView);
+    ViewData frameView = view;
+    frameView.viewCache = &viewCache;
+    frameView.depthTarget = graph.ImportTexture(
+        depthTexture.Get(), RHIResourceState::DepthWrite);
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, frameView, scene, opaqueItems, maskedItems, compiled.plan,
+        preparation, report, compiled.plan.frameSequence);
+    context.depthGPUDriven = MakeSyntheticGPUSceneRasterInputs(
+        graph, device, pipelineCache,
+        MakeMainSceneGPUDrivenInputs(graph, context.identity, culling));
+    ASSERT_TRUE(context.depthGPUDriven.IsCompatibleWith(context.identity));
+    const std::shared_ptr<std::atomic_bool> recordingFailure =
+        context.depthGPUDriven.gpuSceneRecordingFailure;
+    ++context.depthGPUDriven.gpuSceneLeaseVersion;
+    ASSERT_FALSE(context.depthGPUDriven.IsCompatibleWith(context.identity));
+
+    DepthPrepass pass;
+    pass.SetEnabled(true);
+    ConfigureResources(pass, gpuResources, pipelineCache);
+    // A stale exact lease must reject the typed input at graph registration
+    // and propagate the shared frame-abort signal without recording work.
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    RecordingCommandContext commands;
+    graph.Execute(commands);
+    pass.PublishRecordResults(context.results, context.identity);
+
+    ASSERT_TRUE(recordingFailure);
+    EXPECT_TRUE(recordingFailure->load());
+    EXPECT_EQ(0u, commands.beginRenderPassCount);
+    EXPECT_EQ(0u, commands.drawIndexedIndirectCount);
+}
+
+TEST_F(RenderPassValidationFixture,
        DepthPrepassUsesPublishedPacketsAfterDrawItemDrift)
 {
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
@@ -12860,6 +13028,91 @@ TEST_F(RenderPassValidationFixture,
               opaqueReport->gpuDrivenLane.status);
     EXPECT_EQ(RenderExecutionStatus::NotAttempted,
               opaqueReport->directLane.status);
+}
+
+TEST_F(RenderPassValidationFixture,
+       OpaquePassGPUSceneDependencyFailureSignalsFrameAbort)
+{
+    RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
+
+    scene.GetMutableObject(0).entityId = 8601;
+    scene.GetMutableObject(0).bounds = meshResource->GetBounds();
+    const MeshGPUBuffers buffers =
+        gpuResources.GetMeshBuffers(meshResource->GetId());
+    ASSERT_TRUE(buffers.IsValid());
+    ASSERT_FALSE(buffers.submeshes.empty());
+
+    RenderDrawItem item = MakeDrawItem(MaterialRenderMode::Opaque);
+    item.packet = MakeOpaquePacket(
+        scene, 0, 0, buffers, item.material,
+        RenderMaterialMode::Opaque, RenderDrawFlags::None);
+    std::vector<RenderDrawItem> opaqueItems = {item};
+    std::vector<RenderDrawItem> maskedItems;
+    SceneMeshPassPreparation preparation = PrepareOpaquePackets(
+        opaqueItems, maskedItems);
+    const RenderFramePlanCompileResult compiled =
+        CompileForcedGPUPlan(preparation, 8601);
+    ASSERT_TRUE(compiled.succeeded);
+    RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
+
+    GPUCulling culling;
+    GPUCullingConfig cullingConfig;
+    cullingConfig.maxInstances = 4;
+    cullingConfig.enableOcclusionCulling = false;
+    cullingConfig.enableDistanceCulling = false;
+    culling.Initialize(&device, cullingConfig);
+    culling.BeginFrame();
+    GPUIndexedDrawDesc drawDesc;
+    drawDesc.indexCount = buffers.submeshes[0].indexCount;
+    drawDesc.firstIndex = buffers.submeshes[0].indexOffset;
+    drawDesc.vertexOffset = buffers.submeshes[0].baseVertex;
+    ASSERT_EQ(0u, culling.BeginDrawGroup(
+        meshResource->GetId(), item.material.slot,
+        MaterialPipelineVariant::Opaque, item.mesh, item.material));
+    ASSERT_NE(RVX_INVALID_INDEX,
+              culling.AddDrawItemInstance(scene, item, drawDesc, 0));
+    culling.EndDrawGroup();
+    culling.EndFrame();
+    culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    ViewData frameView = view;
+    frameView.viewCache = &viewCache;
+    frameView.colorTarget = graph.ImportTexture(
+        colorTexture.Get(), RHIResourceState::RenderTarget);
+    RenderPassRecordContext context = MakeMainSceneRecordContext(
+        graph, frameView, scene, opaqueItems, maskedItems, compiled.plan,
+        preparation, report, compiled.plan.frameSequence);
+    context.opaqueGPUDriven = MakeSyntheticGPUSceneRasterInputs(
+        graph, device, pipelineCache,
+        MakeMainSceneGPUDrivenInputs(graph, context.identity, culling));
+    ASSERT_TRUE(context.opaqueGPUDriven.IsCompatibleWith(context.identity));
+    const std::shared_ptr<std::atomic_bool> recordingFailure =
+        context.opaqueGPUDriven.gpuSceneRecordingFailure;
+
+    OpaquePass pass;
+    pass.SetResources(&pipelineCache, nullptr);
+    pass.SetResourceRegistry(&gpuResources.GetRegistry());
+    pass.AddToGraph(graph, context);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    RecordingCommandContext commands;
+    graph.Execute(commands);
+    pass.PublishRecordResults(context.results, context.identity);
+
+    ASSERT_TRUE(recordingFailure);
+    EXPECT_TRUE(recordingFailure->load());
+    EXPECT_EQ(0u, commands.beginRenderPassCount);
+    EXPECT_EQ(0u, commands.drawIndexedIndirectCount);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              context.results->executionReport.status);
+    const RenderPassExecutionReport* opaqueReport = FindPassExecutionReport(
+        context.results->executionReport, RenderPassKind::Opaque);
+    ASSERT_NE(opaqueReport, nullptr);
+    EXPECT_EQ(RenderExecutionStatus::Failed, opaqueReport->status);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              opaqueReport->gpuDrivenLane.status);
 }
 
 TEST_F(RenderPassValidationFixture, OpaquePassRejectsMalformedTypedRecordWithoutPlan)

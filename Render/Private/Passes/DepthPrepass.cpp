@@ -17,6 +17,7 @@
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
+#include <array>
 #include <chrono>
 #include <limits>
 #include <memory>
@@ -241,10 +242,16 @@ void DepthPrepass::InitializeGraphRecorder(
     m_maskedDrawItems = maskedDrawItems;
     m_gpuCulling = gpuCulling;
     m_gpuDrivenInstanceHandle = gpuInputs.instances;
+    m_gpuSceneCandidateHandle = gpuInputs.gpuSceneCandidates;
+    m_gpuScenePrimitiveHandle = gpuInputs.gpuScenePrimitives;
+    m_gpuSceneTransformHandle = gpuInputs.gpuSceneTransforms;
     m_gpuDrivenInstanceIndexHandle = gpuInputs.instanceIndices;
     m_gpuDrivenIndirectHandle = gpuInputs.indirectDraws;
     m_gpuDrivenDrawCountHandle = gpuInputs.drawCount;
+    m_gpuSceneRasterBinding = gpuInputs.gpuSceneRasterBinding;
+    m_gpuSceneRecordingFailure = gpuInputs.gpuSceneRecordingFailure;
     m_gpuDrivenDepthIndirectEnabled = gpuDrivenPlanned;
+    m_gpuSceneRasterEnabled = gpuInputs.gpuSceneRasterEnabled;
 }
 
 void DepthPrepass::AddToGraph(
@@ -333,6 +340,12 @@ void DepthPrepass::AddToGraph(
         hasCurrentGraphDepthAttachment(execution.view, execution.identity) &&
         (!gpuPlanned || (gpuInputs.IsCompatibleWith(execution.identity) &&
                          gpuInputs.recordedState->Matches(gpuRecordingIdentity)));
+    if (sourceContextValid && gpuPlanned &&
+        gpuInputs.gpuSceneRasterEnabled && !contextValid &&
+        gpuInputs.gpuSceneRecordingFailure)
+    {
+        gpuInputs.gpuSceneRecordingFailure->store(true);
+    }
     const bool resultOwnershipValid = sourceContextValid &&
         execution.identity.Matches(graph) && execution.results != nullptr &&
         execution.results->identity == execution.identity &&
@@ -436,7 +449,22 @@ void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
     if (m_gpuDrivenDepthIndirectEnabled && m_gpuCulling)
     {
-        if (m_gpuDrivenInstanceHandle.IsValid())
+        if (m_gpuSceneRasterEnabled)
+        {
+            if (m_gpuSceneCandidateHandle.IsValid())
+            {
+                builder.Read(m_gpuSceneCandidateHandle, RHIShaderStage::Vertex);
+            }
+            if (m_gpuScenePrimitiveHandle.IsValid())
+            {
+                builder.Read(m_gpuScenePrimitiveHandle, RHIShaderStage::Vertex);
+            }
+            if (m_gpuSceneTransformHandle.IsValid())
+            {
+                builder.Read(m_gpuSceneTransformHandle, RHIShaderStage::Vertex);
+            }
+        }
+        else if (m_gpuDrivenInstanceHandle.IsValid())
         {
             builder.Read(m_gpuDrivenInstanceHandle, RHIShaderStage::Vertex);
         }
@@ -516,12 +544,17 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                                             uint32 expectedPacketCount,
                                             uint32 expectedGroupCount)
 {
+    const bool usesGPUSceneRaster = m_gpuSceneRasterEnabled;
     m_drawStats.gpuDrivenRequested = m_gpuDrivenDepthIndirectEnabled && m_gpuCulling != nullptr;
     if (!m_gpuDrivenDepthIndirectEnabled ||
         !m_pipelineCache ||
         !m_gpuCulling ||
-        !m_gpuCulling->GetInstanceBuffer() ||
         !m_gpuCulling->GetInstanceIndexBuffer() ||
+        (!usesGPUSceneRaster && !m_gpuCulling->GetInstanceBuffer()) ||
+        (usesGPUSceneRaster &&
+         (!m_gpuSceneRasterBinding ||
+          !m_gpuSceneRasterBinding->IsReadyForBinding() ||
+          m_gpuSceneRasterBinding->leaseVersion == 0)) ||
         (!m_gpuCulling->WasGpuExecutionUsedLastCull() && !m_gpuCulling->WasCpuFallbackUsedLastCull()))
     {
         return false;
@@ -536,33 +569,45 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     }
     m_drawStats.gpuDrivenEligible = true;
 
-    RHIPipeline* pipeline = m_pipelineCache->GetGPUDrivenDepthOnlyPipeline();
+    RHIPipeline* pipeline = usesGPUSceneRaster
+        ? m_gpuSceneRasterBinding->depthPipeline.Get()
+        : m_pipelineCache->GetGPUDrivenDepthOnlyPipeline();
     if (!pipeline)
     {
         return false;
     }
 
-    if (!m_pipelineCache->UpdateObjectConstants(Mat4Identity(),
-                                                Mat4Identity(),
-                                                Mat4Identity(),
-                                                view.previousViewProjectionMatrix,
-                                                false))
-    {
-        return false;
-    }
-    if (!m_pipelineCache->UpdateObjectInstanceBuffer(m_gpuCulling->GetInstanceBuffer()))
+    if (!usesGPUSceneRaster &&
+        (!m_pipelineCache->UpdateObjectConstants(Mat4Identity(),
+                                                  Mat4Identity(),
+                                                  Mat4Identity(),
+                                                  view.previousViewProjectionMatrix,
+                                                  false) ||
+         !m_pipelineCache->UpdateObjectInstanceBuffer(m_gpuCulling->GetInstanceBuffer())))
     {
         return false;
     }
 
     ctx.SetPipeline(pipeline);
 
-    if (RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet())
+    RHIDescriptorSet* const frameSet = m_pipelineCache->GetFrameDescriptorSet();
+    if (usesGPUSceneRaster && !frameSet)
+    {
+        return false;
+    }
+    if (frameSet)
     {
         ctx.SetDescriptorSet(0, frameSet);
     }
 
-    if (RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet())
+    if (usesGPUSceneRaster)
+    {
+        static constexpr std::array<uint32, 1> gpuSceneObjectOffsets{0u};
+        ctx.SetDescriptorSet(1,
+                             m_gpuSceneRasterBinding->objectDescriptorSet.Get(),
+                             gpuSceneObjectOffsets);
+    }
+    else if (RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet())
     {
         const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
         ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
@@ -581,7 +626,11 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         {
             return false;
         }
-
+        if (usesGPUSceneRaster &&
+            group.pipelineVariant != MaterialPipelineVariant::Opaque)
+        {
+            return false;
+        }
         ctx.SetVertexBuffer(0, buffers.positionBuffer);
         ctx.SetVertexBuffer(6, m_gpuCulling->GetInstanceIndexBuffer());
         if (buffers.boneIndicesBuffer)
@@ -900,6 +949,13 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
     uint64 directLaneSubmissionCpuNanoseconds = 0;
     bool gpuLaneSubmissionTimingAvailable = false;
     bool directLaneSubmissionTimingAvailable = false;
+    const auto reportGPUSceneRecordingFailure = [&]()
+    {
+        if (m_gpuSceneRasterEnabled && m_gpuSceneRecordingFailure)
+        {
+            m_gpuSceneRecordingFailure->store(true);
+        }
+    };
 
     RHITextureViewRef depthTargetViewOwner;
     RHITextureView* depthTargetView = nullptr;
@@ -921,6 +977,7 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
 
     if (!m_pipelineCache || !m_renderScene || !depthTargetView)
     {
+        reportGPUSceneRecordingFailure();
         return;
     }
 
@@ -932,6 +989,7 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
             Ref<RefCounted>(depthTargetView->GetTexture())))
     {
         RVX_RENDER_WARN("DepthPrepass: submission ownership rejected graph-owned depth attachment");
+        reportGPUSceneRecordingFailure();
         return;
     }
 
@@ -941,6 +999,10 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
                                       bool gpuLane,
                                       RenderVisibilityMode visibility)
     {
+        if (status == RenderExecutionStatus::Failed)
+        {
+            reportGPUSceneRecordingFailure();
+        }
         if (view.renderFrameExecutionReport == nullptr)
         {
             return;
@@ -1085,6 +1147,11 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
                 view,
                 plannedGPUCount,
                 depthPlan->partition.drawGroupCount);
+            if (!gpuRecorded && m_gpuSceneRasterEnabled &&
+                m_gpuSceneRecordingFailure)
+            {
+                m_gpuSceneRecordingFailure->store(true);
+            }
             gpuLaneSubmissionCpuNanoseconds = static_cast<uint64>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - laneStart).count());
@@ -1102,6 +1169,10 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
         ctx.EndRenderPass();
 
         const bool passRecorded = gpuRecorded && directRecorded;
+        if (!passRecorded)
+        {
+            reportGPUSceneRecordingFailure();
+        }
         m_drawStats.failureReason = passRecorded
             ? RenderPolicyReason::None
             : RenderPolicyReason::UnexpectedRecordingFailure;

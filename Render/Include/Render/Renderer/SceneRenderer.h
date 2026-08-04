@@ -39,6 +39,7 @@
 #include "RenderContracts/RenderProxy.h"
 #include "RHI/RHICapabilities.h"
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -1362,18 +1363,32 @@ namespace RVX
             RGBufferHandle constants;
             RGBufferHandle instances;
             RGBufferHandle gpuSceneCandidates;
+            RGBufferHandle gpuScenePrimitives;
+            RGBufferHandle gpuSceneTransforms;
             RGBufferHandle instanceIndices;
             RGBufferHandle visibility;
             RGBufferHandle visibleInstances;
             RGBufferHandle indirectDraws;
             RGBufferHandle drawCount;
+            std::shared_ptr<const GPUSceneRasterBindingSnapshot> gpuSceneRasterBinding;
+            uint64 gpuSceneLeaseVersion = 0;
+            bool gpuSceneRasterEnabled = false;
 
             bool IsValid() const
             {
-                return constants.IsValid() && instances.IsValid() &&
+                const bool commonHandles = constants.IsValid() &&
                        instanceIndices.IsValid() &&
                        visibility.IsValid() && visibleInstances.IsValid() &&
                        indirectDraws.IsValid() && drawCount.IsValid();
+                if (!gpuSceneRasterEnabled)
+                {
+                    return commonHandles && instances.IsValid();
+                }
+                return commonHandles && gpuSceneCandidates.IsValid() &&
+                       gpuScenePrimitives.IsValid() &&
+                       gpuSceneTransforms.IsValid() &&
+                       gpuSceneRasterBinding != nullptr &&
+                       gpuSceneLeaseVersion != 0;
             }
         };
         GPUCullingGraphHandles m_depthGPUCullingGraphHandles;
@@ -1383,6 +1398,7 @@ namespace RVX
         bool m_depthGPUCullingFramePrepared = false;
         bool m_opaqueGPUCullingFramePrepared = false;
         bool m_gpuSceneCullingCommandRecordingFailed = false;
+        std::shared_ptr<std::atomic_bool> m_gpuSceneRasterCommandRecordingFailed;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
         std::unique_ptr<GPUSceneUpdate> m_gpuSceneUpdate;

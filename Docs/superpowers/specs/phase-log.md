@@ -46692,3 +46692,108 @@ below.
   changes no current frame-plan or sample behavior.
 
 ---
+
+### R-SP354 Render-policy Task 11D-D2b GPU Scene raster pass integration
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D2b stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP353 (stable GPU Scene raster substrate).
+- D2a supplied validated shaders, layouts, pipelines, descriptors, and an
+  immutable binding snapshot, but Depth/Opaque still consumed the transient
+  Tier 1 instance transform stream.
+
+**Approved scope:**
+
+- Form an immutable raster binding only after an actual successful GPU Scene
+  seal. Verify its exact lease version and underlying candidate, primitive, and
+  transform resources before graph mutation; otherwise preserve the normal
+  Tier 1 seal path.
+- Carry the sealed candidate handle and the same already-acquired lease's
+  primitive/transform handles into Depth and Opaque. Declare all three as
+  Vertex SRVs without re-importing buffers or acquiring a second lease.
+- Bind the GPU Scene descriptor and opaque/masked/depth pipelines while keeping
+  the established identity instance-index input, mesh/index/material binding,
+  and Task 10 per-group indirect-count request unchanged.
+- Preserve current mesh-pass eligibility. Opaque depth groups may use the GPU
+  Scene depth pipeline; masked depth remains Direct, so no unreachable fourth
+  masked-depth GPU Scene pipeline or shader entry is introduced.
+- Publish `receivesShadow` through primitive flag bit 2 and deliver it as a
+  non-interpolated vertex output to the shared pixel shader. Direct and Tier 1
+  continue to source the same semantic from object constants.
+- Abort the complete frame recording whenever a registered GPU Scene culling
+  or raster callback fails, including a failure in a mixed Direct lane. Do not
+  submit partial commands, commit realized access, or replay another path.
+- Keep public RHI capabilities, backend implementations, public
+  `GPUResidentScene` selection, qualification, Auto policy, and Samples out of
+  D2b; D3/D4 own the capability and DX12 qualification boundary.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUScene/GPUSceneSchema.h`
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/Passes/RenderPassRecordContext.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Render/Shaders/GPUDriven/GPUSceneRaster.hlsli`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/GPUSceneUploadValidation/main.cpp`
+- `Tests/GPUSceneValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial builds: PASS for `GPUDrivenValidation`,
+  `PipelineCacheValidation`, `RenderPassValidation`,
+  `GPUSceneUploadValidation`, `GPUSceneValidation`, and
+  `RenderSubmissionValidation`.
+- Primary focused executables: PASS 42/42, 133/133, 198/198, 17/17, 32/32,
+  and 27/27 (449/449 total).
+- `Architecture.PhaseGates`: PASS 1/1. The actual GPU Scene DefaultLit and
+  DepthOnly vertex entries continue to compile for DX12 Shader Model 6.0.
+- Executable coverage proves typed input/version rejection, dependency failure
+  propagation, Graphics/Vertex final access on the exact candidate/primitive/
+  transform resources, unsubmitted rollback and lease reacquisition, and
+  receives-shadow preservation through publication and commit.
+
+**Independent review result:**
+
+- Initial review required actual Graphics/Vertex lease-consumer coverage and a
+  publication-chain receives-shadow fixture; both were added and passed.
+- Final review confirmed that removing the proposed fourth masked-depth GPU
+  Scene path matches `DepthMeshPassProcessor::PassRequiresDirect` and preserves
+  the existing Direct masked-depth pipeline without changing Task 10 semantics.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diff, shader semantic, graph provenance, lease lifetime,
+  failure-propagation, and submission-scope review. The primary remediation
+  also closes the mixed-lane case by aborting when either GPU or Direct
+  recording fails after GPU Scene registration.
+- Serial rebuild, independent 449/449 focused executable tests, architecture
+  phase gate, and whitespace/scope checks pass. Unrelated
+  `Engine/Private/Engine.cpp`, runtime diagnostics output, Python cache, and
+  generated shader-cache contents remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- Fake-RHI and DXC tests cannot prove real DX12 descriptor-table contents,
+  row-major DXIL loads, indirect base-instance behavior, or visual/depth/
+  normal/tangent parity. D4 must collect warm-frame real-device evidence.
+- First upload frames legitimately remain Tier 1 until a fully current resident
+  lease exists; D4 diagnostics must distinguish this from a failed Tier 2 path.
+- D3 must define the backend-neutral table-indexing/capability contract before
+  D4 selects public `GPUResidentScene`. Vulkan and Metal qualification remain
+  isolated to Tasks 12 and 13.
+
+---

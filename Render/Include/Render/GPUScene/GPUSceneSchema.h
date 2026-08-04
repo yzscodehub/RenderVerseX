@@ -44,6 +44,16 @@ namespace RVX
         Invalid = 1U << 1U,
     };
 
+    /** @brief Render semantics stored in GPUScenePrimitiveRow::primitiveFlags. */
+    enum class GPUScenePrimitiveFlags : uint32
+    {
+        None = 0,
+        ReceivesShadow = 1U << 2U,
+    };
+
+    static_assert(static_cast<uint32>(GPUScenePrimitiveFlags::ReceivesShadow) ==
+                  (1U << 2U));
+
     /** @brief Backend-neutral material metadata flags for one draw-local row. */
     enum class GPUSceneMaterialFlags : uint32
     {
@@ -84,6 +94,12 @@ namespace RVX
 
     /** @brief True when every bit in @p flags is present in @p value. */
     constexpr bool HasGPUSceneBoundsFlag(uint32 value, GPUSceneBoundsFlags flags)
+    {
+        return (value & static_cast<uint32>(flags)) == static_cast<uint32>(flags);
+    }
+
+    /** @brief True when every bit in @p flags is present in @p value. */
+    constexpr bool HasGPUScenePrimitiveFlag(uint32 value, GPUScenePrimitiveFlags flags)
     {
         return (value & static_cast<uint32>(flags)) == static_cast<uint32>(flags);
     }

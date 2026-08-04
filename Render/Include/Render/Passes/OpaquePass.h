@@ -10,8 +10,11 @@
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "RHI/RHICommandContext.h"
+
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -27,6 +30,7 @@ namespace RVX
     class RenderScene;
     class ShadowPass;
     struct GPUCullingDrawGroup;
+    struct GPUSceneRasterBindingSnapshot;
 
     /**
      * @brief Opaque geometry render pass
@@ -107,9 +111,14 @@ namespace RVX
         RGTextureHandle m_directionalShadowReadHandle;
         RGTextureHandle m_rayTracedShadowMaskReadHandle;
         RGBufferHandle m_gpuDrivenInstanceHandle;
+        RGBufferHandle m_gpuSceneCandidateHandle;
+        RGBufferHandle m_gpuScenePrimitiveHandle;
+        RGBufferHandle m_gpuSceneTransformHandle;
         RGBufferHandle m_gpuDrivenInstanceIndexHandle;
         RGBufferHandle m_gpuDrivenIndirectHandle;
         RGBufferHandle m_gpuDrivenDrawCountHandle;
+        std::shared_ptr<const GPUSceneRasterBindingSnapshot> m_gpuSceneRasterBinding;
+        std::shared_ptr<std::atomic_bool> m_gpuSceneRecordingFailure;
         OpaquePassShadowStats m_shadowStats;
         OpaquePassDrawStats m_drawStats;
         DirectionalShadowRecordOutput m_directionalShadowInputs;
@@ -128,6 +137,7 @@ namespace RVX
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
 
         bool m_gpuDrivenOpaqueIndirectEnabled = false;
+        bool m_gpuSceneRasterEnabled = false;
         bool AreGPUDrivenOpaqueGroupsDrawable(
             uint32 expectedPacketCount,
             uint32 expectedGroupCount,

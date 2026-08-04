@@ -1,4 +1,5 @@
 #include "Core/Log.h"
+#include "Render/GPUScene/GPUSceneSchema.h"
 #include "GPUScene/GPUSceneUploader.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/GPUDriven/GPUDrivenDiagnostics.h"
@@ -2674,7 +2675,7 @@ TEST_F(GPUDrivenValidationFixture,
     const size_t renderStart = source.find("void SceneRenderer::Render()");
     const size_t graphExecute = source.find("m_renderGraph->Execute(*ctx);", renderStart);
     const size_t failedFrameGate = source.find(
-        "graphExecuted = !m_gpuSceneCullingCommandRecordingFailed;", graphExecute);
+        "graphExecuted = !m_gpuSceneCullingCommandRecordingFailed &&", graphExecute);
     const size_t uploaderCommit = source.find(
         "m_gpuSceneUploader->CommitRealizedAccess(*m_renderGraph);", graphExecute);
     const size_t cullingCommit = source.find(
@@ -2719,6 +2720,66 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_LT(acceptedFrame, releaseUnsubmitted);
     EXPECT_LT(releaseUnsubmitted, abortFrame);
     EXPECT_LT(abortFrame, submitFrame);
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       GPUSceneRasterPassesUseSealedBindingsAndSupportedDepthInputs)
+{
+    const std::filesystem::path root = FindWorkspaceRoot();
+    ASSERT_FALSE(root.empty());
+    const std::string renderer = ReadTextFile(
+        root / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string recordContext = ReadTextFile(
+        root / "Render" / "Include" / "Render" / "Passes" /
+        "RenderPassRecordContext.h");
+    const std::string depthPass = ReadTextFile(
+        root / "Render" / "Private" / "Passes" / "DepthPrepass.cpp");
+    const std::string opaquePass = ReadTextFile(
+        root / "Render" / "Private" / "Passes" / "OpaquePass.cpp");
+    ASSERT_FALSE(renderer.empty());
+    ASSERT_FALSE(recordContext.empty());
+    ASSERT_FALSE(depthPass.empty());
+    ASSERT_FALSE(opaquePass.empty());
+
+    const size_t gpuSceneSeal = renderer.find("owner->SealForGPUSceneGraph(");
+    const size_t bindingCreate = renderer.find(
+        "CreateGPUSceneRasterBindingSnapshot(", gpuSceneSeal);
+    const size_t graphImport = renderer.find("m_renderGraph->ImportBuffer(", gpuSceneSeal);
+    ASSERT_NE(std::string::npos, gpuSceneSeal);
+    ASSERT_NE(std::string::npos, bindingCreate);
+    ASSERT_NE(std::string::npos, graphImport);
+    EXPECT_LT(gpuSceneSeal, bindingCreate);
+    EXPECT_LT(bindingCreate, graphImport);
+    EXPECT_NE(std::string::npos,
+              renderer.find("gpuSceneBinding->RetainSubmissionResources"));
+    EXPECT_NE(std::string::npos,
+              renderer.find("m_gpuSceneRasterCommandRecordingFailed"));
+
+    EXPECT_NE(std::string::npos,
+              recordContext.find("gpuSceneCandidates"));
+    EXPECT_NE(std::string::npos,
+              recordContext.find("gpuScenePrimitives"));
+    EXPECT_NE(std::string::npos,
+              recordContext.find("gpuSceneTransforms"));
+    EXPECT_NE(std::string::npos,
+              recordContext.find("gpuSceneRasterBinding"));
+    EXPECT_NE(std::string::npos,
+              recordContext.find("gpuSceneLeaseVersion"));
+
+    for (const std::string* pass : {&depthPass, &opaquePass})
+    {
+        EXPECT_NE(std::string::npos,
+                  pass->find("builder.Read(m_gpuSceneCandidateHandle, RHIShaderStage::Vertex)"));
+        EXPECT_NE(std::string::npos,
+                  pass->find("builder.Read(m_gpuScenePrimitiveHandle, RHIShaderStage::Vertex)"));
+        EXPECT_NE(std::string::npos,
+                  pass->find("builder.Read(m_gpuSceneTransformHandle, RHIShaderStage::Vertex)"));
+        EXPECT_NE(std::string::npos,
+                  pass->find("gpuSceneObjectOffsets{0u}"));
+    }
+
+    EXPECT_NE(std::string::npos,
+              depthPass.find("group.pipelineVariant != MaterialPipelineVariant::Opaque"));
 }
 
 TEST_F(GPUDrivenValidationFixture,
@@ -2893,7 +2954,9 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
     compileVertexEntry(root / "Render" / "Shaders" / "DefaultLit.hlsl");
     compileVertexEntry(root / "Render" / "Shaders" / "DepthOnly.hlsl");
 
-    const auto compileGPUSceneVertexEntry = [&compiler](const std::filesystem::path& shaderPath)
+    const auto compileGPUSceneVertexEntry = [&compiler](
+        const std::filesystem::path& shaderPath,
+        const char* entryPoint)
     {
         const std::string shader = ReadTextFile(shaderPath);
         ASSERT_FALSE(shader.empty());
@@ -2905,7 +2968,7 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
         options.sourcePath = shaderPathString.c_str();
         options.targetBackend = RHIBackendType::DX12;
         options.targetProfile = "vs_6_0";
-        options.entryPoint = "VSMainGPUScene";
+        options.entryPoint = entryPoint;
         options.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
         options.enableDebugInfo = false;
         options.enableOptimization = true;
@@ -2934,8 +2997,10 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
         EXPECT_TRUE(containsInclude("GPUSceneCulling.hlsli"));
     };
 
-    compileGPUSceneVertexEntry(root / "Render" / "Shaders" / "DefaultLit.hlsl");
-    compileGPUSceneVertexEntry(root / "Render" / "Shaders" / "DepthOnly.hlsl");
+    compileGPUSceneVertexEntry(
+        root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUScene");
+    compileGPUSceneVertexEntry(
+        root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene");
 }
 
 TEST_F(GPUDrivenValidationFixture,
@@ -2947,12 +3012,16 @@ TEST_F(GPUDrivenValidationFixture,
         root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneRaster.hlsli");
     const std::string sharedSchema = ReadTextFile(
         root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
+    const std::string cpuSchema = ReadTextFile(
+        root / "Render" / "Include" / "Render" / "GPUScene" /
+        "GPUSceneSchema.h");
     const std::string defaultLit = ReadTextFile(
         root / "Render" / "Shaders" / "DefaultLit.hlsl");
     const std::string depthOnly = ReadTextFile(
         root / "Render" / "Shaders" / "DepthOnly.hlsl");
     ASSERT_FALSE(rasterInclude.empty());
     ASSERT_FALSE(sharedSchema.empty());
+    ASSERT_FALSE(cpuSchema.empty());
     ASSERT_FALSE(defaultLit.empty());
     ASSERT_FALSE(depthOnly.empty());
 
@@ -2969,11 +3038,32 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_NE(rasterInclude.find("dot(transform.normalFromLocal[0].xyz"),
               std::string::npos);
     EXPECT_NE(rasterInclude.find("GPUSceneInvalidClipPosition"), std::string::npos);
+    EXPECT_NE(rasterInclude.find("out uint primitiveFlags"), std::string::npos);
+    EXPECT_NE(rasterInclude.find("RVX_GPU_SCENE_PRIMITIVE_RECEIVES_SHADOW (1u << 2u)"),
+              std::string::npos);
+    EXPECT_NE(cpuSchema.find("enum class GPUScenePrimitiveFlags : uint32"),
+              std::string::npos);
+    EXPECT_NE(cpuSchema.find("ReceivesShadow = 1U << 2U"), std::string::npos);
+    EXPECT_NE(cpuSchema.find("HasGPUScenePrimitiveFlag"), std::string::npos);
     EXPECT_NE(defaultLit.find("PSInput VSMainGPUScene"), std::string::npos);
     EXPECT_NE(depthOnly.find("VSOutput VSMainGPUScene"), std::string::npos);
     EXPECT_NE(defaultLit.find("output.WorldTangent = float4(0.0f"), std::string::npos);
     EXPECT_NE(defaultLit.find("GPUSceneTransformNormal"), std::string::npos);
     EXPECT_NE(defaultLit.find("GPUSceneTransformTangent"), std::string::npos);
+    EXPECT_NE(defaultLit.find("nointerpolation float ReceivesShadowValue : TEXCOORD4"),
+              std::string::npos);
+    EXPECT_NE(defaultLit.find("primitiveFlags & RVX_GPU_SCENE_PRIMITIVE_RECEIVES_SHADOW"),
+              std::string::npos);
+    EXPECT_NE(defaultLit.find("input.ReceivesShadowValue > 0.5"),
+              std::string::npos);
+
+    constexpr uint32 receivesShadow =
+        static_cast<uint32>(GPUScenePrimitiveFlags::ReceivesShadow);
+    const uint32 mixedPrimitiveFlags[] = {receivesShadow, 0u};
+    EXPECT_TRUE(HasGPUScenePrimitiveFlag(
+        mixedPrimitiveFlags[0], GPUScenePrimitiveFlags::ReceivesShadow));
+    EXPECT_FALSE(HasGPUScenePrimitiveFlag(
+        mixedPrimitiveFlags[1], GPUScenePrimitiveFlags::ReceivesShadow));
 
     const auto assertGPUSceneHelperIsPermutationOnly =
         [](const std::string& shaderSource)

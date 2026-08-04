@@ -2901,7 +2901,24 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w, cascadeIndex)"),
               std::string::npos);
     EXPECT_NE(shader.find("#define ReceivesShadow ObjectVelocityParams.y"), std::string::npos);
-    EXPECT_NE(shader.find("const bool receivesShadow = ReceivesShadow > 0.5;"), std::string::npos);
+    const auto countShaderOccurrences = [&shader](std::string_view needle)
+    {
+        size_t count = 0;
+        for (size_t offset = shader.find(needle);
+             offset != std::string::npos;
+             offset = shader.find(needle, offset + needle.size()))
+        {
+            ++count;
+        }
+        return count;
+    };
+    EXPECT_EQ(countShaderOccurrences(
+                  "output.ReceivesShadowValue = ReceivesShadow;"),
+              3u);
+    EXPECT_NE(shader.find("(primitiveFlags & RVX_GPU_SCENE_PRIMITIVE_RECEIVES_SHADOW) != 0u"),
+              std::string::npos);
+    EXPECT_NE(shader.find("const bool receivesShadow = input.ReceivesShadowValue > 0.5;"),
+              std::string::npos);
     EXPECT_NE(shader.find("receivesShadow ? SampleDirectionalShadow(input.WorldPos, normal) : 1.0"),
               std::string::npos);
     EXPECT_NE(shader.find("receivesShadow ? SampleRayTracedShadowMask(input.Position) : 1.0"),

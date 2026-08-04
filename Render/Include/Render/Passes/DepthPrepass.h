@@ -13,8 +13,9 @@
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderDrawItem.h"
 
-#include <span>
+#include <atomic>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace RVX
@@ -23,6 +24,7 @@ namespace RVX
     class GPUCulling;
     class RenderScene;
     class MaterialSystem;
+    struct GPUSceneRasterBindingSnapshot;
 
     /**
      * @brief Depth prepass for early-Z optimization
@@ -134,12 +136,18 @@ namespace RVX
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
         RGTextureHandle m_depthTargetHandle;
         RGBufferHandle m_gpuDrivenInstanceHandle;
+        RGBufferHandle m_gpuSceneCandidateHandle;
+        RGBufferHandle m_gpuScenePrimitiveHandle;
+        RGBufferHandle m_gpuSceneTransformHandle;
         RGBufferHandle m_gpuDrivenInstanceIndexHandle;
         RGBufferHandle m_gpuDrivenIndirectHandle;
         RGBufferHandle m_gpuDrivenDrawCountHandle;
+        std::shared_ptr<const GPUSceneRasterBindingSnapshot> m_gpuSceneRasterBinding;
+        std::shared_ptr<std::atomic_bool> m_gpuSceneRecordingFailure;
         DepthPrepassDrawStats m_drawStats;
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
         bool m_gpuDrivenDepthIndirectEnabled = false;
+        bool m_gpuSceneRasterEnabled = false;
     };
 
 } // namespace RVX

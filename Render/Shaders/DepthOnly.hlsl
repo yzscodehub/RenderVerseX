@@ -148,7 +148,8 @@ VSOutput VSMainGPUScene(RigidVSInput input)
 {
     VSOutput output;
     GPUSceneTransformRow transform;
-    if (!GPUSceneResolveRasterTransform(input.InstanceIndex, transform))
+    uint primitiveFlags;
+    if (!GPUSceneResolveRasterTransform(input.InstanceIndex, transform, primitiveFlags))
     {
         output.Position = GPUSceneInvalidClipPosition();
         return output;
@@ -158,6 +159,7 @@ VSOutput VSMainGPUScene(RigidVSInput input)
     output.Position = mul(ViewProjection, worldPosition);
     return output;
 }
+
 #endif
 
 MaskedVSOutput VSMainMasked(MaskedVSInput input)

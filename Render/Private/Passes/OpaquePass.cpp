@@ -305,10 +305,16 @@ void OpaquePass::InitializeGraphRecorder(
     m_maskedDrawItems = maskedDrawItems;
     m_gpuCulling = gpuCulling;
     m_gpuDrivenInstanceHandle = gpuInputs.instances;
+    m_gpuSceneCandidateHandle = gpuInputs.gpuSceneCandidates;
+    m_gpuScenePrimitiveHandle = gpuInputs.gpuScenePrimitives;
+    m_gpuSceneTransformHandle = gpuInputs.gpuSceneTransforms;
     m_gpuDrivenInstanceIndexHandle = gpuInputs.instanceIndices;
     m_gpuDrivenIndirectHandle = gpuInputs.indirectDraws;
     m_gpuDrivenDrawCountHandle = gpuInputs.drawCount;
+    m_gpuSceneRasterBinding = gpuInputs.gpuSceneRasterBinding;
+    m_gpuSceneRecordingFailure = gpuInputs.gpuSceneRecordingFailure;
     m_gpuDrivenOpaqueIndirectEnabled = gpuDrivenPlanned;
+    m_gpuSceneRasterEnabled = gpuInputs.gpuSceneRasterEnabled;
     m_directionalShadowInputs = directionalShadow;
     m_rayTracedShadowInputs = rayTracedShadow;
 }
@@ -410,6 +416,12 @@ void OpaquePass::AddToGraph(
         execution.rayTracedShadow.IsCompatibleWith(execution.identity) &&
         (!gpuPlanned || (gpuInputs.IsCompatibleWith(execution.identity) &&
                          gpuInputs.recordedState->Matches(gpuRecordingIdentity)));
+    if (sourceContextValid && gpuPlanned &&
+        gpuInputs.gpuSceneRasterEnabled && !contextValid &&
+        gpuInputs.gpuSceneRecordingFailure)
+    {
+        gpuInputs.gpuSceneRecordingFailure->store(true);
+    }
     const bool resultOwnershipValid = sourceContextValid &&
         execution.identity.Matches(graph) && execution.results != nullptr &&
         execution.results->identity == execution.identity &&
@@ -581,7 +593,22 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 
     if (m_gpuDrivenOpaqueIndirectEnabled && m_gpuCulling)
     {
-        if (m_gpuDrivenInstanceHandle.IsValid())
+        if (m_gpuSceneRasterEnabled)
+        {
+            if (m_gpuSceneCandidateHandle.IsValid())
+            {
+                builder.Read(m_gpuSceneCandidateHandle, RHIShaderStage::Vertex);
+            }
+            if (m_gpuScenePrimitiveHandle.IsValid())
+            {
+                builder.Read(m_gpuScenePrimitiveHandle, RHIShaderStage::Vertex);
+            }
+            if (m_gpuSceneTransformHandle.IsValid())
+            {
+                builder.Read(m_gpuSceneTransformHandle, RHIShaderStage::Vertex);
+            }
+        }
+        else if (m_gpuDrivenInstanceHandle.IsValid())
         {
             builder.Read(m_gpuDrivenInstanceHandle, RHIShaderStage::Vertex);
         }
@@ -670,6 +697,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
                                           uint32 expectedPacketCount,
                                           uint32 expectedGroupCount)
 {
+    const bool usesGPUSceneRaster = m_gpuSceneRasterEnabled;
     m_drawStats.gpuDrivenRequested = m_gpuDrivenOpaqueIndirectEnabled;
     m_drawStats.gpuDrivenFallbackReason = GPUDrivenDrawFallbackReason::Disabled;
     if (!m_gpuDrivenOpaqueIndirectEnabled)
@@ -694,8 +722,12 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
             GPUDrivenDrawFallbackReason::CullingUnavailable;
         return false;
     }
-    if (!m_gpuCulling->GetInstanceBuffer() ||
+    if ((!usesGPUSceneRaster && !m_gpuCulling->GetInstanceBuffer()) ||
         !m_gpuCulling->GetInstanceIndexBuffer() ||
+        (usesGPUSceneRaster &&
+         (!m_gpuSceneRasterBinding ||
+          !m_gpuSceneRasterBinding->IsReadyForBinding() ||
+          m_gpuSceneRasterBinding->leaseVersion == 0)) ||
         (!m_gpuCulling->WasGpuExecutionUsedLastCull() &&
          !m_gpuCulling->WasCpuFallbackUsedLastCull()))
     {
@@ -739,8 +771,18 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
             return false;
         }
 
-        RHIPipeline* pipeline =
-            m_pipelineCache->GetGPUDrivenPipelineForVariant(group.pipelineVariant, colorTargetFormat);
+        RHIPipeline* pipeline = nullptr;
+        if (usesGPUSceneRaster)
+        {
+            pipeline = group.pipelineVariant == MaterialPipelineVariant::Masked
+                ? m_gpuSceneRasterBinding->maskedPipeline.Get()
+                : m_gpuSceneRasterBinding->opaquePipeline.Get();
+        }
+        else
+        {
+            pipeline = m_pipelineCache->GetGPUDrivenPipelineForVariant(
+                group.pipelineVariant, colorTargetFormat);
+        }
         if (!pipeline)
         {
             m_drawStats.gpuDrivenFallbackReason =
@@ -776,34 +818,42 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         return false;
     }
 
-    const bool objectConstantsUpdated =
-        m_pipelineCache->UpdateObjectConstants(
-            Mat4Identity(),
-            Mat4Identity(),
-            Mat4Identity(),
-            view.previousViewProjectionMatrix,
-            false);
-    if (requireObjectConstantUpload && !objectConstantsUpdated)
+    if (!usesGPUSceneRaster)
     {
-        m_drawStats.gpuDrivenFallbackReason =
-            GPUDrivenDrawFallbackReason::ObjectBindingUnavailable;
-        return false;
-    }
-    if (!m_pipelineCache->UpdateObjectInstanceBuffer(m_gpuCulling->GetInstanceBuffer()))
-    {
-        m_drawStats.gpuDrivenFallbackReason =
-            GPUDrivenDrawFallbackReason::ObjectBindingUnavailable;
-        return false;
+        const bool objectConstantsUpdated =
+            m_pipelineCache->UpdateObjectConstants(
+                Mat4Identity(),
+                Mat4Identity(),
+                Mat4Identity(),
+                view.previousViewProjectionMatrix,
+                false);
+        if (requireObjectConstantUpload && !objectConstantsUpdated)
+        {
+            m_drawStats.gpuDrivenFallbackReason =
+                GPUDrivenDrawFallbackReason::ObjectBindingUnavailable;
+            return false;
+        }
+        if (!m_pipelineCache->UpdateObjectInstanceBuffer(m_gpuCulling->GetInstanceBuffer()))
+        {
+            m_drawStats.gpuDrivenFallbackReason =
+                GPUDrivenDrawFallbackReason::ObjectBindingUnavailable;
+            return false;
+        }
     }
 
-    RHIDescriptorSet* objectSet = m_pipelineCache->GetObjectDescriptorSet();
+    RHIDescriptorSet* objectSet = usesGPUSceneRaster
+        ? m_gpuSceneRasterBinding->objectDescriptorSet.Get()
+        : m_pipelineCache->GetObjectDescriptorSet();
     if (!objectSet)
     {
         m_drawStats.gpuDrivenFallbackReason =
             GPUDrivenDrawFallbackReason::ObjectBindingUnavailable;
         return false;
     }
-    const auto objectDynamicOffsets = m_pipelineCache->GetCurrentObjectDynamicOffset();
+    static constexpr std::array<uint32, 1> gpuSceneObjectOffsets{0u};
+    const auto objectDynamicOffsets = usesGPUSceneRaster
+        ? gpuSceneObjectOffsets
+        : m_pipelineCache->GetCurrentObjectDynamicOffset();
     m_drawStats.gpuDrivenEligible = true;
     m_drawStats.gpuDrivenIndirectExecutedDrawCountAvailable =
         m_gpuCulling->WasCpuFallbackUsedLastCull();
@@ -816,10 +866,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         {
             ctx.SetDescriptorSet(0, frameSet);
         }
-        if (objectSet)
-        {
-            ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
-        }
+        ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
 
         ctx.SetVertexBuffer(0, batch.buffers.positionBuffer);
         ctx.SetVertexBuffer(6, m_gpuCulling->GetInstanceIndexBuffer());
@@ -1197,6 +1244,11 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                                       bool gpuLane,
                                       RenderVisibilityMode visibility)
     {
+        if (status == RenderExecutionStatus::Failed &&
+            m_gpuSceneRasterEnabled && m_gpuSceneRecordingFailure)
+        {
+            m_gpuSceneRecordingFailure->store(true);
+        }
         if (view.renderFrameExecutionReport == nullptr)
         {
             return;
@@ -1635,6 +1687,11 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                 true,
                 plannedGPUCount,
                 opaquePlan->partition.drawGroupCount);
+            if (!gpuRecorded && m_gpuSceneRasterEnabled &&
+                m_gpuSceneRecordingFailure)
+            {
+                m_gpuSceneRecordingFailure->store(true);
+            }
             gpuLaneSubmissionCpuNanoseconds = static_cast<uint64>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - laneStart).count());
@@ -1652,6 +1709,11 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         ctx.EndRenderPass();
 
         const bool passRecorded = gpuRecorded && directRecorded;
+        if (!passRecorded && m_gpuSceneRasterEnabled &&
+            m_gpuSceneRecordingFailure)
+        {
+            m_gpuSceneRecordingFailure->store(true);
+        }
         m_drawStats.failureReason = passRecorded
             ? RenderPolicyReason::None
             : RenderPolicyReason::UnexpectedRecordingFailure;

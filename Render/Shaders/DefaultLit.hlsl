@@ -198,6 +198,7 @@ struct PSInput
     float3 WorldNormal : TEXCOORD1;
     float2 TexCoord    : TEXCOORD2;
     float4 WorldTangent : TEXCOORD3;
+    nointerpolation float ReceivesShadowValue : TEXCOORD4;
 };
 
 // =============================================================================
@@ -269,6 +270,7 @@ PSInput VSMain(VSInput input)
     output.WorldNormal = normalize(mul((float3x3)NormalMatrix, localNormal));
     output.TexCoord = input.TexCoord;
     output.WorldTangent = float4(normalize(mul((float3x3)World, localTangent)), input.Tangent.w);
+    output.ReceivesShadowValue = ReceivesShadow;
 
     return output;
 }
@@ -283,6 +285,7 @@ PSInput VSMainRigid(RigidDirectVSInput input)
     output.WorldNormal = normalize(mul((float3x3)NormalMatrix, input.Normal));
     output.TexCoord = input.TexCoord;
     output.WorldTangent = float4(normalize(mul((float3x3)World, input.Tangent.xyz)), input.Tangent.w);
+    output.ReceivesShadowValue = ReceivesShadow;
 
     return output;
 }
@@ -301,6 +304,7 @@ PSInput VSMainGPUDriven(
     output.WorldNormal = normalize(mul((float3x3)instance.normalMatrix, input.Normal));
     output.TexCoord = input.TexCoord;
     output.WorldTangent = float4(normalize(mul((float3x3)instance.worldMatrix, input.Tangent.xyz)), input.Tangent.w);
+    output.ReceivesShadowValue = ReceivesShadow;
 
     return output;
 }
@@ -311,13 +315,15 @@ PSInput VSMainGPUScene(RigidVSInput input)
 {
     PSInput output;
     GPUSceneTransformRow transform;
-    if (!GPUSceneResolveRasterTransform(input.InstanceIndex, transform))
+    uint primitiveFlags;
+    if (!GPUSceneResolveRasterTransform(input.InstanceIndex, transform, primitiveFlags))
     {
         output.Position = GPUSceneInvalidClipPosition();
         output.WorldPos = float3(0.0f, 0.0f, 0.0f);
         output.WorldNormal = float3(0.0f, 0.0f, 0.0f);
         output.TexCoord = float2(0.0f, 0.0f);
         output.WorldTangent = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        output.ReceivesShadowValue = 0.0f;
         return output;
     }
 
@@ -332,6 +338,10 @@ PSInput VSMainGPUScene(RigidVSInput input)
         GPUSceneSafeNormalize(GPUSceneTransformTangent(transform, input.Tangent.xyz),
                                float3(1.0f, 0.0f, 0.0f)),
         input.Tangent.w);
+    output.ReceivesShadowValue =
+        (primitiveFlags & RVX_GPU_SCENE_PRIMITIVE_RECEIVES_SHADOW) != 0u
+            ? 1.0f
+            : 0.0f;
     return output;
 }
 #endif
@@ -761,7 +771,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float clampedRoughness = clamp(roughness, 0.04, 1.0);
     float3 f0 = ComputeF0(baseColor.rgb, metallic);
 
-    const bool receivesShadow = ReceivesShadow > 0.5;
+    const bool receivesShadow = input.ReceivesShadowValue > 0.5;
     const float rasterShadowVisibility =
         receivesShadow ? SampleDirectionalShadow(input.WorldPos, normal) : 1.0;
     const float rayTracedShadowVisibility =
