@@ -1310,6 +1310,8 @@ namespace RVX
         void ApplyRenderFramePlanProjection();
         void BuildGPUDrivenVisibilityInputs();
         void PrepareGPUDrivenGraphCullInputs();
+        void ConfirmGPUDrivenActualTier();
+        void MarkGPUDrivenFrameFailure() noexcept;
         void ApplyObjectMotionHistory();
         void UpdateObjectMotionHistory();
         void PreparePassesForFrame();
@@ -1391,6 +1393,29 @@ namespace RVX
                        gpuSceneLeaseVersion != 0;
             }
         };
+
+        enum class GPUDrivenGraphFailureInjection : uint8
+        {
+            None = 0,
+            Acquire,
+            Seal,
+            Binding,
+            PassRegistration,
+        };
+
+        struct GPUDrivenTierExecutionTestProbe
+        {
+            uint32 gpuSceneLeaseAcquireAttempts = 0;
+            uint32 gpuSceneSealAttempts = 0;
+            uint32 tierOneSealAttempts = 0;
+            uint32 graphPassRegistrationAttempts = 0;
+            uint64 depthGPUSceneLeaseVersion = 0;
+            uint64 opaqueGPUSceneLeaseVersion = 0;
+            GPUDrivenTier depthActualTier = GPUDrivenTier::Direct;
+            GPUDrivenTier opaqueActualTier = GPUDrivenTier::Direct;
+            bool frameFailed = false;
+        };
+
         GPUCullingGraphHandles m_depthGPUCullingGraphHandles;
         GPUCullingGraphHandles m_opaqueGPUCullingGraphHandles;
         std::shared_ptr<GPUCullingRecordedState> m_depthGPUCullingRecordedState;
@@ -1398,6 +1423,12 @@ namespace RVX
         bool m_depthGPUCullingFramePrepared = false;
         bool m_opaqueGPUCullingFramePrepared = false;
         bool m_gpuSceneCullingCommandRecordingFailed = false;
+        bool m_gpuDrivenTier1PreparationFailed = false;
+        bool m_gpuDrivenFrameFailure = false;
+        GPUDrivenTier m_confirmedGPUDrivenTier = GPUDrivenTier::Direct;
+        GPUDrivenGraphFailureInjection m_gpuDrivenGraphFailureInjection =
+            GPUDrivenGraphFailureInjection::None;
+        GPUDrivenTierExecutionTestProbe m_gpuDrivenTierExecutionTestProbe{};
         std::shared_ptr<std::atomic_bool> m_gpuSceneRasterCommandRecordingFailed;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;

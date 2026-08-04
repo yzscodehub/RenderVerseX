@@ -3,8 +3,8 @@
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
 10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a,
 Task 11D-D1b-a, Task 11D-D1b-b, Task 11D-D2a, and Task 11D-D2b are complete,
-Task 11D-D3, Task 11D-D4a, and Task 11D-D4b1 are complete, and Task
-11D-D4b2 is next
+Task 11D-D3, Task 11D-D4a, Task 11D-D4b1, and Task 11D-D4b2 are complete,
+and Task 11D-D4c is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -938,3 +938,34 @@ Start **Task 11D-D4b2** next: populate the live resident facts before the one
 immutable plan is compiled, confirm one whole-view actual tier before graph
 mutation, keep Tier 1 at zero GPU Scene lease/seal usage, and treat every Tier 2
 failure after graph construction begins as a failed frame rather than a replay.
+
+Task 11D-D4b2 implementation, one independent review/remediation round, final
+re-review, and primary audit are complete. The accepted frozen-tier execution
+slice is:
+
+- [x] Populate canonical pass facts before the one immutable frame plan is
+  compiled; aggregate Tier 1 readiness over relevant lanes without allowing a
+  missing Depth owner or candidate to disable a valid Opaque Tier 1 lane.
+- [x] Form the potential Tier 2 lane set independently from live GPU Scene
+  owner/binding readiness, then require every potential lane plus the exact
+  uploader version and live descriptor limit before selecting Tier 2.
+- [x] Confirm one whole-view actual tier before RenderGraph mutation. A complete
+  Tier 1 companion mismatch may fall back to `IndirectGrouped` while retaining
+  the frozen selected plan and recording `PlannedFallback`.
+- [x] Keep selected Tier 1 at zero GPU Scene lease/seal usage. Selected Tier 2
+  acquires one exact-version lease shared by Depth and Opaque and preflights all
+  planned lanes before registering graph passes.
+- [x] Fail the frame without Tier 1 replay, submission, realized-access commit,
+  or transient retirement when acquire, seal, binding, registration, or graph
+  execution fails after Tier 2 is selected.
+- [x] Add execution reporting for the actual tier and tier fallback reason
+  without changing Candidate Auto, bindless policy, public RHI, or backend
+  contracts.
+- [x] Finish independent final review with READY and no unresolved P0-P2; pass
+  Render Policy 29/29, GPU-driven 42/42, GPU Scene upload 18/18, and Render Pass
+  203/203 in the primary audit (292/292 total), plus the focused 5/5 D4b2 gate.
+
+Start **Task 11D-D4c** next: produce real-DX12 cold Tier 1 to warm Tier 2
+execution, parity, validation-layer, exact-version lifetime, resize, repeat, and
+failure-closure evidence without promoting Candidate qualification or changing
+Auto policy.

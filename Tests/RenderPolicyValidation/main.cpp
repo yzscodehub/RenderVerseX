@@ -534,6 +534,8 @@ namespace
         const RenderFrameExecutionReport frameReport;
         EXPECT_EQ(0u, frameReport.frameSequence);
         EXPECT_EQ(RenderExecutionStatus::NotAttempted, frameReport.status);
+        EXPECT_EQ(GPUDrivenTier::Direct, frameReport.executedTier);
+        EXPECT_EQ(RenderPolicyReason::None, frameReport.tierFallbackReason);
         EXPECT_TRUE(frameReport.passes.empty());
 
         const RenderPolicyDiagnostics diagnostics;

@@ -170,6 +170,10 @@ namespace RVX
     {
         uint64 frameSequence = 0;
         RenderExecutionStatus status = RenderExecutionStatus::NotAttempted;
+        /// Whole-view tier actually recorded after pre-graph confirmation.
+        GPUDrivenTier executedTier = GPUDrivenTier::Direct;
+        /// Non-None only for an explicit pre-graph whole-view fallback.
+        RenderPolicyReason tierFallbackReason = RenderPolicyReason::None;
         std::vector<RenderPassExecutionReport> passes{};
 
         bool operator==(const RenderFrameExecutionReport&) const = default;

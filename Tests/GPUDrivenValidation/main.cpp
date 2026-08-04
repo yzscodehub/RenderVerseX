@@ -2633,7 +2633,7 @@ TEST_F(GPUDrivenValidationFixture,
 }
 
 TEST_F(GPUDrivenValidationFixture,
-       SceneRendererGPUSceneLeaseWiringUsesOneAcquireAndPerPassFallback)
+       SceneRendererGPUSceneLeaseWiringUsesOneAcquireAndPreflightsBeforeGraphMutation)
 {
     const std::filesystem::path root = FindWorkspaceRoot();
     ASSERT_FALSE(root.empty());
@@ -2657,8 +2657,12 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_EQ(1u, acquireCount);
     EXPECT_NE(source.find("m_gpuSceneUploader->BuildRenderGraph("),
               std::string::npos);
+    EXPECT_NE(source.find("requestedGPUSceneTier"), std::string::npos);
+    EXPECT_NE(source.find("useGPUSceneTier"), std::string::npos);
+    EXPECT_NE(source.find("preflightGPUScenePass"), std::string::npos);
     EXPECT_NE(source.find("owner->SealForGPUSceneGraph("), std::string::npos);
-    EXPECT_NE(source.find("if (!recordedState)"), std::string::npos);
+    EXPECT_NE(source.find("HasCompleteGPUSceneCandidates(requiredResidentVersion)"),
+              std::string::npos);
     EXPECT_NE(source.find("owner->SealForGraph(cullingIdentity)"),
               std::string::npos);
     EXPECT_NE(source.find("m_gpuSceneUploader->CancelCurrentGraphLease()"),
@@ -2760,7 +2764,7 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_LT(gpuSceneSeal, bindingCreate);
     EXPECT_LT(bindingCreate, graphImport);
     EXPECT_NE(std::string::npos,
-              renderer.find("gpuSceneBinding->RetainSubmissionResources"));
+              renderer.find("retainedBinding->RetainSubmissionResources"));
     EXPECT_NE(std::string::npos,
               renderer.find("m_gpuSceneRasterCommandRecordingFailed"));
 

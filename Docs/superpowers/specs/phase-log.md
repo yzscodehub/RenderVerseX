@@ -47031,3 +47031,80 @@ below.
   validation, parity, and qualification evidence.
 
 ---
+
+### R-SP358 Render-policy Task 11D-D4b2 frozen GPU Scene execution tier
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D4b2 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP357 (exact GPU Scene readiness evidence).
+- D4b1 supplied side-effect-free exact-version readiness and acquisition, but
+  live plan facts, the one-plan/one-tier execution boundary, and failure closure
+  were not yet wired through `SceneRenderer`.
+
+**Approved scope:**
+
+- Build canonical pass facts before compiling one immutable frame plan. Treat a
+  pass as a Tier 1 lane only when it is requested, supported, GPU-driven allowed,
+  and has candidates; a missing unrelated lane must not disable a valid lane.
+- Determine potential Tier 2 lanes without filtering on their live GPU Scene
+  owner/binding readiness, then apply owner, binding, uploader, pipeline, exact
+  resident version, and descriptor-limit requirements to the full set.
+- Confirm one whole-view actual tier before RenderGraph mutation. Permit only a
+  complete Tier 1 companion mismatch to produce a pre-graph planned fallback;
+  graph-stage Tier 2 failures fail the frame and never replay Tier 1.
+- Selected Tier 1 must acquire and seal no GPU Scene state. Selected Tier 2 must
+  share one exact-version resident lease across Depth and Opaque and preflight
+  all planned lanes before pass registration.
+- Extend the value-only execution report with actual tier and tier-fallback
+  reason. Keep Candidate Auto as Direct and leave public RHI, backend contracts,
+  Samples, and qualification unchanged.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderFrameExecutionPlan.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderPolicyValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary focused executables: PASS for Render Policy 29/29, GPU-driven 42/42,
+  GPU Scene upload 18/18, and Render Pass 203/203 (292/292 total).
+- The focused D4b2 gate passed 5/5: Tier 1 has zero GPU Scene lease/seal use,
+  companion mismatch falls back before graph mutation, Tier 2 graph failures
+  fail closed without replay, Depth and Opaque share one exact resident lease,
+  and a missing Depth candidate/owner does not disable valid Opaque Tier 1.
+- Scoped `git diff --check`: PASS apart from the repository's existing CRLF
+  conversion notices.
+
+**Independent review result:**
+
+- Initial review found one P1: all-of Depth/Opaque owner aggregation could
+  suppress a valid Opaque Tier 1 lane when Depth had no candidate or owner.
+- Remediation moved pass-fact construction ahead of view aggregation and split
+  Tier 1 any-relevant readiness from Tier 2 all-required readiness.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete scoped diff, plan-freeze, lane-membership, exact-lease,
+  preflight, failure-closure, execution-report, and test-honesty review.
+- Unrelated Engine/PipelineCache worktree entries, runtime diagnostics, and
+  Python cache output remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- The accepted D4b2 execution proof uses validation fakes plus real renderer,
+  uploader, culling, and pipeline code; it is not real-device Tier 2 evidence.
+- D4c owns real-DX12 cold Tier 1 to warm Tier 2 execution, exact-version
+  lifetime, validation-layer, parity, resize, repeat, and failure-closure proof.
+- Vulkan and Metal Tier 2 qualification remain open; no Candidate or Auto
+  qualification state changes in D4b2.
+
+---

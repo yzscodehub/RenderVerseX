@@ -453,33 +453,6 @@ namespace
                    GPUCullingFallbackReason::ShaderBackendUnsupported;
     }
 
-    template <typename Resolver>
-    RenderPolicyReadiness ResolveAnyGPUOwnerReadiness(
-        const GPUCulling* depthOwner,
-        const GPUCulling* opaqueOwner,
-        Resolver&& resolver)
-    {
-        RenderPolicyReadiness aggregate = RenderPolicyReadiness::Unavailable;
-        for (const GPUCulling* owner : {depthOwner, opaqueOwner})
-        {
-            if (owner == nullptr)
-            {
-                continue;
-            }
-            const RenderPolicyReadiness readiness =
-                resolver(owner->GetExecutionDecision());
-            if (readiness == RenderPolicyReadiness::Ready)
-            {
-                return RenderPolicyReadiness::Ready;
-            }
-            if (readiness == RenderPolicyReadiness::Pending)
-            {
-                aggregate = RenderPolicyReadiness::Pending;
-            }
-        }
-        return aggregate;
-    }
-
     RenderPassPolicyFacts MakeRenderPassPolicyFacts(
         RenderPassKind pass,
         const IRenderPass* renderPass,
@@ -1958,6 +1931,7 @@ void SceneRenderer::CompileRenderFramePlan()
     m_renderPolicyDiagnostics.selectedPlan = {};
     m_renderPolicyDiagnostics.executionReport = {};
     m_renderPolicyDiagnostics.measurement = {};
+    m_confirmedGPUDrivenTier = GPUDrivenTier::Direct;
     m_viewData.renderFrameExecutionPlan = nullptr;
     m_viewData.meshPassPreparation = nullptr;
     m_viewData.renderFrameExecutionReport = nullptr;
@@ -1971,7 +1945,7 @@ void SceneRenderer::CompileRenderFramePlan()
 
     const IRHIDevice* device = m_renderContext
         ? m_renderContext->GetDevice()
-        : nullptr;
+        : m_featureReportDeviceForTesting;
     if (device)
     {
         const RHICapabilities& capabilities = device->GetCapabilities();
@@ -1986,6 +1960,7 @@ void SceneRenderer::CompileRenderFramePlan()
             capabilities.indexedIndirectExecution.supportsCountBuffer;
         input.capabilities.supportsDescriptorResourceBindings =
             capabilities.supportsDescriptorSets;
+        input.capabilities.maxDescriptorSets = capabilities.maxDescriptorSets;
     }
     input.qualification = GetGPUDrivenBackendQualification(
         input.capabilities.backend);
@@ -2035,44 +2010,6 @@ void SceneRenderer::CompileRenderFramePlan()
                     formatPolicy.actualSceneColorFormat) != nullptr;
         }
     }
-    input.view.rendererAllowsGPUDriven = true;
-    input.view.viewAllowsGPUDriven = true;
-    input.view.implementationAvailable =
-        (m_depthGPUCulling &&
-         IsGPUImplementationAvailable(depthGPUExecution)) ||
-        (m_opaqueGPUCulling &&
-         IsGPUImplementationAvailable(opaqueGPUExecution));
-    const GPUCullingConfig cullingConfig = GetGPUDrivenCullingConfig();
-    input.view.requestedVisibility = cullingConfig.enableDistanceCulling
-        ? RenderVisibilityMode::GpuFrustumAndDistance
-        : RenderVisibilityMode::GpuFrustum;
-    input.view.visibilityShaderReadiness = ResolveAnyGPUOwnerReadiness(
-        m_depthGPUCulling.get(), m_opaqueGPUCulling.get(),
-        [](const GPUCullingExecutionDecision& decision)
-        {
-            return ResolveGPUShaderReadiness(decision);
-        });
-    input.view.visibilityPipelineReadiness = ResolveAnyGPUOwnerReadiness(
-        m_depthGPUCulling.get(), m_opaqueGPUCulling.get(),
-        [](const GPUCullingExecutionDecision& decision)
-        {
-            return decision.pipelineReady
-                ? RenderPolicyReadiness::Ready
-                : RenderPolicyReadiness::Unavailable;
-        });
-    input.view.sharedResourceReadiness = ResolveAnyGPUOwnerReadiness(
-        m_depthGPUCulling.get(), m_opaqueGPUCulling.get(),
-        [](const GPUCullingExecutionDecision& decision)
-        {
-            return ResolveGPUResourceReadiness(decision);
-        });
-    input.view.requiredBindingReadiness = ResolveAnyGPUOwnerReadiness(
-        m_depthGPUCulling.get(), m_opaqueGPUCulling.get(),
-        [](const GPUCullingExecutionDecision& decision)
-        {
-            return ResolveGPUBindingReadiness(decision);
-        });
-
     input.passes = {
         MakeRenderPassPolicyFacts(RenderPassKind::Depth,
                                   m_depthPrepass,
@@ -2096,6 +2033,178 @@ void SceneRenderer::CompileRenderFramePlan()
                                   false),
     };
 
+    struct GPUDrivenLaneFacts
+    {
+        const RenderPassPolicyFacts* passFacts = nullptr;
+        const GPUCulling* owner = nullptr;
+        GPUCullingExecutionDecision execution{};
+    };
+    const std::array<GPUDrivenLaneFacts, 2> gpuDrivenLanes = {{
+        {&input.passes[0], m_depthGPUCulling.get(), depthGPUExecution},
+        {&input.passes[1], m_opaqueGPUCulling.get(), opaqueGPUExecution},
+    }};
+    const auto isRelevantTierOneLane = [](const GPUDrivenLaneFacts& lane)
+    {
+        return lane.passFacts != nullptr && lane.passFacts->requested &&
+               lane.passFacts->supported && lane.passFacts->gpuDrivenAllowed &&
+               lane.passFacts->candidatePacketCount != 0;
+    };
+    const auto resolveAnyRelevantLane =
+        [&gpuDrivenLanes, &isRelevantTierOneLane](auto&& resolver)
+    {
+        bool hasRelevantLane = false;
+        bool hasPendingLane = false;
+        for (const GPUDrivenLaneFacts& lane : gpuDrivenLanes)
+        {
+            if (!isRelevantTierOneLane(lane))
+            {
+                continue;
+            }
+            hasRelevantLane = true;
+            const RenderPolicyReadiness readiness = lane.owner != nullptr
+                ? resolver(lane)
+                : RenderPolicyReadiness::Unavailable;
+            if (readiness == RenderPolicyReadiness::Ready)
+            {
+                return RenderPolicyReadiness::Ready;
+            }
+            hasPendingLane |= readiness == RenderPolicyReadiness::Pending;
+        }
+        return hasRelevantLane && hasPendingLane
+            ? RenderPolicyReadiness::Pending
+            : RenderPolicyReadiness::Unavailable;
+    };
+    const auto isTierOneImplementationAvailable =
+        [&gpuDrivenLanes, &isRelevantTierOneLane]()
+    {
+        for (const GPUDrivenLaneFacts& lane : gpuDrivenLanes)
+        {
+            if (isRelevantTierOneLane(lane) && lane.owner != nullptr &&
+                IsGPUImplementationAvailable(lane.execution))
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    input.view.rendererAllowsGPUDriven = true;
+    input.view.viewAllowsGPUDriven = true;
+    input.view.implementationAvailable = isTierOneImplementationAvailable();
+    const GPUCullingConfig cullingConfig = GetGPUDrivenCullingConfig();
+    input.view.requestedVisibility = cullingConfig.enableDistanceCulling
+        ? RenderVisibilityMode::GpuFrustumAndDistance
+        : RenderVisibilityMode::GpuFrustum;
+    input.view.visibilityShaderReadiness = resolveAnyRelevantLane(
+        [](const GPUDrivenLaneFacts& lane)
+        {
+            return lane.passFacts->gpuDrivenShaderReadiness;
+        });
+    input.view.visibilityPipelineReadiness = resolveAnyRelevantLane(
+        [](const GPUDrivenLaneFacts& lane)
+        {
+            return lane.passFacts->gpuDrivenPipelineReadiness;
+        });
+    input.view.sharedResourceReadiness = resolveAnyRelevantLane(
+        [](const GPUDrivenLaneFacts& lane)
+        {
+            return lane.passFacts->gpuDrivenResourceReadiness;
+        });
+    input.view.requiredBindingReadiness = resolveAnyRelevantLane(
+        [](const GPUDrivenLaneFacts& lane)
+        {
+            return ResolveGPUBindingReadiness(lane.execution);
+        });
+
+    const auto isPotentialGPUSceneLane =
+        [&isRelevantTierOneLane](const GPUDrivenLaneFacts& lane)
+    {
+        return isRelevantTierOneLane(lane) && lane.owner != nullptr &&
+               IsGPUImplementationAvailable(lane.execution) &&
+               lane.passFacts->gpuDrivenShaderReadiness ==
+                   RenderPolicyReadiness::Ready &&
+               lane.passFacts->gpuDrivenPipelineReadiness ==
+                   RenderPolicyReadiness::Ready &&
+               lane.passFacts->gpuDrivenResourceReadiness ==
+                   RenderPolicyReadiness::Ready;
+    };
+    bool hasPotentialGPUSceneLane = false;
+    bool allPotentialGPUSceneOwnersReady = true;
+    bool allPotentialGPUSceneBindingsReady = true;
+    for (const GPUDrivenLaneFacts& lane : gpuDrivenLanes)
+    {
+        if (!isPotentialGPUSceneLane(lane))
+        {
+            continue;
+        }
+        hasPotentialGPUSceneLane = true;
+        allPotentialGPUSceneOwnersReady &= lane.owner->IsGPUSceneExecutionReady();
+        allPotentialGPUSceneBindingsReady &=
+            ResolveGPUBindingReadiness(lane.execution) ==
+                RenderPolicyReadiness::Ready;
+    }
+    const bool gpuSceneImplementationAvailable =
+        hasPotentialGPUSceneLane && m_gpuSceneUpdate && m_gpuSceneUploader &&
+        m_pipelineCache && m_pipelineCache->IsInitialized();
+    const bool gpuSceneRasterReady = gpuSceneImplementationAvailable &&
+        m_pipelineCache->IsGPUSceneRasterReady();
+    uint64 requiredResidentVersion = 0;
+    if (m_gpuSceneUpdate)
+    {
+        const GPUScenePublicationStats& publication =
+            m_gpuSceneUpdate->GetStats();
+        const GPUSceneCommittedMirror& mirror =
+            m_gpuSceneUpdate->GetCommittedMirrorForUpload();
+        if (publication.complete &&
+            publication.failureReason == GPUScenePublicationFailureReason::None &&
+            publication.committedVersion != 0 &&
+            publication.committedSourceSequence ==
+                m_renderScene.GetAcceptedHeader().sequence &&
+            mirror.version == publication.committedVersion)
+        {
+            requiredResidentVersion = publication.committedVersion;
+        }
+    }
+    GPUSceneResidentReadiness residentReadiness;
+    if (m_gpuSceneUploader && requiredResidentVersion != 0)
+    {
+        residentReadiness =
+            m_gpuSceneUploader->QueryExactVersionReadiness(requiredResidentVersion);
+    }
+    input.gpuResidentScene.requiredResidentVersion = requiredResidentVersion;
+    input.gpuResidentScene.implementationReadiness = gpuSceneImplementationAvailable
+        ? RenderPolicyReadiness::Ready
+        : RenderPolicyReadiness::Unavailable;
+    input.gpuResidentScene.shaderReadiness =
+        gpuSceneImplementationAvailable && allPotentialGPUSceneOwnersReady
+        ? RenderPolicyReadiness::Ready
+        : RenderPolicyReadiness::Unavailable;
+    input.gpuResidentScene.pipelineReadiness =
+        gpuSceneImplementationAvailable && gpuSceneRasterReady
+            ? RenderPolicyReadiness::Ready
+            : RenderPolicyReadiness::Unavailable;
+    input.gpuResidentScene.bindingReadiness =
+        gpuSceneImplementationAvailable && allPotentialGPUSceneBindingsReady
+        ? RenderPolicyReadiness::Ready
+        : RenderPolicyReadiness::Unavailable;
+    switch (residentReadiness.status)
+    {
+        case GPUSceneResidentReadinessStatus::Ready:
+            input.gpuResidentScene.resourceReadiness = residentReadiness.IsReady()
+                ? RenderPolicyReadiness::Ready
+                : RenderPolicyReadiness::Unavailable;
+            break;
+        case GPUSceneResidentReadinessStatus::Pending:
+            input.gpuResidentScene.resourceReadiness =
+                RenderPolicyReadiness::Pending;
+            break;
+        case GPUSceneResidentReadinessStatus::Unavailable:
+        default:
+            input.gpuResidentScene.resourceReadiness =
+                RenderPolicyReadiness::Unavailable;
+            break;
+    }
+
     m_renderPolicyDiagnostics.measurement.frameSequence =
         input.request.frameSequence;
     const auto planStart = std::chrono::steady_clock::now();
@@ -2117,6 +2226,11 @@ void SceneRenderer::CompileRenderFramePlan()
             &m_renderPolicyDiagnostics.executionReport;
         m_renderPolicyDiagnostics.executionReport.frameSequence =
             compiled.plan.frameSequence;
+        m_renderPolicyDiagnostics.executionReport.executedTier =
+            compiled.plan.viewPolicy.selectedTier;
+        m_renderPolicyDiagnostics.executionReport.tierFallbackReason =
+            RenderPolicyReason::None;
+        m_confirmedGPUDrivenTier = compiled.plan.viewPolicy.selectedTier;
         for (const RenderPassExecutionPlan& passPlan : compiled.plan.passes)
         {
             RenderPassExecutionReport report;
@@ -2183,6 +2297,8 @@ void SceneRenderer::BuildGPUDrivenVisibilityInputs()
 {
     m_depthGPUCullingFramePrepared = false;
     m_opaqueGPUCullingFramePrepared = false;
+    m_gpuDrivenTier1PreparationFailed = false;
+    m_gpuDrivenFrameFailure = false;
     m_gpuDrivenCullingStats = {};
     m_gpuDrivenCullingStats.policyDecisionAvailable = true;
     m_gpuDrivenCullingStats.policyDecision = m_gpuDrivenPolicyDecision;
@@ -2329,13 +2445,13 @@ void SceneRenderer::BuildGPUDrivenVisibilityInputs()
             diagnosticGPUCulling->GetExecutionDecision();
     }
 
-    if (!m_gpuDrivenCullingEnabled ||
-        (!m_depthGPUCulling && !m_opaqueGPUCulling) ||
-        m_renderResourceRegistry == nullptr)
+    if (m_gpuDrivenCullingEnabled &&
+        (m_depthGPUCulling || m_opaqueGPUCulling) &&
+        m_renderResourceRegistry != nullptr)
     {
-        return;
+        PrepareGPUDrivenGraphCullInputs();
     }
-    PrepareGPUDrivenGraphCullInputs();
+    ConfirmGPUDrivenActualTier();
 }
 
 void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
@@ -2354,6 +2470,10 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
     {
         return;
     }
+    const bool buildGPUSceneCandidates =
+        framePlan->viewPolicy.selectedTier == GPUDrivenTier::GPUResidentScene;
+    const uint64 requiredResidentVersion =
+        framePlan->viewPolicy.requiredResidentVersion;
 
     // RenderContext::BeginFrame has already waited this slot's previous
     // submission before RenderAcceptedFrame reaches SceneRenderer. Select the
@@ -2365,11 +2485,12 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
         (m_opaqueGPUCulling && !m_opaqueGPUCulling->SetFrameSlot(frameSlot)))
     {
         ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+        m_gpuDrivenTier1PreparationFailed = true;
         return;
     }
 
     const auto preparePass =
-        [this, framePlan](RenderPassKind pass,
+        [this, framePlan, buildGPUSceneCandidates, requiredResidentVersion](RenderPassKind pass,
                           const MeshPassPacketStream& stream,
                           GPUCulling* owner,
                           bool& outPrepared)
@@ -2428,8 +2549,9 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
         }
 
         owner->BeginFrame();
-        bool gpuSceneCandidateStreamValid =
-            m_gpuSceneUpdate != nullptr && owner->IsGPUSceneExecutionReady();
+        bool gpuSceneCandidateStreamValid = buildGPUSceneCandidates &&
+            requiredResidentVersion != 0 && m_gpuSceneUpdate != nullptr &&
+            owner->IsGPUSceneExecutionReady();
         uint32 plannedOffset = 0;
         for (const RenderDrawGroupRange& group : stream.groups)
         {
@@ -2494,6 +2616,7 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                     const std::vector<GPUCullingDrawGroup>& drawGroups =
                         owner->GetDrawGroups();
                     if (!acceptedDraw || !acceptedDraw->IsValid() ||
+                        acceptedDraw->committedVersion != requiredResidentVersion ||
                         requiredPassMask == 0 || groupIndex >= drawGroups.size())
                     {
                         owner->InvalidateGPUSceneCandidates();
@@ -2518,7 +2641,7 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                         gpuSceneCandidate.rasterInstanceIndex = rasterInstanceIndex;
                         if (!owner->AddGPUSceneCandidate(
                                 gpuSceneCandidate,
-                                acceptedDraw->committedVersion))
+                                requiredResidentVersion))
                         {
                             owner->InvalidateGPUSceneCandidates();
                             gpuSceneCandidateStreamValid = false;
@@ -2553,6 +2676,91 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                 m_opaqueGPUCullingFramePrepared);
 }
 
+void SceneRenderer::MarkGPUDrivenFrameFailure() noexcept
+{
+    m_gpuDrivenFrameFailure = true;
+    m_gpuDrivenTierExecutionTestProbe.frameFailed = true;
+    if (!m_renderPolicyDiagnostics.planAvailable)
+    {
+        return;
+    }
+    RenderFrameExecutionReport& report =
+        m_renderPolicyDiagnostics.executionReport;
+    report.status = RenderExecutionStatus::Failed;
+    for (RenderPassExecutionReport& passReport : report.passes)
+    {
+        passReport.status = RenderExecutionStatus::Failed;
+        passReport.reason = RenderPolicyReason::UnexpectedRecordingFailure;
+    }
+}
+void SceneRenderer::ConfirmGPUDrivenActualTier()
+{
+    const RenderFrameExecutionPlan* framePlan =
+        m_viewData.renderFrameExecutionPlan;
+    m_confirmedGPUDrivenTier = framePlan
+        ? framePlan->viewPolicy.selectedTier
+        : GPUDrivenTier::Direct;
+    if (framePlan == nullptr)
+    {
+        return;
+    }
+
+    RenderFrameExecutionReport& report =
+        m_renderPolicyDiagnostics.executionReport;
+    report.executedTier = m_confirmedGPUDrivenTier;
+    report.tierFallbackReason = RenderPolicyReason::None;
+    const auto laneIsPlanned = [framePlan](RenderPassKind pass)
+    {
+        for (const RenderPassExecutionPlan& passPlan : framePlan->passes)
+        {
+            if (passPlan.pass == pass)
+            {
+                return passPlan.gpuEligiblePackets.count != 0;
+            }
+        }
+        return false;
+    };
+    const bool depthTier1Complete = !laneIsPlanned(RenderPassKind::Depth) ||
+        (m_depthGPUCullingFramePrepared && m_depthGPUCulling != nullptr &&
+         m_depthGPUCulling->GetInstanceCount() != 0);
+    const bool opaqueTier1Complete = !laneIsPlanned(RenderPassKind::Opaque) ||
+        (m_opaqueGPUCullingFramePrepared && m_opaqueGPUCulling != nullptr &&
+         m_opaqueGPUCulling->GetInstanceCount() != 0);
+    if (m_gpuDrivenTier1PreparationFailed || !depthTier1Complete ||
+        !opaqueTier1Complete)
+    {
+        MarkGPUDrivenFrameFailure();
+        return;
+    }
+    if (m_confirmedGPUDrivenTier != GPUDrivenTier::GPUResidentScene)
+    {
+        return;
+    }
+
+    const uint64 requiredResidentVersion =
+        framePlan->viewPolicy.requiredResidentVersion;
+    const bool depthCompanionComplete = !laneIsPlanned(RenderPassKind::Depth) ||
+        (requiredResidentVersion != 0 && m_depthGPUCulling != nullptr &&
+         m_depthGPUCulling->HasCompleteGPUSceneCandidates(
+             requiredResidentVersion));
+    const bool opaqueCompanionComplete = !laneIsPlanned(RenderPassKind::Opaque) ||
+        (requiredResidentVersion != 0 && m_opaqueGPUCulling != nullptr &&
+         m_opaqueGPUCulling->HasCompleteGPUSceneCandidates(
+             requiredResidentVersion));
+    if (depthCompanionComplete && opaqueCompanionComplete)
+    {
+        return;
+    }
+    if (framePlan->viewPolicy.immediateFallbackTier !=
+        GPUDrivenTier::IndirectGrouped)
+    {
+        MarkGPUDrivenFrameFailure();
+        return;
+    }
+    m_confirmedGPUDrivenTier = GPUDrivenTier::IndirectGrouped;
+    report.executedTier = m_confirmedGPUDrivenTier;
+    report.tierFallbackReason = RenderPolicyReason::PlannedFallback;
+}
 void SceneRenderer::ApplyObjectMotionHistory()
 {
     for (size_t objectIndex = 0; objectIndex < m_renderScene.GetObjectCount(); ++objectIndex)
@@ -3060,12 +3268,34 @@ void SceneRenderer::Render()
     // any RenderGraph construction or command-recording decisions occur.
     CompileRenderFramePlan();
     BuildGPUDrivenVisibilityInputs();
+    if (m_gpuDrivenFrameFailure)
+    {
+        m_renderPolicyDiagnostics.reportAvailable =
+            m_renderPolicyDiagnostics.planAvailable;
+        RefreshFrameDiagnostics(true,
+                                false,
+                                true,
+                                true,
+                                "GPU-driven pre-graph confirmation failed");
+        return;
+    }
 
     // Clear the render graph for this frame
     m_renderGraph->Clear();
 
     // Build the render graph (creates depth buffer if needed, imports resources)
     BuildRenderGraph();
+    if (m_gpuDrivenFrameFailure)
+    {
+        m_renderPolicyDiagnostics.reportAvailable =
+            m_renderPolicyDiagnostics.planAvailable;
+        RefreshFrameDiagnostics(true,
+                                false,
+                                true,
+                                true,
+                                "GPU-driven RenderGraph construction failed");
+        return;
+    }
 
     // Compile the render graph (computes barriers, memory aliasing, pass culling)
     m_renderGraph->Compile();
@@ -3091,6 +3321,7 @@ void SceneRenderer::Render()
         {
             executionSkippedReason =
                 "GPU-scene command recording failed";
+            MarkGPUDrivenFrameFailure();
         }
         if (graphExecuted)
         {
@@ -3104,6 +3335,15 @@ void SceneRenderer::Render()
             {
                 m_renderPolicyDiagnostics.executionReport =
                     m_activeRenderPassResults->executionReport;
+                m_renderPolicyDiagnostics.executionReport.executedTier =
+                    m_confirmedGPUDrivenTier;
+                m_renderPolicyDiagnostics.executionReport.tierFallbackReason =
+                    (m_viewData.renderFrameExecutionPlan &&
+                     m_confirmedGPUDrivenTier !=
+                         m_viewData.renderFrameExecutionPlan
+                             ->viewPolicy.selectedTier)
+                        ? RenderPolicyReason::PlannedFallback
+                        : RenderPolicyReason::None;
                 PopulateSubmissionMeasurement(m_renderPolicyDiagnostics);
                 if (m_shadowPass)
                 {
@@ -3188,7 +3428,8 @@ void SceneRenderer::Render()
                                      : "RenderGraph compile reported validation errors";
     }
 
-    if (graphExecuted && m_renderPolicyDiagnostics.planAvailable)
+    if (m_renderPolicyDiagnostics.planAvailable &&
+        (graphExecuted || m_gpuDrivenFrameFailure))
     {
         m_renderPolicyDiagnostics.reportAvailable = true;
         bool anyFailed = false;
@@ -3212,6 +3453,11 @@ void SceneRenderer::Render()
                             true,
                             true,
                             executionSkippedReason);
+
+    if (m_gpuDrivenFrameFailure)
+    {
+        return;
+    }
 
     // Log compile stats periodically for debugging
     static uint64_t frameCount = 0;
@@ -4024,12 +4270,24 @@ void SceneRenderer::AddGPUDrivenCullingPass(
     m_opaqueGPUCullingGraphHandles = {};
     m_depthGPUCullingRecordedState.reset();
     m_opaqueGPUCullingRecordedState.reset();
+    m_gpuDrivenTierExecutionTestProbe = {};
     m_gpuSceneCullingCommandRecordingFailed = false;
     m_gpuSceneRasterCommandRecordingFailed =
         std::make_shared<std::atomic_bool>(false);
 
     if (!m_renderGraph || !m_gpuDrivenCullingEnabled || !recordIdentity.IsValid())
     {
+        return;
+    }
+    if (m_gpuDrivenFrameFailure)
+    {
+        return;
+    }
+    const RenderFrameExecutionPlan* const frozenPlan =
+        m_viewData.renderFrameExecutionPlan;
+    if (frozenPlan == nullptr)
+    {
+        MarkGPUDrivenFrameFailure();
         return;
     }
 
@@ -4066,44 +4324,146 @@ void SceneRenderer::AddGPUDrivenCullingPass(
     bool* const gpuSceneCullingFailureSink =
         &m_gpuSceneCullingCommandRecordingFailed;
 
-    // BuildRenderGraph records uploader copy passes before this point. A
-    // current, already-resident set can be leased exactly once and shared by
-    // Depth/Opaque graph consumers; a pending upload intentionally fails
-    // closed and leaves both passes on their existing Tier 1 path.
-    std::optional<GPUSceneResidentGraphLease> gpuSceneLease;
-    uint64 requiredResidentVersion = 0;
-    if (m_gpuSceneUpdate)
+    const bool requestedGPUSceneTier =
+        frozenPlan->viewPolicy.selectedTier == GPUDrivenTier::GPUResidentScene;
+    const bool useGPUSceneTier = requestedGPUSceneTier &&
+        m_confirmedGPUDrivenTier == GPUDrivenTier::GPUResidentScene;
+    if (requestedGPUSceneTier && !useGPUSceneTier &&
+        m_confirmedGPUDrivenTier != GPUDrivenTier::IndirectGrouped)
     {
-        const GPUScenePublicationStats& publication =
-            m_gpuSceneUpdate->GetStats();
-        const GPUSceneCommittedMirror& mirror =
-            m_gpuSceneUpdate->GetCommittedMirrorForUpload();
-        if (publication.complete &&
-            publication.failureReason == GPUScenePublicationFailureReason::None &&
-            publication.committedVersion != 0 &&
-            publication.committedSourceSequence ==
-                m_renderScene.GetAcceptedHeader().sequence &&
-            mirror.version == publication.committedVersion)
-        {
-            requiredResidentVersion = publication.committedVersion;
-        }
+        MarkGPUDrivenFrameFailure();
+        return;
     }
-    const auto canUseGPUSceneLease = [](const GPUCulling* owner,
-                                        bool framePrepared)
+    const auto laneIsPlanned = [frozenPlan](RenderPassKind pass)
+    {
+        for (const RenderPassExecutionPlan& passPlan : frozenPlan->passes)
+        {
+            if (passPlan.pass == pass)
+            {
+                return passPlan.gpuEligiblePackets.count != 0;
+            }
+        }
+        return false;
+    };
+    const bool depthLanePlanned = laneIsPlanned(RenderPassKind::Depth);
+    const bool opaqueLanePlanned = laneIsPlanned(RenderPassKind::Opaque);
+    struct GPUScenePassPreflight
+    {
+        GPUCulling* owner = nullptr;
+        std::shared_ptr<GPUCullingRecordedState> recordedState;
+        std::shared_ptr<const GPUSceneRasterBindingSnapshot> binding;
+        uint64 leaseVersion = 0;
+    };
+    std::optional<GPUSceneResidentGraphLease> gpuSceneLease;
+    const uint64 requiredResidentVersion =
+        frozenPlan->viewPolicy.requiredResidentVersion;
+    const auto canUseGPUSceneLease = [requiredResidentVersion](
+        const GPUCulling* owner, bool framePrepared)
     {
         return framePrepared && owner != nullptr &&
                owner->GetInstanceCount() != 0 &&
                owner->IsGPUSceneExecutionReady() &&
-               owner->HasCompleteGPUSceneCandidates();
+               owner->HasCompleteGPUSceneCandidates(requiredResidentVersion);
     };
-    if (m_gpuSceneUploader &&
-        (canUseGPUSceneLease(m_depthGPUCulling.get(),
-                             m_depthGPUCullingFramePrepared) ||
-         canUseGPUSceneLease(m_opaqueGPUCulling.get(),
-                             m_opaqueGPUCullingFramePrepared)))
+    GPUScenePassPreflight depthGPUScenePreflight;
+    GPUScenePassPreflight opaqueGPUScenePreflight;
+    if (useGPUSceneTier)
     {
+        if (!m_gpuSceneUploader || !m_pipelineCache || !m_submissionBatch ||
+            requiredResidentVersion == 0 ||
+            (depthLanePlanned && !canUseGPUSceneLease(
+                m_depthGPUCulling.get(), m_depthGPUCullingFramePrepared)) ||
+            (opaqueLanePlanned && !canUseGPUSceneLease(
+                m_opaqueGPUCulling.get(), m_opaqueGPUCullingFramePrepared)))
+        {
+            MarkGPUDrivenFrameFailure();
+            return;
+        }
+        if (m_gpuDrivenGraphFailureInjection ==
+            GPUDrivenGraphFailureInjection::Acquire)
+        {
+            MarkGPUDrivenFrameFailure();
+            return;
+        }
+        ++m_gpuDrivenTierExecutionTestProbe.gpuSceneLeaseAcquireAttempts;
         gpuSceneLease = m_gpuSceneUploader->AcquireCurrentGraphLease(
             *m_renderGraph, m_submissionBatch.get(), requiredResidentVersion);
+        if (!gpuSceneLease)
+        {
+            MarkGPUDrivenFrameFailure();
+            return;
+        }
+        const GPUCullingRecordingIdentity cullingIdentity{
+            recordIdentity.graphIdentity,
+            recordIdentity.graphRecordingGeneration,
+            recordIdentity.frameSequence,
+            recordIdentity.viewOrdinal,
+            recordIdentity.recordEpoch};
+        const auto preflightGPUScenePass =
+            [this, &gpuSceneLease, &cullingIdentity](GPUCulling* owner,
+                                                      GPUScenePassPreflight& out)
+        {
+            if (owner == nullptr || !gpuSceneLease)
+            {
+                return false;
+            }
+            if (m_gpuDrivenGraphFailureInjection ==
+                GPUDrivenGraphFailureInjection::Seal)
+            {
+                return false;
+            }
+            ++m_gpuDrivenTierExecutionTestProbe.gpuSceneSealAttempts;
+            std::shared_ptr<GPUCullingRecordedState> recordedState =
+                owner->SealForGPUSceneGraph(cullingIdentity, *gpuSceneLease);
+            if (!recordedState || !recordedState->IsValid())
+            {
+                return false;
+            }
+            const GPUSceneRasterResourceSnapshot rasterResources =
+                recordedState->GetGPUSceneRasterResourceSnapshot();
+            ObjectConstants objectConstants{};
+            objectConstants.world = Mat4Identity();
+            objectConstants.normalMatrix = Mat4Identity();
+            objectConstants.previousWorldViewProjection = Mat4Identity();
+            objectConstants.objectVelocityParams = Vec4(0.0f);
+            objectConstants.skinningParams = Vec4(0.0f);
+            GPUSceneRasterBindingSnapshot binding;
+            if (m_gpuDrivenGraphFailureInjection ==
+                    GPUDrivenGraphFailureInjection::Binding ||
+                !rasterResources.IsValid() ||
+                rasterResources.GetLeaseVersion() != gpuSceneLease->version ||
+                !m_pipelineCache->CreateGPUSceneRasterBindingSnapshot(
+                    rasterResources, objectConstants, binding) ||
+                !binding.IsReadyForBinding() ||
+                binding.leaseVersion != gpuSceneLease->version ||
+                binding.candidateBuffer.Get() != rasterResources.GetCandidates() ||
+                binding.primitiveBuffer.Get() != rasterResources.GetPrimitives() ||
+                binding.transformBuffer.Get() != rasterResources.GetTransforms())
+            {
+                return false;
+            }
+            std::shared_ptr<const GPUSceneRasterBindingSnapshot> retainedBinding =
+                std::make_shared<GPUSceneRasterBindingSnapshot>(std::move(binding));
+            if (!retainedBinding->RetainSubmissionResources(*m_submissionBatch))
+            {
+                return false;
+            }
+            out.owner = owner;
+            out.recordedState = std::move(recordedState);
+            out.binding = std::move(retainedBinding);
+            out.leaseVersion = gpuSceneLease->version;
+            return true;
+        };
+        if ((depthLanePlanned && !preflightGPUScenePass(
+                 m_depthGPUCulling.get(), depthGPUScenePreflight)) ||
+            (opaqueLanePlanned && !preflightGPUScenePass(
+                 m_opaqueGPUCulling.get(), opaqueGPUScenePreflight)))
+        {
+            RVX_VERIFY(m_gpuSceneUploader->CancelCurrentGraphLease(),
+                       "SceneRenderer: failed to cancel GPU-scene preflight lease");
+            MarkGPUDrivenFrameFailure();
+            return;
+        }
     }
 
     const auto addPass =
@@ -4119,6 +4479,7 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             const char* name,
             GPUCulling* owner,
             bool framePrepared,
+            const GPUScenePassPreflight* gpuScenePreflight,
             GPUCullingGraphHandles& outHandles,
             std::shared_ptr<GPUCullingRecordedState>& outRecordedState,
             bool& outGPUSceneRegistered) -> bool
@@ -4130,71 +4491,47 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             return false;
         }
 
-        const GPUCullingRecordingIdentity cullingIdentity{
+        const bool usesGPUScene = gpuScenePreflight != nullptr;
+        if (owner == m_depthGPUCulling.get())
+        {
+            m_gpuDrivenTierExecutionTestProbe.depthActualTier = usesGPUScene
+                ? GPUDrivenTier::GPUResidentScene
+                : GPUDrivenTier::IndirectGrouped;
+            m_gpuDrivenTierExecutionTestProbe.depthGPUSceneLeaseVersion =
+                usesGPUScene ? gpuScenePreflight->leaseVersion : 0;
+        }
+        else if (owner == m_opaqueGPUCulling.get())
+        {
+            m_gpuDrivenTierExecutionTestProbe.opaqueActualTier = usesGPUScene
+                ? GPUDrivenTier::GPUResidentScene
+                : GPUDrivenTier::IndirectGrouped;
+            m_gpuDrivenTierExecutionTestProbe.opaqueGPUSceneLeaseVersion =
+                usesGPUScene ? gpuScenePreflight->leaseVersion : 0;
+        }
+        std::shared_ptr<GPUCullingRecordedState> recordedState;
+        std::shared_ptr<const GPUSceneRasterBindingSnapshot> gpuSceneBinding;
+        uint64 gpuSceneLeaseVersion = 0;
+        if (usesGPUScene)
+        {
+            if (!gpuSceneLease || gpuScenePreflight->owner != owner ||
+                !gpuScenePreflight->recordedState ||
+                !gpuScenePreflight->binding)
+            {
+                return false;
+            }
+            recordedState = gpuScenePreflight->recordedState;
+            gpuSceneBinding = gpuScenePreflight->binding;
+            gpuSceneLeaseVersion = gpuScenePreflight->leaseVersion;
+        }
+        else
+        {
+            const GPUCullingRecordingIdentity cullingIdentity{
                 recordIdentity.graphIdentity,
                 recordIdentity.graphRecordingGeneration,
                 recordIdentity.frameSequence,
                 recordIdentity.viewOrdinal,
                 recordIdentity.recordEpoch};
-        bool usesGPUScene = false;
-        std::shared_ptr<GPUCullingRecordedState> recordedState;
-        std::shared_ptr<const GPUSceneRasterBindingSnapshot> gpuSceneBinding;
-        uint64 gpuSceneLeaseVersion = 0;
-        if (gpuSceneLease && owner->IsGPUSceneExecutionReady() &&
-            owner->HasCompleteGPUSceneCandidates() && m_pipelineCache &&
-            m_submissionBatch)
-        {
-            recordedState = owner->SealForGPUSceneGraph(
-                cullingIdentity, *gpuSceneLease);
-            usesGPUScene = recordedState != nullptr && recordedState->IsValid();
-            if (usesGPUScene)
-            {
-                const GPUSceneRasterResourceSnapshot rasterResources =
-                    recordedState->GetGPUSceneRasterResourceSnapshot();
-                ObjectConstants objectConstants{};
-                objectConstants.world = Mat4Identity();
-                objectConstants.normalMatrix = Mat4Identity();
-                objectConstants.previousWorldViewProjection = Mat4Identity();
-                objectConstants.objectVelocityParams = Vec4(0.0f);
-                objectConstants.skinningParams = Vec4(0.0f);
-
-                GPUSceneRasterBindingSnapshot binding;
-                if (!rasterResources.IsValid() ||
-                    rasterResources.GetLeaseVersion() != gpuSceneLease->version ||
-                    !m_pipelineCache->CreateGPUSceneRasterBindingSnapshot(
-                        rasterResources, objectConstants, binding) ||
-                    !binding.IsReadyForBinding() ||
-                    binding.leaseVersion != gpuSceneLease->version ||
-                    binding.candidateBuffer.Get() != rasterResources.GetCandidates() ||
-                    binding.primitiveBuffer.Get() != rasterResources.GetPrimitives() ||
-                    binding.transformBuffer.Get() != rasterResources.GetTransforms())
-                {
-                    recordedState.reset();
-                    usesGPUScene = false;
-                }
-                else
-                {
-                    gpuSceneBinding = std::make_shared<GPUSceneRasterBindingSnapshot>(
-                        std::move(binding));
-                    if (!gpuSceneBinding->RetainSubmissionResources(*m_submissionBatch))
-                    {
-                        gpuSceneBinding.reset();
-                        recordedState.reset();
-                        usesGPUScene = false;
-                    }
-                    else
-                    {
-                        gpuSceneLeaseVersion = gpuSceneLease->version;
-                    }
-                }
-            }
-        }
-        if (!recordedState)
-        {
-            // GPU-scene recording is optional. Resolve any exact-lease or
-            // descriptor failure before the graph is mutated, then retain the
-            // unchanged Tier 1 seal as the per-pass fallback.
-            usesGPUScene = false;
+            ++m_gpuDrivenTierExecutionTestProbe.tierOneSealAttempts;
             recordedState = owner->SealForGraph(cullingIdentity);
         }
         if (!recordedState || !recordedState->IsValid())
@@ -4324,6 +4661,13 @@ void SceneRenderer::AddGPUDrivenCullingPass(
         outRecordedState = recordedState;
         outGPUSceneRegistered = usesGPUScene;
 
+        if (usesGPUScene &&
+            m_gpuDrivenGraphFailureInjection ==
+                GPUDrivenGraphFailureInjection::PassRegistration)
+        {
+            return false;
+        }
+        ++m_gpuDrivenTierExecutionTestProbe.graphPassRegistrationAttempts;
         m_renderGraph->AddPass<GPUDrivenCullPassData>(
             name,
             RenderGraphPassType::Compute,
@@ -4414,6 +4758,9 @@ void SceneRenderer::AddGPUDrivenCullingPass(
     const bool depthAdded = addPass("GPUDrivenDepthCull",
                                     m_depthGPUCulling.get(),
                                     m_depthGPUCullingFramePrepared,
+                                    useGPUSceneTier && depthLanePlanned
+                                        ? &depthGPUScenePreflight
+                                        : nullptr,
                                     m_depthGPUCullingGraphHandles,
                                     m_depthGPUCullingRecordedState,
                                     depthGPUSceneRegistered);
@@ -4421,16 +4768,23 @@ void SceneRenderer::AddGPUDrivenCullingPass(
     const bool opaqueAdded = addPass("GPUDrivenOpaqueCull",
                                      m_opaqueGPUCulling.get(),
                                      m_opaqueGPUCullingFramePrepared,
+                                     useGPUSceneTier && opaqueLanePlanned
+                                         ? &opaqueGPUScenePreflight
+                                         : nullptr,
                                      m_opaqueGPUCullingGraphHandles,
                                      m_opaqueGPUCullingRecordedState,
                                      opaqueGPUSceneRegistered);
-    if (gpuSceneLease && !depthGPUSceneRegistered && !opaqueGPUSceneRegistered)
+    if ((depthLanePlanned && !depthAdded) ||
+        (opaqueLanePlanned && !opaqueAdded))
     {
-        // Both passes selected their normal sealed fallback before graph
-        // recording. Drop the unused uploader lease so it cannot be marked as
-        // a GPU read merely because its buffers were imported.
-        RVX_VERIFY(m_gpuSceneUploader->CancelCurrentGraphLease(),
-                   "SceneRenderer: failed to cancel unused GPU-scene lease");
+        if (gpuSceneLease && !depthAdded && !opaqueAdded &&
+            m_gpuSceneUploader)
+        {
+            RVX_VERIFY(m_gpuSceneUploader->CancelCurrentGraphLease(),
+                       "SceneRenderer: failed to cancel GPU-scene lease after pass registration failure");
+        }
+        MarkGPUDrivenFrameFailure();
+        return;
     }
     m_gpuDrivenCullingStats.graphPassAdded = depthAdded || opaqueAdded;
     m_gpuDrivenCullingStats.gpuCullingGraphPassCount =

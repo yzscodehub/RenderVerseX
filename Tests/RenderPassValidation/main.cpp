@@ -29,6 +29,7 @@
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
 #include "Render/GPUScene/GPUSceneSchema.h"
+#include "GPUScene/GPUSceneUploader.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
@@ -84,6 +85,275 @@
 #include "Scene/Mesh.h"
 
 #include <gtest/gtest.h>
+
+namespace RVX
+{
+    class SceneRendererTestAccess final
+    {
+    public:
+        static void ConfigureGPUDrivenPlan(
+            SceneRenderer& renderer,
+            GPUDrivenTier selectedTier,
+            GPUDrivenTier immediateFallbackTier,
+            uint64 requiredResidentVersion,
+            bool depthLane,
+            bool opaqueLane)
+        {
+            RenderFrameExecutionPlan& plan =
+                renderer.m_renderPolicyDiagnostics.selectedPlan;
+            plan = {};
+            plan.frameSequence = 991u;
+            plan.viewPolicy.selectedTier = selectedTier;
+            plan.viewPolicy.immediateFallbackTier = immediateFallbackTier;
+            plan.viewPolicy.requiredResidentVersion = requiredResidentVersion;
+            for (const RenderPassKind pass : {RenderPassKind::Depth,
+                                              RenderPassKind::Opaque})
+            {
+                if ((pass == RenderPassKind::Depth && !depthLane) ||
+                    (pass == RenderPassKind::Opaque && !opaqueLane))
+                {
+                    continue;
+                }
+                RenderPassExecutionPlan passPlan;
+                passPlan.pass = pass;
+                passPlan.gpuEligiblePackets = {0u, 1u};
+                plan.passes.push_back(std::move(passPlan));
+            }
+            renderer.m_renderPolicyDiagnostics.planAvailable = true;
+            renderer.m_renderPolicyDiagnostics.executionReport = {};
+            renderer.m_renderPolicyDiagnostics.executionReport.frameSequence =
+                plan.frameSequence;
+            for (const RenderPassExecutionPlan& passPlan : plan.passes)
+            {
+                RenderPassExecutionReport report;
+                report.pass = passPlan.pass;
+                report.gpuDrivenLane.packetRange = passPlan.gpuEligiblePackets;
+                renderer.m_renderPolicyDiagnostics.executionReport.passes.push_back(
+                    std::move(report));
+            }
+            renderer.m_viewData.renderFrameExecutionPlan = &plan;
+            renderer.m_viewData.renderFrameExecutionReport =
+                &renderer.m_renderPolicyDiagnostics.executionReport;
+            renderer.m_gpuDrivenCullingEnabled = depthLane || opaqueLane;
+            renderer.m_gpuDrivenTier1PreparationFailed = false;
+            renderer.m_gpuDrivenFrameFailure = false;
+            renderer.m_confirmedGPUDrivenTier = selectedTier;
+            renderer.m_gpuDrivenGraphFailureInjection =
+                SceneRenderer::GPUDrivenGraphFailureInjection::None;
+            renderer.m_gpuDrivenTierExecutionTestProbe = {};
+        }
+
+        static void InstallCullingOwners(
+            SceneRenderer& renderer,
+            std::unique_ptr<GPUCulling> depth,
+            std::unique_ptr<GPUCulling> opaque)
+        {
+            renderer.m_depthGPUCulling = std::move(depth);
+            renderer.m_opaqueGPUCulling = std::move(opaque);
+            renderer.m_depthGPUCullingFramePrepared =
+                renderer.m_depthGPUCulling != nullptr;
+            renderer.m_opaqueGPUCullingFramePrepared =
+                renderer.m_opaqueGPUCulling != nullptr;
+        }
+
+        static void InstallGraph(SceneRenderer& renderer, IRHIDevice& device)
+        {
+            renderer.m_renderGraph = std::make_unique<RenderGraph>();
+            renderer.m_renderGraph->SetDevice(&device);
+        }
+
+        static void InstallGPUSceneResources(
+            SceneRenderer& renderer,
+            std::unique_ptr<GPUSceneUploader> uploader,
+            std::unique_ptr<PipelineCache> pipelineCache)
+        {
+            renderer.m_gpuSceneUploader = std::move(uploader);
+            renderer.m_pipelineCache = std::move(pipelineCache);
+            renderer.m_submissionBatch =
+                std::make_unique<RenderSubmissionResourceBatch>();
+        }
+
+        static void ConfirmActualTier(SceneRenderer& renderer)
+        {
+            renderer.ConfirmGPUDrivenActualTier();
+        }
+
+        static void AddGPUDrivenCullingPass(SceneRenderer& renderer)
+        {
+            RenderGraph* const graph = renderer.m_renderGraph.get();
+            if (graph == nullptr)
+            {
+                return;
+            }
+            const RenderPassRecordIdentity identity{
+                graph,
+                graph->GetGraphIdentity(),
+                graph->GetRecordingGeneration(),
+                renderer.m_renderPolicyDiagnostics.selectedPlan.frameSequence,
+                0u,
+                1u};
+            renderer.AddGPUDrivenCullingPass(identity);
+        }
+
+        static void InjectGraphFailure(SceneRenderer& renderer, uint32 stage)
+        {
+            renderer.m_gpuDrivenGraphFailureInjection =
+                static_cast<SceneRenderer::GPUDrivenGraphFailureInjection>(stage);
+        }
+
+        static GPUDrivenTier ConfirmedTier(const SceneRenderer& renderer)
+        {
+            return renderer.m_confirmedGPUDrivenTier;
+        }
+
+        static bool FrameFailed(const SceneRenderer& renderer)
+        {
+            return renderer.m_gpuDrivenFrameFailure;
+        }
+
+        static uint32 LeaseAcquireAttempts(const SceneRenderer& renderer)
+        {
+            return renderer.m_gpuDrivenTierExecutionTestProbe
+                .gpuSceneLeaseAcquireAttempts;
+        }
+
+        static uint32 GPUSceneSealAttempts(const SceneRenderer& renderer)
+        {
+            return renderer.m_gpuDrivenTierExecutionTestProbe
+                .gpuSceneSealAttempts;
+        }
+
+        static uint32 TierOneSealAttempts(const SceneRenderer& renderer)
+        {
+            return renderer.m_gpuDrivenTierExecutionTestProbe
+                .tierOneSealAttempts;
+        }
+
+        static uint32 GraphPassRegistrationAttempts(const SceneRenderer& renderer)
+        {
+            return renderer.m_gpuDrivenTierExecutionTestProbe
+                .graphPassRegistrationAttempts;
+        }
+
+        static uint64 DepthGPUSceneLeaseVersion(const SceneRenderer& renderer)
+        {
+            return renderer.m_gpuDrivenTierExecutionTestProbe
+                .depthGPUSceneLeaseVersion;
+        }
+
+        static uint64 OpaqueGPUSceneLeaseVersion(const SceneRenderer& renderer)
+        {
+            return renderer.m_gpuDrivenTierExecutionTestProbe
+                .opaqueGPUSceneLeaseVersion;
+        }
+
+        static GPUDrivenTier DepthActualTier(const SceneRenderer& renderer)
+        {
+            return renderer.m_gpuDrivenTierExecutionTestProbe.depthActualTier;
+        }
+
+        static GPUDrivenTier OpaqueActualTier(const SceneRenderer& renderer)
+        {
+            return renderer.m_gpuDrivenTierExecutionTestProbe.opaqueActualTier;
+        }
+
+        static GPUDrivenTier SelectedTier(const SceneRenderer& renderer)
+        {
+            return renderer.m_renderPolicyDiagnostics.selectedPlan.viewPolicy.selectedTier;
+        }
+
+        static uint64 RequiredResidentVersion(const SceneRenderer& renderer)
+        {
+            return renderer.m_renderPolicyDiagnostics.selectedPlan.viewPolicy
+                .requiredResidentVersion;
+        }
+
+        static const RenderFrameExecutionReport& ExecutionReport(
+            const SceneRenderer& renderer)
+        {
+            return renderer.m_renderPolicyDiagnostics.executionReport;
+        }
+
+        static uint32 CompileGraph(SceneRenderer& renderer)
+        {
+            if (renderer.m_renderGraph == nullptr)
+            {
+                return 0;
+            }
+            renderer.m_renderGraph->Compile();
+            return renderer.m_renderGraph->GetCompileStats().totalPasses;
+        }
+
+        static bool IsGraphCompileValid(const SceneRenderer& renderer)
+        {
+            return renderer.m_renderGraph != nullptr &&
+                renderer.m_renderGraph->GetCompileStats().compileValid;
+        }
+
+        static uint32 ExecutedGraphPassCount(const SceneRenderer& renderer)
+        {
+            return renderer.m_renderGraph != nullptr
+                ? renderer.m_renderGraph->GetCompileStats().lastExecutedPassCount
+                : 0;
+        }
+
+        static void ExecuteGraph(SceneRenderer& renderer,
+                                 RHICommandContext& context)
+        {
+            if (renderer.m_renderGraph != nullptr)
+            {
+                renderer.m_renderGraph->Execute(context);
+            }
+        }
+
+        static bool GPUSceneCommandRecordingFailed(const SceneRenderer& renderer)
+        {
+            return renderer.m_gpuSceneCullingCommandRecordingFailed;
+        }
+
+        static void ReleaseTestSubmissionResources(
+            SceneRenderer& renderer,
+            RenderRetirementQueue& retirement)
+        {
+            if (renderer.m_submissionBatch)
+            {
+                renderer.m_submissionBatch->ReleaseUnsubmitted(retirement);
+                renderer.m_submissionBatch.reset();
+                renderer.m_viewData.submissionResourceBatch = nullptr;
+            }
+        }
+
+        static void ConfigureLaneAggregationForTesting(
+            SceneRenderer& renderer,
+            std::unique_ptr<PipelineCache> pipelineCache,
+            DepthPrepass* depthPass,
+            OpaquePass* opaquePass,
+            std::unique_ptr<GPUCulling> opaqueOwner)
+        {
+            renderer.m_pipelineCache = std::move(pipelineCache);
+            renderer.m_depthPrepass = depthPass;
+            renderer.m_opaquePass = opaquePass;
+            renderer.m_shadowPass = nullptr;
+            renderer.m_transparentPass = nullptr;
+            renderer.m_depthGPUCulling.reset();
+            renderer.m_opaqueGPUCulling = std::move(opaqueOwner);
+            renderer.m_meshPassPreparation.Clear();
+
+            MeshPassProcessorResult opaqueCandidate;
+            opaqueCandidate.disposition = MeshPassDisposition::GPUCandidate;
+            opaqueCandidate.reason = MeshPassEligibilityReason::None;
+            opaqueCandidate.packet.pass = RenderPassKind::Opaque;
+            opaqueCandidate.packet.arguments.indexCount = 3u;
+            opaqueCandidate.groupKey.pipeline.materialVariant =
+                MaterialPipelineVariant::Opaque;
+            opaqueCandidate.groupKey.pipeline.topology =
+                MeshUploadPrimitiveTopology::Triangles;
+            renderer.m_meshPassPreparation.opaque.Record(
+                std::move(opaqueCandidate));
+            renderer.m_meshPassPreparation.opaque.FinalizeGroups();
+        }
+    };
+} // namespace RVX
 
 using namespace RVX;
 
@@ -2368,7 +2638,502 @@ namespace
         RHITextureViewRef colorView;
         ViewData view;
     };
+
+    struct D4b2ResidentGPUScene
+    {
+        RenderSubmissionTracker tracker;
+        RenderRetirementQueue retirement;
+        GPUSceneDatabase database;
+        std::unique_ptr<GPUSceneUploader> uploader;
+        uint64 version = 0;
+
+        [[nodiscard]] bool Initialize(FakeDevice& device)
+        {
+            if (!tracker.Initialize(&device) || !retirement.Initialize(&tracker))
+            {
+                return false;
+            }
+
+            uploader = std::make_unique<GPUSceneUploader>();
+            if (!uploader || !uploader->Initialize(&device, &tracker))
+            {
+                return false;
+            }
+
+            GPUSceneObjectData object;
+            object.objectId = 1u;
+            object.draws.resize(1u);
+            object.draws[0].draw.indexCount = 3u;
+            object.draws[0].draw.instanceCount = 1u;
+            object.draws[0].geometry.indexCount = 3u;
+            GPUSceneTransaction transaction;
+            transaction.Add(object);
+            if (!database.Commit(transaction).Succeeded())
+            {
+                return false;
+            }
+            version = database.GetCommittedVersion();
+            uploader->Observe(
+                database.GetCommittedMirror(), database.GetLastChangeSet());
+
+            RenderGraph uploadGraph;
+            uploadGraph.SetDevice(&device);
+            RenderSubmissionResourceBatch uploadBatch;
+            uploader->BuildRenderGraph(uploadGraph, &uploadBatch);
+            uploadGraph.Compile();
+            bool initialized = uploadGraph.GetCompileStats().compileValid;
+            RecordingCommandContext uploadContext;
+            if (initialized)
+            {
+                uploadGraph.Execute(uploadContext);
+                uploader->CommitRealizedAccess(uploadGraph);
+                const GPUCompletionPoint point = tracker.Submit(&uploadContext);
+                GPUCompletionToken completion;
+                initialized = point.value != 0 &&
+                    InsertGPUCompletionPoint(completion, point);
+                if (initialized)
+                {
+                    uploader->NotifySubmission(completion);
+                    uploadBatch.SealAndTransfer(completion, retirement);
+                    initialized = retirement.Poll() != GPUCompletionStatus::Lost;
+                }
+            }
+            if (!uploadBatch.IsSealed())
+            {
+                uploadBatch.ReleaseUnsubmitted(retirement);
+            }
+            return initialized &&
+                uploader->QueryExactVersionReadiness(version).IsReady();
+        }
+    };
+
+    [[nodiscard]] std::unique_ptr<GPUCulling> MakeD4b2CullingOwner(
+        FakeDevice& device,
+        uint64 candidateVersion,
+        uint32 requiredPassMask)
+    {
+        GPUCullingConfig config;
+        config.maxInstances = 1u;
+        config.enableOcclusionCulling = false;
+        config.enableDistanceCulling = false;
+
+        auto owner = std::make_unique<GPUCulling>();
+        owner->Initialize(&device, config);
+        owner->BeginFrame();
+        if (owner->BeginDrawGroup(1u, 1u) == RVX_INVALID_INDEX)
+        {
+            return nullptr;
+        }
+
+        GPUInstanceData instance{};
+        instance.indexCount = 3u;
+        instance.sourceIndex = 1u;
+        if (owner->AddInstance(instance) == RVX_INVALID_INDEX)
+        {
+            return nullptr;
+        }
+
+        if (candidateVersion != 0)
+        {
+            GPUSceneCullingCandidate candidate;
+            candidate.primitiveSlot = 1u;
+            candidate.primitiveGeneration = 1u;
+            candidate.drawSlot = 1u;
+            candidate.drawGeneration = 1u;
+            candidate.objectIdLow = 1u;
+            candidate.requiredPassMask = requiredPassMask;
+            candidate.drawGroupIndex = 0u;
+            candidate.drawGroupCommandOffset = 0u;
+            candidate.rasterInstanceIndex = 0u;
+            if (!owner->AddGPUSceneCandidate(candidate, candidateVersion))
+            {
+                return nullptr;
+            }
+        }
+
+        owner->EndDrawGroup();
+        owner->EndFrame();
+        return owner;
+    }
+
+    [[nodiscard]] std::unique_ptr<PipelineCache> MakeD4b2PipelineCache(
+        FakeDevice& device,
+        const fs::path& shaderDir)
+    {
+        auto cache = std::make_unique<PipelineCache>(
+            RVX::Tests::CreateDeterministicShaderCompiler);
+        if (!cache->Initialize(&device, shaderDir.string()) ||
+            !cache->IsGPUSceneRasterReady())
+        {
+            return nullptr;
+        }
+        return cache;
+    }
+
+    struct D4b2RendererSubmissionCleanup
+    {
+        SceneRenderer& renderer;
+        RenderRetirementQueue& retirement;
+
+        ~D4b2RendererSubmissionCleanup()
+        {
+            SceneRendererTestAccess::ReleaseTestSubmissionResources(
+                renderer, retirement);
+            static_cast<void>(retirement.Poll());
+        }
+    };
 } // namespace
+
+TEST_F(RenderPassValidationFixture,
+       SceneRendererD4b2IndirectGroupedUsesOnlyTierOneWithReadyResidentInputs)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    D4b2ResidentGPUScene resident;
+    ASSERT_TRUE(resident.Initialize(device));
+    auto scenePipelineCache = MakeD4b2PipelineCache(device, shaderDir);
+    ASSERT_NE(nullptr, scenePipelineCache);
+
+    const uint32 depthMask = static_cast<uint32>(GPUScenePassMask::Depth);
+    const uint32 opaqueMask = static_cast<uint32>(GPUScenePassMask::Opaque);
+    auto depth = MakeD4b2CullingOwner(device, resident.version, depthMask);
+    auto opaque = MakeD4b2CullingOwner(device, resident.version, opaqueMask);
+    ASSERT_NE(nullptr, depth);
+    ASSERT_NE(nullptr, opaque);
+    ASSERT_TRUE(depth->HasCompleteGPUSceneCandidates(resident.version));
+    ASSERT_TRUE(opaque->HasCompleteGPUSceneCandidates(resident.version));
+    ASSERT_TRUE(depth->IsGPUSceneExecutionReady());
+    ASSERT_TRUE(opaque->IsGPUSceneExecutionReady());
+
+    SceneRenderer renderer;
+    D4b2RendererSubmissionCleanup cleanup{renderer, resident.retirement};
+    SceneRendererTestAccess::ConfigureGPUDrivenPlan(
+        renderer,
+        GPUDrivenTier::IndirectGrouped,
+        GPUDrivenTier::Direct,
+        resident.version,
+        true,
+        true);
+    SceneRendererTestAccess::InstallGraph(renderer, device);
+    SceneRendererTestAccess::InstallCullingOwners(
+        renderer, std::move(depth), std::move(opaque));
+    SceneRendererTestAccess::InstallGPUSceneResources(
+        renderer, std::move(resident.uploader), std::move(scenePipelineCache));
+
+    SceneRendererTestAccess::ConfirmActualTier(renderer);
+    SceneRendererTestAccess::AddGPUDrivenCullingPass(renderer);
+
+    EXPECT_FALSE(SceneRendererTestAccess::FrameFailed(renderer));
+    EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
+              SceneRendererTestAccess::ConfirmedTier(renderer));
+    EXPECT_EQ(0u, SceneRendererTestAccess::LeaseAcquireAttempts(renderer));
+    EXPECT_EQ(0u, SceneRendererTestAccess::GPUSceneSealAttempts(renderer));
+    EXPECT_EQ(2u, SceneRendererTestAccess::TierOneSealAttempts(renderer));
+    EXPECT_EQ(2u, SceneRendererTestAccess::GraphPassRegistrationAttempts(renderer));
+    EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
+              SceneRendererTestAccess::DepthActualTier(renderer));
+    EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
+              SceneRendererTestAccess::OpaqueActualTier(renderer));
+    EXPECT_EQ(0u, SceneRendererTestAccess::DepthGPUSceneLeaseVersion(renderer));
+    EXPECT_EQ(0u, SceneRendererTestAccess::OpaqueGPUSceneLeaseVersion(renderer));
+    EXPECT_EQ(2u, SceneRendererTestAccess::CompileGraph(renderer));
+    EXPECT_TRUE(SceneRendererTestAccess::IsGraphCompileValid(renderer));
+}
+
+TEST_F(RenderPassValidationFixture,
+       SceneRendererD4b2TierTwoCompanionMismatchFallsBackBeforeGraphMutation)
+{
+    constexpr uint64 requiredResidentVersion = 17u;
+    auto depth = MakeD4b2CullingOwner(
+        device,
+        requiredResidentVersion,
+        static_cast<uint32>(GPUScenePassMask::Depth));
+    auto opaque = MakeD4b2CullingOwner(
+        device,
+        requiredResidentVersion + 1u,
+        static_cast<uint32>(GPUScenePassMask::Opaque));
+    ASSERT_NE(nullptr, depth);
+    ASSERT_NE(nullptr, opaque);
+    ASSERT_TRUE(depth->HasCompleteGPUSceneCandidates(requiredResidentVersion));
+    ASSERT_FALSE(opaque->HasCompleteGPUSceneCandidates(requiredResidentVersion));
+
+    SceneRenderer renderer;
+    SceneRendererTestAccess::ConfigureGPUDrivenPlan(
+        renderer,
+        GPUDrivenTier::GPUResidentScene,
+        GPUDrivenTier::IndirectGrouped,
+        requiredResidentVersion,
+        true,
+        true);
+    SceneRendererTestAccess::InstallGraph(renderer, device);
+    SceneRendererTestAccess::InstallCullingOwners(
+        renderer, std::move(depth), std::move(opaque));
+
+    SceneRendererTestAccess::ConfirmActualTier(renderer);
+
+    const RenderFrameExecutionReport& report =
+        SceneRendererTestAccess::ExecutionReport(renderer);
+    EXPECT_FALSE(SceneRendererTestAccess::FrameFailed(renderer));
+    EXPECT_EQ(GPUDrivenTier::GPUResidentScene,
+              SceneRendererTestAccess::SelectedTier(renderer));
+    EXPECT_EQ(requiredResidentVersion,
+              SceneRendererTestAccess::RequiredResidentVersion(renderer));
+    EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
+              SceneRendererTestAccess::ConfirmedTier(renderer));
+    EXPECT_EQ(GPUDrivenTier::IndirectGrouped, report.executedTier);
+    EXPECT_EQ(RenderPolicyReason::PlannedFallback, report.tierFallbackReason);
+    EXPECT_EQ(0u, SceneRendererTestAccess::LeaseAcquireAttempts(renderer));
+    EXPECT_EQ(0u, SceneRendererTestAccess::TierOneSealAttempts(renderer));
+    EXPECT_EQ(0u, SceneRendererTestAccess::GraphPassRegistrationAttempts(renderer));
+    EXPECT_EQ(0u, SceneRendererTestAccess::CompileGraph(renderer));
+    EXPECT_TRUE(SceneRendererTestAccess::IsGraphCompileValid(renderer));
+}
+
+TEST_F(RenderPassValidationFixture,
+       SceneRendererD4b2TierTwoInjectedGraphFailuresFailClosedWithoutTierOneReplay)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    constexpr std::array<std::pair<uint32, const char*>, 4> stages = {{
+        {1u, "Acquire"},
+        {2u, "Seal"},
+        {3u, "Binding"},
+        {4u, "PassRegistration"},
+    }};
+    for (const auto& [stage, stageName] : stages)
+    {
+        SCOPED_TRACE(stageName);
+        D4b2ResidentGPUScene resident;
+        ASSERT_TRUE(resident.Initialize(device));
+        auto scenePipelineCache = MakeD4b2PipelineCache(device, shaderDir);
+        ASSERT_NE(nullptr, scenePipelineCache);
+
+        auto depth = MakeD4b2CullingOwner(
+            device,
+            resident.version,
+            static_cast<uint32>(GPUScenePassMask::Depth));
+        auto opaque = MakeD4b2CullingOwner(
+            device,
+            resident.version,
+            static_cast<uint32>(GPUScenePassMask::Opaque));
+        ASSERT_NE(nullptr, depth);
+        ASSERT_NE(nullptr, opaque);
+        ASSERT_TRUE(depth->IsGPUSceneExecutionReady());
+        ASSERT_TRUE(opaque->IsGPUSceneExecutionReady());
+
+        SceneRenderer renderer;
+        D4b2RendererSubmissionCleanup cleanup{renderer, resident.retirement};
+        SceneRendererTestAccess::ConfigureGPUDrivenPlan(
+            renderer,
+            GPUDrivenTier::GPUResidentScene,
+            GPUDrivenTier::IndirectGrouped,
+            resident.version,
+            true,
+            true);
+        SceneRendererTestAccess::InstallGraph(renderer, device);
+        SceneRendererTestAccess::InstallCullingOwners(
+            renderer, std::move(depth), std::move(opaque));
+        SceneRendererTestAccess::InstallGPUSceneResources(
+            renderer,
+            std::move(resident.uploader),
+            std::move(scenePipelineCache));
+        SceneRendererTestAccess::ConfirmActualTier(renderer);
+        ASSERT_FALSE(SceneRendererTestAccess::FrameFailed(renderer));
+        ASSERT_EQ(GPUDrivenTier::GPUResidentScene,
+                  SceneRendererTestAccess::ConfirmedTier(renderer));
+
+        const uint64 submittedBefore = resident.tracker.GetLastSubmittedValue(
+            GPUQueueDomain::Graphics);
+        SceneRendererTestAccess::InjectGraphFailure(renderer, stage);
+        SceneRendererTestAccess::AddGPUDrivenCullingPass(renderer);
+
+        const RenderFrameExecutionReport& report =
+            SceneRendererTestAccess::ExecutionReport(renderer);
+        EXPECT_TRUE(SceneRendererTestAccess::FrameFailed(renderer));
+        EXPECT_EQ(RenderExecutionStatus::Failed, report.status);
+        EXPECT_EQ(GPUDrivenTier::GPUResidentScene,
+                  SceneRendererTestAccess::SelectedTier(renderer));
+        EXPECT_EQ(resident.version,
+                  SceneRendererTestAccess::RequiredResidentVersion(renderer));
+        EXPECT_EQ(RenderPolicyReason::None, report.tierFallbackReason);
+        EXPECT_EQ(0u, SceneRendererTestAccess::TierOneSealAttempts(renderer));
+        EXPECT_EQ(0u, SceneRendererTestAccess::GraphPassRegistrationAttempts(renderer));
+        EXPECT_EQ(0u, SceneRendererTestAccess::CompileGraph(renderer));
+        EXPECT_TRUE(SceneRendererTestAccess::IsGraphCompileValid(renderer));
+        EXPECT_EQ(0u, SceneRendererTestAccess::ExecutedGraphPassCount(renderer));
+        EXPECT_EQ(submittedBefore,
+                  resident.tracker.GetLastSubmittedValue(GPUQueueDomain::Graphics));
+
+        if (stage == 1u)
+        {
+            EXPECT_EQ(0u, SceneRendererTestAccess::LeaseAcquireAttempts(renderer));
+            EXPECT_EQ(0u, SceneRendererTestAccess::GPUSceneSealAttempts(renderer));
+        }
+        else if (stage == 2u)
+        {
+            EXPECT_EQ(1u, SceneRendererTestAccess::LeaseAcquireAttempts(renderer));
+            EXPECT_EQ(0u, SceneRendererTestAccess::GPUSceneSealAttempts(renderer));
+        }
+        else if (stage == 3u)
+        {
+            EXPECT_EQ(1u, SceneRendererTestAccess::LeaseAcquireAttempts(renderer));
+            EXPECT_EQ(1u, SceneRendererTestAccess::GPUSceneSealAttempts(renderer));
+        }
+        else
+        {
+            EXPECT_EQ(1u, SceneRendererTestAccess::LeaseAcquireAttempts(renderer));
+            EXPECT_EQ(2u, SceneRendererTestAccess::GPUSceneSealAttempts(renderer));
+        }
+    }
+}
+
+TEST_F(RenderPassValidationFixture,
+       SceneRendererD4b2TierTwoDepthOpaqueSharesOneExactResidentLease)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    D4b2ResidentGPUScene resident;
+    ASSERT_TRUE(resident.Initialize(device));
+    auto scenePipelineCache = MakeD4b2PipelineCache(device, shaderDir);
+    ASSERT_NE(nullptr, scenePipelineCache);
+    auto depth = MakeD4b2CullingOwner(
+        device,
+        resident.version,
+        static_cast<uint32>(GPUScenePassMask::Depth));
+    auto opaque = MakeD4b2CullingOwner(
+        device,
+        resident.version,
+        static_cast<uint32>(GPUScenePassMask::Opaque));
+    ASSERT_NE(nullptr, depth);
+    ASSERT_NE(nullptr, opaque);
+    ASSERT_TRUE(depth->IsGPUSceneExecutionReady());
+    ASSERT_TRUE(opaque->IsGPUSceneExecutionReady());
+
+    SceneRenderer renderer;
+    D4b2RendererSubmissionCleanup cleanup{renderer, resident.retirement};
+    SceneRendererTestAccess::ConfigureGPUDrivenPlan(
+        renderer,
+        GPUDrivenTier::GPUResidentScene,
+        GPUDrivenTier::IndirectGrouped,
+        resident.version,
+        true,
+        true);
+    SceneRendererTestAccess::InstallGraph(renderer, device);
+    SceneRendererTestAccess::InstallCullingOwners(
+        renderer, std::move(depth), std::move(opaque));
+    SceneRendererTestAccess::InstallGPUSceneResources(
+        renderer, std::move(resident.uploader), std::move(scenePipelineCache));
+    SceneRendererTestAccess::ConfirmActualTier(renderer);
+    ASSERT_FALSE(SceneRendererTestAccess::FrameFailed(renderer));
+    ASSERT_EQ(GPUDrivenTier::GPUResidentScene,
+              SceneRendererTestAccess::ConfirmedTier(renderer));
+
+    SceneRendererTestAccess::AddGPUDrivenCullingPass(renderer);
+
+    EXPECT_FALSE(SceneRendererTestAccess::FrameFailed(renderer));
+    EXPECT_EQ(GPUDrivenTier::GPUResidentScene,
+              SceneRendererTestAccess::DepthActualTier(renderer));
+    EXPECT_EQ(GPUDrivenTier::GPUResidentScene,
+              SceneRendererTestAccess::OpaqueActualTier(renderer));
+    EXPECT_EQ(1u, SceneRendererTestAccess::LeaseAcquireAttempts(renderer));
+    EXPECT_EQ(2u, SceneRendererTestAccess::GPUSceneSealAttempts(renderer));
+    EXPECT_EQ(0u, SceneRendererTestAccess::TierOneSealAttempts(renderer));
+    EXPECT_EQ(2u, SceneRendererTestAccess::GraphPassRegistrationAttempts(renderer));
+    const uint64 depthLeaseVersion =
+        SceneRendererTestAccess::DepthGPUSceneLeaseVersion(renderer);
+    const uint64 opaqueLeaseVersion =
+        SceneRendererTestAccess::OpaqueGPUSceneLeaseVersion(renderer);
+    EXPECT_NE(0u, depthLeaseVersion);
+    EXPECT_EQ(resident.version, depthLeaseVersion);
+    EXPECT_EQ(depthLeaseVersion, opaqueLeaseVersion);
+    EXPECT_EQ(2u, SceneRendererTestAccess::CompileGraph(renderer));
+    ASSERT_TRUE(SceneRendererTestAccess::IsGraphCompileValid(renderer));
+
+    RecordingCommandContext commands;
+    SceneRendererTestAccess::ExecuteGraph(renderer, commands);
+    EXPECT_EQ(2u, SceneRendererTestAccess::ExecutedGraphPassCount(renderer));
+    EXPECT_FALSE(SceneRendererTestAccess::GPUSceneCommandRecordingFailed(renderer));
+}
+
+TEST_F(RenderPassValidationFixture,
+       SceneRendererPolicyKeepsOpaqueTierOneWhenDepthHasNoCandidateOrOwner)
+{
+    const fs::path shaderDir = FindShaderDirectory();
+    if (shaderDir.empty())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    auto scenePipelineCache = MakeD4b2PipelineCache(device, shaderDir);
+    ASSERT_NE(nullptr, scenePipelineCache);
+    DepthPrepass depthPass;
+    depthPass.SetResources(scenePipelineCache.get());
+    depthPass.SetEnabled(true);
+    OpaquePass opaquePass;
+    opaquePass.SetResources(scenePipelineCache.get(), nullptr);
+    auto opaqueOwner = MakeD4b2CullingOwner(
+        device, 0u, static_cast<uint32>(GPUScenePassMask::Opaque));
+    ASSERT_NE(nullptr, opaqueOwner);
+    ASSERT_TRUE(opaqueOwner->IsGpuExecutionReady());
+
+    RHITextureRef colorTarget = device.CreateTexture(
+        RHITextureDesc::RenderTarget(32u, 32u, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(colorTarget);
+    SceneRendererExternalTargetDesc externalTarget;
+    externalTarget.colorTarget = colorTarget.Get();
+
+    SceneRenderer renderer;
+    renderer.SetRenderFeatureReportDeviceForTesting(&device);
+    renderer.SetExternalRenderTarget(externalTarget);
+    renderer.SetGPUDrivenCullingMode(RenderGPUDrivenMode::ForceEnabled);
+    SceneRendererTestAccess::ConfigureLaneAggregationForTesting(
+        renderer,
+        std::move(scenePipelineCache),
+        &depthPass,
+        &opaquePass,
+        std::move(opaqueOwner));
+
+    renderer.CompileRenderFramePlanForTesting();
+
+    const RenderPolicyDiagnostics& diagnostics =
+        renderer.GetRenderPolicyDiagnostics();
+    ASSERT_TRUE(diagnostics.planAvailable);
+    EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
+              diagnostics.selectedPlan.viewPolicy.selectedTier);
+    const auto findPassPlan = [&diagnostics](RenderPassKind pass)
+        -> const RenderPassExecutionPlan*
+    {
+        for (const RenderPassExecutionPlan& passPlan :
+             diagnostics.selectedPlan.passes)
+        {
+            if (passPlan.pass == pass)
+            {
+                return &passPlan;
+            }
+        }
+        return nullptr;
+    };
+    const RenderPassExecutionPlan* const depthPlan =
+        findPassPlan(RenderPassKind::Depth);
+    const RenderPassExecutionPlan* const opaquePlan =
+        findPassPlan(RenderPassKind::Opaque);
+    ASSERT_NE(nullptr, depthPlan);
+    ASSERT_NE(nullptr, opaquePlan);
+    EXPECT_EQ(0u, depthPlan->gpuEligiblePackets.count);
+    EXPECT_EQ(1u, opaquePlan->gpuEligiblePackets.count);
+}
 
 TEST_F(RenderPassValidationFixture,
      PrivateBindingSnapshotUsesSealedTablesAndRetainsIndependentPipelineState)
