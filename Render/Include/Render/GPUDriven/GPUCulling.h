@@ -12,6 +12,7 @@
 #include "Render/Material/MaterialClassification.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RHI/RHI.h"
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -25,6 +26,7 @@ namespace RVX
     class RenderSubmissionResourceBatch;
     class GPUCullingRecordedState;
     struct GPUCompletionToken;
+    struct GPUSceneResidentGraphLease;
     struct RenderDrawItem;
     struct RenderDrawPacket;
     struct RenderVisibilityCandidate;
@@ -78,6 +80,65 @@ namespace RVX
     static_assert(offsetof(GPUInstanceData, drawGroupCommandOffset) == 204);
     static_assert(offsetof(GPUInstanceData, candidateIndex) == 208);
     static_assert(offsetof(GPUInstanceData, forceVisible) == 212);
+
+    /**
+     * @brief Fixed culling constant-buffer ABI shared by both compute paths.
+     *
+     * The uint count blocks deliberately avoid float conversion for resource
+     * counts and preserve exact GPU-scene lease capacities.
+     */
+    struct alignas(16) GPUCullingConstants
+    {
+        Mat4 viewProj;
+        Vec4 frustumPlanes[6];
+        Vec4 cameraPosition;
+        Vec4 params;
+        uint32 counts[4];
+        uint32 gpuSceneTableCounts0[4];
+        uint32 gpuSceneTableCounts1[4];
+    };
+
+    static_assert(sizeof(GPUCullingConstants) == 240,
+                  "GPUCullingConstants must match GPUCulling.hlsl and GPUSceneCulling.hlsl");
+    static_assert(offsetof(GPUCullingConstants, viewProj) == 0);
+    static_assert(offsetof(GPUCullingConstants, frustumPlanes) == 64);
+    static_assert(offsetof(GPUCullingConstants, cameraPosition) == 160);
+    static_assert(offsetof(GPUCullingConstants, params) == 176);
+    static_assert(offsetof(GPUCullingConstants, counts) == 192);
+    static_assert(offsetof(GPUCullingConstants, gpuSceneTableCounts0) == 208);
+    static_assert(offsetof(GPUCullingConstants, gpuSceneTableCounts1) == 224);
+
+    /** @brief Fixed GPU-scene culling candidate ABI; no native bools or uint64s. */
+    struct GPUSceneCullingCandidate
+    {
+        uint32 primitiveSlot = 0;
+        uint32 primitiveGeneration = 0;
+        uint32 drawSlot = 0;
+        uint32 drawGeneration = 0;
+        uint32 objectIdLow = 0;
+        uint32 objectIdHigh = 0;
+        uint32 requiredPassMask = 0;
+        uint32 drawGroupIndex = RVX_INVALID_INDEX;
+        uint32 drawGroupCommandOffset = 0;
+        uint32 rasterInstanceIndex = RVX_INVALID_INDEX;
+
+        constexpr bool operator==(const GPUSceneCullingCandidate&) const = default;
+    };
+
+    static_assert(sizeof(GPUSceneCullingCandidate) == 40,
+                  "GPUSceneCullingCandidate must match GPUSceneCulling.hlsli");
+    static_assert(offsetof(GPUSceneCullingCandidate, primitiveSlot) == 0);
+    static_assert(offsetof(GPUSceneCullingCandidate, primitiveGeneration) == 4);
+    static_assert(offsetof(GPUSceneCullingCandidate, drawSlot) == 8);
+    static_assert(offsetof(GPUSceneCullingCandidate, drawGeneration) == 12);
+    static_assert(offsetof(GPUSceneCullingCandidate, objectIdLow) == 16);
+    static_assert(offsetof(GPUSceneCullingCandidate, objectIdHigh) == 20);
+    static_assert(offsetof(GPUSceneCullingCandidate, requiredPassMask) == 24);
+    static_assert(offsetof(GPUSceneCullingCandidate, drawGroupIndex) == 28);
+    static_assert(offsetof(GPUSceneCullingCandidate, drawGroupCommandOffset) == 32);
+    static_assert(offsetof(GPUSceneCullingCandidate, rasterInstanceIndex) == 36);
+
+    constexpr uint32 RVX_GPU_SCENE_CULLING_TABLE_COUNT = 6;
 
     /**
      * @brief Contiguous indirect command range for a mesh-compatible draw group
@@ -144,6 +205,7 @@ namespace RVX
     {
         RHIBufferAccessSnapshot constants;
         RHIBufferAccessSnapshot instances;
+        RHIBufferAccessSnapshot gpuSceneCandidates;
         RHIBufferAccessSnapshot instanceIndices;
         RHIBufferAccessSnapshot visibility;
         RHIBufferAccessSnapshot visibleInstances;
@@ -254,6 +316,15 @@ namespace RVX
         [[nodiscard]] std::shared_ptr<GPUCullingRecordedState> SealForGraph(
             const GPUCullingRecordingIdentity& identity) const;
 
+        /** @brief Seal immutable culling resources bound to one exact GPU-scene lease. */
+        [[nodiscard]] std::shared_ptr<GPUCullingRecordedState>
+            SealForGPUSceneGraph(
+                const GPUCullingRecordingIdentity& identity,
+                const GPUSceneResidentGraphLease& lease) const;
+
+        /** @brief Whether the separate GPU-scene descriptor/pipeline path is available. */
+        [[nodiscard]] bool IsGPUSceneExecutionReady() const;
+
         // =========================================================================
         // Instance Management
         // =========================================================================
@@ -312,6 +383,14 @@ namespace RVX
             const RenderDrawPacket& packet,
             const GPUIndexedDrawDesc& drawDesc);
 
+        /** @brief Append one exact GPU-scene candidate matching the last raster instance. */
+        [[nodiscard]] bool AddGPUSceneCandidate(
+            const GPUSceneCullingCandidate& candidate,
+            uint64 committedVersion);
+        /** @brief Discard incomplete/stale GPU-scene candidates while preserving Tier 1 inputs. */
+        void InvalidateGPUSceneCandidates() noexcept;
+        [[nodiscard]] bool HasCompleteGPUSceneCandidates() const noexcept;
+
         /**
          * @brief End instance collection and upload to GPU
          */
@@ -361,6 +440,9 @@ namespace RVX
          * @brief Get the instance input buffer
          */
         RHIBuffer* GetInstanceBuffer() const;
+
+        /** @brief GPU-scene candidate input for a sealed GPU-scene compute pass. */
+        RHIBuffer* GetGPUSceneCandidateBuffer() const;
 
         /** @brief Identity per-instance vertex input used to resolve indirect firstInstance. */
         RHIBuffer* GetInstanceIndexBuffer() const { return m_instanceIndexBuffer.Get(); }
@@ -472,9 +554,11 @@ namespace RVX
         struct GPUCullingFrameInputs
         {
             RHIBufferRef instanceBuffer;
+            RHIBufferRef gpuSceneCandidateBuffer;
             RHIBufferRef constantsBuffer;
             RHIDescriptorSetRef descriptorSet;
             RHIBufferAccessSnapshot instanceAccess;
+            RHIBufferAccessSnapshot gpuSceneCandidateAccess;
             RHIBufferAccessSnapshot constantsAccess;
         };
 
@@ -490,6 +574,9 @@ namespace RVX
         bool SupportsGpuExecution() const;
         uint32 EnsureDefaultDrawGroup();
         void UploadInstances();
+        void UploadGPUSceneCandidates();
+        [[nodiscard]] bool ConfigureGPUSceneRecording(
+            const GPUSceneResidentGraphLease& lease);
         void ExtractFrustumPlanes(const Mat4& viewProj, Vec4* planes);
         void BuildCpuCullResults(const Mat4& viewMatrix, const Vec4* frustumPlanes);
         void UploadCullOutputs(RHICommandContext* ctx = nullptr);
@@ -503,6 +590,8 @@ namespace RVX
         bool m_occlusionRequested = false;
         // CPU-side instance data
         std::vector<GPUInstanceData> m_instances;
+        std::vector<GPUSceneCullingCandidate> m_gpuSceneCandidates;
+        uint64 m_gpuSceneCandidateVersion = 0;
         std::vector<uint32> m_visibleInstanceIndices;
         std::vector<uint32> m_visibleSourceIndices;
         std::vector<IndirectDrawIndexedCommand> m_indirectCommands;
@@ -536,6 +625,18 @@ namespace RVX
         RHIPipelineRef m_frustumCullPipeline;
         RHIPipelineRef m_occlusionCullPipeline;
         RHIPipelineRef m_compactPipeline;
+        RHIShaderRef m_gpuSceneFrustumCullShader;
+        RHIShaderRef m_gpuSceneCompactShader;
+        RHIDescriptorSetLayoutRef m_gpuSceneDescriptorSetLayout;
+        RHIPipelineLayoutRef m_gpuScenePipelineLayout;
+        RHIPipelineRef m_gpuSceneFrustumCullPipeline;
+        RHIPipelineRef m_gpuSceneCompactPipeline;
+        RHIDescriptorSetRef m_gpuSceneDescriptorSet;
+        std::array<RHIBufferRef, RVX_GPU_SCENE_CULLING_TABLE_COUNT>
+            m_gpuSceneTableBuffers;
+        std::array<uint32, RVX_GPU_SCENE_CULLING_TABLE_COUNT>
+            m_gpuSceneTableCapacities{};
+        bool m_gpuSceneEnabled = false;
 
         // Statistics
         Statistics m_stats;

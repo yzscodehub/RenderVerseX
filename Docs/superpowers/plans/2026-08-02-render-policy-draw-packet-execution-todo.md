@@ -1,8 +1,8 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
-10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a is
-complete and Task 11D-D1b is next
+10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a and
+Task 11D-D1b-a are complete, and Task 11D-D1b-b is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -733,9 +733,37 @@ are complete. The accepted private-consumer foundation is:
   foundation changes no culling shader, raster behavior, Task 10 strategy,
   shared RHI contract, backend implementation, or Auto policy.
 
-Start **Task 11D-D1b** next: add the compact stable-ref candidate ABI, bind the
-exact lease into the sealed GPU culling recording, validate GPU Scene rows in
-HLSL, source bounds and indexed draw arguments from those rows, and feed the
-existing per-group Task 10 indirect-count submission. If no exact current lease
-or mapping exists, preserve the existing `IndirectGrouped` input path. Public
-`GPUResidentScene` selection remains forbidden until D3/D4.
+Task 11D-D1b-a implementation, two remediation rounds, independent re-review,
+and primary audit are complete. The accepted non-executing foundation is:
+
+- [x] Freeze a 40-byte, ten-`uint32` stable-ref candidate ABI with exact C++
+  offsets, committed-version locking, raster ordinal/group linkage, and one
+  exact pass bit.
+- [x] Freeze one 240-byte constants ABI shared by normal and GPU Scene compute
+  shaders. Counts and all six exact lease capacities use integer fields; the
+  normal path deterministically zeros the GPU Scene capacity blocks.
+- [x] Mirror all six GPU Scene row layouts in one shared HLSL include and reject
+  invalid schema versions, tombstones, generations, object identities,
+  contiguous draw ranges, back-references, pass masks, and indexed-draw
+  semantics before emitting a command.
+- [x] Seal a GPU Scene recording only against the same committed lease version,
+  exact nonzero capacities, matching structured-buffer strides, and sufficient
+  backing byte sizes. Upload candidate/constants inputs and retain all table,
+  descriptor, shader, layout, and pipeline references in the submission batch.
+- [x] Keep normal Tier 1 execution, SceneRenderer scheduling, Task 10 strategy,
+  public RHI, policy selection, diagnostics, and Auto behavior unchanged.
+  `GPUResidentScene` remains unselected.
+- [x] Finish independent re-review with READY and no unresolved P0-P2 after
+  correcting the initially omitted table-capacity constants and the actual
+  GPU Scene shader's float/integer count mismatch.
+- [x] Pass GPU-driven 38/38, GPU Scene upload 16/16, GPU Scene 31/31,
+  RenderGraph 50/50, Render Submission 27/27, and the architecture phase gate
+  in the primary audit.
+
+Start **Task 11D-D1b-b** next: build candidates from exact accepted lookups,
+acquire one current lease per recorded view, declare all candidate/table/output
+RenderGraph accesses, dispatch GPU Scene frustum/compaction for Depth and Opaque,
+commit or roll back the lease with graph/submission outcomes, and feed the
+existing per-group Task 10 indirect-count submission. Any missing or stale
+lookup/lease/readiness must preserve the existing `IndirectGrouped` inputs.
+Public `GPUResidentScene` selection remains forbidden until D3/D4.

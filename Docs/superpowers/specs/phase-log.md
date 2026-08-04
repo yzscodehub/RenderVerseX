@@ -46411,3 +46411,99 @@ below.
   remains a Task 11E diagnostics/pressure-fixture opportunity.
 
 ---
+
+### R-SP351 Render-policy Task 11D-D1b-a stable GPU Scene culling ABI and sealed inputs
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D1b-a stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP350 (exact GPU Scene consumer lease and accepted-draw
+  lookup).
+- D1a exposed one exact current six-table lease and stable accepted references,
+  but no compute ABI could consume them and no sealed GPU culling state owned
+  their descriptors or candidate stream.
+
+**Approved scope:**
+
+- Add one 40-byte renderer-facing candidate ABI carrying exact primitive/draw
+  slots and generations, object identity, one pass bit, draw-group placement,
+  and the matching raster-instance ordinal.
+- Add one fixed 240-byte C++/HLSL constants ABI. Use integer candidate/group
+  counts and exact six-table capacities, with normal Tier 1 writes clearing all
+  GPU Scene-only words deterministically.
+- Mirror the frozen primitive, bounds, transform, material, geometry, and draw
+  rows in a shared HLSL include. Reject stale, tombstoned, mismatched,
+  out-of-range, multi-pass, or non-single-instance rows before command output.
+- Compile separate GPU Scene frustum/compaction entries and descriptor/pipeline
+  objects, but keep them unreachable from normal `Cull` and SceneRenderer.
+- Seal GPU Scene state only when candidate version, exact resident lease,
+  capacities, structured strides, backing sizes, and pipeline resources all
+  agree. Upload candidate/constants buffers and retain every referenced RHI
+  object through submission ownership.
+- Keep the slice non-executing: no graph pass, dispatch, raster transform,
+  strategy selection, public RHI capability, policy tier, or Auto behavior
+  changes.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Shaders/GPUDriven/GPUCulling.hlsl`
+- `Render/Shaders/GPUDriven/GPUSceneCulling.hlsl`
+- `Render/Shaders/GPUDriven/GPUSceneCulling.hlsli`
+- `Tests/GPUDrivenValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial builds: PASS for `GPUDrivenValidation`,
+  `GPUSceneUploadValidation`, `GPUSceneValidation`, `RenderGraphValidation`,
+  and `RenderSubmissionValidation`.
+- Primary focused executables: PASS 38/38, 16/16, 31/31, 50/50, and 27/27.
+- `Architecture.PhaseGates`: PASS 1/1. Both normal and GPU Scene compute entries
+  compile for DX12 Shader Model 6.0.
+- Runtime fake-backed coverage proves successful exact-version sealing,
+  candidate/constants upload, access validity, strong six-table retention, and
+  stale, zero-capacity, oversized, wrong-stride, invalid, multi-pass, and
+  version-mismatch rejection.
+
+**Independent review result:**
+
+- Initial verdict NOT READY found one P0: HLSL read two capacity blocks that the
+  old 208-byte C++ constants upload never wrote. It also requested real seal and
+  retention behavior coverage plus complete single-instance draw validation.
+- First remediation introduced the 240-byte integer ABI, exact capacity upload,
+  physical buffer-size validation, and behavior tests, but primary diff review
+  caught the actual GPU Scene shader still declaring `float4 Counts` despite the
+  implementation report.
+- Final remediation changed both shaders to exact `uint4 Counts`, required
+  schema strides and one pass bit, and added regressions against either ABI
+  mismatch. Final independent verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete tracked and untracked diff inspection, rejection and
+  correction of the remaining real shader ABI mismatch, independent re-review,
+  serial rebuild, independent 162/162 focused executable tests, phase gate,
+  and whitespace/scope validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, Python
+  cache, and generated shader-cache contents remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- D1b-b must create candidates from `GPUSceneAcceptedDrawLookup`, acquire one
+  exact lease for the recorded view, declare all graph reads/writes, dispatch
+  Depth/Opaque compute, and preserve lease commit/rollback/submission symmetry.
+- No GPU Scene compute pipeline is scheduled yet, and raster shaders still use
+  the established per-recording instance stream. D2 owns the stable-table
+  transform fetch and parity gate.
+- D1/D2 remain an internal stable-input evolution of the existing per-group
+  `IndirectGrouped` strategy. D3/D4 are still required before public
+  `GPUResidentScene` selection or a Tier 2 qualification claim.
+- GPU Scene pipeline creation is eager during culler initialization so planning
+  can observe deterministic readiness. Pipeline-cache integration and memory/
+  pressure diagnostics remain Task 11E work.
+
+---

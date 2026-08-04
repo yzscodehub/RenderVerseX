@@ -1,4 +1,5 @@
 #include "Core/Log.h"
+#include "GPUScene/GPUSceneUploader.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/GPUDriven/GPUDrivenPolicy.h"
@@ -81,6 +82,73 @@ namespace
         RHIBufferDesc m_desc;
         std::vector<uint8> m_storage;
         std::shared_ptr<BufferLifetimeState> m_lifetimeState;
+    };
+
+    class FakeShader final : public RHIShader
+    {
+    public:
+        explicit FakeShader(const RHIShaderDesc& desc)
+            : m_stage(desc.stage)
+        {
+            if (desc.bytecode != nullptr && desc.bytecodeSize != 0)
+            {
+                const auto* bytes = static_cast<const uint8*>(desc.bytecode);
+                m_bytecode.assign(bytes, bytes + desc.bytecodeSize);
+            }
+        }
+
+        RHIShaderStage GetStage() const override { return m_stage; }
+        const std::vector<uint8>& GetBytecode() const override { return m_bytecode; }
+
+    private:
+        RHIShaderStage m_stage = RHIShaderStage::None;
+        std::vector<uint8> m_bytecode;
+    };
+
+    class FakeDescriptorSetLayout final : public RHIDescriptorSetLayout
+    {
+    public:
+        explicit FakeDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
+            : m_entries(desc.entries)
+        {
+        }
+
+        const std::vector<RHIBindingLayoutEntry>& GetEntries() const override
+        {
+            return m_entries;
+        }
+
+    private:
+        std::vector<RHIBindingLayoutEntry> m_entries;
+    };
+
+    class FakePipelineLayout final : public RHIPipelineLayout
+    {
+    public:
+        explicit FakePipelineLayout(const RHIPipelineLayoutDesc& desc)
+            : RHIPipelineLayout(desc)
+        {
+        }
+    };
+
+    class FakeComputePipeline final : public RHIPipeline
+    {
+    public:
+        bool IsCompute() const override { return true; }
+    };
+
+    class FakeDescriptorSet final : public RHIDescriptorSet
+    {
+    public:
+        explicit FakeDescriptorSet(const RHIDescriptorSetDesc& desc)
+            : RHIDescriptorSet(desc)
+        {
+        }
+
+        bool Update(const std::vector<RHIDescriptorBinding>&) override
+        {
+            return false;
+        }
     };
 
     class FakeFence final : public RHIFence
@@ -266,17 +334,41 @@ namespace
         RHITextureRef CreateTexture(const RHITextureDesc&) override { return {}; }
         RHITextureViewRef CreateTextureView(RHITexture*, const RHITextureViewDesc& = {}) override { return {}; }
         RHISamplerRef CreateSampler(const RHISamplerDesc&) override { return {}; }
-        RHIShaderRef CreateShader(const RHIShaderDesc&) override { return {}; }
+        RHIShaderRef CreateShader(const RHIShaderDesc& desc) override
+        {
+            return m_enablePipelineObjects ? RHIShaderRef(new FakeShader(desc)) : RHIShaderRef{};
+        }
         RHIHeapRef CreateHeap(const RHIHeapDesc&) override { return {}; }
         RHITextureRef CreatePlacedTexture(RHIHeap*, uint64, const RHITextureDesc&) override { return {}; }
         RHIBufferRef CreatePlacedBuffer(RHIHeap*, uint64, const RHIBufferDesc&) override { return {}; }
         MemoryRequirements GetTextureMemoryRequirements(const RHITextureDesc&) override { return {}; }
         MemoryRequirements GetBufferMemoryRequirements(const RHIBufferDesc& desc) override { return {desc.size, 256}; }
-        RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc&) override { return {}; }
-        RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc&) override { return {}; }
+        RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(
+            const RHIDescriptorSetLayoutDesc& desc) override
+        {
+            return m_enablePipelineObjects
+                ? RHIDescriptorSetLayoutRef(new FakeDescriptorSetLayout(desc))
+                : RHIDescriptorSetLayoutRef{};
+        }
+        RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc& desc) override
+        {
+            return m_enablePipelineObjects
+                ? RHIPipelineLayoutRef(new FakePipelineLayout(desc))
+                : RHIPipelineLayoutRef{};
+        }
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc&) override { return {}; }
-        RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc&) override { return {}; }
-        RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc&) override { return {}; }
+        RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc&) override
+        {
+            return m_enablePipelineObjects
+                ? RHIPipelineRef(new FakeComputePipeline())
+                : RHIPipelineRef{};
+        }
+        RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override
+        {
+            return m_enablePipelineObjects
+                ? RHIDescriptorSetRef(new FakeDescriptorSet(desc))
+                : RHIDescriptorSetRef{};
+        }
         RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc&) override { return {}; }
         RHICommandContextRef CreateCommandContext(RHICommandQueueType) override { return RHICommandContextRef(new FakeCommandContext()); }
         uint64 SubmitCommandContext(RHICommandContext*, RHIFence* signalFence = nullptr) override
@@ -338,6 +430,14 @@ namespace
             capabilities.queueTopology.activeDomainCount = 3;
         }
 
+        void EnableGPUScenePipelineObjects()
+        {
+            capabilities.supportsComputePipeline = true;
+            capabilities.supportsDescriptorSets = true;
+            capabilities.indexedIndirectExecution.supportsCountBuffer = true;
+            m_enablePipelineObjects = true;
+        }
+
         FakeFence* GetFence(size_t index) const
         {
             return index < fences.size()
@@ -349,6 +449,9 @@ namespace
         std::vector<FakeBuffer*> createdBuffers;
         std::vector<RHIFenceRef> fences;
         std::shared_ptr<BufferLifetimeState> bufferLifetimeState;
+
+    private:
+        bool m_enablePipelineObjects = false;
     };
 
     class FakeEncodedCommandBuffer final : public RHIEncodedCommandBuffer
@@ -415,6 +518,38 @@ namespace
             std::memcpy(&value, buffer.GetStorage().data() + offset, sizeof(T));
         }
         return value;
+    }
+
+    GPUSceneResidentGraphLease MakeGPUSceneLease(
+        FakeDevice& device,
+        uint64 version,
+        const std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT>& capacities)
+    {
+        const std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT> rowStrides{
+            sizeof(GPUScenePrimitiveRow),
+            sizeof(GPUSceneBoundsRow),
+            sizeof(GPUSceneTransformRow),
+            sizeof(GPUSceneMaterialRow),
+            sizeof(GPUSceneGeometryRow),
+            sizeof(GPUSceneDrawMetadataRow)};
+        GPUSceneResidentGraphLease lease;
+        lease.version = version;
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+             ++tableIndex)
+        {
+            RHIBufferDesc desc;
+            desc.size =
+                static_cast<uint64>(capacities[tableIndex]) * rowStrides[tableIndex];
+            desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+            desc.memoryType = RHIMemoryType::Upload;
+            desc.stride = rowStrides[tableIndex];
+            desc.debugName = "GPUDrivenValidation.GPUSceneLeaseTable";
+            lease.buffers[tableIndex] = device.CreateBuffer(desc);
+            lease.handles[tableIndex].index = tableIndex;
+            lease.capacities[tableIndex] = capacities[tableIndex];
+        }
+        return lease;
     }
 
     Mat4 TestView()
@@ -2011,7 +2146,7 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingDeclaresComputeCompactionAndIndirec
     EXPECT_NE(shader.find("void CSFrustumCull"), std::string::npos);
     EXPECT_NE(shader.find("void CSCompactDraws"), std::string::npos);
     EXPECT_NE(shader.find("gDrawCount[instanceIndex] = 0"), std::string::npos);
-    EXPECT_NE(shader.find("uint drawGroupCount = (uint)Counts.y"),
+    EXPECT_NE(shader.find("uint drawGroupCount = Counts.y"),
               std::string::npos);
     EXPECT_NE(shader.find("InterlockedAdd(gDrawCount[0], 1, totalDrawIndex)"), std::string::npos);
     EXPECT_NE(shader.find("InterlockedAdd(gDrawCount[instance.drawGroupIndex + 1], 1, groupDrawIndex)"),
@@ -2175,6 +2310,287 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
     EXPECT_FALSE(frustumResult.bytecode.empty());
 
     options.entryPoint = "CSCompactDraws";
+    ShaderCompileResult compactResult = compiler->Compile(options);
+    ASSERT_TRUE(compactResult.success) << compactResult.errorMessage;
+    EXPECT_FALSE(compactResult.bytecode.empty());
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       GPUSceneCandidateAbiAndSealedInputPlumbingRemainRendererPrivate)
+{
+    EXPECT_EQ(40u, sizeof(GPUSceneCullingCandidate));
+
+    FakeDevice device;
+    device.EnableTimelineRetirement();
+    device.EnableGPUScenePipelineObjects();
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+    GPUCullingConfig config;
+    config.maxInstances = 4;
+    GPUCulling culling;
+    culling.Initialize(&device, config);
+    EXPECT_EQ(nullptr, culling.GetGPUSceneCandidateBuffer());
+    ASSERT_TRUE(culling.IsGPUSceneExecutionReady());
+
+    culling.BeginFrame();
+    ASSERT_EQ(0u, culling.AddInstance(
+        MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 36)));
+
+    GPUSceneCullingCandidate candidate;
+    candidate.primitiveSlot = 1u;
+    candidate.primitiveGeneration = 7u;
+    candidate.drawSlot = 3u;
+    candidate.drawGeneration = 7u;
+    candidate.objectIdLow = 42u;
+    candidate.requiredPassMask = 2u;
+    candidate.drawGroupIndex = 0u;
+    candidate.drawGroupCommandOffset = 0u;
+    candidate.rasterInstanceIndex = 0u;
+    GPUSceneCullingCandidate multiPassCandidate = candidate;
+    multiPassCandidate.requiredPassMask = 3u;
+    EXPECT_FALSE(culling.AddGPUSceneCandidate(multiPassCandidate, 19u));
+    EXPECT_TRUE(culling.AddGPUSceneCandidate(candidate, 19u));
+
+    ASSERT_EQ(1u, culling.AddInstance(
+        MakeInstance(Vec3(1.0f, 0.0f, -5.0f), 1.0f, 24)));
+    GPUSceneCullingCandidate secondCandidate = candidate;
+    secondCandidate.drawSlot = 4u;
+    secondCandidate.rasterInstanceIndex = 1u;
+    // This candidate has passed all positional/group checks and can fail only
+    // at the committed-version lock.
+    EXPECT_FALSE(culling.AddGPUSceneCandidate(secondCandidate, 20u));
+    EXPECT_FALSE(culling.HasCompleteGPUSceneCandidates());
+    EXPECT_TRUE(culling.AddGPUSceneCandidate(secondCandidate, 19u));
+    EXPECT_TRUE(culling.HasCompleteGPUSceneCandidates());
+
+    culling.EndFrame();
+    const GPUCullingRecordingIdentity identity{301u, 12u, 100u, 0u, 7u};
+    const std::array<uint32, GPU_SCENE_RESIDENT_TABLE_COUNT> capacities{
+        8u, 9u, 10u, 11u, 12u, 13u};
+    GPUSceneResidentGraphLease lease = MakeGPUSceneLease(device, 19u, capacities);
+    ASSERT_TRUE(lease.IsValid());
+
+    const std::shared_ptr<GPUCullingRecordedState> recorded =
+        culling.SealForGPUSceneGraph(identity, lease);
+    ASSERT_NE(nullptr, recorded);
+    EXPECT_TRUE(recorded->GetCulling().HasCompleteGPUSceneCandidates());
+
+    const FakeBuffer* candidateBuffer = static_cast<const FakeBuffer*>(
+        recorded->GetCulling().GetGPUSceneCandidateBuffer());
+    ASSERT_NE(nullptr, candidateBuffer);
+    EXPECT_EQ(candidate, ReadBufferValue<GPUSceneCullingCandidate>(*candidateBuffer, 0));
+    EXPECT_EQ(secondCandidate,
+              ReadBufferValue<GPUSceneCullingCandidate>(*candidateBuffer, 1));
+    EXPECT_EQ(RHIContentValidity::Valid,
+              recorded->GetAccessSnapshots().gpuSceneCandidates
+                  .uniformAccess.contentValidity);
+
+    const FakeBuffer* constantsBuffer = static_cast<const FakeBuffer*>(
+        recorded->GetCulling().GetCullingConstantsBuffer());
+    ASSERT_NE(nullptr, constantsBuffer);
+    const GPUCullingConstants constants =
+        ReadBufferValue<GPUCullingConstants>(*constantsBuffer);
+    EXPECT_EQ(2u, constants.counts[0]);
+    EXPECT_EQ(1u, constants.counts[1]);
+    EXPECT_EQ(0u, constants.counts[2]);
+    EXPECT_EQ(0u, constants.counts[3]);
+    for (uint32 tableIndex = 0; tableIndex < 4; ++tableIndex)
+    {
+        EXPECT_EQ(capacities[tableIndex], constants.gpuSceneTableCounts0[tableIndex]);
+    }
+    EXPECT_EQ(capacities[4], constants.gpuSceneTableCounts1[0]);
+    EXPECT_EQ(capacities[5], constants.gpuSceneTableCounts1[1]);
+    EXPECT_EQ(0u, constants.gpuSceneTableCounts1[2]);
+    EXPECT_EQ(0u, constants.gpuSceneTableCounts1[3]);
+    EXPECT_EQ(RHIContentValidity::Valid,
+              recorded->GetAccessSnapshots().constants.uniformAccess.contentValidity);
+
+    GPUSceneResidentGraphLease staleLease = lease;
+    staleLease.version = 18u;
+    EXPECT_TRUE(staleLease.IsValid());
+    EXPECT_EQ(nullptr, culling.SealForGPUSceneGraph(identity, staleLease));
+
+    GPUSceneResidentGraphLease zeroCapacityLease = lease;
+    zeroCapacityLease.capacities[5] = 0u;
+    EXPECT_TRUE(zeroCapacityLease.IsValid());
+    EXPECT_EQ(nullptr, culling.SealForGPUSceneGraph(identity, zeroCapacityLease));
+
+    GPUSceneResidentGraphLease oversizedLease = lease;
+    oversizedLease.capacities[0] += 1u;
+    EXPECT_TRUE(oversizedLease.IsValid());
+    EXPECT_EQ(nullptr, culling.SealForGPUSceneGraph(identity, oversizedLease));
+
+    GPUSceneResidentGraphLease wrongStrideLease = lease;
+    RHIBufferDesc wrongStrideDesc;
+    wrongStrideDesc.size =
+        static_cast<uint64>(capacities[0]) * sizeof(GPUScenePrimitiveRow);
+    wrongStrideDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+    wrongStrideDesc.memoryType = RHIMemoryType::Upload;
+    wrongStrideDesc.stride = sizeof(uint32);
+    wrongStrideDesc.debugName = "GPUDrivenValidation.GPUSceneWrongStride";
+    wrongStrideLease.buffers[0] = device.CreateBuffer(wrongStrideDesc);
+    EXPECT_TRUE(wrongStrideLease.IsValid());
+    EXPECT_EQ(nullptr, culling.SealForGPUSceneGraph(identity, wrongStrideLease));
+
+    GPUSceneResidentGraphLease invalidLease = lease;
+    invalidLease.buffers[0].Reset();
+    EXPECT_FALSE(invalidLease.IsValid());
+    EXPECT_EQ(nullptr, culling.SealForGPUSceneGraph(identity, invalidLease));
+
+    const std::shared_ptr<GPUCullingRecordedState> normalRecorded =
+        culling.SealForGraph(identity);
+    ASSERT_NE(nullptr, normalRecorded);
+    RenderSubmissionResourceBatch normalBatch;
+    ASSERT_TRUE(normalRecorded->RetainSubmissionResources(normalBatch));
+    const uint32 normalResourceCount = normalBatch.GetRetainedObjectCount();
+
+    // Clearing the caller's refs before retention proves the sealed state
+    // itself owns every table from the exact lease.
+    lease.buffers = {};
+    RenderSubmissionResourceBatch gpuSceneBatch;
+    ASSERT_TRUE(recorded->RetainSubmissionResources(gpuSceneBatch));
+    constexpr uint32 gpuSceneOnlyRetainedObjectCount = 14u;
+    EXPECT_EQ(normalResourceCount + gpuSceneOnlyRetainedObjectCount,
+              gpuSceneBatch.GetRetainedObjectCount());
+    normalBatch.ReleaseUnsubmitted(retirement);
+    gpuSceneBatch.ReleaseUnsubmitted(retirement);
+
+    culling.InvalidateGPUSceneCandidates();
+    EXPECT_FALSE(culling.HasCompleteGPUSceneCandidates());
+    EXPECT_TRUE(recorded->GetCulling().HasCompleteGPUSceneCandidates());
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       GPUSceneCullingShaderUsesSharedSixTableAbiAndExactGenerationValidation)
+{
+    const std::filesystem::path root = FindWorkspaceRoot();
+    ASSERT_FALSE(root.empty());
+
+    const std::string header = ReadTextFile(
+        root / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
+    const std::string source = ReadTextFile(
+        root / "Render" / "Private" / "GPUDriven" / "GPUCulling.cpp");
+    const std::string sharedShader = ReadTextFile(
+        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsli");
+    const std::string shader = ReadTextFile(
+        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsl");
+    const std::string normalShader = ReadTextFile(
+        root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl");
+    ASSERT_FALSE(header.empty());
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(sharedShader.empty());
+    ASSERT_FALSE(shader.empty());
+    ASSERT_FALSE(normalShader.empty());
+
+    EXPECT_NE(header.find("sizeof(GPUSceneCullingCandidate) == 40"),
+              std::string::npos);
+    EXPECT_NE(header.find("RVX_GPU_SCENE_CULLING_TABLE_COUNT = 6"),
+              std::string::npos);
+    EXPECT_NE(header.find("SealForGPUSceneGraph"), std::string::npos);
+    EXPECT_NE(source.find("ConfigureGPUSceneRecording"), std::string::npos);
+    EXPECT_NE(source.find("FindGPUSceneCullingShaderPath"), std::string::npos);
+    EXPECT_NE(source.find("BindBuffer(6 + tableIndex"), std::string::npos);
+    EXPECT_NE(source.find("m_gpuSceneTableBuffers = lease.buffers"),
+              std::string::npos);
+
+    EXPECT_NE(sharedShader.find("struct GPUScenePrimitiveRow"), std::string::npos);
+    EXPECT_NE(sharedShader.find("struct GPUSceneBoundsRow"), std::string::npos);
+    EXPECT_NE(sharedShader.find("struct GPUSceneTransformRow"), std::string::npos);
+    EXPECT_NE(sharedShader.find("struct GPUSceneMaterialRow"), std::string::npos);
+    EXPECT_NE(sharedShader.find("struct GPUSceneGeometryRow"), std::string::npos);
+    EXPECT_NE(sharedShader.find("struct GPUSceneDrawMetadataRow"), std::string::npos);
+    EXPECT_NE(sharedShader.find("GPUSceneValidateCandidateRows"), std::string::npos);
+    EXPECT_NE(sharedShader.find("drawRef.y != primitive.firstDraw.y"),
+              std::string::npos);
+    EXPECT_NE(sharedShader.find("draw.instanceCount != 1u"), std::string::npos);
+    EXPECT_NE(sharedShader.find("draw.firstInstance != 0u"), std::string::npos);
+    EXPECT_NE(sharedShader.find("candidate.requiredPassMask &"),
+              std::string::npos);
+    EXPECT_NE(sharedShader.find("RVX_GPU_SCENE_ROW_FLAG_TOMBSTONE"),
+              std::string::npos);
+    EXPECT_NE(shader.find("#include \"GPUSceneCulling.hlsli\""),
+              std::string::npos);
+    EXPECT_NE(shader.find("void CSGPUSceneFrustumCull"), std::string::npos);
+    EXPECT_NE(shader.find("void CSGPUSceneCompactDraws"), std::string::npos);
+    EXPECT_NE(shader.find("uint4 Counts"), std::string::npos);
+    EXPECT_EQ(shader.find("float4 Counts"), std::string::npos);
+    EXPECT_EQ(shader.find("(uint)Counts"), std::string::npos);
+    EXPECT_NE(normalShader.find("uint4 Counts"), std::string::npos);
+    EXPECT_EQ(normalShader.find("float4 Counts"), std::string::npos);
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       NormalCullingWritesTheCompleteFixedConstantsAbiWithoutLeaseResidue)
+{
+    FakeDevice device;
+    GPUCullingConfig config;
+    config.maxInstances = 4;
+    GPUCulling culling;
+    culling.Initialize(&device, config);
+
+    culling.BeginFrame();
+    ASSERT_EQ(0u, culling.AddInstance(
+        MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 36)));
+    culling.EndFrame();
+
+    FakeCommandContext context;
+    culling.Cull(context, TestView(), TestProjection());
+
+    const FakeBuffer* constantsBuffer = static_cast<const FakeBuffer*>(
+        culling.GetCullingConstantsBuffer());
+    ASSERT_NE(nullptr, constantsBuffer);
+    const GPUCullingConstants constants =
+        ReadBufferValue<GPUCullingConstants>(*constantsBuffer);
+    EXPECT_EQ(1u, constants.counts[0]);
+    EXPECT_EQ(1u, constants.counts[1]);
+    EXPECT_EQ(0u, constants.counts[2]);
+    EXPECT_EQ(0u, constants.counts[3]);
+    for (uint32 tableIndex = 0; tableIndex < 4; ++tableIndex)
+    {
+        EXPECT_EQ(0u, constants.gpuSceneTableCounts0[tableIndex]);
+        EXPECT_EQ(0u, constants.gpuSceneTableCounts1[tableIndex]);
+    }
+    EXPECT_EQ(RHIContentValidity::Valid,
+              culling.GetAccessSnapshots().constants.uniformAccess.contentValidity);
+}
+
+TEST_F(GPUDrivenValidationFixture, GPUSceneCullingShaderEntriesCompileForDX12)
+{
+    const std::filesystem::path root = FindWorkspaceRoot();
+    ASSERT_FALSE(root.empty());
+
+    const std::filesystem::path shaderPath =
+        root / "Render" / "Shaders" / "GPUDriven" / "GPUSceneCulling.hlsl";
+    const std::string shader = ReadTextFile(shaderPath);
+    ASSERT_FALSE(shader.empty());
+
+    std::unique_ptr<IShaderCompiler> compiler = CreateShaderCompiler();
+    ASSERT_NE(nullptr, compiler);
+
+    const std::string shaderPathString = shaderPath.string();
+    ShaderCompileOptions options;
+    options.stage = RHIShaderStage::Compute;
+    options.sourceCode = shader.c_str();
+    options.sourcePath = shaderPathString.c_str();
+    options.targetBackend = RHIBackendType::DX12;
+    options.targetProfile = "cs_6_0";
+    options.enableDebugInfo = false;
+    options.enableOptimization = true;
+
+    const ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
+    options.entryPoint = "CSGPUSceneFrustumCull";
+    ShaderCompileResult frustumResult = compiler->Compile(options);
+    ASSERT_TRUE(frustumResult.success) << frustumResult.errorMessage;
+    EXPECT_FALSE(frustumResult.bytecode.empty());
+
+    options.entryPoint = "CSGPUSceneCompactDraws";
     ShaderCompileResult compactResult = compiler->Compile(options);
     ASSERT_TRUE(compactResult.success) << compactResult.errorMessage;
     EXPECT_FALSE(compactResult.bytecode.empty());

@@ -14,8 +14,10 @@ cbuffer CullingConstants : register(b0, space0)
     float4x4 ViewProj;
     float4 FrustumPlanes[6];
     float4 CameraPosition;
-    float4 Params; // x=maxDistance, y=instanceCount, z=frustumEnabled, w=distanceEnabled
-    float4 Counts; // x=instanceCount, y=drawGroupCount
+    float4 Params; // x=maxDistance, y=reserved, z=frustumEnabled, w=distanceEnabled
+    uint4 Counts; // x=instanceCount, y=drawGroupCount
+    uint4 GPUSceneTableCounts0; // primitive, bounds, transform, material
+    uint4 GPUSceneTableCounts1; // geometry, draw, reserved, reserved
 };
 
 StructuredBuffer<GPUInstanceData> gInstances : register(t1, space0);
@@ -60,8 +62,8 @@ IndirectDrawIndexedCommand EmptyCommand()
 void CSFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint instanceIndex = dispatchThreadId.x;
-    uint instanceCount = (uint)Counts.x;
-    uint drawGroupCount = (uint)Counts.y;
+    uint instanceCount = Counts.x;
+    uint drawGroupCount = Counts.y;
     if (instanceIndex <= drawGroupCount)
     {
         gDrawCount[instanceIndex] = 0;
@@ -104,7 +106,7 @@ void CSFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
 void CSCompactDraws(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint instanceIndex = dispatchThreadId.x;
-    uint instanceCount = (uint)Counts.x;
+    uint instanceCount = Counts.x;
     if (instanceIndex >= instanceCount || gVisibility[instanceIndex] == 0)
     {
         return;
