@@ -3,7 +3,8 @@
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
 10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a,
 Task 11D-D1b-a, Task 11D-D1b-b, Task 11D-D2a, and Task 11D-D2b are complete,
-Task 11D-D3 and Task 11D-D4a are complete, and Task 11D-D4b is next
+Task 11D-D3, Task 11D-D4a, and Task 11D-D4b1 are complete, and Task
+11D-D4b2 is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -911,3 +912,29 @@ uploader/culling/pipeline state before plan freeze, make `selectedTier`
 authoritative during graph construction, and record only explicit pre-recording
 fallback. Root Signature 1.0 remains compile/structure reviewed but lacks a
 real 1.0 device in the current hardware matrix.
+
+Task 11D-D4b1 implementation, independent review, and primary audit are
+complete. The accepted exact-residency evidence slice is:
+
+- [x] Add a side-effect-free exact-version readiness query whose value evidence
+  distinguishes unavailable, pending, and ready residency without retaining or
+  importing graph resources.
+- [x] Make the query and lease acquisition share one exact resident-set
+  predicate covering the committed mirror/version, all six table buffers,
+  capacity/stride, dirty state, pending uploads, unusable sets, and outstanding
+  frame reads.
+- [x] Require lease acquisition to name the frozen required version and bind
+  the resulting lease to that exact version.
+- [x] Add exact-version GPU Scene candidate completeness while preserving the
+  authoritative Tier 1 instance/group streams on a mismatch.
+- [x] Accept a renderer publication version only when update publication is
+  complete, failure-free, nonzero, sourced from the accepted frame, and equal
+  to the committed upload mirror.
+- [x] Finish independent final review with READY and no unresolved P0-P2; pass
+  GPU Scene upload 18/18, GPU-driven 42/42, and Render Pass 198/198 in the
+  primary audit, plus scoped whitespace/scope checks.
+
+Start **Task 11D-D4b2** next: populate the live resident facts before the one
+immutable plan is compiled, confirm one whole-view actual tier before graph
+mutation, keep Tier 1 at zero GPU Scene lease/seal usage, and treat every Tier 2
+failure after graph construction begins as a failed frame rather than a replay.

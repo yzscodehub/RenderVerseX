@@ -279,6 +279,76 @@ public:
     std::optional<PendingUpload> pending;
     bool initialized = false;
     bool deviceLost = false;
+
+    [[nodiscard]] bool HasOutstandingFrameReadUse() const noexcept
+    {
+        return std::any_of(sets.begin(), sets.end(), [](const BufferSet& set)
+        {
+            return set.frameReadUse;
+        });
+    }
+
+    [[nodiscard]] uint64 GetHighestResidentVersion() const noexcept
+    {
+        uint64 residentVersion = 0;
+        for (const BufferSet& set : sets)
+        {
+            residentVersion = std::max(residentVersion, set.residentVersion);
+        }
+        return residentVersion;
+    }
+
+    /**
+     * @brief Locate one set that exactly represents the frozen version.
+     *
+     * The predicate deliberately performs no retention, graph import, device
+     * query, or diagnostics update. QueryExactVersionReadiness() and
+     * AcquireCurrentGraphLease() both use it so a lease can never be borrowed
+     * from a different observed generation.
+     */
+    [[nodiscard]] std::optional<uint32>
+        FindExactResidentSet(uint64 requiredVersion) const noexcept
+    {
+        if (requiredVersion == 0 || observedMirror == nullptr ||
+            observedVersion != requiredVersion ||
+            observedMirror->version != requiredVersion ||
+            !HasValidTableSources(*observedMirror) ||
+            HasOutstandingFrameReadUse())
+        {
+            return std::nullopt;
+        }
+
+        for (uint32 setIndex = 0; setIndex < sets.size(); ++setIndex)
+        {
+            const BufferSet& set = sets[setIndex];
+            if (set.unusable || set.frameReadUse ||
+                set.residentVersion != requiredVersion ||
+                set.coveredVersion != requiredVersion ||
+                set.desiredVersion != requiredVersion)
+            {
+                continue;
+            }
+
+            bool complete = true;
+            for (uint32 tableIndex = 0;
+                 tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+                 ++tableIndex)
+            {
+                const TableState& table = set.tables[tableIndex];
+                const TableSource source = GetTableSource(
+                    *observedMirror,
+                    static_cast<GPUSceneUploadTable>(tableIndex));
+                complete &= table.buffer && table.capacity >= source.rowCount &&
+                            table.stride == source.stride && !table.fullDirty &&
+                            table.dirtyRanges.empty();
+            }
+            if (complete)
+            {
+                return setIndex;
+            }
+        }
+        return std::nullopt;
+    }
 };
 
 GPUSceneUploader::GPUSceneUploader()
@@ -824,85 +894,80 @@ void GPUSceneUploader::BuildRenderGraph(
     m_impl->pending = std::move(pending);
 }
 
+GPUSceneResidentReadiness GPUSceneUploader::QueryExactVersionReadiness(
+    uint64 requiredVersion) const noexcept
+{
+    GPUSceneResidentReadiness readiness;
+    readiness.requiredVersion = requiredVersion;
+    if (m_impl)
+    {
+        readiness.observedVersion = m_impl->observedVersion;
+        readiness.residentVersion = m_impl->GetHighestResidentVersion();
+    }
+    if (!m_impl || !m_impl->initialized || m_impl->deviceLost ||
+        !m_impl->device || !m_impl->tracker || requiredVersion == 0)
+    {
+        return readiness;
+    }
+    if (m_impl->device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready ||
+        !m_impl->observedMirror ||
+        m_impl->observedVersion != requiredVersion ||
+        m_impl->observedMirror->version != requiredVersion ||
+        !HasValidTableSources(*m_impl->observedMirror))
+    {
+        return readiness;
+    }
+
+    if (m_impl->pending || m_impl->HasOutstandingFrameReadUse())
+    {
+        readiness.status = GPUSceneResidentReadinessStatus::Pending;
+        return readiness;
+    }
+
+    if (m_impl->FindExactResidentSet(requiredVersion).has_value())
+    {
+        readiness.status = GPUSceneResidentReadinessStatus::Ready;
+        readiness.residentVersion = requiredVersion;
+    }
+    else
+    {
+        readiness.status = GPUSceneResidentReadinessStatus::Pending;
+    }
+    return readiness;
+}
+
 std::optional<GPUSceneResidentGraphLease>
 GPUSceneUploader::AcquireCurrentGraphLease(
     RenderGraph& graph,
-    RenderSubmissionResourceBatch* submissionBatch) noexcept
+    RenderSubmissionResourceBatch* submissionBatch,
+    uint64 requiredVersion) noexcept
 {
-    if (!m_impl || !m_impl->initialized || m_impl->deviceLost ||
-        m_impl->pending || !m_impl->observedMirror ||
-        m_impl->observedVersion == 0 ||
-        m_impl->observedMirror->version != m_impl->observedVersion)
+    if (!QueryExactVersionReadiness(requiredVersion).IsReady())
     {
-        return std::nullopt;
-    }
-    if (!m_impl->device ||
-        m_impl->device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
-    {
-        m_impl->deviceLost = true;
-        m_diagnostics.deviceLost = true;
-        m_diagnostics.failureReason = GPUSceneUploadFailureReason::DeviceLost;
+        if (m_impl && m_impl->device &&
+            m_impl->device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            m_impl->deviceLost = true;
+            m_diagnostics.deviceLost = true;
+            m_diagnostics.failureReason = GPUSceneUploadFailureReason::DeviceLost;
+        }
         return std::nullopt;
     }
 
-    const GPUSceneCommittedMirror& mirror = *m_impl->observedMirror;
-    if (!HasValidTableSources(mirror))
-    {
-        m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
-        return std::nullopt;
-    }
-
-    for (const Impl::BufferSet& set : m_impl->sets)
-    {
-        // A graph recording may consume one concrete uploader set exactly
-        // once. Do not satisfy a second request from a different same-version
-        // set while the first submission has not resolved its access snapshot.
-        if (set.frameReadUse)
-        {
-            return std::nullopt;
-        }
-    }
-
-    uint32 selectedSetIndex = RVX_INVALID_INDEX;
-    for (uint32 setIndex = 0; setIndex < m_impl->sets.size(); ++setIndex)
-    {
-        const Impl::BufferSet& set = m_impl->sets[setIndex];
-        if (set.unusable || set.frameReadUse ||
-            set.residentVersion != m_impl->observedVersion ||
-            set.coveredVersion != m_impl->observedVersion ||
-            set.desiredVersion != m_impl->observedVersion)
-        {
-            continue;
-        }
-
-        bool complete = true;
-        for (uint32 tableIndex = 0;
-             tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
-             ++tableIndex)
-        {
-            const Impl::TableState& table = set.tables[tableIndex];
-            const TableSource source = GetTableSource(
-                mirror, static_cast<GPUSceneUploadTable>(tableIndex));
-            complete &= table.buffer && table.capacity >= source.rowCount &&
-                        table.stride == source.stride && !table.fullDirty &&
-                        table.dirtyRanges.empty();
-        }
-        if (complete)
-        {
-            selectedSetIndex = setIndex;
-            break;
-        }
-    }
-
-    if (selectedSetIndex == RVX_INVALID_INDEX)
+    // Re-run the same exact-set predicate after the readiness query. This is
+    // the only point that converts a side-effect-free observation into a
+    // graph lease, and it cannot select a different observed version.
+    const std::optional<uint32> selectedSetIndex =
+        m_impl->FindExactResidentSet(requiredVersion);
+    if (!selectedSetIndex)
     {
         return std::nullopt;
     }
 
-    Impl::BufferSet& set = m_impl->sets[selectedSetIndex];
+    Impl::BufferSet& set = m_impl->sets[*selectedSetIndex];
     GPUSceneResidentGraphLease lease;
-    lease.version = m_impl->observedVersion;
-    lease.m_bufferSetIndex = selectedSetIndex;
+    lease.version = requiredVersion;
+    lease.m_bufferSetIndex = *selectedSetIndex;
     try
     {
         for (uint32 tableIndex = 0;

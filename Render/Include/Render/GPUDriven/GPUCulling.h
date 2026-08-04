@@ -460,6 +460,10 @@ namespace RVX
             uint64 committedVersion);
         /** @brief Discard incomplete/stale GPU-scene candidates while preserving Tier 1 inputs. */
         void InvalidateGPUSceneCandidates() noexcept;
+        /** @brief True only when every Tier 1 instance has a companion at the exact frozen version. */
+        [[nodiscard]] bool HasCompleteGPUSceneCandidates(
+            uint64 requiredVersion) const noexcept;
+        /** @brief True when every Tier 1 instance has a companion at the collected version. */
         [[nodiscard]] bool HasCompleteGPUSceneCandidates() const noexcept;
 
         /**

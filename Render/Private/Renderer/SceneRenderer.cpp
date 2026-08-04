@@ -4071,6 +4071,23 @@ void SceneRenderer::AddGPUDrivenCullingPass(
     // Depth/Opaque graph consumers; a pending upload intentionally fails
     // closed and leaves both passes on their existing Tier 1 path.
     std::optional<GPUSceneResidentGraphLease> gpuSceneLease;
+    uint64 requiredResidentVersion = 0;
+    if (m_gpuSceneUpdate)
+    {
+        const GPUScenePublicationStats& publication =
+            m_gpuSceneUpdate->GetStats();
+        const GPUSceneCommittedMirror& mirror =
+            m_gpuSceneUpdate->GetCommittedMirrorForUpload();
+        if (publication.complete &&
+            publication.failureReason == GPUScenePublicationFailureReason::None &&
+            publication.committedVersion != 0 &&
+            publication.committedSourceSequence ==
+                m_renderScene.GetAcceptedHeader().sequence &&
+            mirror.version == publication.committedVersion)
+        {
+            requiredResidentVersion = publication.committedVersion;
+        }
+    }
     const auto canUseGPUSceneLease = [](const GPUCulling* owner,
                                         bool framePrepared)
     {
@@ -4086,7 +4103,7 @@ void SceneRenderer::AddGPUDrivenCullingPass(
                              m_opaqueGPUCullingFramePrepared)))
     {
         gpuSceneLease = m_gpuSceneUploader->AcquireCurrentGraphLease(
-            *m_renderGraph, m_submissionBatch.get());
+            *m_renderGraph, m_submissionBatch.get(), requiredResidentVersion);
     }
 
     const auto addPass =

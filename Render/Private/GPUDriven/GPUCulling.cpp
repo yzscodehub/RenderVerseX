@@ -1279,7 +1279,14 @@ void GPUCulling::InvalidateGPUSceneCandidates() noexcept
 
 bool GPUCulling::HasCompleteGPUSceneCandidates() const noexcept
 {
-    return m_gpuSceneCandidateVersion != 0 &&
+    return HasCompleteGPUSceneCandidates(m_gpuSceneCandidateVersion);
+}
+
+bool GPUCulling::HasCompleteGPUSceneCandidates(
+    uint64 requiredVersion) const noexcept
+{
+    return requiredVersion != 0 &&
+        m_gpuSceneCandidateVersion == requiredVersion &&
         m_instanceCount != 0 &&
         m_gpuSceneCandidates.size() == m_instances.size() &&
         m_gpuSceneCandidates.size() == m_instanceCount;
@@ -1721,8 +1728,7 @@ bool GPUCulling::ConfigureGPUSceneRecording(
     const GPUSceneResidentGraphLease& lease)
 {
     GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
-    if (!lease.IsValid() || !HasCompleteGPUSceneCandidates() ||
-        lease.version != m_gpuSceneCandidateVersion ||
+    if (!lease.IsValid() || !HasCompleteGPUSceneCandidates(lease.version) ||
         !IsGPUSceneExecutionReady() || inputs == nullptr ||
         !inputs->constantsBuffer ||
         !m_visibilityBuffer || !m_visibleInstanceBuffer || !m_indirectBuffer ||
@@ -1854,9 +1860,9 @@ bool GPUCulling::CullGPUScene(RHICommandContext& ctx,
     m_lastFallbackReason = GPUCullingFallbackReason::PipelineResourcesUnavailable;
 
     GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
-    if (!m_gpuSceneEnabled || !HasCompleteGPUSceneCandidates() ||
+    if (!m_gpuSceneEnabled ||
+        !HasCompleteGPUSceneCandidates(m_gpuSceneLeaseVersion) ||
         m_gpuSceneLeaseVersion == 0 ||
-        m_gpuSceneLeaseVersion != m_gpuSceneCandidateVersion ||
         !IsGPUSceneExecutionReady() || !m_gpuSceneDescriptorSet ||
         inputs == nullptr || !inputs->constantsBuffer ||
         !inputs->gpuSceneCandidateBuffer ||

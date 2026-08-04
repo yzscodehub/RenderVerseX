@@ -2387,6 +2387,13 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_FALSE(culling.HasCompleteGPUSceneCandidates());
     EXPECT_TRUE(culling.AddGPUSceneCandidate(secondCandidate, 19u));
     EXPECT_TRUE(culling.HasCompleteGPUSceneCandidates());
+    const uint32 tier1InstanceCount = culling.GetInstanceCount();
+    const size_t tier1GroupCount = culling.GetDrawGroups().size();
+    EXPECT_FALSE(culling.HasCompleteGPUSceneCandidates(18u));
+    EXPECT_FALSE(culling.HasCompleteGPUSceneCandidates(20u));
+    EXPECT_TRUE(culling.HasCompleteGPUSceneCandidates(19u));
+    EXPECT_EQ(tier1InstanceCount, culling.GetInstanceCount());
+    EXPECT_EQ(tier1GroupCount, culling.GetDrawGroups().size());
 
     culling.EndFrame();
     const GPUCullingRecordingIdentity identity{301u, 12u, 100u, 0u, 7u};
@@ -2399,6 +2406,8 @@ TEST_F(GPUDrivenValidationFixture,
         culling.SealForGPUSceneGraph(identity, lease);
     ASSERT_NE(nullptr, recorded);
     EXPECT_TRUE(recorded->GetCulling().HasCompleteGPUSceneCandidates());
+    EXPECT_TRUE(recorded->GetCulling().HasCompleteGPUSceneCandidates(19u));
+    EXPECT_FALSE(recorded->GetCulling().HasCompleteGPUSceneCandidates(20u));
 
     const FakeBuffer* candidateBuffer = static_cast<const FakeBuffer*>(
         recorded->GetCulling().GetGPUSceneCandidateBuffer());

@@ -332,12 +332,14 @@ namespace
     [[nodiscard]] bool RecordExactLeaseRead(
         GPUSceneUploader& uploader,
         FakeDevice& device,
-        FakeCommandContext& context)
+        FakeCommandContext& context,
+        uint64 requiredVersion)
     {
         RenderGraph graph;
         graph.SetDevice(&device);
         const std::optional<GPUSceneResidentGraphLease> lease =
-            uploader.AcquireCurrentGraphLease(graph, nullptr);
+            uploader.AcquireCurrentGraphLease(
+                graph, nullptr, requiredVersion);
         if (!lease)
         {
             return false;
@@ -507,6 +509,107 @@ namespace
         EXPECT_EQ(uploader.GetDiagnostics().frameUploadRangeCount, 0U);
     }
 
+    TEST(GPUSceneUploadValidation,
+         ExactVersionReadinessIsSideEffectFreeAndAcquireRequiresTheFrozenVersion)
+    {
+        GPUSceneUploader uninitialized;
+        const GPUSceneResidentReadiness unavailable =
+            uninitialized.QueryExactVersionReadiness(17u);
+        EXPECT_EQ(GPUSceneResidentReadinessStatus::Unavailable,
+                  unavailable.status);
+        EXPECT_EQ(17u, unavailable.requiredVersion);
+        EXPECT_FALSE(unavailable.IsReady());
+
+        FakeDevice device;
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        GPUSceneUploader uploader;
+        ASSERT_TRUE(uploader.Initialize(&device, &tracker));
+        GPUSceneDatabase database;
+        GPUSceneTransaction add;
+        add.Add(MakeObject(1, 1.0F));
+        ASSERT_TRUE(database.Commit(add).Succeeded());
+        const uint64 version = database.GetCommittedVersion();
+        uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+        const GPUSceneUploadDiagnostics diagnosticsBefore =
+            uploader.GetDiagnostics();
+        const uint32 defaultBuffersBefore = device.DefaultBufferCount();
+        const GPUSceneResidentReadiness pendingA =
+            uploader.QueryExactVersionReadiness(version);
+        const GPUSceneResidentReadiness pendingB =
+            uploader.QueryExactVersionReadiness(version);
+        EXPECT_EQ(GPUSceneResidentReadinessStatus::Pending, pendingA.status);
+        EXPECT_EQ(pendingA, pendingB);
+        EXPECT_EQ(version, pendingA.requiredVersion);
+        EXPECT_EQ(version, pendingA.observedVersion);
+        EXPECT_FALSE(pendingA.IsReady());
+        EXPECT_EQ(defaultBuffersBefore, device.DefaultBufferCount());
+        const GPUSceneUploadDiagnostics diagnosticsAfter =
+            uploader.GetDiagnostics();
+        EXPECT_EQ(diagnosticsBefore.observedVersion,
+                  diagnosticsAfter.observedVersion);
+        EXPECT_EQ(diagnosticsBefore.residentVersion,
+                  diagnosticsAfter.residentVersion);
+        EXPECT_EQ(diagnosticsBefore.frameUploadBytes,
+                  diagnosticsAfter.frameUploadBytes);
+        EXPECT_EQ(diagnosticsBefore.frameUploadRangeCount,
+                  diagnosticsAfter.frameUploadRangeCount);
+        EXPECT_EQ(diagnosticsBefore.failureReason,
+                  diagnosticsAfter.failureReason);
+
+        FakeCommandContext context;
+        RecordAndExecute(uploader, device, context);
+        const GPUCompletionPoint uploadPoint = tracker.Submit(&context);
+        GPUCompletionToken uploadToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(uploadToken, uploadPoint));
+        uploader.NotifySubmission(uploadToken);
+        CompleteToken(device, uploadToken);
+
+        const GPUSceneResidentReadiness ready =
+            uploader.QueryExactVersionReadiness(version);
+        EXPECT_EQ(GPUSceneResidentReadinessStatus::Ready, ready.status);
+        EXPECT_EQ(version, ready.requiredVersion);
+        EXPECT_EQ(version, ready.observedVersion);
+        EXPECT_EQ(version, ready.residentVersion);
+        EXPECT_TRUE(ready.IsReady());
+        const GPUSceneResidentReadiness wrongVersion =
+            uploader.QueryExactVersionReadiness(version + 1u);
+        EXPECT_EQ(GPUSceneResidentReadinessStatus::Unavailable,
+                  wrongVersion.status);
+        EXPECT_EQ(version + 1u, wrongVersion.requiredVersion);
+        EXPECT_EQ(version, wrongVersion.observedVersion);
+        EXPECT_FALSE(wrongVersion.IsReady());
+
+        RenderGraph graph;
+        graph.SetDevice(&device);
+        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(
+            graph, nullptr, version + 1u).has_value());
+        EXPECT_TRUE(uploader.AcquireCurrentGraphLease(
+            graph, nullptr, version).has_value());
+        EXPECT_EQ(GPUSceneResidentReadinessStatus::Pending,
+                  uploader.QueryExactVersionReadiness(version).status);
+        EXPECT_TRUE(uploader.CancelCurrentGraphLease());
+        EXPECT_TRUE(uploader.QueryExactVersionReadiness(version).IsReady());
+
+        GPUSceneTransaction update;
+        update.Update(database.FindPrimitive(1).value(), MakeObject(1, 2.0F));
+        ASSERT_TRUE(database.Commit(update).Succeeded());
+        const uint64 nextVersion = database.GetCommittedVersion();
+        uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+        const GPUSceneResidentReadiness dirty =
+            uploader.QueryExactVersionReadiness(nextVersion);
+        EXPECT_EQ(GPUSceneResidentReadinessStatus::Pending, dirty.status);
+        EXPECT_EQ(nextVersion, dirty.observedVersion);
+        EXPECT_FALSE(dirty.IsReady());
+
+        device.SetDeviceLost(true);
+        const GPUSceneResidentReadiness lost =
+            uploader.QueryExactVersionReadiness(nextVersion);
+        EXPECT_EQ(GPUSceneResidentReadinessStatus::Unavailable, lost.status);
+        EXPECT_FALSE(lost.IsReady());
+    }
+
     TEST(GPUSceneUploadValidation, ExactCurrentLeaseRetainsOneSixTableSetAndRollsBackReadAccess)
     {
         FakeDevice device;
@@ -534,7 +637,8 @@ namespace
         graph.SetDevice(&device);
         RenderSubmissionResourceBatch batch;
         const std::optional<GPUSceneResidentGraphLease> lease =
-            uploader.AcquireCurrentGraphLease(graph, &batch);
+            uploader.AcquireCurrentGraphLease(
+                graph, &batch, database.GetCommittedVersion());
         ASSERT_TRUE(lease.has_value());
         ASSERT_TRUE(lease->IsValid());
         EXPECT_EQ(lease->version, database.GetCommittedVersion());
@@ -549,7 +653,8 @@ namespace
         }
         // A recording owns exactly one concrete set; a second lease cannot
         // accidentally mark another same-version set as in flight.
-        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(graph, &batch).has_value());
+        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(
+            graph, &batch, database.GetCommittedVersion()).has_value());
 
         struct LeaseReadPassData
         {
@@ -649,7 +754,8 @@ namespace
         EXPECT_TRUE(uploader.GetDiagnostics().rollbackPending);
         RenderGraph retryGraph;
         retryGraph.SetDevice(&device);
-        EXPECT_TRUE(uploader.AcquireCurrentGraphLease(retryGraph, nullptr).has_value());
+        EXPECT_TRUE(uploader.AcquireCurrentGraphLease(
+            retryGraph, nullptr, database.GetCommittedVersion()).has_value());
         uploader.ReleaseUnsubmittedFrame();
         batch.ReleaseUnsubmitted(retirement);
     }
@@ -679,13 +785,15 @@ namespace
 
         RenderGraph unusedGraph;
         unusedGraph.SetDevice(&device);
-        ASSERT_TRUE(uploader.AcquireCurrentGraphLease(unusedGraph, nullptr).has_value());
+        ASSERT_TRUE(uploader.AcquireCurrentGraphLease(
+            unusedGraph, nullptr, database.GetCommittedVersion()).has_value());
         EXPECT_TRUE(uploader.CancelCurrentGraphLease());
         EXPECT_FALSE(uploader.CancelCurrentGraphLease());
 
         RenderGraph retryGraph;
         retryGraph.SetDevice(&device);
-        EXPECT_TRUE(uploader.AcquireCurrentGraphLease(retryGraph, nullptr).has_value());
+        EXPECT_TRUE(uploader.AcquireCurrentGraphLease(
+            retryGraph, nullptr, database.GetCommittedVersion()).has_value());
         uploader.ReleaseUnsubmittedFrame();
     }
 
@@ -705,7 +813,8 @@ namespace
         RenderGraph pendingGraph;
         pendingGraph.SetDevice(&device);
         uploader.BuildRenderGraph(pendingGraph, nullptr);
-        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(pendingGraph, nullptr).has_value());
+        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(
+            pendingGraph, nullptr, database.GetCommittedVersion()).has_value());
 
         FakeCommandContext context;
         pendingGraph.Compile();
@@ -719,7 +828,8 @@ namespace
 
         RenderGraph residentGraph;
         residentGraph.SetDevice(&device);
-        ASSERT_TRUE(uploader.AcquireCurrentGraphLease(residentGraph, nullptr).has_value());
+        ASSERT_TRUE(uploader.AcquireCurrentGraphLease(
+            residentGraph, nullptr, database.GetCommittedVersion()).has_value());
         uploader.ReleaseUnsubmittedFrame();
 
         GPUSceneTransaction update;
@@ -728,9 +838,11 @@ namespace
         uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
         RenderGraph mismatchGraph;
         mismatchGraph.SetDevice(&device);
-        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(mismatchGraph, nullptr).has_value());
+        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(
+            mismatchGraph, nullptr, database.GetCommittedVersion()).has_value());
         uploader.BuildRenderGraph(mismatchGraph, nullptr);
-        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(mismatchGraph, nullptr).has_value());
+        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(
+            mismatchGraph, nullptr, database.GetCommittedVersion()).has_value());
         uploader.ReleaseUnsubmittedFrame();
     }
 
@@ -755,7 +867,8 @@ namespace
         uploader.NotifySubmission(uploadToken);
         CompleteToken(device, uploadToken);
 
-        ASSERT_TRUE(RecordExactLeaseRead(uploader, device, context));
+        ASSERT_TRUE(RecordExactLeaseRead(
+            uploader, device, context, database.GetCommittedVersion()));
         const GPUCompletionPoint readPoint = tracker.Submit(&context);
         GPUCompletionToken readToken;
         ASSERT_TRUE(InsertGPUCompletionPoint(readToken, readPoint));
@@ -800,7 +913,8 @@ namespace
         uploader.NotifySubmission(uploadToken);
         CompleteToken(device, uploadToken);
 
-        ASSERT_TRUE(RecordExactLeaseRead(uploader, device, context));
+        ASSERT_TRUE(RecordExactLeaseRead(
+            uploader, device, context, database.GetCommittedVersion()));
         GPUCompletionToken invalid;
         invalid.count = 1;
         invalid.points[0] = {GPUQueueDomain::Graphics, 0};
@@ -809,7 +923,8 @@ namespace
                   GPUSceneUploadFailureReason::InvalidCompletionToken);
         RenderGraph afterInvalid;
         afterInvalid.SetDevice(&device);
-        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(afterInvalid, nullptr).has_value());
+        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(
+            afterInvalid, nullptr, database.GetCommittedVersion()).has_value());
 
         GPUSceneUploader omittedCommitUploader;
         ASSERT_TRUE(omittedCommitUploader.Initialize(&device, &tracker));
@@ -830,7 +945,8 @@ namespace
         RenderGraph omittedGraph;
         omittedGraph.SetDevice(&device);
         ASSERT_TRUE(omittedCommitUploader.AcquireCurrentGraphLease(
-            omittedGraph, nullptr).has_value());
+            omittedGraph, nullptr,
+            omittedCommitDatabase.GetCommittedVersion()).has_value());
         const GPUCompletionPoint omittedRead = tracker.Submit(&context);
         GPUCompletionToken omittedReadToken;
         ASSERT_TRUE(InsertGPUCompletionPoint(omittedReadToken, omittedRead));
@@ -843,7 +959,8 @@ namespace
         RenderGraph afterOmittedCommit;
         afterOmittedCommit.SetDevice(&device);
         EXPECT_FALSE(omittedCommitUploader.AcquireCurrentGraphLease(
-            afterOmittedCommit, nullptr).has_value());
+            afterOmittedCommit, nullptr,
+            omittedCommitDatabase.GetCommittedVersion()).has_value());
     }
 
     TEST(GPUSceneUploadValidation, LostDevicePreemptsTheWarmStaticFastPath)
@@ -1013,7 +1130,8 @@ namespace
         const std::array<FakeCommandContext*, 3> contexts = {&graphics, &compute, &copy};
         const GPUCompletionToken token = SubmitToken(tracker, contexts);
         uploader.NotifySubmission(token);
-        ASSERT_TRUE(RecordExactLeaseRead(uploader, device, graphics));
+        ASSERT_TRUE(RecordExactLeaseRead(
+            uploader, device, graphics, database.GetCommittedVersion()));
         uploader.NotifySubmission(token); // Merge a same-version future read.
 
         device.Fence(0)->Complete(token.points[0].value);
@@ -1165,12 +1283,14 @@ namespace
         uploader.NotifySubmission(uploadedToken);
         CompleteToken(device, uploadedToken);
 
-        ASSERT_TRUE(RecordExactLeaseRead(uploader, device, context));
+        ASSERT_TRUE(RecordExactLeaseRead(
+            uploader, device, context, database.GetCommittedVersion()));
         const GPUCompletionPoint firstRead = tracker.Submit(&context);
         GPUCompletionToken firstReadToken;
         ASSERT_TRUE(InsertGPUCompletionPoint(firstReadToken, firstRead));
         uploader.NotifySubmission(firstReadToken);
-        ASSERT_TRUE(RecordExactLeaseRead(uploader, device, context));
+        ASSERT_TRUE(RecordExactLeaseRead(
+            uploader, device, context, database.GetCommittedVersion()));
         const GPUCompletionPoint secondRead = tracker.Submit(&context);
         GPUCompletionToken secondReadToken;
         ASSERT_TRUE(InsertGPUCompletionPoint(secondReadToken, secondRead));

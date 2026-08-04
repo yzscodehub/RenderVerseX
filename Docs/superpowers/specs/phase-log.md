@@ -46957,3 +46957,77 @@ below.
   real-device execution, validation, parity, and qualification evidence.
 
 ---
+
+### R-SP357 Render-policy Task 11D-D4b1 exact GPU Scene readiness evidence
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D4b1 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP356 (DX12 capability honesty).
+- D3 had frozen an exact required resident version, but the uploader lease API
+  still selected its current observed version implicitly and GPU-culling had no
+  exact-version companion-candidate query.
+
+**Approved scope:**
+
+- Add renderer-private, value-only exact-version uploader readiness evidence.
+  Repeated queries must not modify diagnostics, create work, import resources,
+  or acquire frame-read ownership.
+- Share one exact-set predicate between Query and Acquire. It verifies the
+  observed/committed/resident/covered/desired versions, the six resident table
+  buffers and layouts, dirty/pending state, unusable sets, and outstanding read
+  leases.
+- Make graph lease acquisition explicit about the required version and make
+  GPU Scene candidate completeness version-aware without changing Tier 1
+  instances or groups.
+- Validate the renderer's required version only from the complete accepted
+  publication and matching committed mirror. Keep live policy facts, frozen
+  tier enforcement, fallback reporting, public RHI, backends, Samples, and
+  qualification outside D4b1.
+
+**Files changed:**
+
+- `Render/Private/GPUScene/GPUSceneUploader.h`
+- `Render/Private/GPUScene/GPUSceneUploader.cpp`
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/GPUSceneUploadValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary focused executables: PASS for GPU Scene upload 18/18, GPU-driven
+  42/42, and Render Pass 198/198 (258/258 total).
+- The focused tests cover side-effect-free repeated queries, wrong versions,
+  pending/dirty/no-clean-set state, device loss, outstanding read leases,
+  cancellation recovery, exact acquisition, and candidate-version mismatch.
+- Scoped `git diff --check`: PASS apart from the repository's existing CRLF
+  conversion notices.
+
+**Independent review result:**
+
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+- The reviewer confirmed Query is value-only, Query and Acquire share the same
+  exact-set predicate, all six tables are validated, publication sourcing is
+  fail-closed, and a candidate mismatch does not disturb Tier 1 semantics.
+
+**Primary review status:**
+
+- PASS after complete scoped diff, classification, exact-version, publication,
+  lease, candidate, and test-honesty review.
+- Unrelated Engine/PipelineCache worktree entries, runtime diagnostics, and
+  Python cache output remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- D4b2 must populate the live plan facts, enforce one frozen selected tier and
+  one whole-view actual tier, and distinguish an allowed pre-graph companion
+  fallback from a graph-stage frame failure.
+- D4c still owns real-device first-frame Tier 1 versus warm-frame Tier 2
+  validation, parity, and qualification evidence.
+
+---

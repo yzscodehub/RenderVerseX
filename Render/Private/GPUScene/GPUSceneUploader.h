@@ -38,6 +38,34 @@ namespace RVX
     constexpr uint32 GPU_SCENE_RESIDENT_TABLE_COUNT =
         static_cast<uint32>(GPUSceneResidentTable::Count);
 
+    /** @brief Side-effect-free readiness category of one exact GPU-scene version. */
+    enum class GPUSceneResidentReadinessStatus : uint8
+    {
+        Unavailable = 0,
+        Pending,
+        Ready,
+    };
+
+    /** @brief Value evidence returned for a frozen GPU-scene residency query. */
+    struct GPUSceneResidentReadiness
+    {
+        GPUSceneResidentReadinessStatus status =
+            GPUSceneResidentReadinessStatus::Unavailable;
+        uint64 requiredVersion = 0;
+        uint64 observedVersion = 0;
+        uint64 residentVersion = 0;
+
+        [[nodiscard]] bool IsReady() const noexcept
+        {
+            return status == GPUSceneResidentReadinessStatus::Ready &&
+                   requiredVersion != 0 &&
+                   observedVersion == requiredVersion &&
+                   residentVersion == requiredVersion;
+        }
+
+        bool operator==(const GPUSceneResidentReadiness&) const = default;
+    };
+
     /**
      * @brief Exact one-recording view of one fully current uploader buffer set.
      *
@@ -107,14 +135,26 @@ namespace RVX
          * @brief Acquire one exact fully-current resident set for graph reads.
          *
          * Pending uploads, stale versions, dirty state, incomplete table sets,
-         * and a second outstanding lease all fail closed. The returned handles
-         * are imported with their prior realized snapshots; the consumer owns
-         * declaring ShaderResource reads in its graph pass.
+         * and a second outstanding lease all fail closed. The caller supplies
+         * the frozen required version and the uploader revalidates that exact
+         * version before importing anything. The returned handles are imported
+         * with their prior realized snapshots; the consumer owns declaring
+         * ShaderResource reads in its graph pass.
          */
         [[nodiscard]] std::optional<GPUSceneResidentGraphLease>
             AcquireCurrentGraphLease(
                 RenderGraph& graph,
-                RenderSubmissionResourceBatch* submissionBatch) noexcept;
+                RenderSubmissionResourceBatch* submissionBatch,
+                uint64 requiredVersion) noexcept;
+
+        /**
+         * @brief Read-only readiness query for one frozen resident version.
+         *
+         * This never retains/imports resources, creates uploads, updates
+         * diagnostics, or changes frame-read ownership.
+         */
+        [[nodiscard]] GPUSceneResidentReadiness
+            QueryExactVersionReadiness(uint64 requiredVersion) const noexcept;
 
         /**
          * @brief Cancel an acquired lease before any graph consumer registers it.
