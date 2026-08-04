@@ -3,7 +3,7 @@
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
 10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a,
 Task 11D-D1b-a, Task 11D-D1b-b, Task 11D-D2a, and Task 11D-D2b are complete,
-and Task 11D-D3/D4 is next
+Task 11D-D3 is complete, and Task 11D-D4 is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -852,3 +852,35 @@ resident-scene capability and qualification contract without weakening Tier 1,
 then implement and qualify the DX12 path before allowing the unchanged frame
 plan resolver to select public `GPUResidentScene`. Real-device evidence must
 distinguish warm resident Tier 2 execution from first-frame Tier 1 fallback.
+
+Task 11D-D3 implementation, independent review/remediation/re-review, and
+primary audit are complete. The accepted dormant policy contract is:
+
+- [x] Project `maxDescriptorSets` into the renderer-owned capability snapshot
+  and define the static Tier 2 base predicate as compute visibility, descriptor
+  resource bindings, at least three descriptor sets, counted indexed indirect,
+  and first-instance support. Backend identity, bindless support, compatibility
+  projections, dynamic readiness, and lease state are deliberately excluded.
+- [x] Add value-only resident-scene facts for implementation, shader, pipeline,
+  resource, and binding readiness plus the required resident version. The
+  resolver retains no RHI owner, graph handle, or lease.
+- [x] Evaluate Tier 2 only after the canonical Tier 1 packet decisions contain
+  GPU work. A fully ready nonzero resident version selects
+  `GPUResidentScene`; pending/unavailable Tier 2 state preserves
+  `IndirectGrouped`, while Candidate `Auto` remains Direct.
+- [x] Freeze immediate fallback semantics as Direct -> Direct,
+  IndirectGrouped -> Direct, and GPUResidentScene -> IndirectGrouped. Validate
+  tier, reason, version, qualification, capability, and fallback combinations
+  fail closed in both resolution and frame-plan validators.
+- [x] Reject forged resident reasons in both capability directions, reject
+  resident Tier 2 without GPU packets, and prove that no bindless field is
+  introduced into the renderer-owned capability contract.
+- [x] Finish independent re-review with READY and no unresolved P0-P2; pass
+  Render Policy 29/29, GPU-driven 42/42, the architecture phase gate, and
+  scoped whitespace/scope checks in the primary audit.
+
+Start **Task 11D-D4** next. D4 must populate the dormant facts from the live
+DX12 renderer path, make the frozen selected tier authoritative during graph
+construction, preserve explicit pre-recording fallback semantics, and collect
+honest first-frame Tier 1 versus warm-frame Tier 2 evidence. It must not use
+bindless as a gate or promote DX12 Candidate `Auto` without qualification.

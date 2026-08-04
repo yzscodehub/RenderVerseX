@@ -36,6 +36,12 @@ namespace
         }
     }
 
+    template <typename T>
+    concept HasBindlessCapability = requires(const T& value)
+    {
+        value.supportsBindless;
+    };
+
     static_assert(std::is_copy_constructible_v<DrawPacketRange>);
     static_assert(std::is_move_constructible_v<DrawPacketRange>);
     static_assert(std::is_copy_constructible_v<RenderFramePolicyRequest>);
@@ -103,6 +109,7 @@ namespace
         decltype(std::declval<RenderPolicyResolverInput>().passes),
         std::vector<RenderPassPolicyFacts>>);
     static_assert(std::is_copy_constructible_v<RenderPolicyViewFacts>);
+    static_assert(std::is_copy_constructible_v<RenderGPUResidentSceneFacts>);
     static_assert(std::is_copy_constructible_v<RenderPassPolicyFacts>);
     static_assert(std::is_copy_constructible_v<RenderPolicyResolverInput>);
     static_assert(std::is_copy_constructible_v<RenderPassPolicyDecision>);
@@ -112,6 +119,7 @@ namespace
     static_assert(std::is_same_v<
         decltype(std::declval<RenderFrameExecutionPlan>().packetReferences),
         std::vector<RenderDrawPacketReference>>);
+    static_assert(!HasBindlessCapability<RenderCapabilitySnapshot>);
 
     void SetIndexedIndirectCapabilities(
         RenderCapabilitySnapshot& capabilities,
@@ -166,6 +174,20 @@ namespace
         opaque.workloadBeneficial = true;
         input.passes.push_back(opaque);
         return input;
+    }
+
+    void SetGPUResidentSceneReady(RenderPolicyResolverInput& input,
+                                  uint64 requiredResidentVersion = 77)
+    {
+        input.capabilities.maxDescriptorSets = 3;
+        input.capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+        input.gpuResidentScene.implementationReadiness =
+            RenderPolicyReadiness::Ready;
+        input.gpuResidentScene.shaderReadiness = RenderPolicyReadiness::Ready;
+        input.gpuResidentScene.pipelineReadiness = RenderPolicyReadiness::Ready;
+        input.gpuResidentScene.resourceReadiness = RenderPolicyReadiness::Ready;
+        input.gpuResidentScene.bindingReadiness = RenderPolicyReadiness::Ready;
+        input.gpuResidentScene.requiredResidentVersion = requiredResidentVersion;
     }
 
     MeshPassProcessorResult MakePreparedPacket(
@@ -377,6 +399,25 @@ namespace
                 EnumCase<RenderPolicyReadiness>{RenderPolicyReadiness::Count, 3, "Count"},
             },
             GetRenderPolicyReadinessName);
+
+        ExpectEnumCases(
+            std::array{
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::NotEvaluated, 0, "NotEvaluated"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::Ready, 1, "Ready"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::CapabilityUnavailable, 2, "CapabilityUnavailable"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::ImplementationPending, 3, "ImplementationPending"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::ImplementationUnavailable, 4, "ImplementationUnavailable"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::ShaderPending, 5, "ShaderPending"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::ShaderUnavailable, 6, "ShaderUnavailable"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::PipelinePending, 7, "PipelinePending"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::PipelineUnavailable, 8, "PipelineUnavailable"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::ResourcePending, 9, "ResourcePending"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::ResourceUnavailable, 10, "ResourceUnavailable"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::BindingPending, 11, "BindingPending"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::BindingUnavailable, 12, "BindingUnavailable"},
+                EnumCase<GPUResidentSceneSelectionReason>{GPUResidentSceneSelectionReason::Count, 13, "Count"},
+            },
+            GetGPUResidentSceneSelectionReasonName);
     }
 
     TEST(RenderPolicyValidation, InvalidEnumerationsHaveInvalidNames)
@@ -393,6 +434,8 @@ namespace
             static_cast<RenderExecutionStatus>(0xFFU)));
         EXPECT_STREQ("Invalid", GetRenderPolicyReasonName(
             static_cast<RenderPolicyReason>(0xFFU)));
+        EXPECT_STREQ("Invalid", GetGPUResidentSceneSelectionReasonName(
+            static_cast<GPUResidentSceneSelectionReason>(0xFFU)));
     }
 
     TEST(RenderPolicyValidation, DefaultsFailClosed)
@@ -408,7 +451,11 @@ namespace
         const RenderViewPolicy viewPolicy;
         EXPECT_EQ(RenderGPUDrivenMode::Auto, viewPolicy.requestedMode);
         EXPECT_EQ(GPUDrivenTier::Direct, viewPolicy.selectedTier);
+        EXPECT_EQ(GPUDrivenTier::Direct, viewPolicy.immediateFallbackTier);
         EXPECT_EQ(RenderPolicyReason::ConservativeDefault, viewPolicy.reason);
+        EXPECT_EQ(GPUResidentSceneSelectionReason::NotEvaluated,
+                  viewPolicy.gpuResidentSceneReason);
+        EXPECT_EQ(0u, viewPolicy.requiredResidentVersion);
 
         const RenderCapabilitySnapshot capability;
         EXPECT_EQ(RHIBackendType::None, capability.backend);
@@ -417,6 +464,8 @@ namespace
         EXPECT_FALSE(capability.supportsIndirectDrawCount);
         EXPECT_FALSE(capability.supportsEncodedCommandBuffer);
         EXPECT_FALSE(capability.supportsDescriptorResourceBindings);
+        EXPECT_EQ(0u, capability.maxDescriptorSets);
+        EXPECT_FALSE(capability.SupportsGPUResidentSceneBase());
 
         const RenderQualificationSnapshot qualification;
         EXPECT_EQ(GPUDrivenQualificationLevel::Unqualified, qualification.level);
@@ -656,6 +705,240 @@ namespace
 
         std::swap(input.passes[0], input.passes[1]);
         EXPECT_EQ(resolution, ResolveRenderPolicy(input));
+    }
+
+    TEST(RenderPolicyValidation,
+         GPUResidentSceneSelectionStaysDirectForAutoCandidateWorkload)
+    {
+        RenderPolicyResolverInput input = MakeValidResolverInput();
+        SetGPUResidentSceneReady(input);
+        input.passes.front().workloadBeneficial = false;
+
+        const RenderPolicyResolution resolution = ResolveRenderPolicy(input);
+        ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+        EXPECT_EQ(GPUDrivenTier::Direct, resolution.viewPolicy.selectedTier);
+        EXPECT_EQ(GPUDrivenTier::Direct,
+                  resolution.viewPolicy.immediateFallbackTier);
+        EXPECT_EQ(RenderPolicyReason::WorkloadNotBeneficial,
+                  resolution.viewPolicy.reason);
+        EXPECT_EQ(GPUResidentSceneSelectionReason::NotEvaluated,
+                  resolution.viewPolicy.gpuResidentSceneReason);
+        EXPECT_EQ(0u, resolution.viewPolicy.requiredResidentVersion);
+
+        RenderPolicyResolution invalid = resolution;
+        invalid.viewPolicy.selectedTier = GPUDrivenTier::GPUResidentScene;
+        invalid.viewPolicy.immediateFallbackTier = GPUDrivenTier::IndirectGrouped;
+        invalid.viewPolicy.gpuResidentSceneReason =
+            GPUResidentSceneSelectionReason::Ready;
+        invalid.viewPolicy.requiredResidentVersion = 77;
+        EXPECT_FALSE(ValidateRenderPolicyResolution(invalid));
+    }
+
+    TEST(RenderPolicyValidation,
+         CandidateAutoQualificationDoesNotEvaluateWarmGPUResidentScene)
+    {
+        RenderPolicyResolverInput input = MakeValidResolverInput();
+        SetGPUResidentSceneReady(input, 78);
+        input.qualification.passedGateMask =
+            input.qualification.requiredGateMask & ~uint64{1};
+        ASSERT_EQ(GPUDrivenQualificationLevel::Candidate,
+                  input.qualification.GetLevel());
+
+        const RenderPolicyResolution resolution = ResolveRenderPolicy(input);
+        ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+        EXPECT_EQ(GPUDrivenTier::Direct, resolution.viewPolicy.selectedTier);
+        EXPECT_EQ(RenderPolicyReason::BackendNotQualified,
+                  resolution.viewPolicy.reason);
+        EXPECT_EQ(GPUResidentSceneSelectionReason::NotEvaluated,
+                  resolution.viewPolicy.gpuResidentSceneReason);
+        EXPECT_EQ(0u, resolution.viewPolicy.requiredResidentVersion);
+    }
+
+    TEST(RenderPolicyValidation,
+         GPUResidentSceneSelectsTierTwoOnlyAfterWarmTierOneWork)
+    {
+        for (const RenderGPUDrivenMode mode : {
+                 RenderGPUDrivenMode::Auto,
+                 RenderGPUDrivenMode::ForceEnabled})
+        {
+            RenderPolicyResolverInput input = MakeValidResolverInput();
+            input.request.gpuDrivenMode = mode;
+            SetGPUResidentSceneReady(input, 91);
+
+            const RenderPolicyResolution resolution = ResolveRenderPolicy(input);
+            ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+            EXPECT_EQ(GPUDrivenTier::GPUResidentScene,
+                      resolution.viewPolicy.selectedTier);
+            EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
+                      resolution.viewPolicy.immediateFallbackTier);
+            EXPECT_EQ(GPUResidentSceneSelectionReason::Ready,
+                      resolution.viewPolicy.gpuResidentSceneReason);
+            EXPECT_EQ(91u, resolution.viewPolicy.requiredResidentVersion);
+            EXPECT_EQ(RenderSubmissionMode::MultiDrawIndirectCount,
+                      resolution.canonicalPassDecisions.front().preferredSubmission);
+        }
+    }
+
+    TEST(RenderPolicyValidation,
+         GPUResidentSceneReadinessFailuresPreserveTierOneWithPreciseReason)
+    {
+        struct ReadinessCase
+        {
+            RenderPolicyReadiness RenderGPUResidentSceneFacts::* member;
+            RenderPolicyReadiness readiness;
+            GPUResidentSceneSelectionReason reason;
+        };
+        constexpr std::array cases = {
+            ReadinessCase{&RenderGPUResidentSceneFacts::implementationReadiness,
+                          RenderPolicyReadiness::Pending,
+                          GPUResidentSceneSelectionReason::ImplementationPending},
+            ReadinessCase{&RenderGPUResidentSceneFacts::implementationReadiness,
+                          RenderPolicyReadiness::Unavailable,
+                          GPUResidentSceneSelectionReason::ImplementationUnavailable},
+            ReadinessCase{&RenderGPUResidentSceneFacts::shaderReadiness,
+                          RenderPolicyReadiness::Pending,
+                          GPUResidentSceneSelectionReason::ShaderPending},
+            ReadinessCase{&RenderGPUResidentSceneFacts::shaderReadiness,
+                          RenderPolicyReadiness::Unavailable,
+                          GPUResidentSceneSelectionReason::ShaderUnavailable},
+            ReadinessCase{&RenderGPUResidentSceneFacts::pipelineReadiness,
+                          RenderPolicyReadiness::Pending,
+                          GPUResidentSceneSelectionReason::PipelinePending},
+            ReadinessCase{&RenderGPUResidentSceneFacts::pipelineReadiness,
+                          RenderPolicyReadiness::Unavailable,
+                          GPUResidentSceneSelectionReason::PipelineUnavailable},
+            ReadinessCase{&RenderGPUResidentSceneFacts::resourceReadiness,
+                          RenderPolicyReadiness::Pending,
+                          GPUResidentSceneSelectionReason::ResourcePending},
+            ReadinessCase{&RenderGPUResidentSceneFacts::resourceReadiness,
+                          RenderPolicyReadiness::Unavailable,
+                          GPUResidentSceneSelectionReason::ResourceUnavailable},
+            ReadinessCase{&RenderGPUResidentSceneFacts::bindingReadiness,
+                          RenderPolicyReadiness::Pending,
+                          GPUResidentSceneSelectionReason::BindingPending},
+            ReadinessCase{&RenderGPUResidentSceneFacts::bindingReadiness,
+                          RenderPolicyReadiness::Unavailable,
+                          GPUResidentSceneSelectionReason::BindingUnavailable},
+        };
+
+        for (const ReadinessCase& testCase : cases)
+        {
+            RenderPolicyResolverInput input = MakeValidResolverInput();
+            SetGPUResidentSceneReady(input, 92);
+            input.gpuResidentScene.*(testCase.member) = testCase.readiness;
+            const RenderPolicyResolution resolution = ResolveRenderPolicy(input);
+            ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+            EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
+                      resolution.viewPolicy.selectedTier);
+            EXPECT_EQ(GPUDrivenTier::Direct,
+                      resolution.viewPolicy.immediateFallbackTier);
+            EXPECT_EQ(testCase.reason, resolution.viewPolicy.gpuResidentSceneReason);
+            EXPECT_EQ(92u, resolution.viewPolicy.requiredResidentVersion);
+        }
+
+        RenderPolicyResolverInput zeroVersion = MakeValidResolverInput();
+        SetGPUResidentSceneReady(zeroVersion, 0);
+        const RenderPolicyResolution resolution = ResolveRenderPolicy(zeroVersion);
+        ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+        EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
+                  resolution.viewPolicy.selectedTier);
+        EXPECT_EQ(GPUResidentSceneSelectionReason::ResourceUnavailable,
+                  resolution.viewPolicy.gpuResidentSceneReason);
+        EXPECT_EQ(0u, resolution.viewPolicy.requiredResidentVersion);
+    }
+
+    TEST(RenderPolicyValidation,
+         GPUResidentSceneBaseRequirementsDoNotConstrainTierOneOrUseBindless)
+    {
+        struct CapabilityCase
+        {
+            void (*disable)(RenderCapabilitySnapshot&);
+        };
+        constexpr std::array cases = {
+            CapabilityCase{[](RenderCapabilitySnapshot& capabilities)
+                           { capabilities.maxDescriptorSets = 2; }},
+            CapabilityCase{[](RenderCapabilitySnapshot& capabilities)
+                           { capabilities.indexedIndirectExecution.supportsCountBuffer = false; }},
+            CapabilityCase{[](RenderCapabilitySnapshot& capabilities)
+                           { capabilities.indexedIndirectExecution.supportsFirstInstance = false; }},
+        };
+
+        for (const CapabilityCase& testCase : cases)
+        {
+            RenderPolicyResolverInput input = MakeValidResolverInput();
+            SetGPUResidentSceneReady(input, 93);
+            testCase.disable(input.capabilities);
+            EXPECT_FALSE(input.capabilities.SupportsGPUResidentSceneBase());
+
+            const RenderPolicyResolution resolution = ResolveRenderPolicy(input);
+            ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+            EXPECT_EQ(GPUDrivenTier::IndirectGrouped,
+                      resolution.viewPolicy.selectedTier);
+            EXPECT_EQ(GPUDrivenTier::Direct,
+                      resolution.viewPolicy.immediateFallbackTier);
+            EXPECT_EQ(GPUResidentSceneSelectionReason::CapabilityUnavailable,
+                      resolution.viewPolicy.gpuResidentSceneReason);
+        }
+    }
+
+    TEST(RenderPolicyValidation,
+         GPUResidentSceneValidationRejectsInvalidFactsReasonsPairsVersionsAndTiers)
+    {
+        RenderPolicyResolverInput invalidInput = MakeValidResolverInput();
+        invalidInput.gpuResidentScene.bindingReadiness =
+            RenderPolicyReadiness::Count;
+        EXPECT_FALSE(ValidateRenderPolicyResolverInput(invalidInput));
+
+        RenderPolicyResolverInput input = MakeValidResolverInput();
+        SetGPUResidentSceneReady(input, 94);
+        const RenderPolicyResolution resolution = ResolveRenderPolicy(input);
+        ASSERT_TRUE(ValidateRenderPolicyResolution(resolution));
+
+        RenderPolicyResolution invalid = resolution;
+        invalid.viewPolicy.gpuResidentSceneReason =
+            GPUResidentSceneSelectionReason::Count;
+        EXPECT_FALSE(ValidateRenderPolicyResolution(invalid));
+
+        invalid = resolution;
+        invalid.viewPolicy.immediateFallbackTier = GPUDrivenTier::Direct;
+        EXPECT_FALSE(ValidateRenderPolicyResolution(invalid));
+
+        invalid = resolution;
+        invalid.viewPolicy.requiredResidentVersion = 0;
+        EXPECT_FALSE(ValidateRenderPolicyResolution(invalid));
+
+        invalid = resolution;
+        invalid.viewPolicy.selectedTier = GPUDrivenTier::Meshlet;
+        EXPECT_FALSE(ValidateRenderPolicyResolution(invalid));
+
+        RenderPolicyResolverInput tierOneInput = MakeValidResolverInput();
+        const RenderPolicyResolution tierOne = ResolveRenderPolicy(tierOneInput);
+        ASSERT_TRUE(ValidateRenderPolicyResolution(tierOne));
+        invalid = tierOne;
+        invalid.viewPolicy.gpuResidentSceneReason =
+            GPUResidentSceneSelectionReason::ImplementationUnavailable;
+        EXPECT_FALSE(ValidateRenderPolicyResolution(invalid));
+
+        invalid = tierOne;
+        invalid.viewPolicy.gpuResidentSceneReason =
+            GPUResidentSceneSelectionReason::Ready;
+        EXPECT_FALSE(ValidateRenderPolicyResolution(invalid));
+
+        RenderPolicyResolverInput baseReadyInput = MakeValidResolverInput();
+        SetGPUResidentSceneReady(baseReadyInput, 95);
+        baseReadyInput.gpuResidentScene.implementationReadiness =
+            RenderPolicyReadiness::Unavailable;
+        const RenderPolicyResolution baseReadyTierOne =
+            ResolveRenderPolicy(baseReadyInput);
+        ASSERT_TRUE(ValidateRenderPolicyResolution(baseReadyTierOne));
+        ASSERT_EQ(GPUDrivenTier::IndirectGrouped,
+                  baseReadyTierOne.viewPolicy.selectedTier);
+        ASSERT_EQ(GPUResidentSceneSelectionReason::ImplementationUnavailable,
+                  baseReadyTierOne.viewPolicy.gpuResidentSceneReason);
+        invalid = baseReadyTierOne;
+        invalid.viewPolicy.gpuResidentSceneReason =
+            GPUResidentSceneSelectionReason::CapabilityUnavailable;
+        EXPECT_FALSE(ValidateRenderPolicyResolution(invalid));
     }
 
     TEST(RenderPolicyValidation, ResolverGlobalAndPassGatesFailClosed)
@@ -1714,6 +1997,21 @@ namespace
         EXPECT_FALSE(ValidateRenderFrameExecutionPlan(plan));
         plan.viewPolicy = resolution.viewPolicy;
         ASSERT_TRUE(ValidateRenderFrameExecutionPlan(plan));
+
+        RenderFrameExecutionPlan tierTwoInvalidPlan = plan;
+        tierTwoInvalidPlan.viewPolicy.immediateFallbackTier =
+            GPUDrivenTier::IndirectGrouped;
+        EXPECT_FALSE(ValidateRenderFrameExecutionPlan(tierTwoInvalidPlan));
+
+        tierTwoInvalidPlan = plan;
+        tierTwoInvalidPlan.viewPolicy.gpuResidentSceneReason =
+            GPUResidentSceneSelectionReason::Ready;
+        EXPECT_FALSE(ValidateRenderFrameExecutionPlan(tierTwoInvalidPlan));
+
+        tierTwoInvalidPlan = plan;
+        tierTwoInvalidPlan.viewPolicy.gpuResidentSceneReason =
+            GPUResidentSceneSelectionReason::ImplementationUnavailable;
+        EXPECT_FALSE(ValidateRenderFrameExecutionPlan(tierTwoInvalidPlan));
 
         RenderPolicyResolution invalidResolution = resolution;
         invalidResolution.canonicalPassDecisions.front()

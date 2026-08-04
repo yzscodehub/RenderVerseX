@@ -30,6 +30,30 @@ namespace RVX
         bool operator==(const RenderPolicyViewFacts&) const = default;
     };
 
+    /**
+     * @brief Value-only readiness facts for the optional GPU-resident scene tier.
+     *
+     * These facts describe the current frame's owned implementation, shader,
+     * pipeline, resident-resource, and descriptor-binding readiness. They do
+     * not retain a GPU-scene lease or any RHI owner.
+     */
+    struct RenderGPUResidentSceneFacts
+    {
+        RenderPolicyReadiness implementationReadiness =
+            RenderPolicyReadiness::Unavailable;
+        RenderPolicyReadiness shaderReadiness =
+            RenderPolicyReadiness::Unavailable;
+        RenderPolicyReadiness pipelineReadiness =
+            RenderPolicyReadiness::Unavailable;
+        RenderPolicyReadiness resourceReadiness =
+            RenderPolicyReadiness::Unavailable;
+        RenderPolicyReadiness bindingReadiness =
+            RenderPolicyReadiness::Unavailable;
+        uint64 requiredResidentVersion = 0;
+
+        bool operator==(const RenderGPUResidentSceneFacts&) const = default;
+    };
+
     /** @brief Per-pass owned facts captured from scene extraction and readiness probes. */
     struct RenderPassPolicyFacts
     {
@@ -73,6 +97,7 @@ namespace RVX
         RenderFramePolicyRequest request{};
         uint32 viewOrdinal = 0;
         RenderPolicyViewFacts view{};
+        RenderGPUResidentSceneFacts gpuResidentScene{};
         RenderCapabilitySnapshot capabilities{};
         GPUDrivenBackendQualification qualification{};
         std::vector<RenderPassPolicyFacts> passes{};
@@ -82,6 +107,7 @@ namespace RVX
             return request == other.request &&
                    viewOrdinal == other.viewOrdinal &&
                    view == other.view &&
+                   gpuResidentScene == other.gpuResidentScene &&
                    capabilities == other.capabilities &&
                    qualification.schemaVersion == other.qualification.schemaVersion &&
                    qualification.backend == other.qualification.backend &&

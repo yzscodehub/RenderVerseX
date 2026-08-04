@@ -46797,3 +46797,84 @@ below.
   isolated to Tasks 12 and 13.
 
 ---
+
+### R-SP355 Render-policy Task 11D-D3 GPU-resident scene policy contract
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D3 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP354 (GPU Scene raster pass integration).
+- D2b provided an optional, exact-lease GPU Scene execution path, but the
+  frozen frame policy could not represent or validate public Tier 2 selection.
+
+**Approved scope:**
+
+- Add a renderer-owned, value-only Tier 2 base-capability predicate using only
+  compute visibility, descriptor-resource bindings, `maxDescriptorSets >= 3`,
+  counted indexed indirect, and first-instance support.
+- Exclude backend identity, bindless, compatibility projections, dynamic
+  readiness, graph handles, and lease ownership from that static predicate.
+- Capture five resident-scene readiness values and a required resident version
+  in resolver input. Evaluate them only after canonical Tier 1 packet decisions
+  have selected GPU work, without repartitioning packets or changing their
+  preferred submission.
+- Select `GPUResidentScene` only for a fully ready nonzero version. Preserve
+  `IndirectGrouped` for Tier 2 pending/unavailable state, and keep Candidate
+  `Auto` Direct behind the existing qualification gate.
+- Define `immediateFallbackTier` as one step in the stable chain: Direct to
+  Direct, IndirectGrouped to Direct, and GPUResidentScene to IndirectGrouped.
+- Validate impossible tier, reason, capability, readiness, version, and fallback
+  combinations fail closed in both policy-resolution and frame-plan contracts.
+- Keep public RHI, backend feature probing, the SceneRenderer live producer,
+  execution-path enforcement, Samples, and qualification evidence out of D3;
+  those are D4 responsibilities.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderPolicyTypes.h`
+- `Render/Include/Render/Policy/RenderPolicyResolver.h`
+- `Render/Private/Policy/RenderPolicyResolver.cpp`
+- `Tests/RenderPolicyValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial build: PASS for `RenderPolicyValidation` and
+  `GPUDrivenValidation`.
+- Primary focused executables: PASS 29/29 and 42/42 (71/71 total).
+- Scoped `git diff --check`: PASS apart from the repository's existing CRLF
+  conversion notices.
+- Tests cover all five pending/unavailable reason families, zero resident
+  version, base-capability gaps, exact fallback pairs, Candidate Auto warm
+  facts, invalid enums, Meshlet rejection, and no-GPU forged Tier 2 state.
+
+**Independent review result:**
+
+- Initial review found that Tier 1 validation accepted resident reasons the
+  resolver could never emit and identified two missing negative tests.
+- Remediation made `CapabilityUnavailable` equivalent to a failed base
+  predicate for Tier 1 and added Candidate Auto plus forged Tier 2 coverage.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete scoped diff, gate-order, capability-predicate, reason,
+  version, fallback-pair, and packet/submission invariance review.
+- The primary agent independently rebuilt and reran all 71 focused tests.
+  Unrelated Engine/PipelineCache worktree entries, runtime diagnostics, and
+  Python cache output remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- The contract is deliberately dormant until D4 propagates the live device's
+  `maxDescriptorSets` and resident readiness/version facts before plan freeze.
+- D4 must stop Tier 1 plans from opportunistically entering the existing GPU
+  Scene path, and must treat an exact Tier 2 lease as execution confirmation
+  rather than a same-frame policy rewrite.
+- DX12 remains Candidate, so `Auto` stays Direct. Real-device first-upload
+  Tier 1 and warm-resident Tier 2 evidence, including validation diagnostics,
+  remains mandatory before qualification can advance.
+
+---

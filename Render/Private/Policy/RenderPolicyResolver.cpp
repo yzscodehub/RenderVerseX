@@ -54,6 +54,19 @@ namespace RVX
                    static_cast<uint8>(RenderPolicyReason::Count);
         }
 
+        bool IsValid(GPUResidentSceneSelectionReason reason)
+        {
+            return static_cast<uint8>(reason) <
+                   static_cast<uint8>(GPUResidentSceneSelectionReason::Count);
+        }
+
+        bool IsResolverSelectedTier(GPUDrivenTier tier)
+        {
+            return tier == GPUDrivenTier::Direct ||
+                   tier == GPUDrivenTier::IndirectGrouped ||
+                   tier == GPUDrivenTier::GPUResidentScene;
+        }
+
         bool IsValid(RenderPolicyReadiness readiness)
         {
             return readiness == RenderPolicyReadiness::Unavailable ||
@@ -119,6 +132,66 @@ namespace RVX
                    IsValid(facts.gpuDrivenShaderReadiness) &&
                    IsValid(facts.gpuDrivenPipelineReadiness) &&
                    IsValid(facts.gpuDrivenResourceReadiness);
+        }
+
+        bool AreGPUResidentSceneFactsValid(
+            const RenderGPUResidentSceneFacts& facts)
+        {
+            return IsValid(facts.implementationReadiness) &&
+                   IsValid(facts.shaderReadiness) &&
+                   IsValid(facts.pipelineReadiness) &&
+                   IsValid(facts.resourceReadiness) &&
+                   IsValid(facts.bindingReadiness);
+        }
+
+        GPUResidentSceneSelectionReason GetGPUResidentSceneReadinessFailure(
+            const RenderGPUResidentSceneFacts& facts)
+        {
+            if (facts.implementationReadiness == RenderPolicyReadiness::Pending)
+            {
+                return GPUResidentSceneSelectionReason::ImplementationPending;
+            }
+            if (facts.implementationReadiness != RenderPolicyReadiness::Ready)
+            {
+                return GPUResidentSceneSelectionReason::ImplementationUnavailable;
+            }
+            if (facts.shaderReadiness == RenderPolicyReadiness::Pending)
+            {
+                return GPUResidentSceneSelectionReason::ShaderPending;
+            }
+            if (facts.shaderReadiness != RenderPolicyReadiness::Ready)
+            {
+                return GPUResidentSceneSelectionReason::ShaderUnavailable;
+            }
+            if (facts.pipelineReadiness == RenderPolicyReadiness::Pending)
+            {
+                return GPUResidentSceneSelectionReason::PipelinePending;
+            }
+            if (facts.pipelineReadiness != RenderPolicyReadiness::Ready)
+            {
+                return GPUResidentSceneSelectionReason::PipelineUnavailable;
+            }
+            if (facts.resourceReadiness == RenderPolicyReadiness::Pending)
+            {
+                return GPUResidentSceneSelectionReason::ResourcePending;
+            }
+            // A zero version is a missing resident resource, not a separate
+            // capability. Keep that fail-closed result in the resource reason
+            // family so the stable enum remains readiness-only.
+            if (facts.resourceReadiness != RenderPolicyReadiness::Ready ||
+                facts.requiredResidentVersion == 0)
+            {
+                return GPUResidentSceneSelectionReason::ResourceUnavailable;
+            }
+            if (facts.bindingReadiness == RenderPolicyReadiness::Pending)
+            {
+                return GPUResidentSceneSelectionReason::BindingPending;
+            }
+            if (facts.bindingReadiness != RenderPolicyReadiness::Ready)
+            {
+                return GPUResidentSceneSelectionReason::BindingUnavailable;
+            }
+            return GPUResidentSceneSelectionReason::Ready;
         }
 
         RenderPolicyReason GetReadinessFailure(
@@ -369,6 +442,25 @@ namespace RVX
             }
         }
 
+        bool HasValidImmediateFallbackPair(
+            GPUDrivenTier selectedTier,
+            GPUDrivenTier immediateFallbackTier)
+        {
+            switch (selectedTier)
+            {
+                case GPUDrivenTier::Direct:
+                    return immediateFallbackTier == GPUDrivenTier::Direct;
+                case GPUDrivenTier::IndirectGrouped:
+                    return immediateFallbackTier == GPUDrivenTier::Direct;
+                case GPUDrivenTier::GPUResidentScene:
+                    return immediateFallbackTier ==
+                           GPUDrivenTier::IndirectGrouped;
+                default:
+                    // Meshlet is intentionally not selected by Task11D-D3.
+                    return false;
+            }
+        }
+
         bool IsSelectedViewPolicyConsistent(
             const RenderViewPolicy& viewPolicy,
             bool hasGPUDrivenPackets,
@@ -376,9 +468,24 @@ namespace RVX
             const RenderQualificationSnapshot& qualification,
             const RenderCapabilitySnapshot& capabilities)
         {
+            if (!IsResolverSelectedTier(viewPolicy.selectedTier) ||
+                !HasValidImmediateFallbackPair(
+                    viewPolicy.selectedTier,
+                    viewPolicy.immediateFallbackTier) ||
+                !IsValid(viewPolicy.gpuResidentSceneReason))
+            {
+                return false;
+            }
+
             if (!hasGPUDrivenPackets)
             {
                 if (viewPolicy.selectedTier != GPUDrivenTier::Direct)
+                {
+                    return false;
+                }
+                if (viewPolicy.gpuResidentSceneReason !=
+                        GPUResidentSceneSelectionReason::NotEvaluated ||
+                    viewPolicy.requiredResidentVersion != 0)
                 {
                     return false;
                 }
@@ -393,7 +500,7 @@ namespace RVX
                            RenderPolicyReason::ForcedGPUDriven;
             }
 
-            if (viewPolicy.selectedTier != GPUDrivenTier::IndirectGrouped ||
+            if (viewPolicy.selectedTier == GPUDrivenTier::Direct ||
                 viewPolicy.requestedMode == RenderGPUDrivenMode::ForceDisabled ||
                 !qualificationMatches ||
                 !capabilities.supportsComputeVisibility ||
@@ -401,15 +508,46 @@ namespace RVX
             {
                 return false;
             }
-            if (viewPolicy.requestedMode == RenderGPUDrivenMode::Auto)
+
+            const bool requestReasonMatches =
+                viewPolicy.requestedMode == RenderGPUDrivenMode::Auto
+                    ? qualification.level == GPUDrivenQualificationLevel::Qualified &&
+                          viewPolicy.reason == RenderPolicyReason::None
+                    : viewPolicy.requestedMode ==
+                              RenderGPUDrivenMode::ForceEnabled &&
+                          viewPolicy.reason == RenderPolicyReason::ForcedGPUDriven;
+            if (!requestReasonMatches)
             {
-                return qualification.level ==
-                           GPUDrivenQualificationLevel::Qualified &&
-                       viewPolicy.reason == RenderPolicyReason::None;
+                return false;
             }
-            return viewPolicy.requestedMode ==
-                       RenderGPUDrivenMode::ForceEnabled &&
-                   viewPolicy.reason == RenderPolicyReason::ForcedGPUDriven;
+
+            if (viewPolicy.selectedTier == GPUDrivenTier::GPUResidentScene)
+            {
+                return capabilities.SupportsGPUResidentSceneBase() &&
+                       viewPolicy.gpuResidentSceneReason ==
+                           GPUResidentSceneSelectionReason::Ready &&
+                       viewPolicy.requiredResidentVersion != 0;
+            }
+
+            if (viewPolicy.selectedTier != GPUDrivenTier::IndirectGrouped)
+            {
+                return false;
+            }
+
+            const bool residentBaseAvailable =
+                capabilities.SupportsGPUResidentSceneBase();
+            if (!residentBaseAvailable)
+            {
+                return viewPolicy.gpuResidentSceneReason ==
+                       GPUResidentSceneSelectionReason::CapabilityUnavailable;
+            }
+
+            return viewPolicy.gpuResidentSceneReason !=
+                       GPUResidentSceneSelectionReason::NotEvaluated &&
+                   viewPolicy.gpuResidentSceneReason !=
+                       GPUResidentSceneSelectionReason::Ready &&
+                   viewPolicy.gpuResidentSceneReason !=
+                       GPUResidentSceneSelectionReason::CapabilityUnavailable;
         }
 
         bool IsPassDecisionReasonConsistent(
@@ -445,7 +583,8 @@ namespace RVX
             !IsValid(input.view.visibilityShaderReadiness) ||
             !IsValid(input.view.visibilityPipelineReadiness) ||
             !IsValid(input.view.sharedResourceReadiness) ||
-            !IsValid(input.view.requiredBindingReadiness))
+            !IsValid(input.view.requiredBindingReadiness) ||
+            !AreGPUResidentSceneFactsValid(input.gpuResidentScene))
         {
             return false;
         }
@@ -611,11 +750,38 @@ namespace RVX
         if (anyGPUDrivenPackets)
         {
             resolution.viewPolicy.selectedTier = GPUDrivenTier::IndirectGrouped;
+            resolution.viewPolicy.immediateFallbackTier = GPUDrivenTier::Direct;
             resolution.viewPolicy.reason = enabledReason;
+
+            // Tier 2 is intentionally considered only after the canonical
+            // pass decisions already contain GPU work. It never repartitions
+            // packets or changes the Tier 1 submission plan opportunistically.
+            resolution.viewPolicy.requiredResidentVersion =
+                input.gpuResidentScene.requiredResidentVersion;
+            if (!input.capabilities.SupportsGPUResidentSceneBase())
+            {
+                resolution.viewPolicy.gpuResidentSceneReason =
+                    GPUResidentSceneSelectionReason::CapabilityUnavailable;
+            }
+            else
+            {
+                resolution.viewPolicy.gpuResidentSceneReason =
+                    GetGPUResidentSceneReadinessFailure(input.gpuResidentScene);
+            }
+
+            if (resolution.viewPolicy.gpuResidentSceneReason ==
+                GPUResidentSceneSelectionReason::Ready)
+            {
+                resolution.viewPolicy.selectedTier =
+                    GPUDrivenTier::GPUResidentScene;
+                resolution.viewPolicy.immediateFallbackTier =
+                    GPUDrivenTier::IndirectGrouped;
+            }
         }
         else
         {
             resolution.viewPolicy.selectedTier = GPUDrivenTier::Direct;
+            resolution.viewPolicy.immediateFallbackTier = GPUDrivenTier::Direct;
             resolution.viewPolicy.reason = firstPassFailure == RenderPolicyReason::None
                 ? RenderPolicyReason::NoEligiblePackets
                 : firstPassFailure;

@@ -239,6 +239,60 @@ namespace RVX
         }
     }
 
+    /** @brief Stable outcome of evaluating the optional GPU-resident scene tier. */
+    enum class GPUResidentSceneSelectionReason : uint8
+    {
+        NotEvaluated = 0,
+        Ready = 1,
+        CapabilityUnavailable = 2,
+        ImplementationPending = 3,
+        ImplementationUnavailable = 4,
+        ShaderPending = 5,
+        ShaderUnavailable = 6,
+        PipelinePending = 7,
+        PipelineUnavailable = 8,
+        ResourcePending = 9,
+        ResourceUnavailable = 10,
+        BindingPending = 11,
+        BindingUnavailable = 12,
+        Count = 13,
+    };
+
+    inline const char* GetGPUResidentSceneSelectionReasonName(
+        GPUResidentSceneSelectionReason reason)
+    {
+        switch (reason)
+        {
+            case GPUResidentSceneSelectionReason::NotEvaluated:
+                return "NotEvaluated";
+            case GPUResidentSceneSelectionReason::Ready: return "Ready";
+            case GPUResidentSceneSelectionReason::CapabilityUnavailable:
+                return "CapabilityUnavailable";
+            case GPUResidentSceneSelectionReason::ImplementationPending:
+                return "ImplementationPending";
+            case GPUResidentSceneSelectionReason::ImplementationUnavailable:
+                return "ImplementationUnavailable";
+            case GPUResidentSceneSelectionReason::ShaderPending:
+                return "ShaderPending";
+            case GPUResidentSceneSelectionReason::ShaderUnavailable:
+                return "ShaderUnavailable";
+            case GPUResidentSceneSelectionReason::PipelinePending:
+                return "PipelinePending";
+            case GPUResidentSceneSelectionReason::PipelineUnavailable:
+                return "PipelineUnavailable";
+            case GPUResidentSceneSelectionReason::ResourcePending:
+                return "ResourcePending";
+            case GPUResidentSceneSelectionReason::ResourceUnavailable:
+                return "ResourceUnavailable";
+            case GPUResidentSceneSelectionReason::BindingPending:
+                return "BindingPending";
+            case GPUResidentSceneSelectionReason::BindingUnavailable:
+                return "BindingUnavailable";
+            case GPUResidentSceneSelectionReason::Count: return "Count";
+            default: return "Invalid";
+        }
+    }
+
     /** @brief Contiguous packet range consumed by one planned render pass. */
     struct DrawPacketRange
     {
@@ -262,7 +316,11 @@ namespace RVX
     {
         RenderGPUDrivenMode requestedMode = RenderGPUDrivenMode::Auto;
         GPUDrivenTier selectedTier = GPUDrivenTier::Direct;
+        GPUDrivenTier immediateFallbackTier = GPUDrivenTier::Direct;
         RenderPolicyReason reason = RenderPolicyReason::ConservativeDefault;
+        GPUResidentSceneSelectionReason gpuResidentSceneReason =
+            GPUResidentSceneSelectionReason::NotEvaluated;
+        uint64 requiredResidentVersion = 0;
 
         bool operator==(const RenderViewPolicy&) const = default;
     };
@@ -282,6 +340,25 @@ namespace RVX
         /// Backend-neutral capability for descriptor/resource-table bindings
         /// required by GPU visibility and indirect submission.
         bool supportsDescriptorResourceBindings = false;
+        /// Exact device descriptor-set limit used by the resident-scene base
+        /// capability predicate. This is a value projection only.
+        uint32 maxDescriptorSets = 0;
+
+        /**
+         * @brief Return the static base capability for GPU-resident scene work.
+         *
+         * This deliberately excludes backend identity, bindless capability,
+         * compatibility projections, dynamic readiness, and exact lease state.
+         * Those remain separate resolver facts owned by the current frame.
+         */
+        [[nodiscard]] bool SupportsGPUResidentSceneBase() const noexcept
+        {
+            return supportsComputeVisibility &&
+                   supportsDescriptorResourceBindings &&
+                   maxDescriptorSets >= 3 &&
+                   indexedIndirectExecution.supportsCountBuffer &&
+                   indexedIndirectExecution.supportsFirstInstance;
+        }
 
         bool operator==(const RenderCapabilitySnapshot&) const = default;
     };
