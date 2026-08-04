@@ -1081,23 +1081,65 @@ namespace RVX
         m_capabilities.adapterName = name;
         m_capabilities.dedicatedVideoMemory = adapterDesc.DedicatedVideoMemory;
 
-        // Query feature support
+        // This baseline query defines the binding tier used by several reported
+        // capabilities. Continuing after a failure would mistake the zeroed
+        // structure for an authoritative Tier 0 result, so fail device creation
+        // closed instead.
         D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
-        m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
+        const HRESULT optionsResult = m_device->CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
+        if (FAILED(optionsResult))
+        {
+            RVX_RHI_ERROR("DX12 baseline feature query failed (HRESULT {:#x}); refusing to report unknown capabilities",
+                          static_cast<uint32>(optionsResult));
+            return false;
+        }
 
         m_capabilities.dx12.resourceBindingTier = static_cast<uint32>(options.ResourceBindingTier);
 
         // Root signature version
         D3D12_FEATURE_DATA_ROOT_SIGNATURE rootSigFeature = {};
         rootSigFeature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
-        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &rootSigFeature, sizeof(rootSigFeature))))
+        const HRESULT rootSignatureResult = m_device->CheckFeatureSupport(
+            D3D12_FEATURE_ROOT_SIGNATURE, &rootSigFeature, sizeof(rootSigFeature));
+        m_capabilities.dx12.supportsRootSignature1_1 = false;
+        if (SUCCEEDED(rootSignatureResult))
         {
             m_capabilities.dx12.supportsRootSignature1_1 = (rootSigFeature.HighestVersion >= D3D_ROOT_SIGNATURE_VERSION_1_1);
         }
+        else
+        {
+            RVX_RHI_WARN("DX12 root signature feature query failed (HRESULT {:#x}); using the root signature 1.0 fallback",
+                         static_cast<uint32>(rootSignatureResult));
+        }
 
-        // Shader model
+        // Query the newest shader model first. Older D3D12 runtimes reject an
+        // unknown requested model with E_INVALIDARG, so retry their known 6.0
+        // ceiling before reporting either capability.
         D3D12_FEATURE_DATA_SHADER_MODEL shaderModel = { D3D_SHADER_MODEL_6_6 };
-        m_device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel));
+        HRESULT shaderModelResult = m_device->CheckFeatureSupport(
+            D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel));
+        if (shaderModelResult == E_INVALIDARG)
+        {
+            shaderModel = { D3D_SHADER_MODEL_6_0 };
+            shaderModelResult = m_device->CheckFeatureSupport(
+                D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel));
+        }
+
+        m_capabilities.dx12.supportsSM6_0 = false;
+        m_capabilities.dx12.supportsSM6_6 = false;
+        if (SUCCEEDED(shaderModelResult))
+        {
+            m_capabilities.dx12.supportsSM6_0 =
+                shaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_0;
+            m_capabilities.dx12.supportsSM6_6 =
+                shaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_6;
+        }
+        else
+        {
+            RVX_RHI_WARN("DX12 shader model feature query failed (HRESULT {:#x}); reporting SM6.0 and SM6.6 unsupported",
+                         static_cast<uint32>(shaderModelResult));
+        }
 
         // Common limits
         m_capabilities.maxTextureSize = 16384;

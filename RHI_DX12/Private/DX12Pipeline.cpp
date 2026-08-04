@@ -471,12 +471,88 @@ namespace RVX
         }
 
         D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootSigDesc = {};
-        rootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-        rootSigDesc.Desc_1_1.NumParameters = static_cast<UINT>(rootParams.size());
-        rootSigDesc.Desc_1_1.pParameters = rootParams.data();
-        rootSigDesc.Desc_1_1.NumStaticSamplers = 0;
-        rootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
-        rootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        std::vector<D3D12_ROOT_PARAMETER> rootParams1_0;
+        std::vector<std::vector<D3D12_DESCRIPTOR_RANGE>> rangesStorage1_0;
+
+        if (m_device->GetCapabilities().dx12.supportsRootSignature1_1)
+        {
+            rootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+            rootSigDesc.Desc_1_1.NumParameters = static_cast<UINT>(rootParams.size());
+            rootSigDesc.Desc_1_1.pParameters = rootParams.data();
+            rootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+            rootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+            rootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        }
+        else
+        {
+            // Root signature 1.0 has no descriptor volatility flags. Convert
+            // the layout structure without changing the 1.1 path, which keeps
+            // the DATA_STATIC/DATA_VOLATILE semantics when the device supports it.
+            rootParams1_0.reserve(rootParams.size());
+            rangesStorage1_0.reserve(rangesStorage.size());
+
+            for (const D3D12_ROOT_PARAMETER1& parameter1 : rootParams)
+            {
+                D3D12_ROOT_PARAMETER parameter = {};
+                parameter.ParameterType = parameter1.ParameterType;
+                parameter.ShaderVisibility = parameter1.ShaderVisibility;
+
+                switch (parameter.ParameterType)
+                {
+                    case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
+                    {
+                        auto& ranges = rangesStorage1_0.emplace_back();
+                        ranges.reserve(parameter1.DescriptorTable.NumDescriptorRanges);
+                        for (UINT rangeIndex = 0;
+                             rangeIndex < parameter1.DescriptorTable.NumDescriptorRanges;
+                             ++rangeIndex)
+                        {
+                            const D3D12_DESCRIPTOR_RANGE1& range1 =
+                                parameter1.DescriptorTable.pDescriptorRanges[rangeIndex];
+                            D3D12_DESCRIPTOR_RANGE range = {};
+                            range.RangeType = range1.RangeType;
+                            range.NumDescriptors = range1.NumDescriptors;
+                            range.BaseShaderRegister = range1.BaseShaderRegister;
+                            range.RegisterSpace = range1.RegisterSpace;
+                            range.OffsetInDescriptorsFromTableStart =
+                                range1.OffsetInDescriptorsFromTableStart;
+                            ranges.push_back(range);
+                        }
+                        parameter.DescriptorTable.NumDescriptorRanges =
+                            static_cast<UINT>(ranges.size());
+                        parameter.DescriptorTable.pDescriptorRanges = ranges.data();
+                        break;
+                    }
+
+                    case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
+                        parameter.Constants = parameter1.Constants;
+                        break;
+
+                    case D3D12_ROOT_PARAMETER_TYPE_CBV:
+                    case D3D12_ROOT_PARAMETER_TYPE_SRV:
+                    case D3D12_ROOT_PARAMETER_TYPE_UAV:
+                        parameter.Descriptor.ShaderRegister =
+                            parameter1.Descriptor.ShaderRegister;
+                        parameter.Descriptor.RegisterSpace =
+                            parameter1.Descriptor.RegisterSpace;
+                        break;
+
+                    default:
+                        RVX_RHI_ERROR("DX12 root signature 1.0 serialization failed: unsupported root parameter type {}",
+                                      static_cast<uint32>(parameter.ParameterType));
+                        return;
+                }
+
+                rootParams1_0.push_back(parameter);
+            }
+
+            rootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_0;
+            rootSigDesc.Desc_1_0.NumParameters = static_cast<UINT>(rootParams1_0.size());
+            rootSigDesc.Desc_1_0.pParameters = rootParams1_0.data();
+            rootSigDesc.Desc_1_0.NumStaticSamplers = 0;
+            rootSigDesc.Desc_1_0.pStaticSamplers = nullptr;
+            rootSigDesc.Desc_1_0.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        }
 
         ComPtr<ID3DBlob> signature;
         ComPtr<ID3DBlob> error;
@@ -590,7 +666,13 @@ namespace RVX
             layoutDesc.pushConstantSize = 128;
             m_ownedLayout = CreateDX12PipelineLayout(m_device, layoutDesc);
             m_pipelineLayout = static_cast<DX12PipelineLayout*>(m_ownedLayout.Get());
-            m_rootSignature = m_pipelineLayout->GetRootSignature();
+            m_rootSignature = m_pipelineLayout ? m_pipelineLayout->GetRootSignature() : nullptr;
+        }
+
+        if (!m_pipelineLayout || !m_rootSignature)
+        {
+            RVX_RHI_ERROR("DX12 graphics pipeline creation failed: pipeline layout or root signature is unavailable");
+            return;
         }
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -762,7 +844,13 @@ namespace RVX
             RHIPipelineLayoutDesc layoutDesc;
             m_ownedLayout = CreateDX12PipelineLayout(m_device, layoutDesc);
             m_pipelineLayout = static_cast<DX12PipelineLayout*>(m_ownedLayout.Get());
-            m_rootSignature = m_pipelineLayout->GetRootSignature();
+            m_rootSignature = m_pipelineLayout ? m_pipelineLayout->GetRootSignature() : nullptr;
+        }
+
+        if (!m_pipelineLayout || !m_rootSignature)
+        {
+            RVX_RHI_ERROR("DX12 compute pipeline creation failed: pipeline layout or root signature is unavailable");
+            return;
         }
 
         D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
@@ -1692,7 +1780,13 @@ namespace RVX
             RVX_RHI_ERROR("DX12 pipeline layout creation failed: {}", validation.message);
             return nullptr;
         }
-        return Ref<DX12PipelineLayout>(new DX12PipelineLayout(device, desc));
+        Ref<DX12PipelineLayout> pipelineLayout(new DX12PipelineLayout(device, desc));
+        if (!pipelineLayout->GetRootSignature())
+        {
+            RVX_RHI_ERROR("DX12 pipeline layout creation failed: root signature creation failed");
+            return nullptr;
+        }
+        return pipelineLayout;
     }
 
     RHIPipelineRef CreateDX12GraphicsPipeline(DX12Device* device, const RHIGraphicsPipelineDesc& desc)

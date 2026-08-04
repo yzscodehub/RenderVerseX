@@ -3,7 +3,7 @@
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
 10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a,
 Task 11D-D1b-a, Task 11D-D1b-b, Task 11D-D2a, and Task 11D-D2b are complete,
-Task 11D-D3 is complete, and Task 11D-D4 is next
+Task 11D-D3 and Task 11D-D4a are complete, and Task 11D-D4b is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -884,3 +884,30 @@ DX12 renderer path, make the frozen selected tier authoritative during graph
 construction, preserve explicit pre-recording fallback semantics, and collect
 honest first-frame Tier 1 versus warm-frame Tier 2 evidence. It must not use
 bindless as a gate or promote DX12 Candidate `Auto` without qualification.
+
+Task 11D-D4a implementation, independent review/remediation/re-review, and
+primary audit are complete. The accepted DX12 capability-honesty slice is:
+
+- [x] Fail DX12 device creation when the baseline `D3D12_OPTIONS` query fails,
+  instead of deriving binding and bindless claims from an unknown zeroed value.
+- [x] Query Shader Model 6.6 first, retry Shader Model 6.0 for an older runtime
+  that returns `E_INVALIDARG`, and populate SM6.0/SM6.6 flags only from a
+  successful native result.
+- [x] Report Root Signature 1.1 support from the native query and serialize a
+  converted Root Signature 1.0 description when 1.1 is unavailable. Preserve
+  the existing descriptor volatility flags on the 1.1 path.
+- [x] Reject pipeline layouts whose root signature could not be created, and
+  guard Graphics/Compute pipeline creation against missing explicit or default
+  layouts/root signatures.
+- [x] Compare the public DX12 capability values with independent native feature
+  queries, compile/create an SM6.0 shader, and create a real layout containing
+  SRV/UAV and sampler tables plus push constants.
+- [x] Finish independent re-review with READY and no unresolved P0-P2; pass the
+  serial DX12 backend build and all 37/37 DX12 validation tests on the available
+  RTX 4070 Ti, plus scoped whitespace/scope checks.
+
+Start **Task 11D-D4b** next: populate the D3 resident facts from the live
+uploader/culling/pipeline state before plan freeze, make `selectedTier`
+authoritative during graph construction, and record only explicit pre-recording
+fallback. Root Signature 1.0 remains compile/structure reviewed but lacks a
+real 1.0 device in the current hardware matrix.

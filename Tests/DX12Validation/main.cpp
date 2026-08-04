@@ -3,6 +3,7 @@
 #include "DX12CommandContext.h"
 #include "DX12Device.h"
 #include "DX12IndirectExecution.h"
+#include "DX12Pipeline.h"
 #include "DX12Resources.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/PipelineCache.h"
@@ -665,6 +666,121 @@ TEST(DX12Validation, DeviceCreation)
     auto device = CreateRHIDevice(RHIBackendType::DX12, desc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
     EXPECT_EQ(device->GetBackendType(), RHIBackendType::DX12);
+}
+
+TEST(DX12Validation, CapabilitiesReflectNativeFeatureQueriesAndCreatePipelineLayout)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+
+    const RHICapabilities& capabilities = device->GetCapabilities();
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS nativeOptions = {};
+    const HRESULT optionsResult = dx12Device->GetD3DDevice()->CheckFeatureSupport(
+        D3D12_FEATURE_D3D12_OPTIONS, &nativeOptions, sizeof(nativeOptions));
+    ASSERT_TRUE(SUCCEEDED(optionsResult));
+
+    const uint32 nativeBindingTier = static_cast<uint32>(nativeOptions.ResourceBindingTier);
+    EXPECT_GE(nativeBindingTier, static_cast<uint32>(D3D12_RESOURCE_BINDING_TIER_1));
+    EXPECT_LE(nativeBindingTier, static_cast<uint32>(D3D12_RESOURCE_BINDING_TIER_3));
+    EXPECT_EQ(capabilities.dx12.resourceBindingTier, nativeBindingTier);
+    EXPECT_EQ(capabilities.supportsBindless,
+              nativeOptions.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_2);
+
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE nativeRootSignature = {};
+    nativeRootSignature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    const HRESULT rootSignatureResult = dx12Device->GetD3DDevice()->CheckFeatureSupport(
+        D3D12_FEATURE_ROOT_SIGNATURE, &nativeRootSignature, sizeof(nativeRootSignature));
+    if (SUCCEEDED(rootSignatureResult))
+    {
+        EXPECT_EQ(capabilities.dx12.supportsRootSignature1_1,
+                  nativeRootSignature.HighestVersion >= D3D_ROOT_SIGNATURE_VERSION_1_1);
+    }
+    else
+    {
+        EXPECT_FALSE(capabilities.dx12.supportsRootSignature1_1);
+    }
+
+    D3D12_FEATURE_DATA_SHADER_MODEL nativeShaderModel = { D3D_SHADER_MODEL_6_6 };
+    HRESULT shaderModelResult = dx12Device->GetD3DDevice()->CheckFeatureSupport(
+        D3D12_FEATURE_SHADER_MODEL, &nativeShaderModel, sizeof(nativeShaderModel));
+    if (shaderModelResult == E_INVALIDARG)
+    {
+        nativeShaderModel = { D3D_SHADER_MODEL_6_0 };
+        shaderModelResult = dx12Device->GetD3DDevice()->CheckFeatureSupport(
+            D3D12_FEATURE_SHADER_MODEL, &nativeShaderModel, sizeof(nativeShaderModel));
+    }
+
+    if (SUCCEEDED(shaderModelResult))
+    {
+        EXPECT_EQ(capabilities.dx12.supportsSM6_0,
+                  nativeShaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_0);
+        EXPECT_EQ(capabilities.dx12.supportsSM6_6,
+                  nativeShaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_6);
+    }
+    else
+    {
+        EXPECT_FALSE(capabilities.dx12.supportsSM6_0);
+        EXPECT_FALSE(capabilities.dx12.supportsSM6_6);
+    }
+    EXPECT_FALSE(capabilities.dx12.supportsSM6_6 && !capabilities.dx12.supportsSM6_0);
+
+    if (SUCCEEDED(shaderModelResult) &&
+        nativeShaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_0)
+    {
+        std::unique_ptr<IShaderCompiler> compiler = CreateShaderCompiler();
+        if (compiler)
+        {
+            ShaderCompileOptions shaderOptions;
+            shaderOptions.stage = RHIShaderStage::Vertex;
+            shaderOptions.entryPoint = "VSMain";
+            shaderOptions.sourceCode = "float4 VSMain() : SV_Position { return float4(0, 0, 0, 1); }";
+            shaderOptions.sourcePath = "CapabilityProbeSM6.hlsl";
+            shaderOptions.targetProfile = "vs_6_0";
+            shaderOptions.targetBackend = RHIBackendType::DX12;
+
+            if (compiler->QuerySupport(shaderOptions).IsSupported())
+            {
+                const ShaderCompileResult compiledShader = compiler->Compile(shaderOptions);
+                ASSERT_TRUE(compiledShader.success) << compiledShader.errorMessage;
+
+                RHIShaderDesc shaderDesc;
+                shaderDesc.stage = shaderOptions.stage;
+                shaderDesc.bytecode = compiledShader.bytecode.data();
+                shaderDesc.bytecodeSize = static_cast<uint64>(compiledShader.bytecode.size());
+                shaderDesc.entryPoint = shaderOptions.entryPoint;
+                shaderDesc.debugName = "CapabilityProbeSM6";
+                EXPECT_NE(device->CreateShader(shaderDesc).Get(), nullptr);
+                EXPECT_TRUE(capabilities.dx12.supportsSM6_0);
+            }
+        }
+    }
+
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.AddBinding(0, RHIBindingType::SampledTexture);
+    setLayoutDesc.AddBinding(1, RHIBindingType::StorageBuffer);
+    setLayoutDesc.AddBinding(2, RHIBindingType::Sampler);
+    setLayoutDesc.debugName = "CapabilityProbeRootSignatureSet";
+    RHIDescriptorSetLayoutRef setLayout = device->CreateDescriptorSetLayout(setLayoutDesc);
+    ASSERT_NE(setLayout.Get(), nullptr);
+
+    RHIPipelineLayoutDesc pipelineLayoutDesc;
+    pipelineLayoutDesc.setLayouts.push_back(setLayout.Get());
+    pipelineLayoutDesc.pushConstantSize = 16;
+    pipelineLayoutDesc.debugName = "CapabilityProbeRootSignatureLayout";
+    RHIPipelineLayoutRef pipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+    ASSERT_NE(pipelineLayout.Get(), nullptr);
+
+    auto* dx12PipelineLayout = dynamic_cast<DX12PipelineLayout*>(pipelineLayout.Get());
+    ASSERT_NE(dx12PipelineLayout, nullptr);
+    EXPECT_NE(dx12PipelineLayout->GetRootSignature(), nullptr);
+    EXPECT_NE(dx12PipelineLayout->GetSrvUavTableIndex(0), UINT32_MAX);
+    EXPECT_NE(dx12PipelineLayout->GetSamplerTableIndex(0), UINT32_MAX);
+    EXPECT_NE(dx12PipelineLayout->GetPushConstantRootIndex(), UINT32_MAX);
 }
 
 TEST(DX12Validation, BufferCreation)

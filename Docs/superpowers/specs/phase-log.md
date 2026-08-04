@@ -46878,3 +46878,82 @@ below.
   remains mandatory before qualification can advance.
 
 ---
+
+### R-SP356 Render-policy Task 11D-D4a DX12 capability honesty
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D4a stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP355 (GPU-resident scene policy contract).
+- D3 defined a backend-neutral Tier 2 predicate, while DX12 still ignored two
+  native feature-query results and generated Root Signature 1.1 unconditionally.
+
+**Approved scope:**
+
+- Treat `D3D12_FEATURE_D3D12_OPTIONS` as a baseline capability query and fail
+  device initialization when it cannot be established. Do not report a zeroed
+  structure as a real binding tier.
+- Probe Shader Model 6.6 and retry 6.0 only for the documented old-runtime
+  `E_INVALIDARG` case. Derive SM6.0/SM6.6 flags from a successful result and
+  otherwise leave them false with a diagnostic.
+- Probe Root Signature 1.1 honestly and convert descriptor ranges, root
+  descriptors, and constants to a Root Signature 1.0 versioned description
+  when 1.1 is unavailable. Keep 1.1 descriptor-data volatility semantics
+  unchanged on capable devices.
+- Return `nullptr` for a pipeline layout whose native root signature was not
+  created. Guard Graphics and Compute setup after explicit/default layout
+  selection so a failed default layout cannot be dereferenced or used.
+- Keep `supportsBindless` as the existing Resource Binding Tier projection only;
+  do not add it to the GPU Scene predicate or alter policy/qualification.
+- Keep public RHI schema, Render, SceneRenderer, Samples, and qualification
+  manifests outside D4a.
+
+**Files changed:**
+
+- `RHI_DX12/Private/DX12Device.cpp`
+- `RHI_DX12/Private/DX12Pipeline.cpp`
+- `Tests/DX12Validation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial Debug builds: PASS for `RVX_RHI_DX12` and `DX12Validation`.
+- Primary real-device execution: PASS 37/37 on NVIDIA GeForce RTX 4070 Ti with
+  the DX12 Debug Layer; DXC compiled `vs_6_0` and the descriptor-table/push-
+  constant pipeline layout created a non-null native root signature.
+- The focused test independently re-queries binding tier, Root Signature, and
+  Shader Model values before comparing them with `RHICapabilities`; SM6.6 is
+  constrained to imply SM6.0.
+- Scoped `git diff --check`: PASS apart from the repository's CRLF conversion
+  notices.
+
+**Independent review result:**
+
+- Initial review found that root-signature construction failures could still
+  escape through a non-null layout and be dereferenced by default Graphics or
+  Compute pipeline setup.
+- Remediation rejects the invalid layout in the factory and adds post-selection
+  guards for both pipeline types; RayTracing already had the equivalent guard.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete capability-query, version-conversion, range-pointer
+  lifetime, error-propagation, factory, pipeline guard, and test-honesty review.
+- The primary agent independently rebuilt both targets and reran all 37 tests.
+  Public capability schema, Render policy, qualification, and unrelated
+  worktree entries remain unchanged and unstaged.
+
+**Residual risks / mandatory follow-ups:**
+
+- The available device supports Root Signature 1.1. The 1.0 conversion branch
+  is compiled and structurally reviewed but still requires an actual 1.0
+  runtime/device or an injectable native-feature test seam for execution proof.
+- D4b must populate live renderer policy facts and enforce the frozen selected
+  tier. D4a alone does not enable `GPUResidentScene` or change Candidate Auto.
+- D4c remains responsible for first-frame Tier 1 versus warm-frame Tier 2
+  real-device execution, validation, parity, and qualification evidence.
+
+---
