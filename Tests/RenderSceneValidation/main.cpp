@@ -30,6 +30,40 @@ namespace RVX
                 renderer.m_gpuSceneUpdate->SetThrowOnPublishForTesting(enabled);
             }
         }
+
+        static void SetGPUSceneTier2DiagnosticVersions(
+            SceneRenderer& renderer,
+            uint64 residentVersion,
+            uint64 leaseVersion) noexcept
+        {
+            renderer.m_renderPolicyDiagnostics.gpuSceneResidentVersion =
+                residentVersion;
+            renderer.m_renderPolicyDiagnostics.gpuSceneLeaseVersion =
+                leaseVersion;
+        }
+
+        static void InvalidateRenderFramePlan(SceneRenderer& renderer)
+        {
+            renderer.InvalidateRenderFramePlan();
+        }
+
+        static void SetExecutionReport(
+            SceneRenderer& renderer,
+            std::vector<RenderPassExecutionReport> passes)
+        {
+            renderer.m_renderPolicyDiagnostics.planAvailable = true;
+            renderer.m_renderPolicyDiagnostics.reportAvailable = false;
+            renderer.m_renderPolicyDiagnostics.executionReport = {};
+            renderer.m_renderPolicyDiagnostics.executionReport.passes =
+                std::move(passes);
+        }
+
+        static void FinalizeExecutionReport(
+            SceneRenderer& renderer,
+            bool graphExecuted) noexcept
+        {
+            renderer.FinalizeRenderExecutionReportStatus(graphExecuted);
+        }
     };
 } // namespace RVX
 
@@ -313,6 +347,95 @@ TEST(RenderSceneValidation, ShadowPublicationFailureCannotRejectAnAppliedFrame)
     EXPECT_EQ(failed.publishedObjectCount, before.publishedObjectCount);
     EXPECT_EQ(failed.publishedDrawCount, before.publishedDrawCount);
     EXPECT_FALSE(failed.executionEligible);
+}
+
+TEST(RenderSceneValidation, GPUSceneTier2DiagnosticVersionsAreValueOnlyAndResetWithFramePlan)
+{
+    SceneRenderer renderer;
+    SceneRendererTestAccess::SetGPUSceneTier2DiagnosticVersions(
+        renderer, 47u, 47u);
+
+    const RenderPolicyDiagnostics copied =
+        renderer.GetRenderPolicyDiagnostics();
+    EXPECT_EQ(copied.gpuSceneResidentVersion, 47u);
+    EXPECT_EQ(copied.gpuSceneLeaseVersion, 47u);
+
+    SceneRendererTestAccess::InvalidateRenderFramePlan(renderer);
+    const RenderPolicyDiagnostics& reset = renderer.GetRenderPolicyDiagnostics();
+    EXPECT_EQ(reset.gpuSceneResidentVersion, 0u);
+    EXPECT_EQ(reset.gpuSceneLeaseVersion, 0u);
+}
+
+TEST(RenderSceneValidation,
+     FrameExecutionStatusCompletesWithMixedCompletedAndNotAttemptedPasses)
+{
+    SceneRenderer renderer;
+    RenderPassExecutionReport completed;
+    completed.pass = RenderPassKind::Opaque;
+    completed.status = RenderExecutionStatus::Completed;
+    RenderPassExecutionReport omitted;
+    omitted.pass = RenderPassKind::Depth;
+    omitted.status = RenderExecutionStatus::NotAttempted;
+
+    SceneRendererTestAccess::SetExecutionReport(
+        renderer, {completed, omitted});
+    SceneRendererTestAccess::FinalizeExecutionReport(renderer, true);
+
+    const RenderPolicyDiagnostics& diagnostics =
+        renderer.GetRenderPolicyDiagnostics();
+    EXPECT_TRUE(diagnostics.reportAvailable);
+    EXPECT_EQ(diagnostics.executionReport.status,
+              RenderExecutionStatus::Completed);
+    ASSERT_EQ(diagnostics.executionReport.passes.size(), 2U);
+    EXPECT_EQ(diagnostics.executionReport.passes[0].status,
+              RenderExecutionStatus::Completed);
+    EXPECT_EQ(diagnostics.executionReport.passes[1].status,
+              RenderExecutionStatus::NotAttempted);
+}
+
+TEST(RenderSceneValidation,
+     FrameExecutionStatusStaysNotAttemptedWhenNoPassRecords)
+{
+    SceneRenderer renderer;
+    RenderPassExecutionReport depth;
+    depth.pass = RenderPassKind::Depth;
+    RenderPassExecutionReport opaque;
+    opaque.pass = RenderPassKind::Opaque;
+
+    SceneRendererTestAccess::SetExecutionReport(renderer, {depth, opaque});
+    SceneRendererTestAccess::FinalizeExecutionReport(renderer, true);
+
+    const RenderPolicyDiagnostics& diagnostics =
+        renderer.GetRenderPolicyDiagnostics();
+    EXPECT_TRUE(diagnostics.reportAvailable);
+    EXPECT_EQ(diagnostics.executionReport.status,
+              RenderExecutionStatus::NotAttempted);
+    ASSERT_EQ(diagnostics.executionReport.passes.size(), 2U);
+    EXPECT_EQ(diagnostics.executionReport.passes[0].status,
+              RenderExecutionStatus::NotAttempted);
+    EXPECT_EQ(diagnostics.executionReport.passes[1].status,
+              RenderExecutionStatus::NotAttempted);
+}
+
+TEST(RenderSceneValidation,
+     FrameExecutionReportStaysUnavailableWhenTheGraphDoesNotExecute)
+{
+    SceneRenderer renderer;
+    RenderPassExecutionReport completed;
+    completed.pass = RenderPassKind::Opaque;
+    completed.status = RenderExecutionStatus::Completed;
+
+    SceneRendererTestAccess::SetExecutionReport(renderer, {completed});
+    SceneRendererTestAccess::FinalizeExecutionReport(renderer, false);
+
+    const RenderPolicyDiagnostics& diagnostics =
+        renderer.GetRenderPolicyDiagnostics();
+    EXPECT_FALSE(diagnostics.reportAvailable);
+    EXPECT_EQ(diagnostics.executionReport.status,
+              RenderExecutionStatus::NotAttempted);
+    ASSERT_EQ(diagnostics.executionReport.passes.size(), 1U);
+    EXPECT_EQ(diagnostics.executionReport.passes[0].status,
+              RenderExecutionStatus::Completed);
 }
 
 TEST(RenderSceneValidation, ShadowPreviousTransformFollowsRenderedHistoryAndDiscontinuities)

@@ -2568,6 +2568,27 @@ if(RVX_ENABLE_DX12 AND TARGET ModelViewer)
             TIMEOUT 180
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         )
+
+        find_program(RVX_D4C_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
+        if(RVX_D4C_POWERSHELL_EXECUTABLE)
+            add_test(
+                NAME DX12GPUSceneTier2Candidate
+                COMMAND ${RVX_D4C_POWERSHELL_EXECUTABLE}
+                    -NoProfile
+                    -ExecutionPolicy Bypass
+                    -File "${CMAKE_SOURCE_DIR}/Scripts/run_d4c_dx12_tier2_candidate.ps1"
+                    -ModelViewer "$<TARGET_FILE:ModelViewer>"
+                    -VisualGoldenValidation "$<TARGET_FILE:VisualGoldenValidation>"
+                    -DX12Validation "$<TARGET_FILE:DX12Validation>"
+                    -SourceRoot "${CMAKE_SOURCE_DIR}"
+                    -ArtifactRoot "${CMAKE_BINARY_DIR}/M3Exit/$<CONFIG>/Task11D-D4c"
+            )
+            set_tests_properties(DX12GPUSceneTier2Candidate PROPERTIES
+                LABELS "nightly;native;gpu;gpu-driven;tier2;candidate;gbv;parity;resize"
+                TIMEOUT 600
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            )
+        endif()
     endif()
 
     add_test(

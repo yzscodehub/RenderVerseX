@@ -892,6 +892,64 @@ namespace
         uploader.ReleaseUnsubmittedFrame();
     }
 
+    TEST(GPUSceneUploadValidation, ExactLeaseTwoReadersRetainVersionUntilCompletionAndRejectedReadRollsBack)
+    {
+        FakeDevice device;
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        GPUSceneUploader uploader;
+        ASSERT_TRUE(uploader.Initialize(&device, &tracker));
+        GPUSceneDatabase database;
+        GPUSceneTransaction add;
+        add.Add(MakeObject(1, 1.0F));
+        ASSERT_TRUE(database.Commit(add).Succeeded());
+        const uint64 versionOne = database.GetCommittedVersion();
+        uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+        FakeCommandContext context;
+        RecordAndExecute(uploader, device, context);
+        const GPUCompletionPoint uploaded = tracker.Submit(&context);
+        GPUCompletionToken uploadToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(uploadToken, uploaded));
+        uploader.NotifySubmission(uploadToken);
+        CompleteToken(device, uploadToken);
+        ASSERT_TRUE(uploader.QueryExactVersionReadiness(versionOne).IsReady());
+
+        // A graph rejected before execution releases its one outstanding exact
+        // lease and restores V1's readable state for a later accepted frame.
+        RenderGraph rejectedGraph;
+        rejectedGraph.SetDevice(&device);
+        ASSERT_TRUE(uploader.AcquireCurrentGraphLease(
+            rejectedGraph, nullptr, versionOne).has_value());
+        uploader.ReleaseUnsubmittedFrame();
+        ASSERT_TRUE(uploader.QueryExactVersionReadiness(versionOne).IsReady());
+
+        // RecordExactLeaseRead adds two independent consumers to one lease,
+        // matching the Depth/Opaque multi-reader ownership contract.
+        ASSERT_TRUE(RecordExactLeaseRead(uploader, device, context, versionOne));
+        const GPUCompletionPoint readPoint = tracker.Submit(&context);
+        GPUCompletionToken readToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(readToken, readPoint));
+        uploader.NotifySubmission(readToken);
+
+        const uint32 buffersBeforeV2 = device.DefaultBufferCount();
+        GPUSceneTransaction update;
+        update.Update(database.FindPrimitive(1).value(), MakeObject(1, 2.0F));
+        ASSERT_TRUE(database.Commit(update).Succeeded());
+        uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+        RenderGraph versionTwoGraph;
+        versionTwoGraph.SetDevice(&device);
+        uploader.BuildRenderGraph(versionTwoGraph, nullptr);
+        // V1 is still in flight, so V2 cannot overwrite the exact multi-reader
+        // set. The uploader allocates a distinct six-table resident set.
+        EXPECT_GE(device.DefaultBufferCount(), buffersBeforeV2 + 6U);
+        uploader.ReleaseUnsubmittedFrame();
+        EXPECT_EQ(uploader.PollSafeReclaimVersion(), 0U);
+
+        CompleteToken(device, readToken);
+        EXPECT_GE(uploader.PollSafeReclaimVersion(), versionOne);
+    }
+
     TEST(GPUSceneUploadValidation, ExactLeaseCommitAndNotifyFailuresFailClosed)
     {
         FakeDevice device;

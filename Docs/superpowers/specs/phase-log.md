@@ -47108,3 +47108,91 @@ below.
   qualification state changes in D4b2.
 
 ---
+
+### R-SP359 Render-policy Task 11D-D4c real DX12 Tier 2 candidate evidence
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D4c stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP358 (frozen GPU Scene execution tier).
+- D4b2 froze and enforced the selected Tier 2 path, but its proof used
+  validation devices and did not yet qualify real DX12 execution, exact-lease
+  lifetime, resize recovery, validation-layer cleanliness, or image parity.
+
+**Approved scope:**
+
+- Add value-only resident/lease versions to frame policy diagnostics and clear
+  them with every new or invalidated plan; acquire no diagnostic ownership.
+- Report a frame completed when the graph executed and at least one planned
+  pass completed, while preserving legal per-pass `NotAttempted` records and
+  leaving an unexecuted graph unavailable.
+- Add ModelViewer schema-v3 evidence with smoke ordinal, presented frame
+  sequence, resize boundary, accepted count, selected/executed tier, fallback,
+  and exact resident/lease versions.
+- Add a fail-closed C++ state machine and an independently implemented runner
+  parser. Both require initial cold Tier 1 to warm Tier 2 and the same ordered
+  transition after resize. Runner regressions cover early Tier 2, missing
+  post-resize cold state, and an unaccepted Tier 2 record.
+- Validate one exact GPU Scene lease shared by two graph readers on the native
+  DX12 queue, with completion-aware replacement, retirement, rejected-frame
+  rollback, invalid/omitted completion, and tracker/device-loss closure.
+- Keep DX12 at Candidate and keep `Auto` Direct. Do not edit public RHI,
+  backend qualification, golden images, or tolerances.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderPolicyDiagnostics.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Samples/Showcase/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/DX12Validation/main.cpp`
+- `Tests/GPUSceneUploadValidation/main.cpp`
+- `Tests/RenderSceneValidation/main.cpp`
+- `Scripts/run_d4c_dx12_tier2_candidate.ps1`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary focused build: PASS for ModelViewer, VisualGoldenValidation,
+  RenderSceneValidation, GPUSceneUploadValidation, and DX12Validation.
+- Primary focused tests: PASS 6/6, including value-only reset, mixed
+  Completed/NotAttempted aggregation, unexecuted-report honesty, mock
+  multi-reader lifetime, and the real-DX12 exact-lease closure gate.
+- Primary complete hardware runner: PASS in 96.5 seconds on NVIDIA GeForce RTX
+  4070 Ti, driver 610.62. Main candidate accepted 16/16 frames and repeated
+  cold-to-warm after resize frame 6; GBV accepted 10/10 frames.
+- Direct/GPU parity: PASS at tolerance 0 with 0 different pixels. Four raw
+  InfoQueue reports are available and read-complete with zero error/corruption;
+  no failure marker remains.
+- Scoped `git diff --check`: PASS apart from existing CRLF conversion notices.
+
+**Independent review result:**
+
+- First review found one P1: evidence observed cold and warm tiers but did not
+  enforce their order or require a new post-resize transition.
+- Second review found one P1: the independent runner parser skipped unaccepted
+  records and therefore did not reject unaccepted Tier 2 evidence itself.
+- Both were remediated with explicit fail-closed state machines and executable
+  negative regressions. Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete scoped diff, frame-report, evidence-schema, ordered
+  transition, exact-version, native lifetime, raw InfoQueue, GBV, parity,
+  provenance, and test-honesty review.
+- Unrelated Engine/PipelineCache changes, runtime diagnostics, and Python cache
+  output remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- D4c qualifies a hermetic DX12 candidate path on one NVIDIA adapter; it does
+  not close the adapter/driver matrix or promote `Auto`.
+- Task 11E must expose truthful memory/capacity/dirty-upload/publication and
+  retirement diagnostics and gather non-gating workload evidence before Task
+  15 derives any measured policy.
+- Vulkan and Metal remain unqualified and are owned by Tasks 12 and 13.
+
+---

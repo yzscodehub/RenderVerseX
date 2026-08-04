@@ -5,10 +5,14 @@
 #include "DX12IndirectExecution.h"
 #include "DX12Pipeline.h"
 #include "DX12Resources.h"
+#include "GPUScene/GPUSceneDatabase.h"
+#include "GPUScene/GPUSceneUploader.h"
 #include "Render/Context/RenderContext.h"
+#include "Render/Graph/RenderGraph.h"
 #include "Render/PipelineCache.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Resources/RenderRetirementQueue.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHI.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
@@ -377,6 +381,142 @@ namespace
             return false;
         }
         return true;
+    }
+
+    GPUSceneObjectData MakeGPUSceneLeaseObject(uint64 objectId, float32 marker)
+    {
+        GPUSceneObjectData object;
+        object.objectId = objectId;
+        object.bounds.minimum = {marker, 0.0F, 0.0F, 0.0F};
+        object.bounds.maximum = {marker + 1.0F, 1.0F, 1.0F, 0.0F};
+        object.draws.resize(1);
+        object.draws[0].draw.indexCount = 3;
+        object.draws[0].draw.instanceCount = 1;
+        object.draws[0].geometry.indexCount = 3;
+        return object;
+    }
+
+    struct GPUSceneLeaseReadPassData
+    {
+        std::array<RGBufferHandle, GPU_SCENE_RESIDENT_TABLE_COUNT> handles;
+    };
+
+    bool SubmitGPUSceneUpload(GPUSceneUploader& uploader,
+                              IRHIDevice& device,
+                              RenderSubmissionTracker& tracker,
+                              RenderRetirementQueue& retirement,
+                              GPUCompletionToken& outToken)
+    {
+        RenderGraph graph;
+        graph.SetDevice(&device);
+        RenderSubmissionResourceBatch batch;
+        uploader.BuildRenderGraph(graph, &batch);
+        graph.Compile();
+        if (!graph.GetCompileStats().compileValid)
+        {
+            return false;
+        }
+
+        RHICommandContextRef context = device.CreateCommandContext(
+            RHICommandQueueType::Graphics);
+        if (!context)
+        {
+            return false;
+        }
+        context->Begin();
+        graph.Execute(*context);
+        uploader.CommitRealizedAccess(graph);
+        context->End();
+
+        const GPUCompletionPoint point = tracker.Submit(context.Get());
+        if (point.value == 0 || !InsertGPUCompletionPoint(outToken, point))
+        {
+            return false;
+        }
+        uploader.NotifySubmission(outToken);
+        batch.SealAndTransfer(outToken, retirement);
+        return uploader.GetDiagnostics().failureReason ==
+            GPUSceneUploadFailureReason::None;
+    }
+
+    std::optional<GPUSceneResidentGraphLease> SubmitGPUSceneLeaseRead(
+        GPUSceneUploader& uploader,
+        IRHIDevice& device,
+        RenderSubmissionTracker& tracker,
+        RenderRetirementQueue& retirement,
+        uint64 requiredVersion,
+        GPUCompletionToken& outToken)
+    {
+        RenderGraph graph;
+        graph.SetDevice(&device);
+        RenderSubmissionResourceBatch batch;
+        std::optional<GPUSceneResidentGraphLease> lease =
+            uploader.AcquireCurrentGraphLease(graph, &batch, requiredVersion);
+        if (!lease)
+        {
+            return std::nullopt;
+        }
+
+        const auto addReader = [&graph, &lease](const char* name)
+        {
+            graph.AddPass<GPUSceneLeaseReadPassData>(
+                name,
+                RenderGraphPassType::Compute,
+                [lease](RenderGraphBuilder& builder,
+                        GPUSceneLeaseReadPassData& data)
+                {
+                    for (uint32 tableIndex = 0;
+                         tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+                         ++tableIndex)
+                    {
+                        data.handles[tableIndex] = builder.Read(
+                            lease->handles[tableIndex],
+                            MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                                  RHIShaderStage::Compute));
+                    }
+                },
+                [](const GPUSceneLeaseReadPassData&, RHICommandContext&) {});
+        };
+        // One frozen lease is deliberately shared by two independent consumers,
+        // mirroring the Depth/Opaque multi-reader contract.
+        addReader("GPUSceneLeaseRead.Depth");
+        addReader("GPUSceneLeaseRead.Opaque");
+        graph.Compile();
+        if (!graph.GetCompileStats().compileValid)
+        {
+            uploader.ReleaseUnsubmittedFrame();
+            batch.ReleaseUnsubmitted(retirement);
+            return std::nullopt;
+        }
+
+        RHICommandContextRef context = device.CreateCommandContext(
+            RHICommandQueueType::Graphics);
+        if (!context)
+        {
+            uploader.ReleaseUnsubmittedFrame();
+            batch.ReleaseUnsubmitted(retirement);
+            return std::nullopt;
+        }
+        context->Begin();
+        graph.Execute(*context);
+        uploader.CommitRealizedAccess(graph);
+        context->End();
+
+        const GPUCompletionPoint point = tracker.Submit(context.Get());
+        if (point.value == 0 || !InsertGPUCompletionPoint(outToken, point))
+        {
+            uploader.ReleaseUnsubmittedFrame();
+            batch.ReleaseUnsubmitted(retirement);
+            return std::nullopt;
+        }
+        uploader.NotifySubmission(outToken);
+        batch.SealAndTransfer(outToken, retirement);
+        if (uploader.GetDiagnostics().failureReason !=
+            GPUSceneUploadFailureReason::None)
+        {
+            return std::nullopt;
+        }
+        return lease;
     }
 
     constexpr uint32 kNativeIndirectWidth = 96;
@@ -1493,6 +1633,221 @@ TEST(DX12Validation, IndexedIndirectResourcesRetireAfterFenceCompletion)
     EXPECT_TRUE(VerifyDX12InfoQueueClean(
         *dx12Device,
         "IndexedIndirectResourcesRetireAfterFenceCompletion"));
+    tracker.Shutdown();
+}
+
+TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
+{
+    constexpr const char* kGateName =
+        "GPUSceneExactLeaseRetirementAndFailureClosure";
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+    ASSERT_NE(dx12Device->GetD3DDevice(), nullptr);
+    ASSERT_NE(dx12Device->GetGraphicsQueue(), nullptr);
+    ASSERT_TRUE(ClearDX12InfoQueue(*dx12Device, kGateName));
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(device.get()));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+    GPUSceneUploader uploader;
+    ASSERT_TRUE(uploader.Initialize(device.get(), &tracker));
+    GPUSceneDatabase database;
+    GPUSceneTransaction add;
+    add.Add(MakeGPUSceneLeaseObject(1, 1.0F));
+    ASSERT_TRUE(database.Commit(add).Succeeded());
+    const uint64 versionOne = database.GetCommittedVersion();
+    uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+    GPUCompletionToken initialUpload;
+    ASSERT_TRUE(SubmitGPUSceneUpload(
+        uploader, *device, tracker, retirement, initialUpload));
+    ASSERT_EQ(tracker.Wait(initialUpload), GPUCompletionStatus::Completed);
+    EXPECT_EQ(retirement.Poll(), GPUCompletionStatus::Completed);
+    ASSERT_TRUE(uploader.QueryExactVersionReadiness(versionOne).IsReady());
+
+    // First prove that a graph rejected before recording releases an exact lease.
+    RenderGraph rejectedGraph;
+    rejectedGraph.SetDevice(device.get());
+    ASSERT_TRUE(uploader.AcquireCurrentGraphLease(
+        rejectedGraph, nullptr, versionOne).has_value());
+    uploader.ReleaseUnsubmittedFrame();
+    ASSERT_TRUE(uploader.QueryExactVersionReadiness(versionOne).IsReady());
+
+    ComPtr<ID3D12Fence> blocker;
+    ASSERT_TRUE(SUCCEEDED(dx12Device->GetD3DDevice()->CreateFence(
+        0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&blocker))));
+    ASSERT_TRUE(SUCCEEDED(dx12Device->GetGraphicsQueue()->Wait(blocker.Get(), 1u)));
+
+    GPUCompletionToken versionOneRead;
+    const std::optional<GPUSceneResidentGraphLease> versionOneLease =
+        SubmitGPUSceneLeaseRead(uploader,
+                                *device,
+                                tracker,
+                                retirement,
+                                versionOne,
+                                versionOneRead);
+    ASSERT_TRUE(versionOneLease.has_value());
+    ASSERT_TRUE(versionOneLease->IsValid());
+    EXPECT_EQ(tracker.Query(versionOneRead), GPUCompletionStatus::Pending);
+    EXPECT_EQ(uploader.PollSafeReclaimVersion(), 0u);
+
+    GPUSceneTransaction update;
+    update.Update(database.FindPrimitive(1).value(),
+                  MakeGPUSceneLeaseObject(1, 2.0F));
+    ASSERT_TRUE(database.Commit(update).Succeeded());
+    const uint64 versionTwo = database.GetCommittedVersion();
+    uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+    GPUCompletionToken versionTwoUpload;
+    ASSERT_TRUE(SubmitGPUSceneUpload(
+        uploader, *device, tracker, retirement, versionTwoUpload));
+    EXPECT_EQ(tracker.Query(versionTwoUpload), GPUCompletionStatus::Pending);
+    EXPECT_EQ(uploader.PollSafeReclaimVersion(), 0u);
+
+    // A stalled V1 reader prevents in-place overwrite and retirement. Once the
+    // real queue completes, V2 must be ready from a distinct six-table set.
+    ASSERT_TRUE(SUCCEEDED(blocker->Signal(1u)));
+    ASSERT_EQ(tracker.Wait(versionOneRead), GPUCompletionStatus::Completed);
+    ASSERT_EQ(tracker.Wait(versionTwoUpload), GPUCompletionStatus::Completed);
+    EXPECT_EQ(retirement.Poll(), GPUCompletionStatus::Completed);
+    ASSERT_TRUE(uploader.QueryExactVersionReadiness(versionTwo).IsReady());
+    EXPECT_GE(uploader.PollSafeReclaimVersion(), versionOne);
+
+    RenderGraph versionTwoGraph;
+    versionTwoGraph.SetDevice(device.get());
+    const std::optional<GPUSceneResidentGraphLease> versionTwoLease =
+        uploader.AcquireCurrentGraphLease(versionTwoGraph, nullptr, versionTwo);
+    ASSERT_TRUE(versionTwoLease.has_value());
+    ASSERT_TRUE(versionTwoLease->IsValid());
+    for (uint32 tableIndex = 0;
+         tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+         ++tableIndex)
+    {
+        EXPECT_NE(versionOneLease->buffers[tableIndex].Get(),
+                  versionTwoLease->buffers[tableIndex].Get());
+    }
+    uploader.ReleaseUnsubmittedFrame();
+
+    // Invalid and omitted completion evidence must permanently close each
+    // independent exact-lease uploader, even on the real DX12 submission path.
+    const auto prepareReadyUploader = [&device, &tracker, &retirement](uint64 objectId)
+        -> std::pair<std::unique_ptr<GPUSceneUploader>, std::unique_ptr<GPUSceneDatabase>>
+    {
+        auto preparedUploader = std::make_unique<GPUSceneUploader>();
+        auto preparedDatabase = std::make_unique<GPUSceneDatabase>();
+        if (!preparedUploader->Initialize(device.get(), &tracker))
+        {
+            return {};
+        }
+        GPUSceneTransaction transaction;
+        transaction.Add(MakeGPUSceneLeaseObject(objectId, 1.0F));
+        if (!preparedDatabase->Commit(transaction).Succeeded())
+        {
+            return {};
+        }
+        preparedUploader->Observe(preparedDatabase->GetCommittedMirror(),
+                                  preparedDatabase->GetLastChangeSet());
+        GPUCompletionToken upload;
+        if (!SubmitGPUSceneUpload(*preparedUploader,
+                                  *device,
+                                  tracker,
+                                  retirement,
+                                  upload) ||
+            tracker.Wait(upload) != GPUCompletionStatus::Completed)
+        {
+            return {};
+        }
+        static_cast<void>(retirement.Poll());
+        return {std::move(preparedUploader), std::move(preparedDatabase)};
+    };
+
+    auto [invalidUploader, invalidDatabase] = prepareReadyUploader(2);
+    ASSERT_NE(invalidUploader, nullptr);
+    ASSERT_NE(invalidDatabase, nullptr);
+    RenderGraph invalidGraph;
+    invalidGraph.SetDevice(device.get());
+    ASSERT_TRUE(invalidUploader->AcquireCurrentGraphLease(
+        invalidGraph, nullptr, invalidDatabase->GetCommittedVersion()).has_value());
+    GPUCompletionToken invalidToken;
+    invalidToken.count = 1;
+    invalidToken.points[0] = {GPUQueueDomain::Graphics, 0};
+    invalidUploader->NotifySubmission(invalidToken);
+    EXPECT_EQ(invalidUploader->GetDiagnostics().failureReason,
+              GPUSceneUploadFailureReason::InvalidCompletionToken);
+    RenderGraph afterInvalid;
+    afterInvalid.SetDevice(device.get());
+    EXPECT_FALSE(invalidUploader->AcquireCurrentGraphLease(
+        afterInvalid, nullptr, invalidDatabase->GetCommittedVersion()).has_value());
+
+    auto [omittedUploader, omittedDatabase] = prepareReadyUploader(3);
+    ASSERT_NE(omittedUploader, nullptr);
+    ASSERT_NE(omittedDatabase, nullptr);
+    RenderGraph omittedGraph;
+    omittedGraph.SetDevice(device.get());
+    ASSERT_TRUE(omittedUploader->AcquireCurrentGraphLease(
+        omittedGraph, nullptr, omittedDatabase->GetCommittedVersion()).has_value());
+    RHICommandContextRef omittedContext = device->CreateCommandContext(
+        RHICommandQueueType::Graphics);
+    ASSERT_NE(omittedContext, nullptr);
+    omittedContext->Begin();
+    omittedContext->End();
+    GPUCompletionToken omittedToken;
+    ASSERT_TRUE(InsertGPUCompletionPoint(
+        omittedToken, tracker.Submit(omittedContext.Get())));
+    // The graph lease was never realized; accepting its real submission token
+    // would conceal missing ownership/state propagation and must fail closed.
+    omittedUploader->NotifySubmission(omittedToken);
+    EXPECT_EQ(omittedUploader->GetDiagnostics().failureReason,
+              GPUSceneUploadFailureReason::InvalidCompletionToken);
+    RenderGraph afterOmitted;
+    afterOmitted.SetDevice(device.get());
+    EXPECT_FALSE(omittedUploader->AcquireCurrentGraphLease(
+        afterOmitted, nullptr, omittedDatabase->GetCommittedVersion()).has_value());
+
+    // A real device reset is intentionally not induced by a validation test.
+    // The tracker loss channel models unavailable completion evidence and must
+    // still make a warm, resident uploader fail closed before reuse.
+    RenderSubmissionTracker lostTracker;
+    ASSERT_TRUE(lostTracker.Initialize(device.get()));
+    RenderRetirementQueue lostRetirement;
+    ASSERT_TRUE(lostRetirement.Initialize(&lostTracker));
+    GPUSceneUploader lostUploader;
+    ASSERT_TRUE(lostUploader.Initialize(device.get(), &lostTracker));
+    GPUSceneDatabase lostDatabase;
+    GPUSceneTransaction lostAdd;
+    lostAdd.Add(MakeGPUSceneLeaseObject(4, 1.0F));
+    ASSERT_TRUE(lostDatabase.Commit(lostAdd).Succeeded());
+    lostUploader.Observe(lostDatabase.GetCommittedMirror(),
+                         lostDatabase.GetLastChangeSet());
+    GPUCompletionToken lostUpload;
+    ASSERT_TRUE(SubmitGPUSceneUpload(
+        lostUploader, *device, lostTracker, lostRetirement, lostUpload));
+    ASSERT_EQ(lostTracker.Wait(lostUpload), GPUCompletionStatus::Completed);
+    EXPECT_EQ(lostRetirement.Poll(), GPUCompletionStatus::Completed);
+    lostTracker.MarkDeviceLost();
+    GPUSceneTransaction lostUpdate;
+    lostUpdate.Update(lostDatabase.FindPrimitive(4).value(),
+                      MakeGPUSceneLeaseObject(4, 2.0F));
+    ASSERT_TRUE(lostDatabase.Commit(lostUpdate).Succeeded());
+    lostUploader.Observe(lostDatabase.GetCommittedMirror(),
+                         lostDatabase.GetLastChangeSet());
+    RenderGraph lostGraph;
+    lostGraph.SetDevice(device.get());
+    lostUploader.BuildRenderGraph(lostGraph, nullptr);
+    EXPECT_EQ(lostUploader.GetDiagnostics().failureReason,
+              GPUSceneUploadFailureReason::DeviceLost);
+    EXPECT_FALSE(lostUploader.AcquireCurrentGraphLease(
+        lostGraph, nullptr, lostDatabase.GetCommittedVersion()).has_value());
+
+    device->WaitIdle();
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(*dx12Device, kGateName));
+    lostTracker.Shutdown();
     tracker.Shutdown();
 }
 

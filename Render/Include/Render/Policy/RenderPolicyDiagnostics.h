@@ -42,6 +42,14 @@ namespace RVX
         RenderFramePolicyRequest request{};
         RenderFrameExecutionPlan selectedPlan{};
         RenderFrameExecutionReport executionReport{};
+        /**
+         * Exact GPU-scene versions observed by the current frame only.
+         * They stay zero unless the selected Tier 2 path observed a resident
+         * set and acquired its corresponding graph lease.  These are
+         * diagnostic values, not retained resource ownership.
+         */
+        uint64 gpuSceneResidentVersion = 0;
+        uint64 gpuSceneLeaseVersion = 0;
         RenderPolicyMeasurement measurement{};
     };
 } // namespace RVX

@@ -1930,6 +1930,8 @@ void SceneRenderer::CompileRenderFramePlan()
     m_renderPolicyDiagnostics.reportAvailable = false;
     m_renderPolicyDiagnostics.selectedPlan = {};
     m_renderPolicyDiagnostics.executionReport = {};
+    m_renderPolicyDiagnostics.gpuSceneResidentVersion = 0;
+    m_renderPolicyDiagnostics.gpuSceneLeaseVersion = 0;
     m_renderPolicyDiagnostics.measurement = {};
     m_confirmedGPUDrivenTier = GPUDrivenTier::Direct;
     m_viewData.renderFrameExecutionPlan = nullptr;
@@ -2749,6 +2751,18 @@ void SceneRenderer::ConfirmGPUDrivenActualTier()
              requiredResidentVersion));
     if (depthCompanionComplete && opaqueCompanionComplete)
     {
+        // Readiness is an observation only.  The graph lease is acquired
+        // later, after all Tier 2 preflight checks have succeeded.
+        const GPUSceneResidentReadiness readiness =
+            m_gpuSceneUploader
+                ? m_gpuSceneUploader->QueryExactVersionReadiness(
+                      requiredResidentVersion)
+                : GPUSceneResidentReadiness{};
+        if (readiness.IsReady())
+        {
+            m_renderPolicyDiagnostics.gpuSceneResidentVersion =
+                readiness.residentVersion;
+        }
         return;
     }
     if (framePlan->viewPolicy.immediateFallbackTier !=
@@ -3104,6 +3118,33 @@ void SceneRenderer::ApplyShadowPassConfig(const ShadowPassConfig& config)
     }
 }
 
+void SceneRenderer::FinalizeRenderExecutionReportStatus(bool graphExecuted) noexcept
+{
+    if (!m_renderPolicyDiagnostics.planAvailable ||
+        (!graphExecuted && !m_gpuDrivenFrameFailure))
+    {
+        return;
+    }
+
+    m_renderPolicyDiagnostics.reportAvailable = true;
+    bool anyFailed = false;
+    bool anyCompleted = false;
+    for (const RenderPassExecutionReport& report :
+         m_renderPolicyDiagnostics.executionReport.passes)
+    {
+        anyFailed |= report.status == RenderExecutionStatus::Failed;
+        anyCompleted |= report.status == RenderExecutionStatus::Completed;
+    }
+
+    // A planned pass can correctly remain NotAttempted (for example, a disabled
+    // optional depth pass). Preserve that per-pass fact while reporting a
+    // successful frame when the graph ran and at least one planned pass recorded.
+    m_renderPolicyDiagnostics.executionReport.status = anyFailed
+        ? RenderExecutionStatus::Failed
+        : (graphExecuted && anyCompleted ? RenderExecutionStatus::Completed
+                                         : RenderExecutionStatus::NotAttempted);
+}
+
 void SceneRenderer::Render()
 {
     if (!m_initialized || !m_renderGraph || !m_renderContext)
@@ -3428,25 +3469,7 @@ void SceneRenderer::Render()
                                      : "RenderGraph compile reported validation errors";
     }
 
-    if (m_renderPolicyDiagnostics.planAvailable &&
-        (graphExecuted || m_gpuDrivenFrameFailure))
-    {
-        m_renderPolicyDiagnostics.reportAvailable = true;
-        bool anyFailed = false;
-        bool allCompleted =
-            !m_renderPolicyDiagnostics.executionReport.passes.empty();
-        for (const RenderPassExecutionReport& report :
-             m_renderPolicyDiagnostics.executionReport.passes)
-        {
-            anyFailed |= report.status == RenderExecutionStatus::Failed;
-            allCompleted &=
-                report.status == RenderExecutionStatus::Completed;
-        }
-        m_renderPolicyDiagnostics.executionReport.status = anyFailed
-            ? RenderExecutionStatus::Failed
-            : (allCompleted ? RenderExecutionStatus::Completed
-                            : RenderExecutionStatus::NotAttempted);
-    }
+    FinalizeRenderExecutionReportStatus(graphExecuted);
 
     RefreshFrameDiagnostics(true,
                             graphExecuted && graphCompileValid,
@@ -4393,6 +4416,12 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             MarkGPUDrivenFrameFailure();
             return;
         }
+        m_renderPolicyDiagnostics.gpuSceneLeaseVersion =
+            gpuSceneLease->version;
+        // Acquisition is the authoritative exact-version observation for
+        // this frame.  Do not retain either value across CompileRenderFramePlan.
+        m_renderPolicyDiagnostics.gpuSceneResidentVersion =
+            gpuSceneLease->version;
         const GPUCullingRecordingIdentity cullingIdentity{
             recordIdentity.graphIdentity,
             recordIdentity.graphRecordingGeneration,

@@ -3,8 +3,8 @@
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
 10A/10B/10C and Tasks 11A/11B/11C are complete and reviewed; Task 11D-D1a,
 Task 11D-D1b-a, Task 11D-D1b-b, Task 11D-D2a, and Task 11D-D2b are complete,
-Task 11D-D3, Task 11D-D4a, Task 11D-D4b1, and Task 11D-D4b2 are complete,
-and Task 11D-D4c is next
+Task 11D-D3, Task 11D-D4a, Task 11D-D4b1, Task 11D-D4b2, and Task 11D-D4c
+are complete, and Task 11E is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -969,3 +969,37 @@ Start **Task 11D-D4c** next: produce real-DX12 cold Tier 1 to warm Tier 2
 execution, parity, validation-layer, exact-version lifetime, resize, repeat, and
 failure-closure evidence without promoting Candidate qualification or changing
 Auto policy.
+
+Task 11D-D4c implementation, two independent review/remediation rounds, final
+re-review, and primary audit are complete. The accepted real-DX12 Tier 2
+candidate evidence slice is:
+
+- [x] Export value-only per-frame resident and acquired-lease versions, reset
+  them at frame-plan compilation, and require every accepted Tier 2 frame to
+  report `required == resident == lease != 0`.
+- [x] Preserve per-pass execution truth while treating a graph with at least
+  one completed planned pass and only legal `NotAttempted` companions as a
+  completed frame; an unexecuted graph still exposes no report.
+- [x] Prove one ordered initial `IndirectGrouped` cold/prewarm phase followed
+  by exact `GPUResidentScene`, then repeat the ordered transition after resize.
+  Reject early Tier 2, warm-to-Tier-1 regression, fallback, unordered evidence,
+  unaccepted Tier 2, and exact-version disagreement.
+- [x] Exercise one exact resident lease shared by two graph readers on a real
+  DX12 queue, including in-flight version replacement, safe retirement,
+  rejected-frame rollback, invalid/omitted completion, and device-loss closure.
+- [x] Run forced Direct and forced GPU against the same hermetic asset, camera,
+  frame count, resolution, and resize timeline with zero tolerance and zero
+  different pixels.
+- [x] Preserve four raw DX12 InfoQueue reports and a bounded 10-frame GBV run;
+  all reports are available/read-complete/clean with zero error and corruption
+  messages. Record executable, runner, artifact, source, adapter, and driver
+  provenance without changing qualification or `Auto`.
+- [x] Finish independent final review with READY and no unresolved P0-P2. The
+  primary audit rebuilt all changed targets, passed 6/6 focused tests, and
+  independently reran the complete hardware gate with 16/16 candidate frames,
+  10/10 GBV frames, exact parity, and four clean InfoQueues.
+
+Start **Task 11E** next: add truthful GPU Scene memory, capacity, dirty-upload,
+publication, retirement, and lifetime diagnostics; then collect deterministic
+non-gating Direct/Tier 1/Tier 2 workload evidence. Measurements must remain
+informational and must not introduce guessed `Auto` thresholds.

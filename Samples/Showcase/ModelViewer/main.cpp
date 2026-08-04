@@ -115,6 +115,7 @@ struct ModelViewerOptions
     std::string modelPath;
     std::string screenshotPath;
     std::string renderPolicyReportPath;
+    std::string gpuSceneTier2EvidenceReportPath;
     std::string hdriPath;
     RHIBackendType backend = RHIBackendType::Auto;
     uint32 width = 1280;
@@ -148,6 +149,7 @@ struct ModelViewerOptions
     bool expectGPUDrivenDirectReady = false;
     bool expectGPUDrivenMultiBatchReady = false;
     bool expectGPUDrivenZeroVisibleReady = false;
+    bool expectGPUSceneTier2Candidate = false;
     bool expectModelVisible = false;
     bool waitModelReady = false;
     uint32 modelReadyTimeoutMs = kDefaultModelReadyTimeoutMs;
@@ -490,6 +492,7 @@ namespace
             << "  --backend <name>     auto, dx11, dx12, vulkan, metal, opengl\n"
             << "  --screenshot <path>  Write final smoke frame as binary PPM\n"
             << "  --render-policy-report <path> Write RVX.RenderPolicyMeasurement v1 JSON from public diagnostics\n"
+            << "  --gpu-scene-tier2-evidence-report <path> Write per-accepted-frame GPU scene Tier 2 evidence JSON\n"
             << "  --camera-fit <auto|fixed> Fit the camera to model bounds or use the deterministic fixed camera\n"
             << "  --hdri <path>        Use an HDR/EXR environment for skybox and texture IBL\n"
             << "  --no-ibl             Disable procedural ModelViewer IBL wiring\n"
@@ -579,6 +582,7 @@ namespace
             << "  --expect-gpu-driven-auto-policy-ready Smoke mode validates Auto against backend qualification\n"
             << "  --expect-gpu-driven-direct-ready Smoke mode fails unless forced-off uses direct draws\n"
             << "  --expect-gpu-driven-multi-batch-ready Smoke mode requires multiple indirect material batches and draws\n"
+            << "  --expect-gpu-scene-tier2-candidate Require one forced-GPU smoke process to observe cold Tier 1 then exact warm Tier 2\n"
             << "  --expect-model-visible Smoke mode fails unless the final frame contains a visible model object\n"
             << "  --wait-model-ready  Smoke mode waits for model mesh/material render resources to reach GPUReady\n"
             << "  --model-ready-timeout-ms <ms>  Bounded resource readiness wait (default 120000, minimum 1000)\n"
@@ -995,6 +999,12 @@ namespace
                 const char* value = requireValue("--render-policy-report");
                 if (!value) return false;
                 options.renderPolicyReportPath = value;
+            }
+            else if (arg == "--gpu-scene-tier2-evidence-report")
+            {
+                const char* value = requireValue("--gpu-scene-tier2-evidence-report");
+                if (!value) return false;
+                options.gpuSceneTier2EvidenceReportPath = value;
             }
             else if (arg == "--camera-fit")
             {
@@ -1456,6 +1466,10 @@ namespace
             {
                 options.expectGPUDrivenZeroVisibleReady = true;
             }
+            else if (arg == "--expect-gpu-scene-tier2-candidate")
+            {
+                options.expectGPUSceneTier2Candidate = true;
+            }
             else if (arg == "--expect-model-visible")
             {
                 options.expectModelVisible = true;
@@ -1616,6 +1630,27 @@ namespace
         {
             RVX_CORE_ERROR("--render-policy-report requires --smoke");
             return false;
+        }
+
+        if (!options.gpuSceneTier2EvidenceReportPath.empty() && !options.smoke)
+        {
+            RVX_CORE_ERROR("--gpu-scene-tier2-evidence-report requires --smoke");
+            return false;
+        }
+
+        if (options.expectGPUSceneTier2Candidate)
+        {
+            if (!options.smoke || options.backend != RHIBackendType::DX12 ||
+                options.gpuDrivenMode != RenderGPUDrivenMode::ForceEnabled ||
+                !options.gpuDrivenCullingTestScene || options.frames < 10u ||
+                options.gpuSceneTier2EvidenceReportPath.empty())
+            {
+                RVX_CORE_ERROR(
+                    "--expect-gpu-scene-tier2-candidate requires --smoke --backend dx12 "
+                    "--gpu-driven on --gpu-driven-culling-test-scene --frames >= 10 and "
+                    "--gpu-scene-tier2-evidence-report");
+                return false;
+            }
         }
 
         if (options.expectModelVisible && !options.smoke)
@@ -2762,6 +2797,252 @@ namespace
     const char* BoolText(bool value)
     {
         return value ? "true" : "false";
+    }
+
+    /** @brief Value-only record captured after one accepted smoke frame. */
+    struct GPUSceneTier2EvidenceFrame
+    {
+        uint64 smokeFrameOrdinal = 0;
+        uint64 frameSequence = 0;
+        GPUDrivenTier selectedTier = GPUDrivenTier::Direct;
+        GPUDrivenTier executedTier = GPUDrivenTier::Direct;
+        RenderExecutionStatus executionStatus =
+            RenderExecutionStatus::NotAttempted;
+        RenderPolicyReason tierFallbackReason = RenderPolicyReason::None;
+        uint64 requiredResidentVersion = 0;
+        uint64 residentVersion = 0;
+        uint64 leaseVersion = 0;
+        bool accepted = false;
+    };
+
+    GPUSceneTier2EvidenceFrame CaptureGPUSceneTier2EvidenceFrame(
+        const RenderFrameFeatureDiagnostics& frame,
+        uint64 smokeFrameOrdinal,
+        uint64 engineFrameSequence)
+    {
+        GPUSceneTier2EvidenceFrame evidence;
+        evidence.smokeFrameOrdinal = smokeFrameOrdinal;
+        // This is the presented engine-frame sequence, not the render-plan
+        // generation. It must advance with every accepted smoke record.
+        evidence.frameSequence = engineFrameSequence;
+        const RenderPolicyDiagnostics& policy = frame.policy;
+        evidence.accepted = frame.available && frame.rendered &&
+            policy.planAvailable && policy.reportAvailable &&
+            policy.executionReport.status == RenderExecutionStatus::Completed;
+        if (!policy.planAvailable)
+        {
+            return evidence;
+        }
+
+        evidence.selectedTier = policy.selectedPlan.viewPolicy.selectedTier;
+        evidence.requiredResidentVersion =
+            policy.selectedPlan.viewPolicy.requiredResidentVersion;
+        evidence.executedTier = policy.executionReport.executedTier;
+        evidence.executionStatus = policy.executionReport.status;
+        evidence.tierFallbackReason =
+            policy.executionReport.tierFallbackReason;
+        evidence.residentVersion = policy.gpuSceneResidentVersion;
+        evidence.leaseVersion = policy.gpuSceneLeaseVersion;
+        return evidence;
+    }
+
+    bool ValidateGPUSceneTier2Candidate(
+        const std::vector<GPUSceneTier2EvidenceFrame>& frames,
+        uint32 resizeFrame,
+        std::string& outReason)
+    {
+        enum class CandidatePhase : uint8
+        {
+            AwaitCold = 0,
+            AwaitWarm,
+            Warm
+        };
+
+        uint32 acceptedFrameCount = 0;
+        uint64 previousSmokeFrameOrdinal = 0;
+        uint64 previousEngineFrameSequence = 0;
+        CandidatePhase preResizePhase = CandidatePhase::AwaitCold;
+        CandidatePhase postResizePhase = CandidatePhase::AwaitCold;
+
+        for (const GPUSceneTier2EvidenceFrame& frame : frames)
+        {
+            if (frame.smokeFrameOrdinal == 0 ||
+                frame.smokeFrameOrdinal <= previousSmokeFrameOrdinal)
+            {
+                outReason = "smoke evidence ordinals are missing, duplicated, or out of order";
+                return false;
+            }
+            previousSmokeFrameOrdinal = frame.smokeFrameOrdinal;
+
+            if (!frame.accepted)
+            {
+                if (frame.selectedTier == GPUDrivenTier::GPUResidentScene ||
+                    frame.executedTier == GPUDrivenTier::GPUResidentScene)
+                {
+                    outReason = "unaccepted evidence reported a Tier 2 execution";
+                    return false;
+                }
+                continue;
+            }
+            ++acceptedFrameCount;
+
+            if (frame.frameSequence == 0 ||
+                frame.frameSequence <= previousEngineFrameSequence)
+            {
+                outReason = "accepted engine frame sequences are missing, duplicated, or out of order";
+                return false;
+            }
+            previousEngineFrameSequence = frame.frameSequence;
+
+            if (frame.executionStatus != RenderExecutionStatus::Completed ||
+                frame.selectedTier != frame.executedTier ||
+                frame.tierFallbackReason != RenderPolicyReason::None)
+            {
+                outReason = "accepted frame has an incomplete execution report or unexpected tier fallback";
+                return false;
+            }
+
+            const bool postResize = resizeFrame > 0u &&
+                frame.smokeFrameOrdinal >= resizeFrame;
+            CandidatePhase phase = postResize ? postResizePhase : preResizePhase;
+            if (frame.executedTier == GPUDrivenTier::IndirectGrouped)
+            {
+                if (frame.residentVersion != 0 || frame.leaseVersion != 0)
+                {
+                    outReason = "cold/prewarm Tier 1 frame reported a GPU-scene resident or lease version";
+                    return false;
+                }
+                if (phase == CandidatePhase::Warm)
+                {
+                    outReason = "an unexpected Tier 1 fallback occurred after Tier 2 became warm";
+                    return false;
+                }
+                phase = CandidatePhase::AwaitWarm;
+            }
+            else if (frame.executedTier == GPUDrivenTier::GPUResidentScene)
+            {
+                if (frame.requiredResidentVersion == 0 ||
+                    frame.requiredResidentVersion != frame.residentVersion ||
+                    frame.requiredResidentVersion != frame.leaseVersion)
+                {
+                    outReason = "Tier 2 exact resident/lease versions do not match the frozen requirement";
+                    return false;
+                }
+                if (phase == CandidatePhase::AwaitCold)
+                {
+                    outReason = postResize
+                        ? "Tier 2 executed before an accepted post-resize cold/prewarm Tier 1 frame"
+                        : "Tier 2 executed before an accepted initial cold/prewarm Tier 1 frame";
+                    return false;
+                }
+                phase = CandidatePhase::Warm;
+            }
+            else
+            {
+                outReason = "accepted evidence executed an unexpected non-GPU-driven tier";
+                return false;
+            }
+
+            if (postResize)
+            {
+                postResizePhase = phase;
+            }
+            else
+            {
+                preResizePhase = phase;
+            }
+        }
+
+        if (acceptedFrameCount < 10u)
+        {
+            outReason = "fewer than ten accepted frames were observed";
+            return false;
+        }
+        if (preResizePhase != CandidatePhase::Warm)
+        {
+            outReason = "the initial accepted cold/prewarm Tier 1 to warm Tier 2 transition was not observed";
+            return false;
+        }
+        if (resizeFrame > 0u && postResizePhase != CandidatePhase::Warm)
+        {
+            outReason = "the accepted post-resize cold/prewarm Tier 1 to warm Tier 2 transition was not observed";
+            return false;
+        }
+
+        outReason.clear();
+        return true;
+    }
+
+    bool WriteGPUSceneTier2EvidenceJson(
+        const std::string& filename,
+        const std::vector<GPUSceneTier2EvidenceFrame>& frames,
+        uint32 resizeFrame,
+        bool candidateSatisfied,
+        const std::string& candidateReason,
+        const RenderDiagnosticsSnapshot& diagnostics)
+    {
+        const std::filesystem::path path(filename);
+        const std::filesystem::path parent = path.parent_path();
+        std::error_code error;
+        if (!parent.empty())
+        {
+            std::filesystem::create_directories(parent, error);
+        }
+        if (error)
+        {
+            RVX_CORE_ERROR("ModelViewer could not create GPU-scene evidence directory '{}': {}",
+                           parent.string(), error.message());
+            return false;
+        }
+
+        std::ofstream output(path, std::ios::out | std::ios::trunc);
+        if (!output)
+        {
+            RVX_CORE_ERROR("ModelViewer could not open GPU-scene evidence report '{}'",
+                           path.string());
+            return false;
+        }
+
+        output << "{\n"
+               << "  \"schema\": \"RVX.GPUSceneTier2CandidateEvidence\",\n"
+               << "  \"schemaVersion\": 3,\n"
+               << "  \"candidateSatisfied\": " << BoolText(candidateSatisfied) << ",\n"
+               << "  \"candidateReason\": \"" << candidateReason << "\",\n"
+               << "  \"resizeFrame\": " << resizeFrame << ",\n"
+               << "  \"acceptedFrameCount\": "
+               << std::count_if(frames.begin(), frames.end(),
+                                [](const GPUSceneTier2EvidenceFrame& frame) {
+                                    return frame.accepted;
+                                }) << ",\n"
+               << "  \"backend\": \"" << ToString(diagnostics.backend) << "\",\n"
+               << "  \"adapterName\": \"" << diagnostics.adapterName << "\",\n"
+               << "  \"driverVersion\": \"" << diagnostics.driverVersion << "\",\n"
+               << "  \"frames\": [\n";
+        for (size_t index = 0; index < frames.size(); ++index)
+        {
+            const GPUSceneTier2EvidenceFrame& frame = frames[index];
+            output << "    {\"smokeFrameOrdinal\": " << frame.smokeFrameOrdinal
+                   << ", \"frameSequence\": " << frame.frameSequence
+                   << ", \"accepted\": " << BoolText(frame.accepted)
+                   << ", \"selectedTier\": \"" << GetGPUDrivenTierName(frame.selectedTier)
+                   << "\", \"executedTier\": \"" << GetGPUDrivenTierName(frame.executedTier)
+                   << "\", \"executionStatus\": \""
+                   << GetRenderExecutionStatusName(frame.executionStatus)
+                   << "\", \"tierFallbackReason\": \""
+                   << GetRenderPolicyReasonName(frame.tierFallbackReason)
+                   << "\", \"requiredResidentVersion\": " << frame.requiredResidentVersion
+                   << ", \"residentVersion\": " << frame.residentVersion
+                   << ", \"leaseVersion\": " << frame.leaseVersion << "}";
+            output << (index + 1u == frames.size() ? "\n" : ",\n");
+        }
+        output << "  ]\n}\n";
+        if (!output)
+        {
+            RVX_CORE_ERROR("ModelViewer could not write GPU-scene evidence report '{}'",
+                           path.string());
+            return false;
+        }
+        return true;
     }
 
     bool WriteRenderPolicyMeasurementJson(
@@ -4586,6 +4867,8 @@ int main(int argc, char* argv[])
         RuntimeFrameDriver frameDriver(engine, *renderSubsystem);
         RenderDiagnosticsSnapshot lastDiagnostics =
             renderSubsystem->GetDiagnosticsSnapshot();
+        std::vector<GPUSceneTier2EvidenceFrame> gpuSceneTier2EvidenceFrames;
+        gpuSceneTier2EvidenceFrames.reserve(options.frames);
         constexpr uint64 captureRequestId = 1;
 
         for (uint32 frameIndex = 0; frameIndex < options.frames; ++frameIndex)
@@ -4670,6 +4953,14 @@ int main(int argc, char* argv[])
             }
             const RenderFrameFeatureDiagnostics* sceneRenderer =
                 &lastDiagnostics.frameFeatures;
+            if (!options.gpuSceneTier2EvidenceReportPath.empty())
+            {
+                gpuSceneTier2EvidenceFrames.push_back(
+                    CaptureGPUSceneTier2EvidenceFrame(
+                        *sceneRenderer,
+                        static_cast<uint64>(smokeFrameNumber),
+                        lastDiagnostics.lastPresentedFrameSequence));
+            }
 
             if (options.expectModelVisible &&
                 (frameIndex + 1 == options.frames))
@@ -5367,6 +5658,35 @@ int main(int argc, char* argv[])
                 smokeSucceeded = false;
                 break;
             }
+        }
+
+        bool gpuSceneTier2CandidateSatisfied = false;
+        std::string gpuSceneTier2CandidateReason;
+        if (!options.gpuSceneTier2EvidenceReportPath.empty())
+        {
+            gpuSceneTier2CandidateSatisfied =
+                ValidateGPUSceneTier2Candidate(gpuSceneTier2EvidenceFrames,
+                                                options.rayTracingResizeFrame,
+                                                gpuSceneTier2CandidateReason);
+            if (options.expectGPUSceneTier2Candidate &&
+                !gpuSceneTier2CandidateSatisfied)
+            {
+                RVX_CORE_ERROR("ModelViewer smoke GPU-scene Tier 2 candidate failed: {}",
+                               gpuSceneTier2CandidateReason);
+                smokeSucceeded = false;
+            }
+        }
+
+        if (!options.gpuSceneTier2EvidenceReportPath.empty() &&
+            !WriteGPUSceneTier2EvidenceJson(
+                options.gpuSceneTier2EvidenceReportPath,
+                gpuSceneTier2EvidenceFrames,
+                options.rayTracingResizeFrame,
+                gpuSceneTier2CandidateSatisfied,
+                gpuSceneTier2CandidateReason,
+                lastDiagnostics))
+        {
+            smokeSucceeded = false;
         }
 
         if (!options.renderPolicyReportPath.empty() &&

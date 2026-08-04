@@ -1311,6 +1311,7 @@ namespace RVX
         void BuildGPUDrivenVisibilityInputs();
         void PrepareGPUDrivenGraphCullInputs();
         void ConfirmGPUDrivenActualTier();
+        void FinalizeRenderExecutionReportStatus(bool graphExecuted) noexcept;
         void MarkGPUDrivenFrameFailure() noexcept;
         void ApplyObjectMotionHistory();
         void UpdateObjectMotionHistory();
