@@ -16,6 +16,8 @@
 #include <GLFW/glfw3native.h>
 #endif
 
+#include <limits>
+
 #ifdef _WIN32
 // Undefine Windows macros that conflict with our function names
 #ifdef CreateWindow
@@ -136,6 +138,21 @@ namespace RVX::HAL
             width = m_desc.width;
             height = m_desc.height;
         }
+    }
+
+    bool GLFWWindow::RequestResize(uint32 width, uint32 height)
+    {
+        if (!m_window || width == 0 || height == 0 ||
+            width > static_cast<uint32>(std::numeric_limits<int>::max()) ||
+            height > static_cast<uint32>(std::numeric_limits<int>::max()))
+        {
+            LOG_ERROR("GLFW window resize request is invalid: {}x{}", width, height);
+            return false;
+        }
+
+        glfwSetWindowSize(
+            m_window, static_cast<int>(width), static_cast<int>(height));
+        return true;
     }
 
     float GLFWWindow::GetDpiScale() const

@@ -2895,6 +2895,31 @@ if(RVX_ENABLE_VULKAN AND TARGET ModelViewer)
         TIMEOUT 120
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
+
+    # Task12 is an independent Vulkan GPU-driven Candidate runner.  It owns
+    # its hermetic output directory and validates the real ModelViewer entry
+    # point (direct, forced GPU, repeat, resize, and zero-visible) rather than
+    # duplicating the DX12 Tier2 qualification semantics in CTest.
+    find_program(RVX_TASK12_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
+    if(RVX_TASK12_POWERSHELL_EXECUTABLE AND TARGET GPUDrivenValidation)
+        add_test(
+            NAME VulkanGPUDrivenCandidate
+            COMMAND ${RVX_TASK12_POWERSHELL_EXECUTABLE}
+                -NoProfile
+                -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/Scripts/run_task12_vulkan_candidate.ps1"
+                -BuildDir "${CMAKE_BINARY_DIR}"
+                -Configuration "$<CONFIG>"
+                -ReportDirectory "${CMAKE_BINARY_DIR}/Task12Exit/$<CONFIG>"
+                -ModelViewer "$<TARGET_FILE:ModelViewer>"
+                -GPUDrivenValidation "$<TARGET_FILE:GPUDrivenValidation>"
+        )
+        set_tests_properties(VulkanGPUDrivenCandidate PROPERTIES
+            LABELS "native;vulkan;gpu-driven;candidate;task12"
+            TIMEOUT 900
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+    endif()
 endif()
 
 # Cross-Backend Validation Tests (requires both DX12 and Vulkan)

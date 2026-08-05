@@ -5191,6 +5191,12 @@ int main(int argc, char* argv[])
         bool rayTracedShadowHistoryResizeObserved = false;
         bool rayTracedReflectionHistoryResetObserved = false;
         bool rayTracedReflectionHistoryResizeObserved = false;
+        bool nativeResizePending = false;
+        uint32 nativeResizeObservedFrame = 0;
+        uint32 resizeFramebufferWidth = options.width;
+        uint32 resizeFramebufferHeight = options.height;
+        uint32 resizeFramebufferWidthBeforeRequest = 0;
+        uint32 resizeFramebufferHeightBeforeRequest = 0;
         bool gpuBudgetRecoveryTriggered = false;
         float gpuBudgetRecoveryBaselineReflectionScale = 0.0f;
         float gpuBudgetRecoveryBaselineReflectionQualityScale = 1.0f;
@@ -5201,6 +5207,15 @@ int main(int argc, char* argv[])
         std::vector<GPUSceneTier2EvidenceFrame> gpuSceneTier2EvidenceFrames;
         gpuSceneTier2EvidenceFrames.reserve(options.frames);
         constexpr uint64 captureRequestId = 1;
+
+        windowSubsystem->GetFramebufferSize(
+            resizeFramebufferWidth, resizeFramebufferHeight);
+        if (resizeFramebufferWidth == 0 || resizeFramebufferHeight == 0)
+        {
+            RVX_CORE_ERROR("ModelViewer smoke requires a non-zero native framebuffer");
+            engine.Shutdown();
+            return -1;
+        }
 
         for (uint32 frameIndex = 0; frameIndex < options.frames; ++frameIndex)
         {
@@ -5219,22 +5234,23 @@ int main(int argc, char* argv[])
 
             if (options.rayTracingResizeFrame > 0u && smokeFrameNumber == options.rayTracingResizeFrame)
             {
-                if (!engine.RequestRenderSurfaceResize(
+                resizeFramebufferWidthBeforeRequest = resizeFramebufferWidth;
+                resizeFramebufferHeightBeforeRequest = resizeFramebufferHeight;
+                if (!windowSubsystem->RequestResize(
                         options.rayTracingResizeWidth,
                         options.rayTracingResizeHeight))
                 {
-                    RVX_CORE_ERROR("ModelViewer smoke render resize request was rejected");
+                    RVX_CORE_ERROR("ModelViewer smoke native resize request was rejected");
                     smokeSucceeded = false;
                 }
-                camera->SetPerspective(kCameraVerticalFovRadians,
-                                       static_cast<float>(options.rayTracingResizeWidth) /
-                                           static_cast<float>(options.rayTracingResizeHeight),
-                                       cameraNearPlane,
-                                       cameraFarPlane);
-                RVX_CORE_INFO("ModelViewer smoke resized RT history viewport on frame {}: {}x{}",
+                else
+                {
+                    nativeResizePending = true;
+                    RVX_CORE_INFO("ModelViewer smoke requested native resize on frame {}: {}x{}",
                               smokeFrameNumber,
                               options.rayTracingResizeWidth,
                               options.rayTracingResizeHeight);
+                }
             }
 
             if (captureFrame)
@@ -5242,12 +5258,8 @@ int main(int argc, char* argv[])
                 RenderFrameCaptureRequest capture;
                 capture.requestId = captureRequestId;
                 capture.kind = RenderFrameCaptureKind::Color;
-                capture.width = options.rayTracingResizeFrame > 0
-                                    ? options.rayTracingResizeWidth
-                                    : options.width;
-                capture.height = options.rayTracingResizeFrame > 0
-                                     ? options.rayTracingResizeHeight
-                                     : options.height;
+                capture.width = resizeFramebufferWidth;
+                capture.height = resizeFramebufferHeight;
                 if (!engine.RequestRenderFrameCapture(capture))
                 {
                     RVX_CORE_ERROR("ModelViewer smoke frame capture request was rejected");
@@ -5285,6 +5297,37 @@ int main(int argc, char* argv[])
             }
             const RenderFrameFeatureDiagnostics* sceneRenderer =
                 &lastDiagnostics.frameFeatures;
+
+            if (nativeResizePending)
+            {
+                uint32 currentFramebufferWidth = 0;
+                uint32 currentFramebufferHeight = 0;
+                windowSubsystem->GetFramebufferSize(
+                    currentFramebufferWidth, currentFramebufferHeight);
+                const bool resizeChangesFramebuffer =
+                    resizeFramebufferWidthBeforeRequest != options.rayTracingResizeWidth ||
+                    resizeFramebufferHeightBeforeRequest != options.rayTracingResizeHeight;
+                if (currentFramebufferWidth != 0 && currentFramebufferHeight != 0 &&
+                    (!resizeChangesFramebuffer ||
+                     currentFramebufferWidth != resizeFramebufferWidthBeforeRequest ||
+                     currentFramebufferHeight != resizeFramebufferHeightBeforeRequest))
+                {
+                    resizeFramebufferWidth = currentFramebufferWidth;
+                    resizeFramebufferHeight = currentFramebufferHeight;
+                    nativeResizePending = false;
+                    nativeResizeObservedFrame = smokeFrameNumber;
+                    camera->SetPerspective(
+                        kCameraVerticalFovRadians,
+                        static_cast<float>(resizeFramebufferWidth) /
+                            static_cast<float>(resizeFramebufferHeight),
+                        cameraNearPlane,
+                        cameraFarPlane);
+                    RVX_CORE_INFO("ModelViewer smoke observed native framebuffer resize on frame {}: {}x{}",
+                                  smokeFrameNumber,
+                                  resizeFramebufferWidth,
+                                  resizeFramebufferHeight);
+                }
+            }
             if (!options.gpuSceneTier2EvidenceReportPath.empty() ||
                 !options.gpuSceneM3EvidenceReportPath.empty())
             {
@@ -5502,12 +5545,12 @@ int main(int argc, char* argv[])
             }
 
             if (options.expectRayTracedShadowHistoryResizeReady &&
-                smokeFrameNumber == options.rayTracingResizeFrame)
+                smokeFrameNumber == nativeResizeObservedFrame)
             {
                 std::string rayTracingHistoryResizeFallbackReason;
                 if (!IsRayTracedShadowHistoryResizeReady(sceneRenderer,
-                                                         options.rayTracingResizeWidth,
-                                                         options.rayTracingResizeHeight,
+                                                         resizeFramebufferWidth,
+                                                         resizeFramebufferHeight,
                                                          rayTracingHistoryResizeFallbackReason))
                 {
                     RVX_CORE_ERROR("ModelViewer smoke expected ray-traced shadow history resize ready; stats: {}",
@@ -5621,12 +5664,12 @@ int main(int argc, char* argv[])
             }
 
             if (options.expectRayTracedReflectionHistoryResizeReady &&
-                smokeFrameNumber == options.rayTracingResizeFrame)
+                smokeFrameNumber == nativeResizeObservedFrame)
             {
                 std::string rayTracingHistoryResizeFallbackReason;
                 if (!IsRayTracedReflectionHistoryResizeReady(sceneRenderer,
-                                                             options.rayTracingResizeWidth,
-                                                             options.rayTracingResizeHeight,
+                                                             resizeFramebufferWidth,
+                                                             resizeFramebufferHeight,
                                                              rayTracingHistoryResizeFallbackReason))
                 {
                     RVX_CORE_ERROR("ModelViewer smoke expected ray-traced reflection history resize ready; stats: {}",
@@ -5708,6 +5751,14 @@ int main(int argc, char* argv[])
                 RVX_CORE_ERROR("ModelViewer smoke expected ray-traced reflection history resize, but resize frame {} "
                                "was not observed",
                                options.rayTracingResizeFrame);
+                smokeSucceeded = false;
+            }
+
+            if (nativeResizePending && (frameIndex + 1 == options.frames))
+            {
+                RVX_CORE_ERROR("ModelViewer smoke did not observe native resize {}x{} before completion",
+                               options.rayTracingResizeWidth,
+                               options.rayTracingResizeHeight);
                 smokeSucceeded = false;
             }
 
@@ -5995,11 +6046,14 @@ int main(int argc, char* argv[])
 
         bool gpuSceneTier2CandidateSatisfied = false;
         std::string gpuSceneTier2CandidateReason;
+        const uint32 gpuSceneResizeFrame = nativeResizeObservedFrame > 0
+            ? nativeResizeObservedFrame
+            : options.rayTracingResizeFrame;
         if (!options.gpuSceneTier2EvidenceReportPath.empty())
         {
             gpuSceneTier2CandidateSatisfied =
                 ValidateGPUSceneTier2Candidate(gpuSceneTier2EvidenceFrames,
-                                                options.rayTracingResizeFrame,
+                                                gpuSceneResizeFrame,
                                                 gpuSceneTier2CandidateReason);
             if (options.expectGPUSceneTier2Candidate &&
                 !gpuSceneTier2CandidateSatisfied)
@@ -6008,13 +6062,14 @@ int main(int argc, char* argv[])
                                gpuSceneTier2CandidateReason);
                 smokeSucceeded = false;
             }
+
         }
 
         if (!options.gpuSceneTier2EvidenceReportPath.empty() &&
             !WriteGPUSceneTier2EvidenceJson(
                 options.gpuSceneTier2EvidenceReportPath,
                 gpuSceneTier2EvidenceFrames,
-                options.rayTracingResizeFrame,
+                gpuSceneResizeFrame,
                 gpuSceneTier2CandidateSatisfied,
                 gpuSceneTier2CandidateReason,
                 lastDiagnostics))

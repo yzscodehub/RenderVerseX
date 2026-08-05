@@ -1,6 +1,7 @@
 #include "VulkanResources.h"
 #include "VulkanDevice.h"
 #include <cmath>
+#include <mutex>
 
 namespace RVX
 {
@@ -20,28 +21,15 @@ namespace RVX
         bufferInfo.size = desc.size;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        // Usage flags
-        bufferInfo.usage = 0;
-        if (HasFlag(desc.usage, RHIBufferUsage::Vertex))
-            bufferInfo.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::Index))
-            bufferInfo.usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::Constant))
-            bufferInfo.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::ShaderResource))
-            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
-            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::Structured))
-            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::IndirectArgs))
-            bufferInfo.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-        
-        // Always allow transfer for buffer updates
-        bufferInfo.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        
-        // Enable device address for raytracing/bindless
-        bufferInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        bufferInfo.usage = ToVkBufferUsage(desc.usage);
+        if (RequiresVulkanBufferDeviceAddress(desc.usage) &&
+            !device->IsBufferDeviceAddressEnabled())
+        {
+            RVX_RHI_ERROR(
+                "Vulkan buffer '{}' requests device-address usage without an enabled logical-device feature",
+                desc.debugName ? desc.debugName : "<unnamed>");
+            return;
+        }
 
         VmaAllocationCreateInfo allocInfo = {};
         switch (desc.memoryType)
@@ -69,8 +57,7 @@ namespace RVX
             m_mappedData = allocationInfo.pMappedData;
         }
 
-        if (HasFlag(desc.usage, RHIBufferUsage::DeviceAddress) ||
-            HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureInput))
+        if (RequiresVulkanBufferDeviceAddress(desc.usage))
         {
             VkBufferDeviceAddressInfo addressInfo = {
                 VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
@@ -114,8 +101,7 @@ namespace RVX
         }
         // Note: Readback buffers are mapped on-demand in Map() method
 
-        if (HasFlag(desc.usage, RHIBufferUsage::DeviceAddress) ||
-            HasFlag(desc.usage, RHIBufferUsage::AccelerationStructureInput))
+        if (RequiresVulkanBufferDeviceAddress(desc.usage))
         {
             VkBufferDeviceAddressInfo addressInfo = {
                 VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
@@ -602,6 +588,7 @@ namespace RVX
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = &m_semaphore;
 
+        std::lock_guard<std::mutex> lock(m_device->GetGraphicsQueueMutex());
         const VkResult result =
             vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
         if (result != VK_SUCCESS)
@@ -651,6 +638,15 @@ namespace RVX
     // =============================================================================
     RHIBufferRef CreateVulkanBuffer(VulkanDevice* device, const RHIBufferDesc& desc)
     {
+        if (!device ||
+            (RequiresVulkanBufferDeviceAddress(desc.usage) &&
+             !device->IsBufferDeviceAddressEnabled()))
+        {
+            RVX_RHI_ERROR(
+                "Vulkan buffer '{}' requests unavailable device-address usage",
+                desc.debugName ? desc.debugName : "<unnamed>");
+            return nullptr;
+        }
         return Ref<VulkanBuffer>(new VulkanBuffer(device, desc));
     }
 
@@ -771,6 +767,18 @@ namespace RVX
         VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         allocInfo.allocationSize = desc.size;
         allocInfo.memoryTypeIndex = m_memoryTypeIndex;
+
+        // A heap has no future placed-buffer usage in its public descriptor.
+        // When BDA is enabled, allocate it with the Vulkan device-address flag
+        // so an explicitly device-addressed placed buffer is valid instead of
+        // failing after vkCreateBuffer has already succeeded.
+        VkMemoryAllocateFlagsInfo addressAllocateInfo = {
+            VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+        if (device->IsBufferDeviceAddressEnabled())
+        {
+            addressAllocateInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+            allocInfo.pNext = &addressAllocateInfo;
+        }
 
         VkResult result = vkAllocateMemory(device->GetDevice(), &allocInfo, nullptr, &m_memory);
         if (result != VK_SUCCESS)
@@ -910,25 +918,15 @@ namespace RVX
         bufferInfo.size = desc.size;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        // Usage flags
-        bufferInfo.usage = 0;
-        if (HasFlag(desc.usage, RHIBufferUsage::Vertex))
-            bufferInfo.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::Index))
-            bufferInfo.usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::Constant))
-            bufferInfo.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::ShaderResource))
-            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
-            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::Structured))
-            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::IndirectArgs))
-            bufferInfo.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-        
-        bufferInfo.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        bufferInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        bufferInfo.usage = ToVkBufferUsage(desc.usage);
+        if (RequiresVulkanBufferDeviceAddress(desc.usage) &&
+            !device->IsBufferDeviceAddressEnabled())
+        {
+            RVX_RHI_ERROR(
+                "Vulkan placed buffer '{}' requests device-address usage without an enabled logical-device feature",
+                desc.debugName ? desc.debugName : "<unnamed>");
+            return nullptr;
+        }
 
         VkBuffer buffer = VK_NULL_HANDLE;
         VkResult result = vkCreateBuffer(device->GetDevice(), &bufferInfo, nullptr, &buffer);

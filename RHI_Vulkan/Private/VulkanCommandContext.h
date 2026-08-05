@@ -57,6 +57,12 @@ namespace RVX
         void DrawIndexed(uint32 indexCount, uint32 instanceCount, uint32 firstIndex, int32 vertexOffset, uint32 firstInstance) override;
         void DrawIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) override;
         void DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) override;
+        void DrawIndexedIndirectCount(RHIBuffer* buffer,
+                                      uint64 offset,
+                                      RHIBuffer* countBuffer,
+                                      uint64 countOffset,
+                                      uint32 maxDrawCount,
+                                      uint32 stride) override;
 
         void Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ) override;
         void DispatchIndirect(RHIBuffer* buffer, uint64 offset) override;

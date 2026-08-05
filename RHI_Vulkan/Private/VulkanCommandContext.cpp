@@ -3,6 +3,7 @@
 #include "VulkanResources.h"
 #include "VulkanPipeline.h"
 #include "VulkanSwapChain.h"
+#include "RHI/RHIIndirectExecution.h"
 #include "RHI/RHITexture.h"
 
 #include <utility>
@@ -154,13 +155,13 @@ namespace RVX
             return;
         }
 
-        const RHICapabilities& capabilities = m_device->GetCapabilities();
+        const VulkanPipelineStageSupport enabledStages =
+            m_device->GetEnabledPipelineStageSupport();
         VkBufferMemoryBarrier2 bufferBarrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
         bufferBarrier.srcStageMask = barrier.hasScopedAccess
             ? ToVkPipelineStageFlags2(
                 barrier.accessBefore.executionScope,
-                capabilities.supportsMeshShaders,
-                capabilities.supportsRaytracingPipeline)
+                enabledStages)
             : ToVkPipelineStageFlags(barrier.stateBefore);
         bufferBarrier.srcAccessMask = barrier.hasScopedAccess
             ? ToVkAccessFlags2(barrier.accessBefore.memoryAccess)
@@ -168,8 +169,7 @@ namespace RVX
         bufferBarrier.dstStageMask = barrier.hasScopedAccess
             ? ToVkPipelineStageFlags2(
                 barrier.accessAfter.executionScope,
-                capabilities.supportsMeshShaders,
-                capabilities.supportsRaytracingPipeline)
+                enabledStages)
             : ToVkPipelineStageFlags(barrier.stateAfter);
         bufferBarrier.dstAccessMask = barrier.hasScopedAccess
             ? ToVkAccessFlags2(barrier.accessAfter.memoryAccess)
@@ -213,13 +213,13 @@ namespace RVX
             return;
         }
 
-        const RHICapabilities& capabilities = m_device->GetCapabilities();
+        const VulkanPipelineStageSupport enabledStages =
+            m_device->GetEnabledPipelineStageSupport();
         VkImageMemoryBarrier2 imageBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         imageBarrier.srcStageMask = barrier.hasScopedAccess
             ? ToVkPipelineStageFlags2(
                 barrier.accessBefore.executionScope,
-                capabilities.supportsMeshShaders,
-                capabilities.supportsRaytracingPipeline)
+                enabledStages)
             : ToVkPipelineStageFlags(barrier.stateBefore);
         imageBarrier.srcAccessMask = barrier.hasScopedAccess
             ? ToVkAccessFlags2(barrier.accessBefore.memoryAccess)
@@ -227,8 +227,7 @@ namespace RVX
         imageBarrier.dstStageMask = barrier.hasScopedAccess
             ? ToVkPipelineStageFlags2(
                 barrier.accessAfter.executionScope,
-                capabilities.supportsMeshShaders,
-                capabilities.supportsRaytracingPipeline)
+                enabledStages)
             : ToVkPipelineStageFlags(barrier.stateAfter);
         imageBarrier.dstAccessMask = barrier.hasScopedAccess
             ? ToVkAccessFlags2(barrier.accessAfter.memoryAccess)
@@ -318,14 +317,25 @@ namespace RVX
         if (m_inRenderPass)
             return;
 
-        FlushBarriers();  // Ensure layout transitions are applied before rendering
-
         // Use dynamic rendering (Vulkan 1.3)
         std::vector<VkRenderingAttachmentInfo> colorAttachments;
+        std::vector<VkExtent2D> attachmentExtents;
         for (uint32 i = 0; i < desc.colorAttachmentCount; ++i)
         {
             const auto& attach = desc.colorAttachments[i];
+            if (attach.view == nullptr)
+            {
+                RVX_RHI_ERROR("Vulkan dynamic rendering rejected null color attachment {}", i);
+                return;
+            }
             auto* vkView = static_cast<VulkanTextureView*>(attach.view);
+            VulkanTexture* texture = vkView->GetVulkanTexture();
+            if (texture == nullptr)
+            {
+                RVX_RHI_ERROR("Vulkan dynamic rendering rejected color attachment {} without a texture", i);
+                return;
+            }
+            attachmentExtents.push_back({texture->GetWidth(), texture->GetHeight()});
 
             VkRenderingAttachmentInfo attachInfo = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
             attachInfo.imageView = vkView->GetImageView();
@@ -350,24 +360,18 @@ namespace RVX
             colorAttachments.push_back(attachInfo);
         }
 
-        VkRenderingInfo renderingInfo = {VK_STRUCTURE_TYPE_RENDERING_INFO};
-
-        // Get render area from first color attachment
-        if (desc.colorAttachmentCount > 0 && desc.colorAttachments[0].view)
-        {
-            auto* view = static_cast<VulkanTextureView*>(desc.colorAttachments[0].view);
-            renderingInfo.renderArea.extent.width = view->GetVulkanTexture()->GetWidth();
-            renderingInfo.renderArea.extent.height = view->GetVulkanTexture()->GetHeight();
-        }
-        renderingInfo.layerCount = 1;
-        renderingInfo.colorAttachmentCount = static_cast<uint32>(colorAttachments.size());
-        renderingInfo.pColorAttachments = colorAttachments.data();
-
         // Depth attachment
         VkRenderingAttachmentInfo depthAttachInfo = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         if (desc.depthStencilAttachment.view)
         {
             auto* vkView = static_cast<VulkanTextureView*>(desc.depthStencilAttachment.view);
+            VulkanTexture* texture = vkView->GetVulkanTexture();
+            if (texture == nullptr)
+            {
+                RVX_RHI_ERROR("Vulkan dynamic rendering rejected depth attachment without a texture");
+                return;
+            }
+            attachmentExtents.push_back({texture->GetWidth(), texture->GetHeight()});
 
             depthAttachInfo.imageView = vkView->GetImageView();
             depthAttachInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -387,9 +391,64 @@ namespace RVX
 
             depthAttachInfo.clearValue.depthStencil = {desc.depthStencilAttachment.clearValue.depth,
                                                         desc.depthStencilAttachment.clearValue.stencil};
-
-            renderingInfo.pDepthAttachment = &depthAttachInfo;
         }
+
+        if (attachmentExtents.empty())
+        {
+            RVX_RHI_ERROR("Vulkan dynamic rendering rejected a render pass without attachments");
+            return;
+        }
+
+        VkRect2D renderArea{};
+        if (desc.renderArea.width == 0 || desc.renderArea.height == 0)
+        {
+            // The RHI contract defines a zero extent as the full attachment extent.
+            renderArea.extent = attachmentExtents.front();
+        }
+        else
+        {
+            renderArea.offset = {desc.renderArea.x, desc.renderArea.y};
+            renderArea.extent = {desc.renderArea.width, desc.renderArea.height};
+        }
+
+        const bool validOffsets = renderArea.offset.x >= 0 && renderArea.offset.y >= 0;
+        const uint64 renderAreaRight = validOffsets
+            ? static_cast<uint64>(renderArea.offset.x) + renderArea.extent.width
+            : 0;
+        const uint64 renderAreaBottom = validOffsets
+            ? static_cast<uint64>(renderArea.offset.y) + renderArea.extent.height
+            : 0;
+        for (const VkExtent2D attachmentExtent : attachmentExtents)
+        {
+            if (!validOffsets || renderArea.extent.width == 0 || renderArea.extent.height == 0 ||
+                renderAreaRight > attachmentExtent.width ||
+                renderAreaBottom > attachmentExtent.height)
+            {
+                RVX_RHI_ERROR(
+                    "Vulkan dynamic rendering rejected render area offset=({}, {}), extent={}x{} "
+                    "outside attachment extent {}x{}",
+                    renderArea.offset.x,
+                    renderArea.offset.y,
+                    renderArea.extent.width,
+                    renderArea.extent.height,
+                    attachmentExtent.width,
+                    attachmentExtent.height);
+                return;
+            }
+        }
+
+        FlushBarriers();  // Ensure layout transitions are applied before rendering
+
+        VkRenderingInfo renderingInfo = {VK_STRUCTURE_TYPE_RENDERING_INFO};
+        renderingInfo.renderArea = renderArea;
+        renderingInfo.layerCount = 1;
+        renderingInfo.colorAttachmentCount = static_cast<uint32>(colorAttachments.size());
+        renderingInfo.pColorAttachments = colorAttachments.empty()
+            ? nullptr
+            : colorAttachments.data();
+        renderingInfo.pDepthAttachment = desc.depthStencilAttachment.view
+            ? &depthAttachInfo
+            : nullptr;
 
         vkCmdBeginRendering(m_commandBuffer, &renderingInfo);
         m_inRenderPass = true;
@@ -569,9 +628,145 @@ namespace RVX
 
     void VulkanCommandContext::DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride)
     {
+        if (drawCount == 0)
+        {
+            return;
+        }
+
+        const RHICapabilities& capabilities = m_device->GetCapabilities();
+        RHIIndexedIndirectExecutionDesc execution;
+        execution.mode = RHIIndirectExecutionMode::FixedCount;
+        execution.argumentBuffer = buffer;
+        execution.argumentOffset = offset;
+        execution.commandStride = stride;
+        execution.maxDrawCount = drawCount;
+        execution.argumentState =
+            capabilities.indexedIndirectExecution.requiredArgumentState;
+        const RHIIndexedIndirectExecutionValidationResult validation =
+            ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DrawIndexedIndirect rejected by the RHI contract: {}",
+                validation.message);
+            return;
+        }
+
+        auto* vkBuffer = dynamic_cast<VulkanBuffer*>(buffer);
+        if (vkBuffer == nullptr || vkBuffer->GetBuffer() == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DrawIndexedIndirect rejected because the argument buffer is not a live Vulkan buffer");
+            return;
+        }
+
         FlushBarriers();
-        auto* vkBuffer = static_cast<VulkanBuffer*>(buffer);
         vkCmdDrawIndexedIndirect(m_commandBuffer, vkBuffer->GetBuffer(), offset, drawCount, stride);
+    }
+
+    void VulkanCommandContext::DrawIndexedIndirectCount(
+        RHIBuffer* buffer,
+        uint64 offset,
+        RHIBuffer* countBuffer,
+        uint64 countOffset,
+        uint32 maxDrawCount,
+        uint32 stride)
+    {
+        if (maxDrawCount == 0)
+        {
+            return;
+        }
+
+        const RHICapabilities& capabilities = m_device->GetCapabilities();
+        RHIIndexedIndirectExecutionDesc execution;
+        execution.mode = RHIIndirectExecutionMode::CountBuffer;
+        execution.argumentBuffer = buffer;
+        execution.argumentOffset = offset;
+        execution.commandStride = stride;
+        execution.maxDrawCount = maxDrawCount;
+        execution.argumentState =
+            capabilities.indexedIndirectExecution.requiredArgumentState;
+        execution.countBuffer = countBuffer;
+        execution.countOffset = countOffset;
+        execution.countState =
+            capabilities.indexedIndirectExecution.requiredCountState;
+        const RHIIndexedIndirectExecutionValidationResult validation =
+            ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DrawIndexedIndirectCount rejected by the RHI contract: {}",
+                validation.message);
+            return;
+        }
+
+        const VulkanIndexedIndirectCountDispatch dispatch =
+            m_device->GetIndexedIndirectCountDispatch();
+        if (dispatch == VulkanIndexedIndirectCountDispatch::None)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan indexed indirect-count was requested without an enabled native command path");
+            return;
+        }
+
+        auto* vkBuffer = dynamic_cast<VulkanBuffer*>(buffer);
+        auto* vkCountBuffer = dynamic_cast<VulkanBuffer*>(countBuffer);
+        if (vkBuffer == nullptr || vkBuffer->GetBuffer() == VK_NULL_HANDLE ||
+            vkCountBuffer == nullptr || vkCountBuffer->GetBuffer() == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DrawIndexedIndirectCount rejected because a buffer is not a live Vulkan buffer");
+            return;
+        }
+
+        FlushBarriers();
+
+        switch (dispatch)
+        {
+            case VulkanIndexedIndirectCountDispatch::Core12:
+            {
+                const PFN_vkCmdDrawIndexedIndirectCount command =
+                    m_device->GetCmdDrawIndexedIndirectCount();
+                if (!command)
+                {
+                    RVX_RHI_ERROR(
+                        "Vulkan indexed indirect-count core entry point is unavailable");
+                    return;
+                }
+                command(m_commandBuffer,
+                        vkBuffer->GetBuffer(),
+                        offset,
+                        vkCountBuffer->GetBuffer(),
+                        countOffset,
+                        maxDrawCount,
+                        stride);
+                return;
+            }
+            case VulkanIndexedIndirectCountDispatch::KHR:
+            {
+                const PFN_vkCmdDrawIndexedIndirectCountKHR command =
+                    m_device->GetCmdDrawIndexedIndirectCountKHR();
+                if (!command)
+                {
+                    RVX_RHI_ERROR(
+                        "Vulkan indexed indirect-count KHR entry point is unavailable");
+                    return;
+                }
+                command(m_commandBuffer,
+                        vkBuffer->GetBuffer(),
+                        offset,
+                        vkCountBuffer->GetBuffer(),
+                        countOffset,
+                        maxDrawCount,
+                        stride);
+                return;
+            }
+            case VulkanIndexedIndirectCountDispatch::None:
+            default:
+                RVX_RHI_ERROR(
+                    "Vulkan indexed indirect-count dispatch is invalid");
+                return;
+        }
     }
 
     void VulkanCommandContext::Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ)
@@ -766,7 +961,7 @@ namespace RVX
 
         auto* vkContext = static_cast<VulkanCommandContext*>(context);
 
-        std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
+        std::lock_guard<std::mutex> lock(device->GetGraphicsQueueMutex());
 
         VkQueue queue = GetQueueForType(device, vkContext->GetQueueType());
         VkCommandBuffer cmdBuffer = vkContext->GetCommandBuffer();
@@ -795,13 +990,12 @@ namespace RVX
 
                 signalSemaphores.push_back(device->GetRenderFinishedSemaphore());
                 signalValues.push_back(0);  // Binary semaphore
+            }
 
-                fence = device->GetCurrentFrameFence();
-            }
-            else if (!swapChain)
-            {
-                fence = device->GetCurrentFrameFence();
-            }
+            // The frame fence is owned exclusively by a BeginFrame/EndFrame
+            // lifecycle. Raw submissions must never receive a fence that has
+            // not first been reset and armed for this frame.
+            fence = device->GetArmedFrameFenceForSubmission();
         }
 
         // Handle timeline semaphore for signalFence
@@ -841,6 +1035,10 @@ namespace RVX
                 "Vulkan command submission failed");
             return 0;
         }
+        if (fence != VK_NULL_HANDLE)
+        {
+            device->MarkArmedFrameFenceSubmitted(fence);
+        }
         return signalFenceValue;
     }
 
@@ -850,7 +1048,7 @@ namespace RVX
         if (!device || contexts.empty())
             return 0;
 
-        std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
+        std::lock_guard<std::mutex> lock(device->GetGraphicsQueueMutex());
 
         // Group contexts by queue type for batch submission
         std::vector<VkCommandBuffer> graphicsCmdBuffers;
@@ -889,10 +1087,21 @@ namespace RVX
 
         VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
-        // Determine if we need cross-queue sync
-        bool needCopyToComputeSync = !copyCmdBuffers.empty() && !computeCmdBuffers.empty();
-        bool needCopyToGraphicsSync = !copyCmdBuffers.empty() && !graphicsCmdBuffers.empty() && computeCmdBuffers.empty();
-        bool needComputeToGraphicsSync = !computeCmdBuffers.empty() && !graphicsCmdBuffers.empty();
+        // Same-queue submissions are ordered by Vulkan and need no binary
+        // semaphore. Compute and Copy currently alias Graphics, so keep the
+        // cross-queue lifetime path dormant until distinct queues are enabled.
+        const VkQueue copyQueue = device->GetTransferQueue();
+        const VkQueue computeQueue = device->GetComputeQueue();
+        const VkQueue graphicsQueue = device->GetGraphicsQueue();
+        const bool needCopyToComputeSync =
+            !copyCmdBuffers.empty() && !computeCmdBuffers.empty() &&
+            copyQueue != computeQueue;
+        const bool needCopyToGraphicsSync =
+            !copyCmdBuffers.empty() && !graphicsCmdBuffers.empty() &&
+            computeCmdBuffers.empty() && copyQueue != graphicsQueue;
+        const bool needComputeToGraphicsSync =
+            !computeCmdBuffers.empty() && !graphicsCmdBuffers.empty() &&
+            computeQueue != graphicsQueue;
 
         VulkanFence* vkSignalFence = signalFence ? static_cast<VulkanFence*>(signalFence) : nullptr;
         const uint64 signalFenceValue = vkSignalFence ? vkSignalFence->AllocateSignalValue() : 0;
@@ -1141,14 +1350,18 @@ namespace RVX
             submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
             submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
 
-            if (!submit(device->GetGraphicsQueue(), submitInfo,
-                        hasAcquiredImage || !swapChain
-                            ? device->GetCurrentFrameFence()
-                            : VK_NULL_HANDLE,
+            const VkFence frameFence = device->GetArmedFrameFenceForSubmission();
+            if (!submit(device->GetGraphicsQueue(),
+                        submitInfo,
+                        frameFence,
                         "Vulkan graphics batch submission failed"))
             {
                 retireCrossQueueSemaphores();
                 return 0;
+            }
+            if (frameFence != VK_NULL_HANDLE)
+            {
+                device->MarkArmedFrameFenceSubmitted(frameFence);
             }
             submittedAnyBatch = true;
             lastSubmittedQueue = device->GetGraphicsQueue();

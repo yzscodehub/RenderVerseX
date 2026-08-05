@@ -11,6 +11,44 @@
 
 namespace RVX
 {
+    /** @brief Whether an RHI buffer description needs Vulkan device-address memory. */
+    inline bool RequiresVulkanBufferDeviceAddress(RHIBufferUsage usage)
+    {
+        return HasFlag(usage, RHIBufferUsage::DeviceAddress) ||
+               HasFlag(usage, RHIBufferUsage::AccelerationStructureStorage) ||
+               HasFlag(usage, RHIBufferUsage::AccelerationStructureInput) ||
+               HasFlag(usage, RHIBufferUsage::ShaderBindingTable);
+    }
+
+    /** @brief Single Vulkan buffer-usage mapping shared by normal and placed buffers. */
+    inline VkBufferUsageFlags ToVkBufferUsage(RHIBufferUsage usage)
+    {
+        VkBufferUsageFlags flags = 0;
+        if (HasFlag(usage, RHIBufferUsage::Vertex))
+            flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        if (HasFlag(usage, RHIBufferUsage::Index))
+            flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        if (HasFlag(usage, RHIBufferUsage::Constant))
+            flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        if (HasFlag(usage, RHIBufferUsage::ShaderResource) ||
+            HasFlag(usage, RHIBufferUsage::UnorderedAccess) ||
+            HasFlag(usage, RHIBufferUsage::Structured))
+        {
+            flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        }
+        if (HasFlag(usage, RHIBufferUsage::IndirectArgs))
+            flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+
+        // The RHI permits generic copies for every buffer; keep the actual
+        // creation and placed-resource requirement queries byte-for-byte
+        // consistent with that contract.
+        flags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+        if (RequiresVulkanBufferDeviceAddress(usage))
+            flags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        return flags;
+    }
+
     class VulkanDevice;
 
     // =============================================================================

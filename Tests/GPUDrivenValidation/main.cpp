@@ -19,6 +19,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <filesystem>
@@ -368,6 +369,7 @@ namespace
         RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(
             const RHIDescriptorSetLayoutDesc& desc) override
         {
+            ++createDescriptorSetLayoutCalls;
             return m_enablePipelineObjects
                 ? RHIDescriptorSetLayoutRef(new FakeDescriptorSetLayout(desc))
                 : RHIDescriptorSetLayoutRef{};
@@ -381,6 +383,7 @@ namespace
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc&) override { return {}; }
         RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc&) override
         {
+            ++createComputePipelineCalls;
             return m_enablePipelineObjects
                 ? RHIPipelineRef(new FakeComputePipeline())
                 : RHIPipelineRef{};
@@ -418,7 +421,7 @@ namespace
         void BeginResourceGroup(const char*) override {}
         void EndResourceGroup() override {}
         const RHICapabilities& GetCapabilities() const override { return capabilities; }
-        RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
+        RHIBackendType GetBackendType() const override { return backendType; }
 
         FakeBuffer* FindBuffer(const char* name) const
         {
@@ -468,9 +471,12 @@ namespace
         }
 
         RHICapabilities capabilities;
+        RHIBackendType backendType = RHIBackendType::DX12;
         std::vector<FakeBuffer*> createdBuffers;
         std::vector<RHIFenceRef> fences;
         std::shared_ptr<BufferLifetimeState> bufferLifetimeState;
+        uint32 createDescriptorSetLayoutCalls = 0;
+        uint32 createComputePipelineCalls = 0;
         bool failTransientUploadMap = false;
 
     private:
@@ -703,10 +709,78 @@ TEST_F(GPUDrivenValidationFixture, DX12QualificationIsCandidateUntilProductionGa
     EXPECT_EQ(expectedMissingGateMask, qualification.GetMissingGateMask());
 }
 
-TEST_F(GPUDrivenValidationFixture, NonDX12BackendsRemainUnqualified)
+TEST_F(GPUDrivenValidationFixture, VulkanQualificationIsCandidateAndAutoRemainsDirect)
+{
+    const GPUDrivenBackendQualification qualification =
+        GetGPUDrivenBackendQualification(RHIBackendType::Vulkan);
+    EXPECT_EQ(2u, qualification.revision);
+    EXPECT_EQ(GPUDrivenQualificationLevel::Candidate,
+              qualification.GetLevel());
+    EXPECT_FALSE(qualification.IsQualified());
+    const uint64 expectedPassedGateMask =
+        GetGPUDrivenQualificationGateMask(
+            GPUDrivenQualificationGate::RHIContractConformance) |
+        GetGPUDrivenQualificationGateMask(
+            GPUDrivenQualificationGate::ShaderPipelineContracts) |
+        GetGPUDrivenQualificationGateMask(
+            GPUDrivenQualificationGate::DescriptorIntegrity) |
+        GetGPUDrivenQualificationGateMask(
+            GPUDrivenQualificationGate::ResourceStateValidation) |
+        GetGPUDrivenQualificationGateMask(
+            GPUDrivenQualificationGate::IndirectExecutionSmoke) |
+        GetGPUDrivenQualificationGateMask(
+            GPUDrivenQualificationGate::DirectFallbackSmoke) |
+        GetGPUDrivenQualificationGateMask(
+            GPUDrivenQualificationGate::RepeatedFrameResize) |
+        GetGPUDrivenQualificationGateMask(
+            GPUDrivenQualificationGate::CrossPathImageParity);
+    EXPECT_EQ(expectedPassedGateMask, qualification.passedGateMask);
+    EXPECT_TRUE(qualification.HasPassed(
+        GPUDrivenQualificationGate::RHIContractConformance));
+    EXPECT_TRUE(qualification.HasPassed(
+        GPUDrivenQualificationGate::ShaderPipelineContracts));
+    EXPECT_TRUE(qualification.HasPassed(
+        GPUDrivenQualificationGate::IndirectExecutionSmoke));
+    EXPECT_TRUE(qualification.HasPassed(
+        GPUDrivenQualificationGate::RepeatedFrameResize));
+    EXPECT_TRUE(qualification.HasPassed(
+        GPUDrivenQualificationGate::CrossPathImageParity));
+    EXPECT_FALSE(qualification.HasPassed(
+        GPUDrivenQualificationGate::GPUBasedValidation));
+
+    GPUDrivenPolicyInput input;
+    input.requestedMode = RenderGPUDrivenMode::Auto;
+    input.backend = RHIBackendType::Vulkan;
+    input.supportsComputePipeline = true;
+    input.supportsDescriptorSets = true;
+    input.indexedIndirectExecution.supportsCountBuffer = true;
+    input.pipelineReady = true;
+    const GPUDrivenPolicyDecision decision = ResolveGPUDrivenPolicy(input);
+    EXPECT_FALSE(decision.enabled);
+    EXPECT_EQ(GPUDrivenPolicyReason::BackendNotQualified, decision.reason);
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       GPUCullingUsesSemanticCapabilitiesInsteadOfADx12BackendGate)
+{
+    FakeDevice device;
+    device.backendType = RHIBackendType::Vulkan;
+    device.capabilities.backendType = RHIBackendType::Vulkan;
+    device.EnableGPUScenePipelineObjects();
+
+    GPUCullingConfig config;
+    config.maxInstances = 4;
+    GPUCulling culling;
+    culling.Initialize(&device, config);
+
+    const GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
+    EXPECT_NE(decision.fallbackReason,
+              GPUCullingFallbackReason::ShaderBackendUnsupported);
+}
+
+TEST_F(GPUDrivenValidationFixture, RemainingBackendsRemainUnqualified)
 {
     for (RHIBackendType backend : {
-             RHIBackendType::Vulkan,
              RHIBackendType::Metal,
              RHIBackendType::DX11,
              RHIBackendType::OpenGL,
@@ -928,6 +1002,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackCullsInstancesAndBuildsIndirectCom
               cullingSubmission.execution.argumentBuffer);
     EXPECT_EQ(sizeof(IndirectDrawIndexedCommand),
               cullingSubmission.execution.commandStride);
+    EXPECT_TRUE(cullingSubmission.execution.requiresFirstInstance);
     const RenderSubmissionResult submission =
         RecordIndexedIndirectSubmission(ctx, cullingSubmission);
     EXPECT_TRUE(submission.recorded);
@@ -1309,6 +1384,95 @@ TEST_F(GPUDrivenValidationFixture, GpuExecutionDecisionReportsCapabilityAndPipel
     }
 }
 
+TEST_F(GPUDrivenValidationFixture,
+       GpuCullingFallbackReasonPreservesExistingDiagnosticValues)
+{
+    EXPECT_EQ(4u, static_cast<uint32>(
+        GPUCullingFallbackReason::IndirectDrawCountUnsupported));
+    EXPECT_EQ(12u, static_cast<uint32>(
+        GPUCullingFallbackReason::PipelineResourcesUnavailable));
+    EXPECT_EQ(13u, static_cast<uint32>(
+        GPUCullingFallbackReason::IndirectDrawFirstInstanceUnsupported));
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       GpuExecutionRejectsMissingFirstInstanceBeforePipelineCreationOrRecording)
+{
+    FakeDevice device;
+    device.capabilities.supportsComputePipeline = true;
+    device.capabilities.supportsDescriptorSets = true;
+    device.capabilities.indexedIndirectExecution.supportsCountBuffer = true;
+    device.capabilities.indexedIndirectExecution.supportsFirstInstance = false;
+
+    GPUCulling culling;
+    culling.Initialize(&device, GPUCullingConfig{});
+
+    const GPUCullingExecutionDecision decision = culling.GetExecutionDecision();
+    EXPECT_EQ(GPUCullingExecutionMode::CpuFallback, decision.mode);
+    EXPECT_FALSE(decision.gpuCapable);
+    EXPECT_FALSE(decision.pipelineReady);
+    EXPECT_EQ(GPUCullingFallbackReason::IndirectDrawFirstInstanceUnsupported,
+              decision.fallbackReason);
+    EXPECT_EQ(0u, device.createDescriptorSetLayoutCalls);
+    EXPECT_EQ(0u, device.createComputePipelineCalls);
+
+    culling.BeginFrame();
+    EXPECT_EQ(0u, culling.AddInstance(
+        MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 36)));
+    culling.EndFrame();
+
+    FakeCommandContext context;
+    culling.Cull(context, TestView(), TestProjection());
+    EXPECT_TRUE(culling.WasCpuFallbackUsedLastCull());
+    EXPECT_FALSE(culling.WasGpuExecutionUsedLastCull());
+    EXPECT_EQ(GPUCullingFallbackReason::IndirectDrawFirstInstanceUnsupported,
+              culling.GetLastFallbackReason());
+    EXPECT_TRUE(context.dispatches.empty());
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       IndexedIndirectCountSubmissionRejectsUnsupportedCapabilityWithoutRecording)
+{
+    FakeDevice device;
+    device.capabilities.indexedIndirectExecution.supportsCountBuffer = false;
+
+    RHIBufferDesc argumentDesc;
+    argumentDesc.size = sizeof(IndirectDrawIndexedCommand);
+    argumentDesc.usage = RHIBufferUsage::IndirectArgs;
+    argumentDesc.memoryType = RHIMemoryType::Default;
+    argumentDesc.stride = sizeof(IndirectDrawIndexedCommand);
+    RHIBufferRef argumentBuffer = device.CreateBuffer(argumentDesc);
+    ASSERT_NE(nullptr, argumentBuffer.Get());
+
+    RHIBufferDesc countDesc;
+    countDesc.size = sizeof(uint32);
+    countDesc.usage = RHIBufferUsage::IndirectArgs;
+    countDesc.memoryType = RHIMemoryType::Default;
+    countDesc.stride = sizeof(uint32);
+    RHIBufferRef countBuffer = device.CreateBuffer(countDesc);
+    ASSERT_NE(nullptr, countBuffer.Get());
+
+    GPUCullingIndexedIndirectSubmission cullingSubmission;
+    cullingSubmission.capabilities = &device.capabilities;
+    cullingSubmission.execution.mode = RHIIndirectExecutionMode::CountBuffer;
+    cullingSubmission.execution.argumentBuffer = argumentBuffer.Get();
+    cullingSubmission.execution.commandStride = sizeof(IndirectDrawIndexedCommand);
+    cullingSubmission.execution.maxDrawCount = 1;
+    cullingSubmission.execution.requiresFirstInstance = true;
+    cullingSubmission.execution.countBuffer = countBuffer.Get();
+
+    FakeCommandContext context;
+    const RenderSubmissionResult result =
+        RecordIndexedIndirectSubmission(context, cullingSubmission);
+    EXPECT_FALSE(result.recorded);
+    EXPECT_EQ(RenderSubmissionValidationCode::IndexedIndirectValidationFailed,
+              result.validationCode);
+    EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CapabilityUnsupported,
+              result.indexedIndirectValidationCode);
+    EXPECT_EQ(0u, context.drawIndexedIndirectCalls);
+    EXPECT_EQ(0u, context.drawIndexedIndirectCountCalls);
+}
+
 TEST_F(GPUDrivenValidationFixture, DrawIndexedIndirectHonorsMaxDrawCount)
 {
     FakeDevice device;
@@ -1403,6 +1567,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuildsMeshGroupedIndirectRanges)
         culling.BuildIndexedIndirectGroupSubmission(0);
     EXPECT_EQ(RHIIndirectExecutionMode::FixedCount,
               firstCullingSubmission.execution.mode);
+    EXPECT_TRUE(firstCullingSubmission.execution.requiresFirstInstance);
     EXPECT_EQ(0u, firstCullingSubmission.execution.argumentOffset);
     const RenderSubmissionResult firstSubmission =
         RecordIndexedIndirectSubmission(ctx, firstCullingSubmission);
@@ -1414,6 +1579,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuildsMeshGroupedIndirectRanges)
     EXPECT_EQ(1u, ctx.lastIndirectDrawCount);
     const GPUCullingIndexedIndirectSubmission secondCullingSubmission =
         culling.BuildIndexedIndirectGroupSubmission(1);
+    EXPECT_TRUE(secondCullingSubmission.execution.requiresFirstInstance);
     EXPECT_EQ(sizeof(IndirectDrawIndexedCommand) * 2u,
               secondCullingSubmission.execution.argumentOffset);
     const RenderSubmissionResult secondSubmission =
@@ -2243,9 +2409,16 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     EXPECT_EQ(cullingShader.find("struct GPUInstanceData"), std::string::npos);
     EXPECT_NE(sharedInstance.find("uint candidateIndex;"), std::string::npos);
     EXPECT_NE(sharedInstance.find("uint forceVisible;"), std::string::npos);
-    EXPECT_NE(cullingHeader.find("sizeof(GPUInstanceData) == 216"),
+    EXPECT_NE(sharedInstance.find("uint2 padding;"), std::string::npos);
+    EXPECT_NE(cullingHeader.find("struct alignas(16) GPUInstanceData"),
+              std::string::npos);
+    EXPECT_NE(cullingHeader.find("sizeof(GPUInstanceData) == 224"),
+              std::string::npos);
+    EXPECT_NE(cullingHeader.find("alignof(GPUInstanceData) == 16"),
               std::string::npos);
     EXPECT_NE(cullingHeader.find("offsetof(GPUInstanceData, forceVisible) == 212"),
+              std::string::npos);
+    EXPECT_NE(cullingHeader.find("offsetof(GPUInstanceData, padding) == 216"),
               std::string::npos);
     EXPECT_NE(pipelineHeader.find("GetGPUDrivenPipelineForVariant"), std::string::npos);
     EXPECT_NE(pipelineSource.find("GPUDrivenOpaquePipeline"), std::string::npos);
@@ -2336,6 +2509,93 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
     ShaderCompileResult compactResult = compiler->Compile(options);
     ASSERT_TRUE(compactResult.success) << compactResult.errorMessage;
     EXPECT_FALSE(compactResult.bytecode.empty());
+}
+
+TEST_F(GPUDrivenValidationFixture,
+       GPUCullingComputeShaderEntriesCompileForVulkanWithExpectedLayout)
+{
+    const std::filesystem::path root = FindWorkspaceRoot();
+    ASSERT_FALSE(root.empty());
+
+    const std::filesystem::path shaderPath =
+        root / "Render" / "Shaders" / "GPUDriven" / "GPUCulling.hlsl";
+    const std::string shader = ReadTextFile(shaderPath);
+    ASSERT_FALSE(shader.empty());
+
+    std::unique_ptr<IShaderCompiler> compiler = CreateShaderCompiler();
+    ASSERT_NE(nullptr, compiler);
+
+    const std::string shaderPathString = shaderPath.string();
+    ShaderCompileOptions options;
+    options.stage = RHIShaderStage::Compute;
+    options.sourceCode = shader.c_str();
+    options.sourcePath = shaderPathString.c_str();
+    options.targetBackend = RHIBackendType::Vulkan;
+    options.targetProfile = "cs_6_0";
+    options.enableDebugInfo = false;
+    options.enableOptimization = true;
+
+    const ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
+    options.entryPoint = "CSFrustumCull";
+    ShaderCompileResult frustumResult = compiler->Compile(options);
+    ASSERT_TRUE(frustumResult.success) << frustumResult.errorMessage;
+    ASSERT_FALSE(frustumResult.bytecode.empty());
+    ASSERT_TRUE(frustumResult.reflection.valid);
+    ASSERT_EQ(frustumResult.bytecode.size() % sizeof(uint32), 0u);
+
+    std::vector<uint32> spirvWords(
+        frustumResult.bytecode.size() / sizeof(uint32));
+    std::memcpy(spirvWords.data(), frustumResult.bytecode.data(),
+                frustumResult.bytecode.size());
+    ASSERT_GE(spirvWords.size(), 5u);
+    ASSERT_EQ(spirvWords[0], 0x07230203u);
+
+    bool hasInstanceArrayStride224 = false;
+    bool hasStaleInstanceArrayStride216 = false;
+    for (size_t wordIndex = 5; wordIndex < spirvWords.size();)
+    {
+        const uint16 wordCount = static_cast<uint16>(spirvWords[wordIndex] >> 16u);
+        const uint16 opcode = static_cast<uint16>(spirvWords[wordIndex] & 0xFFFFu);
+        ASSERT_NE(wordCount, 0u);
+        ASSERT_LE(wordIndex + wordCount, spirvWords.size());
+
+        // OpDecorate <target-id> ArrayStride <literal>.
+        if (opcode == 71u && wordCount >= 4u && spirvWords[wordIndex + 2] == 6u)
+        {
+            hasInstanceArrayStride224 |= spirvWords[wordIndex + 3] == 224u;
+            hasStaleInstanceArrayStride216 |= spirvWords[wordIndex + 3] == 216u;
+        }
+        wordIndex += wordCount;
+    }
+    EXPECT_TRUE(hasInstanceArrayStride224);
+    EXPECT_FALSE(hasStaleInstanceArrayStride216);
+    const auto hasBinding = [&frustumResult](uint32 binding,
+                                             RHIBindingType type)
+    {
+        return std::any_of(
+            frustumResult.reflection.resources.begin(),
+            frustumResult.reflection.resources.end(),
+            [binding, type](const ShaderReflection::ResourceBinding& resource)
+            {
+                return resource.set == 0 && resource.binding == binding &&
+                       resource.type == type;
+            });
+    };
+    EXPECT_TRUE(hasBinding(0, RHIBindingType::UniformBuffer));
+    EXPECT_TRUE(hasBinding(1, RHIBindingType::ShaderResourceBuffer));
+    EXPECT_TRUE(hasBinding(2, RHIBindingType::StorageBuffer));
+    EXPECT_TRUE(hasBinding(5, RHIBindingType::StorageBuffer));
+
+    options.entryPoint = "CSCompactDraws";
+    ShaderCompileResult compactResult = compiler->Compile(options);
+    ASSERT_TRUE(compactResult.success) << compactResult.errorMessage;
+    EXPECT_FALSE(compactResult.bytecode.empty());
+    EXPECT_TRUE(compactResult.reflection.valid);
 }
 
 TEST_F(GPUDrivenValidationFixture,

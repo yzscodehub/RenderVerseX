@@ -46,7 +46,7 @@ namespace RVX
     private:
         void CreateSwapchain();
         void CreateImageViews();
-        void CleanupSwapchain();
+        bool CleanupSwapchain();
 
         VkSurfaceFormatKHR ChooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats);
         VkPresentModeKHR ChoosePresentMode(const std::vector<VkPresentModeKHR>& modes);

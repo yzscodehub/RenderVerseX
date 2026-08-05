@@ -673,10 +673,9 @@ void GPUCulling::CreatePipelineResources()
     shaderDesc.backend = m_device->GetBackendType();
     shaderDesc.enableDebugInfo = false;
     shaderDesc.enableOptimization = true;
-    if (shaderDesc.backend == RHIBackendType::DX12)
-    {
-        shaderDesc.targetProfile = "cs_6_0";
-    }
+    // HLSL shader-model selection is source-language metadata, not a DX12
+    // execution gate.  The compiler selects DXIL/SPIR-V from the backend.
+    shaderDesc.targetProfile = "cs_6_0";
 
     shaderDesc.entryPoint = "CSFrustumCull";
     ShaderLoadResult frustumResult = shaderManager.LoadFromFile(m_device, shaderDesc);
@@ -862,9 +861,12 @@ GPUCullingExecutionDecision GPUCulling::EvaluateGpuExecution(bool requirePipelin
         return decision;
     }
 
-    if (m_device->GetBackendType() != RHIBackendType::DX12)
+    // The culling paths encode the source instance in every indexed-indirect
+    // command, so a backend without firstInstance cannot consume this output.
+    if (!capabilities.indexedIndirectExecution.supportsFirstInstance)
     {
-        decision.fallbackReason = GPUCullingFallbackReason::ShaderBackendUnsupported;
+        decision.fallbackReason =
+            GPUCullingFallbackReason::IndirectDrawFirstInstanceUnsupported;
         return decision;
     }
 
@@ -2002,6 +2004,7 @@ GPUCullingIndexedIndirectSubmission GPUCulling::BuildIndexedIndirectSubmission(
         : nullptr;
     submission.execution.argumentBuffer = m_indirectBuffer.Get();
     submission.execution.commandStride = sizeof(IndirectDrawIndexedCommand);
+    submission.execution.requiresFirstInstance = true;
 
     if (m_usedGpuExecutionLastCull && m_drawCountBuffer)
     {
@@ -2037,6 +2040,7 @@ GPUCullingIndexedIndirectSubmission GPUCulling::BuildIndexedIndirectGroupSubmiss
     submission.execution.argumentOffset =
         static_cast<uint64>(group.commandOffset) * sizeof(IndirectDrawIndexedCommand);
     submission.execution.commandStride = sizeof(IndirectDrawIndexedCommand);
+    submission.execution.requiresFirstInstance = true;
 
     if (m_usedGpuExecutionLastCull && m_drawCountBuffer)
     {

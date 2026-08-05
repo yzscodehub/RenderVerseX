@@ -29,6 +29,7 @@ namespace RVX
         const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
         void* pUserData)
     {
+        (void)messageType;
         // Filter out harmless loader messages about missing external overlay layers
         // These occur when third-party software (Epic Games, Steam, etc.) registers
         // Vulkan layers but the layer files are missing or moved
@@ -41,6 +42,11 @@ namespace RVX
             // Skip other common harmless loader messages
             if (strstr(msg, "OverlayVkLayer") != nullptr)
                 return VK_FALSE;
+        }
+
+        if (auto* device = static_cast<VulkanDevice*>(pUserData))
+        {
+            device->RecordValidationMessage(messageSeverity);
         }
 
         if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
@@ -348,6 +354,7 @@ namespace RVX
                 VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                 VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
             debugCreateInfo.pfnUserCallback = DebugCallback;
+            debugCreateInfo.pUserData = this;
 
             createInfo.pNext = &debugCreateInfo;
         }
@@ -368,6 +375,11 @@ namespace RVX
                 RVX_RHI_INFO("Vulkan validation layers enabled");
             }
         }
+
+        // The requested layer may be unavailable.  Keep every downstream
+        // decision tied to the layer state actually used to create the
+        // instance rather than the original request.
+        m_validationEnabled = enableValidation;
 
         return true;
     }
@@ -429,6 +441,29 @@ namespace RVX
 
             if (!CheckDeviceExtensionSupport(device))
                 continue;
+
+            VkPhysicalDeviceVulkan12Features vulkan12Support = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+            VkPhysicalDeviceVulkan13Features vulkan13Support = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+            VkPhysicalDeviceFeatures2 featureSupport = {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            featureSupport.pNext = &vulkan12Support;
+            vulkan12Support.pNext = &vulkan13Support;
+            vkGetPhysicalDeviceFeatures2(device, &featureSupport);
+
+            const VulkanRequiredDeviceFeatureSupport requiredSupport = {
+                props.apiVersion,
+                vulkan12Support.timelineSemaphore == VK_TRUE,
+                vulkan13Support.dynamicRendering == VK_TRUE,
+                vulkan13Support.synchronization2 == VK_TRUE};
+            if (!IsVulkanRequiredDeviceConfigurationSupported(requiredSupport))
+            {
+                RVX_RHI_DEBUG(
+                    "Skipping GPU {}: Vulkan backend requires API 1.3 plus timelineSemaphore, dynamicRendering, and synchronization2",
+                    props.deviceName);
+                continue;
+            }
 
             // Score device - prioritize discrete GPUs heavily
             // Discrete GPUs get 100000 base score to ensure they're always preferred
@@ -545,15 +580,28 @@ namespace RVX
     bool VulkanDevice::CreateLogicalDevice()
     {
         m_enabledDrawIndirectFirstInstance = false;
+        m_enabledTimelineSemaphore = false;
+        m_enabledMultiDrawIndirect = false;
+        m_enabledDrawIndirectCount = false;
+        m_enabledDrawIndirectCountKHR = false;
+        m_enabledDescriptorIndexing = false;
+        m_enabledBufferDeviceAddress = false;
+        m_enabledGeometryShader = false;
+        m_enabledTessellationShader = false;
+        m_enabledSynchronization2 = false;
+        m_enabledDynamicRendering = false;
+        m_enabledMemoryBudget = false;
+        m_indexedIndirectCountDispatch =
+            VulkanIndexedIndirectCountDispatch::None;
+        m_vkCmdDrawIndexedIndirectCount = nullptr;
+        m_vkCmdDrawIndexedIndirectCountKHR = nullptr;
         std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+        // Multi-family scheduling requires paired queue-family ownership
+        // release/acquire barriers. The RenderGraph cannot emit those pairs
+        // yet, so logical Compute and Copy alias the graphics queue.
         std::set<uint32> uniqueQueueFamilies = {
             m_queueFamilies.graphicsFamily.value()
         };
-
-        if (m_queueFamilies.computeFamily.has_value())
-            uniqueQueueFamilies.insert(m_queueFamilies.computeFamily.value());
-        if (m_queueFamilies.transferFamily.has_value())
-            uniqueQueueFamilies.insert(m_queueFamilies.transferFamily.value());
 
         float queuePriority = 1.0f;
         for (uint32 queueFamily : uniqueQueueFamilies)
@@ -565,13 +613,10 @@ namespace RVX
             queueCreateInfos.push_back(queueCreateInfo);
         }
 
-        // Enable device features
-        VkPhysicalDeviceFeatures2 features2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-        VkPhysicalDeviceVulkan12Features vulkan12Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-        VkPhysicalDeviceVulkan13Features vulkan13Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-
         std::vector<const char*> enabledExtensions = s_deviceExtensions;
-#ifdef VK_EXT_device_fault
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(m_physicalDevice, &properties);
+
         uint32 extensionCount = 0;
         vkEnumerateDeviceExtensionProperties(
             m_physicalDevice, nullptr, &extensionCount, nullptr);
@@ -581,17 +626,88 @@ namespace RVX
             nullptr,
             &extensionCount,
             availableExtensions.data());
+        const auto hasAvailableExtension = [&availableExtensions](
+            const char* extensionName)
+        {
+            return std::any_of(
+                availableExtensions.begin(), availableExtensions.end(),
+                [extensionName](const VkExtensionProperties& extension)
+                {
+                    return std::strcmp(extension.extensionName, extensionName) == 0;
+                });
+        };
+        const auto enableExtension = [&enabledExtensions](const char* extensionName)
+        {
+            const bool alreadyEnabled = std::any_of(
+                enabledExtensions.begin(), enabledExtensions.end(),
+                [extensionName](const char* enabledExtension)
+                {
+                    return std::strcmp(enabledExtension, extensionName) == 0;
+                });
+            if (!alreadyEnabled)
+            {
+                enabledExtensions.push_back(extensionName);
+            }
+        };
+
+        // The KHR command has no separate feature bit.  It is considered only
+        // below Vulkan 1.2; on 1.2+ a disabled core feature must fail closed.
+        const bool khrDrawIndirectCountAvailable =
+            properties.apiVersion < VK_API_VERSION_1_2 &&
+            hasAvailableExtension(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
+        if (khrDrawIndirectCountAvailable)
+        {
+            enableExtension(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
+        }
+
+        const bool memoryBudgetExtensionEnabled =
+            SelectVulkanMemoryBudgetExtensionEnabled(
+                hasAvailableExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME));
+        if (memoryBudgetExtensionEnabled)
+        {
+            enableExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        }
+
+#ifdef VK_EXT_device_fault
         const bool deviceFaultExtensionAvailable =
-            std::any_of(availableExtensions.begin(),
-                        availableExtensions.end(),
-                        [](const VkExtensionProperties& extension) {
-                            return std::strcmp(
-                                       extension.extensionName,
-                                       VK_EXT_DEVICE_FAULT_EXTENSION_NAME) == 0;
-                        });
+            hasAvailableExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
         VkPhysicalDeviceFaultFeaturesEXT deviceFaultFeatures = {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
 #endif
+
+        // Query physical support, then build a distinct enabled feature chain.
+        // The queried chain must never be passed through after being mutated.
+        VkPhysicalDeviceFeatures2 supportedFeatures = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        VkPhysicalDeviceVulkan12Features supportedVulkan12 = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceVulkan13Features supportedVulkan13 = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+        supportedFeatures.pNext = &supportedVulkan12;
+        supportedVulkan12.pNext = &supportedVulkan13;
+#ifdef VK_EXT_device_fault
+        supportedVulkan13.pNext = &deviceFaultFeatures;
+#endif
+        vkGetPhysicalDeviceFeatures2(m_physicalDevice, &supportedFeatures);
+
+        const VulkanRequiredDeviceFeatureSupport requiredSupport = {
+            properties.apiVersion,
+            supportedVulkan12.timelineSemaphore == VK_TRUE,
+            supportedVulkan13.dynamicRendering == VK_TRUE,
+            supportedVulkan13.synchronization2 == VK_TRUE};
+        if (!IsVulkanRequiredDeviceConfigurationSupported(requiredSupport))
+        {
+            RVX_RHI_ERROR(
+                "Selected Vulkan GPU no longer satisfies the required API 1.3 timelineSemaphore, dynamicRendering, and synchronization2 configuration");
+            return false;
+        }
+
+        VkPhysicalDeviceFeatures2 features2 = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        VkPhysicalDeviceVulkan12Features vulkan12Features = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceVulkan13Features vulkan13Features = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
 
         features2.pNext = &vulkan12Features;
         vulkan12Features.pNext = &vulkan13Features;
@@ -602,21 +718,37 @@ namespace RVX
         }
 #endif
 
-        vkGetPhysicalDeviceFeatures2(m_physicalDevice, &features2);
-
-        // This bit remains in the feature chain passed to vkCreateDevice.
-        // Publish it only after creation succeeds so capabilities describe the
-        // logical device rather than physical-device availability.
+        // Publish enabled bits only after logical-device creation succeeds.
         const bool enableDrawIndirectFirstInstance =
-            features2.features.drawIndirectFirstInstance == VK_TRUE;
+            supportedFeatures.features.drawIndirectFirstInstance == VK_TRUE;
+        const bool enableTimelineSemaphore =
+            supportedVulkan12.timelineSemaphore == VK_TRUE;
+        const bool enableMultiDrawIndirect =
+            supportedFeatures.features.multiDrawIndirect == VK_TRUE;
+        const bool enableDrawIndirectCount =
+            properties.apiVersion >= VK_API_VERSION_1_2 &&
+            supportedVulkan12.drawIndirectCount == VK_TRUE;
+        const bool enableDescriptorIndexing =
+            supportedVulkan12.descriptorIndexing == VK_TRUE;
+        const bool enableBufferDeviceAddress =
+            supportedVulkan12.bufferDeviceAddress == VK_TRUE;
+        const bool enableGeometryShader =
+            supportedFeatures.features.geometryShader == VK_TRUE;
+        const bool enableTessellationShader =
+            supportedFeatures.features.tessellationShader == VK_TRUE;
+        const bool enableSynchronization2 =
+            supportedVulkan13.synchronization2 == VK_TRUE;
+        const bool enableDynamicRendering =
+            supportedVulkan13.dynamicRendering == VK_TRUE;
 
 #ifdef VK_EXT_device_fault
+        m_deviceFaultEnabled = false;
         m_deviceFaultEnabled =
             deviceFaultExtensionAvailable &&
             deviceFaultFeatures.deviceFault == VK_TRUE;
         if (m_deviceFaultEnabled)
         {
-            enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+            enableExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
         }
         else
         {
@@ -624,19 +756,38 @@ namespace RVX
         }
 #endif
 
-        // Enable specific features
-        features2.features.samplerAnisotropy = VK_TRUE;
-        features2.features.fillModeNonSolid = VK_TRUE;
-        features2.features.multiDrawIndirect = VK_TRUE;
+        // Enable only the feature bits reported by the physical device.  This
+        // makes the subsequent member snapshot an exact logical-device record.
+        features2.features.samplerAnisotropy =
+            supportedFeatures.features.samplerAnisotropy;
+        features2.features.fillModeNonSolid =
+            supportedFeatures.features.fillModeNonSolid;
+        features2.features.multiDrawIndirect =
+            enableMultiDrawIndirect ? VK_TRUE : VK_FALSE;
+        features2.features.geometryShader =
+            enableGeometryShader ? VK_TRUE : VK_FALSE;
+        features2.features.tessellationShader =
+            enableTessellationShader ? VK_TRUE : VK_FALSE;
+        features2.features.drawIndirectFirstInstance =
+            enableDrawIndirectFirstInstance ? VK_TRUE : VK_FALSE;
 
-        vulkan12Features.descriptorIndexing = VK_TRUE;
-        vulkan12Features.descriptorBindingPartiallyBound = VK_TRUE;
-        vulkan12Features.runtimeDescriptorArray = VK_TRUE;
-        vulkan12Features.timelineSemaphore = VK_TRUE;
-        vulkan12Features.bufferDeviceAddress = VK_TRUE;
+        vulkan12Features.drawIndirectCount =
+            enableDrawIndirectCount ? VK_TRUE : VK_FALSE;
+        vulkan12Features.descriptorIndexing =
+            enableDescriptorIndexing ? VK_TRUE : VK_FALSE;
+        vulkan12Features.descriptorBindingPartiallyBound =
+            supportedVulkan12.descriptorBindingPartiallyBound;
+        vulkan12Features.runtimeDescriptorArray =
+            supportedVulkan12.runtimeDescriptorArray;
+        vulkan12Features.timelineSemaphore =
+            enableTimelineSemaphore ? VK_TRUE : VK_FALSE;
+        vulkan12Features.bufferDeviceAddress =
+            enableBufferDeviceAddress ? VK_TRUE : VK_FALSE;
 
-        vulkan13Features.dynamicRendering = VK_TRUE;
-        vulkan13Features.synchronization2 = VK_TRUE;
+        vulkan13Features.dynamicRendering =
+            enableDynamicRendering ? VK_TRUE : VK_FALSE;
+        vulkan13Features.synchronization2 =
+            enableSynchronization2 ? VK_TRUE : VK_FALSE;
 
         VkDeviceCreateInfo createInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         createInfo.pNext = &features2;
@@ -659,19 +810,44 @@ namespace RVX
         }
 
         m_enabledDrawIndirectFirstInstance = enableDrawIndirectFirstInstance;
+        m_enabledTimelineSemaphore = enableTimelineSemaphore;
+        m_enabledMultiDrawIndirect = enableMultiDrawIndirect;
+        m_enabledDrawIndirectCount = enableDrawIndirectCount;
+        m_enabledDrawIndirectCountKHR = khrDrawIndirectCountAvailable;
+        m_enabledDescriptorIndexing = enableDescriptorIndexing;
+        m_enabledBufferDeviceAddress = enableBufferDeviceAddress;
+        m_enabledGeometryShader = enableGeometryShader;
+        m_enabledTessellationShader = enableTessellationShader;
+        m_enabledDynamicRendering = enableDynamicRendering;
+        m_enabledSynchronization2 = enableSynchronization2;
+        m_enabledMemoryBudget = memoryBudgetExtensionEnabled;
+        m_vkCmdDrawIndexedIndirectCount =
+            reinterpret_cast<PFN_vkCmdDrawIndexedIndirectCount>(
+                vkGetDeviceProcAddr(m_device, "vkCmdDrawIndexedIndirectCount"));
+        m_vkCmdDrawIndexedIndirectCountKHR =
+            reinterpret_cast<PFN_vkCmdDrawIndexedIndirectCountKHR>(
+                vkGetDeviceProcAddr(m_device, "vkCmdDrawIndexedIndirectCountKHR"));
+        m_indexedIndirectCountDispatch = SelectVulkanIndexedIndirectCountDispatch({
+            properties.apiVersion,
+            m_enabledDrawIndirectCount,
+            m_enabledDrawIndirectCountKHR,
+            m_vkCmdDrawIndexedIndirectCount != nullptr,
+            m_vkCmdDrawIndexedIndirectCountKHR != nullptr});
+        if ((m_enabledDrawIndirectCount || m_enabledDrawIndirectCountKHR) &&
+            m_indexedIndirectCountDispatch ==
+                VulkanIndexedIndirectCountDispatch::None)
+        {
+            RVX_RHI_WARN(
+                "Vulkan indexed indirect-count was enabled but no usable command entry point loaded");
+        }
 
-        // Get queues
+        // The logical Compute and Copy domains intentionally alias Graphics
+        // until paired ownership transfers are implemented end-to-end.
         vkGetDeviceQueue(m_device, m_queueFamilies.graphicsFamily.value(), 0, &m_graphicsQueue);
-        if (m_queueFamilies.computeFamily.has_value())
-            vkGetDeviceQueue(m_device, m_queueFamilies.computeFamily.value(), 0, &m_computeQueue);
-        else
-            m_computeQueue = m_graphicsQueue;
-        if (m_queueFamilies.transferFamily.has_value())
-            vkGetDeviceQueue(m_device, m_queueFamilies.transferFamily.value(), 0, &m_transferQueue);
-        else
-            m_transferQueue = m_graphicsQueue;
+        m_computeQueue = m_graphicsQueue;
+        m_transferQueue = m_graphicsQueue;
 
-        RVX_RHI_DEBUG("Command queues created (Graphics, Compute, Transfer)");
+        RVX_RHI_DEBUG("Command queues created (Compute and Copy alias Graphics until ownership transfers are implemented)");
         return true;
     }
 
@@ -718,11 +894,17 @@ namespace RVX
         allocatorInfo.instance = m_instance;
         allocatorInfo.pVulkanFunctions = &vulkanFunctions;
 
-        // Enable buffer device address for bindless/raytracing
-        allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        // VMA may request device-address allocation flags only when the
+        // logical device actually enabled bufferDeviceAddress.
+        if (m_enabledBufferDeviceAddress)
+        {
+            allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        }
 
-        // Enable memory budget extension for better memory tracking (if available)
-        allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+        if (m_enabledMemoryBudget)
+        {
+            allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+        }
 
         VkResult result = vmaCreateAllocator(&allocatorInfo, &m_allocator);
         if (result != VK_SUCCESS)
@@ -746,27 +928,8 @@ namespace RVX
         poolInfo.queueFamilyIndex = m_queueFamilies.graphicsFamily.value();
         VK_CHECK(vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_graphicsCommandPool));
 
-        if (m_queueFamilies.computeFamily.has_value() &&
-            m_queueFamilies.computeFamily.value() != m_queueFamilies.graphicsFamily.value())
-        {
-            poolInfo.queueFamilyIndex = m_queueFamilies.computeFamily.value();
-            VK_CHECK(vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_computeCommandPool));
-        }
-        else
-        {
-            m_computeCommandPool = m_graphicsCommandPool;
-        }
-
-        if (m_queueFamilies.transferFamily.has_value() &&
-            m_queueFamilies.transferFamily.value() != m_queueFamilies.graphicsFamily.value())
-        {
-            poolInfo.queueFamilyIndex = m_queueFamilies.transferFamily.value();
-            VK_CHECK(vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_transferCommandPool));
-        }
-        else
-        {
-            m_transferCommandPool = m_graphicsCommandPool;
-        }
+        m_computeCommandPool = m_graphicsCommandPool;
+        m_transferCommandPool = m_graphicsCommandPool;
 
         return true;
     }
@@ -926,6 +1089,19 @@ namespace RVX
         }
     }
 
+    void VulkanDevice::RecordValidationMessage(
+        VkDebugUtilsMessageSeverityFlagBitsEXT severity) noexcept
+    {
+        if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+        {
+            m_validationErrorCount.fetch_add(1, std::memory_order_relaxed);
+        }
+        else if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+        {
+            m_validationWarningCount.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
     // =============================================================================
     // Capabilities Query
     // =============================================================================
@@ -952,35 +1128,16 @@ namespace RVX
             }
         }
 
-        // Query available device extensions for capability detection
-        uint32 extensionCount = 0;
-        vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extensionCount, nullptr);
-        std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-        vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extensionCount, availableExtensions.data());
-
-        auto hasExtension = [&availableExtensions](const char* extensionName) {
-            for (const auto& ext : availableExtensions)
-            {
-                if (strcmp(ext.extensionName, extensionName) == 0)
-                    return true;
-            }
-            return false;
-        };
-
-        // Feature support
-        VkPhysicalDeviceFeatures2 features2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-        VkPhysicalDeviceVulkan12Features vulkan12Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-        features2.pNext = &vulkan12Features;
-        vkGetPhysicalDeviceFeatures2(m_physicalDevice, &features2);
-
-        m_capabilities.supportsBindless = vulkan12Features.descriptorIndexing;
+        // Capabilities are logical-device facts.  Do not re-query physical
+        // availability here: an extension or feature that was not enabled is
+        // unavailable to RHI callers.
+        // Descriptor indexing is enabled as a Vulkan feature fact, but the
+        // backend has not implemented the RHI bindless resource model.
+        m_capabilities.supportsBindless = false;
 
         // Vulkan ray tracing stays disabled until the backend implements AS creation,
         // AS builds, RT pipeline state, shader tables, and DispatchRays.
-        const bool hasRayTracingExtensions =
-            hasExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) &&
-            hasExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
-            hasExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        constexpr bool hasRayTracingExtensions = false;
         m_capabilities.supportsRaytracing = false;
         m_capabilities.supportsRaytracingPipeline = false;
         m_capabilities.supportsRayQuery = false;
@@ -995,8 +1152,8 @@ namespace RVX
         // logical device, so physical-device availability must not be reported.
         m_capabilities.supportsMeshShaders = false;
 
-        // Check for variable rate shading support (VK_KHR_fragment_shading_rate)
-        m_capabilities.supportsVariableRateShading = hasExtension(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+        // Fragment shading rate is not enabled on this logical device.
+        m_capabilities.supportsVariableRateShading = false;
 
         // Query pools are intentionally reported unsupported until the backend
         // creates VkQueryPool objects and resolves their results.
@@ -1032,20 +1189,26 @@ namespace RVX
 
         // Vulkan-specific
         m_capabilities.vulkan.maxPushConstantSize = props.limits.maxPushConstantsSize;
-        m_capabilities.vulkan.supportsDescriptorIndexing = vulkan12Features.descriptorIndexing;
-        m_capabilities.vulkan.supportsBufferDeviceAddress = vulkan12Features.bufferDeviceAddress;
+        m_capabilities.vulkan.supportsDescriptorIndexing = m_enabledDescriptorIndexing;
+        m_capabilities.vulkan.supportsBufferDeviceAddress = m_enabledBufferDeviceAddress;
         m_capabilities.vulkan.apiVersion = props.apiVersion;
 
         // Dynamic state and advanced features
-        m_capabilities.supportsDepthBounds = true;              // Vulkan supports depth bounds
-        m_capabilities.supportsDynamicLineWidth = true;         // Vulkan supports dynamic line width
+        m_capabilities.supportsDepthBounds = false;
+        // wideLines is neither enabled nor represented by the RHI semantic.
+        m_capabilities.supportsDynamicLineWidth = false;
         m_capabilities.supportsSeparateStencilRef = true;       // Vulkan supports separate stencil refs
         m_capabilities.supportsSplitBarrier = false;            // Event-based split barriers are not implemented yet
-        m_capabilities.supportsSecondaryCommandBuffer = true;   // Vulkan supports secondary command buffers
-        m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
-        // vkCmdDrawIndexedIndirectCount is intentionally not wired through the
-        // raw RHI command contract yet; Task 12 owns that implementation.
-        m_capabilities.indexedIndirectExecution.supportsCountBuffer = false;
+        m_capabilities.supportsSecondaryCommandBuffer = false;
+        const VulkanIndexedIndirectExecutionSelection indirectSelection =
+            SelectVulkanIndexedIndirectExecutionSelection({
+                m_enabledMultiDrawIndirect,
+                m_indexedIndirectCountDispatch,
+                props.limits.maxDrawIndirectCount});
+        m_capabilities.indexedIndirectExecution.supportsFixedCount =
+            indirectSelection.supportsFixedCount;
+        m_capabilities.indexedIndirectExecution.supportsCountBuffer =
+            indirectSelection.supportsCountBuffer;
         m_capabilities.indexedIndirectExecution.supportsFirstInstance =
             m_enabledDrawIndirectFirstInstance;
         m_capabilities.indexedIndirectExecution.requiresExactCommandStride = false;
@@ -1054,57 +1217,28 @@ namespace RVX
         m_capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
         m_capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
         m_capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
-        m_capabilities.indexedIndirectExecution.maxDrawCount = props.limits.maxDrawIndirectCount;
+        m_capabilities.indexedIndirectExecution.maxDrawCount =
+            indirectSelection.maxDrawCount;
         m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
         m_capabilities.indexedIndirectExecution.requiredArgumentState = RHIResourceState::IndirectArgument;
         m_capabilities.indexedIndirectExecution.requiredCountState = RHIResourceState::IndirectArgument;
         m_capabilities.supportsIndirectDrawCount =
             m_capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_capabilities.supportsComputePipeline = true;          // Vulkan exposes compute pipelines in the base API
-        const auto sameQueue = [](uint32 leftFamily,
-                                  VkQueue leftQueue,
-                                  uint32 rightFamily,
-                                  VkQueue rightQueue)
-        {
-            return leftFamily == rightFamily && leftQueue == rightQueue;
-        };
-        const uint32 graphicsFamily = GetGraphicsQueueFamily();
-        const uint32 computeFamily = GetComputeQueueFamily();
-        const uint32 transferFamily = GetTransferQueueFamily();
-        const GPUQueueDomain computeDomain =
-            sameQueue(graphicsFamily, m_graphicsQueue, computeFamily, m_computeQueue)
-                ? GPUQueueDomain::Graphics
-                : GPUQueueDomain::Compute;
-        GPUQueueDomain copyDomain = GPUQueueDomain::Copy;
-        if (sameQueue(graphicsFamily, m_graphicsQueue, transferFamily, m_transferQueue))
-        {
-            copyDomain = GPUQueueDomain::Graphics;
-        }
-        else if (sameQueue(computeFamily, m_computeQueue, transferFamily, m_transferQueue))
-        {
-            copyDomain = computeDomain;
-        }
-
         m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
         m_capabilities.queueTopology.logicalQueueDomains = {
             GPUQueueDomain::Graphics,
-            computeDomain,
-            copyDomain,
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics,
         };
-        std::array<bool, 3> activeDomains{};
-        for (GPUQueueDomain domain : m_capabilities.queueTopology.logicalQueueDomains)
-        {
-            activeDomains[static_cast<uint8>(domain)] = true;
-        }
-        m_capabilities.queueTopology.activeDomainCount = static_cast<uint8>(
-            std::count(activeDomains.begin(), activeDomains.end(), true));
-        m_capabilities.supportsAsyncCompute = computeDomain != GPUQueueDomain::Graphics;
+        m_capabilities.queueTopology.activeDomainCount = 1;
+        m_capabilities.supportsAsyncCompute = false;
         m_capabilities.supportsDescriptorSets = true;
         m_capabilities.supportsDynamicDescriptorOffsets = true;
         m_capabilities.maxDescriptorSets = 4;
         m_capabilities.supportsExplicitResourceBarriers = true;
         m_capabilities.emulatesResourceBarriers = false;
-        m_capabilities.supportsMemoryBudgetQuery = true;        // VK_EXT_memory_budget
+        m_capabilities.supportsMemoryBudgetQuery = m_enabledMemoryBudget;
         m_capabilities.supportsPersistentMapping = true;        // Vulkan supports persistent mapping
         m_capabilities.supportsExplicitHeapManagement = true;   // Vulkan backend implements explicit heaps
     }
@@ -1118,9 +1252,12 @@ namespace RVX
         {
             return;
         }
+        std::lock_guard<std::mutex> lock(m_graphicsQueueMutex);
+        const uint32 frameIndex = m_currentFrameIndex;
+
         // Wait for the frame's fence before reusing resources
         VkResult result = vkWaitForFences(
-            m_device, 1, &m_frameFences[m_currentFrameIndex],
+            m_device, 1, &m_frameFences[frameIndex],
             VK_TRUE, UINT64_MAX);
         if (result != VK_SUCCESS)
         {
@@ -1130,7 +1267,7 @@ namespace RVX
             return;
         }
         result = vkResetFences(
-            m_device, 1, &m_frameFences[m_currentFrameIndex]);
+            m_device, 1, &m_frameFences[frameIndex]);
         if (result != VK_SUCCESS)
         {
             ReportRuntimeFailure(result,
@@ -1138,6 +1275,7 @@ namespace RVX
                                  "Vulkan frame fence reset failed");
             return;
         }
+        m_frameFenceArmed[frameIndex] = true;
         ProcessDeferredSemaphoreDestroys(false);
     }
 
@@ -1147,7 +1285,46 @@ namespace RVX
         {
             return;
         }
+
+        std::lock_guard<std::mutex> lock(m_graphicsQueueMutex);
+        const uint32 frameIndex = m_currentFrameIndex;
+        if (m_frameFenceArmed[frameIndex])
+        {
+            // AbortFrame and a frame with no graphics submission still need
+            // completion evidence before this frame slot is reused.
+            VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            const VkResult result = vkQueueSubmit(
+                m_graphicsQueue,
+                1,
+                &submitInfo,
+                m_frameFences[frameIndex]);
+            if (result != VK_SUCCESS)
+            {
+                ReportRuntimeFailure(
+                    result,
+                    RHIDeviceFaultOperation::CommandSubmission,
+                    "Vulkan empty frame-fence submission failed");
+                return;
+            }
+            m_frameFenceArmed[frameIndex] = false;
+        }
         m_currentFrameIndex = (m_currentFrameIndex + 1) % RVX_MAX_FRAME_COUNT;
+    }
+
+    VkFence VulkanDevice::GetArmedFrameFenceForSubmission() const
+    {
+        return m_frameFenceArmed[m_currentFrameIndex]
+            ? m_frameFences[m_currentFrameIndex]
+            : VK_NULL_HANDLE;
+    }
+
+    void VulkanDevice::MarkArmedFrameFenceSubmitted(VkFence fence)
+    {
+        if (fence == m_frameFences[m_currentFrameIndex] &&
+            m_frameFenceArmed[m_currentFrameIndex])
+        {
+            m_frameFenceArmed[m_currentFrameIndex] = false;
+        }
     }
 
     VkSemaphore VulkanDevice::GetRenderFinishedSemaphore() const
@@ -1168,7 +1345,14 @@ namespace RVX
         if (m_device &&
             QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
         {
-            const VkResult result = vkDeviceWaitIdle(m_device);
+            // vkDeviceWaitIdle externally synchronizes every queue owned by
+            // the device. Compute and Copy currently alias Graphics, so use
+            // the same host-operation mutex as submit, signal, and present.
+            const VkResult result = [&]()
+            {
+                std::lock_guard<std::mutex> lock(m_graphicsQueueMutex);
+                return vkDeviceWaitIdle(m_device);
+            }();
             if (result != VK_SUCCESS)
             {
                 ReportRuntimeFailure(result,
@@ -1551,20 +1735,7 @@ namespace RVX
         bufferInfo.size = desc.size;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        // Usage flags
-        bufferInfo.usage = 0;
-        if (HasFlag(desc.usage, RHIBufferUsage::Vertex))
-            bufferInfo.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::Index))
-            bufferInfo.usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::Constant))
-            bufferInfo.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::ShaderResource))
-            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        if (HasFlag(desc.usage, RHIBufferUsage::UnorderedAccess))
-            bufferInfo.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-
-        bufferInfo.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bufferInfo.usage = ToVkBufferUsage(desc.usage);
 
         VkBuffer tempBuffer = VK_NULL_HANDLE;
         VkResult result = vkCreateBuffer(m_device, &bufferInfo, nullptr, &tempBuffer);
@@ -1701,7 +1872,12 @@ namespace RVX
     {
         RHIMemoryStats stats = {};
 
-        // Query VK_EXT_memory_budget if available
+        if (!m_enabledMemoryBudget)
+        {
+            return stats;
+        }
+
+        // Query only because VK_EXT_memory_budget was enabled on the logical device.
         VkPhysicalDeviceMemoryBudgetPropertiesEXT budgetProps = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
         VkPhysicalDeviceMemoryProperties2 memProps = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
         memProps.pNext = &budgetProps;

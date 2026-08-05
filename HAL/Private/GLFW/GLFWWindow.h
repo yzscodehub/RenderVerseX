@@ -26,6 +26,7 @@ namespace RVX::HAL
         void PollEvents() override;
         bool ShouldClose() const override;
         void GetFramebufferSize(uint32& width, uint32& height) const override;
+        bool RequestResize(uint32 width, uint32 height) override;
         float GetDpiScale() const override;
         void* GetNativeHandle() const override;
         void* GetInternalHandle() const override { return m_window; }

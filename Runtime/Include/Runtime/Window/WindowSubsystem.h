@@ -71,6 +71,9 @@ namespace RVX
         /// Get framebuffer size
         void GetFramebufferSize(uint32_t& width, uint32_t& height) const;
 
+        /// Request a native resize; Tick publishes the observed framebuffer generation.
+        bool RequestResize(uint32 width, uint32 height);
+
         /// Get DPI scale
         float GetDpiScale() const;
 

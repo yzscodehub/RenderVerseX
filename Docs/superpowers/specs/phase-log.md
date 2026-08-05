@@ -47292,3 +47292,104 @@ below.
   promotion.
 
 ---
+
+### R-SP361 Render-policy Task 12 Vulkan Tier 1 Candidate qualification
+
+**Date:** 2026-08-05
+**Commit:** Included in the Task 12 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP360 (GPU Scene M3 diagnostics and workload exit).
+- Task 10 froze the backend-neutral indexed-indirect/submission strategy and
+  Task 11 completed the DX12 GPU Scene lane. Vulkan still exposed several
+  physically available features as semantic capabilities, had no native
+  count-command qualification evidence, and lacked resize/parity coverage.
+
+**Approved scope:**
+
+- Require the Vulkan 1.3 baseline actually consumed by the backend, snapshot
+  the enabled feature/extension chain, and publish semantic capabilities only
+  from enabled implementation state. Keep unsupported bindless, depth-bounds,
+  dynamic-line-width, secondary-command-buffer, ray-tracing, mesh, and async
+  queue claims disabled.
+- Select `vkCmdDrawIndexedIndirectCount` core/KHR dispatch explicitly and
+  validate fixed/count RHI descriptors, buffer usage/ranges, offsets, stride,
+  count limits, and live backend resources before native recording. Require
+  first-instance semantics for GPU culling and preserve Direct/fixed fallback.
+- Keep logical Compute and Copy domains aliased to Graphics until paired queue
+  ownership is implemented. Serialize submit/present/wait/retirement host
+  operations, avoid redundant cross-queue semaphores for aliased queues, and
+  gate optional synchronization2 shader stages by enabled features.
+- Repair frame-fence ownership across swapchain, headless, raw-submit, and
+  aborted frames. Clean swapchain children and the instance-owned surface after
+  device loss without attempting to recreate a terminal generation.
+- Use the shared 224-byte C++/HLSL instance layout, Vulkan shader targets, real
+  framebuffer resize observation, deterministic new-generation clear, and a
+  fail-closed seven-gate native runner. Keep Vulkan Candidate and `Auto` Direct.
+
+**Files changed:**
+
+- Vulkan device, command-context, resource, synchronization, queue, and
+  swapchain implementation under `RHI_Vulkan/Private`.
+- GPU-driven capability/qualification/culling contracts and the shared
+  instance shader ABI under `Render`.
+- Window resize plumbing under `HAL` and `Runtime`, ModelViewer smoke/evidence
+  behavior, focused Vulkan/GPU-driven/RHI tests, CMake registration, and
+  `Scripts/run_task12_vulkan_candidate.ps1`.
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial build: PASS for VulkanValidation, GPUDrivenValidation,
+  RHIContractValidation, ModelViewer, RenderPassValidation,
+  RenderSceneValidation, ShaderCompilerValidation, RenderPolicyValidation,
+  CrossBackendValidation, DX12Validation, RenderThreadRuntimeValidation, and
+  EngineRenderCompositionValidation.
+- Primary tests: Vulkan 37/37, GPU-driven 48/48, RHI contract 44/44, extended
+  render/runtime/cross-backend CTest 167/167, Render Pass 203/203, Shader
+  Compiler 15/15, and Architecture.PhaseGates 1/1.
+- Native Vulkan Candidate runner: PASS on NVIDIA GeForce RTX 4070 Ti. All seven
+  gates completed with zero validation messages/errors/warnings and no orphan
+  process. Direct/GPU and repeated-GPU captures matched exactly at 320x180;
+  Direct/GPU resize captures matched exactly at 192x108. Zero-visible forced
+  GPU execution also completed.
+- Evidence summary:
+  `build/win_x64_debug/Task12Exit/Debug/RootFinal2/Task12VulkanCandidate.summary.json`.
+  Normal parity hash is `1518d947783d2a7c6886496d9f30b36d5063efd00f7e1bfb8075ed52ec4ff24b`;
+  resize parity hash is `c4d60b99a800b314342a87b7df47d90788fbb54138c545e62e0cb0285d2f6566`.
+- PowerShell runner execution, artifact/provenance validation, and scoped
+  `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Review found and remediation closed: headless frame-fence starvation while
+  protecting raw submissions; missing raw Vulkan indexed-indirect validation;
+  device-lost swapchain/surface lifetime leakage; and an under-specified
+  revision-2 qualification-mask assertion.
+- A proposed DX12 resize-state P1 was withdrawn after confirming D3D12
+  `PRESENT` and `COMMON` are the same native state value.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete scoped diff, capability-chain, native dispatch,
+  synchronization, frame-fence, resize-generation, shader-layout, negative
+  fixture, runner-honesty, parity, and validation-layer review.
+- Unrelated `Engine/Private/Engine.cpp`, runtime fatal diagnostics, Python
+  caches, logs, and build artifacts remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- Candidate evidence covers one NVIDIA Vulkan adapter/driver environment; it
+  does not close the adapter/driver matrix, real-asset regression, or promote
+  `Auto`. GPU-based validation remains an explicitly missing qualification
+  gate.
+- Logical Vulkan Compute/Copy queues intentionally alias Graphics. Distinct
+  queues and paired ownership transfers require a separately reviewed RHI and
+  RenderGraph stage.
+- Metal ICB qualification remains open and is owned by Task 13. DX11/OpenGL
+  compatibility closure remains Task 14; neither may weaken the primary
+  DX12/Vulkan/Metal contracts.
+
+---

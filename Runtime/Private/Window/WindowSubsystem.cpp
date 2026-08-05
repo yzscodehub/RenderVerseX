@@ -92,6 +92,23 @@ void WindowSubsystem::GetFramebufferSize(uint32_t& width, uint32_t& height) cons
     }
 }
 
+bool WindowSubsystem::RequestResize(uint32 width, uint32 height)
+{
+    if (!m_window)
+    {
+        RVX_CORE_ERROR("Window resize requested before WindowSubsystem initialization");
+        return false;
+    }
+
+    if (!m_window->RequestResize(width, height))
+    {
+        RVX_CORE_ERROR("Native window resize request failed: {}x{}", width, height);
+        return false;
+    }
+
+    return true;
+}
+
 float WindowSubsystem::GetDpiScale() const
 {
     return m_window ? m_window->GetDpiScale() : 1.0f;

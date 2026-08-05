@@ -1,8 +1,8 @@
 # Render Policy and Draw Packet Remaining Execution TODO
 
 **Status:** Tasks 0-8, all Task 9 slices through Task 9B-6B2b, Tasks
-10A/10B/10C, and every Task 11 slice through Task 11E are complete and
-reviewed; Task 12 is next
+10A/10B/10C, every Task 11 slice through Task 11E, and Task 12 are complete
+and reviewed; Task 13 is next
 **Baseline commit:** `80838c04 feat(render): add mesh pass preparation`
 **Scope:** Engine core and framework; Editor excluded
 **Primary backends:** DX12, Vulkan, Metal
@@ -406,26 +406,26 @@ final-visible prerequisite, and no synchronous readback.
 
 ### Task 12 - Vulkan Tier 1 Strategy and Qualification Candidate
 
-- [ ] Audit physical-device availability versus actually enabled feature and
+- [x] Audit physical-device availability versus actually enabled feature and
   extension chains.
-- [ ] Populate semantic indirect capabilities from enabled Vulkan state.
-- [ ] Implement indexed indirect count through Vulkan 1.2 core or KHR entry
+- [x] Populate semantic indirect capabilities from enabled Vulkan state.
+- [x] Implement indexed indirect count through Vulkan 1.2 core or KHR entry
   points, selected explicitly.
-- [ ] Implement fixed-count or Direct fallback when count-buffer submission is
+- [x] Implement fixed-count or Direct fallback when count-buffer submission is
   unavailable.
-- [ ] Validate indirect/count buffer usage, offset/stride alignment, count
+- [x] Validate indirect/count buffer usage, offset/stride alignment, count
   limits, synchronization2 stage/access mapping, and queue ownership.
-- [ ] Validate shader compilation and layout conventions for Vulkan.
-- [ ] Route Vulkan through the Task 10 submission strategy without DX12
+- [x] Validate shader compilation and layout conventions for Vulkan.
+- [x] Route Vulkan through the Task 10 submission strategy without DX12
   conditions in Render code.
-- [ ] Add capability-negative fixtures that prove unsupported commands are
+- [x] Add capability-negative fixtures that prove unsupported commands are
   never called.
-- [ ] Run Vulkan validation layers, repeated-frame/resize, Direct/forced-GPU
+- [x] Run Vulkan validation layers, repeated-frame/resize, Direct/forced-GPU
   parity, and resource-lifetime gates on the hermetic asset.
-- [ ] Re-run two-view, rejected-frame, resize, queue-ownership, and in-flight
+- [x] Re-run two-view, rejected-frame, resize, queue-ownership, and in-flight
   failure injection on the Vulkan strategy rather than relying only on Task 9
   infrastructure tests.
-- [ ] Create an independent Vulkan qualification revision and keep it Candidate
+- [x] Create an independent Vulkan qualification revision and keep it Candidate
   until every required gate is reviewed.
 
 ### Task 13 - Metal ICB Strategy and Qualification Candidate
@@ -1036,9 +1036,41 @@ delayed GPU timer was truthfully unavailable and reported as zero,
 `nonGating=true`, and `usedForAutoDecision=false`. Task 15 owns measured GPU
 timing, thresholds, hysteresis, and any future `Auto` promotion.
 
-Start **Task 12** next: qualify a Vulkan Tier 1 submission strategy from enabled
-device state, with explicit core/KHR count-command selection, fixed-count or
-Direct fallback, synchronization/ownership validation, negative capability
-fixtures, validation-layer evidence, parity, resize, and in-flight lifetime
-gates. Keep Vulkan Candidate until the independent qualification revision is
-reviewed.
+Task 12 implementation, independent review/remediation, and primary audit are
+complete. The accepted Vulkan Candidate ledger is:
+
+- [x] Require Vulkan 1.3, timeline semaphore, dynamic rendering, and
+  synchronization2; distinguish physical availability from the exact logical
+  feature/extension chain and publish only enabled semantic capabilities.
+- [x] Select indexed indirect count explicitly through Vulkan 1.2 core or KHR,
+  validate fixed/count descriptors before native recording, and fail closed to
+  fixed-count or Direct when multi-draw, first-instance, or count support is
+  unavailable.
+- [x] Keep logical Compute/Copy aliased to Graphics until paired ownership
+  transfers exist; serialize queue host access and avoid cross-queue binary
+  semaphore traffic for aliased native queues.
+- [x] Repair frame-fence ownership for swapchain, headless, raw-submit, and
+  AbortFrame paths; retire swapchain device children and the instance-owned
+  surface even after device loss.
+- [x] Compile the GPU visibility shaders for Vulkan with the shared 224-byte
+  instance ABI and route the backend through the Task 10 strategy without a
+  DX12 condition in Render code.
+- [x] Use actual programmatic framebuffer resize in ModelViewer and wait for a
+  new compatible frame after one deterministic clear; never replay an old
+  surface-generation packet.
+- [x] Add a fail-closed seven-gate Vulkan runner covering Direct, Direct resize,
+  forced GPU, repeated GPU, GPU resize, zero-visible execution, exact P6 parity,
+  validation messages, orphan processes, artifact hashes, and provenance.
+- [x] Complete the native gate on NVIDIA GeForce RTX 4070 Ti: Vulkan 37/37,
+  GPU-driven 48/48, RHI contract 44/44, extended cross-backend/render/runtime
+  167/167, Render Pass 203/203, Shader Compiler 15/15, and
+  Architecture.PhaseGates 1/1. All seven runner gates passed with zero Vulkan
+  validation messages/errors/warnings and exact Direct/GPU parity before and
+  after resize.
+- [x] Finish independent final review with READY and no unresolved P0-P2.
+  Qualification revision 2 remains Candidate and `Auto` remains Direct.
+
+Start **Task 13** next: define and implement the Metal-native ICB strategy on
+available macOS/Apple GPU infrastructure. Hardware availability must be
+confirmed before Candidate evidence is claimed; DX12/Vulkan semantics must not
+be emulated through a weaker shared RHI contract.

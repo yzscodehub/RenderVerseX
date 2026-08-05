@@ -45,7 +45,7 @@ namespace RVX
     /**
      * @brief GPU instance data for culling
      */
-    struct GPUInstanceData
+    struct alignas(16) GPUInstanceData
     {
         Mat4 worldMatrix;
         Mat4 normalMatrix;
@@ -62,10 +62,14 @@ namespace RVX
         uint32 drawGroupCommandOffset;
         uint32 candidateIndex = RVX_INVALID_INDEX;
         uint32 forceVisible = 0;
+        // Keep the structured-buffer element stride 16-byte aligned across
+        // DXIL and SPIR-V. These slots are reserved for future raster data.
+        uint32 padding[2] = {};
     };
 
-    static_assert(sizeof(GPUInstanceData) == 216,
+    static_assert(sizeof(GPUInstanceData) == 224,
                   "GPUInstanceData must match GPUInstanceData.hlsli");
+    static_assert(alignof(GPUInstanceData) == 16);
     static_assert(offsetof(GPUInstanceData, worldMatrix) == 0);
     static_assert(offsetof(GPUInstanceData, normalMatrix) == 64);
     static_assert(offsetof(GPUInstanceData, boundingSphere) == 128);
@@ -81,6 +85,7 @@ namespace RVX
     static_assert(offsetof(GPUInstanceData, drawGroupCommandOffset) == 204);
     static_assert(offsetof(GPUInstanceData, candidateIndex) == 208);
     static_assert(offsetof(GPUInstanceData, forceVisible) == 212);
+    static_assert(offsetof(GPUInstanceData, padding) == 216);
 
     /**
      * @brief Fixed culling constant-buffer ABI shared by both compute paths.
@@ -191,6 +196,7 @@ namespace RVX
         PipelineCreationFailed,
         DescriptorSetCreationFailed,
         PipelineResourcesUnavailable,
+        IndirectDrawFirstInstanceUnsupported,
     };
 
     struct GPUCullingExecutionDecision

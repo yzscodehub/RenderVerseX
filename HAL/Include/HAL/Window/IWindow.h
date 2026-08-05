@@ -55,6 +55,15 @@ namespace RVX::HAL
         /// Get the framebuffer size in pixels
         virtual void GetFramebufferSize(uint32& width, uint32& height) const = 0;
 
+        /**
+         * @brief Request a native window resize in logical window coordinates.
+         *
+         * The request is asynchronous on platforms whose window managers apply
+         * size changes through their event queues. Callers must observe the
+         * resulting framebuffer size before using it for rendering.
+         */
+        virtual bool RequestResize(uint32 width, uint32 height) = 0;
+
         /// Get DPI scale factor
         virtual float GetDpiScale() const = 0;
 

@@ -176,9 +176,9 @@ namespace RVX
      * @brief Return the reviewed backend qualification manifest.
      *
      * DX12 has completed the M2 correctness closure and visible-set cross-path
-     * parity, but still lacks a checked-in real-asset regression and an adapter
-     * and driver matrix. It therefore remains a Candidate and Auto stays on the
-     * direct path. Forced mode is available for closing the remaining gates.
+     * parity. Vulkan has completed its Tier-1 native indirect-count, shader,
+     * repeated-resize, and Direct/GPU parity slice. Both remain Candidates
+     * until the remaining gates close, so Auto stays on the direct path.
      */
     inline GPUDrivenBackendQualification GetGPUDrivenBackendQualification(
         RHIBackendType backend)
@@ -208,6 +208,27 @@ namespace RVX
                     GPUDrivenQualificationGate::DeterministicVisualGolden) |
                 GetGPUDrivenQualificationGateMask(
                     GPUDrivenQualificationGate::GPUBasedValidation) |
+                GetGPUDrivenQualificationGateMask(
+                    GPUDrivenQualificationGate::RepeatedFrameResize) |
+                GetGPUDrivenQualificationGateMask(
+                    GPUDrivenQualificationGate::CrossPathImageParity);
+        }
+        else if (backend == RHIBackendType::Vulkan)
+        {
+            qualification.revision = 2;
+            qualification.passedGateMask =
+                GetGPUDrivenQualificationGateMask(
+                    GPUDrivenQualificationGate::RHIContractConformance) |
+                GetGPUDrivenQualificationGateMask(
+                    GPUDrivenQualificationGate::ShaderPipelineContracts) |
+                GetGPUDrivenQualificationGateMask(
+                    GPUDrivenQualificationGate::DescriptorIntegrity) |
+                GetGPUDrivenQualificationGateMask(
+                    GPUDrivenQualificationGate::ResourceStateValidation) |
+                GetGPUDrivenQualificationGateMask(
+                    GPUDrivenQualificationGate::IndirectExecutionSmoke) |
+                GetGPUDrivenQualificationGateMask(
+                    GPUDrivenQualificationGate::DirectFallbackSmoke) |
                 GetGPUDrivenQualificationGateMask(
                     GPUDrivenQualificationGate::RepeatedFrameResize) |
                 GetGPUDrivenQualificationGateMask(

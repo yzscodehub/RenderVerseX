@@ -20,6 +20,7 @@ struct GPUInstanceData
     uint drawGroupCommandOffset;
     uint candidateIndex;
     uint forceVisible;
+    uint2 padding;
 };
 
 #endif

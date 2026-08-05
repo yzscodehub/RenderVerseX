@@ -12,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 namespace RVX::Tests
@@ -458,7 +459,10 @@ namespace RVX::Tests
         EXPECT_NE(accessHeader.find("RHIDiscardIntent"), std::string::npos);
         EXPECT_NE(dx12.find("D3D12_RESOURCE_BARRIER_TYPE_UAV"), std::string::npos);
         EXPECT_NE(dx12.find("RHIDependencyKind::Memory"), std::string::npos);
-        EXPECT_NE(vulkanCommon.find("ToVkPipelineStageFlags2(RHIExecutionScope"), std::string::npos);
+        EXPECT_NE(vulkanCommon.find("struct VulkanPipelineStageSupport"),
+                  std::string::npos);
+        EXPECT_NE(vulkanCommon.find("ToVkPipelineStageFlags2("),
+                  std::string::npos);
         EXPECT_NE(vulkanCommon.find("ToVkAccessFlags2(RHIMemoryAccess"), std::string::npos);
         EXPECT_NE(vulkan.find("GetQueueFamilyIndex(device, before.domain)"), std::string::npos);
         EXPECT_NE(vulkan.find("GetQueueFamilyIndex(device, after.domain)"), std::string::npos);
@@ -701,6 +705,53 @@ namespace RVX::Tests
                   std::string::npos);
         EXPECT_NE(renderSubsystem.find("Surface update could not be applied", classify),
                   std::string::npos);
+
+        const size_t applySurface = renderSubsystem.find("RenderRuntimeResult ApplySurface(");
+        const size_t processRelease = renderSubsystem.find("void ProcessRelease", applySurface);
+        ASSERT_NE(applySurface, std::string::npos);
+        ASSERT_NE(processRelease, std::string::npos);
+        const std::string applySurfaceBody =
+            renderSubsystem.substr(applySurface, processRelease - applySurface);
+        EXPECT_EQ(applySurfaceBody.find("PresentAcceptedFrame("), std::string::npos);
+        constexpr std::string_view clearCall =
+            "PresentDeterministicClear(surface.generation)";
+        const size_t clearCallPosition = applySurfaceBody.find(clearCall);
+        ASSERT_NE(clearCallPosition, std::string::npos);
+        EXPECT_EQ(applySurfaceBody.find(clearCall,
+                                        clearCallPosition + clearCall.size()),
+                  std::string::npos);
+        EXPECT_NE(renderSubsystem.find(
+                      "commandContext->TextureBarrier(backBuffer,\n"
+                      "                                           RHIResourceState::Undefined,\n"
+                      "                                           RHIResourceState::RenderTarget)"),
+                  std::string::npos);
+
+        const size_t presentAccepted = renderSubsystem.find(
+            "RenderRuntimeResult PresentAcceptedFrame(");
+        const size_t presentClear = renderSubsystem.find(
+            "RenderRuntimeResult PresentDeterministicClear(", presentAccepted);
+        const size_t deviceStatus = renderSubsystem.find(
+            "RenderRuntimeResult MakeDeviceRuntimeResult() const", presentClear);
+        ASSERT_NE(presentAccepted, std::string::npos);
+        ASSERT_NE(presentClear, std::string::npos);
+        ASSERT_NE(deviceStatus, std::string::npos);
+        const std::string acceptedFrameBody = renderSubsystem.substr(
+            presentAccepted, presentClear - presentAccepted);
+        const std::string deterministicClearBody = renderSubsystem.substr(
+            presentClear, deviceStatus - presentClear);
+        for (const std::string* frameBody : {
+                 &acceptedFrameBody,
+                 &deterministicClearBody})
+        {
+            EXPECT_NE(frameBody->find("MakeDeviceRuntimeResult()"),
+                      std::string::npos);
+            EXPECT_NE(frameBody->find(
+                          "result.code = RenderRuntimeCode::RenderGraphValidationFailed"),
+                      std::string::npos);
+            EXPECT_EQ(frameBody->find(
+                          "result.code = RenderRuntimeCode::DeviceLost"),
+                      std::string::npos);
+        }
 
         const size_t requestResize = renderSubsystem.find(
             "RenderResizeResult RenderSubsystem::RequestResize(");
@@ -1608,9 +1659,17 @@ namespace RVX::Tests
         EXPECT_NE(dx12.find("GPUQueueDomain::Copy"), std::string::npos);
 
         const std::string vulkan = ReadSource("RHI_Vulkan/Private/VulkanDevice.cpp");
-        EXPECT_NE(vulkan.find("leftFamily == rightFamily && leftQueue == rightQueue"),
+        EXPECT_NE(vulkan.find("m_capabilities.queueTopology.activeDomainCount = 1"),
                   std::string::npos);
-        EXPECT_NE(vulkan.find("m_capabilities.supportsAsyncCompute = computeDomain != GPUQueueDomain::Graphics"),
+        EXPECT_NE(vulkan.find("m_capabilities.supportsAsyncCompute = false"),
+                  std::string::npos);
+        const std::string vulkanDeviceHeader =
+            ReadSource("RHI_Vulkan/Private/VulkanDevice.h");
+        EXPECT_NE(vulkanDeviceHeader.find(
+                      "uint32 GetComputeQueueFamily() const { return GetGraphicsQueueFamily(); }"),
+                  std::string::npos);
+        EXPECT_NE(vulkanDeviceHeader.find(
+                      "uint32 GetTransferQueueFamily() const { return GetGraphicsQueueFamily(); }"),
                   std::string::npos);
 
         const std::string metal = ReadSource("RHI_Metal/Private/MetalDevice.mm");

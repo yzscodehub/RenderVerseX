@@ -5,6 +5,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <mutex>
 
 namespace RVX
 {
@@ -63,8 +64,14 @@ namespace RVX
         // The owning RenderContext resolves the surface generation first.
         CleanupSwapchain();
 
-        if (m_surface)
+        // VkSurfaceKHR is an instance child, not a device child. It must be
+        // released even when queue retirement reported VK_ERROR_DEVICE_LOST;
+        // otherwise instance teardown observes a live surface.
+        if (m_device && m_surface)
+        {
             vkDestroySurfaceKHR(m_device->GetInstance(), m_surface, nullptr);
+            m_surface = VK_NULL_HANDLE;
+        }
 
         if (m_device && m_device->GetPrimarySwapChain() == this)
         {
@@ -173,8 +180,34 @@ namespace RVX
         }
     }
 
-    void VulkanSwapChain::CleanupSwapchain()
+    bool VulkanSwapChain::CleanupSwapchain()
     {
+        if (!m_device || m_device->GetDevice() == VK_NULL_HANDLE)
+        {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(m_device->GetGraphicsQueueMutex());
+        bool canRecreate =
+            m_device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready;
+        if (canRecreate &&
+            (m_swapchain != VK_NULL_HANDLE ||
+             !m_renderFinishedSemaphores.empty()))
+        {
+            const VkResult idleResult = vkQueueWaitIdle(m_device->GetGraphicsQueue());
+            if (idleResult != VK_SUCCESS)
+            {
+                m_device->ReportRuntimeFailure(
+                    idleResult,
+                    RHIDeviceFaultOperation::SurfaceResize,
+                    "Vulkan present queue idle wait failed while retiring swap-chain generation");
+                canRecreate = false;
+            }
+        }
+
+        // Vulkan permits direct child destruction after device loss. Cleanup
+        // is therefore unconditional once the host owns the queue mutex; only
+        // creation of a replacement generation depends on successful idle.
         for (auto semaphore : m_renderFinishedSemaphores)
         {
             if (semaphore != VK_NULL_HANDLE)
@@ -193,6 +226,9 @@ namespace RVX
             vkDestroySwapchainKHR(m_device->GetDevice(), m_swapchain, nullptr);
             m_swapchain = VK_NULL_HANDLE;
         }
+        m_hasAcquiredImage = false;
+
+        return canRecreate;
     }
 
     VkSurfaceFormatKHR VulkanSwapChain::ChooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats)
@@ -335,7 +371,11 @@ namespace RVX
         presentInfo.pSwapchains = &m_swapchain;
         presentInfo.pImageIndices = &m_currentImageIndex;
 
-        VkResult result = vkQueuePresentKHR(m_device->GetGraphicsQueue(), &presentInfo);
+        VkResult result = VK_SUCCESS;
+        {
+            std::lock_guard<std::mutex> lock(m_device->GetGraphicsQueueMutex());
+            result = vkQueuePresentKHR(m_device->GetGraphicsQueue(), &presentInfo);
+        }
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
         {
@@ -385,7 +425,11 @@ namespace RVX
         m_height = height;
 
         // RenderContext has already resolved the old surface-generation token.
-        CleanupSwapchain();
+        if (!CleanupSwapchain())
+        {
+            RVX_RHI_ERROR("Vulkan SwapChain resize aborted because the previous generation could not retire");
+            return;
+        }
         CreateSwapchain();
         CreateImageViews();
 

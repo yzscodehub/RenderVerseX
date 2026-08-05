@@ -175,13 +175,8 @@ namespace
                 return result;
             }
             m_sceneRenderer->SetSurfaceCompatibilityKey(surface.generation);
-            if (m_sceneRenderer->GetLastPresentedFrameSequence() != 0)
-            {
-                return PresentAcceptedFrame(
-                    m_sceneRenderer->GetLastPresentedFrameSequence(),
-                    surface.generation,
-                    {});
-            }
+            // Accepted packets retain the prior surface's viewport and attachments.
+            // Clear the new surface until a packet for this generation arrives.
             return PresentDeterministicClear(surface.generation);
         }
 
@@ -685,11 +680,25 @@ namespace
                                  : RHIBackendType::None;
             result.frameSequence = frameSequence;
             result.surfaceGeneration = surfaceGeneration;
-            if (m_context == nullptr || m_sceneRenderer == nullptr ||
-                !m_context->BeginFrame())
+            if (m_context == nullptr || m_sceneRenderer == nullptr)
             {
-                result.code = RenderRuntimeCode::DeviceLost;
-                result.message = "Frame slot completion was lost";
+                result.code = RenderRuntimeCode::OwnershipViolation;
+                result.message = "Accepted frame has no render context or scene renderer";
+                return result;
+            }
+            if (!m_context->BeginFrame())
+            {
+                m_sceneRenderer->ReleaseUnsubmittedFrame();
+                RenderRuntimeResult health = MakeDeviceRuntimeResult();
+                health.frameSequence = frameSequence;
+                health.surfaceGeneration = surfaceGeneration;
+                if (health.code != RenderRuntimeCode::Running)
+                {
+                    return health;
+                }
+                result.code = RenderRuntimeCode::RenderGraphValidationFailed;
+                result.message =
+                    "Accepted frame could not acquire a renderable frame slot";
                 return result;
             }
 
@@ -712,7 +721,14 @@ namespace
             if (submittedPoint.value == 0)
             {
                 m_sceneRenderer->ReleaseUnsubmittedFrame();
-                result.code = RenderRuntimeCode::DeviceLost;
+                RenderRuntimeResult health = MakeDeviceRuntimeResult();
+                health.frameSequence = frameSequence;
+                health.surfaceGeneration = surfaceGeneration;
+                if (health.code != RenderRuntimeCode::Running)
+                {
+                    return health;
+                }
+                result.code = RenderRuntimeCode::RenderGraphValidationFailed;
                 result.message =
                     "Graphics submission did not produce a completion point";
                 return result;
@@ -761,10 +777,22 @@ namespace
                                  ? m_context->GetDevice()->GetBackendType()
                                  : RHIBackendType::None;
             result.surfaceGeneration = surfaceGeneration;
-            if (m_context == nullptr || !m_context->BeginFrame())
+            if (m_context == nullptr)
             {
-                result.code = RenderRuntimeCode::DeviceLost;
-                result.message = "Resize redraw could not begin a frame";
+                result.code = RenderRuntimeCode::OwnershipViolation;
+                result.message = "Resize redraw has no render context";
+                return result;
+            }
+            if (!m_context->BeginFrame())
+            {
+                RenderRuntimeResult health = MakeDeviceRuntimeResult();
+                health.surfaceGeneration = surfaceGeneration;
+                if (health.code != RenderRuntimeCode::Running)
+                {
+                    return health;
+                }
+                result.code = RenderRuntimeCode::RenderGraphValidationFailed;
+                result.message = "Resize redraw could not acquire a renderable frame slot";
                 return result;
             }
             RHICommandContext* commandContext =
@@ -781,7 +809,7 @@ namespace
                 return result;
             }
             commandContext->TextureBarrier(backBuffer,
-                                           RHIResourceState::Present,
+                                           RHIResourceState::Undefined,
                                            RHIResourceState::RenderTarget);
             RHIRenderPassDesc clearPass;
             clearPass.AddColorAttachment(
@@ -797,7 +825,13 @@ namespace
             const GPUCompletionPoint submittedPoint = m_context->EndFrame();
             if (submittedPoint.value == 0)
             {
-                result.code = RenderRuntimeCode::DeviceLost;
+                RenderRuntimeResult health = MakeDeviceRuntimeResult();
+                health.surfaceGeneration = surfaceGeneration;
+                if (health.code != RenderRuntimeCode::Running)
+                {
+                    return health;
+                }
+                result.code = RenderRuntimeCode::RenderGraphValidationFailed;
                 result.message = "Resize redraw submission failed";
                 return result;
             }
