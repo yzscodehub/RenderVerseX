@@ -7,6 +7,7 @@
 
 #include "Core/MathTypes.h"
 #include "Scene/ActorComponent.h"
+#include "Scene/TransformStore.h"
 
 #include <vector>
 
@@ -35,29 +36,35 @@ namespace RVX
         // Relative Transform
         // =====================================================================
 
-        const Vec3& GetRelativeLocation() const { return m_relativeLocation; }
+        const Vec3& GetRelativeLocation() const;
         void SetRelativeLocation(const Vec3& location);
 
-        const Quat& GetRelativeRotation() const { return m_relativeRotation; }
+        const Quat& GetRelativeRotation() const;
         void SetRelativeRotation(const Quat& rotation);
 
-        const Vec3& GetRelativeScale() const { return m_relativeScale; }
+        const Vec3& GetRelativeScale() const;
         void SetRelativeScale(const Vec3& scale);
-        const Vec3& GetRelativeScale3D() const { return m_relativeScale; }
+        const Vec3& GetRelativeScale3D() const { return GetRelativeScale(); }
         void SetRelativeScale3D(const Vec3& scale) { SetRelativeScale(scale); }
 
         Mat4 GetRelativeTransform() const;
         const Mat4& GetWorldTransform() const;
+        const Mat4& GetPreviousWorldTransform() const;
         Vec3 GetWorldLocation() const;
         Quat GetWorldRotation() const;
         Vec3 GetWorldScale() const;
+        uint64 GetLocalTransformRevision() const;
+        uint64 GetWorldTransformRevision() const;
 
         // =====================================================================
         // Attachment
         // =====================================================================
 
-        bool AttachToComponent(SceneComponent* parent);
-        void DetachFromComponent();
+        bool AttachToComponent(
+            SceneComponent* parent,
+            AttachmentTransformRule rule = AttachmentTransformRule::KeepLocal);
+        void DetachFromComponent(
+            AttachmentTransformRule rule = AttachmentTransformRule::KeepLocal);
 
         SceneComponent* GetAttachParent() const { return m_attachParent; }
         const std::vector<SceneComponent*>& GetAttachChildren() const { return m_attachChildren; }
@@ -68,6 +75,7 @@ namespace RVX
 
     private:
         bool WouldCreateCycle(const SceneComponent* parent) const;
+        TransformStore* GetRuntimeTransformStore() const;
 
         Vec3 m_relativeLocation{0.0f};
         Quat m_relativeRotation{1.0f, 0.0f, 0.0f, 0.0f};

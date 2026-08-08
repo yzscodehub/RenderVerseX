@@ -14,7 +14,6 @@
 #include "Scene/SceneComponent.h"
 #include "Spatial/Index/ISpatialEntity.h"
 
-#include <atomic>
 #include <memory>
 #include <string>
 #include <typeindex>
@@ -77,7 +76,7 @@ namespace RVX
         // ISpatialEntity Implementation
         // =====================================================================
 
-        Handle GetHandle() const override { return m_handle; }
+        Handle GetHandle() const override { return Actor::GetHandle(); }
         AABB GetWorldBounds() const override;
         uint32_t GetLayerMask() const override { return m_layerMask; }
         uint32_t GetTypeMask() const override { return 1u << static_cast<uint8_t>(GetEntityType()); }
@@ -89,24 +88,19 @@ namespace RVX
         // Basic Properties
         // =====================================================================
 
-        const std::string& GetName() const override { return m_name; }
-        void SetName(const std::string& name) override
-        {
-            Actor::SetName(name);
-            m_name = name;
-        }
+        const std::string& GetName() const override { return Actor::GetName(); }
+        void SetName(const std::string& name) override { Actor::SetName(name); }
 
         const char* GetClassName() const override { return "SceneEntity"; }
         virtual EntityType GetEntityType() const { return EntityType::Node; }
 
-        bool IsActive() const override { return m_active; }
+        bool IsActive() const override { return Actor::IsActive(); }
         void SetActive(bool active) override
         {
-            if (m_active == active)
+            if (Actor::IsActive() == active)
                 return;
 
             Actor::SetActive(active);
-            m_active = active;
             MarkSpatialDirty();
         }
 
@@ -271,11 +265,6 @@ namespace RVX
         void SetSceneManager(SceneManager* manager) { m_sceneManager = manager; }
 
     private:
-        // Identity
-        Handle m_handle;
-        std::string m_name;
-        bool m_active = true;
-
         // Filtering
         uint32_t m_layerMask = ~0u;
 
@@ -327,9 +316,6 @@ namespace RVX
         void EndLegacyComponentDispatch();
         void NotifyComponentAttached(Component* component);
 
-        // Handle generation
-        static Handle GenerateHandle();
-        static std::atomic<Handle> s_nextHandle;
     };
 
     // =========================================================================
@@ -364,6 +350,7 @@ namespace RVX
             // Store component
             m_legacyComponentOrder.push_back(typeIndex);
             m_components[typeIndex] = std::move(component);
+            NotifyComponentAdded(ptr);
 
             if (ShouldAutoRegisterComponent(ptr))
             {

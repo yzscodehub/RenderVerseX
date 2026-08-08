@@ -104,6 +104,10 @@ public:
     void OnAttach() override;
     void OnDetach() override;
     void Tick(float deltaTime) override;
+    [[nodiscard]] SceneUpdatePhase GetSceneUpdatePhase() const override
+    {
+        return SceneUpdatePhase::BoundsSpatial;
+    }
 
     // =========================================================================
     // Spatial Bounds

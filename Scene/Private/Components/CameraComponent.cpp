@@ -23,6 +23,46 @@ void CameraComponent::SetProjectionType(ProjectionType type)
     }
 }
 
+void CameraComponent::SetPerspective(float fovRadians,
+                                     float aspect,
+                                     float nearPlane,
+                                     float farPlane)
+{
+    m_projectionType = ProjectionType::Perspective;
+    m_fieldOfView = fovRadians;
+    m_aspectRatio = aspect;
+    m_nearPlane = nearPlane;
+    m_farPlane = farPlane;
+    m_projectionDirty = true;
+}
+
+void CameraComponent::SetPosition(const Vec3& position)
+{
+    if (SceneEntity* owner = GetOwner())
+        owner->SetPosition(position);
+}
+
+void CameraComponent::LookAt(const Vec3& target)
+{
+    SceneEntity* owner = GetOwner();
+    if (!owner)
+        return;
+
+    const Vec3 position = owner->GetWorldPosition();
+    if (length(target - position) <= 0.000001f)
+        return;
+
+    const Mat4 desiredWorld = inverse(
+        lookAt(position, target, Vec3{0.0f, 1.0f, 0.0f}));
+    Quat desiredRotation = normalize(glm::quat_cast(desiredWorld));
+    if (const SceneEntity* parent = owner->GetParent())
+    {
+        desiredRotation = normalize(
+            inverse(parent->GetWorldRotation()) * desiredRotation);
+    }
+    owner->SetRotation(desiredRotation);
+}
+
 Mat4 CameraComponent::GetViewMatrix() const
 {
     SceneEntity* owner = GetOwner();

@@ -4,7 +4,6 @@
 #include "Animation/State/AnimationStateMachine.h"
 #include "Core/Job/JobSystem.h"
 #include "Geometry/Asset/Mesh.h"
-#include "RenderContracts/RenderProxy.h"
 #include "Resource/ResourceHandle.h"
 #include "Resource/Types/MeshResource.h"
 #include "Scene/Components/AnimatorComponent.h"
@@ -304,7 +303,7 @@ TEST(AnimationValidation, AnimatorComponentTickCanUseJobifiedPoseEvaluation)
     EXPECT_NEAR(0.5f, sampledTranslation.z, 0.0001f);
 }
 
-TEST(AnimationValidation, SkeletonProvidesPaletteToStaticMeshProxy)
+TEST(AnimationValidation, SkeletonProvidesPaletteToSceneExtraction)
 {
     SceneEntity entity("SkinnedMesh");
     auto* staticMesh = entity.AddComponent<StaticMeshComponent>();
@@ -320,13 +319,11 @@ TEST(AnimationValidation, SkeletonProvidesPaletteToStaticMeshProxy)
     ASSERT_NE(nullptr, provider);
     ASSERT_EQ(1u, provider->GetSkinningPalette().size());
 
-    RenderPrimitiveProxy proxy;
-    ASSERT_TRUE(staticMesh->CreateRenderProxy(proxy));
-    ASSERT_EQ(1u, proxy.skinningMatrices.size());
-    EXPECT_FLOAT_EQ(1.0f, proxy.skinningMatrices[0][0][0]);
+    ASSERT_EQ(1u, provider->GetSkinningPalette().size());
+    EXPECT_FLOAT_EQ(1.0f, provider->GetSkinningPalette()[0][0][0]);
 }
 
-TEST(AnimationValidation, StaticMeshProxyRejectsMultipleSkinningProviders)
+TEST(AnimationValidation, MultipleSkinningProvidersRemainTypedAndDiscoverable)
 {
     SceneEntity entity("AmbiguousSkinnedMesh");
     auto* staticMesh = entity.AddComponent<StaticMeshComponent>();
@@ -335,9 +332,12 @@ TEST(AnimationValidation, StaticMeshProxyRejectsMultipleSkinningProviders)
     ASSERT_NE(nullptr, entity.AddComponent<SecondSkinningProvider>());
     staticMesh->SetMesh(CreateLoadedMesh());
 
-    RenderPrimitiveProxy proxy;
-    proxy.meshAssetId = AssetId{99};
-
-    EXPECT_FALSE(staticMesh->CreateRenderProxy(proxy));
-    EXPECT_EQ(99u, proxy.meshAssetId.value);
+    size_t providerCount = 0;
+    for (const auto& [componentType, component] : entity.GetComponents())
+    {
+        (void)componentType;
+        if (dynamic_cast<ISkinningPaletteProvider*>(component.get()))
+            ++providerCount;
+    }
+    EXPECT_EQ(providerCount, 2U);
 }

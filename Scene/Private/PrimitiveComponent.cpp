@@ -32,12 +32,22 @@ void PrimitiveComponent::SetEnabled(bool enabled)
     MarkSpatialDirty();
 }
 
+void PrimitiveComponent::SetVisible(bool visible)
+{
+    if (m_visible == visible)
+        return;
+    m_visible = visible;
+    NotifySceneStateChanged();
+    MarkSpatialDirty();
+}
+
 void PrimitiveComponent::SetLayerMask(uint32 layerMask)
 {
     if (m_layerMask == layerMask)
         return;
 
     m_layerMask = layerMask;
+    NotifySceneStateChanged();
     MarkSpatialDirty();
 }
 
@@ -45,6 +55,7 @@ void PrimitiveComponent::SetLocalBounds(const AABB& bounds)
 {
     m_localBounds = bounds;
     m_boundsDirty = true;
+    NotifySceneStateChanged();
     MarkSpatialDirty();
 }
 

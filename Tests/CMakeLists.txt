@@ -1038,6 +1038,49 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+rvx_add_gtest(
+    NAME SceneHandleValidation
+    SOURCES SceneHandleValidation/main.cpp
+    LIBS RVX::Scene RVX::World
+    LABELS "unit;scene;architecture"
+)
+
+rvx_add_gtest(
+    NAME SceneLifetimeValidation
+    SOURCES SceneLifetimeValidation/main.cpp
+    LIBS RVX::Scene
+    LABELS "unit;scene;architecture"
+)
+
+rvx_add_gtest(
+    NAME SceneComponentRegistryValidation
+    SOURCES SceneComponentRegistryValidation/main.cpp
+    LIBS RVX::Scene
+    LABELS "unit;scene;architecture"
+)
+
+rvx_add_gtest(
+    NAME SceneTransformHierarchyValidation
+    SOURCES SceneTransformHierarchyValidation/main.cpp
+    LIBS RVX::Scene
+    LABELS "unit;scene;architecture"
+)
+
+rvx_add_gtest(
+    NAME SceneTransformScaleValidation
+    SOURCES SceneTransformScaleValidation/main.cpp
+    LIBS RVX::Scene
+    LABELS "unit;scene;architecture;performance"
+    TIMEOUT 60
+)
+
+rvx_add_gtest(
+    NAME SceneSystemScheduleValidation
+    SOURCES SceneSystemScheduleValidation/main.cpp
+    LIBS RVX::Scene
+    LABELS "unit;scene;architecture"
+)
+
 # Spatial component validation tests
 rvx_add_gtest(
     NAME SpatialComponentValidation

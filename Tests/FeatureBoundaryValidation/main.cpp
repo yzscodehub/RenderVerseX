@@ -167,7 +167,7 @@ TEST(FeatureBoundaryValidation, WaterComponentBuildsRenderSnapshotWithoutGPUHand
 
     ASSERT_EQ(snapshot.items.size(), 1u);
     const WaterRenderSnapshotItem& item = snapshot.items.front();
-    EXPECT_EQ(item.componentId, entity.GetHandle());
+    EXPECT_EQ(item.componentId, water->GetComponentId());
     EXPECT_FLOAT_EQ(item.worldPosition.x, 4.0f);
     EXPECT_FLOAT_EQ(item.worldPosition.y, 2.0f);
     EXPECT_FLOAT_EQ(item.worldPosition.z, -3.0f);
@@ -260,7 +260,7 @@ TEST(FeatureBoundaryValidation, TerrainComponentBuildsRenderSnapshotWithoutGPUHa
 
     ASSERT_EQ(snapshot.items.size(), 1u);
     const TerrainRenderSnapshotItem& item = snapshot.items.front();
-    EXPECT_EQ(item.componentId, entity.GetHandle());
+    EXPECT_EQ(item.componentId, terrain->GetComponentId());
     EXPECT_FLOAT_EQ(item.worldPosition.x, -8.0f);
     EXPECT_FLOAT_EQ(item.worldPosition.y, 1.5f);
     EXPECT_FLOAT_EQ(item.worldPosition.z, 6.0f);
@@ -352,11 +352,11 @@ TEST(FeatureBoundaryValidation, RenderFeatureSceneBridgeCollectsFeatureSnapshots
     EXPECT_NE(snapshot.particles.items.front().sortingReason.find("Render-owned"), std::string::npos);
 
     ASSERT_EQ(snapshot.water.items.size(), 1u);
-    EXPECT_EQ(snapshot.water.items.front().componentId, waterEntity->GetHandle());
+    EXPECT_EQ(snapshot.water.items.front().componentId, water->GetComponentId());
     EXPECT_EQ(snapshot.water.items.front().surfaceType, WaterRenderSnapshotSurfaceType::Lake);
 
     ASSERT_EQ(snapshot.terrain.items.size(), 1u);
-    EXPECT_EQ(snapshot.terrain.items.front().componentId, terrainEntity->GetHandle());
+    EXPECT_EQ(snapshot.terrain.items.front().componentId, terrain->GetComponentId());
     EXPECT_EQ(snapshot.terrain.items.front().patchSize, 16u);
 
     sceneManager.Shutdown();

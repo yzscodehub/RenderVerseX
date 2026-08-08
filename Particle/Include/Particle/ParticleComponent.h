@@ -43,6 +43,10 @@ namespace RVX::Particle
         void OnAttach() override;
         void OnDetach() override;
         void Tick(float deltaTime) override;
+        [[nodiscard]] SceneUpdatePhase GetSceneUpdatePhase() const override
+        {
+            return SceneUpdatePhase::FeatureSystems;
+        }
 
         // =====================================================================
         // Particle System

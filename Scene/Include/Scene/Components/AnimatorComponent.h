@@ -88,6 +88,13 @@ public:
     void OnAttach() override;
     void OnDetach() override;
     void Tick(float deltaTime) override;
+    [[nodiscard]] SceneUpdatePhase GetSceneUpdatePhase() const override
+    {
+        return m_updateMode == AnimatorUpdateMode::AnimatePhysics
+                   ? SceneUpdatePhase::FixedPhysics
+                   : SceneUpdatePhase::AnimationPrePhysics;
+    }
+    [[nodiscard]] int32 GetSceneUpdateOrder() const override { return -100; }
 
     // =========================================================================
     // State Machine

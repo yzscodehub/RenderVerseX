@@ -132,9 +132,12 @@ TEST(SystemIntegration, SpatialPrimitivesAndBvh)
     }
 
     {
-        TestSpatialEntity entity1(1, AABB(Vec3(-1.0f, -1.0f, -1.0f), Vec3(0.0f, 0.0f, 0.0f)));
-        TestSpatialEntity entity2(2, AABB(Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f)));
-        TestSpatialEntity entity3(3, AABB(Vec3(10.0f, 10.0f, 10.0f), Vec3(11.0f, 11.0f, 11.0f)));
+        TestSpatialEntity entity1(Spatial::EntityHandle::Create(1),
+                                  AABB(Vec3(-1.0f, -1.0f, -1.0f), Vec3(0.0f, 0.0f, 0.0f)));
+        TestSpatialEntity entity2(Spatial::EntityHandle::Create(2),
+                                  AABB(Vec3(0.0f, 0.0f, 0.0f), Vec3(1.0f, 1.0f, 1.0f)));
+        TestSpatialEntity entity3(Spatial::EntityHandle::Create(3),
+                                  AABB(Vec3(10.0f, 10.0f, 10.0f), Vec3(11.0f, 11.0f, 11.0f)));
 
         std::vector<Spatial::ISpatialEntity*> entities = {&entity1, &entity2, &entity3};
 
@@ -155,7 +158,7 @@ TEST(SystemIntegration, SceneEntityAndManager)
 {
     {
         SceneEntity entity("TestEntity");
-        EXPECT_NE(SceneEntity::InvalidHandle, entity.GetHandle());
+        EXPECT_EQ(SceneEntity::InvalidHandle, entity.GetHandle());
         EXPECT_EQ(std::string("TestEntity"), entity.GetName());
         EXPECT_TRUE(entity.IsActive());
 

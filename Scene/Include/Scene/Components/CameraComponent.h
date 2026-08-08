@@ -97,6 +97,18 @@ public:
     float GetAspectRatio() const { return m_aspectRatio; }
     void SetAspectRatio(float aspect) { m_aspectRatio = aspect; m_projectionDirty = true; }
 
+    /** @brief Configure all perspective values atomically. */
+    void SetPerspective(float fovRadians,
+                        float aspect,
+                        float nearPlane,
+                        float farPlane);
+
+    /** @brief Set the owning scene entity's local position. */
+    void SetPosition(const Vec3& position);
+
+    /** @brief Orient the owning scene entity toward a world-space target. */
+    void LookAt(const Vec3& target);
+
     // =========================================================================
     // Clear Settings
     // =========================================================================

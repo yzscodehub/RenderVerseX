@@ -6,11 +6,14 @@
 #include "RenderExtraction/RenderProxySceneBridge.h"
 
 #include "Geometry/Asset/AssetMetadata.h"
+#include "Scene/Components/ISkinningPaletteProvider.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
+#include "Scene/Components/StaticMeshComponent.h"
 #include "Scene/PrimitiveComponent.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
+#include "Scene/SceneRuntime.h"
 #include "World/World.h"
 
 #include <glm/gtc/matrix_inverse.hpp>
@@ -50,6 +53,85 @@ namespace RVX
                     return RenderMaterialMode::Opaque;
             }
         }
+
+        bool BuildStaticMeshProxy(const StaticMeshComponent& component,
+                                  RenderPrimitiveProxy& outProxy)
+        {
+            if (!component.HasRenderData())
+                return false;
+
+            const ISkinningPaletteProvider* skinningProvider = nullptr;
+            if (auto* entity =
+                    dynamic_cast<SceneEntity*>(component.GetOwner()))
+            {
+                for (const auto& [componentType, owned] :
+                     entity->GetComponents())
+                {
+                    (void)componentType;
+                    auto* candidate = dynamic_cast<
+                        ISkinningPaletteProvider*>(owned.get());
+                    if (!candidate)
+                        continue;
+                    if (skinningProvider != nullptr)
+                        return false;
+                    skinningProvider = candidate;
+                }
+            }
+
+            RenderPrimitiveProxy proxy;
+            const Mat4 worldMatrix = component.GetWorldTransform();
+            proxy.worldMatrix = worldMatrix;
+            proxy.normalMatrix =
+                glm::inverseTranspose(Mat4(Mat3(worldMatrix)));
+            proxy.bounds = component.GetWorldBounds();
+            proxy.meshAssetId = AssetId{component.GetMesh().GetId()};
+            proxy.layerMask = component.GetLayerMask();
+            proxy.castsShadow = component.CastsShadow();
+            proxy.receivesShadow = component.ReceivesShadow();
+            proxy.visible = component.IsVisible();
+
+            const size_t submeshCount = component.GetSubmeshCount();
+            proxy.materialAssetIds.resize(submeshCount);
+            proxy.materialModes.resize(submeshCount);
+            for (size_t index = 0; index < submeshCount; ++index)
+            {
+                const SceneMaterialHandle material =
+                    component.GetMaterial(index);
+                proxy.materialAssetIds[index] =
+                    AssetId{material.IsValid() ? material.GetId() : 0};
+                proxy.materialModes[index] = ToRenderMaterialMode(
+                    material.As<IMaterialAssetMetadata>());
+            }
+            proxy.sortKey = proxy.materialAssetIds.empty()
+                                ? 0
+                                : proxy.materialAssetIds.front().value;
+
+            if (skinningProvider != nullptr)
+            {
+                const std::span<const Mat4> palette =
+                    skinningProvider->GetSkinningPalette();
+                proxy.skinningMatrices.assign(palette.begin(), palette.end());
+            }
+            outProxy = std::move(proxy);
+            return true;
+        }
+
+        uint64 ToRenderOwnerId(const Actor* actor)
+        {
+            return actor && actor->GetHandle().IsValid()
+                       ? actor->GetHandle().GetPackedValue()
+                       : 0;
+        }
+
+        uint64 ToRenderComponentId(const ActorComponent* component)
+        {
+            if (!component)
+                return 0;
+
+            return component->GetComponentHandle().IsValid()
+                       ? component->GetComponentHandle().GetPackedValue()
+                       : component->GetComponentId();
+        }
     } // namespace
 
     const char* ToString(RenderProxySceneBridgeFallbackReason reason)
@@ -87,8 +169,156 @@ namespace RVX
             return false;
         }
 
-        SceneManager* sceneManager = world->GetSceneManager();
-        return BuildSnapshot(sceneManager, outSnapshot, outResult);
+        Scene* scene = world->GetScene();
+        outSnapshot.BeginBuild(++m_nextSnapshotSequence);
+        if (!scene)
+        {
+            outSnapshot.MarkIncomplete();
+            MarkFallback(result,
+                         RenderProxySceneBridgeFallbackReason::NullSceneManager,
+                         0);
+            CopySnapshotMetadata(outSnapshot, result);
+            if (outResult) *outResult = result;
+            return false;
+        }
+
+        std::unordered_set<uint64> primitiveControlledEntities;
+        for (PrimitiveComponent* primitive :
+             scene->GetComponentsImplementing<PrimitiveComponent>())
+        {
+            Actor* owner = primitive ? primitive->GetOwner() : nullptr;
+            if (!primitive || !owner || !owner->IsActive())
+                continue;
+
+            const bool hasLegacyRenderData = primitive->HasRenderData();
+            const auto* staticMesh =
+                dynamic_cast<const StaticMeshComponent*>(primitive);
+            const bool hasProxyData =
+                staticMesh != nullptr && staticMesh->HasRenderData();
+            if (hasLegacyRenderData || hasProxyData)
+                primitiveControlledEntities.insert(ToRenderOwnerId(owner));
+            if (!primitive->IsEnabled() || !primitive->IsVisible())
+                continue;
+            if (!hasProxyData)
+            {
+                if (hasLegacyRenderData)
+                {
+                    MarkFallback(
+                        result,
+                        RenderProxySceneBridgeFallbackReason::PrimitiveProxyUnavailable,
+                        ToRenderOwnerId(owner));
+                }
+                continue;
+            }
+
+            RenderPrimitiveProxy proxy;
+            if (!BuildStaticMeshProxy(*staticMesh, proxy))
+            {
+                MarkFallback(
+                    result,
+                    RenderProxySceneBridgeFallbackReason::PrimitiveProxyCreationFailed,
+                    ToRenderOwnerId(owner));
+                continue;
+            }
+            proxy.ownerId = ToRenderOwnerId(owner);
+            if (!proxy.id.IsValid())
+                proxy.id.value = ToRenderComponentId(primitive);
+            outSnapshot.primitives.push_back(std::move(proxy));
+        }
+
+        for (MeshRendererComponent* renderer :
+             scene->GetComponentsImplementing<MeshRendererComponent>())
+        {
+            auto* entity = renderer
+                               ? dynamic_cast<SceneEntity*>(renderer->GetOwner())
+                               : nullptr;
+            if (!entity || !entity->IsActive() || !renderer->IsEnabled() ||
+                !renderer->IsVisible() || !renderer->HasValidMesh() ||
+                primitiveControlledEntities.contains(ToRenderOwnerId(entity)))
+            {
+                continue;
+            }
+
+            const Mat4 worldMatrix = entity->GetWorldMatrix();
+            RenderPrimitiveProxy proxy;
+            proxy.id.value = ToRenderComponentId(renderer);
+            proxy.ownerId = ToRenderOwnerId(entity);
+            proxy.worldMatrix = worldMatrix;
+            proxy.normalMatrix = glm::inverseTranspose(Mat4(Mat3(worldMatrix)));
+            proxy.bounds = entity->GetWorldBounds();
+            proxy.meshAssetId = AssetId{renderer->GetMesh().GetId()};
+            proxy.layerMask = ~0u;
+            proxy.visible = renderer->IsVisible();
+            proxy.castsShadow = renderer->CastsShadow();
+            proxy.receivesShadow = renderer->ReceivesShadow();
+
+            const size_t submeshCount = renderer->GetSubmeshCount();
+            proxy.materialAssetIds.resize(submeshCount);
+            proxy.materialModes.resize(submeshCount);
+            for (size_t index = 0; index < submeshCount; ++index)
+            {
+                auto material = renderer->GetMaterial(index);
+                proxy.materialAssetIds[index] =
+                    AssetId{material.IsValid() ? material.GetId() : 0};
+                proxy.materialModes[index] = ToRenderMaterialMode(
+                    material.As<IMaterialAssetMetadata>());
+            }
+            proxy.sortKey = proxy.materialAssetIds.empty()
+                                ? 0
+                                : proxy.materialAssetIds.front().value;
+            outSnapshot.primitives.push_back(std::move(proxy));
+        }
+
+        for (LightComponent* lightComponent :
+             scene->GetComponentsImplementing<LightComponent>())
+        {
+            auto* entity = lightComponent
+                               ? dynamic_cast<SceneEntity*>(lightComponent->GetOwner())
+                               : nullptr;
+            if (!entity || !entity->IsActive() || !lightComponent->IsEnabled())
+                continue;
+
+            RenderLightProxy light;
+            light.id.value = ToRenderComponentId(lightComponent);
+            light.ownerId = ToRenderOwnerId(entity);
+            switch (lightComponent->GetLightType())
+            {
+                case LightType::Directional:
+                    light.type = RenderLightProxy::Type::Directional;
+                    break;
+                case LightType::Point:
+                    light.type = RenderLightProxy::Type::Point;
+                    break;
+                case LightType::Spot:
+                    light.type = RenderLightProxy::Type::Spot;
+                    break;
+            }
+            light.position = entity->GetWorldPosition();
+            const Mat4 rotation = glm::mat4_cast(entity->GetWorldRotation());
+            light.direction = Vec3(rotation * Vec4(0, 0, -1, 0));
+            light.color = lightComponent->GetColor();
+            light.intensity = lightComponent->GetIntensity();
+            light.range = lightComponent->GetRange();
+            light.innerConeAngle = lightComponent->GetInnerConeAngle();
+            light.outerConeAngle = lightComponent->GetOuterConeAngle();
+            light.castsShadow = lightComponent->CastsShadow();
+            outSnapshot.lights.push_back(std::move(light));
+        }
+
+        if (result.requiresLegacyFallback)
+        {
+            outSnapshot.MarkIncomplete();
+            CopySnapshotMetadata(outSnapshot, result);
+            if (outResult) *outResult = result;
+            return false;
+        }
+
+        outSnapshot.MarkComplete();
+        result.usedProxyPath = true;
+        result.fallbackReason = RenderProxySceneBridgeFallbackReason::None;
+        CopySnapshotMetadata(outSnapshot, result);
+        if (outResult) *outResult = result;
+        return true;
     }
 
     bool RenderProxySceneBridge::BuildSnapshot(SceneManager* sceneManager,
@@ -118,10 +348,13 @@ namespace RVX
                 continue;
 
             const bool hasLegacyRenderData = primitive->HasRenderData();
-            const bool hasProxyData = primitive->HasRenderProxy();
+            const auto* staticMesh =
+                dynamic_cast<const StaticMeshComponent*>(primitive);
+            const bool hasProxyData =
+                staticMesh != nullptr && staticMesh->HasRenderData();
             if (hasLegacyRenderData || hasProxyData)
             {
-                primitiveControlledEntities.insert(entity->GetHandle());
+                primitiveControlledEntities.insert(ToRenderOwnerId(entity));
             }
 
             if (!primitive->IsEnabled() || !primitive->IsVisible())
@@ -133,24 +366,24 @@ namespace RVX
                 {
                     MarkFallback(result,
                                  RenderProxySceneBridgeFallbackReason::PrimitiveProxyUnavailable,
-                                 entity->GetHandle());
+                                 ToRenderOwnerId(entity));
                 }
                 continue;
             }
 
             RenderPrimitiveProxy proxy;
-            if (!primitive->CreateRenderProxy(proxy))
+            if (!BuildStaticMeshProxy(*staticMesh, proxy))
             {
                 MarkFallback(result,
                              RenderProxySceneBridgeFallbackReason::PrimitiveProxyCreationFailed,
-                             entity->GetHandle());
+                             ToRenderOwnerId(entity));
                 continue;
             }
 
-            proxy.ownerId = entity->GetHandle();
+            proxy.ownerId = ToRenderOwnerId(entity);
             if (!proxy.id.IsValid())
             {
-                proxy.id.value = proxy.ownerId;
+                proxy.id.value = ToRenderComponentId(primitive);
             }
             outSnapshot.primitives.push_back(std::move(proxy));
         }
@@ -190,7 +423,8 @@ namespace RVX
         if (!entity || !entity->IsActive())
             return;
 
-        if (primitiveControlledEntities.find(entity->GetHandle()) == primitiveControlledEntities.end())
+        const uint64 ownerId = ToRenderOwnerId(entity);
+        if (primitiveControlledEntities.find(ownerId) == primitiveControlledEntities.end())
         {
             if (auto* renderer = entity->GetComponent<MeshRendererComponent>())
             {
@@ -199,8 +433,8 @@ namespace RVX
                     const Mat4 worldMatrix = entity->GetWorldMatrix();
 
                     RenderPrimitiveProxy proxy;
-                    proxy.id.value = entity->GetHandle();
-                    proxy.ownerId = entity->GetHandle();
+                    proxy.id.value = ToRenderComponentId(renderer);
+                    proxy.ownerId = ownerId;
                     proxy.worldMatrix = worldMatrix;
                     proxy.normalMatrix = glm::inverseTranspose(Mat4(Mat3(worldMatrix)));
                     proxy.bounds = entity->GetWorldBounds();
@@ -235,8 +469,8 @@ namespace RVX
             if (lightComp->IsEnabled())
             {
                 RenderLightProxy light;
-                light.id.value = entity->GetHandle();
-                light.ownerId = entity->GetHandle();
+                light.id.value = ToRenderComponentId(lightComp);
+                light.ownerId = ownerId;
 
                 switch (lightComp->GetLightType())
                 {

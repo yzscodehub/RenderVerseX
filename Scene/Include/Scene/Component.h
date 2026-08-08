@@ -96,6 +96,7 @@ namespace RVX
         void RequestTick() { m_needsTick = true; }
 
     private:
+        friend class Scene;
         friend class SceneEntity;
 
         /// Set by SceneEntity when attached

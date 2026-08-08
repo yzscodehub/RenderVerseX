@@ -7,6 +7,7 @@
 
 #include "Core/Subsystem/WorldSubsystem.h"
 #include "Physics/PhysicsWorld.h"
+#include "Scene/SceneSystemScheduler.h"
 
 #include <memory>
 #include <vector>
@@ -14,6 +15,7 @@
 namespace RVX
 {
     class RigidBodyComponent;
+    class Scene;
 
     /**
      * @brief Per-world physics simulation and Scene synchronization.
@@ -30,10 +32,11 @@ namespace RVX
         void Initialize() override;
         void Deinitialize() override;
         void Tick(float deltaTime) override;
-        bool ShouldTick() const override { return true; }
+        bool ShouldTick() const override { return false; }
         TickPhase GetTickPhase() const override { return TickPhase::Update; }
 
         void SetConfig(const Physics::PhysicsWorldConfig& config);
+        void RebindScene();
         const Physics::PhysicsWorldConfig& GetConfig() const { return m_config; }
 
         Physics::PhysicsWorld* GetPhysicsWorld() { return m_physicsWorld.get(); }
@@ -53,6 +56,8 @@ namespace RVX
         size_t m_lastRegisteredBodyComponentCount = 0;
         uint32 m_lastPhysicsStepCount = 0;
         float m_physicsAccumulatorSeconds = 0.0f;
+        SceneSystemHandle m_sceneSystemHandle = InvalidSceneSystemHandle;
+        Scene* m_registeredScene = nullptr;
     };
 
 } // namespace RVX

@@ -14,6 +14,7 @@
  * - Actor (UE-style component owner)
  * - SceneEntity (base class for spatial entities)
  * - SceneManager (central scene management)
+ * - Scene (authoritative runtime owner)
  * - Prefab (reusable entity templates)
  * - Components (various entity components)
  */
@@ -33,6 +34,7 @@
 #include "Scene/SceneComponent.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
+#include "Scene/SceneRuntime.h"
 #include "Scene/VertexAttribute.h"
 
 // Components

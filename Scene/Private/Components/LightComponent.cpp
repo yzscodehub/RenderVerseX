@@ -53,4 +53,52 @@ void LightComponent::SetRange(float range)
     }
 }
 
+void LightComponent::SetColor(const Vec3& color)
+{
+    if (m_color == color)
+        return;
+    m_color = color;
+    NotifySceneStateChanged();
+}
+
+void LightComponent::SetIntensity(float intensity)
+{
+    if (m_intensity == intensity)
+        return;
+    m_intensity = intensity;
+    NotifySceneStateChanged();
+}
+
+void LightComponent::SetInnerConeAngle(float angle)
+{
+    if (m_innerConeAngle == angle)
+        return;
+    m_innerConeAngle = angle;
+    NotifySceneStateChanged();
+}
+
+void LightComponent::SetOuterConeAngle(float angle)
+{
+    if (m_outerConeAngle == angle)
+        return;
+    m_outerConeAngle = angle;
+    NotifySceneStateChanged();
+}
+
+void LightComponent::SetCastsShadow(bool casts)
+{
+    if (m_castsShadow == casts)
+        return;
+    m_castsShadow = casts;
+    NotifySceneStateChanged();
+}
+
+void LightComponent::SetShadowBias(float bias)
+{
+    if (m_shadowBias == bias)
+        return;
+    m_shadowBias = bias;
+    NotifySceneStateChanged();
+}
+
 } // namespace RVX

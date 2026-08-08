@@ -72,10 +72,10 @@ namespace RVX
         // =====================================================================
 
         const Vec3& GetColor() const { return m_color; }
-        void SetColor(const Vec3& color) { m_color = color; }
+        void SetColor(const Vec3& color);
 
         float GetIntensity() const { return m_intensity; }
-        void SetIntensity(float intensity) { m_intensity = intensity; }
+        void SetIntensity(float intensity);
 
         /// Range for point/spot lights
         float GetRange() const { return m_range; }
@@ -87,21 +87,21 @@ namespace RVX
 
         /// Inner cone angle in radians
         float GetInnerConeAngle() const { return m_innerConeAngle; }
-        void SetInnerConeAngle(float angle) { m_innerConeAngle = angle; }
+        void SetInnerConeAngle(float angle);
 
         /// Outer cone angle in radians
         float GetOuterConeAngle() const { return m_outerConeAngle; }
-        void SetOuterConeAngle(float angle) { m_outerConeAngle = angle; }
+        void SetOuterConeAngle(float angle);
 
         // =====================================================================
         // Shadow Properties
         // =====================================================================
 
         bool CastsShadow() const { return m_castsShadow; }
-        void SetCastsShadow(bool casts) { m_castsShadow = casts; }
+        void SetCastsShadow(bool casts);
 
         float GetShadowBias() const { return m_shadowBias; }
-        void SetShadowBias(float bias) { m_shadowBias = bias; }
+        void SetShadowBias(float bias);
 
     private:
         LightType m_type = LightType::Directional;

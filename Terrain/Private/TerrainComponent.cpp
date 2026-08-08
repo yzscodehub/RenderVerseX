@@ -164,9 +164,11 @@ bool TerrainComponent::BuildRenderSnapshot(TerrainRenderSnapshot& outSnapshot) c
     outSnapshot.BeginBuild(++m_nextRenderSnapshotSequence);
 
     TerrainRenderSnapshotItem item;
+    item.componentId = GetComponentHandle().IsValid()
+                           ? GetComponentHandle().GetPackedValue()
+                           : GetComponentId();
     if (auto* owner = GetOwner())
     {
-        item.componentId = owner->GetHandle();
         item.worldPosition = owner->GetWorldPosition();
         item.worldBounds = owner->GetWorldBounds();
     }

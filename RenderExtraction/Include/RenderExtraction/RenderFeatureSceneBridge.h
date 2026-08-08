@@ -13,6 +13,7 @@
 namespace RVX
 {
     class SceneEntity;
+    class Scene;
     class SceneManager;
     class World;
 
@@ -49,6 +50,9 @@ namespace RVX
                            RenderFeatureSnapshot& outSnapshot,
                            RenderFeatureSceneBridgeResult* outResult = nullptr) const;
         bool BuildSnapshot(SceneManager* sceneManager,
+                           RenderFeatureSnapshot& outSnapshot,
+                           RenderFeatureSceneBridgeResult* outResult = nullptr) const;
+        bool BuildSnapshot(Scene* scene,
                            RenderFeatureSnapshot& outSnapshot,
                            RenderFeatureSceneBridgeResult* outResult = nullptr) const;
 

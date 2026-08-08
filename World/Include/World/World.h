@@ -14,19 +14,17 @@
 #include "Core/Subsystem/WorldSubsystem.h"
 #include "Core/Math/Geometry.h"
 #include "Physics/PhysicsWorld.h"
-#include "Scene/Actor.h"
-#include "Scene/SceneManager.h"
+#include "Scene/SceneRuntime.h"
 #include <functional>
 #include <memory>
 #include <string>
 #include <type_traits>
-#include <unordered_map>
-#include <vector>
 
 namespace RVX
 {
     // Forward declarations
     class Camera;
+    class CameraComponent;
     struct RaycastHit;
 
     namespace Spatial { class ISpatialIndex; }
@@ -138,8 +136,14 @@ namespace RVX
         // Scene Access
         // =====================================================================
 
-        /// Get the scene manager
-        SceneManager* GetSceneManager() const { return m_sceneManager.get(); }
+        /// Get the authoritative scene runtime.
+        Scene* GetScene() const { return m_scene.get(); }
+
+        /// Compatibility facade for legacy spatial SceneEntity APIs.
+        SceneManager* GetSceneManager() const
+        {
+            return m_scene ? m_scene->GetSceneManager() : nullptr;
+        }
 
         /// Spawn a scene-owned actor.
         SceneEntity* SpawnActor(const ActorSpawnParams& params = {});
@@ -159,11 +163,11 @@ namespace RVX
 
             if constexpr (std::is_base_of_v<SceneEntity, T>)
             {
-                return m_sceneManager ? m_sceneManager->SpawnActor<T>(params) : nullptr;
+                return m_scene ? m_scene->SpawnActor<T>(params) : nullptr;
             }
             else
             {
-                return SpawnPureActor<T>(params);
+                return m_scene ? m_scene->SpawnActor<T>(params) : nullptr;
             }
         }
 
@@ -174,7 +178,7 @@ namespace RVX
         Actor* GetActor(Actor::Handle handle) const;
 
         /// Get non-spatial actor count owned directly by the world.
-        size_t GetActorCount() const { return m_actors.size(); }
+        size_t GetActorCount() const { return m_scene ? m_scene->GetPureActorCount() : 0; }
 
         /// Iterate over pure world actors and scene-owned actors.
         void ForEachActor(const std::function<void(Actor*)>& callback);
@@ -228,11 +232,28 @@ namespace RVX
          */
         void SetActiveCamera(Camera* camera);
 
+        /** @brief Select a scene-owned CameraComponent as active. */
+        bool SetActiveCamera(ComponentHandle camera);
+
+        [[nodiscard]] ComponentHandle GetActiveCameraHandle() const
+        {
+            return m_scene ? m_scene->GetActiveCameraHandle()
+                           : InvalidComponentHandle;
+        }
+
+        [[nodiscard]] CameraComponent* GetActiveCameraComponent() const
+        {
+            return m_scene ? m_scene->GetActiveCameraComponent() : nullptr;
+        }
+
         /**
          * @brief Get the currently active camera
          * @return Pointer to the active camera or nullptr
          */
-        Camera* GetActiveCamera() const { return m_activeCamera; }
+        Camera* GetActiveCamera() const
+        {
+            return m_scene ? m_scene->GetActiveCamera() : nullptr;
+        }
 
         // =====================================================================
         // Properties
@@ -242,46 +263,9 @@ namespace RVX
         const WorldConfig& GetConfig() const { return m_config; }
 
     private:
-        template<typename T>
-        T* SpawnPureActor(const ActorSpawnParams& params)
-        {
-            static_assert(std::is_base_of_v<Actor, T>, "T must derive from Actor");
-            static_assert(!std::is_base_of_v<SceneEntity, T>, "SceneEntity actors must use SceneManager");
-
-            if (params.parent)
-                return nullptr;
-
-            auto actor = std::make_unique<T>(params.name);
-            auto* spawned = actor.get();
-            spawned->SetAutoRegisterComponents(true);
-            spawned->RegisterAllComponents();
-            spawned->SetPosition(params.localPosition);
-            spawned->SetRotation(params.localRotation);
-            spawned->SetScale(params.localScale);
-
-            const auto handle = spawned->GetHandle();
-            m_actors[handle] = std::move(actor);
-            return spawned;
-        }
-
-        bool IsActorDestroyPending(Actor::Handle handle) const;
-        void QueuePendingActorDestroy(Actor::Handle handle);
-        void FlushPendingActorDestroys();
-        void DestroyPureActorImmediate(Actor::Handle handle);
-        void UpdatePureActorLifecycles(float deltaTime);
-        void ClearPureActors();
-
         WorldConfig m_config;
         SubsystemCollection<WorldSubsystem> m_subsystems;
-        std::unique_ptr<SceneManager> m_sceneManager;
-        std::unordered_map<Actor::Handle, std::unique_ptr<Actor>> m_actors;
-        std::vector<Actor::Handle> m_pendingDestroyActors;
-
-        // Camera management
-        std::unordered_map<std::string, std::unique_ptr<Camera>> m_cameras;
-        Camera* m_activeCamera = nullptr;
-
-        bool m_isDispatchingActorLifecycles = false;
+        std::unique_ptr<Scene> m_scene;
         bool m_initialized = false;
     };
 

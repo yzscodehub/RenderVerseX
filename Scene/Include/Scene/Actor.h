@@ -12,7 +12,6 @@
 #include "Spatial/Index/ISpatialEntity.h"
 
 #include <algorithm>
-#include <atomic>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -21,7 +20,9 @@
 
 namespace RVX
 {
+    class Scene;
     class SceneComponent;
+    class SceneManager;
 
     /**
      * @brief Base scene object for the UE-style component system.
@@ -59,6 +60,7 @@ namespace RVX
         // =====================================================================
 
         virtual Handle GetHandle() const { return m_handle; }
+        Scene* GetScene() const { return m_scene; }
         virtual const std::string& GetName() const { return m_name; }
         virtual void SetName(const std::string& name) { m_name = name; }
 
@@ -133,8 +135,13 @@ namespace RVX
                                             const ActorComponent* ignoredComponent = nullptr) const;
         bool IsComponentNameInUse(const std::string& name,
                                   const ActorComponent* ignoredComponent = nullptr) const;
+        void NotifyComponentAdded(ActorComponent* component);
+        void NotifyComponentRemoving(ActorComponent* component);
 
     private:
+        friend class Scene;
+        friend class SceneManager;
+
         struct PendingComponentRemoval
         {
             ActorComponent* component = nullptr;
@@ -150,8 +157,11 @@ namespace RVX
         void BeginComponentDispatch(bool dispatchingEndPlay = false);
         void EndComponentDispatch(bool dispatchingEndPlay = false);
         void DestroyAllComponents();
+        void AssignHandle(Handle handle) { m_handle = handle; }
+        void AssignScene(Scene* scene) { m_scene = scene; }
 
         Handle m_handle = InvalidHandle;
+        Scene* m_scene = nullptr;
         std::string m_name;
         bool m_active = true;
         bool m_hasBegunPlay = false;
@@ -162,8 +172,6 @@ namespace RVX
         int32 m_componentEndPlayDispatchDepth = 0;
         std::vector<PendingComponentRemoval> m_pendingRemoveComponents;
 
-        static Handle GenerateHandle();
-        static std::atomic<Handle> s_nextHandle;
     };
 
     // =========================================================================
@@ -187,6 +195,7 @@ namespace RVX
             ptr->SetOwnerActor(this);
             m_components.push_back(std::move(component));
             ptr->OnComponentCreated();
+            NotifyComponentAdded(ptr);
 
             if (ShouldAutoRegisterComponent(ptr))
             {

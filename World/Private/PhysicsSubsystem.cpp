@@ -7,8 +7,7 @@
 
 #include "Core/Log.h"
 #include "Scene/Components/RigidBodyComponent.h"
-#include "Scene/SceneEntity.h"
-#include "Scene/SceneManager.h"
+#include "Scene/SceneRuntime.h"
 #include "World/World.h"
 
 namespace RVX
@@ -29,11 +28,20 @@ void PhysicsSubsystem::Initialize()
         return;
     }
 
+    RebindScene();
+
     RVX_CORE_INFO("PhysicsSubsystem initialized");
 }
 
 void PhysicsSubsystem::Deinitialize()
 {
+    if (m_registeredScene)
+    {
+        m_registeredScene->UnregisterSystem(m_sceneSystemHandle);
+    }
+    m_sceneSystemHandle = InvalidSceneSystemHandle;
+    m_registeredScene = nullptr;
+
     DetachComponents();
 
     if (m_physicsWorld)
@@ -98,26 +106,34 @@ void PhysicsSubsystem::GatherRigidBodyComponents(std::vector<RigidBodyComponent*
     outComponents.clear();
 
     const World* world = GetWorld();
-    SceneManager* sceneManager = world ? world->GetSceneManager() : nullptr;
-    if (!sceneManager)
+    const Scene* scene = world ? world->GetScene() : nullptr;
+    if (!scene)
     {
         return;
     }
 
-    outComponents.reserve(sceneManager->GetEntityCount());
-    sceneManager->ForEachEntity(
-        [&outComponents](SceneEntity* entity)
-        {
-            if (!entity)
-            {
-                return;
-            }
+    outComponents = scene->GetComponents<RigidBodyComponent>();
+}
 
-            if (auto* rigidBody = entity->GetComponent<RigidBodyComponent>())
-            {
-                outComponents.push_back(rigidBody);
-            }
-        });
+void PhysicsSubsystem::RebindScene()
+{
+    World* world = GetWorld();
+    Scene* scene = world ? world->GetScene() : nullptr;
+    if (scene == m_registeredScene && m_sceneSystemHandle.IsValid())
+        return;
+
+    if (m_registeredScene)
+        m_registeredScene->UnregisterSystem(m_sceneSystemHandle);
+
+    m_registeredScene = scene;
+    m_sceneSystemHandle = InvalidSceneSystemHandle;
+    if (m_registeredScene)
+    {
+        m_sceneSystemHandle = m_registeredScene->RegisterSystem(
+            "PhysicsSubsystem",
+            SceneUpdatePhase::FixedPhysics,
+            [this](float deltaTime) { Tick(deltaTime); });
+    }
 }
 
 void PhysicsSubsystem::AttachComponents(std::vector<RigidBodyComponent*>& components)

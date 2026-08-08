@@ -6,15 +6,12 @@
  */
 
 #include "Core/MathTypes.h"
-#include <cstdint>
+#include "Spatial/EntityHandle.h"
+
 #include <vector>
 
 namespace RVX::Spatial
 {
-    /// Entity handle type
-    using EntityHandle = uint32_t;
-    static constexpr EntityHandle InvalidEntityHandle = ~0u;
-
     /**
      * @brief Result of a spatial query
      */
@@ -32,7 +29,7 @@ namespace RVX::Spatial
         /// User data pointer (optional)
         void* userData = nullptr;
 
-        bool IsValid() const { return handle != InvalidEntityHandle; }
+        bool IsValid() const { return handle.IsValid(); }
 
         bool operator<(const QueryResult& other) const
         {

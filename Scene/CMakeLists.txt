@@ -12,6 +12,9 @@ target_sources(RVX_Scene PRIVATE
     Private/PrimitiveComponent.cpp
     Private/SceneEntity.cpp
     Private/SceneManager.cpp
+    Private/SceneRuntime.cpp
+    Private/SceneSystemScheduler.cpp
+    Private/TransformStore.cpp
     Private/Component.cpp
     Private/ComponentClassFactory.cpp
     Private/ComponentFactory.cpp
@@ -37,7 +40,6 @@ target_include_directories(RVX_Scene PUBLIC
 target_link_libraries(RVX_Scene PUBLIC
     RVX::Core
     RVX::Geometry
-    RVX::RenderContracts
     Spatial
 )
 

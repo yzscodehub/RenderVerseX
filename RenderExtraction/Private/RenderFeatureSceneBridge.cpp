@@ -8,6 +8,7 @@
 #include "Scene/Component.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
+#include "Scene/SceneRuntime.h"
 #include "World/World.h"
 
 namespace RVX
@@ -62,7 +63,66 @@ namespace RVX
             return false;
         }
 
-        return BuildSnapshot(world->GetSceneManager(), outSnapshot, outResult);
+        return BuildSnapshot(world->GetScene(), outSnapshot, outResult);
+    }
+
+    bool RenderFeatureSceneBridge::BuildSnapshot(
+        Scene* scene,
+        RenderFeatureSnapshot& outSnapshot,
+        RenderFeatureSceneBridgeResult* outResult) const
+    {
+        RenderFeatureSceneBridgeResult result;
+        outSnapshot.BeginBuild(++m_nextSnapshotSequence);
+
+        if (!scene)
+        {
+            outSnapshot.MarkIncomplete();
+            MarkFallback(result,
+                         RenderFeatureSceneBridgeFallbackReason::NullSceneManager,
+                         0);
+            CopySnapshotMetadata(outSnapshot, result);
+            if (outResult) *outResult = result;
+            return false;
+        }
+
+        const auto providers =
+            scene->GetComponentsImplementing<IRenderFeatureSnapshotProvider>();
+        for (const IRenderFeatureSnapshotProvider* provider : providers)
+        {
+            const auto* component = dynamic_cast<const ActorComponent*>(provider);
+            const Actor* owner = component ? component->GetOwner() : nullptr;
+            if (!component || !owner || !owner->IsActive() ||
+                !component->IsEnabled())
+            {
+                continue;
+            }
+
+            ++outSnapshot.metadata.providerCount;
+            if (!provider->AppendRenderFeatureSnapshot(outSnapshot))
+            {
+                ++outSnapshot.metadata.skippedProviderCount;
+                MarkFallback(
+                    result,
+                    RenderFeatureSceneBridgeFallbackReason::ProviderAppendFailed,
+                    owner->GetHandle().GetPackedValue());
+                break;
+            }
+        }
+
+        if (result.requiresLegacyFallback)
+        {
+            outSnapshot.MarkIncomplete();
+            CopySnapshotMetadata(outSnapshot, result);
+            if (outResult) *outResult = result;
+            return false;
+        }
+
+        outSnapshot.MarkComplete();
+        result.usedProviderPath = true;
+        result.fallbackReason = RenderFeatureSceneBridgeFallbackReason::None;
+        CopySnapshotMetadata(outSnapshot, result);
+        if (outResult) *outResult = result;
+        return true;
     }
 
     bool RenderFeatureSceneBridge::BuildSnapshot(SceneManager* sceneManager,
@@ -130,7 +190,7 @@ namespace RVX
                 ++outSnapshot.metadata.skippedProviderCount;
                 MarkFallback(result,
                              RenderFeatureSceneBridgeFallbackReason::ProviderAppendFailed,
-                             entity->GetHandle());
+                             entity->GetHandle().GetPackedValue());
                 return;
             }
         }

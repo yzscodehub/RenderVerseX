@@ -40,24 +40,19 @@ namespace RVX
         SceneMaterialHandle GetMaterial(size_t submeshIndex) const;
         size_t GetSubmeshCount() const;
         size_t GetMaterialOverrideCount() const { return m_materialOverrides.size(); }
-        void ClearMaterialOverrides() { m_materialOverrides.clear(); }
+        void ClearMaterialOverrides();
 
         // =====================================================================
         // Rendering Properties
         // =====================================================================
 
         bool CastsShadow() const { return m_castsShadow; }
-        void SetCastsShadow(bool castsShadow) { m_castsShadow = castsShadow; }
+        void SetCastsShadow(bool castsShadow);
 
         bool ReceivesShadow() const { return m_receivesShadow; }
-        void SetReceivesShadow(bool receivesShadow) { m_receivesShadow = receivesShadow; }
-
-        // =====================================================================
-        // Render Extraction
-        // =====================================================================
+        void SetReceivesShadow(bool receivesShadow);
 
         bool HasRenderData() const override;
-        bool CreateRenderProxy(RenderPrimitiveProxy& outProxy) const override;
 
     private:
         SceneMeshHandle m_mesh;

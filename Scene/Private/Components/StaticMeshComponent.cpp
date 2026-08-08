@@ -1,37 +1,11 @@
 #include "Scene/Components/StaticMeshComponent.h"
 
 #include "Geometry/Asset/AssetMetadata.h"
-#include "RenderContracts/RenderProxy.h"
-#include "Scene/Components/ISkinningPaletteProvider.h"
-#include "Scene/SceneEntity.h"
-
-#include <glm/gtc/matrix_inverse.hpp>
 
 #include <utility>
 
 namespace RVX
 {
-namespace
-{
-    RenderMaterialMode ToRenderMaterialMode(
-        const IMaterialAssetMetadata* material)
-    {
-        if (!material)
-            return RenderMaterialMode::Opaque;
-
-        switch (material->GetAssetMaterialMode())
-        {
-            case AssetMaterialMode::Masked:
-                return RenderMaterialMode::Masked;
-            case AssetMaterialMode::Transparent:
-                return RenderMaterialMode::Transparent;
-            case AssetMaterialMode::Opaque:
-            default:
-                return RenderMaterialMode::Opaque;
-        }
-    }
-} // namespace
-
 void StaticMeshComponent::SetMesh(SceneMeshHandle mesh)
 {
     m_mesh = std::move(mesh);
@@ -65,6 +39,31 @@ void StaticMeshComponent::SetMaterial(size_t submeshIndex,
         m_materialOverrides.resize(submeshIndex + 1);
     }
     m_materialOverrides[submeshIndex] = std::move(material);
+    NotifySceneStateChanged();
+}
+
+void StaticMeshComponent::ClearMaterialOverrides()
+{
+    if (m_materialOverrides.empty())
+        return;
+    m_materialOverrides.clear();
+    NotifySceneStateChanged();
+}
+
+void StaticMeshComponent::SetCastsShadow(bool castsShadow)
+{
+    if (m_castsShadow == castsShadow)
+        return;
+    m_castsShadow = castsShadow;
+    NotifySceneStateChanged();
+}
+
+void StaticMeshComponent::SetReceivesShadow(bool receivesShadow)
+{
+    if (m_receivesShadow == receivesShadow)
+        return;
+    m_receivesShadow = receivesShadow;
+    NotifySceneStateChanged();
 }
 
 SceneMaterialHandle StaticMeshComponent::GetMaterial(size_t submeshIndex) const
@@ -96,70 +95,6 @@ size_t StaticMeshComponent::GetSubmeshCount() const
 bool StaticMeshComponent::HasRenderData() const
 {
     return HasValidMesh() && GetSubmeshCount() > 0;
-}
-
-bool StaticMeshComponent::CreateRenderProxy(RenderPrimitiveProxy& outProxy) const
-{
-    if (!HasRenderData())
-        return false;
-
-    const ISkinningPaletteProvider* skinningProvider = nullptr;
-    if (auto* entity = dynamic_cast<SceneEntity*>(GetOwner()))
-    {
-        for (const auto& [componentType, component] : entity->GetComponents())
-        {
-            (void)componentType;
-            auto* candidate =
-                dynamic_cast<ISkinningPaletteProvider*>(component.get());
-            if (!candidate)
-            {
-                continue;
-            }
-
-            if (skinningProvider)
-            {
-                return false;
-            }
-            skinningProvider = candidate;
-        }
-    }
-
-    const Mat4 worldMatrix = GetWorldTransform();
-
-    outProxy = RenderPrimitiveProxy();
-    outProxy.worldMatrix = worldMatrix;
-    outProxy.normalMatrix = glm::inverseTranspose(Mat4(Mat3(worldMatrix)));
-    outProxy.bounds = GetWorldBounds();
-    outProxy.meshAssetId = AssetId{m_mesh.GetId()};
-    outProxy.layerMask = GetLayerMask();
-    outProxy.castsShadow = m_castsShadow;
-    outProxy.receivesShadow = m_receivesShadow;
-    outProxy.visible = IsVisible();
-
-    const size_t submeshCount = GetSubmeshCount();
-    outProxy.materialAssetIds.resize(submeshCount);
-    outProxy.materialModes.resize(submeshCount);
-    for (size_t i = 0; i < submeshCount; ++i)
-    {
-        auto material = GetMaterial(i);
-        outProxy.materialAssetIds[i] =
-            AssetId{material.IsValid() ? material.GetId() : 0};
-        outProxy.materialModes[i] =
-            ToRenderMaterialMode(material.As<IMaterialAssetMetadata>());
-    }
-
-    outProxy.sortKey = outProxy.materialAssetIds.empty()
-                           ? 0
-                           : outProxy.materialAssetIds[0].value;
-
-    if (skinningProvider)
-    {
-        const std::span<const Mat4> palette =
-            skinningProvider->GetSkinningPalette();
-        outProxy.skinningMatrices.assign(palette.begin(), palette.end());
-    }
-
-    return true;
 }
 
 } // namespace RVX

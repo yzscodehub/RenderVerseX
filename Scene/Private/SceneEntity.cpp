@@ -1,7 +1,10 @@
 #include "Scene/SceneEntity.h"
+
 #include "Core/Event/EventBus.h"
 #include "Scene/ComponentEvents.h"
+#include "Scene/PrimitiveComponent.h"
 #include "Scene/SceneManager.h"
+#include "Scene/SceneRuntime.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -10,17 +13,8 @@
 namespace RVX
 {
 
-std::atomic<SceneEntity::Handle> SceneEntity::s_nextHandle{1};
-
-SceneEntity::Handle SceneEntity::GenerateHandle()
-{
-    return s_nextHandle.fetch_add(1, std::memory_order_relaxed);
-}
-
 SceneEntity::SceneEntity(const std::string& name)
     : Actor(name)
-    , m_handle(GenerateHandle())
-    , m_name(name)
 {
     m_compatRootComponent = Actor::AddComponent<SceneComponent>();
     SetRootComponent(m_compatRootComponent);
@@ -310,6 +304,23 @@ AABB SceneEntity::ComputeBoundsFromComponents() const
             }
         }
     }
+
+    // ActorComponent-based render primitives live in Actor's component store,
+    // rather than the legacy Component map above. Include their component-space
+    // transforms so model roots expose the same bounds used for render proxies.
+    for (const auto& actorComponent : GetActorComponents())
+    {
+        const auto* primitive =
+            dynamic_cast<const PrimitiveComponent*>(actorComponent.get());
+        if (primitive && primitive->IsEnabled())
+        {
+            const AABB primitiveBounds = primitive->GetWorldBounds();
+            if (primitiveBounds.IsValid())
+            {
+                combined.Expand(primitiveBounds);
+            }
+        }
+    }
     
     // Expand to include children bounds
     for (const auto* child : m_children)
@@ -497,6 +508,7 @@ bool SceneEntity::RemoveLegacyComponentByType(std::type_index typeIndex)
 
     if (removedComponent)
     {
+        NotifyComponentRemoving(removedComponent.get());
         removedComponent->EndPlayWithOwner();
         removedComponent->UnregisterFromOwner();
         removedComponent->OnDetach();
@@ -526,6 +538,7 @@ void SceneEntity::QueuePendingLegacyComponentRemoval(std::type_index typeIndex)
     if (IsLegacyComponentRemovalPending(typeIndex))
         return;
 
+    NotifyComponentRemoving(m_components[typeIndex].get());
     m_pendingRemoveLegacyComponents.push_back(typeIndex);
 }
 
@@ -696,7 +709,11 @@ void SceneEntity::TickComponents(float deltaTime)
         if (!component || IsLegacyComponentRemovalPending(std::type_index(typeid(*component))))
             continue;
 
-        if (component->IsEnabled())
+        const bool sceneGameplayComponent =
+            GetScene() == nullptr ||
+            component->GetSceneUpdatePhase() == SceneUpdatePhase::Gameplay;
+        if (component->IsEnabled() && sceneGameplayComponent &&
+            component->ShouldSceneDispatchTick())
         {
             component->Tick(deltaTime);
         }
@@ -707,7 +724,8 @@ void SceneEntity::TickComponents(float deltaTime)
 bool SceneEntity::ShouldAutoRegisterComponent(ActorComponent* component) const
 {
     (void)component;
-    return m_sceneManager != nullptr;
+    return m_sceneManager != nullptr &&
+           (GetScene() == nullptr || !GetScene()->IsUpdating());
 }
 
 void SceneEntity::SetRootComponent(SceneComponent* rootComponent)

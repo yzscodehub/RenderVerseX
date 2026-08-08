@@ -1,5 +1,8 @@
 #include "Scene/ActorComponent.h"
 
+#include "Scene/Actor.h"
+#include "Scene/SceneRuntime.h"
+
 #include <atomic>
 
 namespace RVX
@@ -29,6 +32,20 @@ namespace
 ActorComponent::ActorComponent()
     : m_componentId(GenerateComponentId())
 {
+}
+
+void ActorComponent::SetEnabled(bool enabled)
+{
+    if (m_enabled == enabled)
+        return;
+    m_enabled = enabled;
+    NotifySceneStateChanged();
+}
+
+void ActorComponent::NotifySceneStateChanged()
+{
+    if (m_owner && m_owner->GetScene() && m_componentHandle.IsValid())
+        m_owner->GetScene()->NotifyComponentChanged(m_componentHandle);
 }
 
 void ActorComponent::SetComponentIdForSerialization(ComponentId componentId)

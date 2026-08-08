@@ -26,6 +26,7 @@ namespace RVX
     class Camera;
     class Node;
     class PrimitiveComponent;
+    class Scene;
 
     /**
      * @brief Configuration for SceneManager
@@ -93,7 +94,10 @@ namespace RVX
     class SceneManager
     {
     public:
-        SceneManager();
+        using ActorHandlePool = HandlePool<Actor::Handle>;
+
+        explicit SceneManager(Scene* ownerScene = nullptr,
+                              ActorHandlePool* sharedActorHandles = nullptr);
         ~SceneManager();
 
         // Non-copyable
@@ -310,15 +314,20 @@ namespace RVX
         Stats GetStats() const;
 
     private:
+        friend class Scene;
+
         class PrimitiveSpatialProxy;
 
-        static constexpr Spatial::EntityHandle s_primitiveSpatialHandleStart = 0x80000000u;
+        static constexpr uint32 s_primitiveSpatialHandleStart = 0x80000000u;
 
         bool m_initialized = false;
         SceneConfig m_config;
 
         // Entity storage
         std::unordered_map<SceneEntity::Handle, SceneEntity::Ptr> m_entities;
+        ActorHandlePool m_ownedActorHandles;
+        ActorHandlePool* m_actorHandles = nullptr;
+        Scene* m_ownerScene = nullptr;
 
         // UE-style renderable primitive registry
         std::vector<PrimitiveComponent*> m_primitives;
@@ -328,7 +337,7 @@ namespace RVX
         std::unordered_map<SceneEntity::Handle, std::unordered_set<PrimitiveComponent*>> m_primitivesByOwner;
         std::vector<std::unique_ptr<PrimitiveSpatialProxy>> m_retiredPrimitiveSpatialProxies;
         std::unordered_set<PrimitiveComponent*> m_indexedPrimitives;
-        Spatial::EntityHandle m_nextPrimitiveSpatialHandle = s_primitiveSpatialHandleStart;
+        uint32 m_nextPrimitiveSpatialHandle = s_primitiveSpatialHandleStart;
 
         // Spatial indexing
         Spatial::SpatialIndexPtr m_spatialIndex;
@@ -344,6 +353,8 @@ namespace RVX
         std::vector<SceneEntity::Handle> m_pendingDestroyEntities;
 
         // Helper for building spatial index
+        Actor::Handle AllocateActorHandle();
+        void ReleaseActorHandle(Actor* actor);
         Spatial::EntityHandle AllocatePrimitiveSpatialHandle();
         PrimitiveSpatialProxy* GetPrimitiveSpatialProxy(PrimitiveComponent* primitive) const;
         bool IsPrimitiveSpatiallyIndexable(const PrimitiveComponent* primitive) const;
@@ -353,7 +364,7 @@ namespace RVX
         void AppendUniquePrimitive(const SpatialQueryTarget& target,
                                    std::vector<PrimitiveComponent*>& outPrimitives) const;
         RaycastHit MakeRaycastHit(const Spatial::QueryResult& result, const Ray& ray) const;
-        void UpdateEntityLifecycles(float deltaTime);
+        void UpdateEntityLifecycles(float deltaTime, bool flushPendingDestroy = true);
         void QueuePendingDestroy(SceneEntity::Handle handle);
         void FlushPendingDestroyEntities();
         void DestroyEntityImmediate(SceneEntity::Handle handle);

@@ -6,6 +6,7 @@
 #include "RenderExtraction/WorldCameraBridge.h"
 
 #include "Core/Camera/Camera.h"
+#include "Scene/Components/CameraComponent.h"
 #include "World/World.h"
 
 #include <glm/gtc/matrix_inverse.hpp>
@@ -22,27 +23,40 @@ WorldCameraBridgeCode WorldCameraBridge::Extract(
     {
         return WorldCameraBridgeCode::NullWorld;
     }
+    CameraComponent* cameraComponent = world->GetActiveCameraComponent();
     Camera* camera = world->GetActiveCamera();
-    if (camera == nullptr)
+    if (cameraComponent == nullptr && camera == nullptr)
     {
         return WorldCameraBridgeCode::MissingActiveCamera;
     }
 
-    outView.viewMatrix = camera->GetView();
-    outView.projectionMatrix = camera->GetProjection();
-    outView.viewProjectionMatrix = camera->GetViewProjection();
+    if (cameraComponent != nullptr)
+    {
+        outView.viewMatrix = cameraComponent->GetViewMatrix();
+        outView.projectionMatrix = cameraComponent->GetProjectionMatrix();
+        outView.viewProjectionMatrix =
+            cameraComponent->GetViewProjectionMatrix();
+        outView.nearPlane = cameraComponent->GetNearPlane();
+        outView.farPlane = cameraComponent->GetFarPlane();
+    }
+    else
+    {
+        outView.viewMatrix = camera->GetView();
+        outView.projectionMatrix = camera->GetProjection();
+        outView.viewProjectionMatrix = camera->GetViewProjection();
+        outView.nearPlane = parameters.nearPlane;
+        outView.farPlane = parameters.farPlane;
+    }
     outView.inverseViewProjectionMatrix =
         glm::inverse(outView.viewProjectionMatrix);
-    outView.cameraPosition = camera->GetPosition();
     const Mat4 inverseView = glm::inverse(outView.viewMatrix);
+    outView.cameraPosition = Vec3(inverseView[3]);
     outView.cameraDirection = -Vec3(inverseView[2]);
     outView.cameraUp = Vec3(inverseView[1]);
     outView.viewportX = parameters.viewportX;
     outView.viewportY = parameters.viewportY;
     outView.viewportWidth = parameters.viewportWidth;
     outView.viewportHeight = parameters.viewportHeight;
-    outView.nearPlane = parameters.nearPlane;
-    outView.farPlane = parameters.farPlane;
     outView.absoluteTime = parameters.absoluteTime;
     outView.deltaTime = parameters.deltaTime;
     outView.exposure = parameters.exposure;

@@ -53,6 +53,7 @@ void Component::EndPlayWithOwner()
 
 void Component::NotifyBoundsChanged()
 {
+    NotifySceneStateChanged();
     if (m_owner)
     {
         m_owner->MarkBoundsDirty();

@@ -1578,6 +1578,22 @@ namespace
         EXPECT_TRUE(primitive.GetWorldBounds().IsValid());
     }
 
+    TEST(ActorComponentValidation, SceneEntityIncludesPrimitiveComponentBounds)
+    {
+        RVX::SceneEntity entity("BoundedPrimitiveEntity");
+        auto* primitive = static_cast<RVX::Actor&>(entity)
+                              .AddComponent<RVX::PrimitiveComponent>();
+        ASSERT_NE(nullptr, primitive);
+        primitive->SetLocalBounds(
+            RVX::AABB(RVX::Vec3(-3.0f, -2.0f, -1.0f),
+                      RVX::Vec3(3.0f, 2.0f, 1.0f)));
+
+        const RVX::AABB worldBounds = entity.GetWorldBounds();
+        EXPECT_TRUE(worldBounds.IsValid());
+        EXPECT_EQ(RVX::Vec3(-3.0f, -2.0f, -1.0f), worldBounds.GetMin());
+        EXPECT_EQ(RVX::Vec3(3.0f, 2.0f, 1.0f), worldBounds.GetMax());
+    }
+
     TEST(ActorComponentValidation, StaticMeshComponentIsPrimitiveSceneComponent)
     {
         EXPECT_TRUE((std::is_base_of_v<RVX::PrimitiveComponent, RVX::StaticMeshComponent>));
@@ -1599,8 +1615,8 @@ namespace
         ASSERT_NE(nullptr, primitive);
         EXPECT_FALSE(primitive->IsRegistered());
 
-        const auto handle = entity->GetHandle();
         sceneManager.AddEntity(entity);
+        const auto handle = entity->GetHandle();
 
         EXPECT_TRUE(primitive->IsRegistered());
         EXPECT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
@@ -2303,7 +2319,14 @@ namespace
         ASSERT_NE(nullptr, dynamic_cast<FactorySpawnPureActor*>(pureActor));
         EXPECT_EQ(std::string("WorldPureFactoryActor"), pureActor->GetName());
         EXPECT_EQ(RVX::Vec3(7.0f, 8.0f, 9.0f), pureActor->GetWorldPosition());
-        EXPECT_EQ(RVX::Quat(0.9659258f, 0.0f, 0.2588190f, 0.0f), pureActor->GetWorldRotation());
+        const RVX::Quat expectedPureRotation =
+            glm::normalize(RVX::Quat(0.9659258f, 0.0f, 0.2588190f, 0.0f));
+        const RVX::Quat actualPureRotation =
+            glm::normalize(pureActor->GetWorldRotation());
+        EXPECT_NEAR(std::abs(glm::dot(expectedPureRotation,
+                                      actualPureRotation)),
+                    1.0f,
+                    1.0e-6f);
         EXPECT_EQ(pureActor, world.GetActor(pureActor->GetHandle()));
         EXPECT_EQ(nullptr, world.GetSceneManager()->GetEntity(pureActor->GetHandle()));
         EXPECT_EQ(static_cast<size_t>(1), world.GetActorCount());

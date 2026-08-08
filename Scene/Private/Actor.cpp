@@ -1,6 +1,7 @@
 #include "Scene/Actor.h"
 #include "Scene/Component.h"
 #include "Scene/SceneComponent.h"
+#include "Scene/SceneRuntime.h"
 
 #include <algorithm>
 #include <utility>
@@ -8,16 +9,8 @@
 namespace RVX
 {
 
-std::atomic<Actor::Handle> Actor::s_nextHandle{1};
-
-Actor::Handle Actor::GenerateHandle()
-{
-    return s_nextHandle.fetch_add(1, std::memory_order_relaxed);
-}
-
 Actor::Actor(const std::string& name)
-    : m_handle(GenerateHandle())
-    , m_name(name)
+    : m_name(name)
 {
 }
 
@@ -156,6 +149,7 @@ ActorComponent* Actor::AddOwnedComponent(std::unique_ptr<ActorComponent> compone
     ptr->SetOwnerActor(this);
     m_components.push_back(std::move(component));
     ptr->OnComponentCreated();
+    NotifyComponentAdded(ptr);
 
     if (ShouldAutoRegisterComponent(ptr))
     {
@@ -236,7 +230,11 @@ void Actor::Tick(float deltaTime)
     BeginComponentDispatch();
     for (ActorComponent* component : snapshot)
     {
+        const bool sceneGameplayComponent =
+            GetScene() == nullptr ||
+            component->GetSceneUpdatePhase() == SceneUpdatePhase::Gameplay;
         if (component && !IsComponentRemovalPending(component) &&
+            sceneGameplayComponent && component->ShouldSceneDispatchTick() &&
             component->IsEnabled() && component->CanEverTick() && component->IsTickEnabled())
         {
             component->TickComponent(deltaTime);
@@ -268,7 +266,7 @@ void Actor::EndPlay()
 bool Actor::ShouldAutoRegisterComponent(ActorComponent* component) const
 {
     (void)component;
-    return m_autoRegisterComponents;
+    return m_autoRegisterComponents && (!m_scene || !m_scene->IsUpdating());
 }
 
 bool Actor::RemoveComponentInstance(ActorComponent* component)
@@ -311,6 +309,7 @@ bool Actor::RemoveComponentInstanceNow(ActorComponent* component)
     m_components.erase(it);
 
     ActorComponent* removed = removedComponent.get();
+    NotifyComponentRemoving(removed);
     if (removed->HasBegunPlay())
     {
         removed->SetHasBegunPlay(false);
@@ -357,6 +356,7 @@ void Actor::QueuePendingComponentRemoval(ActorComponent* component)
     }
 
     m_pendingRemoveComponents.push_back({ component, dispatchEndPlay });
+    NotifyComponentRemoving(component);
 }
 
 void Actor::FlushPendingComponentRemovals()
@@ -436,11 +436,24 @@ void Actor::DestroyAllComponents()
         if (!component)
             continue;
 
+        NotifyComponentRemoving(component);
         component->OnComponentDestroyed();
         component->SetOwnerActor(nullptr);
     }
     m_rootComponent = nullptr;
     m_components.clear();
+}
+
+void Actor::NotifyComponentAdded(ActorComponent* component)
+{
+    if (m_scene)
+        m_scene->RegisterComponent(component);
+}
+
+void Actor::NotifyComponentRemoving(ActorComponent* component)
+{
+    if (m_scene)
+        m_scene->UnregisterComponent(component);
 }
 
 } // namespace RVX

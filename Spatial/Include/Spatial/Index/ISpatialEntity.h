@@ -6,14 +6,12 @@
  */
 
 #include "Core/Math/AABB.h"
+#include "Spatial/EntityHandle.h"
+
 #include <cstdint>
 
 namespace RVX::Spatial
 {
-    /// Entity handle type
-    using EntityHandle = uint32_t;
-    static constexpr EntityHandle InvalidHandle = ~0u;
-
     /**
      * @brief Interface for entities that can be spatially indexed
      * 
