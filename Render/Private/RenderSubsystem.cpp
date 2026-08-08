@@ -1126,6 +1126,23 @@ RenderFramePublishResult RenderSubsystem::TryPublishFrame(
     return m_runtime->TryPublishFrame(std::move(packet));
 }
 
+RenderFramePublishResult RenderSubsystem::TryPublishFrameSet(
+    std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate,
+    std::unique_ptr<const RenderFramePacketV5> frameV5,
+    std::unique_ptr<const RenderFramePacket> compatibilityFrame)
+{
+    if (m_runtime == nullptr)
+    {
+        RenderFramePublishResult result;
+        result.code = RenderFramePublishCode::NotRunning;
+        result.resultClass = ClassifyRenderFramePublishCode(result.code);
+        return result;
+    }
+    return m_runtime->TryPublishFrameSet(std::move(sceneUpdate),
+                                         std::move(frameV5),
+                                         std::move(compatibilityFrame));
+}
+
 RenderResizeResult RenderSubsystem::RequestResize(
     const NativeSurfaceDesc& surface)
 {

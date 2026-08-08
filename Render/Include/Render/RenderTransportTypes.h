@@ -14,6 +14,7 @@ namespace RVX
     struct RenderTransportConfig
     {
         uint32 frameCapacity = 3;
+        uint32 sceneUpdateCapacity = 4;
         uint32 uploadRequestCapacity = 1024;
         uint64 uploadByteCapacity = 256ull * 1024ull * 1024ull;
         uint32 statusSlotCapacity = 262144;
@@ -21,6 +22,7 @@ namespace RVX
         [[nodiscard]] bool IsValid() const noexcept
         {
             return frameCapacity >= 2U && frameCapacity <= 4U &&
+                   sceneUpdateCapacity >= 2U && sceneUpdateCapacity <= 16U &&
                    uploadRequestCapacity != 0U &&
                    uploadByteCapacity != 0U &&
                    statusSlotCapacity >= 1024U;

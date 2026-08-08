@@ -7,6 +7,7 @@
 
 #include "Core/Types.h"
 #include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFramePacketV5.h"
 
 #include <array>
 #include <memory>
@@ -234,4 +235,27 @@ namespace RVX
         CompleteRenderFramePacketValidator<RenderFramePacket>>;
     using RenderFrameAcquireResult =
         BasicRenderFrameAcquireResult<RenderFramePacket>;
+
+    struct CompleteRenderFramePacketV5Validator final
+    {
+        [[nodiscard]] bool operator()(
+            const RenderFramePacketV5& packet) const noexcept
+        {
+            const RenderFrameHeaderV5& header = packet.GetHeader();
+            const RenderExtractionDiagnostics& diagnostics =
+                packet.GetExtractionDiagnostics();
+            return header.schemaId == RVX_RENDER_FRAME_PACKET_V5_SCHEMA_ID &&
+                   header.schemaVersion ==
+                       RVX_RENDER_FRAME_PACKET_V5_SCHEMA_VERSION &&
+                   header.sequence != 0 && header.requiredSceneRevision != 0 &&
+                   diagnostics.complete &&
+                   diagnostics.code == RenderExtractionCode::Complete;
+        }
+    };
+
+    using RenderFrameMailboxV5 = BasicRenderFrameMailbox<
+        RenderFramePacketV5,
+        CompleteRenderFramePacketV5Validator>;
+    using RenderFrameAcquireResultV5 =
+        BasicRenderFrameAcquireResult<RenderFramePacketV5>;
 } // namespace RVX

@@ -7,6 +7,8 @@
 #include "Render/RenderRuntimeTypes.h"
 #include "RenderContracts/IRenderResourceGateway.h"
 #include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFramePacketV5.h"
+#include "RenderContracts/RenderSceneUpdate.h"
 #include "RHI/RHINativeSurface.h"
 
 #include <memory>
@@ -39,6 +41,10 @@ namespace RVX
                        const NativeSurfaceDesc& surface);
         RenderFramePublishResult TryPublishFrame(
             std::unique_ptr<const RenderFramePacket> packet);
+        RenderFramePublishResult TryPublishFrameSet(
+            std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate,
+            std::unique_ptr<const RenderFramePacketV5> frameV5,
+            std::unique_ptr<const RenderFramePacket> compatibilityFrame);
         RenderResizeResult RequestResize(const NativeSurfaceDesc& surface);
         [[nodiscard]] RenderDiagnosticsSnapshot
             GetDiagnosticsSnapshot() const;

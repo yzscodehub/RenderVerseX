@@ -293,6 +293,7 @@ namespace
             const RenderFramePacket& packet) override
         {
             m_probe->Record(RenderRuntimeTestEvent::Frame);
+            m_probe->RecordConsumedFrame(packet);
             if (m_probe->throwOnFrame)
             {
                 throw std::runtime_error("forced consumer frame exception");
@@ -695,6 +696,26 @@ namespace
         std::lock_guard lock(m_mutex);
         m_eventCounts = {};
         m_events.clear();
+    }
+
+    void RenderFrameConsumerTestProbe::RecordConsumedFrame(
+        const RenderFramePacket& packet)
+    {
+        std::lock_guard lock(m_mutex);
+        m_lastConsumedPrimitiveIds.clear();
+        m_lastConsumedPrimitiveIds.reserve(packet.GetPrimitives().size());
+        for (const RenderPrimitiveSnapshot& primitive :
+             packet.GetPrimitives())
+        {
+            m_lastConsumedPrimitiveIds.push_back(primitive.objectId);
+        }
+    }
+
+    std::vector<uint64>
+        RenderFrameConsumerTestProbe::GetLastConsumedPrimitiveIds() const
+    {
+        std::lock_guard lock(m_mutex);
+        return m_lastConsumedPrimitiveIds;
     }
 
     uint32 RenderFrameConsumerTestProbe::GetEventCount(

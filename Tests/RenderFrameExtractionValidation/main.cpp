@@ -10,6 +10,7 @@
 #include "Resource/Types/TextureResource.h"
 #include "Scene/Actor.h"
 #include "Scene/Component.h"
+#include "Scene/Components/CameraComponent.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/SkyboxComponent.h"
 #include "Scene/Components/StaticMeshComponent.h"
@@ -425,9 +426,14 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
     RenderFrameExtractionResult extraction =
         extractor.Extract(MakeInput(41, &world, &fixture.subsystem));
     ASSERT_TRUE(extraction.IsComplete());
+    ASSERT_TRUE(extraction.HasCompleteShadowOutput());
     ASSERT_NE(extraction.packet, nullptr);
     EXPECT_EQ(extraction.sealCode, RenderFrameSealCode::Sealed);
 
+    std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate =
+        std::move(extraction.sceneUpdate);
+    std::unique_ptr<const RenderFramePacketV5> frameV5 =
+        std::move(extraction.frameV5);
     std::unique_ptr<const RenderFramePacket> packet =
         std::move(extraction.packet);
     world.Shutdown();
@@ -435,6 +441,19 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
     material.Reset();
     transparentMaterial.Reset();
     unresolvedHandle.Reset();
+
+    ASSERT_NE(sceneUpdate, nullptr);
+    EXPECT_TRUE(sceneUpdate->fullReset);
+    EXPECT_EQ(sceneUpdate->baseSceneRevision, 0U);
+    EXPECT_EQ(sceneUpdate->targetSceneRevision, 41U);
+    EXPECT_EQ(sceneUpdate->primitives.size(), 1U);
+    EXPECT_EQ(sceneUpdate->lights.size(), 1U);
+    EXPECT_EQ(sceneUpdate->particles.size(), 1U);
+    EXPECT_EQ(sceneUpdate->water.size(), 1U);
+    EXPECT_EQ(sceneUpdate->terrain.size(), 1U);
+    ASSERT_NE(frameV5, nullptr);
+    EXPECT_EQ(frameV5->GetHeader().sequence, 41U);
+    EXPECT_EQ(frameV5->GetHeader().requiredSceneRevision, 41U);
 
     EXPECT_EQ(packet->GetHeader().sequence, 41U);
     EXPECT_EQ(packet->GetHeader().worldRevision, 17U);
@@ -511,6 +530,105 @@ TEST(RenderFrameExtractionValidation, RejectsNullWorldAndMissingCamera)
     EXPECT_EQ(missingCamera.code,
               RenderFrameExtractionResultCode::MissingCamera);
     EXPECT_EQ(missingCamera.packet, nullptr);
+    world.Shutdown();
+}
+
+TEST(RenderFrameExtractionValidation, ExtractsActiveCameraComponentByHandle)
+{
+    ExtractionFixture fixture("camera-component");
+    World world;
+    ASSERT_TRUE(world.Initialize());
+    SceneEntity* cameraActor = CreateEntity(world, "ComponentCamera");
+    ASSERT_NE(cameraActor, nullptr);
+    cameraActor->SetPosition(Vec3{3.0f, 4.0f, 5.0f});
+    auto* camera = cameraActor->AddComponent<CameraComponent>();
+    ASSERT_NE(camera, nullptr);
+    camera->SetAspectRatio(16.0f / 9.0f);
+    camera->SetNearPlane(0.5f);
+    camera->SetFarPlane(500.0f);
+    ASSERT_TRUE(world.SetActiveCamera(camera->GetComponentHandle()));
+
+    RenderFrameExtractor extractor;
+    RenderFrameExtractionResult result =
+        extractor.Extract(MakeInput(1, &world, &fixture.subsystem));
+    ASSERT_TRUE(result.IsComplete());
+    ASSERT_NE(result.packet, nullptr);
+    EXPECT_EQ(world.GetActiveCameraHandle(), camera->GetComponentHandle());
+    EXPECT_EQ(world.GetActiveCameraComponent(), camera);
+    EXPECT_FLOAT_EQ(result.packet->GetView().nearPlane, 0.5f);
+    EXPECT_FLOAT_EQ(result.packet->GetView().farPlane, 500.0f);
+    EXPECT_NEAR(result.packet->GetView().cameraPosition.x, 3.0f, 0.0001f);
+    EXPECT_NEAR(result.packet->GetView().cameraPosition.y, 4.0f, 0.0001f);
+    EXPECT_NEAR(result.packet->GetView().cameraPosition.z, 5.0f, 0.0001f);
+    world.Shutdown();
+}
+
+TEST(RenderFrameExtractionValidation,
+     EmitsIncrementalMutationsOnlyAfterPublicationAcknowledgement)
+{
+    ExtractionFixture fixture("incremental");
+    World world;
+    ASSERT_TRUE(world.Initialize());
+    ASSERT_NE(world.CreateCamera("Main"), nullptr);
+    SceneEntity* lightActor = CreateEntity(world, "IncrementalLight");
+    ASSERT_NE(lightActor, nullptr);
+    auto* light = lightActor->AddComponent<LightComponent>();
+    ASSERT_NE(light, nullptr);
+    light->SetIntensity(2.0f);
+
+    RenderFrameExtractor extractor;
+    RenderFrameExtractionResult first =
+        extractor.Extract(MakeInput(1, &world, &fixture.subsystem));
+    ASSERT_TRUE(first.IsComplete());
+    ASSERT_NE(first.sceneUpdate, nullptr);
+    EXPECT_TRUE(first.sceneUpdate->fullReset);
+    ASSERT_EQ(first.sceneUpdate->lights.size(), 1U);
+    extractor.ResolveLastPublication(
+        RenderFramePublicationDisposition::Accepted);
+
+    RenderFrameExtractionResult unchanged =
+        extractor.Extract(MakeInput(2, &world, &fixture.subsystem));
+    ASSERT_TRUE(unchanged.IsComplete());
+    EXPECT_EQ(unchanged.sceneUpdate, nullptr);
+    ASSERT_NE(unchanged.frameV5, nullptr);
+    EXPECT_EQ(unchanged.frameV5->GetHeader().requiredSceneRevision, 1U);
+    extractor.ResolveLastPublication(
+        RenderFramePublicationDisposition::Accepted);
+
+    light->SetIntensity(9.0f);
+    RenderFrameExtractionResult changed =
+        extractor.Extract(MakeInput(3, &world, &fixture.subsystem));
+    ASSERT_TRUE(changed.IsComplete());
+    ASSERT_NE(changed.sceneUpdate, nullptr);
+    EXPECT_FALSE(changed.sceneUpdate->fullReset);
+    EXPECT_EQ(changed.sceneUpdate->baseSceneRevision, 1U);
+    ASSERT_EQ(changed.sceneUpdate->lights.size(), 1U);
+    EXPECT_EQ(changed.sceneUpdate->lights[0].operation,
+              RenderSceneMutationOperation::Upsert);
+    EXPECT_FLOAT_EQ(changed.sceneUpdate->lights[0].state.intensity, 9.0f);
+
+    // Backpressure never advances the reliable queue. Diffing again from the
+    // last accepted baseline coalesces all skipped revisions without a reset.
+    extractor.ResolveLastPublication(
+        RenderFramePublicationDisposition::NotAccepted);
+    RenderFrameExtractionResult recovery =
+        extractor.Extract(MakeInput(4, &world, &fixture.subsystem));
+    ASSERT_TRUE(recovery.IsComplete());
+    ASSERT_NE(recovery.sceneUpdate, nullptr);
+    EXPECT_FALSE(recovery.sceneUpdate->fullReset);
+    EXPECT_EQ(recovery.sceneUpdate->baseSceneRevision, 1U);
+    EXPECT_EQ(recovery.sceneUpdate->targetSceneRevision, 4U);
+    ASSERT_EQ(recovery.sceneUpdate->lights.size(), 1U);
+    EXPECT_FLOAT_EQ(recovery.sceneUpdate->lights[0].state.intensity, 9.0f);
+
+    extractor.ResolveLastPublication(
+        RenderFramePublicationDisposition::SceneUpdateAcceptedWithoutFrame);
+    RenderFrameExtractionResult checkpoint =
+        extractor.Extract(MakeInput(5, &world, &fixture.subsystem));
+    ASSERT_TRUE(checkpoint.IsComplete());
+    ASSERT_NE(checkpoint.sceneUpdate, nullptr);
+    EXPECT_TRUE(checkpoint.sceneUpdate->fullReset);
+    EXPECT_EQ(checkpoint.sceneUpdate->baseSceneRevision, 0U);
     world.Shutdown();
 }
 

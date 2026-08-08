@@ -49,7 +49,9 @@ namespace RVX
         InvalidPacket = 2,
         OutOfOrder = 3,
         ShuttingDown = 4,
-        NotRunning = 5
+        NotRunning = 5,
+        SceneUpdateBackpressure = 6,
+        InvalidSceneUpdate = 7
     };
 
     struct RenderFramePublishResult
@@ -58,6 +60,8 @@ namespace RVX
         RenderResultClass resultClass = RenderResultClass::RecoverableFrame;
         uint64 sequence = 0;
         uint64 replacedSequence = 0;
+        uint64 sceneRevision = 0;
+        bool sceneUpdateAccepted = false;
     };
 
     enum class RenderResizeCode : uint8
@@ -197,7 +201,7 @@ namespace RVX
         RenderFramePublishCode code) noexcept
     {
         return code >= RenderFramePublishCode::Accepted &&
-               code <= RenderFramePublishCode::NotRunning;
+               code <= RenderFramePublishCode::InvalidSceneUpdate;
     }
 
     [[nodiscard]] constexpr RenderResultClass ClassifyRenderFramePublishCode(
@@ -210,9 +214,11 @@ namespace RVX
             case RenderFramePublishCode::ReplacedOlder:
             case RenderFramePublishCode::ShuttingDown:
             case RenderFramePublishCode::NotRunning:
+            case RenderFramePublishCode::SceneUpdateBackpressure:
                 return RenderResultClass::ExpectedPressure;
             case RenderFramePublishCode::InvalidPacket:
             case RenderFramePublishCode::OutOfOrder:
+            case RenderFramePublishCode::InvalidSceneUpdate:
                 return RenderResultClass::RecoverableFrame;
         }
         return RenderResultClass::RecoverableFrame;

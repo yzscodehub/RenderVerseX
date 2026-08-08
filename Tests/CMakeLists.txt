@@ -411,6 +411,22 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME RenderTransportShadowValidation
+    SOURCES RenderTransportShadowValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderContracts
+        RVX::RenderExtraction
+        RVX::Render
+        RVX::Resource
+        RVX::Scene
+        RVX::World
+    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    LABELS "unit;architecture;transport"
+    TIMEOUT 60
+)
+
+rvx_add_gtest(
     NAME RenderDrawPacketValidation
     SOURCES RenderDrawPacketValidation/main.cpp
     LIBS RVX::Render
@@ -916,6 +932,34 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/World/Include
     LABELS unit
     TIMEOUT 120
+)
+
+rvx_add_gtest(
+    NAME RenderSceneUpdateQueueValidation
+    SOURCES RenderSceneUpdateQueueValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderContracts
+        RVX_RenderRuntimeCore
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/RenderContracts/Include
+    LABELS "unit;architecture"
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME RenderSceneRevisionValidation
+    SOURCES RenderSceneRevisionValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderContracts
+        RVX::Render
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/RenderContracts/Include
+    LABELS "unit;architecture"
+    TIMEOUT 30
 )
 
 # Material system validation tests

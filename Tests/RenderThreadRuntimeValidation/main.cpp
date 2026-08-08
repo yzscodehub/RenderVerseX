@@ -319,11 +319,16 @@ namespace
         return surface;
     }
 
-    std::unique_ptr<const RenderFramePacket> MakePacket(uint64 sequence)
+    std::unique_ptr<const RenderFramePacket> MakePacket(
+        uint64 sequence,
+        std::vector<RenderPrimitiveSnapshot> primitives = {})
     {
         RenderFramePacketBuilder builder;
         RenderFrameHeader header;
         header.sequence = sequence;
+        header.expectedPrimitiveCount =
+            static_cast<uint32>(primitives.size());
+        header.extractedPrimitiveCount = header.expectedPrimitiveCount;
         RenderViewSnapshot view;
         view.viewportWidth = 64;
         view.viewportHeight = 64;
@@ -335,6 +340,10 @@ namespace
 
         EXPECT_TRUE(builder.SetHeader(header));
         EXPECT_TRUE(builder.SetView(view));
+        for (RenderPrimitiveSnapshot& primitive : primitives)
+        {
+            EXPECT_TRUE(builder.AddPrimitive(std::move(primitive)));
+        }
         EXPECT_TRUE(builder.SetSky(RenderSkySnapshot{}));
         EXPECT_TRUE(builder.SetEnvironment(RenderEnvironmentSnapshot{}));
         EXPECT_TRUE(builder.SetSettings(RenderFrameSettings{}));
@@ -756,6 +765,93 @@ namespace
         EXPECT_TRUE(diagnostics.frameFeatures.rendered);
         EXPECT_EQ(diagnostics.frameFeatures.renderGraphTotalPasses, 11U);
         EXPECT_EQ(diagnostics.frameFeatures.visibleObjectCount, 3U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         DualChannelConsumesPersistentSceneInsteadOfCompatibilityArray)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        RenderPrimitiveSnapshot primitive11;
+        primitive11.objectId = 11;
+        primitive11.mesh = RenderResourceHandle{1, 1};
+        RenderPrimitiveSnapshot primitive22;
+        primitive22.objectId = 22;
+        primitive22.mesh = RenderResourceHandle{2, 1};
+
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(0, true);
+        ASSERT_TRUE(accumulator.UpsertPrimitive(primitive22, true));
+        ASSERT_TRUE(accumulator.UpsertPrimitive(primitive11, true));
+        accumulator.UpsertSky(RenderSkySnapshot{});
+        accumulator.UpsertEnvironment(RenderEnvironmentSnapshot{});
+
+        RenderFrameHeaderV5 headerV5;
+        headerV5.sequence = 17;
+        headerV5.requiredSceneRevision = 1;
+        RenderViewSnapshot view;
+        view.viewportWidth = 64;
+        view.viewportHeight = 64;
+        RenderExtractionDiagnostics diagnostics;
+        diagnostics.complete = true;
+        auto frameV5 = RenderFramePacketV5::Create(
+            headerV5,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            diagnostics);
+        ASSERT_NE(frameV5, nullptr);
+
+        // The v4 shadow is semantically equal but intentionally reversed.
+        // The persistent database emits stable object-ID order.
+        auto compatibility = MakePacket(
+            17,
+            std::vector<RenderPrimitiveSnapshot>{primitive22, primitive11});
+        ASSERT_NE(compatibility, nullptr);
+        auto update = std::make_unique<const RenderSceneUpdateBatch>(
+            accumulator.Build(1));
+
+        const RenderFramePublishResult publish = runtime.TryPublishFrameSet(
+            std::move(update),
+            std::move(frameV5),
+            std::move(compatibility));
+        ASSERT_EQ(publish.code, RenderFramePublishCode::Accepted);
+        EXPECT_EQ(probe->GetLastConsumedPrimitiveIds(),
+                  (std::vector<uint64>{11, 22}));
+        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().lastPresentedFrameSequence,
+                  17U);
+
+        headerV5.sequence = 18;
+        auto staticFrameV5 = RenderFramePacketV5::Create(
+            headerV5,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            diagnostics);
+        auto staticCompatibility = MakePacket(
+            18,
+            std::vector<RenderPrimitiveSnapshot>{primitive22, primitive11});
+        ASSERT_NE(staticFrameV5, nullptr);
+        ASSERT_NE(staticCompatibility, nullptr);
+        const RenderFramePublishResult staticPublish = runtime.TryPublishFrameSet(
+            nullptr,
+            std::move(staticFrameV5),
+            std::move(staticCompatibility));
+        EXPECT_EQ(staticPublish.code, RenderFramePublishCode::Accepted);
+        EXPECT_FALSE(staticPublish.sceneUpdateAccepted);
+        EXPECT_EQ(staticPublish.sceneRevision, 1U);
+        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().lastPresentedFrameSequence,
+                  18U);
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
     }
 

@@ -6,6 +6,8 @@
  */
 
 #include "Render/RenderDiagnostics.h"
+#include "Render/Renderer/RenderSceneDatabase.h"
+#include "Render/Runtime/RenderSceneUpdateQueue.h"
 #include "RenderContracts/IRenderResourceGateway.h"
 #include "RenderContracts/RenderFramePacket.h"
 #include "RHI/RHINativeSurface.h"
@@ -195,6 +197,10 @@ namespace RenderRuntimeDetail
 
         RenderFramePublishResult TryPublishFrame(
             std::unique_ptr<const RenderFramePacket> packet);
+        RenderFramePublishResult TryPublishFrameSet(
+            std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate,
+            std::unique_ptr<const RenderFramePacketV5> frameV5,
+            std::unique_ptr<const RenderFramePacket> compatibilityFrame);
         RenderResizeResult RequestResize(const NativeSurfaceDesc& surface);
         [[nodiscard]] RenderDiagnosticsSnapshot
             GetDiagnosticsSnapshot() const;
@@ -280,6 +286,12 @@ namespace RenderRuntimeDetail
         std::shared_ptr<IRenderWaitHook> m_waitHook;
         std::shared_ptr<IRenderMonotonicClock> m_clock;
         std::unique_ptr<RenderFrameMailbox> m_frameMailbox;
+        std::unique_ptr<RenderFrameMailboxV5> m_frameMailboxV5;
+        // Render-thread-only carry used when the dual mailboxes are observed
+        // between the v5 and compatibility-frame publications.
+        std::unique_ptr<const RenderFramePacketV5> m_pendingFrameV5;
+        std::unique_ptr<RenderSceneUpdateQueue> m_sceneUpdateQueue;
+        RenderSceneDatabase m_shadowScene;
         std::unique_ptr<SurfaceControlMailbox> m_controlMailbox;
         std::unique_ptr<RenderResourceGateway> m_resourceGateway;
         RenderDiagnosticsPublisher m_diagnosticsPublisher;

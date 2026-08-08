@@ -22,6 +22,7 @@ target_sources(RVX_RenderRuntimeCore PRIVATE
     Private/Runtime/RenderResourceGateway.cpp
     Private/Runtime/RenderResourceReservationDirectory.cpp
     Private/Runtime/RenderResourceStatusTable.cpp
+    Private/Runtime/RenderSceneUpdateQueue.cpp
     Private/Runtime/RenderUploadQueue.cpp
     Private/Runtime/RenderThreadGuard.cpp
     Private/Resources/RenderRetirementQueue.cpp
@@ -85,6 +86,7 @@ target_sources(RVX_Render PRIVATE
     Private/Renderer/RenderDrawPacket.cpp
     Private/Renderer/RenderDrawPacketCache.cpp
     Private/Renderer/RenderScene.cpp
+    Private/Renderer/RenderSceneDatabase.cpp
     Private/Renderer/RenderDrawItem.cpp
     Private/Renderer/RenderPassRegistry.cpp
     Private/Renderer/SceneRenderer.cpp

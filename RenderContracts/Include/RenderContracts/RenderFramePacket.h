@@ -11,6 +11,7 @@
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderMaterial.h"
 
+#include <memory>
 #include <vector>
 
 namespace RVX
@@ -292,6 +293,19 @@ namespace RVX
     class RenderFramePacket final
     {
     public:
+        /** @brief Internal migration factory for persistent-scene consumers. */
+        static std::unique_ptr<const RenderFramePacket> CreateCompatibility(
+            RenderFrameHeader header,
+            RenderViewSnapshot view,
+            std::vector<RenderPrimitiveSnapshot> primitives,
+            std::vector<RenderLightSnapshot> lights,
+            RenderSkySnapshot sky,
+            RenderEnvironmentSnapshot environment,
+            RenderFrameSettings settings,
+            RenderFrameCaptureRequest captureRequest,
+            RenderFeatureSnapshot features,
+            RenderExtractionDiagnostics extractionDiagnostics);
+
         ~RenderFramePacket() = default;
         RenderFramePacket() = delete;
         RenderFramePacket(const RenderFramePacket&) = delete;

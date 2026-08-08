@@ -144,6 +144,9 @@ namespace RVX
             std::chrono::milliseconds timeout) const;
         [[nodiscard]] std::vector<RenderRuntimeTestEvent> GetEvents() const;
         void ClearEvents();
+        void RecordConsumedFrame(const RenderFramePacket& packet);
+        [[nodiscard]] std::vector<uint64>
+            GetLastConsumedPrimitiveIds() const;
 
         void BlockFrames();
         void ReleaseFrames();
@@ -178,6 +181,7 @@ namespace RVX
         mutable std::condition_variable m_cv;
         std::array<uint32, EVENT_COUNT> m_eventCounts{};
         std::vector<RenderRuntimeTestEvent> m_events;
+        std::vector<uint64> m_lastConsumedPrimitiveIds;
         bool m_blockFrames = false;
         bool m_blockStartup = false;
         std::thread::id m_startupThread{};

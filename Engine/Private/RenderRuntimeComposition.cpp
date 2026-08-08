@@ -87,6 +87,29 @@ namespace RVX
                 return m_render.TryPublishFrame(std::move(packet));
             }
 
+            RenderFramePublishResult PublishExtractedFrame(
+                RenderFrameExtractionResult extraction) override
+            {
+                RenderFramePublishResult result = m_render.TryPublishFrameSet(
+                    std::move(extraction.sceneUpdate),
+                    std::move(extraction.frameV5),
+                    std::move(extraction.packet));
+                RenderFramePublicationDisposition disposition =
+                    RenderFramePublicationDisposition::NotAccepted;
+                if (result.code == RenderFramePublishCode::Accepted ||
+                    result.code == RenderFramePublishCode::ReplacedOlder)
+                {
+                    disposition = RenderFramePublicationDisposition::Accepted;
+                }
+                else if (result.sceneUpdateAccepted)
+                {
+                    disposition = RenderFramePublicationDisposition::
+                        SceneUpdateAcceptedWithoutFrame;
+                }
+                m_extractor.ResolveLastPublication(disposition);
+                return result;
+            }
+
             RenderDiagnosticsSnapshot GetRenderDiagnostics() const override
             {
                 return m_render.GetDiagnosticsSnapshot();
@@ -227,7 +250,7 @@ namespace RVX
 
         ++m_stats.extractionCompleted;
         RenderFramePublishResult publication =
-            m_services->PublishFrame(std::move(extraction.packet));
+            m_services->PublishExtractedFrame(std::move(extraction));
         m_stats.lastPublishResult = publication;
         if (publication.code == RenderFramePublishCode::Accepted ||
             publication.code == RenderFramePublishCode::ReplacedOlder)

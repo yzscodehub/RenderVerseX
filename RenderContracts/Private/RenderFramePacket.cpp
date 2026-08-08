@@ -4,6 +4,31 @@
 
 namespace RVX
 {
+std::unique_ptr<const RenderFramePacket> RenderFramePacket::CreateCompatibility(
+    RenderFrameHeader header,
+    RenderViewSnapshot view,
+    std::vector<RenderPrimitiveSnapshot> primitives,
+    std::vector<RenderLightSnapshot> lights,
+    RenderSkySnapshot sky,
+    RenderEnvironmentSnapshot environment,
+    RenderFrameSettings settings,
+    RenderFrameCaptureRequest captureRequest,
+    RenderFeatureSnapshot features,
+    RenderExtractionDiagnostics extractionDiagnostics)
+{
+    return std::unique_ptr<const RenderFramePacket>(new RenderFramePacket(
+        std::move(header),
+        std::move(view),
+        std::move(primitives),
+        std::move(lights),
+        std::move(sky),
+        std::move(environment),
+        std::move(settings),
+        std::move(captureRequest),
+        std::move(features),
+        std::move(extractionDiagnostics)));
+}
+
 RenderFramePacket::RenderFramePacket(
     RenderFrameHeader header,
     RenderViewSnapshot view,

@@ -13,6 +13,7 @@
 
 #include <functional>
 #include <memory>
+#include <utility>
 
 namespace RVX
 {
@@ -72,6 +73,12 @@ namespace RVX
             const RenderRuntimeCompositionFrameInput& input) = 0;
         virtual RenderFramePublishResult PublishFrame(
             std::unique_ptr<const RenderFramePacket> packet) = 0;
+        /** @brief Publish v5 shadow values before the compatibility v4 frame. */
+        virtual RenderFramePublishResult PublishExtractedFrame(
+            RenderFrameExtractionResult extraction)
+        {
+            return PublishFrame(std::move(extraction.packet));
+        }
         [[nodiscard]] virtual RenderDiagnosticsSnapshot
             GetRenderDiagnostics() const = 0;
         virtual RenderResizeResult RequestResize(
