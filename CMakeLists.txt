@@ -26,11 +26,18 @@ option(RVX_ENABLE_METAL "Enable Metal backend (macOS/iOS)" OFF)
 option(RVX_ENABLE_OPENGL "Enable OpenGL backend" OFF)
 option(RVX_BUILD_EDITOR "Build the Editor application and Editor-only validation" ON)
 option(RVX_BUILD_SAMPLES "Build sample applications" ON)
+option(RVX_BUILD_LEGACY_SAMPLES
+    "Build legacy Basic and Showcase sample executables"
+    OFF)
 option(RVX_BUILD_TESTS "Build validation tests" ON)
 option(RVX_ENABLE_TSAN "Enable ThreadSanitizer instrumentation" OFF)
 option(RVX_ENABLE_GPU_VALIDATION_TESTS
     "Register bounded GPU-based validation tests (dedicated/nightly only)"
     OFF)
+
+if(RVX_BUILD_LEGACY_SAMPLES)
+    add_compile_definitions(RVX_ENABLE_LEGACY_SCENE_API=1)
+endif()
 
 # =============================================================================
 # Platform Detection
@@ -257,6 +264,7 @@ message(STATUS "  Metal:        ${RVX_ENABLE_METAL}")
 message(STATUS "  OpenGL:       ${RVX_ENABLE_OPENGL}")
 message(STATUS "  Editor:       ${RVX_BUILD_EDITOR}")
 message(STATUS "  Samples:      ${RVX_BUILD_SAMPLES}")
+message(STATUS "  Legacy Samples: ${RVX_BUILD_LEGACY_SAMPLES}")
 message(STATUS "  Tests:        ${RVX_BUILD_TESTS}")
 message(STATUS "  TSAN:         ${RVX_ENABLE_TSAN}")
 message(STATUS "")

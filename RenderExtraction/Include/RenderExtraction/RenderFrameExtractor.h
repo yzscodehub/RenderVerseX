@@ -6,10 +6,8 @@
  */
 
 #include "Core/Types.h"
-#include "RenderContracts/RenderFramePacket.h"
 #include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderSceneUpdate.h"
-#include "RenderExtraction/RenderFramePacketBuilder.h"
 #include "RenderExtraction/WorldCameraBridge.h"
 
 #include <memory>
@@ -57,22 +55,19 @@ namespace RVX
     {
         RenderFrameExtractionResultCode code =
             RenderFrameExtractionResultCode::SealFailed;
-        RenderFrameSealCode sealCode = RenderFrameSealCode::None;
         RenderExtractionDiagnostics diagnostics;
-        std::unique_ptr<const RenderFramePacket> packet;
-        /** Compatibility shadow output; v4 remains the actual input in Phase 4. */
         std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate;
         std::unique_ptr<const RenderFramePacketV5> frameV5;
 
         [[nodiscard]] bool IsComplete() const noexcept
         {
             return code == RenderFrameExtractionResultCode::Complete &&
-                   packet != nullptr;
+                   frameV5 != nullptr;
         }
 
         [[nodiscard]] bool HasCompleteShadowOutput() const noexcept
         {
-            return IsComplete() && frameV5 != nullptr;
+            return IsComplete();
         }
     };
 

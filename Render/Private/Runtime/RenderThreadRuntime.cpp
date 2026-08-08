@@ -325,8 +325,6 @@ namespace
         }
         if (m_config.transports.IsValid())
         {
-            m_frameMailbox = std::make_unique<RenderFrameMailbox>(
-                m_config.transports.frameCapacity);
             m_frameMailboxV5 = std::make_unique<RenderFrameMailboxV5>(
                 m_config.transports.frameCapacity);
             m_sceneUpdateQueue = std::make_unique<RenderSceneUpdateQueue>(
@@ -686,74 +684,9 @@ namespace
         TerminateAfterFatalDiagnostics();
     }
 
-    RenderFramePublishResult RenderThreadRuntime::TryPublishFrame(
-        std::unique_ptr<const RenderFramePacket> packet)
-    {
-        RenderFramePublishResult result;
-        result.sequence = packet != nullptr ? packet->GetHeader().sequence : 0U;
-        {
-            std::lock_guard lock(m_publicationMutex);
-            if (IsShuttingDownForPublication())
-            {
-                result.code = RenderFramePublishCode::ShuttingDown;
-            }
-            else if (!IsRunningForPublication())
-            {
-                result.code = RenderFramePublishCode::NotRunning;
-            }
-            else
-            {
-                if (m_publicationHook != nullptr)
-                {
-                    m_publicationHook->BeforeMutation(
-                        RenderPublicationPath::Frame);
-                }
-                const RenderFrameMailboxPublishResult mailboxResult =
-                    m_frameMailbox->TryPublish(std::move(packet));
-                switch (mailboxResult.code)
-                {
-                    case RenderFrameMailboxPublishCode::Accepted:
-                        result.code = RenderFramePublishCode::Accepted;
-                        break;
-                    case RenderFrameMailboxPublishCode::ReplacedOldest:
-                        result.code = RenderFramePublishCode::ReplacedOlder;
-                        result.replacedSequence =
-                            mailboxResult.replacedSequence;
-                        m_frameReplacementCount.fetch_add(
-                            1, std::memory_order_relaxed);
-                        break;
-                    case RenderFrameMailboxPublishCode::InvalidPacket:
-                        result.code = RenderFramePublishCode::InvalidPacket;
-                        m_invalidFrameCount.fetch_add(
-                            1, std::memory_order_relaxed);
-                        break;
-                    case RenderFrameMailboxPublishCode::OutOfOrder:
-                        result.code = RenderFramePublishCode::OutOfOrder;
-                        m_outOfOrderFrameCount.fetch_add(
-                            1, std::memory_order_relaxed);
-                        break;
-                }
-                if (result.code == RenderFramePublishCode::Accepted ||
-                    result.code == RenderFramePublishCode::ReplacedOlder)
-                {
-                    m_lastPublishedFrameSequence.store(
-                        result.sequence, std::memory_order_release);
-                }
-            }
-        }
-        result.resultClass = ClassifyRenderFramePublishCode(result.code);
-        if (result.code == RenderFramePublishCode::Accepted ||
-            result.code == RenderFramePublishCode::ReplacedOlder)
-        {
-            NotifyExecutor();
-        }
-        return result;
-    }
-
     RenderFramePublishResult RenderThreadRuntime::TryPublishFrameSet(
         std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate,
-        std::unique_ptr<const RenderFramePacketV5> frameV5,
-        std::unique_ptr<const RenderFramePacket> compatibilityFrame)
+        std::unique_ptr<const RenderFramePacketV5> frameV5)
     {
         RenderFramePublishResult result;
         result.sequence = frameV5 != nullptr
@@ -776,15 +709,11 @@ namespace
                 result.code = RenderFramePublishCode::NotRunning;
             }
             else if (frameV5 == nullptr ||
-                     !CompleteRenderFramePacketV5Validator{}(*frameV5) ||
-                     (m_config.sceneTransportMode ==
-                          RenderSceneTransportMode::Shadow &&
-                      (compatibilityFrame == nullptr ||
-                       !CompleteRenderFramePacketValidator<RenderFramePacket>{}(
-                           *compatibilityFrame) ||
-                       compatibilityFrame->GetHeader().sequence !=
-                           result.sequence)) ||
-                     (sceneUpdate != nullptr &&
+                     !CompleteRenderFramePacketV5Validator{}(*frameV5))
+            {
+                result.code = RenderFramePublishCode::InvalidPacket;
+            }
+            else if ((sceneUpdate != nullptr &&
                       (!sceneUpdate->IsStructurallyValid() ||
                        frameV5->GetHeader().requiredSceneRevision !=
                            sceneUpdate->targetSceneRevision)) ||
@@ -820,25 +749,11 @@ namespace
                     result.sceneUpdateAccepted = updateResult.IsAccepted();
                     const RenderFrameMailboxPublishResult v5Result =
                         m_frameMailboxV5->TryPublish(std::move(frameV5));
-                    RenderFrameMailboxPublishResult compatibilityResult;
-                    compatibilityResult.code =
-                        RenderFrameMailboxPublishCode::Accepted;
-                    if (m_config.sceneTransportMode ==
-                        RenderSceneTransportMode::Shadow)
-                    {
-                        compatibilityResult = m_frameMailbox->TryPublish(
-                            std::move(compatibilityFrame));
-                    }
                     const bool v5Accepted =
                         v5Result.code == RenderFrameMailboxPublishCode::Accepted ||
                         v5Result.code ==
                             RenderFrameMailboxPublishCode::ReplacedOldest;
-                    const bool compatibilityAccepted =
-                        compatibilityResult.code ==
-                            RenderFrameMailboxPublishCode::Accepted ||
-                        compatibilityResult.code ==
-                            RenderFrameMailboxPublishCode::ReplacedOldest;
-                    if (!v5Accepted || !compatibilityAccepted)
+                    if (!v5Accepted)
                     {
                         result.code = RenderFramePublishCode::InvalidPacket;
                     }
@@ -846,14 +761,10 @@ namespace
                     {
                         result.code =
                             v5Result.code ==
-                                    RenderFrameMailboxPublishCode::ReplacedOldest ||
-                                compatibilityResult.code ==
                                     RenderFrameMailboxPublishCode::ReplacedOldest
                                 ? RenderFramePublishCode::ReplacedOlder
                                 : RenderFramePublishCode::Accepted;
-                        result.replacedSequence = std::max(
-                            v5Result.replacedSequence,
-                            compatibilityResult.replacedSequence);
+                        result.replacedSequence = v5Result.replacedSequence;
                         if (result.code == RenderFramePublishCode::ReplacedOlder)
                         {
                             m_frameReplacementCount.fetch_add(
@@ -1215,6 +1126,9 @@ namespace
                 m_frameMailboxV5->AcquireLatest();
             if (acquiredFrameV5.packet != nullptr)
             {
+                m_frameReplacementCount.fetch_add(
+                    acquiredFrameV5.discardedCount,
+                    std::memory_order_relaxed);
                 if (m_pendingFrameV5 == nullptr ||
                     acquiredFrameV5.packet->GetHeader().sequence >
                         m_pendingFrameV5->GetHeader().sequence)
@@ -1227,16 +1141,6 @@ namespace
                         m_pendingFrameV5->GetHeader().sequence,
                         std::memory_order_release);
                 }
-                progressed = true;
-            }
-            RenderFrameAcquireResult frame = m_frameMailbox->AcquireLatest();
-            m_frameReplacementCount.fetch_add(frame.discardedCount,
-                                              std::memory_order_relaxed);
-            if (frame.packet != nullptr)
-            {
-                m_lastAcquiredFrameSequence.store(
-                    frame.packet->GetHeader().sequence,
-                    std::memory_order_release);
                 progressed = true;
             }
 
@@ -1287,80 +1191,8 @@ namespace
                 return FailOnRenderThread(std::move(health));
             }
 
-            if (m_config.sceneTransportMode ==
-                    RenderSceneTransportMode::Shadow &&
-                frame.packet != nullptr)
+            if (m_pendingFrameV5 != nullptr)
             {
-                if (m_pendingFrameV5 != nullptr &&
-                    m_pendingFrameV5->GetHeader().sequence ==
-                        frame.packet->GetHeader().sequence)
-                {
-                    const bool revisionReady = sceneUpdatesValid &&
-                        !m_sceneCheckpointRequired &&
-                        m_renderSceneDatabase.GetRevision() >=
-                            m_pendingFrameV5->GetHeader().requiredSceneRevision;
-                    const RenderSceneShadowComparison comparison =
-                        revisionReady
-                            ? m_renderSceneDatabase.Compare(*frame.packet)
-                            : RenderSceneShadowComparison{};
-                    if (!revisionReady || !comparison.matches)
-                    {
-                        RenderRuntimeResult shadowFailure = MakeRuntimeResult(
-                            RenderRuntimeCode::RenderGraphValidationFailed,
-                            m_executorKind,
-                            GetLastRuntimeResult().backend,
-                            GetCurrentSurfaceSnapshot().generation);
-                        shadowFailure.frameSequence =
-                            frame.packet->GetHeader().sequence;
-                        shadowFailure.message = !revisionReady
-                            ? "v5 frame references an unapplied scene revision"
-                            : "v4/v5 render-scene shadow comparison failed";
-                        StoreRuntimeResult(shadowFailure);
-                        RecordFailure(shadowFailure);
-                        frame.packet.reset();
-                    }
-                    else
-                    {
-                        frame.packet =
-                            m_renderSceneDatabase.BuildCompatibilityFrame(
-                            *m_pendingFrameV5);
-                        if (frame.packet == nullptr)
-                        {
-                            RenderRuntimeResult rebuildFailure =
-                                MakeRuntimeResult(
-                                    RenderRuntimeCode::RenderGraphValidationFailed,
-                                    m_executorKind,
-                                    GetLastRuntimeResult().backend,
-                                    GetCurrentSurfaceSnapshot().generation);
-                            rebuildFailure.frameSequence =
-                                m_pendingFrameV5->GetHeader().sequence;
-                            rebuildFailure.message =
-                                "persistent RenderScene could not build the v5 frame";
-                            StoreRuntimeResult(rebuildFailure);
-                            RecordFailure(rebuildFailure);
-                        }
-                    }
-                    m_pendingFrameV5.reset();
-                }
-                else if (m_pendingFrameV5 != nullptr &&
-                         frame.packet->GetHeader().sequence <
-                             m_pendingFrameV5->GetHeader().sequence)
-                {
-                    // A newer v5 packet was observed between its publication
-                    // and the matching compatibility frame. The older v4
-                    // packet is stale and must not become authoritative.
-                    frame.packet.reset();
-                }
-            }
-
-            if (m_config.sceneTransportMode ==
-                    RenderSceneTransportMode::Authoritative &&
-                m_pendingFrameV5 != nullptr)
-            {
-                // A compatibility frame is never an execution input in
-                // authoritative mode. Only the value database plus v5 frame
-                // state may cross the consumer boundary.
-                frame.packet.reset();
                 const uint64 requiredRevision =
                     m_pendingFrameV5->GetHeader().requiredSceneRevision;
                 if (sceneUpdatesValid && !m_sceneCheckpointRequired &&
@@ -1400,40 +1232,6 @@ namespace
                         RecordFailure(frameResult);
                     }
                     m_pendingFrameV5.reset();
-                }
-            }
-
-            if (frame.packet != nullptr)
-            {
-                const uint64 sequence = frame.packet->GetHeader().sequence;
-                RenderRuntimeResult frameResult = NormalizeRuntimeResult(
-                    m_consumer->ConsumeFrame(*frame.packet),
-                    m_executorKind,
-                    GetLastRuntimeResult().backend,
-                    GetCurrentSurfaceSnapshot().generation);
-                frameResult.frameSequence = sequence;
-                {
-                    std::lock_guard lock(m_stateMutex);
-                    m_consumer->PopulateDiagnostics(m_diagnosticsState);
-                }
-                if (frameResult.code == RenderRuntimeCode::Running)
-                {
-                    m_lastAppliedFrameSequence.store(sequence,
-                                                     std::memory_order_release);
-                    m_lastSubmittedFrameSequence.store(
-                        sequence, std::memory_order_release);
-                    m_lastPresentedFrameSequence.store(
-                        sequence, std::memory_order_release);
-                }
-                else if (frameResult.resultClass ==
-                         RenderResultClass::RuntimeFatal)
-                {
-                    return FailOnRenderThread(std::move(frameResult));
-                }
-                else
-                {
-                    StoreRuntimeResult(frameResult);
-                    RecordFailure(frameResult);
                 }
             }
 
@@ -1596,10 +1394,6 @@ namespace
     bool RenderThreadRuntime::IsConfigurationValid() const noexcept
     {
         return m_config.backendType != RHIBackendType::None &&
-               (m_config.sceneTransportMode ==
-                    RenderSceneTransportMode::Shadow ||
-                m_config.sceneTransportMode ==
-                    RenderSceneTransportMode::Authoritative) &&
                m_config.frameBuffering >= 2U &&
                m_config.frameBuffering <= 4U &&
                m_config.transports.IsValid() &&
@@ -1612,7 +1406,6 @@ namespace
                m_executor != nullptr &&
                (m_consumer != nullptr || m_factory != nullptr) &&
                m_clock != nullptr &&
-               m_frameMailbox != nullptr &&
                m_frameMailboxV5 != nullptr &&
                m_sceneUpdateQueue != nullptr &&
                m_controlMailbox != nullptr &&
@@ -1879,10 +1672,10 @@ namespace
         snapshot.resizeRejectedCount =
             m_resizeRejectedCount.load(std::memory_order_relaxed);
 
-        if (m_frameMailbox != nullptr)
+        if (m_frameMailboxV5 != nullptr)
         {
             const RenderFrameMailboxSnapshot frameQueue =
-                m_frameMailbox->GetSnapshot();
+                m_frameMailboxV5->GetSnapshot();
             snapshot.frameTransport.currentUsage = frameQueue.pendingCount;
             snapshot.frameTransport.highWaterMark =
                 frameQueue.highWaterMark;
@@ -2218,18 +2011,14 @@ namespace
     void RenderThreadRuntime::DiscardPendingWorkOnRenderThread(
         RenderTeardownMode mode) noexcept
     {
-        if (m_frameMailbox != nullptr)
+        if (m_frameMailboxV5 != nullptr)
         {
-            RenderFrameAcquireResult discarded =
-                m_frameMailbox->AcquireLatest();
+            RenderFrameAcquireResultV5 discarded =
+                m_frameMailboxV5->AcquireLatest();
             m_frameReplacementCount.fetch_add(
                 discarded.discardedCount +
                     (discarded.packet != nullptr ? 1U : 0U),
                 std::memory_order_relaxed);
-        }
-        if (m_frameMailboxV5 != nullptr)
-        {
-            static_cast<void>(m_frameMailboxV5->AcquireLatest());
         }
         m_pendingFrameV5.reset();
         if (m_sceneUpdateQueue != nullptr)

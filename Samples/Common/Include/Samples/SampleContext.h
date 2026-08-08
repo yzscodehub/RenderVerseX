@@ -6,7 +6,7 @@
  */
 
 #include "Core/Types.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 #include "Samples/SampleInfo.h"
 
 #include <filesystem>

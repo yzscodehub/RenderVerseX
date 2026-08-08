@@ -1226,15 +1226,6 @@ void SceneRenderer::PrepareFrameApplyResources(
     }
 }
 
-RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
-    const RenderFramePacket& packet,
-    RenderResourceRegistry& registry)
-{
-    PrepareFrameApplyResources(registry);
-    return FinalizeFrameApply(
-        m_renderScene.ApplyFramePacket(packet, registry), registry);
-}
-
 RenderFrameApplyResult SceneRenderer::ApplyFrameV5(
     const RenderFramePacketV5& frame,
     const RenderSceneDatabase& scene,

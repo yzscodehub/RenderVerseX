@@ -3,7 +3,7 @@
 #include "Scenes/PBRMaterialsSample.h"
 
 #include "Core/MathTypes.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Scene/Components/CameraComponent.h"
 #include "Samples/SampleCLI.h"

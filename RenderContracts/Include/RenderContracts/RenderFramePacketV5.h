@@ -5,7 +5,7 @@
  * @brief Latest-complete-wins frame state referencing a persistent scene revision
  */
 
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 
 #include <memory>
 

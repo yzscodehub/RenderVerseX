@@ -10,7 +10,7 @@
 #include "RHI/RHI.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Renderer/ShadowConstants.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 
 #include <array>
 

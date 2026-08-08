@@ -5,7 +5,8 @@
 
 #include "Common/GpuTestUtils.h"
 #include "Render/RenderSubsystem.h"
-#include "RenderExtraction/RenderFramePacketBuilder.h"
+#include "RenderContracts/RenderFramePacketV5.h"
+#include "RenderContracts/RenderSceneUpdate.h"
 
 #if defined(RVX_NATIVE_BACKEND_VULKAN)
 #define GLFW_INCLUDE_VULKAN
@@ -193,35 +194,46 @@ namespace
 #endif
     };
 
-    [[nodiscard]] std::unique_ptr<const RenderFramePacket> MakePacket(
+    struct NativeFrameSet
+    {
+        std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate;
+        std::unique_ptr<const RenderFramePacketV5> frame;
+
+        [[nodiscard]] bool IsComplete() const noexcept
+        {
+            return sceneUpdate != nullptr && frame != nullptr;
+        }
+    };
+
+    [[nodiscard]] NativeFrameSet MakePacket(
         uint64 sequence,
         uint32 width,
         uint32 height)
     {
-        RenderFramePacketBuilder builder;
-        RenderFrameHeader header;
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(0, true);
+        accumulator.UpsertSky(RenderSkySnapshot{});
+        accumulator.UpsertEnvironment(RenderEnvironmentSnapshot{});
+
+        RenderFrameHeaderV5 header;
         header.sequence = sequence;
+        header.requiredSceneRevision = sequence;
         RenderViewSnapshot view;
         view.viewportWidth = width;
         view.viewportHeight = height;
-        RenderFeatureSnapshot features;
-        features.BeginBuild(sequence);
-        features.MarkComplete();
         RenderExtractionDiagnostics extraction;
         extraction.complete = true;
-
-        if (!builder.SetHeader(header) ||
-            !builder.SetView(view) ||
-            !builder.SetSky(RenderSkySnapshot{}) ||
-            !builder.SetEnvironment(RenderEnvironmentSnapshot{}) ||
-            !builder.SetSettings(RenderFrameSettings{}) ||
-            !builder.SetCaptureRequest(RenderFrameCaptureRequest{}) ||
-            !builder.SetFeatures(std::move(features)) ||
-            !builder.SetExtractionDiagnostics(extraction))
-        {
-            return nullptr;
-        }
-        return builder.Seal();
+        NativeFrameSet result;
+        result.sceneUpdate =
+            std::make_unique<const RenderSceneUpdateBatch>(
+                accumulator.Build(sequence));
+        result.frame = RenderFramePacketV5::Create(
+            header,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            extraction);
+        return result;
     }
 
     template <typename Predicate>
@@ -362,10 +374,12 @@ namespace
                 .count());
         ASSERT_TRUE(render.IsReady());
 
-        auto firstPacket =
+        NativeFrameSet firstPacket =
             MakePacket(1, initialSurface.width, initialSurface.height);
-        ASSERT_NE(firstPacket, nullptr);
-        ASSERT_EQ(render.TryPublishFrame(std::move(firstPacket)).code,
+        ASSERT_TRUE(firstPacket.IsComplete());
+        ASSERT_EQ(render.TryPublishFrameSet(
+                      std::move(firstPacket.sceneUpdate),
+                      std::move(firstPacket.frame)).code,
                   RenderFramePublishCode::Accepted);
         ASSERT_TRUE(WaitUntil(window, [&]() {
             return render.GetDiagnosticsSnapshot()
@@ -392,10 +406,12 @@ namespace
             return render.GetDiagnosticsSnapshot().surfaceGeneration == 2U;
         }));
 
-        auto secondPacket =
+        NativeFrameSet secondPacket =
             MakePacket(2, resizedSurface.width, resizedSurface.height);
-        ASSERT_NE(secondPacket, nullptr);
-        ASSERT_EQ(render.TryPublishFrame(std::move(secondPacket)).code,
+        ASSERT_TRUE(secondPacket.IsComplete());
+        ASSERT_EQ(render.TryPublishFrameSet(
+                      std::move(secondPacket.sceneUpdate),
+                      std::move(secondPacket.frame)).code,
                   RenderFramePublishCode::Accepted);
         ASSERT_TRUE(WaitUntil(window, [&]() {
             return render.GetDiagnosticsSnapshot()

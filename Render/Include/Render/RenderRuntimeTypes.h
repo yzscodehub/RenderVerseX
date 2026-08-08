@@ -23,13 +23,6 @@ namespace RVX
         InlineTest = 2
     };
 
-    /** @brief Selects the scene/frame transport consumed by the render owner. */
-    enum class RenderSceneTransportMode : uint8
-    {
-        Shadow = 0,
-        Authoritative = 1
-    };
-
     enum class RenderLifecycleState : uint8
     {
         Stopped = 0,
@@ -173,8 +166,6 @@ namespace RVX
     struct RenderRuntimeConfig
     {
         RHIBackendType backendType = RHIBackendType::Auto;
-        RenderSceneTransportMode sceneTransportMode =
-            RenderSceneTransportMode::Authoritative;
         bool enableValidation = true;
         bool enableGPUValidation = false;
         bool allowSoftwareAdapter = false;

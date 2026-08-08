@@ -874,10 +874,6 @@ namespace RVX
         // Frame Setup
         // =====================================================================
 
-        /** @brief Transactionally apply one immutable render-frame packet. */
-        [[nodiscard]] RenderFrameApplyResult ApplyFramePacket(
-            const RenderFramePacket& packet,
-            RenderResourceRegistry& registry);
         /** @brief Consume v5 frame state without constructing a v4 packet. */
         [[nodiscard]] RenderFrameApplyResult ApplyFrameV5(
             const RenderFramePacketV5& frame,

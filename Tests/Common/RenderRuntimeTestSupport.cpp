@@ -290,23 +290,6 @@ namespace
             m_probe->Record(RenderRuntimeTestEvent::Upload);
         }
 
-        RenderRuntimeResult ConsumeFrame(
-            const RenderFramePacket& packet) override
-        {
-            m_probe->Record(RenderRuntimeTestEvent::Frame);
-            m_probe->RecordConsumedFrame(packet);
-            if (m_probe->throwOnFrame)
-            {
-                throw std::runtime_error("forced consumer frame exception");
-            }
-            m_probe->WaitWhileFrameBlocked();
-            RenderRuntimeResult result;
-            result.code = m_probe->frameCode;
-            result.frameSequence = packet.GetHeader().sequence;
-            result.message = m_probe->frameMessage;
-            return result;
-        }
-
         RenderRuntimeResult ConsumeFrameV5(
             const RenderFramePacketV5& packet,
             const RenderSceneDatabase& scene) override
@@ -425,31 +408,6 @@ namespace
             {
                 m_deviceLost.store(true, std::memory_order_release);
             }
-        }
-
-        RenderRuntimeResult ConsumeFrame(
-            const RenderFramePacket& packet) override
-        {
-            if (ShouldFail(RenderRuntimeFaultPoint::FrameException))
-            {
-                throw std::runtime_error("Injected frame exception");
-            }
-            if (ShouldFail(RenderRuntimeFaultPoint::Present) ||
-                ShouldFail(
-                    RenderRuntimeFaultPoint::DeviceLossBeforeSubmission))
-            {
-                return MakeDeviceLost(m_surfaceGeneration,
-                                      "Injected frame device loss");
-            }
-            if (ShouldFail(RenderRuntimeFaultPoint::DeviceLossInFlight))
-            {
-                m_deviceLost.store(true, std::memory_order_release);
-            }
-            RenderRuntimeResult result = MakeRunning(
-                RHIBackendType::DX11,
-                m_surfaceGeneration);
-            result.frameSequence = packet.GetHeader().sequence;
-            return result;
         }
 
         RenderRuntimeResult ConsumeFrameV5(
@@ -741,19 +699,6 @@ namespace
         std::lock_guard lock(m_mutex);
         m_eventCounts = {};
         m_events.clear();
-    }
-
-    void RenderFrameConsumerTestProbe::RecordConsumedFrame(
-        const RenderFramePacket& packet)
-    {
-        std::lock_guard lock(m_mutex);
-        m_lastConsumedPrimitiveIds.clear();
-        m_lastConsumedPrimitiveIds.reserve(packet.GetPrimitives().size());
-        for (const RenderPrimitiveSnapshot& primitive :
-             packet.GetPrimitives())
-        {
-            m_lastConsumedPrimitiveIds.push_back(primitive.objectId);
-        }
     }
 
     void RenderFrameConsumerTestProbe::RecordConsumedSceneDatabase(

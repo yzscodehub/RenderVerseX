@@ -17,7 +17,6 @@ target_sources(RVX_RenderRuntimeCore PRIVATE
     Private/Runtime/DedicatedRenderExecutor.cpp
     Private/Runtime/RenderControlMailbox.cpp
     Private/Runtime/RenderDiagnosticsPublisher.cpp
-    Private/Runtime/RenderFrameMailbox.cpp
     Private/Runtime/RenderReleaseQueue.cpp
     Private/Runtime/RenderResourceGateway.cpp
     Private/Runtime/RenderResourceReservationDirectory.cpp

@@ -4,7 +4,6 @@
 add_library(RVX_RenderContracts STATIC)
 
 target_sources(RVX_RenderContracts PRIVATE
-    Private/RenderFramePacket.cpp
     Private/RenderFramePacketV5.cpp
     Private/RenderSceneUpdate.cpp
     Private/ResourceUploadRequest.cpp

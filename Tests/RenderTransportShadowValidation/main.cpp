@@ -148,41 +148,60 @@ namespace
         return input;
     }
 
-    void ExpectShadowParity(const RVX::RenderFrameExtractionResult& extraction,
-                            const RVX::RenderSceneDatabase& database)
+    RVX::CameraComponent* CreateActiveCamera(RVX::World& world)
     {
-        ASSERT_NE(extraction.packet, nullptr);
-        ASSERT_NE(extraction.frameV5, nullptr);
-        const auto comparison = database.Compare(*extraction.packet);
-        EXPECT_TRUE(comparison.matches);
-        EXPECT_EQ(comparison.missingPrimitiveCount, 0u);
-        EXPECT_EQ(comparison.changedPrimitiveCount, 0u);
-        EXPECT_EQ(comparison.missingLightCount, 0u);
-        EXPECT_EQ(comparison.changedLightCount, 0u);
-        EXPECT_EQ(comparison.featureMismatchCount, 0u);
-
-        const auto rebuilt =
-            database.BuildCompatibilityFrame(*extraction.frameV5);
-        ASSERT_NE(rebuilt, nullptr);
-        EXPECT_EQ(rebuilt->GetHeader().sequence,
-                  extraction.packet->GetHeader().sequence);
-        EXPECT_EQ(rebuilt->GetHeader().worldRevision,
-                  extraction.packet->GetHeader().worldRevision);
-        EXPECT_EQ(rebuilt->GetView().viewportWidth,
-                  extraction.packet->GetView().viewportWidth);
-        ASSERT_EQ(rebuilt->GetLights().size(),
-                  extraction.packet->GetLights().size());
-        if (!rebuilt->GetLights().empty())
+        RVX::SceneEntity* actor = world.SpawnActor({.name = "Camera"});
+        if (!actor)
+            return nullptr;
+        auto* camera = actor->AddComponent<RVX::CameraComponent>();
+        if (!camera ||
+            !world.SetActiveCamera(camera->GetComponentHandle()))
         {
-            EXPECT_EQ(rebuilt->GetLights().front().lightId,
-                      extraction.packet->GetLights().front().lightId);
-            EXPECT_FLOAT_EQ(rebuilt->GetLights().front().intensity,
-                            extraction.packet->GetLights().front().intensity);
+            return nullptr;
+        }
+        return camera;
+    }
+
+    void ExpectAuthoritativeState(
+        const RVX::RenderFrameExtractionResult& extraction,
+        const RVX::RenderSceneDatabase& database)
+    {
+        ASSERT_NE(extraction.frameV5, nullptr);
+        EXPECT_EQ(database.GetRevision(),
+                  extraction.frameV5->GetHeader().requiredSceneRevision);
+        if (extraction.sceneUpdate == nullptr)
+        {
+            return;
+        }
+
+        for (const auto& mutation : extraction.sceneUpdate->primitives)
+        {
+            const auto* state = database.FindPrimitive(mutation.objectId);
+            if (mutation.operation == RVX::RenderSceneMutationOperation::Remove)
+                EXPECT_EQ(state, nullptr);
+            else
+            {
+                ASSERT_NE(state, nullptr);
+                EXPECT_TRUE(RVX::AreRenderPrimitiveSnapshotsEqual(
+                    *state, mutation.state));
+            }
+        }
+        for (const auto& mutation : extraction.sceneUpdate->lights)
+        {
+            const auto* state = database.FindLight(mutation.lightId);
+            if (mutation.operation == RVX::RenderSceneMutationOperation::Remove)
+                EXPECT_EQ(state, nullptr);
+            else
+            {
+                ASSERT_NE(state, nullptr);
+                EXPECT_TRUE(RVX::AreRenderLightSnapshotsEqual(
+                    *state, mutation.state));
+            }
         }
     }
 } // namespace
 
-TEST(RenderTransportShadowValidation,
+TEST(RenderTransportAuthoritativeValidation,
      FullResetStaticFrameAndIncrementalUpdateStayEquivalent)
 {
     ResourceFixture resources;
@@ -209,7 +228,7 @@ TEST(RenderTransportShadowValidation,
     ASSERT_NE(first.sceneUpdate, nullptr);
     EXPECT_TRUE(first.sceneUpdate->fullReset);
     ASSERT_TRUE(database.Apply(*first.sceneUpdate).IsApplied());
-    ExpectShadowParity(first, database);
+    ExpectAuthoritativeState(first, database);
     extractor.ResolveLastPublication(
         RVX::RenderFramePublicationDisposition::Accepted);
 
@@ -220,7 +239,7 @@ TEST(RenderTransportShadowValidation,
     ASSERT_NE(unchanged.frameV5, nullptr);
     EXPECT_EQ(unchanged.frameV5->GetHeader().requiredSceneRevision,
               database.GetRevision());
-    ExpectShadowParity(unchanged, database);
+    ExpectAuthoritativeState(unchanged, database);
     extractor.ResolveLastPublication(
         RVX::RenderFramePublicationDisposition::Accepted);
 
@@ -231,7 +250,7 @@ TEST(RenderTransportShadowValidation,
     ASSERT_NE(changed.sceneUpdate, nullptr);
     EXPECT_FALSE(changed.sceneUpdate->fullReset);
     ASSERT_TRUE(database.Apply(*changed.sceneUpdate).IsApplied());
-    ExpectShadowParity(changed, database);
+    ExpectAuthoritativeState(changed, database);
     ASSERT_NE(database.FindLight(
                   light->GetComponentHandle().GetPackedValue()),
               nullptr);
@@ -245,12 +264,12 @@ TEST(RenderTransportShadowValidation,
     world.Shutdown();
 }
 
-TEST(RenderTransportShadowValidation, SceneUpdateSurvivesDroppedFramePacket)
+TEST(RenderTransportAuthoritativeValidation, SceneUpdateSurvivesDroppedFramePacket)
 {
     ResourceFixture resources;
     RVX::World world;
     ASSERT_TRUE(world.Initialize());
-    ASSERT_NE(world.CreateCamera("Main"), nullptr);
+    ASSERT_NE(CreateActiveCamera(world), nullptr);
     auto* lightActor = world.SpawnActor({.name = "Light"});
     ASSERT_NE(lightActor, nullptr);
     auto* light = lightActor->AddComponent<RVX::LightComponent>();
@@ -286,18 +305,18 @@ TEST(RenderTransportShadowValidation, SceneUpdateSurvivesDroppedFramePacket)
     ASSERT_NE(recovery.sceneUpdate, nullptr);
     EXPECT_TRUE(recovery.sceneUpdate->fullReset);
     ASSERT_TRUE(database.Apply(*recovery.sceneUpdate).IsApplied());
-    ExpectShadowParity(recovery, database);
+    ExpectAuthoritativeState(recovery, database);
 
     world.Shutdown();
 }
 
-TEST(RenderTransportShadowValidation,
+TEST(RenderTransportAuthoritativeValidation,
      DecalsAndProbesUseIncrementalPersistentSceneUpdates)
 {
     ResourceFixture resources;
     RVX::World world;
     ASSERT_TRUE(world.Initialize());
-    ASSERT_NE(world.CreateCamera("Main"), nullptr);
+    ASSERT_NE(CreateActiveCamera(world), nullptr);
 
     auto* decalActor = world.SpawnActor({.name = "Decal"});
     auto* reflectionActor = world.SpawnActor({.name = "ReflectionProbe"});

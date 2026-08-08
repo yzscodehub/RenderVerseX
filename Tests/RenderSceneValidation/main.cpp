@@ -4,8 +4,8 @@
 #include "Render/Renderer/RenderSceneDatabase.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/RenderScene.h"
-#include "RenderContracts/RenderFramePacket.h"
-#include "RenderExtraction/RenderFramePacketBuilder.h"
+#include "RenderContracts/RenderFramePacketV5.h"
+#include "RenderContracts/RenderSceneUpdate.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionTracker.h"
@@ -312,18 +312,14 @@ namespace
         RenderResourceRegistry registry;
     };
 
-    RenderFeatureSnapshot MakeFeatures(uint64 sequence)
+    ParticleRenderSnapshotItem MakeParticleFeature()
     {
-        RenderFeatureSnapshot features;
-        features.BeginBuild(sequence);
         ParticleRenderSnapshotItem particle;
         particle.instanceId = 7;
         particle.systemId = 8;
         particle.systemName = "packet-owned-feature";
         particle.worldBounds = AABB(Vec3{-1.0f}, Vec3{1.0f});
-        features.particles.items.push_back(std::move(particle));
-        features.MarkComplete();
-        return features;
+        return particle;
     }
 
     RenderPrimitiveSnapshot MakePrimitive(
@@ -347,43 +343,54 @@ namespace
         return primitive;
     }
 
-    std::unique_ptr<const RenderFramePacket> MakePacket(
+    struct V5FrameInput
+    {
+        RenderSceneDatabase database;
+        std::unique_ptr<const RenderFramePacketV5> frame;
+    };
+
+    V5FrameInput MakeFrame(
         uint64 sequence,
         uint64 worldRevision,
         uint64 temporalEpoch,
         bool discontinuity,
         std::vector<RenderPrimitiveSnapshot> primitives)
     {
-        RenderFramePacketBuilder builder;
-        RenderFrameHeader header;
+        V5FrameInput input;
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(0, true);
+        for (RenderPrimitiveSnapshot& primitive : primitives)
+        {
+            EXPECT_TRUE(accumulator.UpsertPrimitive(
+                std::move(primitive), true));
+        }
+        EXPECT_TRUE(accumulator.UpsertParticle(MakeParticleFeature(), true));
+        accumulator.UpsertSky({});
+        accumulator.UpsertEnvironment({});
+        EXPECT_TRUE(input.database.Apply(
+            accumulator.Build(worldRevision)).IsApplied());
+
+        RenderFrameHeaderV5 header;
         header.sequence = sequence;
+        header.requiredSceneRevision = worldRevision;
         header.worldRevision = worldRevision;
         header.temporalEpoch = temporalEpoch;
         header.explicitDiscontinuity = discontinuity;
-        header.expectedPrimitiveCount =
-            static_cast<uint32>(primitives.size());
-        header.extractedPrimitiveCount = header.expectedPrimitiveCount;
-        static_cast<void>(builder.SetHeader(header));
 
         RenderViewSnapshot view;
         view.viewportWidth = 1280;
         view.viewportHeight = 720;
         view.cameraPosition = {0.0f, 0.0f, 5.0f};
-        static_cast<void>(builder.SetView(view));
-        for (RenderPrimitiveSnapshot& primitive : primitives)
-        {
-            static_cast<void>(builder.AddPrimitive(std::move(primitive)));
-        }
-        static_cast<void>(builder.SetSky({}));
-        static_cast<void>(builder.SetEnvironment({}));
-        static_cast<void>(builder.SetSettings({}));
-        static_cast<void>(builder.SetCaptureRequest({}));
-        static_cast<void>(builder.SetFeatures(MakeFeatures(sequence)));
         RenderExtractionDiagnostics diagnostics;
         diagnostics.code = RenderExtractionCode::Complete;
         diagnostics.complete = true;
-        static_cast<void>(builder.SetExtractionDiagnostics(diagnostics));
-        return builder.Seal();
+        input.frame = RenderFramePacketV5::Create(
+            header,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            diagnostics);
+        return input;
     }
 
     RenderFrameApplyResult Apply(
@@ -395,14 +402,14 @@ namespace
         bool discontinuity,
         RenderPrimitiveSnapshot primitive)
     {
-        std::unique_ptr<const RenderFramePacket> packet = MakePacket(
+        V5FrameInput input = MakeFrame(
             sequence,
             worldRevision,
             temporalEpoch,
             discontinuity,
             {std::move(primitive)});
-        EXPECT_NE(packet, nullptr);
-        return scene.ApplyFramePacket(*packet, registry);
+        EXPECT_NE(input.frame, nullptr);
+        return scene.ApplyFrameV5(*input.frame, input.database, registry);
     }
 } // namespace
 
@@ -413,15 +420,16 @@ TEST(RenderSceneValidation, AppliesTransactionallyAndOwnsPacketValues)
         resources.Add({1}, RenderResourceKind::Mesh, true);
     const RenderResourceHandle material =
         resources.Add({2}, RenderResourceKind::Material, true);
-    std::unique_ptr<const RenderFramePacket> packet =
-        MakePacket(10, 3, 4, false, {MakePrimitive(mesh, material, {2, 0, 0})});
-    ASSERT_NE(packet, nullptr);
+    V5FrameInput input =
+        MakeFrame(10, 3, 4, false, {MakePrimitive(mesh, material, {2, 0, 0})});
+    ASSERT_NE(input.frame, nullptr);
 
     RenderScene scene;
     RenderFrameApplyResult applied =
-        scene.ApplyFramePacket(*packet, resources.registry);
+        scene.ApplyFrameV5(*input.frame, input.database, resources.registry);
     ASSERT_TRUE(applied.IsApplied());
-    packet.reset();
+    input.frame.reset();
+    input.database.Clear();
 
     ASSERT_EQ(scene.GetObjectCount(), 1U);
     const RenderObject& object = scene.GetObject(0);
@@ -490,21 +498,23 @@ TEST(RenderSceneValidation, ShadowPublicationFailureCannotRejectAnAppliedFrame)
         {700}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
     SceneRenderer renderer;
 
-    std::unique_ptr<const RenderFramePacket> first = MakePacket(
+    V5FrameInput first = MakeFrame(
         101, 1, 1, false, {MakePrimitive(mesh)});
-    ASSERT_NE(first, nullptr);
-    ASSERT_TRUE(renderer.ApplyFramePacket(*first, resources.registry).IsApplied());
+    ASSERT_NE(first.frame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *first.frame, first.database, resources.registry).IsApplied());
     const GPUScenePublicationStats before =
         renderer.GetGPUScenePublicationStats();
     ASSERT_EQ(before.failureReason, GPUScenePublicationFailureReason::None);
     ASSERT_EQ(before.publishedObjectCount, 1U);
 
     SceneRendererTestAccess::SetShadowPublishAllocationFailure(renderer, true);
-    std::unique_ptr<const RenderFramePacket> second = MakePacket(
+    V5FrameInput second = MakeFrame(
         102, 2, 1, false, {MakePrimitive(mesh, {}, {3.0F, 0.0F, 0.0F})});
-    ASSERT_NE(second, nullptr);
+    ASSERT_NE(second.frame, nullptr);
     const RenderFrameApplyResult applied =
-        renderer.ApplyFramePacket(*second, resources.registry);
+        renderer.ApplyFrameV5(
+            *second.frame, second.database, resources.registry);
 
     EXPECT_TRUE(applied.IsApplied());
     EXPECT_EQ(renderer.GetRenderScene().GetAcceptedHeader().sequence, 102U);
@@ -759,12 +769,13 @@ TEST(RenderSceneValidation,
     primitive.submeshes = {
         {0, maskedMaterial, RenderMaterialMode::Masked},
         {1, transparentMaterial, RenderMaterialMode::Transparent}};
-    std::unique_ptr<const RenderFramePacket> packet = MakePacket(
+    V5FrameInput input = MakeFrame(
         1, 1, 1, false, {primitive});
-    ASSERT_NE(packet, nullptr);
+    ASSERT_NE(input.frame, nullptr);
 
     RenderScene scene;
-    ASSERT_TRUE(scene.ApplyFramePacket(*packet, resources.registry).IsApplied());
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *input.frame, input.database, resources.registry).IsApplied());
     const RenderObject& object = scene.GetObject(0);
     ASSERT_TRUE(object.meshBatchesAuthoritative);
     ASSERT_EQ(object.meshBatches.size(), 2U);
@@ -801,10 +812,11 @@ TEST(RenderSceneValidation,
 
     RenderPrimitiveSnapshot incomplete = MakePrimitive(mesh, material);
     incomplete.submeshes = {{0, material, RenderMaterialMode::Opaque}};
-    std::unique_ptr<const RenderFramePacket> packet = MakePacket(
+    V5FrameInput input = MakeFrame(
         2, 1, 1, false, {std::move(incomplete)});
-    ASSERT_NE(packet, nullptr);
-    EXPECT_EQ(scene.ApplyFramePacket(*packet, resources.registry).code,
+    ASSERT_NE(input.frame, nullptr);
+    EXPECT_EQ(scene.ApplyFrameV5(
+                  *input.frame, input.database, resources.registry).code,
               RenderFrameApplyCode::InvalidPacket);
     EXPECT_EQ(scene.GetAcceptedHeader().sequence, 1U);
 }
@@ -866,11 +878,11 @@ TEST(RenderSceneValidation,
         mesh, material, {7.0f, 0.0f, 0.0f});
     retained.skinMatrices = {Mat4Identity(), Mat4Identity()};
     retained.skinMatrices[1][3] = Vec4{2.0f, 0.0f, 0.0f, 1.0f};
-    std::unique_ptr<const RenderFramePacket> secondPacket = MakePacket(
+    V5FrameInput second = MakeFrame(
         2, 1, 1, false, {std::move(leading), std::move(retained)});
-    ASSERT_NE(secondPacket, nullptr);
-    ASSERT_TRUE(scene.ApplyFramePacket(*secondPacket, resources.registry)
-                    .IsApplied());
+    ASSERT_NE(second.frame, nullptr);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *second.frame, second.database, resources.registry).IsApplied());
 
     const RenderDrawPacketCacheStats afterSecond =
         scene.GetDrawPacketCacheStats();
@@ -944,11 +956,15 @@ TEST(RenderSceneValidation, RejectsSchemaOrderAndStaleHandlesWithoutMutation)
                       MakePrimitive(mesh, {}, {1, 0, 0}))
                     .IsApplied());
 
-    std::unique_ptr<const RenderFramePacket> unsupported =
-        MakePacket(11, 1, 1, false, {MakePrimitive(mesh, {}, {2, 0, 0})});
-    ASSERT_NE(unsupported, nullptr);
-    const_cast<RenderFrameHeader&>(unsupported->GetHeader()).schemaVersion += 1;
-    EXPECT_EQ(scene.ApplyFramePacket(*unsupported, resources.registry).code,
+    V5FrameInput unsupported =
+        MakeFrame(11, 1, 1, false, {MakePrimitive(mesh, {}, {2, 0, 0})});
+    ASSERT_NE(unsupported.frame, nullptr);
+    const_cast<RenderFrameHeaderV5&>(
+        unsupported.frame->GetHeader()).schemaVersion += 1;
+    EXPECT_EQ(scene.ApplyFrameV5(
+                  *unsupported.frame,
+                  unsupported.database,
+                  resources.registry).code,
               RenderFrameApplyCode::UnsupportedSchema);
     EXPECT_EQ(Vec3(scene.GetObject(0).worldMatrix[3]), (Vec3{1, 0, 0}));
 
@@ -1248,7 +1264,8 @@ TEST(RenderSceneValidation, StampsExactResourceClosureTransactionally)
     EXPECT_EQ(resources.registry.GetLastUse(texture).points[0].value, 17U);
 }
 
-TEST(RenderSceneValidation, RejectsDuplicateNonzeroObjectIdsWithoutCacheOrSceneMutation)
+TEST(RenderSceneValidation,
+     PersistentDatabaseRejectsDuplicateObjectIdsWithoutSceneMutation)
 {
     RegistryFixture resources;
     MeshUploadCreateInfo createInfo;
@@ -1275,12 +1292,18 @@ TEST(RenderSceneValidation, RejectsDuplicateNonzeroObjectIdsWithoutCacheOrSceneM
         mesh, {}, {3.0F, 0.0F, 0.0F});
     first.objectId = 99;
     duplicate.objectId = 99;
-    std::unique_ptr<const RenderFramePacket> packet = MakePacket(
-        2, 1, 1, false, {std::move(first), std::move(duplicate)});
-    ASSERT_NE(packet, nullptr);
+    RenderSceneUpdateBatch invalidBatch;
+    invalidBatch.targetSceneRevision = 2;
+    invalidBatch.fullReset = true;
+    invalidBatch.primitives.push_back(
+        {RenderSceneMutationOperation::Upsert, 99, std::move(first)});
+    invalidBatch.primitives.push_back(
+        {RenderSceneMutationOperation::Upsert, 99, std::move(duplicate)});
+    RenderSceneDatabase invalidDatabase;
+    EXPECT_EQ(invalidDatabase.Apply(invalidBatch).code,
+              RenderSceneUpdateApplyCode::InvalidMutation);
+    EXPECT_EQ(invalidDatabase.GetRevision(), 0U);
 
-    EXPECT_EQ(scene.ApplyFramePacket(*packet, resources.registry).code,
-              RenderFrameApplyCode::InvalidPacket);
     EXPECT_EQ(scene.GetAcceptedHeader().sequence, 1U);
     EXPECT_EQ(scene.GetObjectCount(), 1U);
     EXPECT_EQ(Vec3(scene.GetObject(0).worldMatrix[3]),

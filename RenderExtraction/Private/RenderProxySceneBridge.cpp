@@ -406,7 +406,7 @@ namespace RVX
             (void)handle;
             if (entity && entity->IsRoot())
             {
-                CollectEntity(entity.get(), primitiveControlledEntities, outSnapshot, result);
+                CollectEntity(entity, primitiveControlledEntities, outSnapshot, result);
             }
         }
 

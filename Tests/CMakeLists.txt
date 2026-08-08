@@ -352,7 +352,10 @@ rvx_add_gtest(
 
 rvx_add_gtest(
     NAME RenderContractsValidation
-    SOURCES RenderContractsValidation/main.cpp
+    SOURCES
+        RenderContractsValidation/main.cpp
+        ${CMAKE_SOURCE_DIR}/RenderContracts/Private/RenderFramePacket.cpp
+        ${CMAKE_SOURCE_DIR}/RenderExtraction/Private/RenderFramePacketBuilder.cpp
     LIBS RVX::Core RVX::RenderContracts RVX::RenderExtraction
     INCLUDES ${CMAKE_SOURCE_DIR}/RenderContracts/Private
     LABELS "unit;architecture"
@@ -424,7 +427,7 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
-    NAME RenderTransportShadowValidation
+    NAME RenderTransportAuthoritativeValidation
     SOURCES RenderTransportShadowValidation/main.cpp
     LIBS
         RVX::Core

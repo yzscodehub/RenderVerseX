@@ -139,7 +139,8 @@ namespace RVX
         /// Get the authoritative scene runtime.
         Scene* GetScene() const { return m_scene.get(); }
 
-        /// Compatibility facade for legacy spatial SceneEntity APIs.
+        /// Non-owning compatibility facade for legacy spatial queries.
+        /// Scene remains the sole owner of every actor exposed by this index.
         SceneManager* GetSceneManager() const
         {
             return m_scene ? m_scene->GetSceneManager() : nullptr;
@@ -177,8 +178,11 @@ namespace RVX
         /// Get a world actor by handle.
         Actor* GetActor(Actor::Handle handle) const;
 
-        /// Get non-spatial actor count owned directly by the world.
-        size_t GetActorCount() const { return m_scene ? m_scene->GetPureActorCount() : 0; }
+        /// Compatibility count for non-SceneEntity actors.
+        size_t GetActorCount() const
+        {
+            return m_scene ? m_scene->GetPureActorCount() : 0;
+        }
 
         /// Iterate over pure world actors and scene-owned actors.
         void ForEachActor(const std::function<void(Actor*)>& callback);
@@ -206,6 +210,7 @@ namespace RVX
         // Camera Management
         // =====================================================================
 
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
         /**
          * @brief Create a legacy Camera facade backed by a CameraComponent
          * @param name Name of the camera (default: "Main")
@@ -231,6 +236,7 @@ namespace RVX
          * @param camera The camera to set as active (must be owned by this world)
          */
         void SetActiveCamera(Camera* camera);
+#endif
 
         /** @brief Select a scene-owned CameraComponent as active. */
         bool SetActiveCamera(ComponentHandle camera);
@@ -246,6 +252,7 @@ namespace RVX
             return m_scene ? m_scene->GetActiveCameraComponent() : nullptr;
         }
 
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
         /**
          * @brief Get the active legacy Camera facade, when one selected it
          * @return Pointer to the active camera or nullptr
@@ -254,6 +261,7 @@ namespace RVX
         {
             return m_scene ? m_scene->GetActiveCamera() : nullptr;
         }
+#endif
 
         // =====================================================================
         // Properties

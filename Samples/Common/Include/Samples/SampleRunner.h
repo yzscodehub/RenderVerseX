@@ -4,7 +4,7 @@
 
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleInfo.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 
 #include <filesystem>
 #include <string>

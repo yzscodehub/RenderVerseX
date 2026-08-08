@@ -162,7 +162,6 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
     auto fail = [&result](RenderFrameExtractionResultCode code)
     {
         result.code = code;
-        result.packet.reset();
         result.sceneUpdate.reset();
         result.frameV5.reset();
         result.diagnostics.complete = false;
@@ -234,7 +233,7 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
         return fail(RenderFrameExtractionResultCode::SealFailed);
     }
 
-    RenderFramePacketBuilder builder;
+    RetainedSceneState currentScene;
     for (const RenderPrimitiveProxy& proxy : proxies.primitives)
     {
         if (proxy.materialAssetIds.size() != proxy.materialModes.size() ||
@@ -295,7 +294,12 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
         primitive.layerMask = proxy.layerMask;
         primitive.sortKey = proxy.sortKey;
         primitive.skinMatrices = proxy.skinningMatrices;
-        static_cast<void>(builder.AddPrimitive(std::move(primitive)));
+        if (!currentScene.primitives.emplace(
+                primitive.objectId, std::move(primitive)).second)
+        {
+            return fail(
+                RenderFrameExtractionResultCode::ProxyExtractionFailed);
+        }
     }
 
     for (const RenderLightProxy& proxy : proxies.lights)
@@ -314,7 +318,11 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
         // update-side intent while an optional shadowResource is reserved for
         // externally prepared shadow data.
         light.castsShadows = proxy.castsShadow;
-        static_cast<void>(builder.AddLight(std::move(light)));
+        if (!currentScene.lights.emplace(light.lightId, std::move(light)).second)
+        {
+            return fail(
+                RenderFrameExtractionResultCode::ProxyExtractionFailed);
+        }
     }
 
     RenderSkySnapshot sky;
@@ -514,58 +522,12 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
             return fail(RenderFrameExtractionResultCode::ProxyExtractionFailed);
     }
 
-    RenderFrameHeader header;
-    header.sequence = input.sequence;
-    header.worldRevision = input.worldRevision;
-    header.temporalEpoch = input.temporalEpoch;
-    header.expectedPrimitiveCount =
-        static_cast<uint32>(proxies.primitives.size());
-    header.extractedPrimitiveCount = header.expectedPrimitiveCount;
-    header.expectedLightCount =
-        static_cast<uint32>(proxies.lights.size());
-    header.extractedLightCount = header.expectedLightCount;
-    header.expectedFeatureProviderCount =
-        static_cast<uint32>(features.metadata.providerCount);
-    header.extractedFeatureProviderCount =
-        header.expectedFeatureProviderCount;
-    header.explicitDiscontinuity = input.explicitDiscontinuity;
-
     result.diagnostics.code = RenderExtractionCode::Complete;
     result.diagnostics.complete = true;
-    static_cast<void>(builder.SetHeader(header));
-    static_cast<void>(builder.SetView(std::move(view)));
-    static_cast<void>(builder.SetSky(std::move(sky)));
-    static_cast<void>(builder.SetEnvironment(std::move(environment)));
-    static_cast<void>(builder.SetSettings(input.settings));
-    static_cast<void>(builder.SetCaptureRequest(input.captureRequest));
-    static_cast<void>(builder.SetFeatures(std::move(features)));
-    static_cast<void>(builder.SetExtractionDiagnostics(result.diagnostics));
-    result.packet = builder.Seal();
-    result.sealCode = builder.GetLastSealCode();
-    if (result.packet == nullptr)
-    {
-        return fail(RenderFrameExtractionResultCode::SealFailed);
-    }
-
-    RetainedSceneState currentScene;
-    for (const RenderPrimitiveSnapshot& primitive :
-         result.packet->GetPrimitives())
-    {
-        if (!currentScene.primitives.emplace(primitive.objectId, primitive)
-                 .second)
-        {
-            return fail(RenderFrameExtractionResultCode::ProxyExtractionFailed);
-        }
-    }
-    for (const RenderLightSnapshot& light : result.packet->GetLights())
-    {
-        if (!currentScene.lights.emplace(light.lightId, light).second)
-            return fail(RenderFrameExtractionResultCode::ProxyExtractionFailed);
-    }
     currentScene.decals = std::move(extractedDecals);
     currentScene.probes = std::move(extractedProbes);
     for (const ParticleRenderSnapshotItem& particle :
-         result.packet->GetFeatures().particles.items)
+         features.particles.items)
     {
         if (!currentScene.particles.emplace(particle.instanceId, particle)
                  .second)
@@ -574,19 +536,19 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
         }
     }
     for (const WaterRenderSnapshotItem& water :
-         result.packet->GetFeatures().water.items)
+         features.water.items)
     {
         if (!currentScene.water.emplace(water.componentId, water).second)
             return fail(RenderFrameExtractionResultCode::FeatureExtractionFailed);
     }
     for (const TerrainRenderSnapshotItem& terrain :
-         result.packet->GetFeatures().terrain.items)
+         features.terrain.items)
     {
         if (!currentScene.terrain.emplace(terrain.componentId, terrain).second)
             return fail(RenderFrameExtractionResultCode::FeatureExtractionFailed);
     }
-    currentScene.sky = result.packet->GetSky();
-    currentScene.environment = result.packet->GetEnvironment();
+    currentScene.sky = std::move(sky);
+    currentScene.environment = std::move(environment);
 
     const bool fullReset = m_forceFullReset || !m_publishedScene.has_value() ||
                            input.worldRevision != m_publishedWorldRevision;
@@ -751,18 +713,17 @@ RenderFrameExtractionResult RenderFrameExtractor::Extract(
         return fail(RenderFrameExtractionResultCode::SealFailed);
 
     RenderFrameHeaderV5 headerV5;
-    headerV5.sequence = result.packet->GetHeader().sequence;
+    headerV5.sequence = input.sequence;
     headerV5.requiredSceneRevision = requiredSceneRevision;
-    headerV5.worldRevision = result.packet->GetHeader().worldRevision;
-    headerV5.temporalEpoch = result.packet->GetHeader().temporalEpoch;
-    headerV5.explicitDiscontinuity =
-        result.packet->GetHeader().explicitDiscontinuity;
+    headerV5.worldRevision = input.worldRevision;
+    headerV5.temporalEpoch = input.temporalEpoch;
+    headerV5.explicitDiscontinuity = input.explicitDiscontinuity;
     result.frameV5 = RenderFramePacketV5::Create(
         headerV5,
-        result.packet->GetView(),
-        result.packet->GetSettings(),
-        result.packet->GetCaptureRequest(),
-        result.packet->GetExtractionDiagnostics());
+        std::move(view),
+        input.settings,
+        input.captureRequest,
+        result.diagnostics);
     if (result.frameV5 == nullptr)
         return fail(RenderFrameExtractionResultCode::SealFailed);
     if (publishesSceneUpdate)

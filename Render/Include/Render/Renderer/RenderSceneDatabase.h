@@ -6,8 +6,6 @@
  */
 
 #include "Core/Types.h"
-#include "RenderContracts/RenderFramePacket.h"
-#include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderSceneUpdate.h"
 
 #include <optional>
@@ -39,18 +37,6 @@ namespace RVX
         }
     };
 
-    struct RenderSceneShadowComparison
-    {
-        bool matches = false;
-        uint32 missingPrimitiveCount = 0;
-        uint32 changedPrimitiveCount = 0;
-        uint32 missingLightCount = 0;
-        uint32 changedLightCount = 0;
-        uint32 featureMismatchCount = 0;
-        bool skyMismatch = false;
-        bool environmentMismatch = false;
-    };
-
     /**
      * @brief Render-thread-owned persistent scene snapshot database.
      *
@@ -63,11 +49,6 @@ namespace RVX
         [[nodiscard]] RenderSceneUpdateApplyResult Apply(
             const RenderSceneUpdateBatch& batch);
         void Clear();
-
-        [[nodiscard]] RenderSceneShadowComparison Compare(
-            const RenderFramePacket& packet) const;
-        [[nodiscard]] std::unique_ptr<const RenderFramePacket>
-            BuildCompatibilityFrame(const RenderFramePacketV5& frame) const;
 
         [[nodiscard]] uint64 GetRevision() const noexcept { return m_revision; }
         [[nodiscard]] size_t GetPrimitiveCount() const noexcept

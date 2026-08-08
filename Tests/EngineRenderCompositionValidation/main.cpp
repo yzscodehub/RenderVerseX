@@ -1,6 +1,6 @@
 #include "RenderRuntimeComposition.h"
 
-#include "RenderExtraction/RenderFramePacketBuilder.h"
+#include "RenderContracts/RenderFramePacketV5.h"
 #include "World/World.h"
 
 #include <gtest/gtest.h>
@@ -32,13 +32,12 @@ namespace
         return surface;
     }
 
-    std::unique_ptr<const RenderFramePacket> MakeCompletePacket(
+    std::unique_ptr<const RenderFramePacketV5> MakeCompletePacket(
         const RenderRuntimeCompositionFrameInput& input)
     {
-        RenderFramePacketBuilder builder;
-
-        RenderFrameHeader header;
+        RenderFrameHeaderV5 header;
         header.sequence = input.sequence;
+        header.requiredSceneRevision = input.sequence;
         header.worldRevision = input.worldRevision;
         header.temporalEpoch = input.temporalEpoch;
         header.explicitDiscontinuity = input.explicitDiscontinuity;
@@ -49,30 +48,19 @@ namespace
         view.absoluteTime = input.view.absoluteTime;
         view.deltaTime = input.view.deltaTime;
 
-        RenderFeatureSnapshot features;
-        features.BeginBuild(input.sequence);
-        features.MarkComplete();
-
         RenderExtractionDiagnostics diagnostics;
         diagnostics.complete = true;
-
-        if (!builder.SetHeader(std::move(header)) ||
-            !builder.SetView(std::move(view)) ||
-            !builder.SetSky(RenderSkySnapshot{}) ||
-            !builder.SetEnvironment(RenderEnvironmentSnapshot{}) ||
-            !builder.SetSettings(input.settings) ||
-            !builder.SetCaptureRequest(input.captureRequest) ||
-            !builder.SetFeatures(std::move(features)) ||
-            !builder.SetExtractionDiagnostics(std::move(diagnostics)))
-        {
-            return {};
-        }
-        return builder.Seal();
+        return RenderFramePacketV5::Create(
+            std::move(header),
+            std::move(view),
+            input.settings,
+            input.captureRequest,
+            std::move(diagnostics));
     }
 
     struct PublishedFrame
     {
-        RenderFrameHeader header{};
+        RenderFrameHeaderV5 header{};
         RenderFrameCaptureRequest capture{};
         RenderFrameSettings settings{};
     };
@@ -135,29 +123,26 @@ namespace
                 }
             }
 
-            result.packet = MakeCompletePacket(input);
-            result.code = result.packet != nullptr
+            result.frameV5 = MakeCompletePacket(input);
+            result.code = result.frameV5 != nullptr
                               ? RenderFrameExtractionResultCode::Complete
                               : RenderFrameExtractionResultCode::SealFailed;
-            result.sealCode = result.packet != nullptr
-                                  ? RenderFrameSealCode::Sealed
-                                  : RenderFrameSealCode::MissingValue;
             return result;
         }
 
-        RenderFramePublishResult PublishFrame(
-            std::unique_ptr<const RenderFramePacket> packet) override
+        RenderFramePublishResult PublishExtractedFrame(
+            RenderFrameExtractionResult extraction) override
         {
             events.emplace_back("publish-frame");
-            if (packet == nullptr)
+            if (extraction.frameV5 == nullptr)
             {
                 return {};
             }
 
             publishedFrames.push_back(
-                {packet->GetHeader(),
-                 packet->GetCaptureRequest(),
-                 packet->GetSettings()});
+                {extraction.frameV5->GetHeader(),
+                 extraction.frameV5->GetCaptureRequest(),
+                 extraction.frameV5->GetSettings()});
             RenderFramePublishResult result;
             result.code = publishCodes.empty()
                               ? RenderFramePublishCode::Accepted
@@ -167,7 +152,7 @@ namespace
                 publishCodes.pop_front();
             }
             result.resultClass = ClassifyRenderFramePublishCode(result.code);
-            result.sequence = packet->GetHeader().sequence;
+            result.sequence = extraction.frameV5->GetHeader().sequence;
             return result;
         }
 

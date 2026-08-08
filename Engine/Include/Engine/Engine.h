@@ -9,7 +9,7 @@
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "Core/Subsystem/SubsystemCollection.h"
 #include "Render/RenderRuntimeTypes.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 
 #include <functional>
 #include <memory>

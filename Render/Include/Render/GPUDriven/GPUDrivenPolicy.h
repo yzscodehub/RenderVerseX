@@ -6,7 +6,7 @@
  */
 
 #include "Render/GPUDriven/GPUDrivenQualification.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 #include "RHI/RHICapabilities.h"
 #include "RHI/RHIDevice.h"
 

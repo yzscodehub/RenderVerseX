@@ -6,7 +6,7 @@
  */
 
 #include "Render/Passes/DirectDrawPacketBatch.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 
 #include <vector>
 

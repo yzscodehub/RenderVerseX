@@ -9,7 +9,7 @@
 #include "Render/Renderer/RenderSceneDatabase.h"
 #include "Render/Runtime/RenderSceneUpdateQueue.h"
 #include "RenderContracts/IRenderResourceGateway.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFramePacketV5.h"
 #include "RHI/RHINativeSurface.h"
 #include "Runtime/IRenderExecutor.h"
 #include "Runtime/RenderControlMailbox.h"
@@ -63,8 +63,6 @@ namespace RenderRuntimeDetail
             const NativeSurfaceDesc& surface) = 0;
         virtual void ProcessRelease(RenderResourceHandle handle) = 0;
         virtual void ProcessUpload(ResourceUploadRequestRef request) = 0;
-        virtual RenderRuntimeResult ConsumeFrame(
-            const RenderFramePacket& packet) = 0;
         /** @brief Consume a v5 frame against the already-applied persistent scene. */
         virtual RenderRuntimeResult ConsumeFrameV5(
             const RenderFramePacketV5& packet,
@@ -199,12 +197,9 @@ namespace RenderRuntimeDetail
         [[nodiscard]] RenderRuntimeResult Start();
         [[nodiscard]] RenderShutdownResult Stop();
 
-        RenderFramePublishResult TryPublishFrame(
-            std::unique_ptr<const RenderFramePacket> packet);
         RenderFramePublishResult TryPublishFrameSet(
             std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate,
-            std::unique_ptr<const RenderFramePacketV5> frameV5,
-            std::unique_ptr<const RenderFramePacket> compatibilityFrame);
+            std::unique_ptr<const RenderFramePacketV5> frameV5);
         RenderResizeResult RequestResize(const NativeSurfaceDesc& surface);
         [[nodiscard]] RenderDiagnosticsSnapshot
             GetDiagnosticsSnapshot() const;
@@ -289,10 +284,9 @@ namespace RenderRuntimeDetail
         std::shared_ptr<IRenderPublicationHook> m_publicationHook;
         std::shared_ptr<IRenderWaitHook> m_waitHook;
         std::shared_ptr<IRenderMonotonicClock> m_clock;
-        std::unique_ptr<RenderFrameMailbox> m_frameMailbox;
         std::unique_ptr<RenderFrameMailboxV5> m_frameMailboxV5;
-        // Render-thread-only carry used when the dual mailboxes are observed
-        // between the v5 and compatibility-frame publications.
+        // Render-thread-only carry retained until its required scene revision
+        // has been applied from the reliable update channel.
         std::unique_ptr<const RenderFramePacketV5> m_pendingFrameV5;
         std::unique_ptr<RenderSceneUpdateQueue> m_sceneUpdateQueue;
         RenderSceneDatabase m_renderSceneDatabase;

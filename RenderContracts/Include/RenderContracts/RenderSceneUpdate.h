@@ -5,7 +5,7 @@
  * @brief Reliable revisioned mutations for the persistent render scene
  */
 
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 
 #include <array>
 #include <optional>

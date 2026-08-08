@@ -81,19 +81,12 @@ namespace RVX
                 return m_extractor.Extract(extraction);
             }
 
-            RenderFramePublishResult PublishFrame(
-                std::unique_ptr<const RenderFramePacket> packet) override
-            {
-                return m_render.TryPublishFrame(std::move(packet));
-            }
-
             RenderFramePublishResult PublishExtractedFrame(
                 RenderFrameExtractionResult extraction) override
             {
                 RenderFramePublishResult result = m_render.TryPublishFrameSet(
                     std::move(extraction.sceneUpdate),
-                    std::move(extraction.frameV5),
-                    std::move(extraction.packet));
+                    std::move(extraction.frameV5));
                 RenderFramePublicationDisposition disposition =
                     RenderFramePublicationDisposition::NotAccepted;
                 if (result.code == RenderFramePublishCode::Accepted ||

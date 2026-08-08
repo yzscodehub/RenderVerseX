@@ -2,7 +2,8 @@
 #include "Render/RenderDiagnostics.h"
 #include "Render/RenderRuntimeTypes.h"
 #include "Render/RenderSubsystem.h"
-#include "RenderExtraction/RenderFramePacketBuilder.h"
+#include "RenderContracts/RenderFramePacketV5.h"
+#include "RenderContracts/RenderSceneUpdate.h"
 #include "Runtime/DedicatedRenderExecutor.h"
 #include "Runtime/RenderDiagnosticsPublisher.h"
 #include "Runtime/RenderThreadRuntime.h"
@@ -319,38 +320,53 @@ namespace
         return surface;
     }
 
-    std::unique_ptr<const RenderFramePacket> MakePacket(
+    struct TestFrameSet
+    {
+        std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate;
+        std::unique_ptr<const RenderFramePacketV5> frame;
+    };
+
+    TestFrameSet MakePacket(
         uint64 sequence,
         std::vector<RenderPrimitiveSnapshot> primitives = {})
     {
-        RenderFramePacketBuilder builder;
-        RenderFrameHeader header;
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(0, true);
+        for (RenderPrimitiveSnapshot& primitive : primitives)
+        {
+            EXPECT_TRUE(accumulator.UpsertPrimitive(
+                std::move(primitive), true));
+        }
+        accumulator.UpsertSky(RenderSkySnapshot{});
+        accumulator.UpsertEnvironment(RenderEnvironmentSnapshot{});
+
+        RenderFrameHeaderV5 header;
         header.sequence = sequence;
-        header.expectedPrimitiveCount =
-            static_cast<uint32>(primitives.size());
-        header.extractedPrimitiveCount = header.expectedPrimitiveCount;
+        header.requiredSceneRevision = sequence;
         RenderViewSnapshot view;
         view.viewportWidth = 64;
         view.viewportHeight = 64;
-        RenderFeatureSnapshot features;
-        features.BeginBuild(sequence);
-        features.MarkComplete();
         RenderExtractionDiagnostics extraction;
         extraction.complete = true;
+        TestFrameSet result;
+        result.sceneUpdate =
+            std::make_unique<const RenderSceneUpdateBatch>(
+                accumulator.Build(sequence));
+        result.frame = RenderFramePacketV5::Create(
+            header,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            extraction);
+        return result;
+    }
 
-        EXPECT_TRUE(builder.SetHeader(header));
-        EXPECT_TRUE(builder.SetView(view));
-        for (RenderPrimitiveSnapshot& primitive : primitives)
-        {
-            EXPECT_TRUE(builder.AddPrimitive(std::move(primitive)));
-        }
-        EXPECT_TRUE(builder.SetSky(RenderSkySnapshot{}));
-        EXPECT_TRUE(builder.SetEnvironment(RenderEnvironmentSnapshot{}));
-        EXPECT_TRUE(builder.SetSettings(RenderFrameSettings{}));
-        EXPECT_TRUE(builder.SetCaptureRequest(RenderFrameCaptureRequest{}));
-        EXPECT_TRUE(builder.SetFeatures(std::move(features)));
-        EXPECT_TRUE(builder.SetExtractionDiagnostics(extraction));
-        return builder.Seal();
+    RenderFramePublishResult PublishFrame(RenderThreadRuntime& runtime,
+                                           TestFrameSet frameSet)
+    {
+        return runtime.TryPublishFrameSet(
+            std::move(frameSet.sceneUpdate),
+            std::move(frameSet.frame));
     }
 
     size_t CountOccurrences(const std::string& value,
@@ -410,7 +426,7 @@ namespace
             runtime.QueryResourceStatus(work.handle);
         EXPECT_EQ(status.code, RenderResourceStatusCode::Current);
         EXPECT_EQ(status.state, RenderResourcePublicState::Reserved);
-        EXPECT_EQ(runtime.TryPublishFrame(MakePacket(4000)).code,
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(4000)).code,
                   RenderFramePublishCode::ShuttingDown);
         EXPECT_EQ(runtime.RequestResize(MakeSurface(4000)).code,
                   RenderResizeCode::ShuttingDown);
@@ -754,7 +770,7 @@ namespace
             CreateInlineRenderExecutor(),
             CreateRecordingRenderFrameConsumer(probe));
         ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
-        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(7)).code,
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(7)).code,
                   RenderFramePublishCode::Accepted);
 
         const RenderDiagnosticsSnapshot diagnostics =
@@ -774,8 +790,6 @@ namespace
         auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
         RenderRuntimeConfig config;
         config.backendType = RHIBackendType::DX11;
-        config.sceneTransportMode =
-            RenderSceneTransportMode::Authoritative;
         RenderThreadRuntime runtime(
             config,
             MakeSurface(),
@@ -819,8 +833,7 @@ namespace
 
         const RenderFramePublishResult publish = runtime.TryPublishFrameSet(
             std::move(update),
-            std::move(frameV5),
-            nullptr);
+            std::move(frameV5));
         ASSERT_EQ(publish.code, RenderFramePublishCode::Accepted);
         EXPECT_EQ(probe->GetLastConsumedPrimitiveIds(),
                   (std::vector<uint64>{11, 22}));
@@ -837,8 +850,7 @@ namespace
         ASSERT_NE(staticFrameV5, nullptr);
         const RenderFramePublishResult staticPublish = runtime.TryPublishFrameSet(
             nullptr,
-            std::move(staticFrameV5),
-            nullptr);
+            std::move(staticFrameV5));
         EXPECT_EQ(staticPublish.code, RenderFramePublishCode::Accepted);
         EXPECT_FALSE(staticPublish.sceneUpdateAccepted);
         EXPECT_EQ(staticPublish.sceneRevision, 1U);
@@ -848,12 +860,11 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
-         ShadowTransportRequiresCompatibilityPacket)
+         FrameWithoutRequiredSceneRevisionFailsClosed)
     {
         auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
         RenderRuntimeConfig config;
         config.backendType = RHIBackendType::DX11;
-        config.sceneTransportMode = RenderSceneTransportMode::Shadow;
         RenderThreadRuntime runtime(
             config,
             MakeSurface(),
@@ -864,7 +875,7 @@ namespace
 
         RenderFrameHeaderV5 header;
         header.sequence = 19;
-        header.requiredSceneRevision = 1;
+        header.requiredSceneRevision = 2;
         RenderViewSnapshot view;
         view.viewportWidth = 64;
         view.viewportHeight = 64;
@@ -885,8 +896,7 @@ namespace
             accumulator.Build(1));
         const RenderFramePublishResult publish = runtime.TryPublishFrameSet(
             std::move(update),
-            std::move(frame),
-            nullptr);
+            std::move(frame));
         EXPECT_EQ(publish.code, RenderFramePublishCode::InvalidSceneUpdate);
         EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 0U);
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
@@ -975,7 +985,7 @@ namespace
             CreateRecordingRenderFrameConsumer(probe));
         ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
 
-        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(900)).code,
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(900)).code,
                   RenderFramePublishCode::Accepted);
 
         const RenderShutdownResult shutdown =
@@ -1068,7 +1078,7 @@ namespace
             CreateRecordingRenderFrameConsumer(probe));
         ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
 
-        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(901)).code,
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(901)).code,
                   RenderFramePublishCode::Accepted);
 
         const RenderShutdownResult shutdown =
@@ -1218,7 +1228,7 @@ namespace
 
         RenderFramePublishResult publishResult;
         std::thread publisher([&]() {
-            publishResult = runtime.TryPublishFrame(MakePacket(7001));
+            publishResult = PublishFrame(runtime, MakePacket(7001));
         });
         ASSERT_TRUE(publicationHook->WaitUntilEntered(RVX_TEST_TIMEOUT));
 
@@ -1236,7 +1246,7 @@ namespace
         stopper.join();
         EXPECT_EQ(publishResult.code, RenderFramePublishCode::Accepted);
         EXPECT_EQ(shutdown.code, RenderShutdownCode::Completed);
-        EXPECT_EQ(runtime.TryPublishFrame(MakePacket(7002)).code,
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(7002)).code,
                   RenderFramePublishCode::ShuttingDown);
     }
 
@@ -1979,7 +1989,7 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
-         UnknownConfiguredExecutorBackendAndTransportAreInvalidConfiguration)
+         UnknownConfiguredExecutorAndBackendAreInvalidConfiguration)
     {
         {
             auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
@@ -2023,23 +2033,6 @@ namespace
             EXPECT_EQ(diagnostics.executor,
                       RenderExecutorKind::InlineTest);
             EXPECT_EQ(diagnostics.backend, RHIBackendType::None);
-        }
-        {
-            auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
-            RenderRuntimeConfig config;
-            config.backendType = RHIBackendType::DX11;
-            config.sceneTransportMode =
-                static_cast<RenderSceneTransportMode>(255);
-            RenderThreadRuntime runtime(
-                config,
-                MakeSurface(),
-                RenderExecutorKind::InlineTest,
-                CreateInlineRenderExecutor(),
-                CreateRecordingRenderFrameConsumer(probe));
-
-            const RenderRuntimeResult result = runtime.Start();
-            EXPECT_EQ(result.code,
-                      RenderRuntimeCode::InvalidConfiguration);
         }
     }
 
@@ -2146,7 +2139,7 @@ namespace
                 {
                     std::_Exit(11);
                 }
-                if (runtime.TryPublishFrame(MakePacket(6001)).code !=
+                if (PublishFrame(runtime, MakePacket(6001)).code !=
                     RenderFramePublishCode::Accepted)
                 {
                     std::_Exit(12);
@@ -2193,7 +2186,7 @@ namespace
             CreateRecordingRenderFrameConsumer(probe));
         const PendingGatewayWork work = PrepareGatewayWork(runtime, 6003);
         ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
-        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(6003)).code,
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(6003)).code,
                   RenderFramePublishCode::Accepted);
         const bool shutdownObserved = probe->WaitForEventCount(
             RenderRuntimeTestEvent::Shutdown, 1U, RVX_TEST_TIMEOUT);
@@ -2343,7 +2336,7 @@ namespace
 
         probe->frameCode =
             RenderRuntimeCode::RenderGraphValidationFailed;
-        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(7301)).code,
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(7301)).code,
                   RenderFramePublishCode::Accepted);
         const RenderRuntimeResult frameResult =
             runtime.GetLastRuntimeResult();
@@ -2392,7 +2385,7 @@ namespace
 
         EXPECT_EQ(runtime.GetLastRuntimeResult().lifecycle,
                   RenderLifecycleState::Stopped);
-        EXPECT_EQ(runtime.TryPublishFrame(MakePacket(1)).code,
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(1)).code,
                   RenderFramePublishCode::NotRunning);
 
         const RenderRuntimeResult start = runtime.Start();
@@ -2409,17 +2402,17 @@ namespace
         EXPECT_EQ(running.transitions[1].from, RenderLifecycleState::Starting);
         EXPECT_EQ(running.transitions[1].to, RenderLifecycleState::Running);
 
-        EXPECT_EQ(runtime.TryPublishFrame(nullptr).code,
+        EXPECT_EQ(runtime.TryPublishFrameSet(nullptr, nullptr).code,
                   RenderFramePublishCode::InvalidPacket);
 
         const uint32 framePollCount =
             probe->GetEventCount(RenderRuntimeTestEvent::Poll);
         const RenderFramePublishResult publish =
-            runtime.TryPublishFrame(MakePacket(2));
+            PublishFrame(runtime, MakePacket(2));
         EXPECT_EQ(publish.code, RenderFramePublishCode::Accepted);
         EXPECT_EQ(publish.resultClass, RenderResultClass::Success);
         EXPECT_EQ(publish.sequence, 2U);
-        EXPECT_EQ(runtime.TryPublishFrame(MakePacket(1)).code,
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(1)).code,
                   RenderFramePublishCode::OutOfOrder);
         ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Frame,
                                              1,
@@ -2467,24 +2460,24 @@ namespace
                                     CreateDedicatedRenderExecutor(),
                                     CreateRecordingRenderFrameConsumer(probe));
         ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
-        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(1)).code,
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(1)).code,
                   RenderFramePublishCode::Accepted);
         ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Frame,
                                              1,
                                              RVX_TEST_TIMEOUT));
 
-        EXPECT_EQ(runtime.TryPublishFrame(MakePacket(2)).code,
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(2)).code,
                   RenderFramePublishCode::Accepted);
-        EXPECT_EQ(runtime.TryPublishFrame(MakePacket(3)).code,
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(3)).code,
                   RenderFramePublishCode::Accepted);
-        EXPECT_EQ(runtime.TryPublishFrame(MakePacket(4)).code,
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(4)).code,
                   RenderFramePublishCode::Accepted);
         const RenderFramePublishResult replacement =
-            runtime.TryPublishFrame(MakePacket(5));
+            PublishFrame(runtime, MakePacket(5));
         EXPECT_EQ(replacement.code, RenderFramePublishCode::ReplacedOlder);
         EXPECT_EQ(replacement.resultClass, RenderResultClass::ExpectedPressure);
         EXPECT_EQ(replacement.replacedSequence, 2U);
-        EXPECT_EQ(runtime.TryPublishFrame(MakePacket(4)).code,
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(4)).code,
                   RenderFramePublishCode::OutOfOrder);
 
         const RenderResizeResult accepted = runtime.RequestResize(MakeSurface(2, 80, 80));
@@ -2520,7 +2513,7 @@ namespace
                                     CreateDedicatedRenderExecutor(),
                                     CreateRecordingRenderFrameConsumer(probe));
         ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
-        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(1)).code,
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(1)).code,
                   RenderFramePublishCode::Accepted);
         ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Frame,
                                              1,
@@ -2624,7 +2617,7 @@ namespace
                                     RenderResourceKind::Texture);
         ASSERT_EQ(release.code, RenderResourceReserveCode::Reserved);
 
-        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(6101)).code,
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(6101)).code,
                   RenderFramePublishCode::Accepted);
         ASSERT_EQ(runtime.TryEnqueueUpload(upload.request).code,
                   RenderUploadEnqueueCode::Accepted);
@@ -2665,7 +2658,7 @@ namespace
             CreateJoinRecordingDedicatedExecutor(joinProbe),
             CreateRecordingRenderFrameConsumer(probe));
         ASSERT_EQ(runtime->Start().code, RenderRuntimeCode::Running);
-        ASSERT_EQ(runtime->TryPublishFrame(MakePacket(6201)).code,
+        ASSERT_EQ(PublishFrame(*runtime, MakePacket(6201)).code,
                   RenderFramePublishCode::Accepted);
         ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Frame,
                                              1U,
@@ -2683,7 +2676,7 @@ namespace
         ASSERT_EQ(release.code, RenderResourceReserveCode::Reserved);
         ASSERT_EQ(runtime->RequestRelease(release.handle).code,
                   RenderReleaseCode::Accepted);
-        ASSERT_EQ(runtime->TryPublishFrame(MakePacket(6202)).code,
+        ASSERT_EQ(PublishFrame(*runtime, MakePacket(6202)).code,
                   RenderFramePublishCode::Accepted);
         ASSERT_FALSE(queuedPayload.expired());
 
@@ -2726,7 +2719,7 @@ namespace
                                     CreateDedicatedRenderExecutor(),
                                     CreateRecordingRenderFrameConsumer(probe));
         ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
-        ASSERT_EQ(runtime.TryPublishFrame(MakePacket(1)).code,
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(1)).code,
                   RenderFramePublishCode::Accepted);
         ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Frame,
                                              1,
@@ -2738,7 +2731,7 @@ namespace
         });
         ASSERT_TRUE(WaitForRuntimeLifecycle(
             runtime, RenderLifecycleState::StopRequested));
-        EXPECT_EQ(runtime.TryPublishFrame(MakePacket(2)).code,
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(2)).code,
                   RenderFramePublishCode::ShuttingDown);
         EXPECT_EQ(runtime.RequestResize(MakeSurface(2, 80, 80)).code,
                   RenderResizeCode::ShuttingDown);
@@ -2876,7 +2869,7 @@ namespace
             const RenderRuntimeResult start = runtime.Start();
             EXPECT_EQ(start.lifecycle, RenderLifecycleState::Failed);
             EXPECT_EQ(start.resultClass, RenderResultClass::RuntimeFatal);
-            EXPECT_EQ(runtime.TryPublishFrame(MakePacket(8800)).code,
+            EXPECT_EQ(PublishFrame(runtime, MakePacket(8800)).code,
                       RenderFramePublishCode::ShuttingDown);
             EXPECT_EQ(probe->GetLiveObjectCount(), 0U);
             if (point != RenderRuntimeFaultPoint::FactoryCreation)
@@ -2912,7 +2905,7 @@ namespace
                                                          static_cast<uint32>(point)},
                     probe));
             ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
-            ASSERT_EQ(runtime.TryPublishFrame(MakePacket(8900)).code,
+            ASSERT_EQ(PublishFrame(runtime, MakePacket(8900)).code,
                       RenderFramePublishCode::Accepted);
             ASSERT_TRUE(WaitForRuntimeLifecycle(
                 runtime, RenderLifecycleState::Failed));
@@ -2922,7 +2915,7 @@ namespace
                       RenderTerminalCause::DeviceLost);
             EXPECT_EQ(probe->GetShutdownMode(),
                       RenderTeardownMode::DeviceLostTeardown);
-            EXPECT_EQ(runtime.TryPublishFrame(MakePacket(8901)).code,
+            EXPECT_EQ(PublishFrame(runtime, MakePacket(8901)).code,
                       RenderFramePublishCode::ShuttingDown);
             static_cast<void>(runtime.Stop());
             EXPECT_EQ(probe->GetLiveObjectCount(), 0U);
@@ -2946,7 +2939,7 @@ namespace
                         RenderRuntimeFaultPoint::FrameException},
                     probe));
             ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
-            ASSERT_EQ(runtime.TryPublishFrame(MakePacket(9000)).code,
+            ASSERT_EQ(PublishFrame(runtime, MakePacket(9000)).code,
                       RenderFramePublishCode::Accepted);
             ASSERT_TRUE(WaitForRuntimeLifecycle(
                 runtime, RenderLifecycleState::Failed));

@@ -147,7 +147,7 @@ namespace RVX
             (void)handle;
             if (entity && entity->IsRoot())
             {
-                CollectEntity(entity.get(), outSnapshot, result);
+                CollectEntity(entity, outSnapshot, result);
             }
         }
 

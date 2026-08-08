@@ -3,7 +3,7 @@
 #include "Scenes/ModelRenderingSample.h"
 
 #include "Core/MathTypes.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 #include "Scene/Components/CameraComponent.h"
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"

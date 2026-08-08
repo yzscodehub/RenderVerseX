@@ -1156,12 +1156,14 @@ namespace
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
-        auto entity = std::make_shared<RVX::SceneEntity>("LegacyLifecycleEntity");
+        auto entity = std::make_unique<RVX::SceneEntity>("LegacyLifecycleEntity");
         LegacyLifecycleCounters counters;
         auto* component = entity->AddComponent<SceneManagedLegacyLifecycleComponent>(&counters);
         ASSERT_NE(nullptr, component);
 
-        sceneManager.AddEntity(entity);
+        RVX::SceneEntity* managedEntity =
+            sceneManager.AddEntity(std::move(entity));
+        ASSERT_NE(nullptr, managedEntity);
         EXPECT_TRUE(component->IsRegistered());
         EXPECT_TRUE(component->IsInitialized());
         EXPECT_EQ(1, counters.registered);
@@ -1173,11 +1175,9 @@ namespace
         EXPECT_EQ(1, counters.ticked);
         EXPECT_TRUE(IsNear(0.125f, counters.lastDeltaTime));
 
-        sceneManager.DestroyEntity(entity->GetHandle());
+        sceneManager.DestroyEntity(managedEntity->GetHandle());
         EXPECT_EQ(1, counters.endedPlay);
         EXPECT_EQ(1, counters.unregistered);
-
-        entity.reset();
         EXPECT_EQ(1, counters.detached);
         EXPECT_EQ(1, counters.destroyed);
 
@@ -1610,13 +1610,15 @@ namespace
         RVX::SceneManager sceneManager;
         sceneManager.Initialize();
 
-        auto entity = std::make_shared<RVX::SceneEntity>("PreOwnedPrimitive");
+        auto entity = std::make_unique<RVX::SceneEntity>("PreOwnedPrimitive");
         auto* primitive = static_cast<RVX::Actor*>(entity.get())->AddComponent<RVX::StaticMeshComponent>();
         ASSERT_NE(nullptr, primitive);
         EXPECT_FALSE(primitive->IsRegistered());
 
-        sceneManager.AddEntity(entity);
-        const auto handle = entity->GetHandle();
+        RVX::SceneEntity* managedEntity =
+            sceneManager.AddEntity(std::move(entity));
+        ASSERT_NE(nullptr, managedEntity);
+        const auto handle = managedEntity->GetHandle();
 
         EXPECT_TRUE(primitive->IsRegistered());
         EXPECT_EQ(static_cast<size_t>(1), sceneManager.GetPrimitives().size());
@@ -1624,7 +1626,6 @@ namespace
 
         sceneManager.DestroyEntity(handle);
 
-        EXPECT_FALSE(primitive->IsRegistered());
         EXPECT_TRUE(sceneManager.GetPrimitives().empty());
         sceneManager.Shutdown();
     }

@@ -1,4 +1,5 @@
 #include "Render/Renderer/RenderSceneDatabase.h"
+#include "RenderContracts/RenderFramePacketV5.h"
 
 #include <gtest/gtest.h>
 
@@ -114,7 +115,7 @@ TEST(RenderSceneRevisionValidation, NewerFullResetRecoversFromDesynchronization)
     EXPECT_NE(database.FindPrimitive(99), nullptr);
 }
 
-TEST(RenderSceneRevisionValidation, BuildsAuthoritativeFrameFromPersistentV5State)
+TEST(RenderSceneRevisionValidation, ExposesAuthoritativeSceneAndV5FrameState)
 {
     RVX::RenderSceneMutationAccumulator reset;
     reset.Begin(0, true);
@@ -163,23 +164,25 @@ TEST(RenderSceneRevisionValidation, BuildsAuthoritativeFrameFromPersistentV5Stat
         diagnostics);
     ASSERT_NE(frameV5, nullptr);
 
-    const auto frame = database.BuildCompatibilityFrame(*frameV5);
-    ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(frame->GetHeader().sequence, 41U);
-    EXPECT_EQ(frame->GetHeader().worldRevision, 6U);
-    EXPECT_EQ(frame->GetHeader().temporalEpoch, 3U);
-    ASSERT_EQ(frame->GetPrimitives().size(), 2U);
-    EXPECT_EQ(frame->GetPrimitives()[0].objectId, 11U);
-    EXPECT_EQ(frame->GetPrimitives()[1].objectId, 22U);
-    ASSERT_EQ(frame->GetLights().size(), 1U);
-    EXPECT_EQ(frame->GetLights()[0].lightId, 7U);
-    ASSERT_EQ(frame->GetFeatures().particles.items.size(), 1U);
-    EXPECT_EQ(frame->GetFeatures().particles.items[0].instanceId, 31U);
-    EXPECT_EQ(frame->GetSky().mode, RVX::RenderSkyMode::Procedural);
-    EXPECT_FLOAT_EQ(frame->GetEnvironment().intensity, 0.75f);
+    EXPECT_EQ(frameV5->GetHeader().sequence, 41U);
+    EXPECT_EQ(frameV5->GetHeader().worldRevision, 6U);
+    EXPECT_EQ(frameV5->GetHeader().temporalEpoch, 3U);
+    EXPECT_EQ(frameV5->GetHeader().requiredSceneRevision,
+              database.GetRevision());
+    ASSERT_EQ(database.GetPrimitives().size(), 2U);
+    EXPECT_NE(database.FindPrimitive(11), nullptr);
+    EXPECT_NE(database.FindPrimitive(22), nullptr);
+    ASSERT_EQ(database.GetLights().size(), 1U);
+    EXPECT_NE(database.FindLight(7), nullptr);
+    ASSERT_EQ(database.GetParticles().size(), 1U);
+    EXPECT_TRUE(database.GetParticles().contains(31));
+    ASSERT_TRUE(database.GetSky().has_value());
+    EXPECT_EQ(database.GetSky()->mode, RVX::RenderSkyMode::Procedural);
+    ASSERT_TRUE(database.GetEnvironment().has_value());
+    EXPECT_FLOAT_EQ(database.GetEnvironment()->intensity, 0.75f);
 }
 
-TEST(RenderSceneRevisionValidation, RejectsV5FrameAheadOfPersistentRevision)
+TEST(RenderSceneRevisionValidation, PersistentRevisionDoesNotSatisfyAheadV5Frame)
 {
     RVX::RenderSceneDatabase database;
     ASSERT_TRUE(database.Apply(MakeFullReset(2)).IsApplied());
@@ -200,7 +203,8 @@ TEST(RenderSceneRevisionValidation, RejectsV5FrameAheadOfPersistentRevision)
         diagnostics);
     ASSERT_NE(frameV5, nullptr);
 
-    EXPECT_EQ(database.BuildCompatibilityFrame(*frameV5), nullptr);
+    EXPECT_LT(database.GetRevision(),
+              frameV5->GetHeader().requiredSceneRevision);
 }
 
 TEST(RenderSceneRevisionValidation, RecycledObjectSlotRequiresOrderedGenerationReplacement)

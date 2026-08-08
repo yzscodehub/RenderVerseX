@@ -53,8 +53,7 @@ namespace RVX
     {
     public:
         using Handle = Spatial::EntityHandle;
-        using Ptr = std::shared_ptr<SceneEntity>;
-        using WeakPtr = std::weak_ptr<SceneEntity>;
+        using Ptr = std::unique_ptr<SceneEntity>;
 
         static constexpr Handle InvalidHandle = Spatial::InvalidHandle;
 

@@ -47,9 +47,9 @@ namespace RVX
     /**
      * @brief Authoritative scene runtime owned by a World.
      *
-     * Scene owns the common actor handle pool. SceneManager remains available as
-     * a compatibility facade for spatial SceneEntity APIs while pure Actor and
-     * SceneEntity identities share the same generation-safe allocation domain.
+     * Scene owns every Actor in one generation-safe allocation domain.
+     * SceneManager is a non-owning compatibility facade for legacy spatial
+     * SceneEntity APIs.
      */
     class Scene
     {
@@ -133,8 +133,8 @@ namespace RVX
         Actor* ResolveActor(Actor::Handle handle) const;
         Actor* GetActor(Actor::Handle handle) const { return ResolveActor(handle); }
 
-        size_t GetPureActorCount() const { return m_actors.size(); }
-        size_t GetActorCount() const { return m_actors.size() + m_sceneManager.GetEntityCount(); }
+        size_t GetPureActorCount() const;
+        size_t GetActorCount() const { return m_actors.size(); }
         void ForEachActor(const std::function<void(Actor*)>& callback);
         void Tick(float deltaTime);
 
@@ -282,13 +282,15 @@ namespace RVX
             m_sceneManager.MarkPrimitiveSpatialDirty(primitive);
         }
 
-        /** @brief Compatibility facade backed by a scene CameraComponent. */
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
+        /** @brief Legacy-sample facade backed by a scene CameraComponent. */
         Camera* CreateCamera(const std::string& name = "Main");
         Camera* GetCamera(const std::string& name = "Main") const;
         void DestroyCamera(const std::string& name);
-        /** @brief Compatibility adapter selecting the facade's component. */
+        /** @brief Legacy-sample adapter selecting the facade's component. */
         void SetActiveCamera(Camera* camera);
         Camera* GetActiveCamera() const { return m_activeCamera; }
+#endif
 
         /** @brief Select the authoritative active CameraComponent by handle. */
         bool SetActiveCamera(ComponentHandle camera);
@@ -320,7 +322,9 @@ namespace RVX
         void ApplyMutationCommands();
         void ClearPureActors();
         void AppendComponentChange(SceneComponentChange change);
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
         void SynchronizeLegacyCamera(Camera* camera);
+#endif
 
         struct ComponentQueryView
         {
@@ -347,9 +351,11 @@ namespace RVX
             m_componentQueryViews;
         std::vector<ActorComponent*> m_pendingComponentRegistrations;
         std::vector<SceneComponentChange> m_componentChanges;
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
         std::unordered_map<std::string, std::unique_ptr<Camera>> m_cameras;
         std::unordered_map<Camera*, ComponentHandle> m_legacyCameraComponents;
         Camera* m_activeCamera = nullptr;
+#endif
         ComponentHandle m_activeCameraComponent = InvalidComponentHandle;
         SceneSystemScheduler m_systemScheduler;
         std::mutex m_mutationMutex;

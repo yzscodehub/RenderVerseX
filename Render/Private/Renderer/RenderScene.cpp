@@ -148,22 +148,6 @@ void RenderScene::Clear()
     m_lastRenderedSurfaceCompatibilityKey = m_surfaceCompatibilityKey;
 }
 
-RenderFrameApplyResult RenderScene::ApplyFramePacket(
-    const RenderFramePacket& packet,
-    const RenderResourceRegistry& registry)
-{
-    return ApplyFrameState(packet.GetHeader(),
-                           packet.GetView(),
-                           packet.GetPrimitives(),
-                           packet.GetLights(),
-                           packet.GetSky(),
-                           packet.GetEnvironment(),
-                           packet.GetSettings(),
-                           packet.GetCaptureRequest(),
-                           packet.GetFeatures(),
-                           registry);
-}
-
 RenderFrameApplyResult RenderScene::ApplyFrameV5(
     const RenderFramePacketV5& frame,
     const RenderSceneDatabase& scene,
@@ -200,22 +184,8 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
                                       features.terrain.items.size();
     features.MarkComplete();
 
-    RenderFrameHeader header;
-    header.sequence = frameHeader.sequence;
-    header.worldRevision = frameHeader.worldRevision;
-    header.temporalEpoch = frameHeader.temporalEpoch;
-    header.expectedPrimitiveCount = static_cast<uint32>(primitives.size());
-    header.extractedPrimitiveCount = header.expectedPrimitiveCount;
-    header.expectedLightCount = static_cast<uint32>(lights.size());
-    header.extractedLightCount = header.expectedLightCount;
-    header.expectedFeatureProviderCount =
-        static_cast<uint32>(features.metadata.providerCount);
-    header.extractedFeatureProviderCount =
-        header.expectedFeatureProviderCount;
-    header.explicitDiscontinuity = frameHeader.explicitDiscontinuity;
-
     return ApplyFrameState(
-        header,
+        frameHeader,
         frame.GetView(),
         primitives,
         lights,
@@ -228,7 +198,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
 }
 
 RenderFrameApplyResult RenderScene::ApplyFrameState(
-    const RenderFrameHeader& header,
+    const RenderFrameHeaderV5& header,
     const RenderViewSnapshot& view,
     const std::vector<RenderPrimitiveSnapshot>& primitives,
     const std::vector<RenderLightSnapshot>& lights,
@@ -244,12 +214,6 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     result.previousAcceptedSequence = m_acceptedHeader.sequence;
     result.lastRenderedSequence = m_lastRenderedHeader.sequence;
 
-    if (header.schemaId != RVX_RENDER_FRAME_PACKET_SCHEMA_ID ||
-        header.schemaVersion != RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION)
-    {
-        result.code = RenderFrameApplyCode::UnsupportedSchema;
-        return result;
-    }
     if (header.sequence == 0 ||
         (m_hasAcceptedFrame && header.sequence <= m_acceptedHeader.sequence))
     {

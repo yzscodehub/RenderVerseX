@@ -6,7 +6,6 @@
  */
 
 #include "Core/Types.h"
-#include "RenderContracts/RenderFramePacket.h"
 #include "RenderContracts/RenderFramePacketV5.h"
 
 #include <array>
@@ -37,41 +36,6 @@ namespace RVX
             RenderFrameMailboxPublishCode::InvalidPacket;
         uint64 replacedSequence = 0;
         RenderFrameMailboxSnapshot snapshot{};
-    };
-
-    template <typename Packet>
-    struct CompleteRenderFramePacketValidator final
-    {
-        [[nodiscard]] bool operator()(const Packet& packet) const noexcept
-        {
-            const RenderFrameHeader& header = packet.GetHeader();
-            const RenderExtractionDiagnostics& diagnostics =
-                packet.GetExtractionDiagnostics();
-            const RenderFeatureSnapshotMetadata featureMetadata =
-                packet.GetFeatures().GetMetadata();
-            return header.schemaId == RVX_RENDER_FRAME_PACKET_SCHEMA_ID &&
-                   header.schemaVersion ==
-                       RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION &&
-                   header.sequence != 0U && diagnostics.complete &&
-                   diagnostics.code == RenderExtractionCode::Complete &&
-                   header.expectedPrimitiveCount ==
-                       header.extractedPrimitiveCount &&
-                   header.extractedPrimitiveCount ==
-                       packet.GetPrimitives().size() &&
-                   header.expectedLightCount == header.extractedLightCount &&
-                   header.extractedLightCount == packet.GetLights().size() &&
-                   header.expectedFeatureProviderCount ==
-                       header.extractedFeatureProviderCount &&
-                   header.extractedFeatureProviderCount ==
-                       featureMetadata.providerCount &&
-                   featureMetadata.schemaVersion ==
-                       RVX_RENDER_FEATURE_SNAPSHOT_SCHEMA_VERSION &&
-                   featureMetadata.sequence == header.sequence &&
-                   featureMetadata.status ==
-                       RenderFeatureSnapshotStatus::Complete &&
-                   featureMetadata.complete &&
-                   featureMetadata.skippedProviderCount == 0U;
-        }
     };
 
     template <typename Packet>
@@ -229,12 +193,6 @@ namespace RVX
         WakeFunction m_wakeFunction = nullptr;
         void* m_wakeContext = nullptr;
     };
-
-    using RenderFrameMailbox = BasicRenderFrameMailbox<
-        RenderFramePacket,
-        CompleteRenderFramePacketValidator<RenderFramePacket>>;
-    using RenderFrameAcquireResult =
-        BasicRenderFrameAcquireResult<RenderFramePacket>;
 
     struct CompleteRenderFramePacketV5Validator final
     {

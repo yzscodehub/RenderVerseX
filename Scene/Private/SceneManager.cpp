@@ -112,22 +112,12 @@ void SceneManager::Shutdown()
     m_isDispatchingLifecycles = false;
     m_pendingDestroyEntities.clear();
 
-    for (auto& [handle, entity] : m_entities)
-    {
-        if (entity)
-        {
-            if (m_ownerScene)
-                m_ownerScene->DetachActor(entity.get());
-            entity->EndPlay();
-            entity->UnregisterAllComponents();
-            entity->SetSceneManager(nullptr);
-            entity->AssignHandle(Actor::InvalidHandle);
-        }
-        m_actorHandles->Free(handle);
-    }
+    while (!m_entities.empty())
+        DestroyEntityImmediate(m_entities.begin()->first);
 
     // Clear all entities
     m_entities.clear();
+    m_ownedEntities.clear();
     m_primitives.clear();
     m_registeredPrimitives.clear();
     m_primitiveSpatialProxies.clear();
@@ -149,9 +139,9 @@ void SceneManager::Shutdown()
 
 SceneEntity::Handle SceneManager::CreateEntity(const std::string& name)
 {
-    auto entity = std::make_shared<SceneEntity>(name);
-    AddEntity(entity);
-    return entity->GetHandle();
+    auto entity = std::make_unique<SceneEntity>(name);
+    SceneEntity* created = AddEntity(std::move(entity));
+    return created ? created->GetHandle() : SceneEntity::InvalidHandle;
 }
 
 SceneEntity* SceneManager::SpawnActor(const ActorSpawnParams& params)
@@ -216,7 +206,8 @@ SceneEntity* SceneManager::AddEntity(SceneEntity::Ptr entity)
     entity->AssignScene(m_ownerScene);
     entity->SetSceneManager(this);
 
-    const auto [it, inserted] = m_entities.emplace(handle, entity);
+    SceneEntity* rawEntity = entity.get();
+    const auto [it, inserted] = m_entities.emplace(handle, rawEntity);
     if (!inserted)
     {
         entity->SetSceneManager(nullptr);
@@ -226,12 +217,39 @@ SceneEntity* SceneManager::AddEntity(SceneEntity::Ptr entity)
     }
 
     if (m_ownerScene)
-        m_ownerScene->AttachActor(entity.get());
-    entity->RegisterAllComponents();
-    MarkEntitySpatialDirty(entity.get());
+    {
+        const auto [actorIt, actorInserted] =
+            m_ownerScene->m_actors.try_emplace(handle, std::move(entity));
+        if (!actorInserted)
+        {
+            m_entities.erase(it);
+            rawEntity->SetSceneManager(nullptr);
+            rawEntity->AssignScene(nullptr);
+            m_actorHandles->Free(handle);
+            return nullptr;
+        }
+        (void)actorIt;
+        m_ownerScene->AttachActor(rawEntity);
+    }
+    else
+    {
+        const auto [ownerIt, ownerInserted] =
+            m_ownedEntities.try_emplace(handle, std::move(entity));
+        if (!ownerInserted)
+        {
+            m_entities.erase(it);
+            rawEntity->SetSceneManager(nullptr);
+            rawEntity->AssignScene(nullptr);
+            m_actorHandles->Free(handle);
+            return nullptr;
+        }
+        (void)ownerIt;
+    }
+    rawEntity->RegisterAllComponents();
+    MarkEntitySpatialDirty(rawEntity);
     m_indexNeedsRebuild = true;
 
-    return entity.get();
+    return rawEntity;
 }
 
 bool SceneManager::DestroyActor(Actor* actor)
@@ -267,7 +285,7 @@ void SceneManager::DestroyEntityImmediate(SceneEntity::Handle handle)
     auto it = m_entities.find(handle);
     if (it != m_entities.end())
     {
-        SceneEntity::Ptr entity = it->second;
+        SceneEntity* entity = it->second;
         std::vector<SceneEntity::Handle> childHandles;
         childHandles.reserve(entity->GetChildren().size());
         for (SceneEntity* child : entity->GetChildren())
@@ -280,12 +298,34 @@ void SceneManager::DestroyEntityImmediate(SceneEntity::Handle handle)
 
         entity->SetParent(nullptr);
         if (m_ownerScene)
-            m_ownerScene->DetachActor(entity.get());
+            m_ownerScene->DetachActor(entity);
         entity->EndPlay();
         entity->UnregisterAllComponents();
         entity->SetSceneManager(nullptr);
         m_entities.erase(it);
-        ReleaseActorHandle(entity.get());
+
+        std::unique_ptr<Actor> sceneOwnedActor;
+        SceneEntity::Ptr standaloneOwnedEntity;
+        if (m_ownerScene)
+        {
+            auto actorIt = m_ownerScene->m_actors.find(handle);
+            if (actorIt != m_ownerScene->m_actors.end())
+            {
+                sceneOwnedActor = std::move(actorIt->second);
+                m_ownerScene->m_actors.erase(actorIt);
+            }
+        }
+        else
+        {
+            auto ownerIt = m_ownedEntities.find(handle);
+            if (ownerIt != m_ownedEntities.end())
+            {
+                standaloneOwnedEntity = std::move(ownerIt->second);
+                m_ownedEntities.erase(ownerIt);
+            }
+        }
+
+        ReleaseActorHandle(entity);
         m_indexNeedsRebuild = true;
     }
 }
@@ -307,7 +347,7 @@ void SceneManager::QueuePendingDestroy(SceneEntity::Handle handle)
         return;
     }
 
-    SceneEntity* entity = found->second.get();
+    SceneEntity* entity = found->second;
     std::vector<SceneEntity::Handle> childHandles;
     childHandles.reserve(entity->GetChildren().size());
     for (SceneEntity* child : entity->GetChildren())
@@ -581,7 +621,7 @@ SceneEntity* SceneManager::GetEntity(SceneEntity::Handle handle)
         return nullptr;
 
     auto it = m_entities.find(handle);
-    return it != m_entities.end() ? it->second.get() : nullptr;
+    return it != m_entities.end() ? it->second : nullptr;
 }
 
 const SceneEntity* SceneManager::GetEntity(SceneEntity::Handle handle) const
@@ -590,7 +630,7 @@ const SceneEntity* SceneManager::GetEntity(SceneEntity::Handle handle) const
         return nullptr;
 
     auto it = m_entities.find(handle);
-    return it != m_entities.end() ? it->second.get() : nullptr;
+    return it != m_entities.end() ? it->second : nullptr;
 }
 
 void SceneManager::AddHierarchy(std::shared_ptr<Node> rootNode)
@@ -653,10 +693,10 @@ void SceneManager::CollectSpatialEntities(std::vector<Spatial::ISpatialEntity*>&
         if (!entity || !entity->IsActive())
             continue;
 
-        if (primitiveOwners.find(entity.get()) != primitiveOwners.end())
+        if (primitiveOwners.find(entity) != primitiveOwners.end())
             continue;
 
-        outEntities.push_back(entity.get());
+        outEntities.push_back(entity);
     }
 }
 
@@ -678,7 +718,7 @@ SpatialQueryTarget SceneManager::ResolveSpatialQueryTarget(const Spatial::QueryR
     auto entityIt = m_entities.find(result.handle);
     if (entityIt != m_entities.end() && entityIt->second)
     {
-        auto* entity = entityIt->second.get();
+        auto* entity = entityIt->second;
         target.entity = entity;
         target.actor = entity;
     }
@@ -876,14 +916,14 @@ void SceneManager::UpdateEntityLifecycles(float deltaTime, bool flushPendingDest
         if (it == m_entities.end() || !it->second || !it->second->IsActive() || IsDestroyPending(handle))
             continue;
 
-        SceneEntity* entity = it->second.get();
+        SceneEntity* entity = it->second;
         entity->BeginPlay();
 
         it = m_entities.find(handle);
         if (it == m_entities.end() || !it->second || !it->second->IsActive() || IsDestroyPending(handle))
             continue;
 
-        entity = it->second.get();
+        entity = it->second;
         entity->Tick(deltaTime);
     }
     m_isDispatchingLifecycles = false;
@@ -982,7 +1022,7 @@ void SceneManager::ForEachEntity(const std::function<void(SceneEntity*)>& callba
 {
     for (auto& [handle, entity] : m_entities)
     {
-        callback(entity.get());
+        callback(entity);
     }
 }
 
@@ -992,7 +1032,7 @@ void SceneManager::ForEachActiveEntity(const std::function<void(SceneEntity*)>& 
     {
         if (entity->IsActive())
         {
-            callback(entity.get());
+            callback(entity);
         }
     }
 }

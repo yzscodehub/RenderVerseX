@@ -7,7 +7,6 @@
 
 #include "Core/Types.h"
 #include "Render/RenderDiagnostics.h"
-#include "RenderContracts/RenderFramePacket.h"
 #include "RenderExtraction/RenderFrameExtractor.h"
 #include "RHI/RHINativeSurface.h"
 
@@ -71,14 +70,9 @@ namespace RVX
         [[nodiscard]] virtual bool IsRenderReady() const noexcept = 0;
         [[nodiscard]] virtual RenderFrameExtractionResult ExtractFrame(
             const RenderRuntimeCompositionFrameInput& input) = 0;
-        virtual RenderFramePublishResult PublishFrame(
-            std::unique_ptr<const RenderFramePacket> packet) = 0;
-        /** @brief Publish v5 shadow values before the compatibility v4 frame. */
+        /** @brief Publish the reliable scene update before its v5 frame. */
         virtual RenderFramePublishResult PublishExtractedFrame(
-            RenderFrameExtractionResult extraction)
-        {
-            return PublishFrame(std::move(extraction.packet));
-        }
+            RenderFrameExtractionResult extraction) = 0;
         [[nodiscard]] virtual RenderDiagnosticsSnapshot
             GetRenderDiagnostics() const = 0;
         virtual RenderResizeResult RequestResize(

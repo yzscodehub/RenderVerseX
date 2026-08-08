@@ -1,4 +1,3 @@
-#include "Core/Camera/Camera.h"
 #include "Core/Log.h"
 #include "Geometry/Asset/Material.h"
 #include "Geometry/Asset/Mesh.h"
@@ -293,9 +292,19 @@ namespace
 
     SceneEntity* CreateEntity(World& world, const std::string& name)
     {
-        SceneManager* sceneManager = world.GetSceneManager();
-        const auto handle = sceneManager->CreateEntity(name);
-        return sceneManager->GetEntity(handle);
+        return world.SpawnActor({.name = name});
+    }
+
+    CameraComponent* CreateActiveCamera(World& world,
+                                        const std::string& name = "Camera")
+    {
+        SceneEntity* actor = world.SpawnActor({.name = name});
+        if (!actor)
+            return nullptr;
+        CameraComponent* camera = actor->AddComponent<CameraComponent>();
+        if (!camera || !world.SetActiveCamera(camera->GetComponentHandle()))
+            return nullptr;
+        return camera;
     }
 
     class ExtractionFixture final
@@ -364,13 +373,12 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
 
     World world;
     world.Initialize();
-    Camera* camera = world.CreateCamera("ExtractionCamera");
+    CameraComponent* camera =
+        CreateActiveCamera(world, "ExtractionCamera");
     ASSERT_NE(camera, nullptr);
     camera->SetPerspective(1.0f, 16.0f / 9.0f, 0.25f, 2500.0f);
     camera->SetPosition({0.0f, 2.0f, 8.0f});
     camera->LookAt({0.0f, 0.0f, 0.0f});
-    world.SetActiveCamera(camera);
-
     ASSERT_TRUE(world.GetScene()->GetActiveCameraHandle().IsValid());
     CameraComponent* activeCamera =
         world.GetScene()->GetActiveCameraComponent();
@@ -440,15 +448,11 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
         extractor.Extract(MakeInput(41, &world, &fixture.subsystem));
     ASSERT_TRUE(extraction.IsComplete());
     ASSERT_TRUE(extraction.HasCompleteShadowOutput());
-    ASSERT_NE(extraction.packet, nullptr);
-    EXPECT_EQ(extraction.sealCode, RenderFrameSealCode::Sealed);
 
     std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate =
         std::move(extraction.sceneUpdate);
     std::unique_ptr<const RenderFramePacketV5> frameV5 =
         std::move(extraction.frameV5);
-    std::unique_ptr<const RenderFramePacket> packet =
-        std::move(extraction.packet);
     world.Shutdown();
     mesh.Reset();
     material.Reset();
@@ -467,63 +471,63 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
     ASSERT_NE(frameV5, nullptr);
     EXPECT_EQ(frameV5->GetHeader().sequence, 41U);
     EXPECT_EQ(frameV5->GetHeader().requiredSceneRevision, 41U);
-
-    EXPECT_EQ(packet->GetHeader().sequence, 41U);
-    EXPECT_EQ(packet->GetHeader().worldRevision, 17U);
-    EXPECT_EQ(packet->GetHeader().temporalEpoch, 23U);
-    EXPECT_TRUE(packet->GetHeader().explicitDiscontinuity);
-    ASSERT_EQ(packet->GetPrimitives().size(), 1U);
-    EXPECT_TRUE(packet->GetPrimitives()[0].mesh.IsValid());
-    EXPECT_TRUE(packet->GetPrimitives()[0].material.IsValid());
-    ASSERT_EQ(packet->GetPrimitives()[0].submeshes.size(), 2U);
-    EXPECT_EQ(packet->GetPrimitives()[0].material,
-              packet->GetPrimitives()[0].submeshes[0].material);
-    EXPECT_EQ(packet->GetPrimitives()[0].submeshes[0].materialMode,
+    EXPECT_EQ(frameV5->GetHeader().worldRevision, 17U);
+    EXPECT_EQ(frameV5->GetHeader().temporalEpoch, 23U);
+    EXPECT_TRUE(frameV5->GetHeader().explicitDiscontinuity);
+    const RenderPrimitiveSnapshot& primitiveState =
+        sceneUpdate->primitives[0].state;
+    EXPECT_TRUE(primitiveState.mesh.IsValid());
+    EXPECT_TRUE(primitiveState.material.IsValid());
+    ASSERT_EQ(primitiveState.submeshes.size(), 2U);
+    EXPECT_EQ(primitiveState.material, primitiveState.submeshes[0].material);
+    EXPECT_EQ(primitiveState.submeshes[0].materialMode,
               RenderMaterialMode::Masked);
-    EXPECT_EQ(packet->GetPrimitives()[0].submeshes[1].materialMode,
+    EXPECT_EQ(primitiveState.submeshes[1].materialMode,
               RenderMaterialMode::Transparent);
-    EXPECT_NE(packet->GetPrimitives()[0].submeshes[0].material,
-              packet->GetPrimitives()[0].submeshes[1].material);
-    EXPECT_EQ(packet->GetPrimitives()[0].layerMask, 0x55U);
-    ASSERT_EQ(packet->GetLights().size(), 1U);
-    EXPECT_EQ(packet->GetLights()[0].type, RenderLightType::Point);
-    EXPECT_FLOAT_EQ(packet->GetLights()[0].intensity, 4.0f);
-    EXPECT_TRUE(packet->GetLights()[0].castsShadows);
-    EXPECT_FALSE(packet->GetLights()[0].shadowResource.IsValid());
-    EXPECT_EQ(packet->GetSky().mode, RenderSkyMode::Cubemap);
-    EXPECT_FALSE(packet->GetSky().skyTexture.IsValid());
-    EXPECT_FLOAT_EQ(packet->GetSky().intensity, 1.75f);
-    EXPECT_FLOAT_EQ(packet->GetSky().rotationRadians, 0.5f);
-    EXPECT_FLOAT_EQ(packet->GetSky().blurLevel, 2.25f);
-    EXPECT_FLOAT_EQ(packet->GetSky().sunDirection.x, 0.0f);
-    EXPECT_FLOAT_EQ(packet->GetSky().sunDirection.y, 1.0f);
-    EXPECT_FLOAT_EQ(packet->GetSky().sunDirection.z, 0.0f);
-    EXPECT_FLOAT_EQ(packet->GetSky().sunColor.x, 0.9f);
-    EXPECT_FLOAT_EQ(packet->GetSky().sunColor.y, 0.8f);
-    EXPECT_FLOAT_EQ(packet->GetSky().sunColor.z, 0.7f);
-    EXPECT_FLOAT_EQ(packet->GetSky().zenithColor.x, 0.15f);
-    EXPECT_FLOAT_EQ(packet->GetSky().zenithColor.y, 0.35f);
-    EXPECT_FLOAT_EQ(packet->GetSky().zenithColor.z, 0.75f);
-    EXPECT_FLOAT_EQ(packet->GetSky().horizonColor.x, 0.65f);
-    EXPECT_FLOAT_EQ(packet->GetSky().horizonColor.y, 0.75f);
-    EXPECT_FLOAT_EQ(packet->GetSky().horizonColor.z, 0.85f);
-    EXPECT_FLOAT_EQ(packet->GetSky().groundColor.x, 0.25f);
-    EXPECT_FLOAT_EQ(packet->GetSky().groundColor.y, 0.2f);
-    EXPECT_FLOAT_EQ(packet->GetSky().groundColor.z, 0.15f);
-    EXPECT_FLOAT_EQ(packet->GetSky().scatteringIntensity, 1.5f);
-    EXPECT_FALSE(packet->GetEnvironment().irradianceTexture.IsValid());
-    EXPECT_EQ(packet->GetFeatures().particles.items[0].systemName,
-              "owned-particle");
-    EXPECT_EQ(packet->GetFeatures().water.items.size(), 1U);
-    EXPECT_EQ(packet->GetFeatures().terrain.items.size(), 1U);
-    EXPECT_FLOAT_EQ(packet->GetSettings().renderScale, 0.75f);
-    EXPECT_EQ(packet->GetSettings().debugView, 9U);
-    EXPECT_EQ(packet->GetCaptureRequest().requestId, 77U);
-    EXPECT_EQ(packet->GetCaptureRequest().kind,
+    EXPECT_NE(primitiveState.submeshes[0].material,
+              primitiveState.submeshes[1].material);
+    EXPECT_EQ(primitiveState.layerMask, 0x55U);
+    const RenderLightSnapshot& lightState = sceneUpdate->lights[0].state;
+    EXPECT_EQ(lightState.type, RenderLightType::Point);
+    EXPECT_FLOAT_EQ(lightState.intensity, 4.0f);
+    EXPECT_TRUE(lightState.castsShadows);
+    EXPECT_FALSE(lightState.shadowResource.IsValid());
+    ASSERT_TRUE(sceneUpdate->sky.has_value());
+    const RenderSkySnapshot& skyState = sceneUpdate->sky->state;
+    EXPECT_EQ(skyState.mode, RenderSkyMode::Cubemap);
+    EXPECT_FALSE(skyState.skyTexture.IsValid());
+    EXPECT_FLOAT_EQ(skyState.intensity, 1.75f);
+    EXPECT_FLOAT_EQ(skyState.rotationRadians, 0.5f);
+    EXPECT_FLOAT_EQ(skyState.blurLevel, 2.25f);
+    EXPECT_FLOAT_EQ(skyState.sunDirection.x, 0.0f);
+    EXPECT_FLOAT_EQ(skyState.sunDirection.y, 1.0f);
+    EXPECT_FLOAT_EQ(skyState.sunDirection.z, 0.0f);
+    EXPECT_FLOAT_EQ(skyState.sunColor.x, 0.9f);
+    EXPECT_FLOAT_EQ(skyState.sunColor.y, 0.8f);
+    EXPECT_FLOAT_EQ(skyState.sunColor.z, 0.7f);
+    EXPECT_FLOAT_EQ(skyState.zenithColor.x, 0.15f);
+    EXPECT_FLOAT_EQ(skyState.zenithColor.y, 0.35f);
+    EXPECT_FLOAT_EQ(skyState.zenithColor.z, 0.75f);
+    EXPECT_FLOAT_EQ(skyState.horizonColor.x, 0.65f);
+    EXPECT_FLOAT_EQ(skyState.horizonColor.y, 0.75f);
+    EXPECT_FLOAT_EQ(skyState.horizonColor.z, 0.85f);
+    EXPECT_FLOAT_EQ(skyState.groundColor.x, 0.25f);
+    EXPECT_FLOAT_EQ(skyState.groundColor.y, 0.2f);
+    EXPECT_FLOAT_EQ(skyState.groundColor.z, 0.15f);
+    EXPECT_FLOAT_EQ(skyState.scatteringIntensity, 1.5f);
+    ASSERT_TRUE(sceneUpdate->environment.has_value());
+    EXPECT_FALSE(sceneUpdate->environment->state.irradianceTexture.IsValid());
+    EXPECT_EQ(sceneUpdate->particles[0].state.systemName, "owned-particle");
+    EXPECT_EQ(sceneUpdate->water.size(), 1U);
+    EXPECT_EQ(sceneUpdate->terrain.size(), 1U);
+    EXPECT_FLOAT_EQ(frameV5->GetSettings().renderScale, 0.75f);
+    EXPECT_EQ(frameV5->GetSettings().debugView, 9U);
+    EXPECT_EQ(frameV5->GetCaptureRequest().requestId, 77U);
+    EXPECT_EQ(frameV5->GetCaptureRequest().kind,
               RenderFrameCaptureKind::Color);
-    EXPECT_EQ(packet->GetView().viewportWidth, 1920U);
-    EXPECT_FLOAT_EQ(packet->GetView().absoluteTime, 12.5f);
-    EXPECT_FLOAT_EQ(packet->GetView().deltaTime, 1.0f / 60.0f);
+    EXPECT_EQ(frameV5->GetView().viewportWidth, 1920U);
+    EXPECT_FLOAT_EQ(frameV5->GetView().absoluteTime, 12.5f);
+    EXPECT_FLOAT_EQ(frameV5->GetView().deltaTime, 1.0f / 60.0f);
 }
 
 TEST(RenderFrameExtractionValidation, RejectsNullWorldAndMissingCamera)
@@ -534,7 +538,7 @@ TEST(RenderFrameExtractionValidation, RejectsNullWorldAndMissingCamera)
         MakeInput(1, nullptr, &fixture.subsystem);
     RenderFrameExtractionResult nullWorld = extractor.Extract(input);
     EXPECT_EQ(nullWorld.code, RenderFrameExtractionResultCode::NullWorld);
-    EXPECT_EQ(nullWorld.packet, nullptr);
+    EXPECT_EQ(nullWorld.frameV5, nullptr);
 
     World world;
     world.Initialize();
@@ -542,7 +546,7 @@ TEST(RenderFrameExtractionValidation, RejectsNullWorldAndMissingCamera)
     RenderFrameExtractionResult missingCamera = extractor.Extract(input);
     EXPECT_EQ(missingCamera.code,
               RenderFrameExtractionResultCode::MissingCamera);
-    EXPECT_EQ(missingCamera.packet, nullptr);
+    EXPECT_EQ(missingCamera.frameV5, nullptr);
     world.Shutdown();
 }
 
@@ -565,14 +569,14 @@ TEST(RenderFrameExtractionValidation, ExtractsActiveCameraComponentByHandle)
     RenderFrameExtractionResult result =
         extractor.Extract(MakeInput(1, &world, &fixture.subsystem));
     ASSERT_TRUE(result.IsComplete());
-    ASSERT_NE(result.packet, nullptr);
+    ASSERT_NE(result.frameV5, nullptr);
     EXPECT_EQ(world.GetActiveCameraHandle(), camera->GetComponentHandle());
     EXPECT_EQ(world.GetActiveCameraComponent(), camera);
-    EXPECT_FLOAT_EQ(result.packet->GetView().nearPlane, 0.5f);
-    EXPECT_FLOAT_EQ(result.packet->GetView().farPlane, 500.0f);
-    EXPECT_NEAR(result.packet->GetView().cameraPosition.x, 3.0f, 0.0001f);
-    EXPECT_NEAR(result.packet->GetView().cameraPosition.y, 4.0f, 0.0001f);
-    EXPECT_NEAR(result.packet->GetView().cameraPosition.z, 5.0f, 0.0001f);
+    EXPECT_FLOAT_EQ(result.frameV5->GetView().nearPlane, 0.5f);
+    EXPECT_FLOAT_EQ(result.frameV5->GetView().farPlane, 500.0f);
+    EXPECT_NEAR(result.frameV5->GetView().cameraPosition.x, 3.0f, 0.0001f);
+    EXPECT_NEAR(result.frameV5->GetView().cameraPosition.y, 4.0f, 0.0001f);
+    EXPECT_NEAR(result.frameV5->GetView().cameraPosition.z, 5.0f, 0.0001f);
     world.Shutdown();
 }
 
@@ -582,7 +586,7 @@ TEST(RenderFrameExtractionValidation,
     ExtractionFixture fixture("incremental");
     World world;
     ASSERT_TRUE(world.Initialize());
-    ASSERT_NE(world.CreateCamera("Main"), nullptr);
+    ASSERT_NE(CreateActiveCamera(world, "Main"), nullptr);
     SceneEntity* lightActor = CreateEntity(world, "IncrementalLight");
     ASSERT_NE(lightActor, nullptr);
     auto* light = lightActor->AddComponent<LightComponent>();
@@ -650,7 +654,7 @@ TEST(RenderFrameExtractionValidation, RejectsIncompleteProviderWithoutPacket)
     ExtractionFixture fixture("provider");
     World world;
     world.Initialize();
-    ASSERT_NE(world.CreateCamera("Main"), nullptr);
+    ASSERT_NE(CreateActiveCamera(world, "Main"), nullptr);
     SceneEntity* entity = CreateEntity(world, "Incomplete");
     ASSERT_NE(entity, nullptr);
     ASSERT_NE(entity->AddComponent<IncompleteFeatureProvider>(), nullptr);
@@ -660,7 +664,7 @@ TEST(RenderFrameExtractionValidation, RejectsIncompleteProviderWithoutPacket)
         extractor.Extract(MakeInput(2, &world, &fixture.subsystem));
     EXPECT_EQ(result.code,
               RenderFrameExtractionResultCode::FeatureExtractionFailed);
-    EXPECT_EQ(result.packet, nullptr);
+    EXPECT_EQ(result.frameV5, nullptr);
     EXPECT_FALSE(result.diagnostics.complete);
     world.Shutdown();
 }
@@ -670,7 +674,7 @@ TEST(RenderFrameExtractionValidation, EnforcesStrictCompletedSequence)
     ExtractionFixture fixture("sequence");
     World world;
     world.Initialize();
-    ASSERT_NE(world.CreateCamera("Main"), nullptr);
+    ASSERT_NE(CreateActiveCamera(world, "Main"), nullptr);
 
     RenderFrameExtractor extractor;
     ASSERT_TRUE(
@@ -680,7 +684,7 @@ TEST(RenderFrameExtractionValidation, EnforcesStrictCompletedSequence)
         extractor.Extract(MakeInput(8, &world, &fixture.subsystem));
     EXPECT_EQ(repeated.code,
               RenderFrameExtractionResultCode::NonMonotonicSequence);
-    EXPECT_EQ(repeated.packet, nullptr);
+    EXPECT_EQ(repeated.frameV5, nullptr);
     ASSERT_TRUE(
         extractor.Extract(MakeInput(9, &world, &fixture.subsystem))
             .IsComplete());
@@ -693,7 +697,7 @@ TEST(RenderFrameExtractionValidation, ValidatesSettingsAndCaptureBeforeSeal)
     ExtractionFixture fixture("controls");
     World world;
     world.Initialize();
-    ASSERT_NE(world.CreateCamera("Main"), nullptr);
+    ASSERT_NE(CreateActiveCamera(world, "Main"), nullptr);
     RenderFrameExtractor extractor;
 
     RenderFrameExtractionInput invalidSettings =
@@ -703,7 +707,7 @@ TEST(RenderFrameExtractionValidation, ValidatesSettingsAndCaptureBeforeSeal)
         extractor.Extract(invalidSettings);
     EXPECT_EQ(settingsResult.code,
               RenderFrameExtractionResultCode::InvalidSettings);
-    EXPECT_EQ(settingsResult.packet, nullptr);
+    EXPECT_EQ(settingsResult.frameV5, nullptr);
 
     RenderFrameExtractionInput invalidCapture =
         MakeInput(1, &world, &fixture.subsystem);
@@ -712,6 +716,6 @@ TEST(RenderFrameExtractionValidation, ValidatesSettingsAndCaptureBeforeSeal)
         extractor.Extract(invalidCapture);
     EXPECT_EQ(captureResult.code,
               RenderFrameExtractionResultCode::InvalidCaptureRequest);
-    EXPECT_EQ(captureResult.packet, nullptr);
+    EXPECT_EQ(captureResult.frameV5, nullptr);
     world.Shutdown();
 }

@@ -3015,7 +3015,8 @@ TEST_F(RenderHonestyValidationFixture, TerrainPlaceholderPathsExposeHonestDiagno
     EXPECT_NE(lodSource.find("Render-owned"), std::string::npos);
 }
 
-TEST_F(RenderHonestyValidationFixture, SceneRendererLegacyCollectionFallbackIsRemoved)
+TEST_F(RenderHonestyValidationFixture,
+       SceneRendererLegacyCollectionAndV4FramePathsAreRemoved)
 {
     const fs::path repoRoot = FindRepoRoot();
     ASSERT_FALSE(repoRoot.empty());
@@ -3027,6 +3028,10 @@ TEST_F(RenderHonestyValidationFixture, SceneRendererLegacyCollectionFallbackIsRe
     const std::string runtimeSource =
         ReadTextFile(repoRoot / "Render" / "Private" / "Runtime" /
                      "RenderThreadRuntime.cpp");
+    const std::string renderContractsCMake =
+        ReadTextFile(repoRoot / "RenderContracts" / "CMakeLists.txt");
+    const std::string renderExtractionCMake =
+        ReadTextFile(repoRoot / "RenderExtraction" / "CMakeLists.txt");
 
     EXPECT_EQ(std::string::npos, header.find("SetLegacyCollectionFallbackEnabled"));
     EXPECT_EQ(std::string::npos, header.find("IsLegacyCollectionFallbackEnabled"));
@@ -3034,13 +3039,20 @@ TEST_F(RenderHonestyValidationFixture, SceneRendererLegacyCollectionFallbackIsRe
     EXPECT_EQ(std::string::npos, source.find("m_renderScene.CollectFromWorld(world)"));
     EXPECT_EQ(std::string::npos, source.find("SceneRenderCollectionPath::LegacyFallback"));
     EXPECT_EQ(std::string::npos, source.find("RenderFeatureSceneBridge"));
-    EXPECT_NE(std::string::npos, source.find("m_renderScene.ApplyFramePacket(packet, registry)"));
+    EXPECT_EQ(std::string::npos, header.find("ApplyFramePacket("));
+    EXPECT_EQ(std::string::npos, source.find("ApplyFramePacket("));
     EXPECT_NE(std::string::npos,
               source.find("m_renderScene.ApplyFrameV5(frame, scene, registry)"));
     EXPECT_NE(std::string::npos,
               runtimeSource.find("m_consumer->ConsumeFrameV5("));
-    EXPECT_NE(std::string::npos,
-              runtimeSource.find("RenderSceneTransportMode::Authoritative"));
+    EXPECT_EQ(std::string::npos,
+              runtimeSource.find("BuildCompatibilityFrame"));
+    EXPECT_EQ(std::string::npos,
+              runtimeSource.find("RenderSceneTransportMode"));
+    EXPECT_EQ(std::string::npos,
+              renderContractsCMake.find("Private/RenderFramePacket.cpp"));
+    EXPECT_EQ(std::string::npos,
+              renderExtractionCMake.find("Private/RenderFramePacketBuilder.cpp"));
     EXPECT_NE(std::string::npos, source.find("m_viewData.SetupFromSnapshot("));
 }
 

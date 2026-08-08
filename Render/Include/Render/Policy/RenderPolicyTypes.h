@@ -7,7 +7,7 @@
 
 #include "Core/Types.h"
 #include "Render/GPUDriven/GPUDrivenQualification.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 #include "RHI/RHIDefinitions.h"
 #include "RHI/RHIIndirectExecution.h"
 

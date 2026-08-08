@@ -124,8 +124,8 @@ namespace RVX
         T* CreateEntity(Args&&... args)
         {
             static_assert(std::is_base_of_v<SceneEntity, T>, "T must derive from SceneEntity");
-            auto entity = std::make_shared<T>(std::forward<Args>(args)...);
-            return static_cast<T*>(AddEntity(entity));
+            auto entity = std::make_unique<T>(std::forward<Args>(args)...);
+            return static_cast<T*>(AddEntity(std::move(entity)));
         }
 
         /// Spawn a scene-owned actor using UE-style parameters.
@@ -144,8 +144,8 @@ namespace RVX
             if (params.parent && GetEntity(params.parent->GetHandle()) != params.parent)
                 return nullptr;
 
-            auto actor = std::make_shared<T>(params.name);
-            auto* spawned = static_cast<T*>(AddEntity(actor));
+            auto actor = std::make_unique<T>(params.name);
+            auto* spawned = static_cast<T*>(AddEntity(std::move(actor)));
             if (!spawned)
                 return nullptr;
 
@@ -177,7 +177,10 @@ namespace RVX
         const SceneEntity* GetEntity(SceneEntity::Handle handle) const;
 
         /// Get all entities
-        const std::unordered_map<SceneEntity::Handle, SceneEntity::Ptr>& GetEntities() const { return m_entities; }
+        const std::unordered_map<SceneEntity::Handle, SceneEntity*>& GetEntities() const
+        {
+            return m_entities;
+        }
 
         /// Get entity count
         size_t GetEntityCount() const { return m_entities.size(); }
@@ -323,8 +326,11 @@ namespace RVX
         bool m_initialized = false;
         SceneConfig m_config;
 
-        // Entity storage
-        std::unordered_map<SceneEntity::Handle, SceneEntity::Ptr> m_entities;
+        // Scene is the sole owner when this facade is attached to a Scene.
+        // Standalone SceneManager tests retain local ownership while exposing
+        // the same non-owning entity index.
+        std::unordered_map<SceneEntity::Handle, SceneEntity*> m_entities;
+        std::unordered_map<SceneEntity::Handle, SceneEntity::Ptr> m_ownedEntities;
         ActorHandlePool m_ownedActorHandles;
         ActorHandlePool* m_actorHandles = nullptr;
         Scene* m_ownerScene = nullptr;

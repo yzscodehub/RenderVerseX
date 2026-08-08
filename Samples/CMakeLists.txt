@@ -4,5 +4,8 @@
 
 add_subdirectory(Common)
 add_subdirectory(RenderVerseSamples)
-add_subdirectory(Basic)
-add_subdirectory(Showcase)
+
+if(RVX_BUILD_LEGACY_SAMPLES)
+    add_subdirectory(Basic)
+    add_subdirectory(Showcase)
+endif()

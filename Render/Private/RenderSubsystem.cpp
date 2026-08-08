@@ -191,44 +191,6 @@ namespace
                 m_uploadProcessor.ProcessUpload(std::move(request)));
         }
 
-        RenderRuntimeResult ConsumeFrame(
-            const RenderFramePacket& packet) override
-        {
-            RenderRuntimeResult result;
-            result.code = RenderRuntimeCode::Running;
-            result.frameSequence = packet.GetHeader().sequence;
-            if (m_context == nullptr || !m_context->HasSwapChain())
-            {
-                result.code = RenderRuntimeCode::SurfaceCreationFailed;
-                result.message = "Cannot consume a frame without a surface";
-                return result;
-            }
-
-            if (m_sceneRenderer == nullptr)
-            {
-                result.code = RenderRuntimeCode::OwnershipViolation;
-                result.message = "Packet renderer is unavailable";
-                return result;
-            }
-
-            const RenderFrameApplyResult applyResult =
-                m_sceneRenderer->ApplyFramePacket(packet,
-                                                  m_resourceRegistry);
-            if (!applyResult.IsApplied())
-            {
-                result.code = RenderRuntimeCode::RenderGraphValidationFailed;
-                result.message =
-                    "Immutable frame packet was rejected before recording, code=" +
-                    std::to_string(static_cast<uint32>(applyResult.code));
-                return result;
-            }
-
-            return PresentAcceptedFrame(
-                packet.GetHeader().sequence,
-                m_context->GetSurface().generation,
-                packet.GetCaptureRequest());
-        }
-
         RenderRuntimeResult ConsumeFrameV5(
             const RenderFramePacketV5& packet,
             const RenderSceneDatabase& scene) override
@@ -1155,24 +1117,9 @@ void RenderSubsystem::Configure(const RenderRuntimeConfig& config,
     m_preShutdownResult = {};
 }
 
-RenderFramePublishResult RenderSubsystem::TryPublishFrame(
-    std::unique_ptr<const RenderFramePacket> packet)
-{
-    if (m_runtime == nullptr)
-    {
-        RenderFramePublishResult result;
-        result.code = RenderFramePublishCode::NotRunning;
-        result.resultClass = ClassifyRenderFramePublishCode(result.code);
-        result.sequence = packet != nullptr ? packet->GetHeader().sequence : 0U;
-        return result;
-    }
-    return m_runtime->TryPublishFrame(std::move(packet));
-}
-
 RenderFramePublishResult RenderSubsystem::TryPublishFrameSet(
     std::unique_ptr<const RenderSceneUpdateBatch> sceneUpdate,
-    std::unique_ptr<const RenderFramePacketV5> frameV5,
-    std::unique_ptr<const RenderFramePacket> compatibilityFrame)
+    std::unique_ptr<const RenderFramePacketV5> frameV5)
 {
     if (m_runtime == nullptr)
     {
@@ -1182,8 +1129,7 @@ RenderFramePublishResult RenderSubsystem::TryPublishFrameSet(
         return result;
     }
     return m_runtime->TryPublishFrameSet(std::move(sceneUpdate),
-                                         std::move(frameV5),
-                                         std::move(compatibilityFrame));
+                                         std::move(frameV5));
 }
 
 RenderResizeResult RenderSubsystem::RequestResize(

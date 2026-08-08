@@ -2,13 +2,12 @@
 
 /**
  * @file RenderScene.h
- * @brief Render-owned transactional copy of immutable frame packets.
+ * @brief Render-owned retained state consumed from v5 frames and RenderSceneDatabase.
  */
 
 #include "Core/Math/AABB.h"
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
-#include "RenderContracts/RenderFramePacket.h"
 #include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderMaterial.h"
 #include "Render/Renderer/MeshBatch.h"
@@ -130,9 +129,6 @@ namespace RVX
         RenderScene() = default;
 
         void Clear();
-        [[nodiscard]] RenderFrameApplyResult ApplyFramePacket(
-            const RenderFramePacket& packet,
-            const RenderResourceRegistry& registry);
         /** @brief Apply v5 frame state directly against a persistent scene database. */
         [[nodiscard]] RenderFrameApplyResult ApplyFrameV5(
             const RenderFramePacketV5& frame,
@@ -162,7 +158,7 @@ namespace RVX
         {
             return m_lights;
         }
-        [[nodiscard]] const RenderFrameHeader& GetAcceptedHeader() const
+        [[nodiscard]] const RenderFrameHeaderV5& GetAcceptedHeader() const
         {
             return m_acceptedHeader;
         }
@@ -244,7 +240,7 @@ namespace RVX
 
     private:
         [[nodiscard]] RenderFrameApplyResult ApplyFrameState(
-            const RenderFrameHeader& header,
+            const RenderFrameHeaderV5& header,
             const RenderViewSnapshot& view,
             const std::vector<RenderPrimitiveSnapshot>& primitives,
             const std::vector<RenderLightSnapshot>& lights,
@@ -257,7 +253,7 @@ namespace RVX
 
         std::vector<RenderObject> m_objects;
         std::vector<RenderLight> m_lights;
-        RenderFrameHeader m_acceptedHeader{};
+        RenderFrameHeaderV5 m_acceptedHeader{};
         RenderViewSnapshot m_view{};
         RenderSkySnapshot m_sky{};
         RenderEnvironmentSnapshot m_environment{};
@@ -270,7 +266,7 @@ namespace RVX
         bool m_hasAcceptedFrame = false;
         bool m_temporalHistoryReset = true;
 
-        RenderFrameHeader m_lastRenderedHeader{};
+        RenderFrameHeaderV5 m_lastRenderedHeader{};
         RenderViewSnapshot m_lastRenderedView{};
         std::unordered_map<uint64, Mat4> m_lastRenderedObjectTransforms;
         uint64 m_surfaceCompatibilityKey = 0;

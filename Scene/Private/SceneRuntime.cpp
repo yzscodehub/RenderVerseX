@@ -1,6 +1,8 @@
 #include "Scene/SceneRuntime.h"
 
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
 #include "Core/Camera/Camera.h"
+#endif
 #include "Core/Log.h"
 #include "Scene/Components/CameraComponent.h"
 #include "Scene/SceneComponent.h"
@@ -45,12 +47,14 @@ void Scene::Shutdown()
     if (!m_initialized)
         return;
 
-    m_activeCamera = nullptr;
     m_activeCameraComponent = InvalidComponentHandle;
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
+    m_activeCamera = nullptr;
     m_legacyCameraComponents.clear();
     m_cameras.clear();
-    ClearPureActors();
+#endif
     m_sceneManager.Shutdown();
+    ClearPureActors();
     {
         std::scoped_lock lock(m_mutationMutex);
         m_pendingMutations.clear();
@@ -173,12 +177,24 @@ Actor* Scene::ResolveActor(Actor::Handle handle) const
         return nullptr;
 
     auto it = m_actors.find(handle);
-    if (it != m_actors.end() && !IsActorDestroyPending(handle))
+    if (it != m_actors.end() && !IsActorDestroyPending(handle) &&
+        !m_sceneManager.IsDestroyPending(handle))
     {
         return it->second.get();
     }
+    return nullptr;
+}
 
-    return const_cast<SceneEntity*>(m_sceneManager.GetEntity(handle));
+size_t Scene::GetPureActorCount() const
+{
+    return static_cast<size_t>(std::count_if(
+        m_actors.begin(),
+        m_actors.end(),
+        [](const auto& entry)
+        {
+            return entry.second != nullptr &&
+                   dynamic_cast<const SceneEntity*>(entry.second.get()) == nullptr;
+        }));
 }
 
 void Scene::ForEachActor(const std::function<void(Actor*)>& callback)
@@ -187,22 +203,17 @@ void Scene::ForEachActor(const std::function<void(Actor*)>& callback)
         return;
 
     std::vector<Actor::Handle> handles;
-    handles.reserve(GetActorCount());
+    handles.reserve(m_actors.size());
     for (const auto& [handle, actor] : m_actors)
     {
         if (actor)
-            handles.push_back(handle);
-    }
-    for (const auto& [handle, entity] : m_sceneManager.GetEntities())
-    {
-        if (entity)
             handles.push_back(handle);
     }
 
     for (Actor::Handle handle : handles)
     {
         Actor* actor = ResolveActor(handle);
-        if (actor && !m_sceneManager.IsDestroyPending(handle))
+        if (actor)
         {
             callback(actor);
         }
@@ -220,7 +231,6 @@ void Scene::Tick(float deltaTime)
     m_systemScheduler.Execute(SceneUpdatePhase::BeginFrame, deltaTime);
 
     UpdatePureActorLifecycles(deltaTime);
-    m_sceneManager.UpdateEntityLifecycles(deltaTime, false);
     m_systemScheduler.Execute(SceneUpdatePhase::Gameplay, deltaTime);
     TickComponentsForPhase(SceneUpdatePhase::AnimationPrePhysics, deltaTime);
     m_systemScheduler.Execute(SceneUpdatePhase::AnimationPrePhysics, deltaTime);
@@ -593,7 +603,9 @@ void Scene::UnregisterComponent(ActorComponent* component)
     if (handle == m_activeCameraComponent)
     {
         m_activeCameraComponent = InvalidComponentHandle;
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
         m_activeCamera = nullptr;
+#endif
     }
     if (dynamic_cast<SceneComponent*>(component))
         m_transformStore.Unregister(handle);
@@ -725,7 +737,8 @@ void Scene::UpdatePureActorLifecycles(float deltaTime)
     {
         auto it = m_actors.find(handle);
         if (it == m_actors.end() || !it->second || !it->second->IsActive() ||
-            IsActorDestroyPending(handle))
+            IsActorDestroyPending(handle) ||
+            m_sceneManager.IsDestroyPending(handle))
         {
             continue;
         }
@@ -735,7 +748,8 @@ void Scene::UpdatePureActorLifecycles(float deltaTime)
 
         it = m_actors.find(handle);
         if (it == m_actors.end() || !it->second || !it->second->IsActive() ||
-            IsActorDestroyPending(handle))
+            IsActorDestroyPending(handle) ||
+            m_sceneManager.IsDestroyPending(handle))
         {
             continue;
         }
@@ -767,6 +781,7 @@ void Scene::ClearPureActors()
     }
 }
 
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
 Camera* Scene::CreateCamera(const std::string& name)
 {
     auto it = m_cameras.find(name);
@@ -860,13 +875,16 @@ void Scene::SetActiveCamera(Camera* camera)
         m_activeCameraComponent = component->second;
     }
 }
+#endif
 
 bool Scene::SetActiveCamera(ComponentHandle camera)
 {
     if (!camera.IsValid())
     {
         m_activeCameraComponent = InvalidComponentHandle;
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
         m_activeCamera = nullptr;
+#endif
         return false;
     }
 
@@ -874,18 +892,23 @@ bool Scene::SetActiveCamera(ComponentHandle camera)
         return false;
 
     m_activeCameraComponent = camera;
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
     m_activeCamera = nullptr;
+#endif
     return true;
 }
 
 CameraComponent* Scene::GetActiveCameraComponent() const
 {
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
     if (m_activeCamera)
         const_cast<Scene*>(this)->SynchronizeLegacyCamera(m_activeCamera);
+#endif
     return dynamic_cast<CameraComponent*>(
         ResolveComponent(m_activeCameraComponent));
 }
 
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
 void Scene::SynchronizeLegacyCamera(Camera* camera)
 {
     if (!camera)
@@ -924,5 +947,6 @@ void Scene::SynchronizeLegacyCamera(Camera* camera)
     component->GetOwner()->SetRotation(
         glm::normalize(glm::quat_cast(world)));
 }
+#endif
 
 } // namespace RVX

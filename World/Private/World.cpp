@@ -269,6 +269,7 @@ bool World::PickScreen(const Camera& camera,
 // Camera Management
 // =============================================================================
 
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
 Camera* World::CreateCamera(const std::string& name)
 {
     return m_scene ? m_scene->CreateCamera(name) : nullptr;
@@ -290,6 +291,7 @@ void World::SetActiveCamera(Camera* camera)
     if (m_scene)
         m_scene->SetActiveCamera(camera);
 }
+#endif
 
 bool World::SetActiveCamera(ComponentHandle camera)
 {

@@ -10,7 +10,7 @@
 #include "Render/GPUDriven/GPUDrivenPolicy.h"
 #include "Render/GPUScene/GPUSceneDiagnostics.h"
 #include "Render/Policy/RenderPolicyDiagnostics.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 
 #include <array>
 #include <string>
