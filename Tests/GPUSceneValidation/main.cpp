@@ -1060,6 +1060,69 @@ TEST(GPUSceneValidation, PublicationDiffsByObjectIdAndIgnoresAcceptedObjectOrder
     EXPECT_EQ(update.GetStats().publishedDrawCount, 0U);
 }
 
+TEST(GPUSceneValidation,
+     IncrementalPublicationTouchesOnlyDirtyIdsAndStaticInputKeepsVersion)
+{
+    PublicationRegistryFixture resources;
+    const RenderResourceHandle mesh = resources.AddReadyMesh({515});
+    GPUSceneUpdate update;
+
+    constexpr uint32 objectCount = 100;
+    RenderScene initialScene;
+    for (uint32 index = 0; index < objectCount; ++index)
+    {
+        initialScene.AddObject(MakePublishedRenderObject(
+            static_cast<uint64>(index) + 1U,
+            mesh,
+            static_cast<float32>(index)));
+    }
+    const GPUScenePublicationStats initial =
+        update.Publish(initialScene, resources.registry);
+    ASSERT_EQ(initial.failureReason, GPUScenePublicationFailureReason::None);
+    ASSERT_EQ(initial.publishedObjectCount, objectCount);
+    ASSERT_EQ(initial.publishedDrawCount, objectCount);
+
+    RenderScene changedScene;
+    for (uint32 index = 0; index < objectCount; ++index)
+    {
+        const float32 position = index == 50U
+            ? 500.0F
+            : static_cast<float32>(index);
+        changedScene.AddObject(MakePublishedRenderObject(
+            static_cast<uint64>(index) + 1U, mesh, position));
+    }
+    const std::vector<uint64> changedIds = {51U};
+    const GPUScenePublicationStats changed = update.PublishIncremental(
+        changedScene, changedIds, {}, resources.registry);
+    ASSERT_EQ(changed.failureReason, GPUScenePublicationFailureReason::None);
+    EXPECT_EQ(changed.addCount, 0U);
+    EXPECT_EQ(changed.updateCount, 1U);
+    EXPECT_EQ(changed.removeCount, 0U);
+    EXPECT_EQ(changed.publishedObjectCount, objectCount);
+    EXPECT_EQ(changed.publishedDrawCount, objectCount);
+    EXPECT_GT(changed.committedVersion, initial.committedVersion);
+
+    const GPUSceneChangeSet delta = update.GetLastChangeSetForUpload();
+    ASSERT_EQ(delta.committedVersion, changed.committedVersion);
+    ASSERT_EQ(delta.primitives.dirtyRanges.size(), 1U);
+    EXPECT_EQ(delta.primitives.dirtyRanges.front().rowCount, 1U);
+    ASSERT_EQ(delta.bounds.dirtyRanges.size(), 1U);
+    EXPECT_EQ(delta.bounds.dirtyRanges.front().rowCount, 1U);
+    ASSERT_EQ(delta.transforms.dirtyRanges.size(), 1U);
+    EXPECT_EQ(delta.transforms.dirtyRanges.front().rowCount, 1U);
+    ASSERT_EQ(delta.draws.dirtyRanges.size(), 1U);
+    EXPECT_EQ(delta.draws.dirtyRanges.front().rowCount, 1U);
+
+    const GPUScenePublicationStats noOp = update.PublishIncremental(
+        changedScene, {}, {}, resources.registry);
+    EXPECT_EQ(noOp.failureReason, GPUScenePublicationFailureReason::None);
+    EXPECT_EQ(noOp.addCount, 0U);
+    EXPECT_EQ(noOp.updateCount, 0U);
+    EXPECT_EQ(noOp.removeCount, 0U);
+    EXPECT_EQ(noOp.committedVersion, changed.committedVersion);
+    EXPECT_EQ(update.GetLastChangeSetForUpload(), delta);
+}
+
 TEST(GPUSceneValidation, PublishedReceivesShadowPrimitiveFlagSurvivesCommitMirror)
 {
     PublicationRegistryFixture resources;

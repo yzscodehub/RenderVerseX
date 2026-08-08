@@ -1245,23 +1245,69 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
         return result;
     }
 
-    // The RenderScene is authoritative.  A failed shadow publication only
-    // records diagnostics and leaves direct/Tier 1 execution untouched.
+    // RenderScene is authoritative. A failed GPUScene publication records
+    // diagnostics and leaves the previously committed resident generation intact.
     if (m_gpuSceneUpdate)
     {
         try
         {
-            static_cast<void>(m_gpuSceneUpdate->Publish(m_renderScene, registry));
-            SynchronizeGPUSceneUploader();
+            const uint64 previousCommittedVersion =
+                m_gpuSceneUpdate->GetStats().committedVersion;
+            bool publicationAttempted = false;
+            GPUScenePublicationStats publication;
+            if (m_forceFullGPUScenePublication ||
+                m_renderScene.IsFullGPUSceneMutation())
+            {
+                publication = m_gpuSceneUpdate->Publish(
+                    m_renderScene, registry);
+                publicationAttempted = true;
+            }
+            else if (!m_renderScene.GetGPUSceneChangedObjectIds().empty() ||
+                     !m_renderScene.GetGPUSceneRemovedObjectIds().empty())
+            {
+                publication = m_gpuSceneUpdate->PublishIncremental(
+                    m_renderScene,
+                    m_renderScene.GetGPUSceneChangedObjectIds(),
+                    m_renderScene.GetGPUSceneRemovedObjectIds(),
+                    registry);
+                publicationAttempted = true;
+            }
+            else if (m_gpuSceneUpdate->GetStats().committedSourceSequence !=
+                     m_renderScene.GetAcceptedHeader().sequence)
+            {
+                // Persistent scene content is unchanged, but execution policy
+                // still needs an exact accepted-frame identity. The empty
+                // incremental transaction advances only that identity: the
+                // database version and GPU upload ranges remain unchanged.
+                publication = m_gpuSceneUpdate->PublishIncremental(
+                    m_renderScene, {}, {}, registry);
+                publicationAttempted = true;
+            }
+            if (publicationAttempted)
+            {
+                if (publication.committedVersion != previousCommittedVersion)
+                    SynchronizeGPUSceneUploader();
+                m_forceFullGPUScenePublication =
+                    publication.failureReason ==
+                        GPUScenePublicationFailureReason::AllocationFailed ||
+                    publication.failureReason ==
+                        GPUScenePublicationFailureReason::DatabaseCommitFailed ||
+                    publication.failureReason ==
+                        GPUScenePublicationFailureReason::UnexpectedFailure;
+            }
+            m_lastGPUSceneResourceContentRevision =
+                registry.GetContentRevision();
         }
         catch (const std::bad_alloc&)
         {
+            m_forceFullGPUScenePublication = true;
             m_gpuSceneUpdate->RecordFailure(
                 m_renderScene.GetAcceptedHeader().sequence,
                 GPUScenePublicationFailureReason::AllocationFailed);
         }
         catch (...)
         {
+            m_forceFullGPUScenePublication = true;
             m_gpuSceneUpdate->RecordUnexpectedFailure(
                 m_renderScene.GetAcceptedHeader().sequence);
         }
@@ -1462,17 +1508,18 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     {
         return result;
     }
-    if (m_gpuSceneUpdate && m_renderResourceRegistry)
+    if (m_gpuSceneUpdate && m_renderResourceRegistry &&
+        m_renderResourceRegistry->GetContentRevision() !=
+            m_lastGPUSceneResourceContentRevision)
     {
         // Exact-generation revalidation prevents an evicted/reloaded resource
-        // from ever making an old accepted shadow row appear current.  The
-        // mirror remains diagnostics-only in Task 11B and cannot alter this
-        // frame's authoritative execution result.
+        // from ever making an old accepted resident row appear current.
         try
         {
             static_cast<void>(
                 m_gpuSceneUpdate->Revalidate(*m_renderResourceRegistry));
-            SynchronizeGPUSceneUploader();
+            m_lastGPUSceneResourceContentRevision =
+                m_renderResourceRegistry->GetContentRevision();
         }
         catch (const std::bad_alloc&)
         {
@@ -1884,12 +1931,14 @@ void SceneRenderer::ReclaimGPUSceneRetiredRows() noexcept
     }
 }
 
-void SceneRenderer::ClearGPUSceneShadow()
+void SceneRenderer::ClearGPUScene()
 {
     if (m_gpuSceneUpdate)
     {
         m_gpuSceneUpdate->Clear();
         SynchronizeGPUSceneUploader();
+        m_lastGPUSceneResourceContentRevision = 0;
+        m_forceFullGPUScenePublication = false;
     }
 }
 
@@ -5377,8 +5426,8 @@ void SceneRenderer::BuildRenderGraph()
             : PipelineCache::GetEnvironmentIBLFallbackReasonName(
                   environmentBinding.fallbackReason);
 
-    // Record the private CPU-shadow upload before a future Task 11D consumer
-    // could import the buffers. It does not bind or schedule an execution path.
+    // Record pending GPUScene row uploads before execution passes import the
+    // exact resident version. Publication itself does not select a render tier.
     if (m_gpuSceneUploader)
     {
         m_gpuSceneUploader->BuildRenderGraph(

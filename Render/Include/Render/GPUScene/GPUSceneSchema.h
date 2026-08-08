@@ -7,8 +7,8 @@
  * This header is intentionally limited to fixed-width scalar values and typed
  * scene-table references. A reference slot indexes only its corresponding CPU
  * scene table; it never represents an object id, descriptor, GPU virtual
- * address, or backend object. Task 11B defines a persistent CPU shadow only:
- * it does not establish GPU residency, upload any row, or change rendering.
+ * address, or backend object. Persistent CPU tables use this schema as the
+ * versioned source for backend-neutral GPU residency uploads.
  */
 
 #include "Core/Types.h"

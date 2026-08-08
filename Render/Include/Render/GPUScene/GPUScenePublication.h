@@ -2,7 +2,7 @@
 
 /**
  * @file GPUScenePublication.h
- * @brief Read-only status of the non-executable GPU-scene CPU shadow.
+ * @brief Read-only status of persistent GPUScene CPU publication.
  */
 
 #include "Core/Types.h"
@@ -11,11 +11,10 @@
 namespace RVX
 {
     /**
-     * @brief Value-only diagnostics for the most recent shadow publication attempt.
+     * @brief Value-only diagnostics for the most recent publication attempt.
      *
-     * A successful full mirror is still non-executable in Task 11B.  The
-     * counters describe accepted RenderScene data and its independently
-     * committed CPU shadow only; they expose neither RHI resources nor the
+     * The counters describe accepted RenderScene data and its independently
+     * committed CPU publication; they expose neither RHI resources nor the
      * private GPUSceneDatabase.
      */
     struct GPUScenePublicationStats
@@ -24,9 +23,9 @@ namespace RVX
         bool attempted = false;
         /** @brief Sequence observed for this attempted publication. */
         uint64 sourceSequence = 0;
-        /** @brief Actual persistent CPU-shadow version, never a candidate version. */
+        /** @brief Actual persistent CPU publication version, never a candidate. */
         uint64 committedVersion = 0;
-        /** @brief Source sequence that produced the currently committed shadow. */
+        /** @brief Source sequence represented by the current publication. */
         uint64 committedSourceSequence = 0;
         /** @brief All accepted RenderScene objects/draws examined by this attempt. */
         uint32 attemptedObjectCount = 0;
@@ -57,8 +56,8 @@ namespace RVX
     /**
      * @brief Value-only diagnostics for the renderer-private GPU-scene uploader.
      *
-     * Task 11C still does not bind these buffers or alter rendering policy. The
-     * counters therefore describe upload planning and lifetime only.
+     * These counters describe resident upload planning and lifetime; render
+     * policy consumes readiness contracts rather than the diagnostic values.
      */
     struct GPUSceneUploadDiagnostics
     {

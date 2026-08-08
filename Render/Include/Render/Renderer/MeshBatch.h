@@ -63,6 +63,8 @@ namespace RVX
         MeshUploadSubmesh geometry;
         RenderMaterialMode materialMode = RenderMaterialMode::Opaque;
         RenderBatchFlags flags = RenderBatchFlags::None;
+        /** Revision of the complete retained object state that produced this batch. */
+        uint64 objectRevision = 0;
     };
 
     struct MeshBatchSourceSubmesh
@@ -84,6 +86,7 @@ namespace RVX
         Vec3 boundsMax{0.0f};
         RenderBatchFlags flags = RenderBatchFlags::None;
         std::vector<MeshBatchSourceSubmesh> submeshes;
+        uint64 objectRevision = 0;
     };
 
     enum class MeshBatchBuildCode : uint8

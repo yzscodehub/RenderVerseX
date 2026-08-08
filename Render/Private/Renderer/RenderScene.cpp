@@ -48,6 +48,40 @@ namespace
         handles.push_back(handle);
     }
 
+    void AddWatchedResourceClosure(
+        std::unordered_map<RenderResourceHandle,
+                           uint64,
+                           RenderResourceHandleHash>& watched,
+        RenderResourceHandle handle,
+        const RenderResourceRegistry& registry)
+    {
+        if (!handle.IsValid() || watched.contains(handle))
+            return;
+
+        watched.emplace(handle, registry.GetContentRevision(handle));
+        const std::vector<RenderResourceHandle>* dependencies =
+            registry.GetDependencies(handle);
+        if (dependencies == nullptr)
+            return;
+        for (RenderResourceHandle dependency : *dependencies)
+            AddWatchedResourceClosure(watched, dependency, registry);
+    }
+
+    bool AreWatchedResourcesCurrent(
+        const std::unordered_map<RenderResourceHandle,
+                                 uint64,
+                                 RenderResourceHandleHash>& watched,
+        const RenderResourceRegistry& registry)
+    {
+        return std::all_of(
+            watched.begin(),
+            watched.end(),
+            [&registry](const auto& entry)
+            {
+                return registry.GetContentRevision(entry.first) == entry.second;
+            });
+    }
+
     RenderResourceHandle SelectOptional(
         RenderResourceHandle preferred,
         RenderResourceHandle fallback,
@@ -99,6 +133,19 @@ namespace
             });
     }
 
+    bool MatricesEqual(const Mat4& left, const Mat4& right) noexcept
+    {
+        for (uint32 column = 0; column < 4; ++column)
+        {
+            for (uint32 row = 0; row < 4; ++row)
+            {
+                if (left[column][row] != right[column][row])
+                    return false;
+            }
+        }
+        return true;
+    }
+
     template<typename Map>
     std::vector<typename Map::mapped_type> CopySortedSceneValues(
         const Map& values)
@@ -125,12 +172,254 @@ namespace
         }
         return result;
     }
+
+    bool BuildRetainedObject(
+        const RenderPrimitiveSnapshot& primitive,
+        PrimitiveDataIndex primitiveData,
+        uint64 objectRevision,
+        bool resetHistory,
+        const std::unordered_map<uint64, Mat4>& lastRenderedTransforms,
+        const RenderResourceRegistry& registry,
+        RenderFrameApplyResult& result,
+        RenderObject& object,
+        std::unordered_map<RenderResourceHandle,
+                           uint64,
+                           RenderResourceHandleHash>& watchedResources)
+    {
+        AddWatchedResourceClosure(watchedResources, primitive.mesh, registry);
+        AddWatchedResourceClosure(watchedResources,
+                                  primitive.fallbackMesh,
+                                  registry);
+        AddWatchedResourceClosure(watchedResources,
+                                  primitive.material,
+                                  registry);
+        AddWatchedResourceClosure(watchedResources,
+                                  primitive.fallbackMaterial,
+                                  registry);
+        for (const RenderSubmeshMaterialBinding& binding : primitive.submeshes)
+            AddWatchedResourceClosure(watchedResources, binding.material, registry);
+
+        const RenderResourceStatus meshStatus = registry.QueryStatus(primitive.mesh);
+        if (primitive.objectId == 0 || !primitive.mesh.IsValid() ||
+            meshStatus.code != RenderResourceStatusCode::Current)
+        {
+            result.code = RenderFrameApplyCode::StaleRequiredHandle;
+            return false;
+        }
+
+        object = {};
+        object.entityId = primitive.objectId;
+        object.objectRevision = objectRevision;
+        object.worldMatrix = primitive.worldTransform;
+        object.previousWorldMatrix = primitive.worldTransform;
+        if (!resetHistory)
+        {
+            const auto previous = lastRenderedTransforms.find(primitive.objectId);
+            if (previous != lastRenderedTransforms.end())
+            {
+                object.previousWorldMatrix = previous->second;
+                object.previousWorldMatrixValid = 1;
+            }
+        }
+        object.normalMatrix = glm::inverseTranspose(Mat4(Mat3(object.worldMatrix)));
+        object.bounds = AABB(primitive.boundsMin, primitive.boundsMax);
+        object.fallbackMesh = primitive.fallbackMesh;
+        object.fallbackMaterial = primitive.fallbackMaterial;
+        object.mesh = SelectOptional(primitive.mesh,
+                                     primitive.fallbackMesh,
+                                     registry,
+                                     result.pendingFallbackCount);
+        object.skinningMatrices = primitive.skinMatrices;
+        object.sortKey = primitive.sortKey;
+        object.layerMask = primitive.layerMask;
+        object.flags = primitive.flags;
+        object.visible = (primitive.flags & PRIMITIVE_VISIBLE) != 0;
+        object.castsShadow = (primitive.flags & PRIMITIVE_CASTS_SHADOW) != 0;
+        object.receivesShadow =
+            (primitive.flags & PRIMITIVE_RECEIVES_SHADOW) != 0;
+        object.drawable = object.mesh.IsValid();
+
+        const bool usingPreferredMesh = object.mesh == primitive.mesh;
+        const RenderMeshResourceData* meshData = object.mesh.IsValid()
+            ? registry.ResolveMesh(object.mesh)
+            : nullptr;
+        object.meshBatchesAuthoritative = meshData != nullptr;
+        const bool hasExplicitBindings = !primitive.submeshes.empty();
+        if (usingPreferredMesh && hasExplicitBindings && meshData == nullptr)
+        {
+            result.code = RenderFrameApplyCode::InvalidPacket;
+            return false;
+        }
+
+        std::vector<MeshUploadSubmesh> actualSubmeshes;
+        if (meshData != nullptr)
+        {
+            actualSubmeshes = meshData->submeshes;
+            if (actualSubmeshes.empty() && meshData->createInfo.indexCount != 0)
+            {
+                if (meshData->createInfo.indexCount >
+                    std::numeric_limits<uint32>::max())
+                {
+                    result.code = RenderFrameApplyCode::InvalidPacket;
+                    return false;
+                }
+                actualSubmeshes.push_back(MeshUploadSubmesh{
+                    0,
+                    static_cast<uint32>(meshData->createInfo.indexCount),
+                    0,
+                    meshData->createInfo.topology});
+            }
+        }
+
+        if (usingPreferredMesh && hasExplicitBindings)
+        {
+            if (primitive.submeshes.size() != actualSubmeshes.size())
+            {
+                result.code = RenderFrameApplyCode::InvalidPacket;
+                return false;
+            }
+            for (size_t index = 0; index < primitive.submeshes.size(); ++index)
+            {
+                const RenderSubmeshMaterialBinding& binding =
+                    primitive.submeshes[index];
+                if (binding.submeshIndex != index ||
+                    !IsValidMaterialMode(binding.materialMode))
+                {
+                    result.code = RenderFrameApplyCode::InvalidPacket;
+                    return false;
+                }
+            }
+        }
+
+        const RenderMaterialMode legacyMode = GetLegacyMaterialMode(primitive);
+        std::vector<RenderResourceHandle> selectedMaterials;
+        std::vector<RenderMaterialMode> selectedModes;
+        selectedMaterials.reserve(actualSubmeshes.size());
+        selectedModes.reserve(actualSubmeshes.size());
+        if (meshData != nullptr && usingPreferredMesh && hasExplicitBindings)
+        {
+            for (const RenderSubmeshMaterialBinding& binding : primitive.submeshes)
+            {
+                selectedMaterials.push_back(SelectOptional(
+                    binding.material,
+                    primitive.fallbackMaterial,
+                    registry,
+                    result.pendingFallbackCount));
+                selectedModes.push_back(binding.materialMode);
+            }
+        }
+        else
+        {
+            const RenderResourceHandle legacyMaterial = SelectOptional(
+                primitive.material,
+                primitive.fallbackMaterial,
+                registry,
+                result.pendingFallbackCount);
+            if (actualSubmeshes.empty())
+            {
+                object.material = legacyMaterial;
+            }
+            else
+            {
+                selectedMaterials.assign(actualSubmeshes.size(), legacyMaterial);
+                selectedModes.assign(actualSubmeshes.size(), legacyMode);
+            }
+        }
+
+        if (!selectedMaterials.empty())
+        {
+            object.material = selectedMaterials.front();
+            object.materialModes = selectedModes;
+        }
+
+        if (meshData != nullptr && !actualSubmeshes.empty())
+        {
+            MeshBatchBuildInput batchInput;
+            batchInput.objectId = object.entityId;
+            batchInput.objectRevision = object.objectRevision;
+            batchInput.mesh = object.mesh;
+            batchInput.primitiveData = primitiveData;
+            batchInput.indexType = meshData->createInfo.indexType;
+            batchInput.boundsMin = primitive.boundsMin;
+            batchInput.boundsMax = primitive.boundsMax;
+            if (IsSkinned(primitive, *meshData))
+                batchInput.flags |= RenderBatchFlags::Skinned;
+            if (object.castsShadow)
+                batchInput.flags |= RenderBatchFlags::CastsShadow;
+            if (object.receivesShadow)
+                batchInput.flags |= RenderBatchFlags::ReceivesShadow;
+            batchInput.submeshes.reserve(actualSubmeshes.size());
+            for (size_t index = 0; index < actualSubmeshes.size(); ++index)
+            {
+                batchInput.submeshes.push_back(MeshBatchSourceSubmesh{
+                    static_cast<uint32>(index),
+                    actualSubmeshes[index],
+                    selectedMaterials[index],
+                    selectedModes[index]});
+            }
+            MeshBatchBuildResult batchResult = BuildMeshBatches(batchInput);
+            if (!batchResult.IsSuccess())
+            {
+                result.code = RenderFrameApplyCode::InvalidPacket;
+                return false;
+            }
+            object.meshBatches = std::move(batchResult.batches);
+        }
+        if (!object.drawable)
+            ++result.skippedDrawCount;
+        AddUniqueHandle(object.referencedResources, object.mesh);
+        for (const MeshBatch& batch : object.meshBatches)
+            AddUniqueHandle(object.referencedResources, batch.material);
+        AddUniqueHandle(object.referencedResources, object.material);
+        return true;
+    }
+
+    bool BuildRetainedLight(
+        const RenderLightSnapshot& snapshot,
+        const RenderResourceRegistry& registry,
+        RenderFrameApplyResult& result,
+        RenderLight& light,
+        std::unordered_map<RenderResourceHandle,
+                           uint64,
+                           RenderResourceHandleHash>& watchedResources)
+    {
+        AddWatchedResourceClosure(watchedResources,
+                                  snapshot.shadowResource,
+                                  registry);
+        if (snapshot.lightId == 0 ||
+            (snapshot.shadowResource.IsValid() &&
+             !registry.HasExactEntry(snapshot.shadowResource)))
+        {
+            result.code = RenderFrameApplyCode::InvalidPacket;
+            return false;
+        }
+        light = {};
+        light.lightId = snapshot.lightId;
+        light.type = ToRenderLightType(snapshot.type);
+        light.position = snapshot.position;
+        light.direction = snapshot.direction;
+        light.color = snapshot.color;
+        light.intensity = snapshot.intensity;
+        light.range = snapshot.range;
+        light.innerConeAngle = snapshot.innerConeRadians;
+        light.outerConeAngle = snapshot.outerConeRadians;
+        light.castsShadow = snapshot.castsShadows;
+        light.shadowResource = snapshot.shadowResource.IsValid() &&
+                                       registry.IsGPUReadyExact(
+                                           snapshot.shadowResource)
+            ? snapshot.shadowResource
+            : RenderResourceHandle{};
+        AddUniqueHandle(light.referencedResources, light.shadowResource);
+        return true;
+    }
 } // namespace
 
 void RenderScene::Clear()
 {
     m_objects.clear();
     m_lights.clear();
+    m_objectIndices.clear();
+    m_lightIndices.clear();
     m_acceptedHeader = {};
     m_view = {};
     m_sky = {};
@@ -139,9 +428,28 @@ void RenderScene::Clear()
     m_captureRequest = {};
     m_features.Clear();
     m_referencedResources.clear();
+    m_referenceCounts.clear();
+    m_referenceIndices.clear();
+    m_skyReferences.clear();
+    m_environmentReferences.clear();
+    m_watchedResourceRevisions.clear();
     m_drawPacketCache.Clear();
+    m_retainedStats = {};
+    m_appliedSceneRevision = 0;
+    m_sourceSceneDatabaseId = 0;
+    m_observedResourceContentRevision = 0;
+    m_drawCount = 0;
+    m_gpuSceneChangedObjectIds.clear();
+    m_gpuSceneRemovedObjectIds.clear();
+    m_pendingRenderedObjectIds.clear();
+    m_pendingRemovedObjectIds.clear();
+    m_temporalSettleObjectIds.clear();
+    m_fullGPUSceneMutation = false;
+    m_fullRenderedObjectRefresh = false;
     m_hasAcceptedFrame = false;
     m_temporalHistoryReset = true;
+    m_requiresTemporalSettle = false;
+    m_acceptedSceneMutated = false;
     m_lastRenderedHeader = {};
     m_lastRenderedView = {};
     m_lastRenderedObjectTransforms.clear();
@@ -169,6 +477,113 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         result.code = RenderFrameApplyCode::InvalidPacket;
         return result;
     }
+    if (frameHeader.sequence == 0 ||
+        (m_hasAcceptedFrame &&
+         frameHeader.sequence <= m_acceptedHeader.sequence))
+    {
+        result.code = RenderFrameApplyCode::OutOfOrder;
+        return result;
+    }
+
+    const bool resetHistory =
+        m_lastRenderedHeader.sequence == 0 ||
+        frameHeader.worldRevision != m_lastRenderedHeader.worldRevision ||
+        frameHeader.temporalEpoch != m_lastRenderedHeader.temporalEpoch ||
+        frameHeader.explicitDiscontinuity ||
+        m_surfaceCompatibilityKey != m_lastRenderedSurfaceCompatibilityKey;
+    const uint64 resourceContentRevision = registry.GetContentRevision();
+    bool watchedResourcesCurrent = true;
+    if (resourceContentRevision != m_observedResourceContentRevision)
+    {
+        watchedResourcesCurrent = AreWatchedResourcesCurrent(
+            m_watchedResourceRevisions, registry);
+    }
+    const bool sameSceneDatabase =
+        scene.GetInstanceId() == m_sourceSceneDatabaseId;
+    if (m_hasAcceptedFrame && sameSceneDatabase && !resetHistory &&
+        m_requiresTemporalSettle &&
+        !m_temporalSettleObjectIds.empty() &&
+        scene.GetRevision() == m_appliedSceneRevision &&
+        watchedResourcesCurrent)
+    {
+        m_gpuSceneChangedObjectIds.clear();
+        m_gpuSceneRemovedObjectIds.clear();
+        m_fullGPUSceneMutation = false;
+        for (uint64 objectId : m_temporalSettleObjectIds)
+        {
+            const auto found = m_objectIndices.find(objectId);
+            if (found == m_objectIndices.end())
+                continue;
+            RenderObject& object = m_objects[found->second];
+            object.previousWorldMatrix = object.worldMatrix;
+            object.previousWorldMatrixValid = 1;
+            m_gpuSceneChangedObjectIds.push_back(objectId);
+        }
+        m_temporalSettleObjectIds.clear();
+        m_requiresTemporalSettle = false;
+        m_acceptedHeader = frameHeader;
+        m_view = frame.GetView();
+        m_settings = frame.GetSettings();
+        m_captureRequest = frame.GetCaptureRequest();
+        m_temporalHistoryReset = false;
+        m_acceptedSceneMutated = !m_gpuSceneChangedObjectIds.empty();
+        m_observedResourceContentRevision = resourceContentRevision;
+        m_retainedStats.lastRebuiltObjectCount = 0;
+        m_retainedStats.lastRemovedObjectCount = 0;
+
+        result.code = RenderFrameApplyCode::Applied;
+        result.temporalHistoryReset = false;
+        result.sceneMutated = m_acceptedSceneMutated;
+        if (m_lastRenderedHeader.sequence != 0 &&
+            frameHeader.sequence > m_lastRenderedHeader.sequence + 1)
+        {
+            result.sequenceGap =
+                frameHeader.sequence - m_lastRenderedHeader.sequence - 1;
+        }
+        return result;
+    }
+    if (m_hasAcceptedFrame && sameSceneDatabase && !resetHistory &&
+        !m_requiresTemporalSettle &&
+        scene.GetRevision() == m_appliedSceneRevision &&
+        watchedResourcesCurrent)
+    {
+        m_acceptedHeader = frameHeader;
+        m_view = frame.GetView();
+        m_settings = frame.GetSettings();
+        m_captureRequest = frame.GetCaptureRequest();
+        m_temporalHistoryReset = false;
+        m_acceptedSceneMutated = false;
+        m_fullGPUSceneMutation = false;
+        m_gpuSceneChangedObjectIds.clear();
+        m_gpuSceneRemovedObjectIds.clear();
+        m_observedResourceContentRevision = resourceContentRevision;
+        ++m_retainedStats.staticReuseCount;
+        m_retainedStats.lastRebuiltObjectCount = 0;
+        m_retainedStats.lastRemovedObjectCount = 0;
+
+        result.code = RenderFrameApplyCode::Applied;
+        result.temporalHistoryReset = false;
+        result.sceneMutated = false;
+        if (m_lastRenderedHeader.sequence != 0 &&
+            frameHeader.sequence > m_lastRenderedHeader.sequence + 1)
+        {
+            result.sequenceGap =
+                frameHeader.sequence - m_lastRenderedHeader.sequence - 1;
+        }
+        return result;
+    }
+    if (m_hasAcceptedFrame && sameSceneDatabase && !resetHistory &&
+        !m_requiresTemporalSettle &&
+        scene.GetRevision() != m_appliedSceneRevision &&
+        watchedResourcesCurrent)
+    {
+        const RenderSceneDatabaseChanges changes =
+            scene.CollectChangesSince(m_appliedSceneRevision);
+        if (changes.available && !changes.fullReset)
+        {
+            return ApplyIncrementalFrameState(frame, scene, changes, registry);
+        }
+    }
 
     std::vector<RenderPrimitiveSnapshot> primitives =
         CopySortedSceneValues(scene.GetPrimitives());
@@ -194,6 +609,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         frame.GetSettings(),
         frame.GetCaptureRequest(),
         features,
+        scene,
         registry);
 }
 
@@ -207,6 +623,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     const RenderFrameSettings& settings,
     const RenderFrameCaptureRequest& captureRequest,
     const RenderFeatureSnapshot& features,
+    const RenderSceneDatabase& retainedScene,
     const RenderResourceRegistry& registry)
 {
     RenderFrameApplyResult result;
@@ -221,7 +638,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
         return result;
     }
 
-    // Object identity is the retained-scene and GPU-scene-shadow key.  Reject
+    // Object identity is the retained-scene and GPUScene publication key. Reject
     // a duplicate before constructing candidates or touching the publication
     // cache so the prior accepted scene remains wholly intact.
     std::unordered_set<uint64> packetObjectIds;
@@ -239,6 +656,12 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     std::vector<RenderObject> candidateObjects;
     std::vector<RenderLight> candidateLights;
     std::vector<RenderResourceHandle> candidateReferences;
+    std::vector<RenderResourceHandle> candidateSkyReferences;
+    std::vector<RenderResourceHandle> candidateEnvironmentReferences;
+    std::unordered_map<RenderResourceHandle,
+                       uint64,
+                       RenderResourceHandleHash>
+        candidateWatchedResources;
     candidateObjects.reserve(primitives.size());
     candidateLights.reserve(lights.size());
 
@@ -252,6 +675,24 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
 
     for (const RenderPrimitiveSnapshot& primitive : primitives)
     {
+        AddWatchedResourceClosure(candidateWatchedResources,
+                                  primitive.mesh,
+                                  registry);
+        AddWatchedResourceClosure(candidateWatchedResources,
+                                  primitive.fallbackMesh,
+                                  registry);
+        AddWatchedResourceClosure(candidateWatchedResources,
+                                  primitive.material,
+                                  registry);
+        AddWatchedResourceClosure(candidateWatchedResources,
+                                  primitive.fallbackMaterial,
+                                  registry);
+        for (const RenderSubmeshMaterialBinding& binding : primitive.submeshes)
+        {
+            AddWatchedResourceClosure(candidateWatchedResources,
+                                      binding.material,
+                                      registry);
+        }
         const RenderResourceStatus meshStatus =
             registry.QueryStatus(primitive.mesh);
         if (primitive.objectId == 0 || !primitive.mesh.IsValid() ||
@@ -263,6 +704,8 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
 
         RenderObject object;
         object.entityId = primitive.objectId;
+        object.objectRevision = retainedScene.GetPrimitiveRevision(
+            primitive.objectId);
         object.worldMatrix = primitive.worldTransform;
         object.previousWorldMatrix = primitive.worldTransform;
         if (!resetHistory)
@@ -395,6 +838,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
         {
             MeshBatchBuildInput batchInput;
             batchInput.objectId = object.entityId;
+            batchInput.objectRevision = object.objectRevision;
             batchInput.mesh = object.mesh;
             batchInput.primitiveData =
                 static_cast<PrimitiveDataIndex>(candidateObjects.size());
@@ -434,17 +878,22 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
         {
             ++result.skippedDrawCount;
         }
-        AddUniqueHandle(candidateReferences, object.mesh);
+        AddUniqueHandle(object.referencedResources, object.mesh);
         for (const MeshBatch& batch : object.meshBatches)
         {
-            AddUniqueHandle(candidateReferences, batch.material);
+            AddUniqueHandle(object.referencedResources, batch.material);
         }
-        AddUniqueHandle(candidateReferences, object.material);
+        AddUniqueHandle(object.referencedResources, object.material);
+        for (RenderResourceHandle reference : object.referencedResources)
+            AddUniqueHandle(candidateReferences, reference);
         candidateObjects.push_back(std::move(object));
     }
 
     for (const RenderLightSnapshot& snapshot : lights)
     {
+        AddWatchedResourceClosure(candidateWatchedResources,
+                                  snapshot.shadowResource,
+                                  registry);
         if (snapshot.lightId == 0 ||
             (snapshot.shadowResource.IsValid() &&
              !registry.HasExactEntry(snapshot.shadowResource)))
@@ -469,18 +918,32 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
                 ? snapshot.shadowResource
                 : RenderResourceHandle{};
         AddUniqueHandle(candidateReferences, light.shadowResource);
+        AddUniqueHandle(light.referencedResources, light.shadowResource);
         candidateLights.push_back(std::move(light));
     }
 
     RenderSkySnapshot sky = inputSky;
+    AddWatchedResourceClosure(candidateWatchedResources,
+                              sky.skyTexture,
+                              registry);
     if (sky.skyTexture.IsValid() &&
         !registry.IsGPUReadyExact(sky.skyTexture))
     {
         sky.skyTexture = {};
     }
     AddUniqueHandle(candidateReferences, sky.skyTexture);
+    AddUniqueHandle(candidateSkyReferences, sky.skyTexture);
 
     RenderEnvironmentSnapshot environment = inputEnvironment;
+    AddWatchedResourceClosure(candidateWatchedResources,
+                              environment.irradianceTexture,
+                              registry);
+    AddWatchedResourceClosure(candidateWatchedResources,
+                              environment.prefilteredTexture,
+                              registry);
+    AddWatchedResourceClosure(candidateWatchedResources,
+                              environment.brdfLutTexture,
+                              registry);
     const bool environmentReady =
         environment.irradianceTexture.IsValid() &&
         environment.prefilteredTexture.IsValid() &&
@@ -497,6 +960,12 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     AddUniqueHandle(candidateReferences, environment.irradianceTexture);
     AddUniqueHandle(candidateReferences, environment.prefilteredTexture);
     AddUniqueHandle(candidateReferences, environment.brdfLutTexture);
+    AddUniqueHandle(candidateEnvironmentReferences,
+                    environment.irradianceTexture);
+    AddUniqueHandle(candidateEnvironmentReferences,
+                    environment.prefilteredTexture);
+    AddUniqueHandle(candidateEnvironmentReferences,
+                    environment.brdfLutTexture);
 
     // Every validation path above must succeed before the retained cache changes.
     // The cache owns only static packet templates; the draw-list path rebinds
@@ -520,6 +989,10 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     m_objects.swap(candidateObjects);
     m_lights.swap(candidateLights);
     m_referencedResources.swap(candidateReferences);
+    m_skyReferences.swap(candidateSkyReferences);
+    m_environmentReferences.swap(candidateEnvironmentReferences);
+    m_watchedResourceRevisions.swap(candidateWatchedResources);
+    RebuildRetainedIndicesAndReferences();
     m_acceptedHeader = header;
     m_view = view;
     m_sky = std::move(sky);
@@ -529,6 +1002,31 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     m_features = features;
     m_hasAcceptedFrame = true;
     m_temporalHistoryReset = resetHistory;
+    m_requiresTemporalSettle = std::any_of(
+        m_objects.begin(),
+        m_objects.end(),
+        [](const RenderObject& object)
+        {
+            return object.previousWorldMatrixValid == 0 ||
+                   !MatricesEqual(object.previousWorldMatrix,
+                                  object.worldMatrix);
+        });
+    m_acceptedSceneMutated = true;
+    m_fullGPUSceneMutation = true;
+    m_gpuSceneChangedObjectIds.clear();
+    m_gpuSceneRemovedObjectIds.clear();
+    m_temporalSettleObjectIds.clear();
+    m_fullRenderedObjectRefresh = true;
+    m_pendingRenderedObjectIds.clear();
+    m_pendingRemovedObjectIds.clear();
+    m_appliedSceneRevision = retainedScene.GetRevision();
+    m_sourceSceneDatabaseId = retainedScene.GetInstanceId();
+    m_observedResourceContentRevision = registry.GetContentRevision();
+    ++m_retainedStats.fullRebuildCount;
+    m_retainedStats.appliedSceneRevision = m_appliedSceneRevision;
+    m_retainedStats.lastRebuiltObjectCount =
+        static_cast<uint32>(m_objects.size());
+    m_retainedStats.lastRemovedObjectCount = 0;
 
     result.code = RenderFrameApplyCode::Applied;
     result.temporalHistoryReset = resetHistory;
@@ -542,6 +1040,440 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     return result;
 }
 
+RenderFrameApplyResult RenderScene::ApplyIncrementalFrameState(
+    const RenderFramePacketV5& frame,
+    const RenderSceneDatabase& retainedScene,
+    const RenderSceneDatabaseChanges& changes,
+    const RenderResourceRegistry& registry)
+{
+    RenderFrameApplyResult result;
+    const RenderFrameHeaderV5& header = frame.GetHeader();
+    result.sequence = header.sequence;
+    result.previousAcceptedSequence = m_acceptedHeader.sequence;
+    result.lastRenderedSequence = m_lastRenderedHeader.sequence;
+
+    struct ObjectCandidate
+    {
+        uint64 objectId = 0;
+        RenderObject object;
+    };
+    struct LightCandidate
+    {
+        uint64 lightId = 0;
+        RenderLight light;
+    };
+
+    std::vector<ObjectCandidate> objectCandidates;
+    std::vector<uint64> removedObjectIds;
+    std::vector<LightCandidate> lightCandidates;
+    std::vector<uint64> removedLightIds;
+    std::unordered_map<RenderResourceHandle,
+                       uint64,
+                       RenderResourceHandleHash>
+        changedWatchedResources;
+    objectCandidates.reserve(changes.primitives.size());
+    removedObjectIds.reserve(changes.primitives.size());
+    lightCandidates.reserve(changes.lights.size());
+    removedLightIds.reserve(changes.lights.size());
+
+    for (uint64 objectId : changes.primitives)
+    {
+        const RenderPrimitiveSnapshot* primitive =
+            retainedScene.FindPrimitive(objectId);
+        if (primitive == nullptr)
+        {
+            removedObjectIds.push_back(objectId);
+            continue;
+        }
+        PrimitiveDataIndex primitiveData = 0;
+        const auto existing = m_objectIndices.find(objectId);
+        if (existing != m_objectIndices.end())
+            primitiveData = existing->second;
+
+        ObjectCandidate candidate;
+        candidate.objectId = objectId;
+        if (!BuildRetainedObject(
+                *primitive,
+                primitiveData,
+                retainedScene.GetPrimitiveRevision(objectId),
+                false,
+                m_lastRenderedObjectTransforms,
+                registry,
+                result,
+                candidate.object,
+                changedWatchedResources))
+        {
+            return result;
+        }
+        objectCandidates.push_back(std::move(candidate));
+    }
+
+    for (uint64 lightId : changes.lights)
+    {
+        const RenderLightSnapshot* light = retainedScene.FindLight(lightId);
+        if (light == nullptr)
+        {
+            removedLightIds.push_back(lightId);
+            continue;
+        }
+        LightCandidate candidate;
+        candidate.lightId = lightId;
+        if (!BuildRetainedLight(*light,
+                                registry,
+                                result,
+                                candidate.light,
+                                changedWatchedResources))
+        {
+            return result;
+        }
+        lightCandidates.push_back(std::move(candidate));
+    }
+
+    std::optional<RenderFeatureSnapshot> changedFeatures;
+    if (!changes.particles.empty() || !changes.water.empty() ||
+        !changes.terrain.empty())
+    {
+        RenderFeatureSnapshot features;
+        features.BeginBuild(header.sequence);
+        features.particles.items =
+            CopySortedSceneValues(retainedScene.GetParticles());
+        features.water.items = CopySortedSceneValues(retainedScene.GetWater());
+        features.terrain.items =
+            CopySortedSceneValues(retainedScene.GetTerrain());
+        features.metadata.providerCount = features.particles.items.size() +
+                                          features.water.items.size() +
+                                          features.terrain.items.size();
+        features.MarkComplete();
+        changedFeatures = std::move(features);
+    }
+
+    std::optional<RenderSkySnapshot> changedSky;
+    std::vector<RenderResourceHandle> changedSkyReferences;
+    if (changes.skyChanged)
+    {
+        RenderSkySnapshot sky =
+            retainedScene.GetSky().value_or(RenderSkySnapshot{});
+        AddWatchedResourceClosure(changedWatchedResources,
+                                  sky.skyTexture,
+                                  registry);
+        if (sky.skyTexture.IsValid() &&
+            !registry.IsGPUReadyExact(sky.skyTexture))
+        {
+            sky.skyTexture = {};
+        }
+        AddUniqueHandle(changedSkyReferences, sky.skyTexture);
+        changedSky = std::move(sky);
+    }
+
+    std::optional<RenderEnvironmentSnapshot> changedEnvironment;
+    std::vector<RenderResourceHandle> changedEnvironmentReferences;
+    if (changes.environmentChanged)
+    {
+        RenderEnvironmentSnapshot environment = retainedScene.GetEnvironment()
+            .value_or(RenderEnvironmentSnapshot{});
+        AddWatchedResourceClosure(changedWatchedResources,
+                                  environment.irradianceTexture,
+                                  registry);
+        AddWatchedResourceClosure(changedWatchedResources,
+                                  environment.prefilteredTexture,
+                                  registry);
+        AddWatchedResourceClosure(changedWatchedResources,
+                                  environment.brdfLutTexture,
+                                  registry);
+        const bool environmentReady =
+            environment.irradianceTexture.IsValid() &&
+            environment.prefilteredTexture.IsValid() &&
+            environment.brdfLutTexture.IsValid() &&
+            registry.IsGPUReadyExact(environment.irradianceTexture) &&
+            registry.IsGPUReadyExact(environment.prefilteredTexture) &&
+            registry.IsGPUReadyExact(environment.brdfLutTexture);
+        if (!environmentReady)
+        {
+            environment.irradianceTexture = {};
+            environment.prefilteredTexture = {};
+            environment.brdfLutTexture = {};
+        }
+        AddUniqueHandle(changedEnvironmentReferences,
+                        environment.irradianceTexture);
+        AddUniqueHandle(changedEnvironmentReferences,
+                        environment.prefilteredTexture);
+        AddUniqueHandle(changedEnvironmentReferences,
+                        environment.brdfLutTexture);
+        changedEnvironment = std::move(environment);
+    }
+
+    m_gpuSceneChangedObjectIds.clear();
+    m_gpuSceneRemovedObjectIds.clear();
+    m_pendingRenderedObjectIds.clear();
+    m_pendingRemovedObjectIds.clear();
+    m_fullGPUSceneMutation = false;
+    m_fullRenderedObjectRefresh = false;
+    m_drawPacketCache.BeginAcceptedPublication(false);
+
+    for (uint64 objectId : removedObjectIds)
+    {
+        const auto existing = m_objectIndices.find(objectId);
+        if (existing == m_objectIndices.end())
+            continue;
+        RemoveObjectAt(existing->second);
+        m_lastRenderedObjectTransforms.erase(objectId);
+        m_gpuSceneRemovedObjectIds.push_back(objectId);
+        m_pendingRemovedObjectIds.push_back(objectId);
+    }
+
+    for (ObjectCandidate& candidate : objectCandidates)
+    {
+        const auto existing = m_objectIndices.find(candidate.objectId);
+        uint32 index = 0;
+        uint32 previousBatchCount = 0;
+        if (existing != m_objectIndices.end())
+        {
+            index = existing->second;
+            previousBatchCount = static_cast<uint32>(
+                m_objects[index].meshBatches.size());
+            m_drawCount -= previousBatchCount;
+            RemoveReferences(m_objects[index].referencedResources);
+            m_objects[index] = std::move(candidate.object);
+        }
+        else
+        {
+            index = static_cast<uint32>(m_objects.size());
+            m_objects.push_back(std::move(candidate.object));
+            m_objectIndices.insert_or_assign(candidate.objectId, index);
+        }
+        RenderObject& object = m_objects[index];
+        m_drawCount += static_cast<uint32>(object.meshBatches.size());
+        for (MeshBatch& batch : object.meshBatches)
+            batch.primitiveData = index;
+        AddReferences(object.referencedResources);
+
+        for (const MeshBatch& batch : object.meshBatches)
+        {
+            RenderDrawPacket packetTemplate;
+            static_cast<void>(m_drawPacketCache.Resolve(
+                batch,
+                m_drawPacketCacheVersions,
+                false,
+                packetTemplate));
+        }
+        for (uint32 submeshIndex = static_cast<uint32>(object.meshBatches.size());
+             submeshIndex < previousBatchCount;
+             ++submeshIndex)
+        {
+            static_cast<void>(m_drawPacketCache.Remove(candidate.objectId,
+                                                       submeshIndex));
+        }
+        m_gpuSceneChangedObjectIds.push_back(candidate.objectId);
+        m_pendingRenderedObjectIds.push_back(candidate.objectId);
+        if (object.previousWorldMatrixValid == 0 ||
+            !MatricesEqual(object.previousWorldMatrix, object.worldMatrix))
+        {
+            m_requiresTemporalSettle = true;
+        }
+    }
+    m_drawPacketCache.EndAcceptedPublication();
+
+    for (uint64 lightId : removedLightIds)
+    {
+        const auto existing = m_lightIndices.find(lightId);
+        if (existing != m_lightIndices.end())
+            RemoveLightAt(existing->second);
+    }
+    for (LightCandidate& candidate : lightCandidates)
+    {
+        const auto existing = m_lightIndices.find(candidate.lightId);
+        if (existing != m_lightIndices.end())
+        {
+            RemoveReferences(m_lights[existing->second].referencedResources);
+            m_lights[existing->second] = std::move(candidate.light);
+            AddReferences(m_lights[existing->second].referencedResources);
+        }
+        else
+        {
+            const uint32 index = static_cast<uint32>(m_lights.size());
+            m_lights.push_back(std::move(candidate.light));
+            m_lightIndices.insert_or_assign(candidate.lightId, index);
+            AddReferences(m_lights.back().referencedResources);
+        }
+    }
+
+    if (changedFeatures.has_value())
+        m_features = std::move(*changedFeatures);
+    if (changedSky.has_value())
+    {
+        RemoveReferences(m_skyReferences);
+        m_sky = std::move(*changedSky);
+        m_skyReferences = std::move(changedSkyReferences);
+        AddReferences(m_skyReferences);
+    }
+    if (changedEnvironment.has_value())
+    {
+        RemoveReferences(m_environmentReferences);
+        m_environment = std::move(*changedEnvironment);
+        m_environmentReferences = std::move(changedEnvironmentReferences);
+        AddReferences(m_environmentReferences);
+    }
+    for (const auto& [handle, revision] : changedWatchedResources)
+        m_watchedResourceRevisions.insert_or_assign(handle, revision);
+
+    m_acceptedHeader = header;
+    m_view = frame.GetView();
+    m_settings = frame.GetSettings();
+    m_captureRequest = frame.GetCaptureRequest();
+    m_hasAcceptedFrame = true;
+    m_temporalHistoryReset = false;
+    m_acceptedSceneMutated = !changes.Empty();
+    m_appliedSceneRevision = retainedScene.GetRevision();
+    m_sourceSceneDatabaseId = retainedScene.GetInstanceId();
+    m_observedResourceContentRevision = registry.GetContentRevision();
+    ++m_retainedStats.incrementalUpdateCount;
+    m_retainedStats.appliedSceneRevision = m_appliedSceneRevision;
+    m_retainedStats.lastRebuiltObjectCount =
+        static_cast<uint32>(objectCandidates.size());
+    m_retainedStats.lastRemovedObjectCount =
+        static_cast<uint32>(m_gpuSceneRemovedObjectIds.size());
+
+    result.code = RenderFrameApplyCode::Applied;
+    result.temporalHistoryReset = false;
+    result.sceneMutated = !changes.Empty();
+    if (m_lastRenderedHeader.sequence != 0 &&
+        header.sequence > m_lastRenderedHeader.sequence + 1)
+    {
+        result.sequenceGap = header.sequence - m_lastRenderedHeader.sequence - 1;
+    }
+    return result;
+}
+
+void RenderScene::RebuildRetainedIndicesAndReferences()
+{
+    m_objectIndices.clear();
+    m_lightIndices.clear();
+    m_referencedResources.clear();
+    m_referenceCounts.clear();
+    m_referenceIndices.clear();
+    m_drawCount = 0;
+
+    m_objectIndices.reserve(m_objects.size());
+    for (uint32 index = 0; index < static_cast<uint32>(m_objects.size()); ++index)
+    {
+        RenderObject& object = m_objects[index];
+        m_objectIndices.insert_or_assign(object.entityId, index);
+        for (MeshBatch& batch : object.meshBatches)
+            batch.primitiveData = index;
+        m_drawCount += static_cast<uint32>(object.meshBatches.size());
+        AddReferences(object.referencedResources);
+    }
+
+    m_lightIndices.reserve(m_lights.size());
+    for (uint32 index = 0; index < static_cast<uint32>(m_lights.size()); ++index)
+    {
+        m_lightIndices.insert_or_assign(m_lights[index].lightId, index);
+        AddReferences(m_lights[index].referencedResources);
+    }
+    AddReferences(m_skyReferences);
+    AddReferences(m_environmentReferences);
+}
+
+void RenderScene::AddReferences(
+    const std::vector<RenderResourceHandle>& references)
+{
+    for (RenderResourceHandle handle : references)
+    {
+        if (!handle.IsValid())
+            continue;
+        auto [count, inserted] = m_referenceCounts.emplace(handle, 1U);
+        if (!inserted)
+        {
+            ++count->second;
+            continue;
+        }
+        const uint32 index = static_cast<uint32>(m_referencedResources.size());
+        m_referenceIndices.insert_or_assign(handle, index);
+        m_referencedResources.push_back(handle);
+    }
+}
+
+void RenderScene::RemoveReferences(
+    const std::vector<RenderResourceHandle>& references)
+{
+    for (RenderResourceHandle handle : references)
+    {
+        const auto count = m_referenceCounts.find(handle);
+        if (count == m_referenceCounts.end())
+            continue;
+        if (count->second > 1U)
+        {
+            --count->second;
+            continue;
+        }
+
+        const auto indexIt = m_referenceIndices.find(handle);
+        if (indexIt != m_referenceIndices.end())
+        {
+            const uint32 index = indexIt->second;
+            const uint32 last = static_cast<uint32>(
+                m_referencedResources.size() - 1U);
+            if (index != last)
+            {
+                const RenderResourceHandle moved = m_referencedResources[last];
+                m_referencedResources[index] = moved;
+                m_referenceIndices.insert_or_assign(moved, index);
+            }
+            m_referencedResources.pop_back();
+            m_referenceIndices.erase(indexIt);
+        }
+        m_referenceCounts.erase(count);
+    }
+}
+
+void RenderScene::RemoveObjectAt(uint32 index)
+{
+    if (index >= m_objects.size())
+        return;
+    RenderObject& removed = m_objects[index];
+    const uint64 removedId = removed.entityId;
+    RemoveReferences(removed.referencedResources);
+    m_drawCount -= static_cast<uint32>(removed.meshBatches.size());
+    for (const MeshBatch& batch : removed.meshBatches)
+        static_cast<void>(m_drawPacketCache.Remove(batch.objectId,
+                                                   batch.submeshIndex));
+    m_objectIndices.erase(removedId);
+
+    const uint32 last = static_cast<uint32>(m_objects.size() - 1U);
+    if (index != last)
+    {
+        m_objects[index] = std::move(m_objects[last]);
+        m_objectIndices.insert_or_assign(m_objects[index].entityId, index);
+        for (MeshBatch& batch : m_objects[index].meshBatches)
+            batch.primitiveData = index;
+    }
+    m_objects.pop_back();
+}
+
+void RenderScene::RemoveLightAt(uint32 index)
+{
+    if (index >= m_lights.size())
+        return;
+    const uint64 removedId = m_lights[index].lightId;
+    RemoveReferences(m_lights[index].referencedResources);
+    m_lightIndices.erase(removedId);
+    const uint32 last = static_cast<uint32>(m_lights.size() - 1U);
+    if (index != last)
+    {
+        m_lights[index] = std::move(m_lights[last]);
+        m_lightIndices.insert_or_assign(m_lights[index].lightId, index);
+    }
+    m_lights.pop_back();
+}
+
+const RenderObject* RenderScene::FindObject(uint64 objectId) const noexcept
+{
+    const auto found = m_objectIndices.find(objectId);
+    return found != m_objectIndices.end() && found->second < m_objects.size()
+        ? &m_objects[found->second]
+        : nullptr;
+}
+
 void RenderScene::MarkAcceptedFrameRendered()
 {
     if (!m_hasAcceptedFrame)
@@ -551,13 +1483,49 @@ void RenderScene::MarkAcceptedFrameRendered()
     m_lastRenderedHeader = m_acceptedHeader;
     m_lastRenderedView = m_view;
     m_lastRenderedSurfaceCompatibilityKey = m_surfaceCompatibilityKey;
-    m_lastRenderedObjectTransforms.clear();
-    m_lastRenderedObjectTransforms.reserve(m_objects.size());
-    for (const RenderObject& object : m_objects)
+    if (!m_acceptedSceneMutated)
+        return;
+
+    m_temporalSettleObjectIds.clear();
+    if (m_fullRenderedObjectRefresh)
     {
-        m_lastRenderedObjectTransforms.insert_or_assign(
-            object.entityId, object.worldMatrix);
+        m_lastRenderedObjectTransforms.clear();
+        m_lastRenderedObjectTransforms.reserve(m_objects.size());
+        for (const RenderObject& object : m_objects)
+        {
+            m_lastRenderedObjectTransforms.insert_or_assign(
+                object.entityId, object.worldMatrix);
+            if (object.previousWorldMatrixValid == 0 ||
+                !MatricesEqual(object.previousWorldMatrix, object.worldMatrix))
+            {
+                m_temporalSettleObjectIds.push_back(object.entityId);
+            }
+        }
     }
+    else
+    {
+        for (uint64 objectId : m_pendingRemovedObjectIds)
+            m_lastRenderedObjectTransforms.erase(objectId);
+        for (uint64 objectId : m_pendingRenderedObjectIds)
+        {
+            const RenderObject* object = FindObject(objectId);
+            if (object == nullptr)
+                continue;
+            m_lastRenderedObjectTransforms.insert_or_assign(
+                objectId, object->worldMatrix);
+            if (object->previousWorldMatrixValid == 0 ||
+                !MatricesEqual(object->previousWorldMatrix,
+                               object->worldMatrix))
+            {
+                m_temporalSettleObjectIds.push_back(objectId);
+            }
+        }
+    }
+    m_requiresTemporalSettle = !m_temporalSettleObjectIds.empty();
+    m_fullRenderedObjectRefresh = false;
+    m_pendingRenderedObjectIds.clear();
+    m_pendingRemovedObjectIds.clear();
+    m_acceptedSceneMutated = false;
 }
 
 void RenderScene::SetSurfaceCompatibilityKey(uint64 key) noexcept

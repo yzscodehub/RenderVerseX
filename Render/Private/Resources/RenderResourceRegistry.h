@@ -175,11 +175,20 @@ namespace RVX
         [[nodiscard]] bool HasPending(RenderResourceHandle handle) const;
         [[nodiscard]] uint32 GetEntryCount() const;
         [[nodiscard]] RenderResourceRegistryStats GetStats() const;
+        /** @brief Monotonic revision for readiness/content identity changes. */
+        [[nodiscard]] uint64 GetContentRevision() const noexcept
+        {
+            return m_contentRevision;
+        }
+        /** @brief Exact entry content revision, or zero when the generation is absent. */
+        [[nodiscard]] uint64 GetContentRevision(
+            RenderResourceHandle handle) const noexcept;
 
     private:
         struct Entry
         {
             uint32 generation = 0;
+            uint64 contentRevision = 0;
             RenderResourceKind kind = RenderResourceKind::Invalid;
             std::vector<RenderResourceHandle> dependencies;
             std::optional<RenderResourceGPUData> pending;
@@ -193,9 +202,11 @@ namespace RVX
                                       const GPUCompletionToken& completion);
         [[nodiscard]] bool IsReady(RenderResourceHandle handle,
                                    RenderResourceKind kind) const;
+        uint64 BumpContentRevision() noexcept;
 
         RenderResourceStatusTable* m_statusTable = nullptr;
         RenderRetirementQueue* m_retirementQueue = nullptr;
         std::unordered_map<uint32, Entry> m_entries;
+        uint64 m_contentRevision = 1;
     };
 } // namespace RVX

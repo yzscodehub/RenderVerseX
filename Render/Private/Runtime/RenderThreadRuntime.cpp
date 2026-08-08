@@ -1214,6 +1214,8 @@ namespace
                     }
                     if (frameResult.code == RenderRuntimeCode::Running)
                     {
+                        m_renderSceneDatabase.AcknowledgeChangesThrough(
+                            m_renderSceneDatabase.GetRevision());
                         m_lastAppliedFrameSequence.store(
                             sequence, std::memory_order_release);
                         m_lastSubmittedFrameSequence.store(

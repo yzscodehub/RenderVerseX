@@ -901,19 +901,19 @@ namespace RVX
         /** @brief Update the surface key used by temporal compatibility checks. */
         void SetSurfaceCompatibilityKey(uint64 key) noexcept;
 
-        /** @brief Read-only diagnostics for the non-executable GPU-scene shadow. */
+        /** @brief Read-only diagnostics for persistent GPUScene publication. */
         [[nodiscard]] const GPUScenePublicationStats&
             GetGPUScenePublicationStats() const noexcept;
 
-        /** @brief Value-only diagnostics for Task 11C's non-executing upload path. */
+        /** @brief Value-only diagnostics for persistent GPUScene residency uploads. */
         [[nodiscard]] const GPUSceneUploadDiagnostics&
             GetGPUSceneUploadDiagnostics() const noexcept;
 
         /** @brief Backend-neutral, informational GPU-scene frame snapshot. */
         [[nodiscard]] GPUSceneDiagnostics GetGPUSceneDiagnostics() const noexcept;
 
-        /** @brief Explicitly discard the non-executable GPU-scene shadow. */
-        void ClearGPUSceneShadow();
+        /** @brief Explicitly discard CPU publication and resident GPUScene state. */
+        void ClearGPUScene();
 
         /**
          * @brief Reset temporal histories on the next rendered view.
@@ -1453,6 +1453,8 @@ namespace RVX
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
         std::unique_ptr<GPUSceneUpdate> m_gpuSceneUpdate;
         std::unique_ptr<GPUSceneUploader> m_gpuSceneUploader;
+        uint64 m_lastGPUSceneResourceContentRevision = 0;
+        bool m_forceFullGPUScenePublication = false;
 
         ViewData m_viewData;
         PrimaryDirectionalLightRecordInput m_primaryDirectionalLight;

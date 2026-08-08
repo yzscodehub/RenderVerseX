@@ -563,7 +563,7 @@ rvx_add_gtest(
     LIBS RVX::Render
     INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
     LABELS "unit;architecture"
-    TIMEOUT 30
+    TIMEOUT 60
 )
 
 rvx_add_gtest(
@@ -974,6 +974,17 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/World/Include
     LABELS unit
     TIMEOUT 120
+)
+
+rvx_add_gtest(
+    NAME RenderIncrementalSceneScaleValidation
+    SOURCES RenderIncrementalSceneScaleValidation/main.cpp
+    LIBS RVX::Render RVX_RenderRuntimeCore
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Include
+        ${CMAKE_SOURCE_DIR}/Render/Private
+    LABELS "unit;architecture;performance"
+    TIMEOUT 180
 )
 
 rvx_add_gtest(

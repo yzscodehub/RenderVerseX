@@ -23,7 +23,7 @@ namespace RVX
     class SceneRendererTestAccess final
     {
     public:
-        static void SetShadowPublishAllocationFailure(
+        static void SetGPUScenePublishAllocationFailure(
             SceneRenderer& renderer,
             bool enabled) noexcept
         {
@@ -298,6 +298,31 @@ namespace
             return handle;
         }
 
+        void CompletePendingMesh(
+            RenderResourceHandle handle,
+            const MeshUploadCreateInfo& createInfo,
+            const std::vector<MeshUploadSubmesh>& submeshes)
+        {
+            const RenderResourceStatus status =
+                gateway.GetStatusTable().Query(handle);
+            ASSERT_EQ(status.code, RenderResourceStatusCode::Current);
+            ASSERT_EQ(status.state, RenderResourcePublicState::Uploading);
+            ASSERT_TRUE(registry.SetPendingMeshMetadata(
+                handle, createInfo, submeshes));
+            ASSERT_TRUE(registry.Commit(handle));
+            const PackedRenderResourceStatus uploading{
+                handle.generation,
+                RenderResourcePublicState::Uploading,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus ready = uploading;
+            ready.state = RenderResourcePublicState::GPUReady;
+            ASSERT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle,
+                uploading,
+                ready,
+                RenderStatusWriter::Render));
+        }
+
         static RenderTransportConfig MakeConfig()
         {
             RenderTransportConfig config;
@@ -391,6 +416,33 @@ namespace
             RenderFrameCaptureRequest{},
             diagnostics);
         return input;
+    }
+
+    std::unique_ptr<const RenderFramePacketV5> MakeFramePacketV5(
+        uint64 sequence,
+        uint64 requiredSceneRevision,
+        uint64 worldRevision = 1,
+        uint64 temporalEpoch = 1,
+        bool discontinuity = false)
+    {
+        RenderFrameHeaderV5 header;
+        header.sequence = sequence;
+        header.requiredSceneRevision = requiredSceneRevision;
+        header.worldRevision = worldRevision;
+        header.temporalEpoch = temporalEpoch;
+        header.explicitDiscontinuity = discontinuity;
+        RenderViewSnapshot view;
+        view.viewportWidth = 1280;
+        view.viewportHeight = 720;
+        RenderExtractionDiagnostics diagnostics;
+        diagnostics.code = RenderExtractionCode::Complete;
+        diagnostics.complete = true;
+        return RenderFramePacketV5::Create(
+            header,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            diagnostics);
     }
 
     RenderFrameApplyResult Apply(
@@ -489,7 +541,110 @@ TEST(RenderSceneValidation,
               (Vec3{4.0F, 0.0F, 0.0F}));
 }
 
-TEST(RenderSceneValidation, ShadowPublicationFailureCannotRejectAnAppliedFrame)
+TEST(RenderSceneValidation,
+     StaticFramesDoNoRetainedWorkAndOnePercentDirtyRebuildsExactObjects)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {8100},
+        createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+
+    constexpr uint32 objectCount = 100;
+    RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    for (uint32 index = 0; index < objectCount; ++index)
+    {
+        RenderPrimitiveSnapshot primitive = MakePrimitive(
+            mesh, {}, {static_cast<float32>(index), 0.0F, 0.0F});
+        primitive.objectId = static_cast<uint64>(index) + 1U;
+        ASSERT_TRUE(reset.UpsertPrimitive(std::move(primitive), true));
+    }
+    RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(reset.Build(1)).IsApplied());
+
+    RenderScene scene;
+    const auto firstFrame = MakeFramePacketV5(1, 1, 7, 3);
+    ASSERT_NE(firstFrame, nullptr);
+    const RenderFrameApplyResult initial =
+        scene.ApplyFrameV5(*firstFrame, database, resources.registry);
+    ASSERT_TRUE(initial.IsApplied());
+    ASSERT_TRUE(initial.sceneMutated);
+    EXPECT_TRUE(scene.IsFullGPUSceneMutation());
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount, 1U);
+    EXPECT_EQ(scene.GetRetainedStats().lastRebuiltObjectCount, objectCount);
+    EXPECT_EQ(scene.GetObjectCount(), objectCount);
+    EXPECT_EQ(scene.GetDrawCount(), objectCount);
+    scene.MarkAcceptedFrameRendered();
+
+    // First reuse settles previous matrices once. The following reuse must be
+    // a true static frame with no retained rebuild or GPU-scene mutation.
+    const auto settleFrame = MakeFramePacketV5(2, 1, 7, 3);
+    ASSERT_NE(settleFrame, nullptr);
+    const RenderFrameApplyResult settled =
+        scene.ApplyFrameV5(*settleFrame, database, resources.registry);
+    ASSERT_TRUE(settled.IsApplied());
+    ASSERT_TRUE(settled.sceneMutated);
+    EXPECT_EQ(scene.GetGPUSceneChangedObjectIds().size(), objectCount);
+    scene.MarkAcceptedFrameRendered();
+
+    const RenderDrawPacketCacheStats beforeStatic =
+        scene.GetDrawPacketCacheStats();
+    const auto staticFrame = MakeFramePacketV5(3, 1, 7, 3);
+    ASSERT_NE(staticFrame, nullptr);
+    const RenderFrameApplyResult reused =
+        scene.ApplyFrameV5(*staticFrame, database, resources.registry);
+    ASSERT_TRUE(reused.IsApplied());
+    EXPECT_FALSE(reused.sceneMutated);
+    EXPECT_FALSE(scene.IsFullGPUSceneMutation());
+    EXPECT_TRUE(scene.GetGPUSceneChangedObjectIds().empty());
+    EXPECT_TRUE(scene.GetGPUSceneRemovedObjectIds().empty());
+    EXPECT_EQ(scene.GetRetainedStats().staticReuseCount, 1U);
+    EXPECT_EQ(scene.GetRetainedStats().lastRebuiltObjectCount, 0U);
+    EXPECT_EQ(scene.GetDrawPacketCacheStats().packetBuildCount,
+              beforeStatic.packetBuildCount);
+    scene.MarkAcceptedFrameRendered();
+
+    RenderPrimitiveSnapshot changed = MakePrimitive(
+        mesh, {}, {25.0F, 4.0F, 0.0F});
+    changed.objectId = 26;
+    RenderSceneMutationAccumulator update;
+    update.Begin(1);
+    ASSERT_TRUE(update.UpsertPrimitive(std::move(changed)));
+    ASSERT_TRUE(database.Apply(update.Build(2)).IsApplied());
+
+    const RenderDrawPacketCacheStats beforeDirty =
+        scene.GetDrawPacketCacheStats();
+    const auto dirtyFrame = MakeFramePacketV5(4, 2, 7, 3);
+    ASSERT_NE(dirtyFrame, nullptr);
+    const RenderFrameApplyResult dirty =
+        scene.ApplyFrameV5(*dirtyFrame, database, resources.registry);
+    ASSERT_TRUE(dirty.IsApplied());
+    EXPECT_TRUE(dirty.sceneMutated);
+    EXPECT_EQ(scene.GetRetainedStats().incrementalUpdateCount, 1U);
+    EXPECT_EQ(scene.GetRetainedStats().lastRebuiltObjectCount, 1U);
+    EXPECT_EQ(scene.GetRetainedStats().lastRemovedObjectCount, 0U);
+    EXPECT_EQ(scene.GetGPUSceneChangedObjectIds(),
+              std::vector<uint64>({26U}));
+    ASSERT_NE(scene.FindObject(26), nullptr);
+    EXPECT_EQ(scene.FindObject(26)->objectRevision, 2U);
+    EXPECT_EQ(Vec3(scene.FindObject(26)->worldMatrix[3]),
+              (Vec3{25.0F, 4.0F, 0.0F}));
+    const RenderDrawPacketCacheStats afterDirty =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterDirty.entryCount, objectCount);
+    EXPECT_EQ(afterDirty.packetBuildCount,
+              beforeDirty.packetBuildCount + 1U);
+    EXPECT_EQ(afterDirty.GetInvalidationCount(
+                  RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged),
+              beforeDirty.GetInvalidationCount(
+                  RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged) +
+                  1U);
+}
+
+TEST(RenderSceneValidation, GPUScenePublicationFailureCannotRejectAnAppliedFrame)
 {
     RegistryFixture resources;
     MeshUploadCreateInfo createInfo;
@@ -503,14 +658,16 @@ TEST(RenderSceneValidation, ShadowPublicationFailureCannotRejectAnAppliedFrame)
     ASSERT_NE(first.frame, nullptr);
     ASSERT_TRUE(renderer.ApplyFrameV5(
         *first.frame, first.database, resources.registry).IsApplied());
+    renderer.GetRenderScene().MarkAcceptedFrameRendered();
     const GPUScenePublicationStats before =
         renderer.GetGPUScenePublicationStats();
     ASSERT_EQ(before.failureReason, GPUScenePublicationFailureReason::None);
     ASSERT_EQ(before.publishedObjectCount, 1U);
 
-    SceneRendererTestAccess::SetShadowPublishAllocationFailure(renderer, true);
+    SceneRendererTestAccess::SetGPUScenePublishAllocationFailure(renderer, true);
     V5FrameInput second = MakeFrame(
-        102, 2, 1, false, {MakePrimitive(mesh, {}, {3.0F, 0.0F, 0.0F})});
+        102, 2, 1, false, {MakePrimitive(mesh)});
+    second.frame = MakeFramePacketV5(102, 2, 1, 1, false);
     ASSERT_NE(second.frame, nullptr);
     const RenderFrameApplyResult applied =
         renderer.ApplyFrameV5(
@@ -540,6 +697,69 @@ TEST(RenderSceneValidation, ShadowPublicationFailureCannotRejectAnAppliedFrame)
     const GPUSceneDiagnostics copied = snapshot;
     EXPECT_EQ(copied.committedVersion, snapshot.committedVersion);
     EXPECT_EQ(copied.publicationPublished, snapshot.publicationPublished);
+
+    // The direct path may render the accepted scene even though publication
+    // failed. A later static frame must therefore retry from the complete
+    // retained scene instead of waiting indefinitely for another mutation.
+    renderer.GetRenderScene().MarkAcceptedFrameRendered();
+    SceneRendererTestAccess::SetGPUScenePublishAllocationFailure(renderer, false);
+    const std::unique_ptr<const RenderFramePacketV5> retryFrame =
+        MakeFramePacketV5(103, 2, 1, 1, false);
+    const RenderFrameApplyResult retried = renderer.ApplyFrameV5(
+        *retryFrame, second.database, resources.registry);
+    ASSERT_TRUE(retried.IsApplied());
+    EXPECT_FALSE(retried.sceneMutated);
+    const GPUScenePublicationStats& recovered =
+        renderer.GetGPUScenePublicationStats();
+    EXPECT_EQ(recovered.failureReason,
+              GPUScenePublicationFailureReason::None);
+    EXPECT_TRUE(recovered.complete);
+    EXPECT_EQ(recovered.committedSourceSequence, 103U);
+    EXPECT_EQ(recovered.publishedObjectCount, 1U);
+}
+
+TEST(RenderSceneValidation,
+     StaticFrameAdvancesGPUSceneIdentityWithoutVersionOrObjectMutation)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {702}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    SceneRenderer renderer;
+
+    V5FrameInput initial = MakeFrame(201, 1, 1, false, {MakePrimitive(mesh)});
+    ASSERT_NE(initial.frame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *initial.frame, initial.database, resources.registry).IsApplied());
+    renderer.GetRenderScene().MarkAcceptedFrameRendered();
+
+    const std::unique_ptr<const RenderFramePacketV5> settleFrame =
+        MakeFramePacketV5(202, 1, 1, 1, false);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *settleFrame, initial.database, resources.registry).IsApplied());
+    renderer.GetRenderScene().MarkAcceptedFrameRendered();
+    const GPUScenePublicationStats beforeStatic =
+        renderer.GetGPUScenePublicationStats();
+    ASSERT_TRUE(beforeStatic.complete);
+    ASSERT_NE(beforeStatic.committedVersion, 0U);
+
+    const std::unique_ptr<const RenderFramePacketV5> staticFrame =
+        MakeFramePacketV5(203, 1, 1, 1, false);
+    const RenderFrameApplyResult staticApplied = renderer.ApplyFrameV5(
+        *staticFrame, initial.database, resources.registry);
+    ASSERT_TRUE(staticApplied.IsApplied());
+    EXPECT_FALSE(staticApplied.sceneMutated);
+
+    const GPUScenePublicationStats& afterStatic =
+        renderer.GetGPUScenePublicationStats();
+    EXPECT_EQ(afterStatic.committedVersion,
+              beforeStatic.committedVersion);
+    EXPECT_EQ(afterStatic.committedSourceSequence, 203U);
+    EXPECT_EQ(afterStatic.addCount, 0U);
+    EXPECT_EQ(afterStatic.updateCount, 0U);
+    EXPECT_EQ(afterStatic.removeCount, 0U);
+    EXPECT_TRUE(afterStatic.complete);
 }
 
 TEST(RenderSceneValidation, GPUSceneTier2DiagnosticVersionsAreValueOnlyAndResetWithFramePlan)
@@ -1011,6 +1231,42 @@ TEST(RenderSceneValidation, UsesReadyFallbackForPendingRequiredMesh)
     EXPECT_EQ(result.skippedDrawCount, 0U);
     EXPECT_EQ(scene.GetObject(0).mesh, fallback);
     EXPECT_TRUE(scene.GetObject(0).drawable);
+}
+
+TEST(RenderSceneValidation,
+     StaticDatabasePromotesFallbackWhenWatchedResourceBecomesReady)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle pending =
+        resources.Add({41}, RenderResourceKind::Mesh, false);
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const std::vector<MeshUploadSubmesh> submeshes = {
+        {0, 3, 0, MeshUploadPrimitiveTopology::Triangles}};
+    const RenderResourceHandle fallback = resources.AddMeshWithMetadata(
+        {42}, createInfo, submeshes);
+    RenderPrimitiveSnapshot primitive = MakePrimitive(pending);
+    primitive.fallbackMesh = fallback;
+
+    V5FrameInput input = MakeFrame(1, 1, 1, false, {primitive});
+    RenderScene scene;
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *input.frame, input.database, resources.registry).IsApplied());
+    ASSERT_EQ(scene.GetObject(0).mesh, fallback);
+    scene.MarkAcceptedFrameRendered();
+    const uint64 fullRebuildsBefore =
+        scene.GetRetainedStats().fullRebuildCount;
+
+    resources.CompletePendingMesh(pending, createInfo, submeshes);
+    const std::unique_ptr<const RenderFramePacketV5> staticSceneFrame =
+        MakeFramePacketV5(2, 1, 1, 1, false);
+    const RenderFrameApplyResult promoted = scene.ApplyFrameV5(
+        *staticSceneFrame, input.database, resources.registry);
+    ASSERT_TRUE(promoted.IsApplied());
+    EXPECT_TRUE(promoted.sceneMutated);
+    EXPECT_EQ(scene.GetObject(0).mesh, pending);
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
+              fullRebuildsBefore + 1U);
 }
 
 TEST(RenderSceneValidation,

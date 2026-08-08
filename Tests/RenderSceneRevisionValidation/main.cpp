@@ -115,6 +115,108 @@ TEST(RenderSceneRevisionValidation, NewerFullResetRecoversFromDesynchronization)
     EXPECT_NE(database.FindPrimitive(99), nullptr);
 }
 
+TEST(RenderSceneRevisionValidation,
+     ChangeJournalMergesExactIdsAndExpiresOnlyAcknowledgedRanges)
+{
+    RVX::RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(MakeFullReset(1)).IsApplied());
+    EXPECT_EQ(database.GetPrimitiveRevision(11), 1U);
+
+    RVX::RenderSceneMutationAccumulator second;
+    second.Begin(1);
+    ASSERT_TRUE(second.UpsertPrimitive(MakePrimitive(11, 9)));
+    RVX::RenderLightSnapshot light;
+    light.lightId = 7;
+    ASSERT_TRUE(second.UpsertLight(light, true));
+    ASSERT_TRUE(database.Apply(second.Build(2)).IsApplied());
+    EXPECT_EQ(database.GetPrimitiveRevision(11), 2U);
+
+    RVX::RenderSceneMutationAccumulator third;
+    third.Begin(2);
+    ASSERT_TRUE(third.UpsertPrimitive(MakePrimitive(11, 12)));
+    RVX::RenderSkySnapshot sky;
+    sky.intensity = 2.0F;
+    third.UpsertSky(sky);
+    ASSERT_TRUE(database.Apply(third.Build(3)).IsApplied());
+
+    const RVX::RenderSceneDatabaseChanges merged =
+        database.CollectChangesSince(1);
+    ASSERT_TRUE(merged.available);
+    EXPECT_FALSE(merged.fullReset);
+    EXPECT_EQ(merged.baseRevision, 1U);
+    EXPECT_EQ(merged.targetRevision, 3U);
+    EXPECT_EQ(merged.primitives, std::vector<RVX::uint64>({11U}));
+    EXPECT_EQ(merged.lights, std::vector<RVX::uint64>({7U}));
+    EXPECT_TRUE(merged.skyChanged);
+    EXPECT_FALSE(merged.environmentChanged);
+
+    database.AcknowledgeChangesThrough(2);
+    const RVX::RenderSceneDatabaseChanges current =
+        database.CollectChangesSince(2);
+    ASSERT_TRUE(current.available);
+    EXPECT_EQ(current.primitives, std::vector<RVX::uint64>({11U}));
+    EXPECT_TRUE(current.skyChanged);
+
+    const RVX::RenderSceneDatabaseChanges expired =
+        database.CollectChangesSince(1);
+    EXPECT_FALSE(expired.available);
+    const RVX::RenderSceneDatabaseChanges noChanges =
+        database.CollectChangesSince(3);
+    EXPECT_TRUE(noChanges.available);
+    EXPECT_TRUE(noChanges.Empty());
+}
+
+TEST(RenderSceneRevisionValidation,
+     FullResetJournalForcesCheckpointAndDatabaseLineageIsUnique)
+{
+    RVX::RenderSceneDatabase first;
+    RVX::RenderSceneDatabase second;
+    ASSERT_NE(first.GetInstanceId(), 0U);
+    ASSERT_NE(second.GetInstanceId(), 0U);
+    EXPECT_NE(first.GetInstanceId(), second.GetInstanceId());
+
+    ASSERT_TRUE(first.Apply(MakeFullReset(4)).IsApplied());
+    RVX::RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    ASSERT_TRUE(reset.UpsertPrimitive(MakePrimitive(99), true));
+    reset.UpsertEnvironment(RVX::RenderEnvironmentSnapshot{});
+    ASSERT_TRUE(first.Apply(reset.Build(9)).IsApplied());
+
+    const RVX::RenderSceneDatabaseChanges changes =
+        first.CollectChangesSince(4);
+    ASSERT_TRUE(changes.available);
+    EXPECT_TRUE(changes.fullReset);
+    EXPECT_TRUE(changes.skyChanged);
+    EXPECT_TRUE(changes.environmentChanged);
+    EXPECT_EQ(changes.targetRevision, 9U);
+}
+
+TEST(RenderSceneRevisionValidation,
+     IncrementalSingletonRemovalCommitsAsAnEngagedEmptyValue)
+{
+    RVX::RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    reset.UpsertSky(RVX::RenderSkySnapshot{});
+    reset.UpsertEnvironment(RVX::RenderEnvironmentSnapshot{});
+    RVX::RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(reset.Build(1)).IsApplied());
+    ASSERT_TRUE(database.GetSky().has_value());
+    ASSERT_TRUE(database.GetEnvironment().has_value());
+
+    RVX::RenderSceneMutationAccumulator remove;
+    remove.Begin(1);
+    remove.RemoveSky();
+    remove.RemoveEnvironment();
+    ASSERT_TRUE(database.Apply(remove.Build(2)).IsApplied());
+    EXPECT_FALSE(database.GetSky().has_value());
+    EXPECT_FALSE(database.GetEnvironment().has_value());
+    const RVX::RenderSceneDatabaseChanges changes =
+        database.CollectChangesSince(1);
+    ASSERT_TRUE(changes.available);
+    EXPECT_TRUE(changes.skyChanged);
+    EXPECT_TRUE(changes.environmentChanged);
+}
+
 TEST(RenderSceneRevisionValidation, ExposesAuthoritativeSceneAndV5FrameState)
 {
     RVX::RenderSceneMutationAccumulator reset;

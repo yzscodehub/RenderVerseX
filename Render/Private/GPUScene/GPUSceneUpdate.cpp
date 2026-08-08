@@ -1,6 +1,6 @@
 /**
  * @file GPUSceneUpdate.cpp
- * @brief Incremental publication of accepted RenderScene values into CPU shadow rows.
+ * @brief Incremental publication of accepted RenderScene values into resident rows.
  */
 
 #include "GPUScene/GPUSceneUpdate.h"
@@ -601,6 +601,33 @@ GPUScenePublicationStats GPUSceneUpdate::Publish(
     return m_stats;
 }
 
+GPUScenePublicationStats GPUSceneUpdate::PublishIncremental(
+    const RenderScene& scene,
+    std::span<const uint64> changedObjectIds,
+    std::span<const uint64> removedObjectIds,
+    const RenderResourceRegistry& registry)
+{
+    try
+    {
+        if (m_throwOnPublishForTesting)
+            throw std::bad_alloc();
+        return PublishIncrementalImpl(scene,
+                                      changedObjectIds,
+                                      removedObjectIds,
+                                      registry);
+    }
+    catch (const std::bad_alloc&)
+    {
+        RecordFailure(scene.GetAcceptedHeader().sequence,
+                      GPUScenePublicationFailureReason::AllocationFailed);
+    }
+    catch (...)
+    {
+        RecordUnexpectedFailure(scene.GetAcceptedHeader().sequence);
+    }
+    return m_stats;
+}
+
 bool GPUSceneUpdate::IsEquivalent(
     const PublishedObject& lhs,
     const PublishedObject& rhs) const noexcept
@@ -877,7 +904,171 @@ GPUScenePublicationStats GPUSceneUpdate::PublishImpl(
     PopulateCommittedIdentity(stats);
     stats.complete = stats.excludedObjectCount == 0 &&
                      stats.excludedDrawCount == 0;
-    // Task 11B intentionally has no upload/binding/command-generation path.
+    stats.executionEligible = false;
+    m_stats = stats;
+    return m_stats;
+}
+
+GPUScenePublicationStats GPUSceneUpdate::PublishIncrementalImpl(
+    const RenderScene& scene,
+    std::span<const uint64> changedObjectIds,
+    std::span<const uint64> removedObjectIds,
+    const RenderResourceRegistry& registry)
+{
+    GPUScenePublicationStats stats;
+    stats.attempted = true;
+    stats.sourceSequence = scene.GetAcceptedHeader().sequence;
+    stats.attemptedObjectCount = static_cast<uint32>(scene.GetObjectCount());
+    stats.acceptedObjectCount = stats.attemptedObjectCount;
+    stats.attemptedDrawCount = scene.GetDrawCount();
+    stats.acceptedDrawCount = stats.attemptedDrawCount;
+    PopulateCommittedIdentity(stats);
+
+    std::unordered_set<uint64> changedIds;
+    std::unordered_set<uint64> objectsToRemove;
+    changedIds.reserve(changedObjectIds.size());
+    objectsToRemove.reserve(changedObjectIds.size() + removedObjectIds.size());
+    for (uint64 objectId : removedObjectIds)
+    {
+        if (objectId == 0 || !objectsToRemove.insert(objectId).second)
+        {
+            stats.failureReason = GPUScenePublicationFailureReason::InvalidObject;
+            stats.complete = false;
+            m_stats = stats;
+            return m_stats;
+        }
+    }
+
+    std::unordered_map<uint64, PublishedObject> candidates;
+    candidates.reserve(changedObjectIds.size());
+    for (uint64 objectId : changedObjectIds)
+    {
+        if (objectId == 0 || !changedIds.insert(objectId).second ||
+            objectsToRemove.contains(objectId))
+        {
+            stats.failureReason = GPUScenePublicationFailureReason::InvalidObject;
+            stats.complete = false;
+            m_stats = stats;
+            return m_stats;
+        }
+        const RenderObject* source = scene.FindObject(objectId);
+        if (source == nullptr)
+        {
+            objectsToRemove.insert(objectId);
+            continue;
+        }
+
+        BuildPublishedObjectResult built = BuildPublishedObject(*source, registry);
+        if (!built.Succeeded())
+        {
+            ++stats.excludedObjectCount;
+            stats.excludedDrawCount +=
+                static_cast<uint32>(source->meshBatches.size());
+            if (stats.failureReason == GPUScenePublicationFailureReason::None)
+                stats.failureReason = built.failureReason;
+            objectsToRemove.insert(objectId);
+            continue;
+        }
+
+        GPUScenePublicationFailureReason dependencyFailure =
+            GPUScenePublicationFailureReason::None;
+        if (!AreExactDependenciesReady(built.object.requiredResources,
+                                       registry,
+                                       dependencyFailure))
+        {
+            ++stats.excludedObjectCount;
+            stats.excludedDrawCount +=
+                static_cast<uint32>(source->meshBatches.size());
+            if (stats.failureReason == GPUScenePublicationFailureReason::None)
+                stats.failureReason = dependencyFailure;
+            objectsToRemove.insert(objectId);
+            continue;
+        }
+        stats.candidateDrawCount +=
+            static_cast<uint32>(built.object.data.draws.size());
+        candidates.emplace(objectId, std::move(built.object));
+    }
+    stats.candidateObjectCount = static_cast<uint32>(candidates.size());
+
+    GPUSceneTransaction transaction;
+    for (uint64 objectId : objectsToRemove)
+    {
+        if (!m_publishedObjects.contains(objectId))
+            continue;
+        const std::optional<GPUScenePrimitiveRef> primitive =
+            m_database.FindPrimitive(objectId);
+        if (!primitive)
+        {
+            stats.failureReason =
+                GPUScenePublicationFailureReason::DatabaseCommitFailed;
+            stats.complete = false;
+            m_stats = stats;
+            return m_stats;
+        }
+        transaction.Remove(*primitive);
+        ++stats.removeCount;
+    }
+    for (const auto& [objectId, candidate] : candidates)
+    {
+        const auto existing = m_publishedObjects.find(objectId);
+        if (existing == m_publishedObjects.end())
+        {
+            transaction.Add(candidate.data);
+            ++stats.addCount;
+        }
+        else if (IsEquivalent(existing->second, candidate))
+        {
+            ++stats.noOpCount;
+        }
+        else
+        {
+            const std::optional<GPUScenePrimitiveRef> primitive =
+                m_database.FindPrimitive(objectId);
+            if (!primitive)
+            {
+                stats.failureReason =
+                    GPUScenePublicationFailureReason::DatabaseCommitFailed;
+                stats.complete = false;
+                m_stats = stats;
+                return m_stats;
+            }
+            transaction.Update(*primitive, candidate.data);
+            ++stats.updateCount;
+        }
+    }
+
+    m_publishedObjects.reserve(m_publishedObjects.size() + stats.addCount);
+    const GPUSceneCommitResult committed = m_database.Commit(transaction);
+    if (!committed.Succeeded())
+    {
+        stats.failureReason =
+            committed.status == GPUSceneCommitStatus::AllocationFailed
+                ? GPUScenePublicationFailureReason::AllocationFailed
+                : GPUScenePublicationFailureReason::DatabaseCommitFailed;
+        PopulateCommittedIdentity(stats);
+        stats.complete = false;
+        stats.executionEligible = false;
+        m_stats = stats;
+        return m_stats;
+    }
+
+    for (uint64 objectId : objectsToRemove)
+        m_publishedObjects.erase(objectId);
+    while (!candidates.empty())
+    {
+        auto candidateNode = candidates.extract(candidates.begin());
+        const auto existing = m_publishedObjects.find(candidateNode.key());
+        if (existing != m_publishedObjects.end())
+            existing->second = std::move(candidateNode.mapped());
+        else
+            m_publishedObjects.insert(std::move(candidateNode));
+    }
+    m_committedSourceSequence = stats.sourceSequence;
+    PopulateCommittedIdentity(stats);
+    stats.complete = stats.excludedObjectCount == 0 &&
+                     stats.excludedDrawCount == 0 &&
+                     stats.publishedObjectCount == stats.attemptedObjectCount &&
+                     stats.publishedDrawCount == stats.attemptedDrawCount;
     stats.executionEligible = false;
     m_stats = stats;
     return m_stats;

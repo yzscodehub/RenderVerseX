@@ -208,6 +208,7 @@ MeshBatchBuildResult BuildMeshBatches(const MeshBatchBuildInput& input)
             source.geometry,
             source.materialMode,
             flags});
+        result.batches.back().objectRevision = input.objectRevision;
     }
     result.code = MeshBatchBuildCode::Success;
     return result;

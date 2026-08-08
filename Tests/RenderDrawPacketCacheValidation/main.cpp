@@ -78,6 +78,9 @@ TEST(RenderDrawPacketCacheValidation, EnumerationsHaveStableNames)
     EXPECT_STREQ(ToName(
                      RenderDrawPacketCacheInvalidationReason::StaticStateChanged),
                  "StaticStateChanged");
+    EXPECT_STREQ(ToName(
+                     RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged),
+                 "ObjectRevisionChanged");
     EXPECT_STREQ(ToName(RenderDrawPacketCacheInvalidationReason::ObjectRemoved),
                  "ObjectRemoved");
     EXPECT_STREQ(ToName(RenderDrawPacketCacheInvalidationReason::DynamicBypass),
@@ -243,6 +246,35 @@ TEST(RenderDrawPacketCacheValidation,
     cache.EndAcceptedPublication();
     EXPECT_EQ(flagsMiss.invalidationReason,
               RenderDrawPacketCacheInvalidationReason::StaticStateChanged);
+}
+
+TEST(RenderDrawPacketCacheValidation,
+     CompleteObjectRevisionInvalidatesWithoutChangingResourceGenerations)
+{
+    RenderDrawPacketCache cache;
+    const RenderDrawPacketCacheVersions versions = MakeVersions();
+    MeshBatch original = MakeBatch();
+    original.objectRevision = 41;
+    RenderDrawPacket packetTemplate;
+
+    cache.BeginAcceptedPublication();
+    ASSERT_EQ(cache.Resolve(original, versions, false, packetTemplate).code,
+              RenderDrawPacketCacheResolveCode::Miss);
+    cache.EndAcceptedPublication();
+
+    MeshBatch changed = original;
+    changed.objectRevision = 42;
+    cache.BeginAcceptedPublication();
+    const RenderDrawPacketCacheResolveResult miss =
+        cache.Resolve(changed, versions, false, packetTemplate);
+    cache.EndAcceptedPublication();
+
+    EXPECT_EQ(miss.code, RenderDrawPacketCacheResolveCode::Miss);
+    EXPECT_EQ(miss.invalidationReason,
+              RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged);
+    EXPECT_EQ(cache.GetStats().GetInvalidationCount(
+                  RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged),
+              1U);
 }
 
 TEST(RenderDrawPacketCacheValidation,

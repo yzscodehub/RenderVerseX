@@ -2,7 +2,7 @@
 
 /**
  * @file GPUSceneUploader.h
- * @brief Renderer-private persistent upload path for the non-executing GPU scene.
+ * @brief Renderer-private persistent upload path for resident GPUScene rows.
  */
 
 #include "Core/Types.h"
@@ -106,9 +106,9 @@ namespace RVX
     /**
      * @brief Uploads the CPU GPU-scene mirror through RenderGraph copy passes.
      *
-     * This type deliberately exposes no RHI resource to the rest of Render. It
-     * establishes residency, state handoff and completion-aware reuse only;
-     * Task 11D remains responsible for every shader/visibility/command consumer.
+     * This type exposes resident tables only through versioned graph leases. It
+     * establishes residency, state handoff, and completion-aware reuse while
+     * consumers remain responsible for declaring exact graph reads.
      */
     class GPUSceneUploader final : public NonMovable
     {

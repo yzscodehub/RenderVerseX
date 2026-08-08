@@ -26,14 +26,19 @@ namespace RVX
         }
         m_statusTable = statusTable;
         m_retirementQueue = retirementQueue;
+        BumpContentRevision();
         return true;
     }
 
     void RenderResourceRegistry::Shutdown()
     {
+        const bool hadState = !m_entries.empty() || m_statusTable != nullptr ||
+                              m_retirementQueue != nullptr;
         m_entries.clear();
         m_retirementQueue = nullptr;
         m_statusTable = nullptr;
+        if (hadState)
+            BumpContentRevision();
     }
 
     bool RenderResourceRegistry::BeginPending(
@@ -67,6 +72,7 @@ namespace RVX
 
         Entry entry;
         entry.generation = handle.generation;
+        entry.contentRevision = BumpContentRevision();
         entry.kind = kind;
         entry.dependencies = dependencies;
         switch (kind)
@@ -243,6 +249,7 @@ namespace RVX
         }
         entry->committed = std::move(entry->pending);
         entry->pending.reset();
+        entry->contentRevision = BumpContentRevision();
         return true;
     }
 
@@ -262,6 +269,12 @@ namespace RVX
         {
             m_entries.erase(handle.slot);
         }
+        else
+        {
+            entry->contentRevision = BumpContentRevision();
+            return true;
+        }
+        BumpContentRevision();
         return true;
     }
 
@@ -281,6 +294,7 @@ namespace RVX
             return false;
         }
         m_entries.erase(handle.slot);
+        BumpContentRevision();
         return true;
     }
 
@@ -605,6 +619,13 @@ namespace RVX
         return stats;
     }
 
+    uint64 RenderResourceRegistry::GetContentRevision(
+        RenderResourceHandle handle) const noexcept
+    {
+        const Entry* entry = FindExact(handle);
+        return entry != nullptr ? entry->contentRevision : 0;
+    }
+
     RenderResourceRegistry::Entry* RenderResourceRegistry::FindExact(
         RenderResourceHandle handle)
     {
@@ -691,5 +712,13 @@ namespace RVX
         const RenderResourceStatus status = m_statusTable->Query(handle);
         return status.code == RenderResourceStatusCode::Current &&
                status.state == RenderResourcePublicState::GPUReady;
+    }
+
+    uint64 RenderResourceRegistry::BumpContentRevision() noexcept
+    {
+        ++m_contentRevision;
+        if (m_contentRevision == 0)
+            ++m_contentRevision;
+        return m_contentRevision;
     }
 } // namespace RVX

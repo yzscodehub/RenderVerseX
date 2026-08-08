@@ -2,7 +2,7 @@
 
 /**
  * @file GPUSceneUpdate.h
- * @brief Accepted RenderScene to persistent CPU GPU-scene-shadow publication.
+ * @brief Accepted RenderScene to persistent CPU GPUScene publication.
  */
 
 #include "GPUScene/GPUSceneDatabase.h"
@@ -10,6 +10,7 @@
 #include "RenderContracts/RenderIdentity.h"
 
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -34,11 +35,11 @@ namespace RVX
     };
 
     /**
-     * @brief Maintains a non-executable, exact-generation CPU mirror.
+     * @brief Maintains the exact-generation CPU source for resident GPUScene rows.
      *
      * This object has no RHI ownership and must remain behind SceneRenderer's
-     * renderer-private boundary.  Its committed values are diagnostics/future
-     * Tier 2 input only; direct and Tier 1 rendering never consume them.
+     * renderer-private boundary. Its committed values feed the GPUScene uploader
+     * and Tier 2 execution; direct and Tier 1 rendering never consume them.
      */
     class GPUSceneUpdate final : public NonMovable
     {
@@ -52,6 +53,12 @@ namespace RVX
 
         [[nodiscard]] GPUScenePublicationStats Publish(
             const RenderScene& scene,
+            const RenderResourceRegistry& registry);
+        /** @brief Publish only changed/removed retained object identities. */
+        [[nodiscard]] GPUScenePublicationStats PublishIncremental(
+            const RenderScene& scene,
+            std::span<const uint64> changedObjectIds,
+            std::span<const uint64> removedObjectIds,
             const RenderResourceRegistry& registry);
         [[nodiscard]] GPUScenePublicationStats Revalidate(
             const RenderResourceRegistry& registry);
@@ -79,7 +86,7 @@ namespace RVX
             return m_database.GetDiagnostics();
         }
 
-        /** @brief Render-private validation view; never an execution input. */
+        /** @brief Render-private validation view of the CPU publication. */
         [[nodiscard]] const GPUSceneCommittedMirror&
             GetCommittedMirrorForTesting() const noexcept
         {
@@ -122,6 +129,11 @@ namespace RVX
     private:
         [[nodiscard]] GPUScenePublicationStats PublishImpl(
             const RenderScene& scene,
+            const RenderResourceRegistry& registry);
+        [[nodiscard]] GPUScenePublicationStats PublishIncrementalImpl(
+            const RenderScene& scene,
+            std::span<const uint64> changedObjectIds,
+            std::span<const uint64> removedObjectIds,
             const RenderResourceRegistry& registry);
         void PopulateCommittedIdentity(GPUScenePublicationStats& stats) const noexcept;
         [[nodiscard]] uint32 GetPublishedDrawCount() const noexcept;

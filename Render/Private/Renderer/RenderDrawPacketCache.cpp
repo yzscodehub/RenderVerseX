@@ -28,7 +28,7 @@ uint64 RenderDrawPacketCacheStats::GetInvalidationCount(
     return index < invalidationCounts.size() ? invalidationCounts[index] : 0;
 }
 
-void RenderDrawPacketCache::BeginAcceptedPublication() noexcept
+void RenderDrawPacketCache::BeginAcceptedPublication(bool pruneUnobserved) noexcept
 {
     ++m_publicationGeneration;
     if (m_publicationGeneration == 0)
@@ -36,6 +36,7 @@ void RenderDrawPacketCache::BeginAcceptedPublication() noexcept
         ++m_publicationGeneration;
     }
     m_publicationActive = true;
+    m_pruneUnobserved = pruneUnobserved;
 }
 
 void RenderDrawPacketCache::EndAcceptedPublication()
@@ -45,24 +46,38 @@ void RenderDrawPacketCache::EndAcceptedPublication()
         return;
     }
 
-    for (auto entry = m_entries.begin(); entry != m_entries.end();)
+    if (m_pruneUnobserved)
     {
-        if (entry->second.lastPublishedGeneration == m_publicationGeneration)
+        for (auto entry = m_entries.begin(); entry != m_entries.end();)
         {
-            ++entry;
-            continue;
-        }
+            if (entry->second.lastPublishedGeneration == m_publicationGeneration)
+            {
+                ++entry;
+                continue;
+            }
 
-        entry = m_entries.erase(entry);
-        RecordInvalidation(RenderDrawPacketCacheInvalidationReason::ObjectRemoved);
+            entry = m_entries.erase(entry);
+            RecordInvalidation(RenderDrawPacketCacheInvalidationReason::ObjectRemoved);
+        }
     }
     m_publicationActive = false;
+    m_pruneUnobserved = true;
+}
+
+bool RenderDrawPacketCache::Remove(RenderObjectId objectId,
+                                   uint32 submeshIndex) noexcept
+{
+    const size_t erased = m_entries.erase(EntryKey{objectId, submeshIndex});
+    if (erased != 0)
+        RecordInvalidation(RenderDrawPacketCacheInvalidationReason::ObjectRemoved);
+    return erased != 0;
 }
 
 void RenderDrawPacketCache::Clear()
 {
     m_entries.clear();
     m_publicationActive = false;
+    m_pruneUnobserved = true;
     ++m_stats.clearCount;
 }
 
@@ -164,6 +179,7 @@ RenderDrawPacketStaticSignature RenderDrawPacketCache::MakeSignature(
     signature.topology = batch.geometry.topology;
     signature.materialMode = batch.materialMode;
     signature.flags = batch.flags;
+    signature.objectRevision = batch.objectRevision;
     signature.versions = versions;
     return signature;
 }
@@ -225,6 +241,10 @@ RenderDrawPacketCache::ClassifyMismatch(
         existing.material.generation != requested.material.generation)
     {
         return RenderDrawPacketCacheInvalidationReason::MaterialGenerationChanged;
+    }
+    if (existing.objectRevision != requested.objectRevision)
+    {
+        return RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged;
     }
     return RenderDrawPacketCacheInvalidationReason::StaticStateChanged;
 }

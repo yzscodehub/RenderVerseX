@@ -43,6 +43,7 @@ namespace RVX
             MeshUploadPrimitiveTopology::Triangles;
         RenderMaterialMode materialMode = RenderMaterialMode::Opaque;
         RenderBatchFlags flags = RenderBatchFlags::None;
+        uint64 objectRevision = 0;
         RenderDrawPacketCacheVersions versions;
 
         [[nodiscard]] bool operator==(
@@ -67,7 +68,8 @@ namespace RVX
         StaticStateChanged = 5,
         ObjectRemoved = 6,
         DynamicBypass = 7,
-        Count = 8
+        ObjectRevisionChanged = 8,
+        Count = 9
     };
 
     [[nodiscard]] constexpr const char* ToName(
@@ -115,6 +117,8 @@ namespace RVX
                 return "ObjectRemoved";
             case RenderDrawPacketCacheInvalidationReason::DynamicBypass:
                 return "DynamicBypass";
+            case RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged:
+                return "ObjectRevisionChanged";
             case RenderDrawPacketCacheInvalidationReason::Count:
                 return "Count";
             default:
@@ -169,8 +173,11 @@ namespace RVX
     class RenderDrawPacketCache
     {
     public:
-        void BeginAcceptedPublication() noexcept;
+        /** @param pruneUnobserved True for a full replacement publication. */
+        void BeginAcceptedPublication(bool pruneUnobserved = true) noexcept;
         void EndAcceptedPublication();
+        /** @brief Remove one retained object/submesh template explicitly. */
+        bool Remove(RenderObjectId objectId, uint32 submeshIndex) noexcept;
         void Clear();
 
         /** @brief Read-only exact lookup used while building material draw lists. */
@@ -230,6 +237,7 @@ namespace RVX
         RenderDrawPacketCacheStats m_stats;
         uint64 m_publicationGeneration = 0;
         bool m_publicationActive = false;
+        bool m_pruneUnobserved = true;
     };
 
     static_assert(static_cast<uint8>(RenderDrawPacketCacheResolveCode::Hit) == 0);

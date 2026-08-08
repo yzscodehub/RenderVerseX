@@ -1,8 +1,11 @@
 #include "RenderGraphInternal.h"
+#include "Core/Job/JobSystem.h"
 #include "Core/Log.h"
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
+#include <future>
 #include <unordered_map>
 #include <vector>
 
@@ -32,6 +35,11 @@ namespace RVX
         {
             graph.stats.lastExecutedPassCount = 0;
             graph.stats.lastExecutionCpuDurationNanoseconds = 0;
+            graph.stats.parallelRecordingEnabled =
+                graph.parallelRecordingEnabled;
+            graph.stats.parallelRecordingUsed = false;
+            graph.stats.lastParallelRecordingLevelCount = 0;
+            graph.stats.lastParallelRecordingBatchCount = 0;
             graph.stats.accessSnapshotMismatchCount = 0;
             graph.stats.executionQueueMismatchCount = 0;
             graph.lastQueueSyncs.clear();
@@ -165,8 +173,20 @@ namespace RVX
             pass.lastExecutionSerial = executionSerial;
             pass.lastCpuDurationNanoseconds =
                 static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - beginTime).count());
-            graph.stats.lastExecutedPassCount++;
-            graph.stats.lastExecutionCpuDurationNanoseconds += pass.lastCpuDurationNanoseconds;
+        }
+
+        void AccumulateExecutionDiagnostics(RenderGraphImpl& graph)
+        {
+            graph.stats.lastExecutedPassCount = 0;
+            graph.stats.lastExecutionCpuDurationNanoseconds = 0;
+            for (const Pass& pass : graph.passes)
+            {
+                if (!pass.executedLastRun)
+                    continue;
+                ++graph.stats.lastExecutedPassCount;
+                graph.stats.lastExecutionCpuDurationNanoseconds +=
+                    pass.lastCpuDurationNanoseconds;
+            }
         }
 
         void EmitExportBarriers(RenderGraphImpl& graph, RHICommandContext& ctx)
@@ -530,6 +550,7 @@ namespace RVX
         }
 
         EmitExportBarriers(graph, ctx);
+        AccumulateExecutionDiagnostics(graph);
         graph.executionRealized = true;
     }
 
@@ -633,11 +654,26 @@ namespace RVX
 
         // All fallible plan construction and validation completes before any
         // pass callback records commands. A GraphicsOnly fallback can
-        // therefore never execute a pass callback twice.
-        uint32 executionSerial = 0;
+        // therefore never execute a pass callback twice. Serial identities are
+        // assigned up front so diagnostics remain deterministic when batches
+        // in one dependency level record concurrently.
+        std::vector<uint32> batchFirstExecutionSerial(
+            planned.queueBatches.size(), 0U);
+        uint32 nextExecutionSerial = 0;
         for (uint32 batchIndex = 0;
              batchIndex < static_cast<uint32>(planned.queueBatches.size());
              ++batchIndex)
+        {
+            batchFirstExecutionSerial[batchIndex] = nextExecutionSerial;
+            for (uint32 passIndex : planned.queueBatches[batchIndex].passIndices)
+            {
+                if (!graph.passes[passIndex].culled)
+                    ++nextExecutionSerial;
+            }
+        }
+
+        const auto recordBatch =
+            [&](uint32 batchIndex)
         {
             const RenderGraph::PlannedQueueBatchDiagnostic& plannedBatch =
                 planned.queueBatches[batchIndex];
@@ -650,6 +686,7 @@ namespace RVX
                 EmitInitialQueueReleaseBarriers(
                     graph, plannedBatch.queue, *context);
             }
+            uint32 executionSerial = batchFirstExecutionSerial[batchIndex];
             for (uint32 passIndex : plannedBatch.passIndices)
             {
                 Pass& pass = graph.passes[passIndex];
@@ -663,10 +700,71 @@ namespace RVX
                 }
             }
             if (plannedBatch.syntheticTerminal)
-            {
                 EmitExportBarriers(graph, *context);
-            }
             context->End();
+        };
+
+        JobSystem& jobs = JobSystem::Get();
+        uint32 levelBegin = 0;
+        while (levelBegin < planned.queueBatches.size())
+        {
+            const uint32 dependencyLevel =
+                planned.queueBatches[levelBegin].dependencyLevel;
+            uint32 levelEnd = levelBegin + 1U;
+            while (levelEnd < planned.queueBatches.size() &&
+                   planned.queueBatches[levelEnd].dependencyLevel ==
+                       dependencyLevel)
+            {
+                ++levelEnd;
+            }
+
+            const bool recordInParallel = graph.parallelRecordingEnabled &&
+                                          jobs.IsInitialized() &&
+                                          jobs.GetWorkerCount() > 1U &&
+                                          levelEnd - levelBegin > 1U;
+            if (recordInParallel)
+            {
+                std::vector<std::future<void>> recordings;
+                recordings.reserve(levelEnd - levelBegin);
+                for (uint32 batchIndex = levelBegin;
+                     batchIndex < levelEnd;
+                     ++batchIndex)
+                {
+                    recordings.push_back(jobs.SubmitWithResult(
+                        [&, batchIndex]() { recordBatch(batchIndex); }));
+                }
+
+                std::exception_ptr firstFailure;
+                for (std::future<void>& recording : recordings)
+                {
+                    try
+                    {
+                        recording.get();
+                    }
+                    catch (...)
+                    {
+                        if (!firstFailure)
+                            firstFailure = std::current_exception();
+                    }
+                }
+                if (firstFailure)
+                    std::rethrow_exception(firstFailure);
+
+                graph.stats.parallelRecordingUsed = true;
+                ++graph.stats.lastParallelRecordingLevelCount;
+                graph.stats.lastParallelRecordingBatchCount +=
+                    levelEnd - levelBegin;
+            }
+            else
+            {
+                for (uint32 batchIndex = levelBegin;
+                     batchIndex < levelEnd;
+                     ++batchIndex)
+                {
+                    recordBatch(batchIndex);
+                }
+            }
+            levelBegin = levelEnd;
         }
 
         graph.stats.asyncComputeScheduledPasses = 0;
@@ -699,6 +797,7 @@ namespace RVX
         graph.stats.asyncFallbackUsed = false;
         graph.stats.asyncFallbackReason =
             RenderGraph::AsyncComputeFallbackReason::None;
+        AccumulateExecutionDiagnostics(graph);
         graph.executionRealized = true;
         return true;
     }
@@ -892,6 +991,7 @@ namespace RVX
             signalComputeForGraphics(RVX_INVALID_INDEX, true);
         }
         EmitExportBarriers(graph, graphicsCtx);
+        AccumulateExecutionDiagnostics(graph);
         graph.executionRealized = true;
 
         if (graph.stats.asyncComputeScheduledPasses == 0)

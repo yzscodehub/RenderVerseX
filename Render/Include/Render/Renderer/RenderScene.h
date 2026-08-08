@@ -20,6 +20,7 @@ namespace RVX
 {
     class RenderResourceRegistry;
     class RenderSceneDatabase;
+    struct RenderSceneDatabaseChanges;
 
     enum class RenderFrameApplyCode : uint8
     {
@@ -66,6 +67,17 @@ namespace RVX
         bool presented = false;
     };
 
+    /** @brief Deterministic retained-scene work counters for scale validation. */
+    struct RenderSceneRetainedStats
+    {
+        uint64 fullRebuildCount = 0;
+        uint64 incrementalUpdateCount = 0;
+        uint64 staticReuseCount = 0;
+        uint64 appliedSceneRevision = 0;
+        uint32 lastRebuiltObjectCount = 0;
+        uint32 lastRemovedObjectCount = 0;
+    };
+
     /** @brief Render-owned primitive values and exact resource generations. */
     struct RenderObject
     {
@@ -80,8 +92,10 @@ namespace RVX
         RenderResourceHandle fallbackMesh;
         RenderResourceHandle fallbackMaterial;
         std::vector<Mat4> skinningMatrices;
+        std::vector<RenderResourceHandle> referencedResources;
 
         uint64 entityId = 0;
+        uint64 objectRevision = 0;
         uint64 sortKey = 0;
         uint32 layerMask = ~0U;
         uint32 flags = 0;
@@ -119,6 +133,7 @@ namespace RVX
         float innerConeAngle = 0.0f;
         float outerConeAngle = 0.7854f;
         RenderResourceHandle shadowResource;
+        std::vector<RenderResourceHandle> referencedResources;
         bool castsShadow = false;
     };
 
@@ -149,6 +164,26 @@ namespace RVX
             RenderDrawPacket& outTemplate) const noexcept;
         [[nodiscard]] RenderDrawPacketCacheStats
             GetDrawPacketCacheStats() const noexcept;
+        [[nodiscard]] const RenderSceneRetainedStats& GetRetainedStats() const noexcept
+        {
+            return m_retainedStats;
+        }
+        [[nodiscard]] const std::vector<uint64>&
+            GetGPUSceneChangedObjectIds() const noexcept
+        {
+            return m_gpuSceneChangedObjectIds;
+        }
+        [[nodiscard]] const std::vector<uint64>&
+            GetGPUSceneRemovedObjectIds() const noexcept
+        {
+            return m_gpuSceneRemovedObjectIds;
+        }
+        [[nodiscard]] bool IsFullGPUSceneMutation() const noexcept
+        {
+            return m_fullGPUSceneMutation;
+        }
+        [[nodiscard]] const RenderObject* FindObject(
+            uint64 objectId) const noexcept;
 
         [[nodiscard]] const std::vector<RenderObject>& GetObjects() const
         {
@@ -216,6 +251,10 @@ namespace RVX
         {
             return m_lights.size();
         }
+        [[nodiscard]] uint32 GetDrawCount() const noexcept
+        {
+            return m_drawCount;
+        }
         [[nodiscard]] const RenderObject& GetObject(size_t index) const
         {
             return m_objects[index];
@@ -231,10 +270,15 @@ namespace RVX
 
         void AddObject(const RenderObject& object)
         {
+            m_objectIndices.insert_or_assign(
+                object.entityId, static_cast<uint32>(m_objects.size()));
+            m_drawCount += static_cast<uint32>(object.meshBatches.size());
             m_objects.push_back(object);
         }
         void AddLight(const RenderLight& light)
         {
+            m_lightIndices.insert_or_assign(
+                light.lightId, static_cast<uint32>(m_lights.size()));
             m_lights.push_back(light);
         }
 
@@ -249,10 +293,23 @@ namespace RVX
             const RenderFrameSettings& settings,
             const RenderFrameCaptureRequest& captureRequest,
             const RenderFeatureSnapshot& features,
+            const RenderSceneDatabase& retainedScene,
             const RenderResourceRegistry& registry);
+        [[nodiscard]] RenderFrameApplyResult ApplyIncrementalFrameState(
+            const RenderFramePacketV5& frame,
+            const RenderSceneDatabase& retainedScene,
+            const RenderSceneDatabaseChanges& changes,
+            const RenderResourceRegistry& registry);
+        void RebuildRetainedIndicesAndReferences();
+        void AddReferences(const std::vector<RenderResourceHandle>& references);
+        void RemoveReferences(const std::vector<RenderResourceHandle>& references);
+        void RemoveObjectAt(uint32 index);
+        void RemoveLightAt(uint32 index);
 
         std::vector<RenderObject> m_objects;
         std::vector<RenderLight> m_lights;
+        std::unordered_map<uint64, uint32> m_objectIndices;
+        std::unordered_map<uint64, uint32> m_lightIndices;
         RenderFrameHeaderV5 m_acceptedHeader{};
         RenderViewSnapshot m_view{};
         RenderSkySnapshot m_sky{};
@@ -261,10 +318,38 @@ namespace RVX
         RenderFrameCaptureRequest m_captureRequest{};
         RenderFeatureSnapshot m_features{};
         std::vector<RenderResourceHandle> m_referencedResources;
+        std::unordered_map<RenderResourceHandle,
+                           uint32,
+                           RenderResourceHandleHash>
+            m_referenceCounts;
+        std::unordered_map<RenderResourceHandle,
+                           uint32,
+                           RenderResourceHandleHash>
+            m_referenceIndices;
+        std::vector<RenderResourceHandle> m_skyReferences;
+        std::vector<RenderResourceHandle> m_environmentReferences;
+        std::unordered_map<RenderResourceHandle,
+                           uint64,
+                           RenderResourceHandleHash>
+            m_watchedResourceRevisions;
         RenderDrawPacketCache m_drawPacketCache;
         RenderDrawPacketCacheVersions m_drawPacketCacheVersions{};
+        RenderSceneRetainedStats m_retainedStats{};
+        uint64 m_appliedSceneRevision = 0;
+        uint64 m_sourceSceneDatabaseId = 0;
+        uint64 m_observedResourceContentRevision = 0;
+        uint32 m_drawCount = 0;
+        std::vector<uint64> m_gpuSceneChangedObjectIds;
+        std::vector<uint64> m_gpuSceneRemovedObjectIds;
+        std::vector<uint64> m_pendingRenderedObjectIds;
+        std::vector<uint64> m_pendingRemovedObjectIds;
+        std::vector<uint64> m_temporalSettleObjectIds;
+        bool m_fullGPUSceneMutation = false;
+        bool m_fullRenderedObjectRefresh = false;
         bool m_hasAcceptedFrame = false;
         bool m_temporalHistoryReset = true;
+        bool m_requiresTemporalSettle = false;
+        bool m_acceptedSceneMutated = false;
 
         RenderFrameHeaderV5 m_lastRenderedHeader{};
         RenderViewSnapshot m_lastRenderedView{};

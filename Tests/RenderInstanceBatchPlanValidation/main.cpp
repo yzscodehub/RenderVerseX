@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <vector>
 
 namespace
@@ -94,6 +95,36 @@ TEST(RenderInstanceBatchPlanValidation, AutoMerges125ExactRigidOpaquePackets)
     EXPECT_EQ(plan.instancedBatchCount, 1u);
     EXPECT_EQ(plan.batches[0].key.layout.primitiveDataBinding,
               RVX::PrimitiveDataBinding::InstanceBuffer);
+}
+
+TEST(RenderInstanceBatchPlanValidation,
+     OneHundredThousandRigidInstancesProduceOneStableSubmissionBatch)
+{
+    constexpr RVX::uint32 instanceCount = 100'000;
+    RVX::DirectDrawPacketBatch input;
+    input.pass = RVX::RenderPassKind::Opaque;
+    input.packets.reserve(instanceCount);
+    for (RVX::uint32 index = 0; index < instanceCount; ++index)
+        input.packets.push_back(MakePacket(index));
+
+    const auto begin = std::chrono::steady_clock::now();
+    const RVX::RenderInstanceBatchPlan plan =
+        RVX::BuildRenderInstanceBatchPlan(
+            input, RVX::RenderInstancingMode::Auto);
+    const auto end = std::chrono::steady_clock::now();
+
+    ASSERT_TRUE(plan.IsComplete());
+    ASSERT_EQ(plan.batches.size(), 1U);
+    EXPECT_TRUE(plan.batches.front().instanced);
+    EXPECT_EQ(plan.batches.front().members.size(), instanceCount);
+    EXPECT_EQ(plan.executedPacketCount, instanceCount);
+    EXPECT_EQ(plan.submittedDrawCount, 1U);
+    EXPECT_EQ(plan.submittedInstanceCount, instanceCount);
+    EXPECT_EQ(plan.instancedBatchCount, 1U);
+    RecordProperty(
+        "instance_batch_100000_us",
+        std::chrono::duration_cast<std::chrono::microseconds>(end - begin)
+            .count());
 }
 
 TEST(RenderInstanceBatchPlanValidation, DisabledPreservesOneDrawPerPacket)

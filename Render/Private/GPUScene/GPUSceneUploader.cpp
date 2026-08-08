@@ -1,6 +1,6 @@
 /**
  * @file GPUSceneUploader.cpp
- * @brief Persistent RenderGraph-copy uploader for the non-executing GPU scene.
+ * @brief Persistent RenderGraph-copy uploader for resident GPUScene tables.
  */
 
 #include "GPUScene/GPUSceneUploader.h"

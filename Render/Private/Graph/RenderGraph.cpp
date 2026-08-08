@@ -1025,6 +1025,16 @@ namespace RVX
         return m_impl->queueExecutionMode;
     }
 
+    void RenderGraph::SetParallelRecordingEnabled(bool enabled) noexcept
+    {
+        m_impl->parallelRecordingEnabled = enabled;
+    }
+
+    bool RenderGraph::IsParallelRecordingEnabled() const noexcept
+    {
+        return m_impl->parallelRecordingEnabled;
+    }
+
     uint64 RenderGraph::GetGraphIdentity() const
     {
         return m_impl->graphIdentity;
@@ -2135,7 +2145,13 @@ namespace RVX
            << ", execution mismatches="
            << diagnostics.compileStats.executionQueueMismatchCount << "\n";
         ss << "Last execution: passes=" << diagnostics.compileStats.lastExecutedPassCount
-           << ", cpuNs=" << diagnostics.compileStats.lastExecutionCpuDurationNanoseconds << "\n";
+           << ", cpuNs=" << diagnostics.compileStats.lastExecutionCpuDurationNanoseconds
+           << ", parallelRecording="
+           << (diagnostics.compileStats.parallelRecordingUsed ? "used" : "serial")
+           << ", parallelLevels="
+           << diagnostics.compileStats.lastParallelRecordingLevelCount
+           << ", parallelBatches="
+           << diagnostics.compileStats.lastParallelRecordingBatchCount << "\n";
         ss << "Estimated transient memory: " << diagnostics.estimatedTransientMemoryBytes << " bytes\n";
         ss << "Estimated used transient memory: " << diagnostics.estimatedUsedTransientMemoryBytes << " bytes\n";
         ss << "Estimated imported memory: " << diagnostics.estimatedImportedMemoryBytes << " bytes\n";
@@ -2386,7 +2402,15 @@ namespace RVX
         ss << "    \"executionQueueMismatchCount\": "
            << stats.executionQueueMismatchCount << ",\n";
         ss << "    \"lastExecutedPassCount\": " << stats.lastExecutedPassCount << ",\n";
-        ss << "    \"lastExecutionCpuDurationNanoseconds\": " << stats.lastExecutionCpuDurationNanoseconds << "\n";
+        ss << "    \"lastExecutionCpuDurationNanoseconds\": " << stats.lastExecutionCpuDurationNanoseconds << ",\n";
+        ss << "    \"parallelRecordingEnabled\": "
+           << JsonBool(stats.parallelRecordingEnabled) << ",\n";
+        ss << "    \"parallelRecordingUsed\": "
+           << JsonBool(stats.parallelRecordingUsed) << ",\n";
+        ss << "    \"lastParallelRecordingLevelCount\": "
+           << stats.lastParallelRecordingLevelCount << ",\n";
+        ss << "    \"lastParallelRecordingBatchCount\": "
+           << stats.lastParallelRecordingBatchCount << "\n";
         ss << "  },\n";
 
         ss << "  \"memory\": {\n";

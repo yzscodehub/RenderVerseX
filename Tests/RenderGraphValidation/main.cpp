@@ -4,10 +4,13 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -307,6 +310,31 @@ namespace
 
     [[maybe_unused]] ::testing::Environment* const g_logEnvironment =
         ::testing::AddGlobalTestEnvironment(new LogEnvironment());
+
+    class ScopedJobSystem final
+    {
+    public:
+        explicit ScopedJobSystem(size_t workerCount)
+            : m_restoreInitialized(JobSystem::Get().IsInitialized()),
+              m_restoreWorkerCount(m_restoreInitialized
+                                       ? JobSystem::Get().GetWorkerCount()
+                                       : 0U)
+        {
+            JobSystem::Get().Shutdown();
+            JobSystem::Get().Initialize(workerCount);
+        }
+
+        ~ScopedJobSystem()
+        {
+            JobSystem::Get().Shutdown();
+            if (m_restoreInitialized)
+                JobSystem::Get().Initialize(m_restoreWorkerCount);
+        }
+
+    private:
+        bool m_restoreInitialized = false;
+        size_t m_restoreWorkerCount = 0;
+    };
 } // namespace
 
 // =============================================================================
@@ -3041,6 +3069,107 @@ TEST(RenderGraphValidation, MultiQueueRecordsDistinctContextsForGraphicsComputeG
     EXPECT_TRUE(hasOwnership(graphicsConsume,
                              GPUQueueDomain::Compute,
                              GPUQueueDomain::Graphics));
+}
+
+TEST(RenderGraphValidation,
+     ParallelRecordingRunsIndependentDependencyLevelBatchesConcurrently)
+{
+    ScopedJobSystem jobs(2);
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::MultiQueue));
+    graph.SetParallelRecordingEnabled(true);
+    ASSERT_TRUE(graph.IsParallelRecordingEnabled());
+
+    RHIBufferDesc desc;
+    desc.size = 256;
+    desc.usage = RHIBufferUsage::Structured |
+                 RHIBufferUsage::UnorderedAccess;
+    FakeBuffer graphicsBuffer(desc);
+    FakeBuffer computeBuffer(desc);
+    const RGBufferHandle graphicsResource = graph.ImportBuffer(
+        &graphicsBuffer, RHIResourceState::Common);
+    const RGBufferHandle computeResource = graph.ImportBuffer(
+        &computeBuffer, RHIResourceState::Common);
+
+    std::mutex rendezvousMutex;
+    std::condition_variable rendezvousCv;
+    uint32 arrived = 0;
+    std::atomic<uint32> successfulRendezvous = 0;
+    const auto rendezvous = [&]()
+    {
+        std::unique_lock lock(rendezvousMutex);
+        ++arrived;
+        rendezvousCv.notify_all();
+        if (rendezvousCv.wait_for(
+                lock,
+                std::chrono::seconds(2),
+                [&arrived]() { return arrived == 2U; }))
+        {
+            successfulRendezvous.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    struct Data
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<Data>(
+        "ParallelGraphics",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                graphicsResource, RHIResourceState::UnorderedAccess);
+        },
+        [&rendezvous](const Data&, RHICommandContext&) { rendezvous(); });
+    graph.AddPass<Data>(
+        "ParallelCompute",
+        RenderGraphPassType::Compute,
+        [computeResource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                computeResource, RHIResourceState::UnorderedAccess);
+        },
+        [&rendezvous](const Data&, RHICommandContext&) { rendezvous(); });
+    graph.SetExportState(graphicsResource, RHIResourceState::ShaderResource);
+    graph.SetExportState(computeResource, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    const RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    ASSERT_GE(plan.queueBatches.size(), 3U);
+    ASSERT_GE(plan.asyncOverlapCandidateLevelCount, 1U);
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(graph.RecordQueueSubmission(recorded));
+    EXPECT_EQ(successfulRendezvous.load(std::memory_order_relaxed), 2U);
+    const RenderGraph::CompileStats& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.parallelRecordingEnabled);
+    EXPECT_TRUE(stats.parallelRecordingUsed);
+    EXPECT_EQ(stats.lastParallelRecordingLevelCount, 1U);
+    EXPECT_EQ(stats.lastParallelRecordingBatchCount, 2U);
+    EXPECT_EQ(stats.lastExecutedPassCount, 2U);
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.passes.size(), 2U);
+    EXPECT_EQ(diagnostics.passes[0].executionSerial, 0U);
+    EXPECT_EQ(diagnostics.passes[1].executionSerial, 1U);
+    const std::string json = graph.ExportDiagnosticsJson();
+    EXPECT_NE(json.find("\"parallelRecordingUsed\": true"),
+              std::string::npos);
 }
 
 TEST(RenderGraphValidation, MultiQueuePlansCopyComputeGraphicsAndTerminalJoin)

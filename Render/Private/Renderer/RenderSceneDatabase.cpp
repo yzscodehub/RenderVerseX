@@ -1,6 +1,7 @@
 #include "Render/Renderer/RenderSceneDatabase.h"
 
 #include <algorithm>
+#include <atomic>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -9,6 +10,32 @@ namespace RVX
 {
 namespace
 {
+    std::atomic<uint64> g_nextRenderSceneDatabaseInstanceId{1};
+
+    template<typename Values>
+    void SortUnique(Values& values)
+    {
+        std::sort(values.begin(), values.end());
+        values.erase(std::unique(values.begin(), values.end()), values.end());
+    }
+
+    template<typename Mutations, typename Values, typename IdMember>
+    void AppendMutationIds(const Mutations& mutations,
+                           Values& values,
+                           IdMember idMember)
+    {
+        values.reserve(values.size() + mutations.size());
+        for (const auto& mutation : mutations)
+            values.push_back(mutation.*idMember);
+    }
+
+    template<typename Values>
+    void AppendIds(const Values& source, Values& destination)
+    {
+        destination.reserve(destination.size() + source.size());
+        destination.insert(destination.end(), source.begin(), source.end());
+    }
+
     template<typename Mutation, typename State>
     void ApplyMutations(const std::vector<Mutation>& mutations,
                         std::unordered_map<uint64, State>& values,
@@ -38,6 +65,13 @@ namespace
         return static_cast<uint32>(id >> 32u);
     }
 
+    [[nodiscard]] uint64 MakePackedHandle(uint32 slot,
+                                          uint32 generation) noexcept
+    {
+        return (static_cast<uint64>(generation) << 32U) |
+               static_cast<uint64>(slot);
+    }
+
     /**
      * Render primitive/light IDs are packed generation-safe ComponentHandles.
      * Validate the entire replacement transaction before applying any value so
@@ -51,16 +85,6 @@ namespace
         uint64 Mutation::* idMember,
         bool fullReset)
     {
-        std::unordered_map<uint32, uint64> currentBySlot;
-        currentBySlot.reserve(current.size());
-        for (const auto& [id, state] : current)
-        {
-            (void)state;
-            const uint32 slot = GetHandleSlot(id);
-            if (slot == 0 || !currentBySlot.emplace(slot, id).second)
-                return false;
-        }
-
         std::unordered_set<uint64> removals;
         std::unordered_map<uint32, uint64> upsertsBySlot;
         removals.reserve(mutations.size());
@@ -92,13 +116,17 @@ namespace
 
         for (const auto& [slot, id] : upsertsBySlot)
         {
-            const auto existing = currentBySlot.find(slot);
-            if (existing != currentBySlot.end() && existing->second == id)
+            const auto accepted = acceptedGenerations.find(slot);
+            const uint64 currentId = accepted != acceptedGenerations.end()
+                ? MakePackedHandle(slot, accepted->second)
+                : 0;
+            const bool hasCurrent = currentId != 0 &&
+                                    current.contains(currentId);
+            if (hasCurrent && currentId == id)
                 continue;
 
-            if (existing == currentBySlot.end())
+            if (!hasCurrent)
             {
-                const auto accepted = acceptedGenerations.find(slot);
                 if (accepted != acceptedGenerations.end() &&
                     GetHandleGeneration(id) <= accepted->second)
                 {
@@ -107,9 +135,8 @@ namespace
                 continue;
             }
 
-            if (GetHandleGeneration(id) <=
-                    GetHandleGeneration(existing->second) ||
-                !removals.contains(existing->second))
+            if (GetHandleGeneration(id) <= GetHandleGeneration(currentId) ||
+                !removals.contains(currentId))
             {
                 return false;
             }
@@ -147,6 +174,141 @@ namespace
             value.reset();
         else
             value = mutation->state;
+    }
+
+    template<typename Map>
+    struct IncrementalMapPlan
+    {
+        Map upserts;
+        std::vector<typename Map::key_type> removals;
+        size_t finalSize = 0;
+    };
+
+    template<typename Mutation, typename State>
+    IncrementalMapPlan<std::unordered_map<uint64, State>>
+        PrepareIncrementalValuePlan(
+            const std::vector<Mutation>& mutations,
+            const std::unordered_map<uint64, State>& current,
+            uint64 Mutation::* idMember)
+    {
+        IncrementalMapPlan<std::unordered_map<uint64, State>> plan;
+        plan.finalSize = current.size();
+        plan.upserts.reserve(mutations.size());
+        plan.removals.reserve(mutations.size());
+        for (const Mutation& mutation : mutations)
+        {
+            const uint64 id = mutation.*idMember;
+            if (mutation.operation == RenderSceneMutationOperation::Remove)
+            {
+                plan.removals.push_back(id);
+                if (current.contains(id))
+                    --plan.finalSize;
+            }
+            else
+            {
+                if (!current.contains(id))
+                    ++plan.finalSize;
+                plan.upserts.emplace(id, mutation.state);
+            }
+        }
+        return plan;
+    }
+
+    IncrementalMapPlan<std::unordered_map<uint64, uint64>>
+        PreparePrimitiveRevisionPlan(
+            const std::vector<RenderPrimitiveMutation>& mutations,
+            const std::unordered_map<uint64, uint64>& current,
+            uint64 targetRevision)
+    {
+        IncrementalMapPlan<std::unordered_map<uint64, uint64>> plan;
+        plan.finalSize = current.size();
+        plan.upserts.reserve(mutations.size());
+        plan.removals.reserve(mutations.size());
+        for (const RenderPrimitiveMutation& mutation : mutations)
+        {
+            if (mutation.operation == RenderSceneMutationOperation::Remove)
+            {
+                plan.removals.push_back(mutation.objectId);
+                if (current.contains(mutation.objectId))
+                    --plan.finalSize;
+            }
+            else
+            {
+                if (!current.contains(mutation.objectId))
+                    ++plan.finalSize;
+                plan.upserts.emplace(mutation.objectId, targetRevision);
+            }
+        }
+        return plan;
+    }
+
+    template<typename Mutation>
+    IncrementalMapPlan<std::unordered_map<uint32, uint32>>
+        PrepareGenerationPlan(
+            const std::vector<Mutation>& mutations,
+            const std::unordered_map<uint32, uint32>& current,
+            uint64 Mutation::* idMember)
+    {
+        IncrementalMapPlan<std::unordered_map<uint32, uint32>> plan;
+        plan.finalSize = current.size();
+        plan.upserts.reserve(mutations.size());
+        for (const Mutation& mutation : mutations)
+        {
+            const uint64 id = mutation.*idMember;
+            const uint32 slot = GetHandleSlot(id);
+            const uint32 generation = GetHandleGeneration(id);
+            auto staged = plan.upserts.find(slot);
+            if (staged != plan.upserts.end())
+            {
+                staged->second = std::max(staged->second, generation);
+                continue;
+            }
+            const auto accepted = current.find(slot);
+            const uint32 next = accepted != current.end()
+                ? std::max(accepted->second, generation)
+                : generation;
+            if (accepted == current.end())
+                ++plan.finalSize;
+            plan.upserts.emplace(slot, next);
+        }
+        return plan;
+    }
+
+    template<typename Map>
+    void ReserveIncrementalTarget(Map& target,
+                                  const IncrementalMapPlan<Map>& plan)
+    {
+        if (plan.finalSize > target.size())
+            target.reserve(plan.finalSize);
+    }
+
+    template<typename Map>
+    void CommitIncrementalPlan(Map& target, IncrementalMapPlan<Map>& plan)
+    {
+        for (const typename Map::key_type& key : plan.removals)
+            target.erase(key);
+        while (!plan.upserts.empty())
+        {
+            typename Map::node_type node =
+                plan.upserts.extract(plan.upserts.begin());
+            target.erase(node.key());
+            static_cast<void>(target.insert(std::move(node)));
+        }
+    }
+
+    template<typename State>
+    std::optional<std::optional<State>> PrepareIncrementalSingleton(
+        const std::optional<RenderSingletonMutation<State>>& mutation)
+    {
+        if (!mutation.has_value())
+            return std::nullopt;
+        if (mutation->operation == RenderSceneMutationOperation::Remove)
+        {
+            return std::optional<std::optional<State>>{
+                std::in_place, std::nullopt};
+        }
+        return std::optional<std::optional<State>>{
+            std::in_place, mutation->state};
     }
 
     bool EqualMatrix(const Mat4& left, const Mat4& right)
@@ -232,6 +394,55 @@ namespace
     }
 } // namespace
 
+RenderSceneDatabase::RenderSceneDatabase()
+    : m_instanceId(g_nextRenderSceneDatabaseInstanceId.fetch_add(
+          1, std::memory_order_relaxed))
+{
+    if (m_instanceId == 0)
+    {
+        m_instanceId = g_nextRenderSceneDatabaseInstanceId.fetch_add(
+            1, std::memory_order_relaxed);
+    }
+}
+
+RenderSceneDatabase::ChangeJournalEntry
+RenderSceneDatabase::BuildChangeJournalEntry(
+    const RenderSceneUpdateBatch& batch)
+{
+    ChangeJournalEntry entry;
+    entry.baseRevision = batch.baseSceneRevision;
+    entry.targetRevision = batch.targetSceneRevision;
+    entry.fullReset = batch.fullReset;
+    entry.skyChanged = batch.fullReset || batch.sky.has_value();
+    entry.environmentChanged =
+        batch.fullReset || batch.environment.has_value();
+    if (batch.fullReset)
+        return entry;
+
+    AppendMutationIds(batch.primitives,
+                      entry.primitives,
+                      &RenderPrimitiveMutation::objectId);
+    AppendMutationIds(batch.lights,
+                      entry.lights,
+                      &RenderLightMutation::lightId);
+    AppendMutationIds(batch.decals,
+                      entry.decals,
+                      &RenderDecalMutation::decalId);
+    AppendMutationIds(batch.probes,
+                      entry.probes,
+                      &RenderProbeMutation::probeId);
+    AppendMutationIds(batch.particles,
+                      entry.particles,
+                      &RenderParticleMutation::instanceId);
+    AppendMutationIds(batch.water,
+                      entry.water,
+                      &RenderWaterMutation::componentId);
+    AppendMutationIds(batch.terrain,
+                      entry.terrain,
+                      &RenderTerrainMutation::componentId);
+    return entry;
+}
+
 RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
     const RenderSceneUpdateBatch& batch)
 {
@@ -302,16 +513,115 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
         return result;
     }
 
+    if (!batch.fullReset)
+    {
+        auto primitives = PrepareIncrementalValuePlan(
+            batch.primitives,
+            m_primitives,
+            &RenderPrimitiveMutation::objectId);
+        auto primitiveRevisions = PreparePrimitiveRevisionPlan(
+            batch.primitives,
+            m_primitiveRevisions,
+            batch.targetSceneRevision);
+        auto lights = PrepareIncrementalValuePlan(
+            batch.lights, m_lights, &RenderLightMutation::lightId);
+        auto decals = PrepareIncrementalValuePlan(
+            batch.decals, m_decals, &RenderDecalMutation::decalId);
+        auto probes = PrepareIncrementalValuePlan(
+            batch.probes, m_probes, &RenderProbeMutation::probeId);
+        auto particles = PrepareIncrementalValuePlan(
+            batch.particles,
+            m_particles,
+            &RenderParticleMutation::instanceId);
+        auto water = PrepareIncrementalValuePlan(
+            batch.water, m_water, &RenderWaterMutation::componentId);
+        auto terrain = PrepareIncrementalValuePlan(
+            batch.terrain, m_terrain, &RenderTerrainMutation::componentId);
+        auto primitiveGenerations = PrepareGenerationPlan(
+            batch.primitives,
+            m_primitiveGenerations,
+            &RenderPrimitiveMutation::objectId);
+        auto lightGenerations = PrepareGenerationPlan(
+            batch.lights,
+            m_lightGenerations,
+            &RenderLightMutation::lightId);
+        auto decalGenerations = PrepareGenerationPlan(
+            batch.decals,
+            m_decalGenerations,
+            &RenderDecalMutation::decalId);
+        auto probeGenerations = PrepareGenerationPlan(
+            batch.probes,
+            m_probeGenerations,
+            &RenderProbeMutation::probeId);
+        auto waterGenerations = PrepareGenerationPlan(
+            batch.water,
+            m_waterGenerations,
+            &RenderWaterMutation::componentId);
+        auto terrainGenerations = PrepareGenerationPlan(
+            batch.terrain,
+            m_terrainGenerations,
+            &RenderTerrainMutation::componentId);
+        auto sky = PrepareIncrementalSingleton(batch.sky);
+        auto environment = PrepareIncrementalSingleton(batch.environment);
+
+        // Every allocation and copy happens before the live value maps change.
+        // Existing-key updates need no rehash; growth reserves once and remains
+        // amortized independently of the total retained scene size.
+        ReserveIncrementalTarget(m_primitives, primitives);
+        ReserveIncrementalTarget(m_primitiveRevisions, primitiveRevisions);
+        ReserveIncrementalTarget(m_lights, lights);
+        ReserveIncrementalTarget(m_decals, decals);
+        ReserveIncrementalTarget(m_probes, probes);
+        ReserveIncrementalTarget(m_particles, particles);
+        ReserveIncrementalTarget(m_water, water);
+        ReserveIncrementalTarget(m_terrain, terrain);
+        ReserveIncrementalTarget(m_primitiveGenerations, primitiveGenerations);
+        ReserveIncrementalTarget(m_lightGenerations, lightGenerations);
+        ReserveIncrementalTarget(m_decalGenerations, decalGenerations);
+        ReserveIncrementalTarget(m_probeGenerations, probeGenerations);
+        ReserveIncrementalTarget(m_waterGenerations, waterGenerations);
+        ReserveIncrementalTarget(m_terrainGenerations, terrainGenerations);
+        m_changeHistory.push_back(BuildChangeJournalEntry(batch));
+
+        CommitIncrementalPlan(m_primitives, primitives);
+        CommitIncrementalPlan(m_primitiveRevisions, primitiveRevisions);
+        CommitIncrementalPlan(m_lights, lights);
+        CommitIncrementalPlan(m_decals, decals);
+        CommitIncrementalPlan(m_probes, probes);
+        CommitIncrementalPlan(m_particles, particles);
+        CommitIncrementalPlan(m_water, water);
+        CommitIncrementalPlan(m_terrain, terrain);
+        CommitIncrementalPlan(m_primitiveGenerations, primitiveGenerations);
+        CommitIncrementalPlan(m_lightGenerations, lightGenerations);
+        CommitIncrementalPlan(m_decalGenerations, decalGenerations);
+        CommitIncrementalPlan(m_probeGenerations, probeGenerations);
+        CommitIncrementalPlan(m_waterGenerations, waterGenerations);
+        CommitIncrementalPlan(m_terrainGenerations, terrainGenerations);
+        if (sky.has_value())
+            m_sky = std::move(*sky);
+        if (environment.has_value())
+            m_environment = std::move(*environment);
+        m_revision = batch.targetSceneRevision;
+
+        result.code = RenderSceneUpdateApplyCode::Applied;
+        result.acceptedRevision = m_revision;
+        result.sceneMutated = true;
+        return result;
+    }
+
     auto primitives = batch.fullReset ? decltype(m_primitives){} : m_primitives;
+    auto primitiveRevisions = batch.fullReset
+        ? decltype(m_primitiveRevisions){}
+        : m_primitiveRevisions;
     auto lights = batch.fullReset ? decltype(m_lights){} : m_lights;
     auto decals = batch.fullReset ? decltype(m_decals){} : m_decals;
     auto probes = batch.fullReset ? decltype(m_probes){} : m_probes;
-    auto primitiveGenerations = m_primitiveGenerations;
-    auto lightGenerations = m_lightGenerations;
-    auto decalGenerations = m_decalGenerations;
-    auto probeGenerations = m_probeGenerations;
-    auto waterGenerations = m_waterGenerations;
-    auto terrainGenerations = m_terrainGenerations;
+    auto primitiveGenerations = decltype(m_primitiveGenerations){};
+    auto lightGenerations = decltype(m_lightGenerations){};
+    auto decalGenerations = decltype(m_decalGenerations){};
+    auto probeGenerations = decltype(m_probeGenerations){};
+    auto waterGenerations = decltype(m_waterGenerations){};
+    auto terrainGenerations = decltype(m_terrainGenerations){};
     auto particles = batch.fullReset ? decltype(m_particles){} : m_particles;
     auto water = batch.fullReset ? decltype(m_water){} : m_water;
     auto terrain = batch.fullReset ? decltype(m_terrain){} : m_terrain;
@@ -319,6 +629,14 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
     auto environment = batch.fullReset ? decltype(m_environment){} : m_environment;
 
     ApplyMutations(batch.primitives, primitives, &RenderPrimitiveMutation::objectId);
+    for (const RenderPrimitiveMutation& mutation : batch.primitives)
+    {
+        if (mutation.operation == RenderSceneMutationOperation::Remove)
+            primitiveRevisions.erase(mutation.objectId);
+        else
+            primitiveRevisions.insert_or_assign(
+                mutation.objectId, batch.targetSceneRevision);
+    }
     ApplyMutations(batch.lights, lights, &RenderLightMutation::lightId);
     ApplyMutations(batch.decals, decals, &RenderDecalMutation::decalId);
     ApplyMutations(batch.probes, probes, &RenderProbeMutation::probeId);
@@ -352,7 +670,12 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
     ApplySingleton(batch.sky, sky);
     ApplySingleton(batch.environment, environment);
 
+    // Allocate/copy history before the no-throw state swaps below. An
+    // allocation failure therefore preserves both retained state and history.
+    m_changeHistory.push_back(BuildChangeJournalEntry(batch));
+
     m_primitives.swap(primitives);
+    m_primitiveRevisions.swap(primitiveRevisions);
     m_lights.swap(lights);
     m_decals.swap(decals);
     m_probes.swap(probes);
@@ -368,6 +691,11 @@ RenderSceneUpdateApplyResult RenderSceneDatabase::Apply(
     m_sky.swap(sky);
     m_environment.swap(environment);
     m_revision = batch.targetSceneRevision;
+    if (batch.fullReset)
+    {
+        while (m_changeHistory.size() > 1)
+            m_changeHistory.pop_front();
+    }
 
     result.code = RenderSceneUpdateApplyCode::Applied;
     result.acceptedRevision = m_revision;
@@ -379,6 +707,7 @@ void RenderSceneDatabase::Clear()
 {
     m_revision = 0;
     m_primitives.clear();
+    m_primitiveRevisions.clear();
     m_lights.clear();
     m_decals.clear();
     m_probes.clear();
@@ -393,6 +722,76 @@ void RenderSceneDatabase::Clear()
     m_terrainGenerations.clear();
     m_sky.reset();
     m_environment.reset();
+    m_changeHistory.clear();
+}
+
+RenderSceneDatabaseChanges RenderSceneDatabase::CollectChangesSince(
+    uint64 baseRevision) const
+{
+    RenderSceneDatabaseChanges result;
+    result.baseRevision = baseRevision;
+    result.targetRevision = m_revision;
+    if (baseRevision == m_revision)
+    {
+        result.available = true;
+        return result;
+    }
+    if (baseRevision > m_revision)
+        return result;
+
+    uint64 expectedRevision = baseRevision;
+    bool observed = false;
+    for (const ChangeJournalEntry& batch : m_changeHistory)
+    {
+        if (batch.targetRevision <= baseRevision)
+            continue;
+
+        if (batch.fullReset)
+        {
+            result.fullReset = true;
+            result.skyChanged = true;
+            result.environmentChanged = true;
+            expectedRevision = batch.targetRevision;
+            observed = true;
+            continue;
+        }
+        if (batch.baseRevision != expectedRevision)
+            return result;
+
+        AppendIds(batch.primitives, result.primitives);
+        AppendIds(batch.lights, result.lights);
+        AppendIds(batch.decals, result.decals);
+        AppendIds(batch.probes, result.probes);
+        AppendIds(batch.particles, result.particles);
+        AppendIds(batch.water, result.water);
+        AppendIds(batch.terrain, result.terrain);
+        result.skyChanged = result.skyChanged || batch.skyChanged;
+        result.environmentChanged = result.environmentChanged ||
+                                    batch.environmentChanged;
+        expectedRevision = batch.targetRevision;
+        observed = true;
+    }
+    if (!observed || expectedRevision != m_revision)
+        return result;
+
+    SortUnique(result.primitives);
+    SortUnique(result.lights);
+    SortUnique(result.decals);
+    SortUnique(result.probes);
+    SortUnique(result.particles);
+    SortUnique(result.water);
+    SortUnique(result.terrain);
+    result.available = true;
+    return result;
+}
+
+void RenderSceneDatabase::AcknowledgeChangesThrough(uint64 revision) noexcept
+{
+    while (!m_changeHistory.empty() &&
+           m_changeHistory.front().targetRevision <= revision)
+    {
+        m_changeHistory.pop_front();
+    }
 }
 
 const RenderPrimitiveSnapshot* RenderSceneDatabase::FindPrimitive(
@@ -400,6 +799,12 @@ const RenderPrimitiveSnapshot* RenderSceneDatabase::FindPrimitive(
 {
     const auto found = m_primitives.find(objectId);
     return found != m_primitives.end() ? &found->second : nullptr;
+}
+
+uint64 RenderSceneDatabase::GetPrimitiveRevision(uint64 objectId) const noexcept
+{
+    const auto found = m_primitiveRevisions.find(objectId);
+    return found != m_primitiveRevisions.end() ? found->second : 0;
 }
 
 const RenderLightSnapshot* RenderSceneDatabase::FindLight(uint64 lightId) const noexcept

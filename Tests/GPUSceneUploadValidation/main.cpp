@@ -448,6 +448,84 @@ namespace
         EXPECT_NE(boundsBefore, bounds->Bytes());
     }
 
+    TEST(GPUSceneUploadValidation,
+         OnePercentDirtyObjectsGenerateExactPerTableUploadRanges)
+    {
+        FakeDevice device;
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        GPUSceneUploader uploader;
+        ASSERT_TRUE(uploader.Initialize(&device, &tracker));
+        GPUSceneDatabase database;
+
+        constexpr uint32 objectCount = 1'000;
+        constexpr uint32 dirtyCount = objectCount / 100U;
+        GPUSceneTransaction add;
+        for (uint32 index = 0; index < objectCount; ++index)
+        {
+            add.Add(MakeObject(
+                static_cast<uint64>(index) + 1U,
+                static_cast<float32>(index)));
+        }
+        ASSERT_TRUE(database.Commit(add).Succeeded());
+        uploader.Observe(database.GetCommittedMirror(),
+                         database.GetLastChangeSet());
+
+        FakeCommandContext context;
+        RecordAndExecute(uploader, device, context);
+        const GPUCompletionPoint fullUpload = tracker.Submit(&context);
+        ASSERT_NE(fullUpload.value, 0U);
+        GPUCompletionToken token;
+        ASSERT_TRUE(InsertGPUCompletionPoint(token, fullUpload));
+        uploader.NotifySubmission(token);
+        ASSERT_NE(device.Fence(0), nullptr);
+        device.Fence(0)->Complete(fullUpload.value);
+
+        GPUSceneTransaction update;
+        for (uint32 index = 0; index < objectCount; index += 100U)
+        {
+            const uint64 objectId = static_cast<uint64>(index) + 1U;
+            const std::optional<GPUScenePrimitiveRef> primitive =
+                database.FindPrimitive(objectId);
+            ASSERT_TRUE(primitive.has_value());
+            update.Update(
+                *primitive,
+                MakeObject(objectId, static_cast<float32>(index) + 0.5F));
+        }
+        ASSERT_TRUE(database.Commit(update).Succeeded());
+        uploader.Observe(database.GetCommittedMirror(),
+                         database.GetLastChangeSet());
+        context.copyCount = 0;
+        RecordAndExecute(uploader, device, context);
+
+        const GPUSceneUploadDiagnostics& diagnostics =
+            uploader.GetDiagnostics();
+        constexpr std::array<uint64, GPU_SCENE_RESIDENT_TABLE_COUNT>
+            rowSizes = {
+                sizeof(GPUScenePrimitiveRow),
+                sizeof(GPUSceneBoundsRow),
+                sizeof(GPUSceneTransformRow),
+                sizeof(GPUSceneMaterialRow),
+                sizeof(GPUSceneGeometryRow),
+                sizeof(GPUSceneDrawMetadataRow),
+            };
+        uint64 expectedBytes = 0;
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+             ++tableIndex)
+        {
+            EXPECT_EQ(diagnostics.tables[tableIndex].frameUploadRangeCount,
+                      dirtyCount);
+            EXPECT_EQ(diagnostics.tables[tableIndex].frameUploadBytes,
+                      static_cast<uint64>(dirtyCount) * rowSizes[tableIndex]);
+            expectedBytes +=
+                static_cast<uint64>(dirtyCount) * rowSizes[tableIndex];
+        }
+        EXPECT_EQ(diagnostics.frameUploadRangeCount,
+                  dirtyCount * GPU_SCENE_RESIDENT_TABLE_COUNT);
+        EXPECT_EQ(diagnostics.frameUploadBytes, expectedBytes);
+    }
+
     TEST(GPUSceneUploadValidation, WarmStaticFrameAndUnsubmittedRetryAreSafe)
     {
         FakeDevice device;

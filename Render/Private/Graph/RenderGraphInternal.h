@@ -219,6 +219,7 @@ namespace RVX
         std::vector<std::string> compileDiagnostics;
         RenderGraph::QueueExecutionMode queueExecutionMode =
             RenderGraph::QueueExecutionMode::GraphicsOnly;
+        bool parallelRecordingEnabled = false;
         // Memory aliasing
         std::vector<TransientHeap> transientHeaps;
         bool enableMemoryAliasing = false;

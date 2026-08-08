@@ -146,6 +146,16 @@ namespace RVX
         bool SetQueueExecutionMode(QueueExecutionMode mode);
         QueueExecutionMode GetQueueExecutionMode() const;
 
+        /**
+         * @brief Enable independent queue-batch recording on Core JobSystem workers.
+         *
+         * Disabled by default until every participating pass callback is audited
+         * for concurrent recording. Batches in the same dependency level may run
+         * concurrently; dependency levels always complete in order.
+         */
+        void SetParallelRecordingEnabled(bool enabled) noexcept;
+        [[nodiscard]] bool IsParallelRecordingEnabled() const noexcept;
+
         /** @brief Stable non-zero identity for this graph instance. */
         uint64 GetGraphIdentity() const;
 
@@ -259,6 +269,10 @@ namespace RVX
             uint32 executionQueueMismatchCount = 0;
             uint32 lastExecutedPassCount = 0;
             uint64 lastExecutionCpuDurationNanoseconds = 0;
+            bool parallelRecordingEnabled = false;
+            bool parallelRecordingUsed = false;
+            uint32 lastParallelRecordingLevelCount = 0;
+            uint32 lastParallelRecordingBatchCount = 0;
             bool memoryAliasingEnabled = false;
             bool memoryAliasingUnsupportedRequested = false;
             bool explicitAliasingBarriersSupported = false;
