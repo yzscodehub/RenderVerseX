@@ -10,6 +10,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <set>
 #include <sstream>
@@ -596,11 +597,10 @@ namespace RVX
         m_vkCmdDrawIndexedIndirectCount = nullptr;
         m_vkCmdDrawIndexedIndirectCountKHR = nullptr;
         std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-        // Multi-family scheduling requires paired queue-family ownership
-        // release/acquire barriers. The RenderGraph cannot emit those pairs
-        // yet, so logical Compute and Copy alias the graphics queue.
         std::set<uint32> uniqueQueueFamilies = {
-            m_queueFamilies.graphicsFamily.value()
+            m_queueFamilies.graphicsFamily.value(),
+            m_queueFamilies.computeFamily.value(),
+            m_queueFamilies.transferFamily.value()
         };
 
         float queuePriority = 1.0f;
@@ -841,13 +841,15 @@ namespace RVX
                 "Vulkan indexed indirect-count was enabled but no usable command entry point loaded");
         }
 
-        // The logical Compute and Copy domains intentionally alias Graphics
-        // until paired ownership transfers are implemented end-to-end.
         vkGetDeviceQueue(m_device, m_queueFamilies.graphicsFamily.value(), 0, &m_graphicsQueue);
-        m_computeQueue = m_graphicsQueue;
-        m_transferQueue = m_graphicsQueue;
+        vkGetDeviceQueue(m_device, m_queueFamilies.computeFamily.value(), 0, &m_computeQueue);
+        vkGetDeviceQueue(m_device, m_queueFamilies.transferFamily.value(), 0, &m_transferQueue);
 
-        RVX_RHI_DEBUG("Command queues created (Compute and Copy alias Graphics until ownership transfers are implemented)");
+        RVX_RHI_DEBUG(
+            "Command queues created (Graphics family {}, Compute family {}, Copy family {})",
+            m_queueFamilies.graphicsFamily.value(),
+            m_queueFamilies.computeFamily.value(),
+            m_queueFamilies.transferFamily.value());
         return true;
     }
 
@@ -928,8 +930,29 @@ namespace RVX
         poolInfo.queueFamilyIndex = m_queueFamilies.graphicsFamily.value();
         VK_CHECK(vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_graphicsCommandPool));
 
-        m_computeCommandPool = m_graphicsCommandPool;
-        m_transferCommandPool = m_graphicsCommandPool;
+        if (m_queueFamilies.computeFamily != m_queueFamilies.graphicsFamily)
+        {
+            poolInfo.queueFamilyIndex = m_queueFamilies.computeFamily.value();
+            VK_CHECK(vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_computeCommandPool));
+        }
+        else
+        {
+            m_computeCommandPool = m_graphicsCommandPool;
+        }
+        if (m_queueFamilies.transferFamily == m_queueFamilies.graphicsFamily)
+        {
+            m_transferCommandPool = m_graphicsCommandPool;
+        }
+        else if (m_queueFamilies.transferFamily == m_queueFamilies.computeFamily)
+        {
+            m_transferCommandPool = m_computeCommandPool;
+        }
+        else
+        {
+            poolInfo.queueFamilyIndex = m_queueFamilies.transferFamily.value();
+            VK_CHECK(vkCreateCommandPool(
+                m_device, &poolInfo, nullptr, &m_transferCommandPool));
+        }
 
         return true;
     }
@@ -1226,13 +1249,39 @@ namespace RVX
             m_capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_capabilities.supportsComputePipeline = true;          // Vulkan exposes compute pipelines in the base API
         m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+        const bool hasDedicatedComputeQueue =
+            GetComputeQueueFamily() != GetGraphicsQueueFamily() ||
+            GetComputeQueue() != GetGraphicsQueue();
+        GPUQueueDomain copyDomain = GPUQueueDomain::Copy;
+        if (GetTransferQueueFamily() == GetGraphicsQueueFamily() &&
+            GetTransferQueue() == GetGraphicsQueue())
+        {
+            copyDomain = GPUQueueDomain::Graphics;
+        }
+        else if (GetTransferQueueFamily() == GetComputeQueueFamily() &&
+                 GetTransferQueue() == GetComputeQueue())
+        {
+            copyDomain = hasDedicatedComputeQueue
+                ? GPUQueueDomain::Compute
+                : GPUQueueDomain::Graphics;
+        }
         m_capabilities.queueTopology.logicalQueueDomains = {
             GPUQueueDomain::Graphics,
-            GPUQueueDomain::Graphics,
-            GPUQueueDomain::Graphics,
+            hasDedicatedComputeQueue ? GPUQueueDomain::Compute
+                                     : GPUQueueDomain::Graphics,
+            copyDomain,
         };
-        m_capabilities.queueTopology.activeDomainCount = 1;
-        m_capabilities.supportsAsyncCompute = false;
+        std::array<bool, 3> activeDomains{};
+        for (GPUQueueDomain domain :
+             m_capabilities.queueTopology.logicalQueueDomains)
+        {
+            activeDomains[static_cast<uint8>(domain)] = true;
+        }
+        m_capabilities.queueTopology.activeDomainCount =
+            static_cast<uint8>(std::count(activeDomains.begin(),
+                                          activeDomains.end(),
+                                          true));
+        m_capabilities.supportsAsyncCompute = hasDedicatedComputeQueue;
         m_capabilities.supportsDescriptorSets = true;
         m_capabilities.supportsDynamicDescriptorOffsets = true;
         m_capabilities.maxDescriptorSets = 4;

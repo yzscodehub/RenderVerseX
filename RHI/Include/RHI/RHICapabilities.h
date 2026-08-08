@@ -21,6 +21,15 @@ namespace RVX
         Adaptive,         // Auto-select based on DrawCall count
     };
 
+    /** @brief Native barrier API selected by the DX12 backend. */
+    enum class DX12BarrierDialect : uint8
+    {
+        Legacy = 0,
+        Enhanced,
+    };
+
+    const char* GetDX12BarrierDialectName(DX12BarrierDialect dialect);
+
     // =============================================================================
     // Device Capabilities
     // =============================================================================
@@ -128,6 +137,8 @@ namespace RVX
             bool supportsRootSignature1_1 = false;
             bool supportsSM6_0 = false;
             bool supportsSM6_6 = false;
+            bool supportsEnhancedBarriers = false;
+            DX12BarrierDialect barrierDialect = DX12BarrierDialect::Legacy;
         } dx12;
 
         // Vulkan-specific

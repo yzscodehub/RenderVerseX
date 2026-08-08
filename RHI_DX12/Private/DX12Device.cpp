@@ -1141,6 +1141,22 @@ namespace RVX
                          static_cast<uint32>(shaderModelResult));
         }
 
+        D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12 = {};
+        const HRESULT options12Result = m_device->CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof(options12));
+        m_capabilities.dx12.supportsEnhancedBarriers =
+            SUCCEEDED(options12Result) && options12.EnhancedBarriersSupported;
+
+        // All ordinary textures, placed textures, and swap-chain images enter
+        // the engine in COMMON; D3D12 defines that legacy initial state as the
+        // COMMON enhanced layout. Buffers do not carry layouts. This lets the
+        // command context select one dialect for its complete lifetime without
+        // mixing ResourceBarrier and Barrier on the same subresource.
+        m_capabilities.dx12.barrierDialect =
+            m_capabilities.dx12.supportsEnhancedBarriers
+            ? DX12BarrierDialect::Enhanced
+            : DX12BarrierDialect::Legacy;
+
         // Common limits
         m_capabilities.maxTextureSize = 16384;
         m_capabilities.maxTextureLayers = 2048;
@@ -1236,7 +1252,7 @@ namespace RVX
         m_capabilities.supportsDefaultQueueFenceSignal = true;
         m_capabilities.supportsExplicitQueueFenceSignal = true;
         m_capabilities.supportsQueueFenceWait = true;
-        m_capabilities.supportsMultiQueueBatchSubmit = false;
+        m_capabilities.supportsMultiQueueBatchSubmit = true;
         m_capabilities.emulatesQueueFences = false;
         m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
         m_capabilities.queueTopology.logicalQueueDomains = {

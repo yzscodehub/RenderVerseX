@@ -251,6 +251,76 @@ namespace RVX
         return {domain, submittedValue};
     }
 
+    GPUCompletionPoint RenderSubmissionTracker::Submit(
+        std::span<RHICommandContext* const> contexts,
+        GPUQueueDomain terminalDomain)
+    {
+        if (!m_device || contexts.empty() ||
+            !IsDeclaredGPUQueueDomain(terminalDomain) ||
+            m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            if (m_device &&
+                m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+            {
+                MarkDeviceLost();
+            }
+            return {};
+        }
+
+        bool containsTerminalDomain = false;
+        for (RHICommandContext* context : contexts)
+        {
+            GPUQueueDomain contextDomain = GPUQueueDomain::Graphics;
+            if (!context ||
+                !TryGetGPUQueueDomain(
+                    m_topology, context->GetQueueType(), contextDomain))
+            {
+                return {};
+            }
+            containsTerminalDomain |= contextDomain == terminalDomain;
+        }
+        if (!containsTerminalDomain)
+        {
+            return {};
+        }
+
+        DomainState* state = GetDomainState(terminalDomain);
+        if (!state || state->lost ||
+            state->lastSubmittedValue == std::numeric_limits<uint64>::max())
+        {
+            if (state)
+            {
+                state->lost = true;
+            }
+            return {};
+        }
+
+        if (m_topology.completionMode ==
+            RHIQueueCompletionMode::CompatibilityWaitIdle)
+        {
+            m_device->SubmitCommandContexts(contexts, nullptr);
+            ++state->lastSubmittedValue;
+            return {terminalDomain, state->lastSubmittedValue};
+        }
+        if (m_topology.completionMode != RHIQueueCompletionMode::NativeTimeline ||
+            !m_device->GetCapabilities().supportsMultiQueueBatchSubmit ||
+            !state->fence)
+        {
+            state->lost = true;
+            return {};
+        }
+
+        const uint64 submittedValue =
+            m_device->SubmitCommandContexts(contexts, state->fence.Get());
+        if (submittedValue == 0 || submittedValue <= state->lastSubmittedValue)
+        {
+            state->lost = true;
+            return {};
+        }
+        state->lastSubmittedValue = submittedValue;
+        return {terminalDomain, submittedValue};
+    }
+
     GPUCompletionStatus RenderSubmissionTracker::Query(GPUCompletionPoint point) const
     {
         if (!IsDeclaredGPUQueueDomain(point.domain) || point.value == 0)

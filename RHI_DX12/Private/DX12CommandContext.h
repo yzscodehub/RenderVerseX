@@ -10,6 +10,7 @@ namespace RVX
     class DX12DescriptorSetLayout;
     class DX12Device;
     class DX12Pipeline;
+    class DX12AccelerationStructure;
 
     // =============================================================================
     // DX12 Command Context Implementation
@@ -163,6 +164,12 @@ namespace RVX
         ComPtr<ID3D12CommandAllocator> DetachCommandAllocator();
 
     private:
+        bool UsesEnhancedBarriers() const;
+        void InsertAccelerationStructureBarrier(
+            DX12AccelerationStructure* accelerationStructure);
+        void QueueEnhancedBarrier(const D3D12_BUFFER_BARRIER& barrier);
+        void QueueEnhancedBarrier(const D3D12_TEXTURE_BARRIER& barrier);
+        void QueueEnhancedBarrier(const D3D12_GLOBAL_BARRIER& barrier);
         void FlushBarriers();
 
         DX12Device* m_device = nullptr;
@@ -171,6 +178,7 @@ namespace RVX
 
         ComPtr<ID3D12CommandAllocator> m_commandAllocator;
         ComPtr<ID3D12GraphicsCommandList> m_commandList;
+        ComPtr<ID3D12GraphicsCommandList7> m_enhancedCommandList;
 
         // Current state
         DX12Pipeline* m_currentPipeline = nullptr;
@@ -183,8 +191,12 @@ namespace RVX
         bool m_isRecording = false;
         bool m_inRenderPass = false;
 
-        // Pending barriers (batched for efficiency)
-        std::vector<D3D12_RESOURCE_BARRIER> m_pendingBarriers;
+        // Pending barriers (batched for efficiency). A device uses exactly one
+        // barrier dialect for a command list lifetime.
+        std::vector<D3D12_RESOURCE_BARRIER> m_pendingLegacyBarriers;
+        std::vector<D3D12_BUFFER_BARRIER> m_pendingBufferBarriers;
+        std::vector<D3D12_TEXTURE_BARRIER> m_pendingTextureBarriers;
+        std::vector<D3D12_GLOBAL_BARRIER> m_pendingGlobalBarriers;
     };
 
     // Factory functions

@@ -202,12 +202,10 @@ namespace RVX
         VkQueue GetGraphicsQueue() const { return m_graphicsQueue; }
         VkQueue GetComputeQueue() const { return m_computeQueue; }
         VkQueue GetTransferQueue() const { return m_transferQueue; }
-        
+
         uint32 GetGraphicsQueueFamily() const { return m_queueFamilies.graphicsFamily.value(); }
-        // Queue-family ownership release/acquire pairs are not implemented.
-        // Keep all logical domains on graphics until that contract exists.
-        uint32 GetComputeQueueFamily() const { return GetGraphicsQueueFamily(); }
-        uint32 GetTransferQueueFamily() const { return GetGraphicsQueueFamily(); }
+        uint32 GetComputeQueueFamily() const { return m_queueFamilies.computeFamily.value(); }
+        uint32 GetTransferQueueFamily() const { return m_queueFamilies.transferFamily.value(); }
 
         VkCommandPool GetCommandPool(RHICommandQueueType type);
         VkDescriptorPool GetDescriptorPool() const { return m_descriptorPool; }

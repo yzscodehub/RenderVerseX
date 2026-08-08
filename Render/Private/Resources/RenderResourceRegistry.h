@@ -159,6 +159,10 @@ namespace RVX
             RenderResourceHandle handle,
             RHICommandContext& context,
             RHIResourceState desiredState);
+        /** @brief Commit the access realized by RenderGraph for an imported texture. */
+        [[nodiscard]] bool CommitTextureAccessSnapshot(
+            RenderResourceHandle handle,
+            const RHITextureAccessSnapshot& accessSnapshot);
         [[nodiscard]] const std::vector<RenderResourceHandle>*
             GetDependencies(RenderResourceHandle handle) const;
         [[nodiscard]] GPUCompletionToken GetLastUse(

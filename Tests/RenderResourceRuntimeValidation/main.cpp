@@ -270,6 +270,7 @@ namespace
         capabilities.supportsExplicitResourceBarriers = true;
         capabilities.supportsDefaultQueueFenceSignal = true;
         capabilities.supportsExplicitQueueFenceSignal = true;
+        capabilities.supportsMultiQueueBatchSubmit = !compatibility;
         capabilities.supportsAsyncCompute = true;
         capabilities.dx12.resourceBindingTier = 2;
         if (compatibility)
@@ -413,9 +414,16 @@ namespace
         }
         uint64 SubmitCommandContexts(
             std::span<RHICommandContext* const>,
-            RHIFence*) override
+            RHIFence* signalFence) override
         {
-            return 0;
+            ++submitCount;
+            if (failSubmit || signalFence == nullptr)
+            {
+                return 0;
+            }
+            lastFence = static_cast<FakeFence*>(signalFence);
+            lastSubmittedValue = lastFence->Allocate();
+            return lastSubmittedValue;
         }
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc&) override
         {
@@ -854,8 +862,16 @@ namespace
                                        staging[259]}),
                   (std::array<uint8, 4>{10, 11, 12, 255}));
         ASSERT_FALSE(device.commandContexts.empty());
-        auto* context = static_cast<FakeCommandContext*>(
-            device.commandContexts.back().Get());
+        const auto copyContext = std::find_if(
+            device.commandContexts.rbegin(),
+            device.commandContexts.rend(),
+            [](const RHICommandContextRef& candidate)
+            {
+                return candidate->GetQueueType() ==
+                    RHICommandQueueType::Copy;
+            });
+        ASSERT_NE(copyContext, device.commandContexts.rend());
+        auto* context = static_cast<FakeCommandContext*>(copyContext->Get());
         ASSERT_EQ(context->textureCopies.size(), 1U);
         EXPECT_EQ(context->textureCopies[0].bufferOffset, 0U);
         EXPECT_EQ(context->textureCopies[0].bufferRowPitch, 256U);
@@ -899,8 +915,16 @@ namespace
 
         ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
         ASSERT_FALSE(device.commandContexts.empty());
-        auto* context = static_cast<FakeCommandContext*>(
-            device.commandContexts.back().Get());
+        const auto copyContext = std::find_if(
+            device.commandContexts.rbegin(),
+            device.commandContexts.rend(),
+            [](const RHICommandContextRef& candidate)
+            {
+                return candidate->GetQueueType() ==
+                    RHICommandQueueType::Copy;
+            });
+        ASSERT_NE(copyContext, device.commandContexts.rend());
+        auto* context = static_cast<FakeCommandContext*>(copyContext->Get());
         ASSERT_EQ(context->textureCopies.size(), 6U);
         for (uint32 face = 0; face < 6U; ++face)
         {

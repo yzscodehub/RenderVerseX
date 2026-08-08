@@ -8,6 +8,7 @@
 #include "GPUScene/GPUSceneDatabase.h"
 #include "GPUScene/GPUSceneUploader.h"
 #include "Render/Context/RenderContext.h"
+#include "Render/GPUUploadService.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/PipelineCache.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
@@ -869,6 +870,18 @@ TEST(DX12Validation, CapabilitiesReflectNativeFeatureQueriesAndCreatePipelineLay
     }
     EXPECT_FALSE(capabilities.dx12.supportsSM6_6 && !capabilities.dx12.supportsSM6_0);
 
+    D3D12_FEATURE_DATA_D3D12_OPTIONS12 nativeOptions12 = {};
+    const HRESULT options12Result = dx12Device->GetD3DDevice()->CheckFeatureSupport(
+        D3D12_FEATURE_D3D12_OPTIONS12,
+        &nativeOptions12,
+        sizeof(nativeOptions12));
+    EXPECT_EQ(capabilities.dx12.supportsEnhancedBarriers,
+              SUCCEEDED(options12Result) && nativeOptions12.EnhancedBarriersSupported);
+    EXPECT_EQ(capabilities.dx12.barrierDialect,
+              capabilities.dx12.supportsEnhancedBarriers
+                  ? DX12BarrierDialect::Enhanced
+                  : DX12BarrierDialect::Legacy);
+
     if (SUCCEEDED(shaderModelResult) &&
         nativeShaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_0)
     {
@@ -1237,7 +1250,7 @@ TEST(DX12Validation, SynchronizationCapabilities)
     EXPECT_TRUE(caps.supportsDefaultQueueFenceSignal);
     EXPECT_TRUE(caps.supportsExplicitQueueFenceSignal);
     EXPECT_TRUE(caps.supportsQueueFenceWait);
-    EXPECT_FALSE(caps.supportsMultiQueueBatchSubmit);
+    EXPECT_TRUE(caps.supportsMultiQueueBatchSubmit);
     EXPECT_FALSE(caps.emulatesQueueFences);
     EXPECT_EQ(caps.queueTopology.completionMode, RHIQueueCompletionMode::NativeTimeline);
     EXPECT_EQ(caps.queueTopology.activeDomainCount, 3);
@@ -1245,6 +1258,37 @@ TEST(DX12Validation, SynchronizationCapabilities)
     EXPECT_EQ(caps.queueTopology.logicalQueueDomains[1], GPUQueueDomain::Compute);
     EXPECT_EQ(caps.queueTopology.logicalQueueDomains[2], GPUQueueDomain::Copy);
     EXPECT_TRUE(ValidateRHICapabilities(caps));
+}
+
+TEST(DX12Validation, UploadGatewayTransfersCopyOwnershipToGraphics)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    GPUUploadService uploadService;
+    uploadService.Initialize(device.get());
+    ASSERT_TRUE(uploadService.IsInitialized());
+
+    const std::array<uint32, 4> source = {1, 2, 3, 4};
+    GPUUploadBufferDesc desc;
+    desc.size = sizeof(source);
+    desc.usage = RHIBufferUsage::Vertex;
+    desc.stride = sizeof(uint32);
+    desc.debugName = "DX12CopyOwnershipUpload";
+    const GPUUploadBufferResult result =
+        uploadService.UploadBufferDataWithResult(
+            desc, source.data(), sizeof(source));
+    ASSERT_TRUE(result.succeeded);
+    ASSERT_TRUE(result.isPending);
+    EXPECT_EQ(result.finalAccess.domain, GPUQueueDomain::Graphics);
+    EXPECT_EQ(uploadService.FlushAndWaitForUploads(), 1U);
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+
+    uploadService.Shutdown();
+    device->WaitIdle();
+    EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
 }
 
 TEST(DX12Validation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)

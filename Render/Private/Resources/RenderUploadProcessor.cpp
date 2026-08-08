@@ -6,6 +6,7 @@
 #include "Runtime/RenderResourceStatusTable.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <type_traits>
@@ -36,6 +37,25 @@ namespace
                request.GetKind() != RenderResourceKind::Invalid;
     }
 
+    RHICommandQueueType GetUploadQueueType(const IRHIDevice* device)
+    {
+        if (!device)
+        {
+            return RHICommandQueueType::Graphics;
+        }
+        const RHICapabilities& capabilities = device->GetCapabilities();
+        GPUQueueDomain copyDomain = GPUQueueDomain::Graphics;
+        if (!TryGetGPUQueueDomain(capabilities.queueTopology,
+                                  RHICommandQueueType::Copy,
+                                  copyDomain) ||
+            (copyDomain != GPUQueueDomain::Graphics &&
+             !capabilities.supportsMultiQueueBatchSubmit))
+        {
+            return RHICommandQueueType::Graphics;
+        }
+        return RHICommandQueueType::Copy;
+    }
+
     GPUQueueDomain GetPhysicalUploadDomain(const IRHIDevice* device)
     {
         GPUQueueDomain domain = GPUQueueDomain::Graphics;
@@ -43,7 +63,7 @@ namespace
         {
             TryGetGPUQueueDomain(
                 device->GetCapabilities().queueTopology,
-                RHICommandQueueType::Copy,
+                GetUploadQueueType(device),
                 domain);
         }
         return domain;
@@ -51,11 +71,67 @@ namespace
 
     RHIAccessSnapshot MakeUploadFinalAccess(const IRHIDevice* device)
     {
+        (void)device;
         return MakeRHIAccessSnapshot(
             RHIResourceState::Common,
             RHIShaderStage::All,
-            GetPhysicalUploadDomain(device),
+            GPUQueueDomain::Graphics,
             RHIContentValidity::Valid);
+    }
+
+    bool RequiresUploadOwnershipAcquire(const IRHIDevice* device)
+    {
+        return GetPhysicalUploadDomain(device) != GPUQueueDomain::Graphics;
+    }
+
+    RHIBufferBarrier MakeUploadFinalBarrier(
+        const IRHIDevice* device,
+        RHIBuffer* buffer)
+    {
+        return MakeRHIBufferBarrier(
+            buffer,
+            MakeRHIAccessSnapshot(
+                RHIResourceState::CopyDest,
+                RHIShaderStage::All,
+                GetPhysicalUploadDomain(device),
+                RHIContentValidity::Valid),
+            MakeUploadFinalAccess(device));
+    }
+
+    RHITextureBarrier MakeUploadFinalBarrier(
+        const IRHIDevice* device,
+        RHITexture* texture)
+    {
+        return MakeRHITextureBarrier(
+            texture,
+            MakeRHIAccessSnapshot(
+                RHIResourceState::CopyDest,
+                RHIShaderStage::All,
+                GetPhysicalUploadDomain(device),
+                RHIContentValidity::Valid),
+            MakeUploadFinalAccess(device));
+    }
+
+    RHICommandContextRef RecordUploadAcquireContext(
+        IRHIDevice* device,
+        const UploadOwnershipTransfers& transfers)
+    {
+        if (!device || transfers.Empty())
+        {
+            return {};
+        }
+        RHICommandContextRef acquire =
+            device->CreateCommandContext(RHICommandQueueType::Graphics);
+        if (!acquire ||
+            acquire->GetQueueType() != RHICommandQueueType::Graphics)
+        {
+            return {};
+        }
+        acquire->Begin();
+        acquire->Barriers(transfers.bufferBarriers,
+                          transfers.textureBarriers);
+        acquire->End();
+        return acquire;
     }
 
     struct PreparedTextureSlice
@@ -83,6 +159,7 @@ namespace
             GPUCompletionPoint completion;
             RHIStagingBufferRef stagingBuffer;
             RHICommandContextRef commandContext;
+            RHICommandContextRef acquireCommandContext;
             bool submissionFailed = false;
         };
 
@@ -133,10 +210,10 @@ namespace
                 return batchCommandContext;
             }
             batchCommandContext =
-                device->CreateCommandContext(RHICommandQueueType::Copy);
+                device->CreateCommandContext(GetUploadQueueType(device));
             if (batchCommandContext &&
                 batchCommandContext->GetQueueType() ==
-                    RHICommandQueueType::Copy)
+                    GetUploadQueueType(device))
             {
                 batchCommandContext->Begin();
             }
@@ -286,9 +363,13 @@ namespace
                                 0,
                                 0,
                                 dataSize);
-            context->BufferBarrier(buffer.Get(),
-                                   RHIResourceState::CopyDest,
-                                   RHIResourceState::Common);
+            const RHIBufferBarrier finalBarrier =
+                MakeUploadFinalBarrier(device, buffer.Get());
+            context->BufferBarrier(finalBarrier);
+            if (RequiresUploadOwnershipAcquire(device))
+            {
+                batchOwnershipTransfers.bufferBarriers.push_back(finalBarrier);
+            }
             batchCommandContextDirty = true;
             ++stats.bufferUploadCount;
             ++stats.stagedUploadCount;
@@ -483,9 +564,13 @@ namespace
                                              texture.Get(),
                                              copy);
             }
-            context->TextureBarrier(texture.Get(),
-                                    RHIResourceState::CopyDest,
-                                    RHIResourceState::Common);
+            const RHITextureBarrier finalBarrier =
+                MakeUploadFinalBarrier(device, texture.Get());
+            context->TextureBarrier(finalBarrier);
+            if (RequiresUploadOwnershipAcquire(device))
+            {
+                batchOwnershipTransfers.textureBarriers.push_back(finalBarrier);
+            }
             batchCommandContextDirty = true;
             ++stats.textureUploadCount;
             ++stats.stagedUploadCount;
@@ -548,7 +633,24 @@ namespace
             }
             RHICommandContextRef submitted = batchCommandContext;
             submitted->End();
-            const GPUCompletionPoint point = tracker->Submit(submitted.Get());
+            RHICommandContextRef acquire;
+            GPUCompletionPoint point;
+            if (!batchOwnershipTransfers.Empty())
+            {
+                acquire = RecordUploadAcquireContext(
+                    device, batchOwnershipTransfers);
+                if (acquire)
+                {
+                    std::array<RHICommandContext*, 2> contexts = {
+                        submitted.Get(), acquire.Get()};
+                    point = tracker->Submit(
+                        contexts, GPUQueueDomain::Graphics);
+                }
+            }
+            else
+            {
+                point = tracker->Submit(submitted.Get());
+            }
             for (PendingUpload& upload : pendingUploads)
             {
                 if (upload.commandContext.Get() != submitted.Get() ||
@@ -563,10 +665,12 @@ namespace
                 else
                 {
                     upload.completion = point;
+                    upload.acquireCommandContext = acquire;
                 }
             }
             batchCommandContext.Reset();
             batchCommandContextDirty = false;
+            batchOwnershipTransfers = {};
         }
 
         uint32 ProcessCompleted()
@@ -628,6 +732,7 @@ namespace
         std::unordered_set<uint64> completedUploads;
         std::unordered_set<uint64> abandonedUploads;
         RHICommandContextRef batchCommandContext;
+        UploadOwnershipTransfers batchOwnershipTransfers;
         bool batchCommandContextDirty = false;
         uint64 nextUploadId = 1;
     };
@@ -896,8 +1001,9 @@ namespace
         }
 
         RHICommandContextRef context =
-            m_device->CreateCommandContext(RHICommandQueueType::Copy);
-        if (!context || context->GetQueueType() != RHICommandQueueType::Copy)
+            m_device->CreateCommandContext(GetUploadQueueType(m_device));
+        if (!context ||
+            context->GetQueueType() != GetUploadQueueType(m_device))
         {
             return FailBeforeSubmission(
                 request,
@@ -906,6 +1012,7 @@ namespace
         }
 
         std::vector<RHIStagingBufferRef> stagingBuffers;
+        UploadOwnershipTransfers ownershipTransfers;
         context->Begin();
         bool built = false;
         switch (request->GetKind())
@@ -917,7 +1024,8 @@ namespace
                     built = BuildMesh(handle,
                                       *payload,
                                       *context,
-                                      stagingBuffers);
+                                      stagingBuffers,
+                                      ownershipTransfers);
                 }
                 break;
             case RenderResourceKind::Texture:
@@ -927,7 +1035,8 @@ namespace
                     built = BuildTexture(handle,
                                          *payload,
                                          *context,
-                                         stagingBuffers);
+                                         stagingBuffers,
+                                         ownershipTransfers);
                 }
                 break;
             case RenderResourceKind::Material:
@@ -937,7 +1046,8 @@ namespace
                     built = BuildMaterial(handle,
                                           *payload,
                                           *context,
-                                          stagingBuffers);
+                                          stagingBuffers,
+                                          ownershipTransfers);
                 }
                 break;
             case RenderResourceKind::Invalid:
@@ -953,8 +1063,28 @@ namespace
         }
 
         context->End();
-        const GPUCompletionPoint point =
-            m_submissionTracker->Submit(context.Get());
+        RHICommandContextRef acquireContext;
+        GPUCompletionPoint point;
+        if (!ownershipTransfers.Empty())
+        {
+            acquireContext = RecordUploadAcquireContext(
+                m_device, ownershipTransfers);
+            if (!acquireContext)
+            {
+                return FailBeforeSubmission(
+                    request,
+                    RenderResourceFailureCode::UploadSubmissionFailed,
+                    RenderUploadProcessCode::SubmissionFailed);
+            }
+            std::array<RHICommandContext*, 2> contexts = {
+                context.Get(), acquireContext.Get()};
+            point = m_submissionTracker->Submit(
+                contexts, GPUQueueDomain::Graphics);
+        }
+        else
+        {
+            point = m_submissionTracker->Submit(context.Get());
+        }
         GPUCompletionToken completion;
         if (point.value == 0 || !InsertGPUCompletionPoint(completion, point) ||
             !m_registry->SetPendingCompletion(handle, completion))
@@ -970,6 +1100,7 @@ namespace
         inFlight.request = std::move(request);
         inFlight.completion = completion;
         inFlight.commandContext = std::move(context);
+        inFlight.acquireCommandContext = std::move(acquireContext);
         inFlight.stagingBuffers = std::move(stagingBuffers);
         inFlight.retainedBytes = inFlight.request->GetDerivedPayloadBytes();
         m_stats.inFlightBytes += inFlight.retainedBytes;
@@ -1131,7 +1262,8 @@ namespace
         RenderResourceHandle handle,
         const MeshUploadPayload& payload,
         RHICommandContext& context,
-        std::vector<RHIStagingBufferRef>& stagingBuffers)
+        std::vector<RHIStagingBufferRef>& stagingBuffers,
+        UploadOwnershipTransfers& ownershipTransfers)
     {
         if (payload.positionRange.size == 0)
         {
@@ -1165,7 +1297,8 @@ namespace
                                   payload.bytes,
                                   spec.range,
                                   context,
-                                  stagingBuffers))
+                                  stagingBuffers,
+                                  ownershipTransfers))
             {
                 return false;
             }
@@ -1177,7 +1310,8 @@ namespace
         RenderResourceHandle handle,
         const TextureUploadPayload& payload,
         RHICommandContext& context,
-        std::vector<RHIStagingBufferRef>& stagingBuffers)
+        std::vector<RHIStagingBufferRef>& stagingBuffers,
+        UploadOwnershipTransfers& ownershipTransfers)
     {
         const RHIFormat format = ToRHIFormat(payload.createInfo);
         if (format == RHIFormat::Unknown || payload.bytes.empty() ||
@@ -1336,7 +1470,7 @@ namespace
                                            MakeRHITextureAccessSnapshot(
                                                RHIResourceState::Common,
                                                RHIShaderStage::All,
-                                               GetPhysicalUploadDomain(m_device),
+                                               GPUQueueDomain::Graphics,
                                                RHIContentValidity::Valid)))
         {
             return false;
@@ -1405,9 +1539,13 @@ namespace
             copy.textureDepthSlice = layout.depthSlice;
             context.CopyBufferToTexture(staging->GetBuffer(), texture.Get(), copy);
         }
-        context.TextureBarrier(texture.Get(),
-                               RHIResourceState::CopyDest,
-                               RHIResourceState::Common);
+        const RHITextureBarrier finalBarrier =
+            MakeUploadFinalBarrier(m_device, texture.Get());
+        context.TextureBarrier(finalBarrier);
+        if (RequiresUploadOwnershipAcquire(m_device))
+        {
+            ownershipTransfers.textureBarriers.push_back(finalBarrier);
+        }
         stagingBuffers.push_back(std::move(staging));
         return true;
     }
@@ -1416,13 +1554,15 @@ namespace
         RenderResourceHandle handle,
         const MaterialUploadPayload& payload,
         RHICommandContext& context,
-        std::vector<RHIStagingBufferRef>& stagingBuffers)
+        std::vector<RHIStagingBufferRef>& stagingBuffers,
+        UploadOwnershipTransfers& ownershipTransfers)
     {
         if (!m_registry->SetPendingMaterialMetadata(handle, payload) ||
             !RecordMaterialConstants(handle,
                                      payload.sourceData,
                                      context,
-                                     stagingBuffers))
+                                     stagingBuffers,
+                                     ownershipTransfers))
         {
             return false;
         }
@@ -1447,7 +1587,8 @@ namespace
         const std::vector<uint8>& bytes,
         UploadByteRange range,
         RHICommandContext& context,
-        std::vector<RHIStagingBufferRef>& stagingBuffers)
+        std::vector<RHIStagingBufferRef>& stagingBuffers,
+        UploadOwnershipTransfers& ownershipTransfers)
     {
         if (range.size == 0)
         {
@@ -1481,7 +1622,7 @@ namespace
                                               MakeRHIBufferAccessSnapshot(
                                                   RHIResourceState::Common,
                                                   RHIShaderStage::All,
-                                                  GetPhysicalUploadDomain(m_device),
+                                                  GPUQueueDomain::Graphics,
                                                   RHIContentValidity::Valid)))
         {
             return false;
@@ -1509,9 +1650,13 @@ namespace
                            0,
                            0,
                            range.size);
-        context.BufferBarrier(buffer.Get(),
-                              RHIResourceState::CopyDest,
-                              RHIResourceState::Common);
+        const RHIBufferBarrier finalBarrier =
+            MakeUploadFinalBarrier(m_device, buffer.Get());
+        context.BufferBarrier(finalBarrier);
+        if (RequiresUploadOwnershipAcquire(m_device))
+        {
+            ownershipTransfers.bufferBarriers.push_back(finalBarrier);
+        }
         stagingBuffers.push_back(std::move(staging));
         return true;
     }
@@ -1520,7 +1665,8 @@ namespace
         RenderResourceHandle handle,
         const MaterialSourceData& sourceData,
         RHICommandContext& context,
-        std::vector<RHIStagingBufferRef>& stagingBuffers)
+        std::vector<RHIStagingBufferRef>& stagingBuffers,
+        UploadOwnershipTransfers& ownershipTransfers)
     {
         static_assert(std::is_trivially_copyable_v<MaterialSourceData>);
         const uint64 constantBytes = AlignUp(sizeof(MaterialSourceData), 256);
@@ -1536,7 +1682,7 @@ namespace
                                                      MakeRHIBufferAccessSnapshot(
                                                          RHIResourceState::Common,
                                                          RHIShaderStage::All,
-                                                         GetPhysicalUploadDomain(m_device),
+                                                         GPUQueueDomain::Graphics,
                                                          RHIContentValidity::Valid)))
         {
             return false;
@@ -1562,9 +1708,13 @@ namespace
                            0,
                            0,
                            sizeof(MaterialSourceData));
-        context.BufferBarrier(buffer.Get(),
-                              RHIResourceState::CopyDest,
-                              RHIResourceState::Common);
+        const RHIBufferBarrier finalBarrier =
+            MakeUploadFinalBarrier(m_device, buffer.Get());
+        context.BufferBarrier(finalBarrier);
+        if (RequiresUploadOwnershipAcquire(m_device))
+        {
+            ownershipTransfers.bufferBarriers.push_back(finalBarrier);
+        }
         stagingBuffers.push_back(std::move(staging));
         return true;
     }
@@ -1746,16 +1896,6 @@ namespace
     RHISamplerDesc RenderUploadProcessor::ToSamplerDesc(
         const MaterialUploadTextureBinding& binding)
     {
-        auto filter = [](MaterialUploadFilterMode value)
-        {
-            return value == MaterialUploadFilterMode::Nearest ||
-                           value ==
-                               MaterialUploadFilterMode::NearestMipmapNearest ||
-                           value ==
-                               MaterialUploadFilterMode::NearestMipmapLinear
-                       ? RHIFilterMode::Nearest
-                       : RHIFilterMode::Linear;
-        };
         auto address = [](MaterialUploadWrapMode value)
         {
             switch (value)
@@ -1773,9 +1913,40 @@ namespace
         };
 
         RHISamplerDesc desc;
-        desc.minFilter = filter(binding.minFilter);
-        desc.magFilter = filter(binding.magFilter);
-        desc.mipFilter = filter(binding.minFilter);
+        desc.magFilter =
+            binding.magFilter == MaterialUploadFilterMode::Nearest
+                ? RHIFilterMode::Nearest
+                : RHIFilterMode::Linear;
+        switch (binding.minFilter)
+        {
+            case MaterialUploadFilterMode::Nearest:
+                desc.minFilter = RHIFilterMode::Nearest;
+                desc.mipFilter = RHIFilterMode::Nearest;
+                desc.maxLod = 0.0f;
+                break;
+            case MaterialUploadFilterMode::Linear:
+                desc.minFilter = RHIFilterMode::Linear;
+                desc.mipFilter = RHIFilterMode::Nearest;
+                desc.maxLod = 0.0f;
+                break;
+            case MaterialUploadFilterMode::NearestMipmapNearest:
+                desc.minFilter = RHIFilterMode::Nearest;
+                desc.mipFilter = RHIFilterMode::Nearest;
+                break;
+            case MaterialUploadFilterMode::LinearMipmapNearest:
+                desc.minFilter = RHIFilterMode::Linear;
+                desc.mipFilter = RHIFilterMode::Nearest;
+                break;
+            case MaterialUploadFilterMode::NearestMipmapLinear:
+                desc.minFilter = RHIFilterMode::Nearest;
+                desc.mipFilter = RHIFilterMode::Linear;
+                break;
+            case MaterialUploadFilterMode::LinearMipmapLinear:
+            default:
+                desc.minFilter = RHIFilterMode::Linear;
+                desc.mipFilter = RHIFilterMode::Linear;
+                break;
+        }
         desc.addressU = address(binding.wrapS);
         desc.addressV = address(binding.wrapT);
         return desc;

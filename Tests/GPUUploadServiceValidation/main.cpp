@@ -203,6 +203,7 @@ namespace
             capabilities.supportsExplicitResourceBarriers = true;
             capabilities.supportsDefaultQueueFenceSignal = true;
             capabilities.supportsExplicitQueueFenceSignal = true;
+            capabilities.supportsMultiQueueBatchSubmit = true;
             capabilities.supportsAsyncCompute = true;
             capabilities.dx12.resourceBindingTier = 2;
             capabilities.queueTopology.completionMode =
@@ -259,8 +260,14 @@ namespace
             return signalFence ? static_cast<FakeFence*>(signalFence)->AllocateSignalValue() : 0;
         }
 
-        uint64 SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence* signalFence) override
+        uint64 SubmitCommandContexts(
+            std::span<RHICommandContext* const> contexts,
+            RHIFence* signalFence) override
         {
+            ++submittedCommandContextCount;
+            lastSubmittedContext = contexts.empty() ? nullptr : contexts.back();
+            lastSubmittedFence = signalFence;
+            lastFence = static_cast<FakeFence*>(signalFence);
             return signalFence ? static_cast<FakeFence*>(signalFence)->AllocateSignalValue() : 0;
         }
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc&) override { return nullptr; }
@@ -301,6 +308,7 @@ namespace
                 capabilities.supportsAsyncCompute = false;
                 capabilities.supportsDefaultQueueFenceSignal = false;
                 capabilities.supportsExplicitQueueFenceSignal = false;
+                capabilities.supportsMultiQueueBatchSubmit = false;
                 capabilities.emulatesQueueFences = true;
                 capabilities.queueTopology.completionMode =
                     RHIQueueCompletionMode::CompatibilityWaitIdle;
@@ -401,7 +409,7 @@ TEST(GPUUploadServiceValidation, StagedBufferUploadsBatchUntilFlush)
     EXPECT_TRUE(firstResult.succeeded);
     EXPECT_TRUE(secondResult.succeeded);
     EXPECT_EQ(firstResult.finalAccess.layout, RHIResourceLayout::General);
-    EXPECT_EQ(firstResult.finalAccess.domain, GPUQueueDomain::Copy);
+    EXPECT_EQ(firstResult.finalAccess.domain, GPUQueueDomain::Graphics);
     EXPECT_EQ(firstResult.finalAccess.contentValidity, RHIContentValidity::Valid);
     EXPECT_TRUE(firstResult.isPending);
     EXPECT_TRUE(secondResult.isPending);
@@ -600,7 +608,7 @@ TEST(GPUUploadServiceValidation, StagedTextureUploadCopiesEveryMipSubresource)
 
     ASSERT_TRUE(result.succeeded);
     EXPECT_EQ(result.finalAccess.layout, RHIResourceLayout::General);
-    EXPECT_EQ(result.finalAccess.domain, GPUQueueDomain::Copy);
+    EXPECT_EQ(result.finalAccess.domain, GPUQueueDomain::Graphics);
     EXPECT_EQ(result.finalAccess.contentValidity, RHIContentValidity::Valid);
     EXPECT_EQ(device.createdTextureCount, 1u);
     ASSERT_NE(nullptr, device.lastCommandContext);

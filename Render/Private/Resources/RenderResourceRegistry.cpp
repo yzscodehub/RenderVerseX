@@ -488,6 +488,25 @@ namespace RVX
         return true;
     }
 
+    bool RenderResourceRegistry::CommitTextureAccessSnapshot(
+        RenderResourceHandle handle,
+        const RHITextureAccessSnapshot& accessSnapshot)
+    {
+        Entry* entry = FindExact(handle);
+        if (entry == nullptr || !entry->committed)
+        {
+            return false;
+        }
+        auto* texture = std::get_if<RenderTextureResourceData>(
+            &*entry->committed);
+        if (texture == nullptr || !texture->texture)
+        {
+            return false;
+        }
+        texture->accessSnapshot = accessSnapshot;
+        return true;
+    }
+
     const std::vector<RenderResourceHandle>*
         RenderResourceRegistry::GetDependencies(
             RenderResourceHandle handle) const

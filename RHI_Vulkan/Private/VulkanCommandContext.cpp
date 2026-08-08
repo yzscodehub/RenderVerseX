@@ -38,6 +38,59 @@ namespace RVX
                    GetQueueFamilyIndex(device, before.domain) !=
                        GetQueueFamilyIndex(device, after.domain);
         }
+
+        uint32 GetContextQueueFamilyIndex(VulkanDevice* device,
+                                          RHICommandQueueType queueType)
+        {
+            switch (queueType)
+            {
+                case RHICommandQueueType::Compute:
+                    return device->GetComputeQueueFamily();
+                case RHICommandQueueType::Copy:
+                    return device->GetTransferQueueFamily();
+                case RHICommandQueueType::Graphics:
+                default:
+                    return device->GetGraphicsQueueFamily();
+            }
+        }
+
+        enum class QueueFamilyTransferRole : uint8
+        {
+            None = 0,
+            Release,
+            Acquire,
+            Invalid,
+        };
+
+        QueueFamilyTransferRole GetQueueFamilyTransferRole(
+            VulkanDevice* device,
+            RHICommandQueueType queueType,
+            const RHIAccessSnapshot& before,
+            const RHIAccessSnapshot& after,
+            RHIDependencyKind dependencyKind)
+        {
+            if (!RequiresPairedQueueFamilyTransfer(
+                    device, before, after, dependencyKind))
+            {
+                return QueueFamilyTransferRole::None;
+            }
+
+            const uint32 currentFamily =
+                GetContextQueueFamilyIndex(device, queueType);
+            const uint32 sourceFamily =
+                GetQueueFamilyIndex(device, before.domain);
+            const uint32 destinationFamily =
+                GetQueueFamilyIndex(device, after.domain);
+            if (currentFamily == sourceFamily)
+            {
+                return QueueFamilyTransferRole::Release;
+            }
+            if (currentFamily == destinationFamily)
+            {
+                return QueueFamilyTransferRole::Acquire;
+            }
+            return QueueFamilyTransferRole::Invalid;
+        }
     } // namespace
 
     VulkanCommandContext::VulkanCommandContext(VulkanDevice* device, RHICommandQueueType type)
@@ -174,21 +227,40 @@ namespace RVX
         bufferBarrier.dstAccessMask = barrier.hasScopedAccess
             ? ToVkAccessFlags2(barrier.accessAfter.memoryAccess)
             : ToVkAccessFlags(barrier.stateAfter);
-        bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        if (barrier.hasScopedAccess && RequiresPairedQueueFamilyTransfer(
-                                           m_device,
-                                           barrier.accessBefore,
-                                           barrier.accessAfter,
-                                           barrier.dependencyKind))
+        const QueueFamilyTransferRole transferRole = barrier.hasScopedAccess
+            ? GetQueueFamilyTransferRole(m_device,
+                                         m_queueType,
+                                         barrier.accessBefore,
+                                         barrier.accessAfter,
+                                         barrier.dependencyKind)
+            : QueueFamilyTransferRole::None;
+        if (transferRole == QueueFamilyTransferRole::Invalid)
         {
-            // A Vulkan ownership transfer is a release on the source queue plus
-            // an acquire on the destination queue. The shared access contract
-            // carries both domains, but this context owns only one command
-            // buffer. Keep the native indices ignored until the submission
-            // planner emits the paired barriers (Task 26).
             RVX_RHI_ERROR(
-                "Vulkan cross-family buffer ownership transfer requires paired release/acquire barriers");
+                "Vulkan cross-family buffer barrier was recorded on an unrelated queue family");
+            return;
+        }
+        if (transferRole != QueueFamilyTransferRole::None)
+        {
+            bufferBarrier.srcQueueFamilyIndex =
+                GetQueueFamilyIndex(m_device, barrier.accessBefore.domain);
+            bufferBarrier.dstQueueFamilyIndex =
+                GetQueueFamilyIndex(m_device, barrier.accessAfter.domain);
+            if (transferRole == QueueFamilyTransferRole::Release)
+            {
+                bufferBarrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+                bufferBarrier.dstAccessMask = VK_ACCESS_2_NONE;
+            }
+            else
+            {
+                bufferBarrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+                bufferBarrier.srcAccessMask = VK_ACCESS_2_NONE;
+            }
+        }
+        else
+        {
+            bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         }
         bufferBarrier.buffer = vkBuffer->GetBuffer();
         bufferBarrier.offset = barrier.offset;
@@ -238,16 +310,40 @@ namespace RVX
         imageBarrier.newLayout = barrier.hasScopedAccess
             ? ToVkImageLayout(barrier.accessAfter.layout)
             : ToVkImageLayout(barrier.stateAfter);
-        imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        if (barrier.hasScopedAccess && RequiresPairedQueueFamilyTransfer(
-                                           m_device,
-                                           barrier.accessBefore,
-                                           barrier.accessAfter,
-                                           barrier.dependencyKind))
+        const QueueFamilyTransferRole transferRole = barrier.hasScopedAccess
+            ? GetQueueFamilyTransferRole(m_device,
+                                         m_queueType,
+                                         barrier.accessBefore,
+                                         barrier.accessAfter,
+                                         barrier.dependencyKind)
+            : QueueFamilyTransferRole::None;
+        if (transferRole == QueueFamilyTransferRole::Invalid)
         {
             RVX_RHI_ERROR(
-                "Vulkan cross-family texture ownership transfer requires paired release/acquire barriers");
+                "Vulkan cross-family texture barrier was recorded on an unrelated queue family");
+            return;
+        }
+        if (transferRole != QueueFamilyTransferRole::None)
+        {
+            imageBarrier.srcQueueFamilyIndex =
+                GetQueueFamilyIndex(m_device, barrier.accessBefore.domain);
+            imageBarrier.dstQueueFamilyIndex =
+                GetQueueFamilyIndex(m_device, barrier.accessAfter.domain);
+            if (transferRole == QueueFamilyTransferRole::Release)
+            {
+                imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+                imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
+            }
+            else
+            {
+                imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+                imageBarrier.srcAccessMask = VK_ACCESS_2_NONE;
+            }
+        }
+        else
+        {
+            imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         }
         imageBarrier.image = vkTexture->GetImage();
 

@@ -706,8 +706,12 @@ namespace
                 m_sceneRenderer->RenderAcceptedFrame();
             if (executionResult.code != RenderFrameExecutionCode::Rendered)
             {
-                m_sceneRenderer->ReleaseUnsubmittedFrame();
+                // End the active recording before releasing descriptor sets and
+                // other objects referenced by that command buffer. Releasing
+                // first invalidates Vulkan command-buffer state while AbortFrame
+                // is still required to finish the recording.
                 m_context->AbortFrame();
+                m_sceneRenderer->ReleaseUnsubmittedFrame();
                 result.code = RenderRuntimeCode::RenderGraphValidationFailed;
                 result.message =
                     "Accepted frame failed RenderGraph validation or recording";

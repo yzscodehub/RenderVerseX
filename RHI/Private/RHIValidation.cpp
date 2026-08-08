@@ -271,6 +271,16 @@ namespace RVX
         }
     }
 
+    const char* GetDX12BarrierDialectName(DX12BarrierDialect dialect)
+    {
+        switch (dialect)
+        {
+            case DX12BarrierDialect::Legacy: return "Legacy";
+            case DX12BarrierDialect::Enhanced: return "Enhanced";
+            default: return "Unknown";
+        }
+    }
+
     const char* GetGPUQueueDomainName(GPUQueueDomain domain)
     {
         switch (domain)
@@ -602,6 +612,13 @@ namespace RVX
             capabilities.dx12.resourceBindingTier < 2)
         {
             fail("DX12 bindless support requires resource binding tier 2 or higher");
+        }
+
+        if (capabilities.backendType == RHIBackendType::DX12 &&
+            capabilities.dx12.barrierDialect == DX12BarrierDialect::Enhanced &&
+            !capabilities.dx12.supportsEnhancedBarriers)
+        {
+            fail("DX12 enhanced barrier dialect requires native enhanced barrier support");
         }
 
         if (capabilities.backendType == RHIBackendType::Vulkan &&

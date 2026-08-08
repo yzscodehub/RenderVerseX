@@ -1,6 +1,7 @@
 #include "Common/GpuTestUtils.h"
 #include "Core/Core.h"
 #include "Render/Context/RenderContext.h"
+#include "Render/GPUUploadService.h"
 #include "RHI/RHI.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "ShaderCompiler/ShaderCompiler.h"
@@ -1007,8 +1008,162 @@ TEST(VulkanValidation, SynchronizationCapabilities)
     EXPECT_EQ(caps.queueTopology.logicalQueueDomains[0], GPUQueueDomain::Graphics);
     EXPECT_EQ(caps.queueTopology.logicalQueueDomains[1], expectedCompute);
     EXPECT_EQ(caps.queueTopology.logicalQueueDomains[2], expectedCopy);
-    EXPECT_EQ(caps.queueTopology.activeDomainCount, 1u);
+    uint8 expectedActiveDomainCount = 1;
+    if (expectedCompute != GPUQueueDomain::Graphics)
+    {
+        ++expectedActiveDomainCount;
+    }
+    if (expectedCopy != GPUQueueDomain::Graphics &&
+        expectedCopy != expectedCompute)
+    {
+        ++expectedActiveDomainCount;
+    }
+    EXPECT_EQ(caps.queueTopology.activeDomainCount,
+              expectedActiveDomainCount);
     EXPECT_EQ(caps.supportsAsyncCompute, !computeAliasesGraphics);
+}
+
+TEST(VulkanValidation, UploadGatewayTransfersCopyOwnershipToGraphics)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
+    const VulkanValidationMessageCounts messagesBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    GPUUploadService uploadService;
+    uploadService.Initialize(device.get());
+    ASSERT_TRUE(uploadService.IsInitialized());
+
+    const std::array<uint32, 4> source = {1, 2, 3, 4};
+    GPUUploadBufferDesc desc;
+    desc.size = sizeof(source);
+    desc.usage = RHIBufferUsage::Vertex;
+    desc.stride = sizeof(uint32);
+    desc.debugName = "VulkanCopyOwnershipUpload";
+    const GPUUploadBufferResult result =
+        uploadService.UploadBufferDataWithResult(
+            desc, source.data(), sizeof(source));
+    ASSERT_TRUE(result.succeeded);
+    ASSERT_TRUE(result.isPending);
+    EXPECT_EQ(result.finalAccess.domain, GPUQueueDomain::Graphics);
+    EXPECT_EQ(uploadService.FlushAndWaitForUploads(), 1U);
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+
+    uploadService.Shutdown();
+    device->WaitIdle();
+    const VulkanValidationMessageCounts messagesAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(messagesAfter.errors, messagesBefore.errors);
+    EXPECT_EQ(messagesAfter.warnings, messagesBefore.warnings);
+}
+
+TEST(VulkanValidation, PairedBufferOwnershipTransferComputeToGraphics)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(vulkanDevice, nullptr);
+    if (vulkanDevice->GetComputeQueueFamily() ==
+        vulkanDevice->GetGraphicsQueueFamily())
+    {
+        GTEST_SKIP() << "Adapter has no dedicated Compute queue family";
+    }
+
+    const VulkanValidationMessageCounts validationBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    std::array<uint32, 64> sourceData{};
+    for (uint32 index = 0; index < sourceData.size(); ++index)
+    {
+        sourceData[index] = index + 1U;
+    }
+    RHIBufferRef source = CreateVulkanUploadBuffer(
+        *device,
+        RHIBufferUsage::CopySrc,
+        sizeof(uint32),
+        sourceData.data(),
+        sizeof(sourceData),
+        "QueueOwnershipSource");
+    ASSERT_NE(source.Get(), nullptr);
+
+    RHIBufferDesc destinationDesc;
+    destinationDesc.size = sizeof(sourceData);
+    destinationDesc.usage = RHIBufferUsage::CopyDst |
+                            RHIBufferUsage::CopySrc |
+                            RHIBufferUsage::Structured;
+    destinationDesc.memoryType = RHIMemoryType::Default;
+    destinationDesc.stride = sizeof(uint32);
+    destinationDesc.debugName = "QueueOwnershipDestination";
+    RHIBufferRef destination = device->CreateBuffer(destinationDesc);
+    ASSERT_NE(destination.Get(), nullptr);
+
+    const RHIAccessSnapshot computeCommon = MakeRHIAccessSnapshot(
+        RHIResourceState::Common,
+        RHIShaderStage::Compute,
+        GPUQueueDomain::Compute,
+        RHIContentValidity::Valid);
+    const RHIAccessSnapshot computeCopyDestination = MakeRHIAccessSnapshot(
+        RHIResourceState::CopyDest,
+        RHIShaderStage::None,
+        GPUQueueDomain::Compute,
+        RHIContentValidity::Valid);
+    const RHIAccessSnapshot graphicsCopySource = MakeRHIAccessSnapshot(
+        RHIResourceState::CopySource,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics,
+        RHIContentValidity::Valid);
+    const RHIBufferBarrier ownershipTransfer = MakeRHIBufferBarrier(
+        destination.Get(),
+        computeCopyDestination,
+        graphicsCopySource);
+    ASSERT_TRUE(HasDependencyKind(ownershipTransfer.dependencyKind,
+                                  RHIDependencyKind::Ownership));
+
+    RHICommandContextRef computeContext =
+        device->CreateCommandContext(RHICommandQueueType::Compute);
+    RHICommandContextRef graphicsContext =
+        device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(computeContext.Get(), nullptr);
+    ASSERT_NE(graphicsContext.Get(), nullptr);
+
+    computeContext->Begin();
+    computeContext->BufferBarrier(destination.Get(),
+                                  computeCommon,
+                                  computeCopyDestination);
+    computeContext->CopyBuffer(source.Get(),
+                               destination.Get(),
+                               0,
+                               0,
+                               sizeof(sourceData));
+    computeContext->BufferBarrier(ownershipTransfer);
+    computeContext->End();
+
+    graphicsContext->Begin();
+    graphicsContext->BufferBarrier(ownershipTransfer);
+    graphicsContext->End();
+
+    RHIFenceRef completionFence = device->CreateFence(0);
+    ASSERT_NE(completionFence.Get(), nullptr);
+    std::array<RHICommandContext*, 2> contexts = {
+        computeContext.Get(),
+        graphicsContext.Get(),
+    };
+    const uint64 completionValue =
+        device->SubmitCommandContexts(contexts, completionFence.Get());
+    ASSERT_NE(completionValue, 0u);
+    device->WaitForFence(completionFence.Get(), completionValue);
+    device->WaitIdle();
+
+    const VulkanValidationMessageCounts validationAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(validationAfter.errors, validationBefore.errors);
+    EXPECT_EQ(validationAfter.warnings, validationBefore.warnings);
 }
 
 TEST(VulkanValidation, DescriptorAndBarrierCapabilities)

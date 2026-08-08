@@ -153,6 +153,9 @@ namespace RVX
          * @brief Submit multiple command contexts for execution.
          * @param contexts Recorded command contexts to submit.
          * @param signalFence Optional fence to signal after submitted work completes.
+         * @note When mixed queue types are supported, execution is ordered
+         * Copy -> Compute -> Graphics and the optional fence represents the
+         * terminal queue in that dependency chain.
          * @return Submitted fence value when signalFence is provided and queued; 0 when no fence was signaled or submission failed.
          */
         virtual uint64 SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence = nullptr) = 0;

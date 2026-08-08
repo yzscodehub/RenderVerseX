@@ -239,8 +239,11 @@ namespace RVX::Tests
         {
             std::ifstream stream(std::filesystem::path(RVX_SOURCE_DIR) / relativePath,
                                  std::ios::binary);
-            return {std::istreambuf_iterator<char>(stream),
-                    std::istreambuf_iterator<char>()};
+            std::string source{std::istreambuf_iterator<char>(stream),
+                               std::istreambuf_iterator<char>()};
+            source.erase(std::remove(source.begin(), source.end(), '\r'),
+                         source.end());
+            return source;
         }
 
         template <typename T>
@@ -466,10 +469,30 @@ namespace RVX::Tests
         EXPECT_NE(vulkanCommon.find("ToVkAccessFlags2(RHIMemoryAccess"), std::string::npos);
         EXPECT_NE(vulkan.find("GetQueueFamilyIndex(device, before.domain)"), std::string::npos);
         EXPECT_NE(vulkan.find("GetQueueFamilyIndex(device, after.domain)"), std::string::npos);
-        EXPECT_NE(vulkan.find("requires paired release/acquire barriers"), std::string::npos);
+        EXPECT_NE(vulkan.find("QueueFamilyTransferRole::Release"), std::string::npos);
+        EXPECT_NE(vulkan.find("QueueFamilyTransferRole::Acquire"), std::string::npos);
+        EXPECT_NE(vulkan.find("VK_PIPELINE_STAGE_2_NONE"), std::string::npos);
         EXPECT_NE(vulkan.find("VK_QUEUE_FAMILY_IGNORED"), std::string::npos);
         EXPECT_NE(metal.find("barrier.accessBefore.executionScope"), std::string::npos);
         EXPECT_NE(metal.find("RequiresMetalBarrier"), std::string::npos);
+    }
+
+    TEST(RHIContractValidation, DX12EnhancedBarrierDialectRequiresNativeSupport)
+    {
+        RHICapabilities capabilities = MakeValidCapabilities(RHIBackendType::DX12);
+        capabilities.dx12.barrierDialect = DX12BarrierDialect::Enhanced;
+        capabilities.dx12.supportsEnhancedBarriers = false;
+
+        const RHICapabilityValidationResult unsupported =
+            ValidateRHICapabilities(capabilities);
+        EXPECT_FALSE(unsupported);
+        EXPECT_NE(unsupported.message.find("enhanced barrier dialect"),
+                  std::string::npos);
+
+        capabilities.dx12.supportsEnhancedBarriers = true;
+        EXPECT_TRUE(ValidateRHICapabilities(capabilities));
+        EXPECT_STREQ(GetDX12BarrierDialectName(capabilities.dx12.barrierDialect),
+                     "Enhanced");
     }
 
     TEST(RHIContractValidation, LifetimeOwnersCommitScopedSnapshots)
@@ -1659,17 +1682,21 @@ namespace RVX::Tests
         EXPECT_NE(dx12.find("GPUQueueDomain::Copy"), std::string::npos);
 
         const std::string vulkan = ReadSource("RHI_Vulkan/Private/VulkanDevice.cpp");
-        EXPECT_NE(vulkan.find("m_capabilities.queueTopology.activeDomainCount = 1"),
+        EXPECT_NE(vulkan.find("const bool hasDedicatedComputeQueue"),
                   std::string::npos);
-        EXPECT_NE(vulkan.find("m_capabilities.supportsAsyncCompute = false"),
+        EXPECT_NE(vulkan.find("m_capabilities.supportsAsyncCompute = hasDedicatedComputeQueue"),
                   std::string::npos);
         const std::string vulkanDeviceHeader =
             ReadSource("RHI_Vulkan/Private/VulkanDevice.h");
         EXPECT_NE(vulkanDeviceHeader.find(
-                      "uint32 GetComputeQueueFamily() const { return GetGraphicsQueueFamily(); }"),
+                      "uint32 GetComputeQueueFamily() const { return m_queueFamilies.computeFamily.value(); }"),
                   std::string::npos);
         EXPECT_NE(vulkanDeviceHeader.find(
-                      "uint32 GetTransferQueueFamily() const { return GetGraphicsQueueFamily(); }"),
+                      "uint32 GetTransferQueueFamily() const { return m_queueFamilies.transferFamily.value(); }"),
+                  std::string::npos);
+        EXPECT_NE(vulkan.find("GPUQueueDomain copyDomain = GPUQueueDomain::Copy"),
+                  std::string::npos);
+        EXPECT_NE(dx12.find("supportsMultiQueueBatchSubmit = true"),
                   std::string::npos);
 
         const std::string metal = ReadSource("RHI_Metal/Private/MetalDevice.mm");

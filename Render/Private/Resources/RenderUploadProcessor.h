@@ -18,6 +18,17 @@ namespace RVX
     class RenderResourceRegistry;
     class RenderResourceStatusTable;
 
+    struct UploadOwnershipTransfers
+    {
+        std::vector<RHIBufferBarrier> bufferBarriers;
+        std::vector<RHITextureBarrier> textureBarriers;
+
+        [[nodiscard]] bool Empty() const
+        {
+            return bufferBarriers.empty() && textureBarriers.empty();
+        }
+    };
+
     enum class RenderUploadProcessCode : uint8
     {
         Accepted = 0,
@@ -106,6 +117,7 @@ namespace RVX
             ResourceUploadRequestRef request;
             GPUCompletionToken completion;
             RHICommandContextRef commandContext;
+            RHICommandContextRef acquireCommandContext;
             std::vector<RHIStagingBufferRef> stagingBuffers;
             uint64 retainedBytes = 0;
             bool cancelled = false;
@@ -123,17 +135,20 @@ namespace RVX
             RenderResourceHandle handle,
             const MeshUploadPayload& payload,
             RHICommandContext& context,
-            std::vector<RHIStagingBufferRef>& stagingBuffers);
+            std::vector<RHIStagingBufferRef>& stagingBuffers,
+            UploadOwnershipTransfers& ownershipTransfers);
         [[nodiscard]] bool BuildTexture(
             RenderResourceHandle handle,
             const TextureUploadPayload& payload,
             RHICommandContext& context,
-            std::vector<RHIStagingBufferRef>& stagingBuffers);
+            std::vector<RHIStagingBufferRef>& stagingBuffers,
+            UploadOwnershipTransfers& ownershipTransfers);
         [[nodiscard]] bool BuildMaterial(
             RenderResourceHandle handle,
             const MaterialUploadPayload& payload,
             RHICommandContext& context,
-            std::vector<RHIStagingBufferRef>& stagingBuffers);
+            std::vector<RHIStagingBufferRef>& stagingBuffers,
+            UploadOwnershipTransfers& ownershipTransfers);
         [[nodiscard]] bool RecordMeshBuffer(
             RenderResourceHandle handle,
             RenderMeshBufferSemantic semantic,
@@ -141,12 +156,14 @@ namespace RVX
             const std::vector<uint8>& bytes,
             UploadByteRange range,
             RHICommandContext& context,
-            std::vector<RHIStagingBufferRef>& stagingBuffers);
+            std::vector<RHIStagingBufferRef>& stagingBuffers,
+            UploadOwnershipTransfers& ownershipTransfers);
         [[nodiscard]] bool RecordMaterialConstants(
             RenderResourceHandle handle,
             const MaterialSourceData& sourceData,
             RHICommandContext& context,
-            std::vector<RHIStagingBufferRef>& stagingBuffers);
+            std::vector<RHIStagingBufferRef>& stagingBuffers,
+            UploadOwnershipTransfers& ownershipTransfers);
         [[nodiscard]] RenderUploadProcessCode FailBeforeSubmission(
             ResourceUploadRequestRef& request,
             RenderResourceFailureCode failure,

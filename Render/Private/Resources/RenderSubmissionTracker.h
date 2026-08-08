@@ -6,6 +6,7 @@
 #include "RHI/RHISynchronization.h"
 
 #include <array>
+#include <span>
 
 namespace RVX
 {
@@ -46,6 +47,10 @@ namespace RVX
         void MarkDeviceLost() noexcept;
 
         GPUCompletionPoint Submit(RHICommandContext* context);
+        /** @brief Submit a mixed-domain dependency batch and track its terminal domain. */
+        GPUCompletionPoint Submit(
+            std::span<RHICommandContext* const> contexts,
+            GPUQueueDomain terminalDomain);
 
         GPUCompletionStatus Query(GPUCompletionPoint point) const;
         GPUCompletionStatus Query(const GPUCompletionToken& token) const;
