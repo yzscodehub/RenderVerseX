@@ -3024,6 +3024,9 @@ TEST_F(RenderHonestyValidationFixture, SceneRendererLegacyCollectionFallbackIsRe
         ReadTextFile(repoRoot / "Render" / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
     const std::string source =
         ReadTextFile(repoRoot / "Render" / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string runtimeSource =
+        ReadTextFile(repoRoot / "Render" / "Private" / "Runtime" /
+                     "RenderThreadRuntime.cpp");
 
     EXPECT_EQ(std::string::npos, header.find("SetLegacyCollectionFallbackEnabled"));
     EXPECT_EQ(std::string::npos, header.find("IsLegacyCollectionFallbackEnabled"));
@@ -3032,6 +3035,12 @@ TEST_F(RenderHonestyValidationFixture, SceneRendererLegacyCollectionFallbackIsRe
     EXPECT_EQ(std::string::npos, source.find("SceneRenderCollectionPath::LegacyFallback"));
     EXPECT_EQ(std::string::npos, source.find("RenderFeatureSceneBridge"));
     EXPECT_NE(std::string::npos, source.find("m_renderScene.ApplyFramePacket(packet, registry)"));
+    EXPECT_NE(std::string::npos,
+              source.find("m_renderScene.ApplyFrameV5(frame, scene, registry)"));
+    EXPECT_NE(std::string::npos,
+              runtimeSource.find("m_consumer->ConsumeFrameV5("));
+    EXPECT_NE(std::string::npos,
+              runtimeSource.find("RenderSceneTransportMode::Authoritative"));
     EXPECT_NE(std::string::npos, source.find("m_viewData.SetupFromSnapshot("));
 }
 

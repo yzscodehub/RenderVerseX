@@ -1187,8 +1187,7 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     }
 }
 
-RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
-    const RenderFramePacket& packet,
+void SceneRenderer::PrepareFrameApplyResources(
     RenderResourceRegistry& registry)
 {
     InvalidateRenderFramePlan();
@@ -1225,8 +1224,31 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
     {
         m_rayTracedReflectionPass->SetResourceRegistry(&registry);
     }
-    RenderFrameApplyResult result =
-        m_renderScene.ApplyFramePacket(packet, registry);
+}
+
+RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
+    const RenderFramePacket& packet,
+    RenderResourceRegistry& registry)
+{
+    PrepareFrameApplyResources(registry);
+    return FinalizeFrameApply(
+        m_renderScene.ApplyFramePacket(packet, registry), registry);
+}
+
+RenderFrameApplyResult SceneRenderer::ApplyFrameV5(
+    const RenderFramePacketV5& frame,
+    const RenderSceneDatabase& scene,
+    RenderResourceRegistry& registry)
+{
+    PrepareFrameApplyResources(registry);
+    return FinalizeFrameApply(
+        m_renderScene.ApplyFrameV5(frame, scene, registry), registry);
+}
+
+RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
+    RenderFrameApplyResult result,
+    RenderResourceRegistry& registry)
+{
     if (!result.IsApplied())
     {
         return result;

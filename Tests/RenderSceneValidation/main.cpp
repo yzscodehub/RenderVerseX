@@ -1,6 +1,7 @@
 #include "GPUScene/GPUSceneUpdate.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderDrawPacket.h"
+#include "Render/Renderer/RenderSceneDatabase.h"
 #include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/RenderScene.h"
 #include "RenderContracts/RenderFramePacket.h"
@@ -431,6 +432,53 @@ TEST(RenderSceneValidation, AppliesTransactionallyAndOwnsPacketValues)
     EXPECT_EQ(scene.GetFeatures().particles.items[0].systemName,
               "packet-owned-feature");
     EXPECT_EQ(scene.GetAcceptedHeader().sequence, 10U);
+}
+
+TEST(RenderSceneValidation,
+     AppliesV5DirectlyFromPersistentDatabaseWithoutCompatibilityPacket)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({31}, RenderResourceKind::Mesh, true);
+    const RenderResourceHandle material =
+        resources.Add({32}, RenderResourceKind::Material, true);
+
+    RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    ASSERT_TRUE(reset.UpsertPrimitive(
+        MakePrimitive(mesh, material, {4.0F, 0.0F, 0.0F}), true));
+    reset.UpsertSky(RenderSkySnapshot{});
+    reset.UpsertEnvironment(RenderEnvironmentSnapshot{});
+    RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(reset.Build(3)).IsApplied());
+
+    RenderFrameHeaderV5 header;
+    header.sequence = 77;
+    header.requiredSceneRevision = 3;
+    header.worldRevision = 9;
+    header.temporalEpoch = 2;
+    RenderViewSnapshot view;
+    view.viewportWidth = 1280;
+    view.viewportHeight = 720;
+    RenderExtractionDiagnostics diagnostics;
+    diagnostics.complete = true;
+    const auto frame = RenderFramePacketV5::Create(
+        header,
+        view,
+        RenderFrameSettings{},
+        RenderFrameCaptureRequest{},
+        diagnostics);
+    ASSERT_NE(frame, nullptr);
+
+    RenderScene scene;
+    const RenderFrameApplyResult result =
+        scene.ApplyFrameV5(*frame, database, resources.registry);
+    ASSERT_TRUE(result.IsApplied());
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 77U);
+    ASSERT_EQ(scene.GetObjectCount(), 1U);
+    EXPECT_EQ(scene.GetObject(0).entityId, 42U);
+    EXPECT_EQ(Vec3(scene.GetObject(0).worldMatrix[3]),
+              (Vec3{4.0F, 0.0F, 0.0F}));
 }
 
 TEST(RenderSceneValidation, ShadowPublicationFailureCannotRejectAnAppliedFrame)

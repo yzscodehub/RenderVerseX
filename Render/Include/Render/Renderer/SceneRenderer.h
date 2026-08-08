@@ -71,6 +71,7 @@ namespace RVX
     class RenderPassRegistry;
     class RenderRetirementQueue;
     class RenderResourceRegistry;
+    class RenderSceneDatabase;
     class RenderSubmissionResourceBatch;
     class GPUSceneUpdate;
     class GPUSceneUploader;
@@ -877,6 +878,11 @@ namespace RVX
         [[nodiscard]] RenderFrameApplyResult ApplyFramePacket(
             const RenderFramePacket& packet,
             RenderResourceRegistry& registry);
+        /** @brief Consume v5 frame state without constructing a v4 packet. */
+        [[nodiscard]] RenderFrameApplyResult ApplyFrameV5(
+            const RenderFramePacketV5& frame,
+            const RenderSceneDatabase& scene,
+            RenderResourceRegistry& registry);
 
         /** @brief Record the currently accepted packet into the active frame. */
         [[nodiscard]] RenderFrameExecutionResult RenderAcceptedFrame();
@@ -1300,6 +1306,10 @@ namespace RVX
     private:
         friend class SceneRendererTestAccess;
 
+        void PrepareFrameApplyResources(RenderResourceRegistry& registry);
+        [[nodiscard]] RenderFrameApplyResult FinalizeFrameApply(
+            RenderFrameApplyResult result,
+            RenderResourceRegistry& registry);
         void RetireOwnerSnapshots(const GPUCompletionToken& completion);
         void PublishProvisionalFrameAccessSnapshots(
             const RHITextureAccessSnapshot* depthAccess,

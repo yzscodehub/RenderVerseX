@@ -769,11 +769,13 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
-         DualChannelConsumesPersistentSceneInsteadOfCompatibilityArray)
+         AuthoritativeTransportConsumesPersistentSceneWithoutV4Packet)
     {
         auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
         RenderRuntimeConfig config;
         config.backendType = RHIBackendType::DX11;
+        config.sceneTransportMode =
+            RenderSceneTransportMode::Authoritative;
         RenderThreadRuntime runtime(
             config,
             MakeSurface(),
@@ -812,19 +814,13 @@ namespace
             diagnostics);
         ASSERT_NE(frameV5, nullptr);
 
-        // The v4 shadow is semantically equal but intentionally reversed.
-        // The persistent database emits stable object-ID order.
-        auto compatibility = MakePacket(
-            17,
-            std::vector<RenderPrimitiveSnapshot>{primitive22, primitive11});
-        ASSERT_NE(compatibility, nullptr);
         auto update = std::make_unique<const RenderSceneUpdateBatch>(
             accumulator.Build(1));
 
         const RenderFramePublishResult publish = runtime.TryPublishFrameSet(
             std::move(update),
             std::move(frameV5),
-            std::move(compatibility));
+            nullptr);
         ASSERT_EQ(publish.code, RenderFramePublishCode::Accepted);
         EXPECT_EQ(probe->GetLastConsumedPrimitiveIds(),
                   (std::vector<uint64>{11, 22}));
@@ -838,20 +834,61 @@ namespace
             RenderFrameSettings{},
             RenderFrameCaptureRequest{},
             diagnostics);
-        auto staticCompatibility = MakePacket(
-            18,
-            std::vector<RenderPrimitiveSnapshot>{primitive22, primitive11});
         ASSERT_NE(staticFrameV5, nullptr);
-        ASSERT_NE(staticCompatibility, nullptr);
         const RenderFramePublishResult staticPublish = runtime.TryPublishFrameSet(
             nullptr,
             std::move(staticFrameV5),
-            std::move(staticCompatibility));
+            nullptr);
         EXPECT_EQ(staticPublish.code, RenderFramePublishCode::Accepted);
         EXPECT_FALSE(staticPublish.sceneUpdateAccepted);
         EXPECT_EQ(staticPublish.sceneRevision, 1U);
         EXPECT_EQ(runtime.GetDiagnosticsSnapshot().lastPresentedFrameSequence,
                   18U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         ShadowTransportRequiresCompatibilityPacket)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        config.sceneTransportMode = RenderSceneTransportMode::Shadow;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        RenderFrameHeaderV5 header;
+        header.sequence = 19;
+        header.requiredSceneRevision = 1;
+        RenderViewSnapshot view;
+        view.viewportWidth = 64;
+        view.viewportHeight = 64;
+        RenderExtractionDiagnostics diagnostics;
+        diagnostics.complete = true;
+        auto frame = RenderFramePacketV5::Create(
+            header,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            diagnostics);
+
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(0, true);
+        accumulator.UpsertSky(RenderSkySnapshot{});
+        accumulator.UpsertEnvironment(RenderEnvironmentSnapshot{});
+        auto update = std::make_unique<const RenderSceneUpdateBatch>(
+            accumulator.Build(1));
+        const RenderFramePublishResult publish = runtime.TryPublishFrameSet(
+            std::move(update),
+            std::move(frame),
+            nullptr);
+        EXPECT_EQ(publish.code, RenderFramePublishCode::InvalidSceneUpdate);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 0U);
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
     }
 
@@ -1942,7 +1979,7 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
-         UnknownConfiguredExecutorAndBackendAreInvalidConfiguration)
+         UnknownConfiguredExecutorBackendAndTransportAreInvalidConfiguration)
     {
         {
             auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
@@ -1986,6 +2023,23 @@ namespace
             EXPECT_EQ(diagnostics.executor,
                       RenderExecutorKind::InlineTest);
             EXPECT_EQ(diagnostics.backend, RHIBackendType::None);
+        }
+        {
+            auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+            RenderRuntimeConfig config;
+            config.backendType = RHIBackendType::DX11;
+            config.sceneTransportMode =
+                static_cast<RenderSceneTransportMode>(255);
+            RenderThreadRuntime runtime(
+                config,
+                MakeSurface(),
+                RenderExecutorKind::InlineTest,
+                CreateInlineRenderExecutor(),
+                CreateRecordingRenderFrameConsumer(probe));
+
+            const RenderRuntimeResult result = runtime.Start();
+            EXPECT_EQ(result.code,
+                      RenderRuntimeCode::InvalidConfiguration);
         }
     }
 

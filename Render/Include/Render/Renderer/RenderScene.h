@@ -9,6 +9,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderMaterial.h"
 #include "Render/Renderer/MeshBatch.h"
 #include "Render/Renderer/RenderDrawPacketCache.h"
@@ -19,6 +20,7 @@
 namespace RVX
 {
     class RenderResourceRegistry;
+    class RenderSceneDatabase;
 
     enum class RenderFrameApplyCode : uint8
     {
@@ -131,6 +133,11 @@ namespace RVX
         [[nodiscard]] RenderFrameApplyResult ApplyFramePacket(
             const RenderFramePacket& packet,
             const RenderResourceRegistry& registry);
+        /** @brief Apply v5 frame state directly against a persistent scene database. */
+        [[nodiscard]] RenderFrameApplyResult ApplyFrameV5(
+            const RenderFramePacketV5& frame,
+            const RenderSceneDatabase& scene,
+            const RenderResourceRegistry& registry);
         void MarkAcceptedFrameRendered();
         void SetSurfaceCompatibilityKey(uint64 key) noexcept;
 
@@ -236,6 +243,18 @@ namespace RVX
         }
 
     private:
+        [[nodiscard]] RenderFrameApplyResult ApplyFrameState(
+            const RenderFrameHeader& header,
+            const RenderViewSnapshot& view,
+            const std::vector<RenderPrimitiveSnapshot>& primitives,
+            const std::vector<RenderLightSnapshot>& lights,
+            const RenderSkySnapshot& sky,
+            const RenderEnvironmentSnapshot& environment,
+            const RenderFrameSettings& settings,
+            const RenderFrameCaptureRequest& captureRequest,
+            const RenderFeatureSnapshot& features,
+            const RenderResourceRegistry& registry);
+
         std::vector<RenderObject> m_objects;
         std::vector<RenderLight> m_lights;
         RenderFrameHeader m_acceptedHeader{};

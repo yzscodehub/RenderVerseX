@@ -229,6 +229,44 @@ namespace
                 packet.GetCaptureRequest());
         }
 
+        RenderRuntimeResult ConsumeFrameV5(
+            const RenderFramePacketV5& packet,
+            const RenderSceneDatabase& scene) override
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.frameSequence = packet.GetHeader().sequence;
+            if (m_context == nullptr || !m_context->HasSwapChain())
+            {
+                result.code = RenderRuntimeCode::SurfaceCreationFailed;
+                result.message = "Cannot consume a v5 frame without a surface";
+                return result;
+            }
+            if (m_sceneRenderer == nullptr)
+            {
+                result.code = RenderRuntimeCode::OwnershipViolation;
+                result.message = "Packet renderer is unavailable";
+                return result;
+            }
+
+            const RenderFrameApplyResult applyResult =
+                m_sceneRenderer->ApplyFrameV5(packet,
+                                              scene,
+                                              m_resourceRegistry);
+            if (!applyResult.IsApplied())
+            {
+                result.code = RenderRuntimeCode::RenderGraphValidationFailed;
+                result.message =
+                    "v5 frame or persistent RenderScene was rejected before recording, code=" +
+                    std::to_string(static_cast<uint32>(applyResult.code));
+                return result;
+            }
+            return PresentAcceptedFrame(
+                packet.GetHeader().sequence,
+                m_context->GetSurface().generation,
+                packet.GetCaptureRequest());
+        }
+
         void PollCompletion() override
         {
             static_cast<void>(m_uploadProcessor.PollCompletion());

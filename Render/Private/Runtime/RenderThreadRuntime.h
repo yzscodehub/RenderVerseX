@@ -65,6 +65,10 @@ namespace RenderRuntimeDetail
         virtual void ProcessUpload(ResourceUploadRequestRef request) = 0;
         virtual RenderRuntimeResult ConsumeFrame(
             const RenderFramePacket& packet) = 0;
+        /** @brief Consume a v5 frame against the already-applied persistent scene. */
+        virtual RenderRuntimeResult ConsumeFrameV5(
+            const RenderFramePacketV5& packet,
+            const RenderSceneDatabase& scene) = 0;
         virtual void PollCompletion() = 0;
         virtual void RetireCompleted() = 0;
         /** @brief Copy Render-owned value diagnostics on the owner thread. */
@@ -291,7 +295,8 @@ namespace RenderRuntimeDetail
         // between the v5 and compatibility-frame publications.
         std::unique_ptr<const RenderFramePacketV5> m_pendingFrameV5;
         std::unique_ptr<RenderSceneUpdateQueue> m_sceneUpdateQueue;
-        RenderSceneDatabase m_shadowScene;
+        RenderSceneDatabase m_renderSceneDatabase;
+        bool m_sceneCheckpointRequired = false;
         std::unique_ptr<SurfaceControlMailbox> m_controlMailbox;
         std::unique_ptr<RenderResourceGateway> m_resourceGateway;
         RenderDiagnosticsPublisher m_diagnosticsPublisher;

@@ -145,6 +145,8 @@ namespace RVX
         [[nodiscard]] std::vector<RenderRuntimeTestEvent> GetEvents() const;
         void ClearEvents();
         void RecordConsumedFrame(const RenderFramePacket& packet);
+        void RecordConsumedSceneDatabase(
+            const RenderSceneDatabase& scene);
         [[nodiscard]] std::vector<uint64>
             GetLastConsumedPrimitiveIds() const;
 

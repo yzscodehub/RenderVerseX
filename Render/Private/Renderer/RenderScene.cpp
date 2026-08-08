@@ -6,6 +6,7 @@
 #include "Render/Renderer/RenderScene.h"
 
 #include "Core/Math/Frustum.h"
+#include "Render/Renderer/RenderSceneDatabase.h"
 #include "Resources/RenderResourceRegistry.h"
 
 #include <algorithm>
@@ -97,6 +98,33 @@ namespace
                        buffer.semantic == RenderMeshBufferSemantic::BoneWeights;
             });
     }
+
+    template<typename Map>
+    std::vector<typename Map::mapped_type> CopySortedSceneValues(
+        const Map& values)
+    {
+        using Key = typename Map::key_type;
+        using State = typename Map::mapped_type;
+        std::vector<std::pair<Key, const State*>> ordered;
+        ordered.reserve(values.size());
+        for (const auto& [id, state] : values)
+        {
+            ordered.emplace_back(id, &state);
+        }
+        std::sort(ordered.begin(), ordered.end(),
+                  [](const auto& left, const auto& right)
+                  {
+                      return left.first < right.first;
+                  });
+        std::vector<State> result;
+        result.reserve(ordered.size());
+        for (const auto& [id, state] : ordered)
+        {
+            static_cast<void>(id);
+            result.push_back(*state);
+        }
+        return result;
+    }
 } // namespace
 
 void RenderScene::Clear()
@@ -124,8 +152,94 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
     const RenderFramePacket& packet,
     const RenderResourceRegistry& registry)
 {
+    return ApplyFrameState(packet.GetHeader(),
+                           packet.GetView(),
+                           packet.GetPrimitives(),
+                           packet.GetLights(),
+                           packet.GetSky(),
+                           packet.GetEnvironment(),
+                           packet.GetSettings(),
+                           packet.GetCaptureRequest(),
+                           packet.GetFeatures(),
+                           registry);
+}
+
+RenderFrameApplyResult RenderScene::ApplyFrameV5(
+    const RenderFramePacketV5& frame,
+    const RenderSceneDatabase& scene,
+    const RenderResourceRegistry& registry)
+{
     RenderFrameApplyResult result;
-    const RenderFrameHeader& header = packet.GetHeader();
+    const RenderFrameHeaderV5& frameHeader = frame.GetHeader();
+    result.sequence = frameHeader.sequence;
+    result.previousAcceptedSequence = m_acceptedHeader.sequence;
+    result.lastRenderedSequence = m_lastRenderedHeader.sequence;
+    if (frameHeader.schemaId != RVX_RENDER_FRAME_PACKET_V5_SCHEMA_ID ||
+        frameHeader.schemaVersion != RVX_RENDER_FRAME_PACKET_V5_SCHEMA_VERSION)
+    {
+        result.code = RenderFrameApplyCode::UnsupportedSchema;
+        return result;
+    }
+    if (scene.GetRevision() < frameHeader.requiredSceneRevision)
+    {
+        result.code = RenderFrameApplyCode::InvalidPacket;
+        return result;
+    }
+
+    std::vector<RenderPrimitiveSnapshot> primitives =
+        CopySortedSceneValues(scene.GetPrimitives());
+    std::vector<RenderLightSnapshot> lights =
+        CopySortedSceneValues(scene.GetLights());
+    RenderFeatureSnapshot features;
+    features.BeginBuild(frameHeader.sequence);
+    features.particles.items = CopySortedSceneValues(scene.GetParticles());
+    features.water.items = CopySortedSceneValues(scene.GetWater());
+    features.terrain.items = CopySortedSceneValues(scene.GetTerrain());
+    features.metadata.providerCount = features.particles.items.size() +
+                                      features.water.items.size() +
+                                      features.terrain.items.size();
+    features.MarkComplete();
+
+    RenderFrameHeader header;
+    header.sequence = frameHeader.sequence;
+    header.worldRevision = frameHeader.worldRevision;
+    header.temporalEpoch = frameHeader.temporalEpoch;
+    header.expectedPrimitiveCount = static_cast<uint32>(primitives.size());
+    header.extractedPrimitiveCount = header.expectedPrimitiveCount;
+    header.expectedLightCount = static_cast<uint32>(lights.size());
+    header.extractedLightCount = header.expectedLightCount;
+    header.expectedFeatureProviderCount =
+        static_cast<uint32>(features.metadata.providerCount);
+    header.extractedFeatureProviderCount =
+        header.expectedFeatureProviderCount;
+    header.explicitDiscontinuity = frameHeader.explicitDiscontinuity;
+
+    return ApplyFrameState(
+        header,
+        frame.GetView(),
+        primitives,
+        lights,
+        scene.GetSky().value_or(RenderSkySnapshot{}),
+        scene.GetEnvironment().value_or(RenderEnvironmentSnapshot{}),
+        frame.GetSettings(),
+        frame.GetCaptureRequest(),
+        features,
+        registry);
+}
+
+RenderFrameApplyResult RenderScene::ApplyFrameState(
+    const RenderFrameHeader& header,
+    const RenderViewSnapshot& view,
+    const std::vector<RenderPrimitiveSnapshot>& primitives,
+    const std::vector<RenderLightSnapshot>& lights,
+    const RenderSkySnapshot& inputSky,
+    const RenderEnvironmentSnapshot& inputEnvironment,
+    const RenderFrameSettings& settings,
+    const RenderFrameCaptureRequest& captureRequest,
+    const RenderFeatureSnapshot& features,
+    const RenderResourceRegistry& registry)
+{
+    RenderFrameApplyResult result;
     result.sequence = header.sequence;
     result.previousAcceptedSequence = m_acceptedHeader.sequence;
     result.lastRenderedSequence = m_lastRenderedHeader.sequence;
@@ -147,8 +261,8 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
     // a duplicate before constructing candidates or touching the publication
     // cache so the prior accepted scene remains wholly intact.
     std::unordered_set<uint64> packetObjectIds;
-    packetObjectIds.reserve(packet.GetPrimitives().size());
-    for (const RenderPrimitiveSnapshot& primitive : packet.GetPrimitives())
+    packetObjectIds.reserve(primitives.size());
+    for (const RenderPrimitiveSnapshot& primitive : primitives)
     {
         if (primitive.objectId != 0 &&
             !packetObjectIds.insert(primitive.objectId).second)
@@ -161,8 +275,8 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
     std::vector<RenderObject> candidateObjects;
     std::vector<RenderLight> candidateLights;
     std::vector<RenderResourceHandle> candidateReferences;
-    candidateObjects.reserve(packet.GetPrimitives().size());
-    candidateLights.reserve(packet.GetLights().size());
+    candidateObjects.reserve(primitives.size());
+    candidateLights.reserve(lights.size());
 
     const bool resetHistory =
         m_lastRenderedHeader.sequence == 0 ||
@@ -172,7 +286,7 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
         m_surfaceCompatibilityKey !=
             m_lastRenderedSurfaceCompatibilityKey;
 
-    for (const RenderPrimitiveSnapshot& primitive : packet.GetPrimitives())
+    for (const RenderPrimitiveSnapshot& primitive : primitives)
     {
         const RenderResourceStatus meshStatus =
             registry.QueryStatus(primitive.mesh);
@@ -365,7 +479,7 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
         candidateObjects.push_back(std::move(object));
     }
 
-    for (const RenderLightSnapshot& snapshot : packet.GetLights())
+    for (const RenderLightSnapshot& snapshot : lights)
     {
         if (snapshot.lightId == 0 ||
             (snapshot.shadowResource.IsValid() &&
@@ -394,7 +508,7 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
         candidateLights.push_back(std::move(light));
     }
 
-    RenderSkySnapshot sky = packet.GetSky();
+    RenderSkySnapshot sky = inputSky;
     if (sky.skyTexture.IsValid() &&
         !registry.IsGPUReadyExact(sky.skyTexture))
     {
@@ -402,7 +516,7 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
     }
     AddUniqueHandle(candidateReferences, sky.skyTexture);
 
-    RenderEnvironmentSnapshot environment = packet.GetEnvironment();
+    RenderEnvironmentSnapshot environment = inputEnvironment;
     const bool environmentReady =
         environment.irradianceTexture.IsValid() &&
         environment.prefilteredTexture.IsValid() &&
@@ -443,12 +557,12 @@ RenderFrameApplyResult RenderScene::ApplyFramePacket(
     m_lights.swap(candidateLights);
     m_referencedResources.swap(candidateReferences);
     m_acceptedHeader = header;
-    m_view = packet.GetView();
+    m_view = view;
     m_sky = std::move(sky);
     m_environment = std::move(environment);
-    m_settings = packet.GetSettings();
-    m_captureRequest = packet.GetCaptureRequest();
-    m_features = packet.GetFeatures();
+    m_settings = settings;
+    m_captureRequest = captureRequest;
+    m_features = features;
     m_hasAcceptedFrame = true;
     m_temporalHistoryReset = resetHistory;
 
