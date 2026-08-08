@@ -386,6 +386,16 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME GPUSceneSchemaValidation
+    SOURCES GPUSceneSchemaValidation/main.cpp
+    LIBS RVX::Render
+    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    LABELS "unit;architecture;gpu-scene"
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME GPUSceneUploadValidation
     SOURCES GPUSceneUploadValidation/main.cpp
     LIBS RVX::Render RVX_RenderRuntimeCore
@@ -535,6 +545,15 @@ rvx_add_gtest(
 rvx_add_gtest(
     NAME MeshPassProcessorValidation
     SOURCES MeshPassProcessorValidation/main.cpp
+    LIBS RVX::Render
+    INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
+    LABELS "unit;architecture"
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME RenderInstanceBatchPlanValidation
+    SOURCES RenderInstanceBatchPlanValidation/main.cpp
     LIBS RVX::Render
     INCLUDES ${CMAKE_SOURCE_DIR}/Render/Include
     LABELS "unit;architecture"
@@ -857,6 +876,9 @@ rvx_add_gtest(
     SOURCES
         GPUDrivenValidation/main.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/GPUDriven/GPUCulling.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Passes/MeshPassProcessor.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Renderer/RenderDrawPacket.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Submission/RasterInstanceStream.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Submission/RenderSubmissionStrategy.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Visibility/RenderVisibility.cpp
     LIBS

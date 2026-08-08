@@ -9,6 +9,8 @@
 #include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Submission/RasterInstanceStream.h"
+#include "Render/Submission/RenderInstanceBatchPlan.h"
 #include "RHI/RHICommandContext.h"
 
 #include <array>
@@ -120,6 +122,16 @@ namespace RVX
         RGBufferHandle m_gpuDrivenInstanceIndexHandle;
         RGBufferHandle m_gpuDrivenIndirectHandle;
         RGBufferHandle m_gpuDrivenDrawCountHandle;
+        RGBufferHandle m_directInstanceHandle;
+        RGBufferHandle m_directInstanceIndexHandle;
+        RGBufferHandle m_directMaterialParameterHandle;
+        RGBufferHandle m_gpuMaterialParameterHandle;
+        RenderInstanceBatchPlan m_directInstancePlan;
+        RasterInstanceStream m_directInstanceStream;
+        RHIBufferRef m_directMaterialParameterTable;
+        RHIBufferRef m_gpuMaterialParameterTable;
+        bool m_directInstancingPreflightFailed = false;
+        bool m_gpuMaterialTablePreflightFailed = false;
         std::shared_ptr<const GPUSceneRasterBindingSnapshot> m_gpuSceneRasterBinding;
         std::shared_ptr<std::atomic_bool> m_gpuSceneRecordingFailure;
         OpaquePassShadowStats m_shadowStats;
@@ -159,6 +171,12 @@ namespace RVX
             RHIFormat colorTargetFormat,
             RHIDescriptorSet* frameSet,
             std::vector<PlannedOpaqueDraw>& outPlannedDraws);
+        bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
+                                         const ViewData& view);
+        void ApplyDirectInstancePlan(
+            const ViewData& view,
+            RHIFormat colorTargetFormat,
+            std::vector<PlannedOpaqueDraw>& plannedDraws);
 
     };
 

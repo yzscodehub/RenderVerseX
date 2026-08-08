@@ -36,9 +36,11 @@ StructuredBuffer<GPUSceneTransformRow> GPUSceneRasterTransforms : register(t3, s
 bool GPUSceneResolveRasterTransform(
     uint rasterInstanceIndex,
     out GPUSceneTransformRow transform,
-    out uint primitiveFlags)
+    out uint primitiveFlags,
+    out uint materialParameterSlot)
 {
     primitiveFlags = 0u;
+    materialParameterSlot = 0xFFFFFFFFu;
     if (GPUSceneRasterCounts.x == 0u ||
         GPUSceneRasterCounts.y == 0u ||
         GPUSceneRasterCounts.z == 0u ||
@@ -72,6 +74,7 @@ bool GPUSceneResolveRasterTransform(
     }
 
     primitiveFlags = primitive.primitiveFlags;
+    materialParameterSlot = candidate.materialParameterSlot;
     transform = GPUSceneRasterTransforms[primitive.transform.x];
     return GPUSceneIsLiveHeader(transform.header, primitive.transform.y, objectId) &&
         (transform.transformFlags & RVX_GPU_SCENE_TRANSFORM_FLAG_NORMAL_VALID) != 0u;

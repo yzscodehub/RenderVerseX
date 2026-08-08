@@ -47,17 +47,6 @@ bool AABBInsideFrustum(float3 center, float3 extent)
     return true;
 }
 
-IndirectDrawIndexedCommand EmptyCommand()
-{
-    IndirectDrawIndexedCommand command;
-    command.indexCount = 0;
-    command.instanceCount = 0;
-    command.firstIndex = 0;
-    command.vertexOffset = 0;
-    command.firstInstance = 0;
-    return command;
-}
-
 [numthreads(64, 1, 1)]
 void CSFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
@@ -80,9 +69,8 @@ void CSFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
     float3 extent = max((instance.aabbMax.xyz - instance.aabbMin.xyz) * 0.5f, 0.0f);
 
     gVisibility[instanceIndex] = 0;
-    gIndirectDraws[instanceIndex] = EmptyCommand();
 
-    if (instance.indexCount == 0)
+    if (instance.indexCount == 0 || instance.drawGroupIndex >= drawGroupCount)
     {
         return;
     }
@@ -113,20 +101,40 @@ void CSCompactDraws(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     GPUInstanceData instance = gInstances[instanceIndex];
-    uint totalDrawIndex = 0;
-    InterlockedAdd(gDrawCount[0], 1, totalDrawIndex);
+    uint groupVisibleIndex = 0;
+    InterlockedAdd(
+        gDrawCount[instance.drawGroupIndex + 1], 1, groupVisibleIndex);
+    gVisibleInstanceIndices[
+        instance.drawGroupVisibleOffset + groupVisibleIndex] = instanceIndex;
+    if (groupVisibleIndex == 0)
+    {
+        IndirectDrawIndexedCommand command;
+        command.indexCount = instance.indexCount;
+        command.instanceCount = 0;
+        command.firstIndex = instance.firstIndex;
+        command.vertexOffset = instance.vertexOffset;
+        command.firstInstance = instance.drawGroupVisibleOffset;
+        gIndirectDraws[instance.drawGroupIndex] = command;
+    }
+}
 
-    uint groupDrawIndex = 0;
-    InterlockedAdd(gDrawCount[instance.drawGroupIndex + 1], 1, groupDrawIndex);
+[numthreads(64, 1, 1)]
+void CSFinalizeDrawGroups(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint drawGroupIndex = dispatchThreadId.x;
+    if (drawGroupIndex >= Counts.y)
+    {
+        return;
+    }
 
-    uint commandIndex = instance.drawGroupCommandOffset + groupDrawIndex;
-    gVisibleInstanceIndices[totalDrawIndex] = instanceIndex;
-
-    IndirectDrawIndexedCommand command;
-    command.indexCount = instance.indexCount;
-    command.instanceCount = 1;
-    command.firstIndex = instance.firstIndex;
-    command.vertexOffset = instance.vertexOffset;
-    command.firstInstance = instanceIndex;
-    gIndirectDraws[commandIndex] = command;
+    const uint visibleCount = gDrawCount[drawGroupIndex + 1];
+    IndirectDrawIndexedCommand command = gIndirectDraws[drawGroupIndex];
+    command.instanceCount = visibleCount;
+    gIndirectDraws[drawGroupIndex] = command;
+    gDrawCount[drawGroupIndex + 1] = visibleCount > 0 ? 1u : 0u;
+    if (visibleCount > 0)
+    {
+        uint ignored = 0;
+        InterlockedAdd(gDrawCount[0], 1, ignored);
+    }
 }

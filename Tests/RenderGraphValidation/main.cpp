@@ -175,6 +175,13 @@ namespace
     class FakeDevice final : public IRHIDevice
     {
     public:
+        FakeDevice()
+        {
+            m_capabilities.queueTopology.logicalQueueDomains[
+                static_cast<uint8>(RHICommandQueueType::Compute)] =
+                GPUQueueDomain::Compute;
+        }
+
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             ++createBufferCount;
@@ -961,14 +968,14 @@ TEST(RenderGraphValidation, DiagnosticsSnapshotReportsPassResourcesLifetimesAndM
 
     std::string dump = graph.ExportDiagnosticsText();
     EXPECT_NE(dump.find("RenderGraph Diagnostics"), std::string::npos);
-    EXPECT_NE(dump.find("Schema: 4"), std::string::npos);
+    EXPECT_NE(dump.find("Schema: 5"), std::string::npos);
     EXPECT_NE(dump.find(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID), std::string::npos);
     EXPECT_NE(dump.find("ProduceColor"), std::string::npos);
     EXPECT_NE(dump.find("DiagnosticColor"), std::string::npos);
     EXPECT_NE(dump.find("Estimated transient memory"), std::string::npos);
 
     std::string json = graph.ExportDiagnosticsJson();
-    EXPECT_NE(json.find("\"schemaVersion\": 4"), std::string::npos);
+    EXPECT_NE(json.find("\"schemaVersion\": 5"), std::string::npos);
     EXPECT_NE(json.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
     EXPECT_NE(json.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
     EXPECT_NE(json.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
@@ -1827,9 +1834,109 @@ TEST(RenderGraphValidation, LifetimeHazardStatsResetAfterClear)
     EXPECT_EQ(stats.validationErrorCount, 0u);
 }
 
+TEST(RenderGraphValidation, GraphicsOnlyModeKeepsComputePassAccessOnGraphicsDomain)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    EXPECT_EQ(graph.GetQueueExecutionMode(),
+              RenderGraph::QueueExecutionMode::GraphicsOnly);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured |
+        RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+    const RGBufferHandle imported = graph.ImportBuffer(
+        &buffer, RHIResourceState::Common);
+
+    struct ComputeData
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<ComputeData>(
+        "GraphicsOnlyCompute",
+        RenderGraphPassType::Compute,
+        [imported](RenderGraphBuilder& builder, ComputeData& data)
+        {
+            data.buffer = builder.Write(
+                imported, RHIResourceState::UnorderedAccess);
+        },
+        [](const ComputeData&, RHICommandContext&) {});
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    const RenderGraph::Diagnostics planned = graph.GetDiagnostics();
+    ASSERT_EQ(planned.passes.size(), 1u);
+    EXPECT_EQ(planned.passes[0].plannedExecutionQueue,
+              RenderGraph::DiagnosticExecutionQueue::Graphics);
+    ASSERT_EQ(planned.passes[0].usages.size(), 1u);
+    EXPECT_EQ(planned.passes[0].usages[0].desiredAccess.domain,
+              GPUQueueDomain::Graphics);
+    EXPECT_EQ(planned.plannedComputeBatchCount, 0u);
+
+    FakeCommandContext graphicsCtx;
+    graph.Execute(graphicsCtx);
+    EXPECT_EQ(graph.GetCompileStats().executionQueueMismatchCount, 0u);
+    EXPECT_EQ(graph.GetCompileStats().lastExecutedPassCount, 1u);
+}
+
+TEST(RenderGraphValidation, GraphicsExecuteRejectsExplicitAsyncComputePlan)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured |
+        RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+    const RGBufferHandle imported = graph.ImportBuffer(
+        &buffer, RHIResourceState::Common);
+
+    bool executed = false;
+    struct ComputeData
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<ComputeData>(
+        "AsyncComputeMustNotRunOnGraphics",
+        RenderGraphPassType::Compute,
+        [imported](RenderGraphBuilder& builder, ComputeData& data)
+        {
+            data.buffer = builder.Write(
+                imported, RHIResourceState::UnorderedAccess);
+        },
+        [&executed](const ComputeData&, RHICommandContext&)
+        {
+            executed = true;
+        });
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    graph.Compile();
+
+    FakeCommandContext graphicsCtx;
+    graph.Execute(graphicsCtx);
+    EXPECT_FALSE(executed);
+    EXPECT_EQ(graph.GetCompileStats().executionQueueMismatchCount, 1u);
+    EXPECT_EQ(graph.GetCompileStats().lastExecutedPassCount, 0u);
+}
+
 TEST(RenderGraphValidation, ExecuteAsyncFallsBackToGraphicsWhenBackendDoesNotSupportQueueSync)
 {
     RenderGraph graph;
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
 
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
@@ -1892,6 +1999,8 @@ TEST(RenderGraphValidation, ExecuteAsyncSchedulesComputePassesWhenQueueSyncIsSup
 
     RenderGraph graph;
     graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
 
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
@@ -2025,6 +2134,8 @@ TEST(RenderGraphValidation, DiagnosticsReportsQueueBatchesAndSyncPoints)
 
     RenderGraph graph;
     graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
 
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
@@ -2122,6 +2233,8 @@ TEST(RenderGraphValidation, DiagnosticsReportsReadyListPlannedQueueBatches)
 
     RenderGraph graph;
     graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
 
     RHIBufferDesc graphicsBufferDesc;
     graphicsBufferDesc.size = 1024;
@@ -2207,7 +2320,14 @@ TEST(RenderGraphValidation, DiagnosticsReportsReadyListPlannedQueueBatches)
 
 TEST(RenderGraphValidation, DiagnosticsReportsPlannedSubmissionSyncGraph)
 {
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
     RenderGraph graph;
+    graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
 
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
@@ -2280,7 +2400,14 @@ TEST(RenderGraphValidation, DiagnosticsReportsPlannedSubmissionSyncGraph)
 
 TEST(RenderGraphValidation, SubmissionPlanExposesReusableReadyListPlan)
 {
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
     RenderGraph graph;
+    graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
 
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
@@ -2355,6 +2482,8 @@ TEST(RenderGraphValidation, ExecuteAsyncUsesSubmissionPlanForCrossQueueSyncStats
 
     RenderGraph graph;
     graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
 
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
@@ -2455,6 +2584,8 @@ TEST(RenderGraphValidation, DiagnosticsReportsPlannedActualSyncCoverage)
 
     RenderGraph graph;
     graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
 
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
@@ -2531,6 +2662,8 @@ TEST(RenderGraphValidation, DiagnosticsReportsAsyncEfficiencyStats)
 
     RenderGraph graph;
     graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
 
     RHIBufferDesc graphicsBufferDesc;
     graphicsBufferDesc.size = 1024;
@@ -2625,6 +2758,8 @@ TEST(RenderGraphValidation, ExecuteAsyncDoesNotFenceIndependentComputeAndGraphic
 
     RenderGraph graph;
     graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::AsyncCompute));
 
     RHIBufferDesc graphicsBufferDesc;
     graphicsBufferDesc.size = 1024;

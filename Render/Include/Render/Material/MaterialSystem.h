@@ -15,6 +15,7 @@
 #include <array>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -73,6 +74,27 @@ namespace RVX
     struct MaterialBindingOptions
     {
         bool allowNormalMap = true;
+        /** Optional frame-owned table used by an instanced material draw. */
+        RHIBuffer* materialParameterTable = nullptr;
+    };
+
+    struct MaterialParameterTableEntryRequest
+    {
+        RenderResourceHandle material;
+        bool allowNormalMap = true;
+    };
+
+    /** @brief Recording-owned stable-slot GPU material parameter table. */
+    struct MaterialParameterTableSnapshot
+    {
+        RHIBufferRef buffer;
+        uint32 slotCount = 0;
+        uint32 materialCount = 0;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return buffer && slotCount != 0 && materialCount != 0;
+        }
     };
 
     /** @brief Recording-owned material constants and descriptor snapshot. */
@@ -86,7 +108,7 @@ namespace RVX
         // every backend (notably Vulkan).  Keep the textures alongside the
         // views so a graph recording remains valid until submission retires.
         std::vector<RHITextureRef> textures;
-        RHISamplerRef sampler;
+        std::array<RHISamplerRef, 5> samplers;
         MaterialBindingResult binding;
 
         [[nodiscard]] bool IsDrawable() const noexcept
@@ -158,23 +180,20 @@ namespace RVX
         const MaterialBindingResult& GetLastBindingResult() const { return m_lastBindingResult; }
         const std::string& GetLastBindingMessage() const { return m_lastBindingResult.message; }
 
-        struct EnvironmentIBLResources
-        {
-            RenderResourceHandle irradianceHandle;
-            RenderResourceHandle prefilteredHandle;
-            RenderResourceHandle brdfLUTHandle;
-            uint32 prefilteredMipLevels = 1;
-            float intensity = 1.0f;
-            bool textureIBLEnabled = false;
-        };
+        /** Resolve value-only texture/sampler compatibility for batch planning. */
+        [[nodiscard]] MaterialInstanceBindingKey ResolveInstanceBindingKey(
+            RenderResourceHandle material) const noexcept;
 
-        void SetEnvironmentIBLResources(const EnvironmentIBLResources& resources);
-        void SetEnvironmentIBLResources(RenderResourceHandle irradiance,
-                                        RenderResourceHandle prefiltered,
-                                        RenderResourceHandle brdfLUT,
-                                        float intensity);
-        void ClearEnvironmentIBLResources();
-        const EnvironmentIBLResources& GetEnvironmentIBLResources() const { return m_environmentIBL; }
+        /**
+         * @brief Materialize exact-generation parameters at stable handle slots.
+         *
+         * Duplicate slot generations or incompatible per-mesh normal-map
+         * requirements fail closed instead of changing table meaning.
+         */
+        [[nodiscard]] bool CreateMaterialParameterTableSnapshot(
+            std::span<const MaterialParameterTableEntryRequest> requests,
+            ResourceViewCache* viewCache,
+            MaterialParameterTableSnapshot& outSnapshot) const;
 
     private:
         void QueueMaterialDescriptorCacheRetirement();
@@ -199,14 +218,16 @@ namespace RVX
             RHITextureView* metallicRoughness = nullptr;
             RHITextureView* occlusion = nullptr;
             RHITextureView* emissive = nullptr;
-            RHITextureView* irradiance = nullptr;
-            RHITextureView* prefilteredEnvironment = nullptr;
-            RHITextureView* brdfLUT = nullptr;
+            RHISampler* baseColorSampler = nullptr;
+            RHISampler* normalSampler = nullptr;
+            RHISampler* metallicRoughnessSampler = nullptr;
+            RHISampler* occlusionSampler = nullptr;
+            RHISampler* emissiveSampler = nullptr;
+            RHIBuffer* materialParameterTable = nullptr;
             uint32 textureFlags = 0;
             uint32 fallbackTextureFlags = 0;
             uint64 viewGeneration = 0;
             uint64 pageIdentity = 0;
-            bool textureIBLEnabled = false;
             bool usedFallback = false;
             bool normalMapDisabled = false;
         };
@@ -218,12 +239,14 @@ namespace RVX
             RHITextureView* metallicRoughness = nullptr;
             RHITextureView* occlusion = nullptr;
             RHITextureView* emissive = nullptr;
-            RHITextureView* irradiance = nullptr;
-            RHITextureView* prefilteredEnvironment = nullptr;
-            RHITextureView* brdfLUT = nullptr;
+            RHISampler* baseColorSampler = nullptr;
+            RHISampler* normalSampler = nullptr;
+            RHISampler* metallicRoughnessSampler = nullptr;
+            RHISampler* occlusionSampler = nullptr;
+            RHISampler* emissiveSampler = nullptr;
+            RHIBuffer* materialParameterTable = nullptr;
             uint64 viewGeneration = 0;
             uint64 pageIdentity = 0;
-            bool textureIBLEnabled = false;
 
             bool operator==(const MaterialDescriptorKey& other) const
             {
@@ -232,18 +255,32 @@ namespace RVX
                        metallicRoughness == other.metallicRoughness &&
                        occlusion == other.occlusion &&
                        emissive == other.emissive &&
-                       irradiance == other.irradiance &&
-                       prefilteredEnvironment == other.prefilteredEnvironment &&
-                       brdfLUT == other.brdfLUT &&
+                       baseColorSampler == other.baseColorSampler &&
+                       normalSampler == other.normalSampler &&
+                       metallicRoughnessSampler ==
+                           other.metallicRoughnessSampler &&
+                       occlusionSampler == other.occlusionSampler &&
+                       emissiveSampler == other.emissiveSampler &&
+                       materialParameterTable ==
+                           other.materialParameterTable &&
                        viewGeneration == other.viewGeneration &&
-                       pageIdentity == other.pageIdentity &&
-                       textureIBLEnabled == other.textureIBLEnabled;
+                       pageIdentity == other.pageIdentity;
             }
         };
 
         struct MaterialDescriptorKeyHash
         {
             size_t operator()(const MaterialDescriptorKey& key) const;
+        };
+
+        struct MaterialDescriptorCacheEntry
+        {
+            RHIDescriptorSetRef descriptorSet;
+            std::array<RHISamplerRef, 5> samplers;
+            // A descriptor set only stores backend descriptor addresses. Keep
+            // a custom per-frame parameter table alive for as long as the
+            // cached descriptor can be reused.
+            RHIBufferRef materialParameterTable;
         };
 
         struct MaterialSetResolveResult
@@ -279,6 +316,7 @@ namespace RVX
         bool m_initialized = false;
 
         RHIBufferRef m_materialConstantBuffer;
+        RHIBufferRef m_defaultMaterialParameterTable;
         std::unique_ptr<FrameConstantUploadArena> m_materialConstantUploadArena;
         uint64 m_materialConstantStride = 0;
         uint64 m_materialConstantCursor = 0;
@@ -291,13 +329,13 @@ namespace RVX
         RHITextureViewRef m_defaultNormalTextureView;
         RHITextureViewRef m_defaultBlackTextureView;
         RHISamplerRef m_defaultSampler;
-        RHITextureRef m_defaultBlackCubemap;
-        RHITextureViewRef m_defaultBlackCubemapView;
         RHIDescriptorSetRef m_defaultMaterialSet;
-        std::unordered_map<MaterialDescriptorKey, RHIDescriptorSetRef, MaterialDescriptorKeyHash> m_materialDescriptorCache;
+        std::unordered_map<MaterialDescriptorKey,
+                           MaterialDescriptorCacheEntry,
+                           MaterialDescriptorKeyHash>
+            m_materialDescriptorCache;
         std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
         uint64 m_materialDescriptorCacheGeneration = ~uint64{0};
-        EnvironmentIBLResources m_environmentIBL;
         MaterialBindingResult m_lastBindingResult;
     };
 

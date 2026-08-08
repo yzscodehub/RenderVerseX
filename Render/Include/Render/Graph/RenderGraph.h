@@ -16,7 +16,7 @@
 namespace RVX
 {
     inline constexpr const char* RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID = "RVX.RenderGraph.Diagnostics";
-    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 4;
+    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 5;
 
     class RenderSubmissionResourceBatch;
     class TransientResourcePool;
@@ -122,11 +122,29 @@ namespace RVX
     class RenderGraph
     {
     public:
+        enum class QueueExecutionMode : uint8
+        {
+            GraphicsOnly = 0,
+            /** @brief Experimental planning mode; not yet wired to production frame submission. */
+            AsyncCompute,
+        };
+
         RenderGraph();
         ~RenderGraph();
 
         void SetDevice(IRHIDevice* device);
         void SetTransientResourcePool(TransientResourcePool* pool);
+
+        /**
+         * @brief Select the physical queue contract used while recording passes.
+         * @return False when passes have already been recorded and the mode cannot change.
+         *
+         * GraphicsOnly is the fail-closed default: Graphics, Compute, and Copy
+         * passes all declare Graphics-domain resource access. AsyncCompute must
+         * be selected before AddPass so barriers and execution agree.
+         */
+        bool SetQueueExecutionMode(QueueExecutionMode mode);
+        QueueExecutionMode GetQueueExecutionMode() const;
 
         /** @brief Stable non-zero identity for this graph instance. */
         uint64 GetGraphIdentity() const;
@@ -185,6 +203,9 @@ namespace RVX
          *
          * When computeCtx is provided, compute passes run asynchronously on the compute queue.
          * Fences are automatically inserted to synchronize resource access between queues.
+         * @warning This legacy recording API is not integrated with RenderContext's
+         * terminal frame submission. Production rendering must remain GraphicsOnly
+         * until queue-batch submission consumes the graph SubmissionPlan.
          */
         void ExecuteAsync(RHICommandContext& graphicsCtx,
                           RHICommandContext* computeCtx,
@@ -195,6 +216,7 @@ namespace RVX
         {
             None,
             GraphNotCompiled,
+            AsyncPlanningDisabled,
             BackendUnsupported,
             QueueFenceSignalUnsupported,
             QueueFenceWaitUnsupported,
@@ -218,6 +240,7 @@ namespace RVX
             uint32 asyncFenceWaitCount = 0;
             uint32 asyncCrossQueueDependencyCount = 0;
             uint32 asyncFinalQueueJoinCount = 0;
+            uint32 executionQueueMismatchCount = 0;
             uint32 lastExecutedPassCount = 0;
             uint64 lastExecutionCpuDurationNanoseconds = 0;
             bool memoryAliasingEnabled = false;
@@ -313,6 +336,8 @@ namespace RVX
             std::string name;
             RenderGraphPassType type = RenderGraphPassType::Graphics;
             bool culled = false;
+            DiagnosticExecutionQueue plannedExecutionQueue =
+                DiagnosticExecutionQueue::Graphics;
             bool executedLastRun = false;
             DiagnosticExecutionQueue executionQueue = DiagnosticExecutionQueue::Unknown;
             uint32 executionSerial = RVX_INVALID_INDEX;

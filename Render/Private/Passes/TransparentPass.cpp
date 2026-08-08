@@ -107,10 +107,16 @@ namespace RVX
                     !RetainResource(batch, draw.buffers.indexBuffer) ||
                     !RetainResource(batch, draw.material.constantBuffer.Get()) ||
                     !RetainResource(batch, draw.material.descriptorSet.Get()) ||
-                    !RetainResource(batch, draw.material.layout.Get()) ||
-                    !RetainResource(batch, draw.material.sampler.Get()))
+                    !RetainResource(batch, draw.material.layout.Get()))
                 {
                     return false;
+                }
+                for (const RHISamplerRef& sampler : draw.material.samplers)
+                {
+                    if (!RetainResource(batch, sampler.Get()))
+                    {
+                        return false;
+                    }
                 }
                 for (const RHITextureViewRef& view : draw.material.textureViews)
                 {
@@ -241,6 +247,28 @@ namespace RVX
             if (!RetainDrawResources(data))
             {
                 return false;
+            }
+
+            if (view.textureIBLEnabled != 0)
+            {
+                const bool iblReadsDeclared =
+                    view.environmentIrradianceTexture.IsValid() &&
+                    builder.Read(
+                        view.environmentIrradianceTexture,
+                        RHIShaderStage::Pixel).IsValid() &&
+                    view.environmentPrefilteredTexture.IsValid() &&
+                    builder.Read(
+                        view.environmentPrefilteredTexture,
+                        RHIShaderStage::Pixel).IsValid() &&
+                    view.environmentBRDFLUTTexture.IsValid() &&
+                    builder.Read(
+                        view.environmentBRDFLUTTexture,
+                        RHIShaderStage::Pixel).IsValid();
+                if (!iblReadsDeclared)
+                {
+                    data.draws.clear();
+                    return false;
+                }
             }
 
             data.colorHandle = builder.ReadWrite(

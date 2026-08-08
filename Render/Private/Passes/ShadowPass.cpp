@@ -190,8 +190,14 @@ namespace
 
 struct ShadowPass::PlannedShadowDraw
 {
+    DirectDrawPacket packet;
     MeshGPUBuffers buffers;
+    SubmeshGPUInfo submesh;
+    RHIPipeline* pipeline = nullptr;
     ObjectConstantBinding objectBinding;
+    RHIBufferRef instanceIndexBuffer;
+    uint32 representedPacketCount = 1;
+    bool instanced = false;
 };
 
 ShadowPass::ShadowPass()
@@ -373,7 +379,11 @@ bool ShadowPass::IsSupported() const
         return false;
     }
 
-    if (!m_pipelineCache->GetShadowDepthPipeline(MakeShadowDepthBiasState(m_config)))
+    const ShadowDepthBiasState biasState = MakeShadowDepthBiasState(m_config);
+    if (!m_pipelineCache->GetShadowDepthPipeline(
+            biasState, DefaultLitDirectVertexInputMode::Rigid) ||
+        !m_pipelineCache->GetShadowDepthPipeline(
+            biasState, DefaultLitDirectVertexInputMode::Skinned))
     {
         m_unsupportedReason = "Shadow depth pipeline is not available";
         return false;
@@ -498,6 +508,11 @@ void ShadowPass::Setup(
     m_cascadeTextureHandles.clear();
     m_cascadeViews.clear();
     m_plannedShadowDraws.clear();
+    m_directInstanceHandle = {};
+    m_directInstanceIndexHandle = {};
+    m_directInstancePlan = {};
+    m_directInstanceStream = {};
+    m_directInstancingPreflightFailed = false;
     m_shadowDrawPreflightValid = false;
     m_cascades.resize(std::max(1u, m_config.numCascades));
 
@@ -533,6 +548,11 @@ void ShadowPass::Setup(
 
     m_stats.declaredCascadeResourceCount = static_cast<uint32_t>(m_cascadeTextureHandles.size());
 
+    if (!PrepareDirectInstanceStream(builder, view))
+    {
+        m_directInstancingPreflightFailed = true;
+    }
+
     // All caster constant pages and set-1 descriptors are fixed while the
     // graph is built. Execute() therefore has no allocation path after an
     // attachment is bound.
@@ -550,30 +570,112 @@ void ShadowPass::Setup(
 bool ShadowPass::BuildPlannedShadowDraws(const ViewData& view)
 {
     m_plannedShadowDraws.clear();
+    const ShadowDepthBiasState biasState = MakeShadowDepthBiasState(m_config);
     if (!m_pipelineCache || !m_renderScene || m_resourceRegistry == nullptr ||
-        m_pipelineCache->GetShadowDepthPipeline(MakeShadowDepthBiasState(m_config)) == nullptr)
+        m_pipelineCache->GetShadowDepthPipeline(
+            biasState, DefaultLitDirectVertexInputMode::Rigid) == nullptr ||
+        m_pipelineCache->GetShadowDepthPipeline(
+            biasState, DefaultLitDirectVertexInputMode::Skinned) == nullptr)
     {
+        RVX_RENDER_ERROR("ShadowPass: planned draw preflight is missing renderer resources or a shadow pipeline");
         return false;
     }
 
-    m_plannedShadowDraws.reserve(m_renderScene->GetObjectCount());
-    for (size_t index = 0; index < m_renderScene->GetObjectCount(); ++index)
+    if (view.renderFrameExecutionPlan == nullptr ||
+        view.meshPassPreparation == nullptr)
     {
-        const RenderObject& object = m_renderScene->GetObject(index);
-        if (!object.castsShadow)
+        RVX_RENDER_ERROR("ShadowPass: planned draw preflight is missing the frame plan or mesh-pass preparation");
+        return false;
+    }
+    const DirectDrawPacketBatchBuildResult direct = BuildDirectDrawPacketBatch(
+        *view.renderFrameExecutionPlan,
+        RenderPassKind::Shadow,
+        view.meshPassPreparation->shadow,
+        nullptr);
+    if (!direct.succeeded)
+    {
+        const MeshPassPacketStream& stream = view.meshPassPreparation->shadow;
+        const RenderPassExecutionPlan* shadowPlan = nullptr;
+        for (const RenderPassExecutionPlan& passPlan :
+             view.renderFrameExecutionPlan->passes)
         {
-            continue;
+            if (passPlan.pass == RenderPassKind::Shadow)
+            {
+                shadowPlan = &passPlan;
+                break;
+            }
+        }
+        RVX_RENDER_ERROR(
+            "ShadowPass: direct shadow packet batch failed validation "
+            "(stream input={}, relevant={}, candidates={}, direct={}, skipped={}, "
+            "plan direct={}, gpu={}, skipped={})",
+            stream.stats.inputPacketCount,
+            stream.stats.relevantPacketCount,
+            stream.stats.gpuCandidatePacketCount,
+            stream.stats.directPacketCount,
+            stream.stats.skippedPacketCount,
+            shadowPlan != nullptr ? shadowPlan->partition.directPacketCount : 0u,
+            shadowPlan != nullptr ? shadowPlan->partition.gpuDrivenPacketCount : 0u,
+            shadowPlan != nullptr ? shadowPlan->partition.skippedPacketCount : 0u);
+        return false;
+    }
+
+    m_plannedShadowDraws.reserve(direct.batch.packets.size());
+    for (const DirectDrawPacket& draw : direct.batch.packets)
+    {
+        const RenderDrawPacket& packet = draw.packet;
+        if (packet.pass != RenderPassKind::Shadow ||
+            packet.primitiveData == RVX_INVALID_PRIMITIVE_DATA_INDEX ||
+            packet.primitiveData >= m_renderScene->GetObjectCount() ||
+            packet.arguments.indexCount == 0 ||
+            packet.arguments.instanceCount != 1 ||
+            packet.arguments.firstInstance != 0)
+        {
+            RVX_RENDER_ERROR("ShadowPass: direct shadow packet violates the canonical packet contract");
+            return false;
+        }
+        const RenderObject& object =
+            m_renderScene->GetObject(packet.primitiveData);
+        if (!object.castsShadow || packet.objectId == 0 ||
+            object.entityId != packet.objectId ||
+            object.mesh != packet.geometryKey.mesh)
+        {
+            RVX_RENDER_ERROR("ShadowPass: direct shadow packet does not match its RenderObject identity");
+            return false;
         }
 
         MeshGPUBuffers buffers = ResolveRenderMeshBuffers(m_resourceRegistry, object.mesh);
         if (!buffers.IsValid() || buffers.positionBuffer == nullptr ||
-            buffers.indexBuffer == nullptr || buffers.submeshes.empty())
+            buffers.indexBuffer == nullptr ||
+            packet.geometryKey.submeshIndex >= buffers.submeshes.size())
         {
+            RVX_RENDER_ERROR("ShadowPass: direct shadow packet references unavailable geometry");
+            return false;
+        }
+        const SubmeshGPUInfo submesh =
+            buffers.submeshes[packet.geometryKey.submeshIndex];
+        if (packet.arguments.indexCount != submesh.indexCount ||
+            packet.arguments.firstIndex != submesh.indexOffset ||
+            packet.arguments.vertexOffset != submesh.baseVertex)
+        {
+            RVX_RENDER_ERROR("ShadowPass: direct shadow packet index arguments do not match the resolved submesh");
             return false;
         }
 
         PlannedShadowDraw planned;
+        planned.packet = draw;
         planned.buffers = std::move(buffers);
+        planned.submesh = submesh;
+        planned.pipeline = m_pipelineCache->GetShadowDepthPipeline(
+            biasState,
+            packet.pipelineKey.skinned
+                ? DefaultLitDirectVertexInputMode::Skinned
+                : DefaultLitDirectVertexInputMode::Rigid);
+        if (planned.pipeline == nullptr)
+        {
+            RVX_RENDER_ERROR("ShadowPass: direct shadow packet has no compatible rigid/skinned pipeline");
+            return false;
+        }
         if (!m_pipelineCache->CreateObjectConstantBinding(
                 object.worldMatrix,
                 object.normalMatrix,
@@ -597,11 +699,202 @@ bool ShadowPass::BuildPlannedShadowDraws(const ViewData& view)
                 view.submissionResourceBatch,
                 Ref<RefCounted>(planned.objectBinding.descriptorSet)))
         {
+            RVX_RENDER_ERROR("ShadowPass: direct shadow object constants or retained bindings failed preflight");
             return false;
         }
         m_plannedShadowDraws.emplace_back(std::move(planned));
     }
+    ApplyDirectInstancePlan(view);
     return true;
+}
+
+bool ShadowPass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
+                                             const ViewData& view)
+{
+    if (view.instancingMode == RenderInstancingMode::Disabled)
+    {
+        return true;
+    }
+    if (m_renderScene == nullptr || view.instanceBatchPlans == nullptr ||
+        !view.instanceBatchPlans->shadowValid ||
+        view.renderFrameExecutionPlan == nullptr ||
+        view.meshPassPreparation == nullptr || view.renderGraph == nullptr ||
+        m_pipelineCache == nullptr)
+    {
+        return false;
+    }
+    m_directInstancePlan = view.instanceBatchPlans->shadow;
+    if (m_directInstancePlan.instancedBatchCount == 0)
+    {
+        return true;
+    }
+    const DirectDrawPacketBatchBuildResult direct = BuildDirectDrawPacketBatch(
+        *view.renderFrameExecutionPlan,
+        RenderPassKind::Shadow,
+        view.meshPassPreparation->shadow,
+        nullptr);
+    std::vector<GPUInstanceData> instances;
+    if (!direct.succeeded ||
+        !BuildRasterInstanceData(m_directInstancePlan,
+                                 direct.batch,
+                                 *m_renderScene,
+                                 instances))
+    {
+        return false;
+    }
+    IRHIDevice* device = m_pipelineCache->GetDevice();
+    if (device == nullptr ||
+        !CreateRasterInstanceStream(*device,
+                                    instances,
+                                    "ShadowDirectInstancing",
+                                    m_directInstanceStream) ||
+        !RetainRenderSubmissionResource(
+            view.submissionResourceBatch,
+            Ref<RefCounted>(m_directInstanceStream.instances)) ||
+        !RetainRenderSubmissionResource(
+            view.submissionResourceBatch,
+            Ref<RefCounted>(m_directInstanceStream.instanceIndices)))
+    {
+        m_directInstanceStream = {};
+        return false;
+    }
+    m_directInstanceHandle = view.renderGraph->ImportBuffer(
+        m_directInstanceStream.instances.Get(),
+        RHIResourceState::ShaderResource);
+    m_directInstanceIndexHandle = view.renderGraph->ImportBuffer(
+        m_directInstanceStream.instanceIndices.Get(),
+        RHIResourceState::VertexBuffer);
+    builder.Read(m_directInstanceHandle, RHIShaderStage::Vertex);
+    builder.Read(m_directInstanceIndexHandle,
+                 RHIResourceState::VertexBuffer,
+                 RHIShaderStage::Vertex);
+    return true;
+}
+
+void ShadowPass::ApplyDirectInstancePlan(const ViewData& view)
+{
+    if (view.instancingMode == RenderInstancingMode::Disabled ||
+        m_directInstancePlan.instancedBatchCount == 0)
+    {
+        return;
+    }
+    if (m_directInstancingPreflightFailed ||
+        !m_directInstanceStream.IsValid() ||
+        m_directInstancePlan.executedPacketCount !=
+            m_plannedShadowDraws.size())
+    {
+        m_stats.instancingFallbackBatchCount +=
+            m_directInstancePlan.instancedBatchCount;
+        return;
+    }
+
+    struct InstancedBinding
+    {
+        uint32 leaderIndex = 0;
+        ObjectConstantBinding objectBinding;
+    };
+    std::vector<InstancedBinding> bindings;
+    bindings.reserve(m_directInstancePlan.instancedBatchCount);
+    std::vector<bool> consumed(m_plannedShadowDraws.size(), false);
+    RHIPipeline* instancedPipeline =
+        m_pipelineCache->GetInstancedShadowDepthPipeline(
+            MakeShadowDepthBiasState(m_config));
+    for (const RenderInstanceBatch& batch : m_directInstancePlan.batches)
+    {
+        if (batch.members.empty())
+        {
+            m_stats.instancingFallbackBatchCount +=
+                m_directInstancePlan.instancedBatchCount;
+            return;
+        }
+        for (const RenderInstanceBatchMember& member : batch.members)
+        {
+            if (member.directPacketIndex >= m_plannedShadowDraws.size() ||
+                consumed[member.directPacketIndex])
+            {
+                m_stats.instancingFallbackBatchCount +=
+                    m_directInstancePlan.instancedBatchCount;
+                return;
+            }
+            consumed[member.directPacketIndex] = true;
+        }
+        if (!batch.instanced)
+        {
+            continue;
+        }
+        const uint32 leaderIndex = batch.members.front().directPacketIndex;
+        const PlannedShadowDraw& leader = m_plannedShadowDraws[leaderIndex];
+        ObjectConstantBinding binding;
+        if (instancedPipeline == nullptr ||
+            leader.packet.packet.pipelineKey.skinned ||
+            !m_pipelineCache->CreateObjectConstantBinding(
+                Mat4Identity(),
+                Mat4Identity(),
+                Mat4Identity(),
+                view.previousViewProjectionMatrix,
+                false,
+                true,
+                {},
+                m_directInstanceStream.instances.Get(),
+                binding) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(binding.constantBuffer)) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(binding.instanceBuffer)) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(binding.descriptorSet)))
+        {
+            m_stats.instancingFallbackBatchCount +=
+                m_directInstancePlan.instancedBatchCount;
+            return;
+        }
+        bindings.push_back({leaderIndex, std::move(binding)});
+    }
+    if (!std::all_of(consumed.begin(), consumed.end(),
+                     [](bool value) { return value; }))
+    {
+        m_stats.instancingFallbackBatchCount +=
+            m_directInstancePlan.instancedBatchCount;
+        return;
+    }
+
+    std::vector<PlannedShadowDraw> batched;
+    batched.reserve(m_directInstancePlan.batches.size());
+    size_t bindingIndex = 0;
+    for (const RenderInstanceBatch& batch : m_directInstancePlan.batches)
+    {
+        const uint32 leaderIndex = batch.members.front().directPacketIndex;
+        if (!batch.instanced)
+        {
+            batched.push_back(std::move(m_plannedShadowDraws[leaderIndex]));
+            continue;
+        }
+        if (bindingIndex >= bindings.size() ||
+            bindings[bindingIndex].leaderIndex != leaderIndex)
+        {
+            m_stats.instancingFallbackBatchCount +=
+                m_directInstancePlan.instancedBatchCount;
+            return;
+        }
+        PlannedShadowDraw leader =
+            std::move(m_plannedShadowDraws[leaderIndex]);
+        leader.pipeline = instancedPipeline;
+        leader.objectBinding =
+            std::move(bindings[bindingIndex].objectBinding);
+        leader.instanceIndexBuffer = m_directInstanceStream.instanceIndices;
+        leader.packet.packet.arguments.instanceCount =
+            static_cast<uint32>(batch.members.size());
+        leader.packet.packet.arguments.firstInstance = batch.firstInstance;
+        leader.representedPacketCount =
+            static_cast<uint32>(batch.members.size());
+        leader.instanced = true;
+        batched.push_back(std::move(leader));
+        ++bindingIndex;
+    }
+    m_plannedShadowDraws = std::move(batched);
 }
 
 void ShadowPass::Execute(
@@ -626,14 +919,6 @@ void ShadowPass::Execute(
     if (!m_pipelineCache || !m_renderScene ||
         m_resourceRegistry == nullptr || !m_shadowDrawPreflightValid)
     {
-        return;
-    }
-
-    // Get shadow depth-only pipeline for shadow rendering
-    RHIPipeline* shadowPipeline = m_pipelineCache->GetShadowDepthPipeline(MakeShadowDepthBiasState(m_config));
-    if (!shadowPipeline)
-    {
-        // Shadow pipeline not available yet
         return;
     }
 
@@ -732,23 +1017,17 @@ void ShadowPass::RenderCascade(
     RHIRect scissor{0, 0, size, size};
     ctx.SetScissor(scissor);
 
-    // Bind shadow pipeline
-    RHIPipeline* pipeline = m_pipelineCache->GetShadowDepthPipeline(MakeShadowDepthBiasState(m_config));
-    if (pipeline)
-    {
-        ctx.SetPipeline(pipeline);
-    }
-
     RHIDescriptorSet* frameSet = m_pipelineCache->GetFrameDescriptorSet();
-    if (frameSet)
-    {
-        ctx.SetDescriptorSet(0, frameSet);
-    }
 
     // All page constants/descriptors were preflighted during graph setup.
     for (const PlannedShadowDraw& planned : m_plannedShadowDraws)
     {
-        ++m_stats.shadowCasterCount;
+        m_stats.shadowCasterCount += planned.representedPacketCount;
+        ctx.SetPipeline(planned.pipeline);
+        if (frameSet)
+        {
+            ctx.SetDescriptorSet(0, frameSet);
+        }
         ctx.SetDescriptorSet(1,
                              planned.objectBinding.descriptorSet.Get(),
                              planned.objectBinding.dynamicOffsets);
@@ -763,13 +1042,23 @@ void ShadowPass::RenderCascade(
         {
             ctx.SetVertexBuffer(5, planned.buffers.boneWeightsBuffer);
         }
+        if (planned.instanced)
+        {
+            ctx.SetVertexBuffer(6, planned.instanceIndexBuffer.Get());
+        }
         ctx.SetIndexBuffer(planned.buffers.indexBuffer, RHIFormat::R32_UINT);
 
-        // Draw
-        for (const SubmeshGPUInfo& submesh : planned.buffers.submeshes)
+        const RenderDrawArguments& arguments = planned.packet.packet.arguments;
+        ctx.DrawIndexed(arguments.indexCount,
+                        arguments.instanceCount,
+                        arguments.firstIndex,
+                        arguments.vertexOffset,
+                        arguments.firstInstance);
+        ++m_stats.drawCount;
+        m_stats.submittedInstanceCount += arguments.instanceCount;
+        if (planned.instanced)
         {
-            ctx.DrawIndexed(submesh.indexCount, 1, submesh.indexOffset, submesh.baseVertex, 0);
-            ++m_stats.drawCount;
+            ++m_stats.instancedBatchCount;
         }
     }
 

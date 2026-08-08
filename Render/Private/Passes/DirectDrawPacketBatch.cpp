@@ -220,6 +220,7 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
                 source.directLayout,
                 reference.sourcePacketIndex,
                 reference.sourceOrdinal,
+                reference.packetId,
             });
         }
     }

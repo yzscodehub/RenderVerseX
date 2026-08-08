@@ -83,6 +83,7 @@ namespace
         RHISamplerRef sampler;
         RHITextureRef fallbackCubemap;
         RHITextureViewRef fallbackCubemapView;
+        RGTextureHandle skyTextureHandle{};
         RGTextureHandle colorHandle{};
         RGTextureHandle depthHandle{};
         bool depthAvailable = false;
@@ -140,6 +141,16 @@ namespace
             // A packet can legitimately name a texture that is not ready for
             // this exact registry generation. Preserve the established solid
             // tint/intensity fallback instead of borrowing pass setter state.
+            return data.cubemapTexture && data.cubemapView;
+        }
+
+        const RGTextureHandle skyTextureHandle =
+            data.execution.view.environmentSkyTexture;
+        if (!skyTextureHandle.IsValid() || data.identity.graph == nullptr ||
+            data.identity.graph->GetTexture(skyTextureHandle) != texture)
+        {
+            // The descriptor and RenderGraph access must identify the same
+            // frame-owned texture. Fall back when that ownership is absent.
             return data.cubemapTexture && data.cubemapView;
         }
 
@@ -344,6 +355,17 @@ namespace
             return false;
         }
 
+        if (data.usingCubemap)
+        {
+            data.skyTextureHandle = builder.Read(
+                view.environmentSkyTexture,
+                RHIShaderStage::Pixel);
+            if (!data.skyTextureHandle.IsValid())
+            {
+                return false;
+            }
+        }
+
         data.colorHandle = builder.ReadWrite(
             view.colorTarget,
             MakeRHIAccessSnapshot(RHIResourceState::RenderTarget,
@@ -380,6 +402,11 @@ namespace
             data.colorHandle.graphIdentity != data.identity.graphIdentity ||
             data.colorHandle.recordingGeneration !=
                 data.identity.graphRecordingGeneration ||
+            (data.usingCubemap &&
+             (!data.skyTextureHandle.IsValid() ||
+              data.skyTextureHandle.graphIdentity != data.identity.graphIdentity ||
+              data.skyTextureHandle.recordingGeneration !=
+                  data.identity.graphRecordingGeneration)) ||
             (data.depthAvailable &&
              (!data.depthHandle.IsValid() ||
               data.depthHandle.graphIdentity != data.identity.graphIdentity ||

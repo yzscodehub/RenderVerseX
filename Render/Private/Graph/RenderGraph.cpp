@@ -79,29 +79,42 @@ namespace RVX
             return AlignUp(desc.size, 256);
         }
 
-        RHICommandQueueType GetQueueType(RenderGraphPassType passType)
-        {
-            switch (passType)
-            {
-                case RenderGraphPassType::Compute: return RHICommandQueueType::Compute;
-                case RenderGraphPassType::Copy: return RHICommandQueueType::Copy;
-                case RenderGraphPassType::Graphics:
-                case RenderGraphPassType::RayTracing:
-                default: return RHICommandQueueType::Graphics;
-            }
-        }
-
-        GPUQueueDomain GetPhysicalDomain(IRHIDevice* device, RenderGraphPassType passType)
+        GPUQueueDomain GetPhysicalDomain(
+            IRHIDevice* device,
+            RenderGraphPassType passType,
+            RenderGraph::QueueExecutionMode executionMode)
         {
             GPUQueueDomain domain = GPUQueueDomain::Graphics;
-            if (device)
+            if (executionMode == RenderGraph::QueueExecutionMode::GraphicsOnly)
             {
+                return domain;
+            }
+
+            if (device && passType == RenderGraphPassType::Compute)
+            {
+                const RHICapabilities& capabilities = device->GetCapabilities();
+                const bool canScheduleAsyncCompute =
+                    capabilities.supportsAsyncCompute &&
+                    capabilities.supportsExplicitQueueFenceSignal &&
+                    capabilities.supportsQueueFenceWait;
+                if (!canScheduleAsyncCompute)
+                {
+                    return GPUQueueDomain::Graphics;
+                }
                 TryGetGPUQueueDomain(
-                    device->GetCapabilities().queueTopology,
-                    GetQueueType(passType),
+                    capabilities.queueTopology,
+                    RHICommandQueueType::Compute,
                     domain);
             }
             return domain;
+        }
+
+        RenderGraph::DiagnosticExecutionQueue GetPlannedExecutionQueue(
+            GPUQueueDomain domain)
+        {
+            return domain == GPUQueueDomain::Compute
+                ? RenderGraph::DiagnosticExecutionQueue::Compute
+                : RenderGraph::DiagnosticExecutionQueue::Graphics;
         }
 
         RHIShaderStage GetDefaultShaderStages(RenderGraphPassType passType)
@@ -187,13 +200,6 @@ namespace RVX
             }
         }
 
-        RenderGraph::DiagnosticExecutionQueue ToDiagnosticExecutionQueue(RenderGraphPassType type)
-        {
-            return type == RenderGraphPassType::Compute
-                       ? RenderGraph::DiagnosticExecutionQueue::Compute
-                       : RenderGraph::DiagnosticExecutionQueue::Graphics;
-        }
-
         const char* ToDiagnosticString(RenderGraph::DiagnosticSyncReason reason)
         {
             switch (reason)
@@ -214,6 +220,8 @@ namespace RVX
                     return "None";
                 case RenderGraph::AsyncComputeFallbackReason::GraphNotCompiled:
                     return "GraphNotCompiled";
+                case RenderGraph::AsyncComputeFallbackReason::AsyncPlanningDisabled:
+                    return "AsyncPlanningDisabled";
                 case RenderGraph::AsyncComputeFallbackReason::BackendUnsupported:
                     return "BackendUnsupported";
                 case RenderGraph::AsyncComputeFallbackReason::QueueFenceSignalUnsupported:
@@ -285,6 +293,7 @@ namespace RVX
                 passDiagnostic.name = pass.name;
                 passDiagnostic.type = pass.type;
                 passDiagnostic.culled = pass.culled;
+                passDiagnostic.plannedExecutionQueue = pass.plannedExecutionQueue;
                 passDiagnostic.executedLastRun = pass.executedLastRun;
                 passDiagnostic.executionQueue = pass.lastExecutionQueue;
                 passDiagnostic.executionSerial = pass.lastExecutionSerial;
@@ -356,7 +365,8 @@ namespace RVX
                 plannedDependencyLevels[passIndex] = dependencyLevel;
                 plannedLevelResolved[passIndex] = 1;
 
-                const RenderGraph::DiagnosticExecutionQueue queue = ToDiagnosticExecutionQueue(pass.type);
+                const RenderGraph::DiagnosticExecutionQueue queue =
+                    pass.plannedExecutionQueue;
                 auto batchIt = std::find_if(
                     plan.queueBatches.begin(),
                     plan.queueBatches.end(),
@@ -563,6 +573,8 @@ namespace RVX
         std::vector<BufferResource>* buffers = nullptr;
         Pass* pass = nullptr;
         IRHIDevice* device = nullptr;
+        RenderGraph::QueueExecutionMode queueExecutionMode =
+            RenderGraph::QueueExecutionMode::GraphicsOnly;
         uint32* compatibilityStateProjectionCount = nullptr;
         uint64 graphIdentity = 0;
         uint64 recordingGeneration = 0;
@@ -612,6 +624,23 @@ namespace RVX
     void RenderGraph::SetTransientResourcePool(TransientResourcePool* pool)
     {
         m_impl->transientResourcePool = pool;
+    }
+
+    bool RenderGraph::SetQueueExecutionMode(QueueExecutionMode mode)
+    {
+        if (!m_impl->passes.empty())
+        {
+            RVX_CORE_ERROR(
+                "RenderGraph queue execution mode cannot change after passes are recorded");
+            return false;
+        }
+        m_impl->queueExecutionMode = mode;
+        return true;
+    }
+
+    RenderGraph::QueueExecutionMode RenderGraph::GetQueueExecutionMode() const
+    {
+        return m_impl->queueExecutionMode;
     }
 
     uint64 RenderGraph::GetGraphIdentity() const
@@ -911,6 +940,8 @@ namespace RVX
         Pass pass;
         pass.name = name ? name : "RenderPass";
         pass.type = type;
+        pass.plannedExecutionQueue = GetPlannedExecutionQueue(
+            GetPhysicalDomain(m_impl->device, type, m_impl->queueExecutionMode));
         pass.execute = std::move(execute);
 
         RenderGraphBuilder builder;
@@ -919,6 +950,7 @@ namespace RVX
         builderImpl.buffers = &m_impl->buffers;
         builderImpl.pass = &pass;
         builderImpl.device = m_impl->device;
+        builderImpl.queueExecutionMode = m_impl->queueExecutionMode;
         builderImpl.compatibilityStateProjectionCount = &m_impl->compatibilityStateProjectionCount;
         builderImpl.graphIdentity = m_impl->graphIdentity;
         builderImpl.recordingGeneration = m_impl->recordingGeneration;
@@ -955,7 +987,10 @@ namespace RVX
         usage.desiredAccess = MakeRHIAccessSnapshot(
             state,
             stages,
-            GetPhysicalDomain(m_impl->device, m_impl->pass->type));
+            GetPhysicalDomain(
+                m_impl->device,
+                m_impl->pass->type,
+                m_impl->queueExecutionMode));
         usage.access = RGAccessType::Read;
         usage.stages = stages;  // Use the stages parameter for fine-grained barrier optimization
         usage.hasSubresourceRange = texture.hasSubresourceRange;
@@ -1017,7 +1052,10 @@ namespace RVX
         usage.desiredAccess = MakeRHIAccessSnapshot(
             state,
             stages,
-            GetPhysicalDomain(m_impl->device, m_impl->pass->type));
+            GetPhysicalDomain(
+                m_impl->device,
+                m_impl->pass->type,
+                m_impl->queueExecutionMode));
         usage.access = RGAccessType::Read;
         usage.stages = stages;  // Use the stages parameter for fine-grained barrier optimization
         usage.hasRange = buffer.hasRange;
@@ -1082,7 +1120,10 @@ namespace RVX
         usage.desiredAccess = MakeRHIAccessSnapshot(
             state,
             usage.stages,
-            GetPhysicalDomain(m_impl->device, m_impl->pass->type));
+            GetPhysicalDomain(
+                m_impl->device,
+                m_impl->pass->type,
+                m_impl->queueExecutionMode));
         usage.access = RGAccessType::Write;
         usage.discardIntent = discardIntent;
         usage.hasSubresourceRange = texture.hasSubresourceRange;
@@ -1143,7 +1184,10 @@ namespace RVX
         usage.desiredAccess = MakeRHIAccessSnapshot(
             state,
             usage.stages,
-            GetPhysicalDomain(m_impl->device, m_impl->pass->type));
+            GetPhysicalDomain(
+                m_impl->device,
+                m_impl->pass->type,
+                m_impl->queueExecutionMode));
         usage.access = RGAccessType::Write;
         usage.discardIntent = discardIntent;
         usage.hasRange = buffer.hasRange;
@@ -1196,7 +1240,10 @@ namespace RVX
             ? GetDefaultShaderStages(m_impl->pass->type)
             : RHIShaderStage::AllGraphics;
         const GPUQueueDomain domain = m_impl && m_impl->pass
-            ? GetPhysicalDomain(m_impl->device, m_impl->pass->type)
+            ? GetPhysicalDomain(
+                m_impl->device,
+                m_impl->pass->type,
+                m_impl->queueExecutionMode)
             : GPUQueueDomain::Graphics;
         return ReadWrite(texture, MakeRHIAccessSnapshot(
             RHIResourceState::UnorderedAccess, stages, domain));
@@ -1234,7 +1281,10 @@ namespace RVX
             ? GetDefaultShaderStages(m_impl->pass->type)
             : RHIShaderStage::AllGraphics;
         const GPUQueueDomain domain = m_impl && m_impl->pass
-            ? GetPhysicalDomain(m_impl->device, m_impl->pass->type)
+            ? GetPhysicalDomain(
+                m_impl->device,
+                m_impl->pass->type,
+                m_impl->queueExecutionMode)
             : GPUQueueDomain::Graphics;
         return ReadWrite(buffer, MakeRHIAccessSnapshot(
             RHIResourceState::UnorderedAccess, stages, domain));
@@ -1583,6 +1633,12 @@ namespace RVX
            << diagnostics.compileStats.accessSnapshotMismatchCount
            << ", compatibility projections="
            << diagnostics.compileStats.compatibilityStateProjectionCount << "\n";
+        ss << "Queue contract: mode="
+           << (m_impl->queueExecutionMode == QueueExecutionMode::AsyncCompute
+                   ? "AsyncCompute"
+                   : "GraphicsOnly")
+           << ", execution mismatches="
+           << diagnostics.compileStats.executionQueueMismatchCount << "\n";
         ss << "Last execution: passes=" << diagnostics.compileStats.lastExecutedPassCount
            << ", cpuNs=" << diagnostics.compileStats.lastExecutionCpuDurationNanoseconds << "\n";
         ss << "Estimated transient memory: " << diagnostics.estimatedTransientMemoryBytes << " bytes\n";
@@ -1737,6 +1793,8 @@ namespace RVX
                 ss << pass.executionSerial;
             }
             ss << " cpuNs=" << pass.cpuDurationNanoseconds
+               << " plannedQueue="
+               << ToDiagnosticString(pass.plannedExecutionQueue)
                << " dependencies=" << FormatPassIndexList(pass.dependencies)
                << " dependents=" << FormatPassIndexList(pass.dependents)
                << " usages=" << pass.usages.size()
@@ -1812,6 +1870,8 @@ namespace RVX
         ss << "    \"asyncFenceWaitCount\": " << stats.asyncFenceWaitCount << ",\n";
         ss << "    \"asyncCrossQueueDependencyCount\": " << stats.asyncCrossQueueDependencyCount << ",\n";
         ss << "    \"asyncFinalQueueJoinCount\": " << stats.asyncFinalQueueJoinCount << ",\n";
+        ss << "    \"executionQueueMismatchCount\": "
+           << stats.executionQueueMismatchCount << ",\n";
         ss << "    \"lastExecutedPassCount\": " << stats.lastExecutedPassCount << ",\n";
         ss << "    \"lastExecutionCpuDurationNanoseconds\": " << stats.lastExecutionCpuDurationNanoseconds << "\n";
         ss << "  },\n";
@@ -1869,6 +1929,8 @@ namespace RVX
             ss << "      \"name\": " << JsonString(pass.name) << ",\n";
             ss << "      \"type\": " << JsonString(ToDiagnosticString(pass.type)) << ",\n";
             ss << "      \"culled\": " << JsonBool(pass.culled) << ",\n";
+            ss << "      \"plannedExecutionQueue\": "
+               << JsonString(ToDiagnosticString(pass.plannedExecutionQueue)) << ",\n";
             ss << "      \"executedLastRun\": " << JsonBool(pass.executedLastRun) << ",\n";
             ss << "      \"executionQueue\": " << JsonString(ToDiagnosticString(pass.executionQueue)) << ",\n";
             ss << "      \"executionSerial\": ";

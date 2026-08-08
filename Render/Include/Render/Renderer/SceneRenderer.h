@@ -7,6 +7,7 @@
 
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/RenderDiagnostics.h"
 #include "Render/GPUScene/GPUScenePublication.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/TransientResourcePool.h"
@@ -34,6 +35,7 @@
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Submission/RenderInstanceBatchPlan.h"
 #include "Render/Visibility/RenderVisibility.h"
 #include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderProxy.h"
@@ -364,6 +366,7 @@ namespace RVX
 
         RenderResourceRegistryStats gpuResourceStats;
         SceneGPUDrivenCullingStats gpuDrivenCullingStats;
+        RenderInstancingDiagnostics instancing;
         RenderPolicyDiagnostics policy;
         RayTracingSceneManagerStats rayTracingSceneStats;
 
@@ -1469,6 +1472,7 @@ namespace RVX
         IRHIDevice* m_featureReportDeviceForTesting = nullptr;
         SceneEnvironmentIBLStats m_environmentIBLStats;
         SceneGPUDrivenCullingStats m_gpuDrivenCullingStats;
+        RenderInstancingDiagnostics m_instancingDiagnostics;
         RayTracingSceneManagerStats m_rayTracingSceneStats;
         SceneRayTracingBudgetSettings m_rayTracingBudgetSettings;
         SceneRayTracingFrameStats m_rayTracingFrameBudgetStats;
@@ -1508,6 +1512,7 @@ namespace RVX
         std::vector<RenderDrawItem> m_coarseOpaqueDrawItems;
         std::vector<RenderDrawItem> m_coarseMaskedDrawItems;
         SceneMeshPassPreparation m_meshPassPreparation;
+        SceneRenderInstanceBatchPlans m_instanceBatchPlans;
         RenderCandidateSet m_renderCandidates;
         RenderVisibilityResult m_renderVisibility;
         std::vector<std::string> m_loggedUnsupportedPassNames;

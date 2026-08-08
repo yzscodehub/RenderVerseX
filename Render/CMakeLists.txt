@@ -101,6 +101,8 @@ target_sources(RVX_Render PRIVATE
     Private/Policy/RenderPolicyResolver.cpp
     # Submission
     Private/Submission/RenderSubmissionStrategy.cpp
+    Private/Submission/RenderInstanceBatchPlan.cpp
+    Private/Submission/RasterInstanceStream.cpp
     Private/Resources/FrameConstantUploadArena.cpp
     # Diagnostics
     Private/Diagnostics/RenderFeatureReport.cpp

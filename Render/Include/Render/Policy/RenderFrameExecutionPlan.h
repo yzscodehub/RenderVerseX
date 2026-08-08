@@ -160,6 +160,11 @@ namespace RVX
         RenderPassLaneExecutionReport gpuDrivenLane{};
         RenderPassLaneExecutionReport directLane{};
         uint32 skippedPacketCount = 0;
+        bool materialBindingsAvailable = false;
+        uint32 materialBindingCount = 0;
+        uint32 materialFallbackBindingCount = 0;
+        uint32 materialTextureFlags = 0;
+        uint32 materialFallbackTextureFlags = 0;
         RenderPolicyReason reason = RenderPolicyReason::ConservativeDefault;
 
         bool operator==(const RenderPassExecutionReport&) const = default;

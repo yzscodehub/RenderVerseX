@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -111,6 +112,16 @@ namespace
 
     class FakeSampler final : public RHISampler
     {
+    public:
+        explicit FakeSampler(const RHISamplerDesc& desc)
+            : m_desc(desc)
+        {
+        }
+
+        const RHISamplerDesc& GetDesc() const { return m_desc; }
+
+    private:
+        RHISamplerDesc m_desc;
     };
 
     class FakeDescriptorSetLayout final : public RHIDescriptorSetLayout
@@ -125,9 +136,11 @@ namespace
             m_entries.push_back({4, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
             m_entries.push_back({5, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
             m_entries.push_back({6, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
-            m_entries.push_back({7, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
-            m_entries.push_back({8, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
-            m_entries.push_back({9, RHIBindingType::SampledTexture, RHIShaderStage::All, 1, false});
+            m_entries.push_back({7, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({8, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({9, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({10, RHIBindingType::Sampler, RHIShaderStage::All, 1, false});
+            m_entries.push_back({11, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::All, 1, false});
         }
 
         const std::vector<RHIBindingLayoutEntry>& GetEntries() const override { return m_entries; }
@@ -336,7 +349,7 @@ namespace
         {
             ++createdSamplerCount;
             createdSamplerDescs.push_back(desc);
-            return RHISamplerRef(new FakeSampler());
+            return RHISamplerRef(new FakeSampler(desc));
         }
 
         RHIShaderRef CreateShader(const RHIShaderDesc&) override { return nullptr; }
@@ -1821,39 +1834,7 @@ namespace
         gpuResources.Shutdown();
     }
 
-    TEST(MaterialSystemValidation, DefaultMaterialSetBindsIBLFallbackViews)
-    {
-        FakeDevice device;
-        RenderRuntimeTestHarness gpuResources;
-        gpuResources.Initialize(&device);
-
-        FakeDescriptorSetLayout materialSetLayout;
-        MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
-
-        RHIDescriptorSet* descriptorSet = materialSystem.GetDefaultMaterialSet();
-        ASSERT_NE(nullptr, descriptorSet);
-
-        const RHIDescriptorBinding* irradianceBinding = FindBinding(descriptorSet, 7);
-        const RHIDescriptorBinding* prefilteredBinding = FindBinding(descriptorSet, 8);
-        const RHIDescriptorBinding* brdfBinding = FindBinding(descriptorSet, 9);
-        ASSERT_NE(nullptr, irradianceBinding);
-        ASSERT_NE(nullptr, prefilteredBinding);
-        ASSERT_NE(nullptr, brdfBinding);
-        ASSERT_NE(nullptr, irradianceBinding->textureView);
-        ASSERT_NE(nullptr, prefilteredBinding->textureView);
-        ASSERT_NE(nullptr, brdfBinding->textureView);
-
-        EXPECT_EQ(RHITextureDimension::TextureCube, irradianceBinding->textureView->GetTexture()->GetDimension());
-        EXPECT_EQ(RHITextureDimension::TextureCube, prefilteredBinding->textureView->GetTexture()->GetDimension());
-        EXPECT_EQ(RHITextureDimension::Texture2D, brdfBinding->textureView->GetTexture()->GetDimension());
-        EXPECT_EQ(irradianceBinding->textureView, prefilteredBinding->textureView);
-
-        materialSystem.Shutdown();
-        gpuResources.Shutdown();
-    }
-
-    TEST(MaterialSystemValidation, MaterialSetUsesResidentTextureIBLViews)
+    TEST(MaterialSystemValidation, MaterialSetPreservesPerTextureSamplerSemantics)
     {
         FakeDevice device;
         RenderRuntimeTestHarness gpuResources;
@@ -1864,168 +1845,105 @@ namespace
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialSetLayout, &gpuResources.GetRegistry()));
 
-        Resource::TextureHandle irradiance = CreateIBLCubemapResource(401);
-        Resource::TextureHandle prefiltered = CreateIBLCubemapResource(402, 2);
-        Resource::TextureHandle brdfLUT = CreateIBLBRDFLUTResource(403);
-        gpuResources.UploadImmediate(irradiance.Get());
-        gpuResources.UploadImmediate(prefiltered.Get());
-        gpuResources.UploadImmediate(brdfLUT.Get());
-        ASSERT_TRUE(gpuResources.IsGPUReady(irradiance.GetId()));
-        ASSERT_TRUE(gpuResources.IsGPUReady(prefiltered.GetId()));
-        ASSERT_TRUE(gpuResources.IsGPUReady(brdfLUT.GetId()));
+        const Resource::TextureHandle texture = CreateTextureResource(502);
+        gpuResources.UploadImmediate(texture.Get());
+        ASSERT_TRUE(gpuResources.IsGPUReady(texture.GetId()));
 
-        MaterialSystem::EnvironmentIBLResources iblResources;
-        iblResources.irradianceHandle = gpuResources.ResolveOrUpload(irradiance.Get());
-        iblResources.prefilteredHandle = gpuResources.ResolveOrUpload(prefiltered.Get());
-        iblResources.brdfLUTHandle = gpuResources.ResolveOrUpload(brdfLUT.Get());
-        iblResources.prefilteredMipLevels = 2;
-        iblResources.textureIBLEnabled = true;
-        materialSystem.SetEnvironmentIBLResources(iblResources);
+        auto material = std::make_shared<Material>("SamplerSemanticMaterial");
+        TextureInfo baseColor("base-color.png");
+        baseColor.wrapS = TextureInfo::WrapMode::ClampToEdge;
+        baseColor.wrapT = TextureInfo::WrapMode::MirrorRepeat;
+        baseColor.minFilter = TextureInfo::FilterMode::Nearest;
+        baseColor.magFilter = TextureInfo::FilterMode::Nearest;
+        material->SetBaseColorTexture(baseColor);
 
-        Resource::MaterialResource materialResource;
-        materialResource.SetId(501);
-        materialResource.SetName("IBLReadyMaterial");
-        materialResource.SetMaterialData(std::make_shared<Material>());
+        TextureInfo normal("normal.png");
+        normal.minFilter = TextureInfo::FilterMode::Linear;
+        material->SetNormalTexture(normal);
 
-        RHIDescriptorSet* descriptorSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
-        ASSERT_NE(nullptr, descriptorSet);
+        TextureInfo metallicRoughness("metallic-roughness.png");
+        metallicRoughness.minFilter =
+            TextureInfo::FilterMode::LinearMipmapNearest;
+        material->SetMetallicRoughnessTexture(metallicRoughness);
 
-        const RHIDescriptorBinding* irradianceBinding = FindBinding(descriptorSet, 7);
-        const RHIDescriptorBinding* prefilteredBinding = FindBinding(descriptorSet, 8);
-        const RHIDescriptorBinding* brdfBinding = FindBinding(descriptorSet, 9);
-        ASSERT_NE(nullptr, irradianceBinding);
-        ASSERT_NE(nullptr, prefilteredBinding);
-        ASSERT_NE(nullptr, brdfBinding);
-        ASSERT_NE(nullptr, irradianceBinding->textureView);
-        ASSERT_NE(nullptr, prefilteredBinding->textureView);
-        ASSERT_NE(nullptr, brdfBinding->textureView);
+        TextureInfo occlusion("occlusion.png");
+        occlusion.minFilter = TextureInfo::FilterMode::NearestMipmapLinear;
+        material->SetOcclusionTexture(occlusion);
 
-        EXPECT_EQ(gpuResources.GetTexture(irradiance.GetId()), irradianceBinding->textureView->GetTexture());
-        EXPECT_EQ(gpuResources.GetTexture(prefiltered.GetId()), prefilteredBinding->textureView->GetTexture());
-        EXPECT_EQ(gpuResources.GetTexture(brdfLUT.GetId()), brdfBinding->textureView->GetTexture());
-
-        materialSystem.Shutdown();
-        viewCache.Shutdown();
-        gpuResources.Shutdown();
-    }
-
-    TEST(MaterialSystemValidation, MaterialSetFallsBackWhenTextureIBLIsNotReady)
-    {
-        FakeDevice device;
-        RenderRuntimeTestHarness gpuResources;
-        gpuResources.Initialize(&device);
-
-        ResourceViewCache viewCache;
-        viewCache.Initialize(&device);
-
-        FakeDescriptorSetLayout materialSetLayout;
-        MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
-
-        Resource::TextureHandle irradiance = CreateIBLCubemapResource(411);
-        Resource::TextureHandle prefiltered = CreateIBLCubemapResource(412, 2);
-        Resource::TextureHandle brdfLUT = CreateIBLBRDFLUTResource(413);
-
-        MaterialSystem::EnvironmentIBLResources iblResources;
-        iblResources.irradianceHandle = gpuResources.Reserve(irradiance.Get());
-        iblResources.prefilteredHandle = gpuResources.Reserve(prefiltered.Get());
-        iblResources.brdfLUTHandle = gpuResources.Reserve(brdfLUT.Get());
-        iblResources.prefilteredMipLevels = 2;
-        iblResources.textureIBLEnabled = true;
-        materialSystem.SetEnvironmentIBLResources(iblResources);
-
-        Resource::MaterialResource materialResource;
-        materialResource.SetId(502);
-        materialResource.SetName("IBLFallbackMaterial");
-        materialResource.SetMaterialData(std::make_shared<Material>());
-
-        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache);
-        EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
-        EXPECT_TRUE(result.usedFallback);
-        ASSERT_NE(nullptr, result.descriptorSet);
-
-        const RHIDescriptorBinding* defaultIrradiance = FindBinding(materialSystem.GetDefaultMaterialSet(), 7);
-        const RHIDescriptorBinding* boundIrradiance = FindBinding(result.descriptorSet, 7);
-        ASSERT_NE(nullptr, defaultIrradiance);
-        ASSERT_NE(nullptr, boundIrradiance);
-        EXPECT_EQ(defaultIrradiance->textureView, boundIrradiance->textureView);
-
-        materialSystem.Shutdown();
-        viewCache.Shutdown();
-        gpuResources.Shutdown();
-    }
-
-    TEST(MaterialSystemValidation, EnvironmentIBLResourceChangeInvalidatesMaterialDescriptorCache)
-    {
-        FakeDevice device;
-        RenderRuntimeTestHarness gpuResources;
-        gpuResources.Initialize(&device);
-
-        ResourceViewCache viewCache;
-        viewCache.Initialize(&device);
-
-        FakeDescriptorSetLayout materialSetLayout;
-        MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
-
-        auto upload = [&gpuResources](const Resource::TextureHandle& texture)
-        {
-            gpuResources.UploadImmediate(texture.Get());
-            ASSERT_TRUE(gpuResources.IsGPUReady(texture.GetId()));
-        };
-
-        Resource::TextureHandle irradianceA = CreateIBLCubemapResource(421);
-        Resource::TextureHandle prefilteredA = CreateIBLCubemapResource(422);
-        Resource::TextureHandle brdfA = CreateIBLBRDFLUTResource(423);
-        upload(irradianceA);
-        upload(prefilteredA);
-        upload(brdfA);
-
-        Resource::TextureHandle irradianceB = CreateIBLCubemapResource(431);
-        Resource::TextureHandle prefilteredB = CreateIBLCubemapResource(432);
-        Resource::TextureHandle brdfB = CreateIBLBRDFLUTResource(433);
-        upload(irradianceB);
-        upload(prefilteredB);
-        upload(brdfB);
+        TextureInfo emissive("emissive.png");
+        emissive.minFilter = TextureInfo::FilterMode::LinearMipmapLinear;
+        material->SetEmissiveTexture(emissive);
 
         Resource::MaterialResource materialResource;
         materialResource.SetId(503);
-        materialResource.SetName("IBLCacheMaterial");
-        materialResource.SetMaterialData(std::make_shared<Material>());
+        materialResource.SetName("SamplerSemanticMaterialResource");
+        materialResource.SetMaterialData(material);
+        materialResource.SetTexture("albedo", texture);
+        materialResource.SetTexture("normal", texture);
+        materialResource.SetTexture("metallic_roughness", texture);
+        materialResource.SetTexture("ao", texture);
+        materialResource.SetTexture("emissive", texture);
 
-        MaterialSystem::EnvironmentIBLResources firstIBL;
-        firstIBL.irradianceHandle = gpuResources.ResolveOrUpload(irradianceA.Get());
-        firstIBL.prefilteredHandle = gpuResources.ResolveOrUpload(prefilteredA.Get());
-        firstIBL.brdfLUTHandle = gpuResources.ResolveOrUpload(brdfA.Get());
-        firstIBL.textureIBLEnabled = true;
-        materialSystem.SetEnvironmentIBLResources(firstIBL);
-        RHIDescriptorSet* firstSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
-        ASSERT_NE(nullptr, firstSet);
-        const uint32 descriptorSetCountAfterFirstIBL = device.createdDescriptorSetCount;
+        const MaterialBindingResult result = materialSystem.PrepareMaterialBinding(
+            gpuResources.ResolveOrUpload(&materialResource), &viewCache);
+        ASSERT_EQ(MaterialBindingStatus::Ready, result.status);
+        ASSERT_TRUE(result.IsDrawable());
 
-        MaterialSystem::EnvironmentIBLResources secondIBL;
-        secondIBL.irradianceHandle = gpuResources.ResolveOrUpload(irradianceB.Get());
-        secondIBL.prefilteredHandle = gpuResources.ResolveOrUpload(prefilteredB.Get());
-        secondIBL.brdfLUTHandle = gpuResources.ResolveOrUpload(brdfB.Get());
-        secondIBL.textureIBLEnabled = true;
-        materialSystem.SetEnvironmentIBLResources(secondIBL);
-        RHIDescriptorSet* secondSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
-        ASSERT_NE(nullptr, secondSet);
+        const auto samplerAt = [&result](uint32 binding) -> const FakeSampler*
+        {
+            const RHIDescriptorBinding* descriptor =
+                FindBinding(result.descriptorSet, binding);
+            return descriptor
+                ? static_cast<const FakeSampler*>(descriptor->sampler)
+                : nullptr;
+        };
 
-        EXPECT_GT(device.createdDescriptorSetCount, descriptorSetCountAfterFirstIBL);
-        const RHIDescriptorBinding* irradianceBinding = FindBinding(secondSet, 7);
-        ASSERT_NE(nullptr, irradianceBinding);
-        ASSERT_NE(nullptr, irradianceBinding->textureView);
-        EXPECT_EQ(gpuResources.GetTexture(irradianceB.GetId()), irradianceBinding->textureView->GetTexture());
+        const FakeSampler* baseColorSampler = samplerAt(6);
+        ASSERT_NE(nullptr, baseColorSampler);
+        const RHISamplerDesc& baseColorDesc = baseColorSampler->GetDesc();
+        EXPECT_EQ(RHIFilterMode::Nearest, baseColorDesc.minFilter);
+        EXPECT_EQ(RHIFilterMode::Nearest, baseColorDesc.magFilter);
+        EXPECT_EQ(RHIFilterMode::Nearest, baseColorDesc.mipFilter);
+        EXPECT_FLOAT_EQ(0.0f, baseColorDesc.maxLod);
+        EXPECT_EQ(RHIAddressMode::ClampToEdge, baseColorDesc.addressU);
+        EXPECT_EQ(RHIAddressMode::MirrorRepeat, baseColorDesc.addressV);
+
+        const FakeSampler* normalSampler = samplerAt(7);
+        ASSERT_NE(nullptr, normalSampler);
+        const RHISamplerDesc& normalDesc = normalSampler->GetDesc();
+        EXPECT_EQ(RHIFilterMode::Linear, normalDesc.minFilter);
+        EXPECT_EQ(RHIFilterMode::Nearest, normalDesc.mipFilter);
+        EXPECT_FLOAT_EQ(0.0f, normalDesc.maxLod);
+
+        const FakeSampler* metallicRoughnessSampler = samplerAt(8);
+        ASSERT_NE(nullptr, metallicRoughnessSampler);
+        const RHISamplerDesc& metallicRoughnessDesc =
+            metallicRoughnessSampler->GetDesc();
+        EXPECT_EQ(RHIFilterMode::Linear, metallicRoughnessDesc.minFilter);
+        EXPECT_EQ(RHIFilterMode::Nearest, metallicRoughnessDesc.mipFilter);
+        EXPECT_GT(metallicRoughnessDesc.maxLod, 0.0f);
+
+        const FakeSampler* occlusionSampler = samplerAt(9);
+        ASSERT_NE(nullptr, occlusionSampler);
+        const RHISamplerDesc& occlusionDesc = occlusionSampler->GetDesc();
+        EXPECT_EQ(RHIFilterMode::Nearest, occlusionDesc.minFilter);
+        EXPECT_EQ(RHIFilterMode::Linear, occlusionDesc.mipFilter);
+
+        const FakeSampler* emissiveSampler = samplerAt(10);
+        ASSERT_NE(nullptr, emissiveSampler);
+        const RHISamplerDesc& emissiveDesc = emissiveSampler->GetDesc();
+        EXPECT_EQ(RHIFilterMode::Linear, emissiveDesc.minFilter);
+        EXPECT_EQ(RHIFilterMode::Linear, emissiveDesc.mipFilter);
 
         materialSystem.Shutdown();
         viewCache.Shutdown();
         gpuResources.Shutdown();
     }
 
-    TEST(MaterialSystemValidation, EnvironmentIBLScalarChangesReuseMaterialDescriptorCache)
+    TEST(MaterialSystemValidation, MaterialDescriptorSetsKeepEnvironmentIBLFrameOwned)
     {
         FakeDevice device;
         RenderRuntimeTestHarness gpuResources;
@@ -2036,54 +1954,170 @@ namespace
 
         FakeDescriptorSetLayout materialSetLayout;
         MaterialSystem materialSystem;
-        ASSERT_TRUE(materialSystem.Initialize(&device, &materialSetLayout, &gpuResources.GetRegistry()));
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialSetLayout, &gpuResources.GetRegistry()));
 
-        auto upload = [&gpuResources](const Resource::TextureHandle& texture)
+        RHIDescriptorSet* defaultSet = materialSystem.GetDefaultMaterialSet();
+        ASSERT_NE(nullptr, defaultSet);
+        for (uint32 binding = 6; binding <= 10; ++binding)
         {
-            gpuResources.UploadImmediate(texture.Get());
-            ASSERT_TRUE(gpuResources.IsGPUReady(texture.GetId()));
-        };
-
-        Resource::TextureHandle irradiance = CreateIBLCubemapResource(441);
-        Resource::TextureHandle prefiltered = CreateIBLCubemapResource(442, 2);
-        Resource::TextureHandle brdf = CreateIBLBRDFLUTResource(443);
-        upload(irradiance);
-        upload(prefiltered);
-        upload(brdf);
+            const RHIDescriptorBinding* sampler = FindBinding(defaultSet, binding);
+            ASSERT_NE(nullptr, sampler);
+            EXPECT_NE(nullptr, sampler->sampler);
+            EXPECT_EQ(nullptr, sampler->textureView);
+        }
+        const RHIDescriptorBinding* defaultParameterTable =
+            FindBinding(defaultSet, 11);
+        ASSERT_NE(nullptr, defaultParameterTable);
+        ASSERT_NE(nullptr, defaultParameterTable->buffer);
+        EXPECT_TRUE(HasFlag(defaultParameterTable->buffer->GetUsage(),
+                            RHIBufferUsage::Structured));
+        EXPECT_TRUE(HasFlag(defaultParameterTable->buffer->GetUsage(),
+                            RHIBufferUsage::ShaderResource));
+        EXPECT_EQ(nullptr, FindBinding(defaultSet, 12));
+        EXPECT_EQ(nullptr, FindBinding(defaultSet, 13));
 
         Resource::MaterialResource materialResource;
-        materialResource.SetId(504);
-        materialResource.SetName("IBLScalarCacheMaterial");
+        materialResource.SetId(501);
+        materialResource.SetName("FrameOwnedIBLMaterial");
         materialResource.SetMaterialData(std::make_shared<Material>());
-
-        MaterialSystem::EnvironmentIBLResources firstIBL;
-        firstIBL.irradianceHandle = gpuResources.ResolveOrUpload(irradiance.Get());
-        firstIBL.prefilteredHandle = gpuResources.ResolveOrUpload(prefiltered.Get());
-        firstIBL.brdfLUTHandle = gpuResources.ResolveOrUpload(brdf.Get());
-        firstIBL.prefilteredMipLevels = 2;
-        firstIBL.intensity = 1.0f;
-        firstIBL.textureIBLEnabled = true;
-        materialSystem.SetEnvironmentIBLResources(firstIBL);
-        RHIDescriptorSet* firstSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
-        ASSERT_NE(nullptr, firstSet);
-        const uint32 descriptorSetCountAfterFirstIBL = device.createdDescriptorSetCount;
-
-        MaterialSystem::EnvironmentIBLResources secondIBL = firstIBL;
-        secondIBL.prefilteredMipLevels = 6;
-        secondIBL.intensity = 2.5f;
-        materialSystem.SetEnvironmentIBLResources(secondIBL);
-        RHIDescriptorSet* secondSet = materialSystem.PrepareMaterialBinding(gpuResources.ResolveOrUpload(&materialResource), &viewCache).descriptorSet;
-        ASSERT_NE(nullptr, secondSet);
-
-        EXPECT_EQ(firstSet, secondSet);
-        EXPECT_EQ(device.createdDescriptorSetCount, descriptorSetCountAfterFirstIBL);
-        EXPECT_EQ(materialSystem.GetEnvironmentIBLResources().prefilteredMipLevels, 6u);
-        EXPECT_FLOAT_EQ(materialSystem.GetEnvironmentIBLResources().intensity, 2.5f);
+        const MaterialBindingResult result =
+            materialSystem.PrepareMaterialBinding(
+                gpuResources.ResolveOrUpload(&materialResource),
+                &viewCache);
+        ASSERT_TRUE(result.IsDrawable());
+        for (uint32 binding = 6; binding <= 10; ++binding)
+        {
+            const RHIDescriptorBinding* sampler =
+                FindBinding(result.descriptorSet, binding);
+            ASSERT_NE(nullptr, sampler);
+            EXPECT_NE(nullptr, sampler->sampler);
+            EXPECT_EQ(nullptr, sampler->textureView);
+        }
+        const RHIDescriptorBinding* parameterTable =
+            FindBinding(result.descriptorSet, 11);
+        ASSERT_NE(nullptr, parameterTable);
+        EXPECT_EQ(defaultParameterTable->buffer, parameterTable->buffer);
+        EXPECT_EQ(nullptr, FindBinding(result.descriptorSet, 12));
+        EXPECT_EQ(nullptr, FindBinding(result.descriptorSet, 13));
 
         materialSystem.Shutdown();
         viewCache.Shutdown();
         gpuResources.Shutdown();
     }
+
+    TEST(MaterialSystemValidation,
+         MaterialParameterTableUsesStableResourceSlotsAndExactParameters)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        gpuResources.Initialize(&device);
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+        FakeDescriptorSetLayout materialSetLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialSetLayout, &gpuResources.GetRegistry()));
+
+        auto firstMaterial = std::make_shared<Material>("FirstTableMaterial");
+        firstMaterial->SetBaseColor(Vec4(0.2f, 0.3f, 0.4f, 1.0f));
+        firstMaterial->SetMetallicFactor(0.25f);
+        firstMaterial->SetRoughnessFactor(0.75f);
+        Resource::MaterialResource firstResource;
+        firstResource.SetId(801);
+        firstResource.SetName("FirstTableMaterial");
+        firstResource.SetMaterialData(firstMaterial);
+
+        auto secondMaterial = std::make_shared<Material>("SecondTableMaterial");
+        secondMaterial->SetBaseColor(Vec4(0.8f, 0.7f, 0.6f, 1.0f));
+        secondMaterial->SetMetallicFactor(0.9f);
+        secondMaterial->SetRoughnessFactor(0.1f);
+        Resource::MaterialResource secondResource;
+        secondResource.SetId(802);
+        secondResource.SetName("SecondTableMaterial");
+        secondResource.SetMaterialData(secondMaterial);
+
+        const RenderResourceHandle first =
+            gpuResources.ResolveOrUpload(&firstResource);
+        const RenderResourceHandle second =
+            gpuResources.ResolveOrUpload(&secondResource);
+        ASSERT_TRUE(first.IsValid());
+        ASSERT_TRUE(second.IsValid());
+        const MaterialInstanceBindingKey firstKey =
+            materialSystem.ResolveInstanceBindingKey(first);
+        const MaterialInstanceBindingKey secondKey =
+            materialSystem.ResolveInstanceBindingKey(second);
+        EXPECT_TRUE(firstKey.parameterTableCompatible);
+        EXPECT_EQ(firstKey, secondKey);
+
+        const std::array requests = {
+            MaterialParameterTableEntryRequest{first, true},
+            MaterialParameterTableEntryRequest{second, true}};
+        MaterialParameterTableSnapshot snapshot;
+        ASSERT_TRUE(materialSystem.CreateMaterialParameterTableSnapshot(
+            requests, &viewCache, snapshot));
+        EXPECT_EQ(snapshot.materialCount, 2u);
+        EXPECT_EQ(snapshot.slotCount, std::max(first.slot, second.slot) + 1u);
+        ASSERT_EQ(snapshot.buffer->GetStride(), sizeof(MaterialGPUConstants));
+
+        auto* buffer = static_cast<FakeBuffer*>(snapshot.buffer.Get());
+        const std::vector<uint8>& bytes = buffer->GetStorage();
+        MaterialGPUConstants firstConstants{};
+        MaterialGPUConstants secondConstants{};
+        std::memcpy(&firstConstants,
+                    bytes.data() + first.slot * sizeof(MaterialGPUConstants),
+                    sizeof(firstConstants));
+        std::memcpy(&secondConstants,
+                    bytes.data() + second.slot * sizeof(MaterialGPUConstants),
+                    sizeof(secondConstants));
+        EXPECT_FLOAT_EQ(firstConstants.metallicFactor, 0.25f);
+        EXPECT_FLOAT_EQ(firstConstants.roughnessFactor, 0.75f);
+        EXPECT_FLOAT_EQ(secondConstants.metallicFactor, 0.9f);
+        EXPECT_FLOAT_EQ(secondConstants.roughnessFactor, 0.1f);
+
+        MaterialBindingOptions firstTableOptions;
+        firstTableOptions.materialParameterTable = snapshot.buffer.Get();
+        const MaterialBindingResult firstTableBinding =
+            materialSystem.PrepareMaterialBinding(
+                first, &viewCache, firstTableOptions);
+        ASSERT_TRUE(firstTableBinding.IsDrawable());
+        const RHIDescriptorBinding* firstTableDescriptor =
+            FindBinding(firstTableBinding.descriptorSet, 11);
+        ASSERT_NE(nullptr, firstTableDescriptor);
+        EXPECT_EQ(snapshot.buffer.Get(), firstTableDescriptor->buffer);
+
+        MaterialParameterTableSnapshot nextFrameSnapshot;
+        ASSERT_TRUE(materialSystem.CreateMaterialParameterTableSnapshot(
+            requests, &viewCache, nextFrameSnapshot));
+        ASSERT_NE(snapshot.buffer.Get(), nextFrameSnapshot.buffer.Get());
+        materialSystem.BeginFrame();
+        MaterialBindingOptions nextFrameOptions;
+        nextFrameOptions.materialParameterTable =
+            nextFrameSnapshot.buffer.Get();
+        const MaterialBindingResult nextFrameBinding =
+            materialSystem.PrepareMaterialBinding(
+                first, &viewCache, nextFrameOptions);
+        ASSERT_TRUE(nextFrameBinding.IsDrawable());
+        const RHIDescriptorBinding* nextFrameTableDescriptor =
+            FindBinding(nextFrameBinding.descriptorSet, 11);
+        ASSERT_NE(nullptr, nextFrameTableDescriptor);
+        EXPECT_EQ(nextFrameSnapshot.buffer.Get(),
+                  nextFrameTableDescriptor->buffer);
+        EXPECT_NE(firstTableBinding.descriptorSet,
+                  nextFrameBinding.descriptorSet);
+
+        const std::array conflicting = {
+            MaterialParameterTableEntryRequest{first, true},
+            MaterialParameterTableEntryRequest{
+                RenderResourceHandle{first.slot, first.generation + 1u}, true}};
+        EXPECT_FALSE(materialSystem.CreateMaterialParameterTableSnapshot(
+            conflicting, &viewCache, snapshot));
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
 
     TEST(MaterialSystemValidation, MaterialSetFallsBackWhenTextureIsNotGPUReady)
     {

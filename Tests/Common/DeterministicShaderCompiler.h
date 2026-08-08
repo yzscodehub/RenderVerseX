@@ -166,6 +166,18 @@ namespace RVX::Tests
             AddResource(
                 reflection, "ClusterLightIndices", 0, 9,
                 RHIBindingType::ShaderResourceBuffer);
+            AddResource(
+                reflection, "IrradianceTexture", 0, 10,
+                RHIBindingType::SampledTexture);
+            AddResource(
+                reflection, "PrefilteredEnvironmentTexture", 0, 11,
+                RHIBindingType::SampledTexture);
+            AddResource(
+                reflection, "BRDFLUTTexture", 0, 12,
+                RHIBindingType::SampledTexture);
+            AddResource(
+                reflection, "IBLLinearClampSampler", 0, 13,
+                RHIBindingType::Sampler);
 
             AddResource(
                 reflection, "MaterialConstants", 2, 0,
@@ -176,14 +188,17 @@ namespace RVX::Tests
                     reflection, "MaterialTexture", 2, binding,
                     RHIBindingType::SampledTexture);
             }
-            AddResource(
-                reflection, "MaterialSampler", 2, 6,
-                RHIBindingType::Sampler);
-            for (uint32 binding = 7; binding <= 9; ++binding)
+            constexpr const char* samplerNames[] = {
+                "BaseColorSampler",
+                "NormalSampler",
+                "MetallicRoughnessSampler",
+                "OcclusionSampler",
+                "EmissiveSampler"};
+            for (uint32 samplerIndex = 0; samplerIndex < 5; ++samplerIndex)
             {
                 AddResource(
-                    reflection, "MaterialTexture", 2, binding,
-                    RHIBindingType::SampledTexture);
+                    reflection, samplerNames[samplerIndex], 2,
+                    6 + samplerIndex, RHIBindingType::Sampler);
             }
         }
     };

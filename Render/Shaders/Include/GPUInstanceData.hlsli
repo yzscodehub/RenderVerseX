@@ -17,7 +17,7 @@ struct GPUInstanceData
     int vertexOffset;
     uint sourceIndex;
     uint drawGroupIndex;
-    uint drawGroupCommandOffset;
+    uint drawGroupVisibleOffset;
     uint candidateIndex;
     uint forceVisible;
     uint2 padding;

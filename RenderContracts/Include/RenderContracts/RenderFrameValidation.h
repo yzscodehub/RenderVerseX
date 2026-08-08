@@ -59,6 +59,14 @@ namespace RVX
             default:
                 return false;
         }
+        switch (settings.instancingMode)
+        {
+            case RenderInstancingMode::Disabled:
+            case RenderInstancingMode::Auto:
+                break;
+            default:
+                return false;
+        }
         if (settings.gpuCulling.mode != RenderGPUDrivenMode::ForceDisabled &&
             (settings.gpuCulling.maxVisibleObjects == 0 ||
              !std::isfinite(settings.gpuCulling.maxDrawDistance) ||

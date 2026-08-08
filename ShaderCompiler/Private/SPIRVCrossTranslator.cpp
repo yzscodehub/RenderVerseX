@@ -190,7 +190,11 @@ namespace RVX
                     binding.name = compiler.get_fallback_name(sb.id);
                 binding.set = compiler.get_decoration(sb.id, spv::DecorationDescriptorSet);
                 binding.binding = compiler.get_decoration(sb.id, spv::DecorationBinding);
-                binding.type = RHIBindingType::StorageBuffer;
+                binding.type =
+                    compiler.get_buffer_block_flags(sb.id).get(
+                        spv::DecorationNonWritable)
+                        ? RHIBindingType::ShaderResourceBuffer
+                        : RHIBindingType::StorageBuffer;
                 binding.count = 1;
                 reflection.resources.push_back(binding);
             }
@@ -541,13 +545,18 @@ namespace RVX
                 std::string name = glslCompiler.get_name(ssbo.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(ssbo.id);
 
+                const RHIBindingType bindingType =
+                    glslCompiler.get_buffer_block_flags(ssbo.id).get(
+                        spv::DecorationNonWritable)
+                        ? RHIBindingType::ShaderResourceBuffer
+                        : RHIBindingType::StorageBuffer;
                 const uint32_t glBinding =
-                    GLSLBindingABI::FlattenBinding(RHIBindingType::StorageBuffer, set, binding);
+                    GLSLBindingABI::FlattenBinding(bindingType, set, binding);
                 glslCompiler.set_decoration(ssbo.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(ssbo.id, spv::DecorationDescriptorSet);
 
                 result.bindingRemaps.push_back({
-                    name, set, binding, glBinding, RHIBindingType::StorageBuffer
+                    name, set, binding, glBinding, bindingType
                 });
             }
 

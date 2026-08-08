@@ -20,6 +20,7 @@ namespace RVX
         RenderSubmissionLayout layout{};
         uint32 sourcePacketIndex = 0;
         uint32 sourceOrdinal = 0;
+        RenderDrawPacketId packetId{};
 
         bool operator==(const DirectDrawPacket&) const = default;
     };

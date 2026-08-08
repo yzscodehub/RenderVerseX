@@ -13,6 +13,7 @@
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
+#include "Render/Submission/RenderInstanceBatchPlan.h"
 #include "Render/Visibility/RenderVisibility.h"
 
 #include <atomic>
@@ -28,6 +29,10 @@ namespace RVX
     struct DepthPrepassDrawStats
     {
         uint32 directDrawCount = 0;
+        uint32 submittedDrawCount = 0;
+        uint32 submittedInstanceCount = 0;
+        uint32 instancedBatchCount = 0;
+        uint32 instancingFallbackBatchCount = 0;
         uint32 gpuDrivenIndirectBatchCount = 0;
         uint32 gpuDrivenIndirectSubmittedDrawUpperBound = 0;
         bool gpuDrivenIndirectExecutedDrawCountAvailable = false;
@@ -53,6 +58,9 @@ namespace RVX
         uint32 resolvedCascadeViewCount = 0;
         uint32 shadowCasterCount = 0;
         uint32 drawCount = 0;
+        uint32 submittedInstanceCount = 0;
+        uint32 instancedBatchCount = 0;
+        uint32 instancingFallbackBatchCount = 0;
     };
 
     struct OpaquePassShadowStats
@@ -153,7 +161,18 @@ namespace RVX
 
     struct OpaquePassDrawStats
     {
+        RenderInstancingMode instancingMode = RenderInstancingMode::Disabled;
+        bool instancingPlanAvailable = false;
+        bool instancingPreflightSucceeded = false;
+        uint32 plannedInstancingPacketCount = 0;
+        uint32 plannedInstancingDrawCount = 0;
+        uint32 plannedInstancingInstanceCount = 0;
+        uint32 plannedInstancingBatchCount = 0;
         uint32 directDrawCount = 0;
+        uint32 submittedDrawCount = 0;
+        uint32 submittedInstanceCount = 0;
+        uint32 instancedBatchCount = 0;
+        uint32 instancingFallbackBatchCount = 0;
         bool gpuDrivenRequested = false;
         bool gpuDrivenCullingReady = false;
         bool gpuDrivenPipelineReady = false;
@@ -166,6 +185,10 @@ namespace RVX
         GPUDrivenDrawFallbackReason gpuDrivenFallbackReason =
             GPUDrivenDrawFallbackReason::Disabled;
         uint32 skippedMaterialBindingCount = 0;
+        uint32 materialBindingCount = 0;
+        uint32 materialFallbackBindingCount = 0;
+        uint32 materialTextureFlags = 0;
+        uint32 materialFallbackTextureFlags = 0;
         bool planRequested = false;
         bool planValidated = false;
         bool directPacketPathUsed = false;
@@ -349,6 +372,7 @@ namespace RVX
         ViewData view{};
         RenderFrameExecutionPlan executionPlan{};
         SceneMeshPassPreparation meshPassPreparation{};
+        SceneRenderInstanceBatchPlans instanceBatchPlans{};
         RenderVisibilityResult visibility{};
         RenderScene scene{};
         // Skybox recording must consume the frame-owned value rather than the
@@ -453,6 +477,7 @@ namespace RVX
         RenderPassRecordIdentity identity{};
         const RenderFrameExecutionPlan* executionPlan = nullptr;
         const SceneMeshPassPreparation* meshPassPreparation = nullptr;
+        const SceneRenderInstanceBatchPlans* instanceBatchPlans = nullptr;
         const RenderVisibilityResult* visibility = nullptr;
         RenderFrameExecutionReport* executionReport = nullptr;
         const RenderScene* renderScene = nullptr;
@@ -490,6 +515,7 @@ namespace RVX
             }
             if (view.renderFrameExecutionPlan != executionPlan ||
                 view.meshPassPreparation != meshPassPreparation ||
+                view.instanceBatchPlans != instanceBatchPlans ||
                 view.renderVisibility != visibility ||
                 view.renderFrameExecutionReport != executionReport)
             {
@@ -550,6 +576,7 @@ namespace RVX
                 results->identity != identity ||
                 view.renderFrameExecutionPlan != &frameSnapshot->executionPlan ||
                 view.meshPassPreparation != &frameSnapshot->meshPassPreparation ||
+                view.instanceBatchPlans != &frameSnapshot->instanceBatchPlans ||
                 view.renderVisibility != &frameSnapshot->visibility ||
                 view.renderFrameExecutionReport != &results->executionReport)
             {
@@ -610,6 +637,10 @@ namespace RVX
         {
             snapshot->meshPassPreparation = *context.meshPassPreparation;
         }
+        if (context.instanceBatchPlans != nullptr)
+        {
+            snapshot->instanceBatchPlans = *context.instanceBatchPlans;
+        }
         if (context.visibility != nullptr)
         {
             snapshot->visibility = *context.visibility;
@@ -650,6 +681,7 @@ namespace RVX
         snapshot->view.renderGraph = context.identity.graph;
         snapshot->view.renderFrameExecutionPlan = &snapshot->executionPlan;
         snapshot->view.meshPassPreparation = &snapshot->meshPassPreparation;
+        snapshot->view.instanceBatchPlans = &snapshot->instanceBatchPlans;
         snapshot->view.renderVisibility = &snapshot->visibility;
         snapshot->view.renderFrameExecutionReport = &results.executionReport;
         return snapshot;
@@ -695,6 +727,7 @@ namespace RVX
         context.identity.recordEpoch = 1;
         context.executionPlan = view.renderFrameExecutionPlan;
         context.meshPassPreparation = view.meshPassPreparation;
+        context.instanceBatchPlans = view.instanceBatchPlans;
         context.visibility = view.renderVisibility;
         context.executionReport = view.renderFrameExecutionReport;
         // The legacy ViewData adapter is intentionally bounded to one graph.

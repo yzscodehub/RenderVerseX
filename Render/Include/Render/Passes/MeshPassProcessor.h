@@ -188,7 +188,13 @@ namespace RVX
         PipelineKey pipeline;
         GeometryBindingKey geometry;
         MaterialBindingKey material;
+        MaterialInstanceBindingKey instanceMaterial;
         RenderSubmissionLayout layout;
+        uint32 indexCount = 0;
+        uint32 firstIndex = 0;
+        int32 vertexOffset = 0;
+        RenderDrawFlags flags = RenderDrawFlags::None;
+        bool usesMaterialParameterTable = false;
 
         [[nodiscard]] bool operator==(
             const RenderDrawGroupKey& other) const noexcept = default;
@@ -209,6 +215,11 @@ namespace RVX
     [[nodiscard]] uint64 GetStableHash(
         const RenderSubmissionLayout& layout) noexcept;
     [[nodiscard]] uint64 GetStableHash(const RenderDrawGroupKey& key) noexcept;
+
+    /** @brief Build the canonical Direct/GPU raster instance batch key. */
+    [[nodiscard]] RenderDrawGroupKey MakeRenderInstanceBatchKey(
+        const RenderDrawPacket& packet,
+        RenderSubmissionLayout layout) noexcept;
 
     struct MeshPassAvailabilityFacts
     {

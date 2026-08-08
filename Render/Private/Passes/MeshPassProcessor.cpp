@@ -117,11 +117,43 @@ namespace
             key.material.material.slot,
             key.material.material.generation,
             static_cast<uint8>(key.material.materialMode),
+            key.instanceMaterial.textureBindingHash,
+            key.instanceMaterial.parameterTableCompatible,
             static_cast<uint32>(key.layout.vertexStreams),
             static_cast<uint32>(key.layout.bindings),
-            static_cast<uint8>(key.layout.primitiveDataBinding)};
+            static_cast<uint8>(key.layout.primitiveDataBinding),
+            key.indexCount,
+            key.firstIndex,
+            key.vertexOffset,
+            static_cast<uint32>(key.flags),
+            key.usesMaterialParameterTable};
     }
 } // namespace
+
+RenderDrawGroupKey MakeRenderInstanceBatchKey(
+    const RenderDrawPacket& packet,
+    RenderSubmissionLayout layout) noexcept
+{
+    RenderDrawGroupKey key;
+    key.pass = packet.pass;
+    key.pipeline = packet.pipelineKey;
+    key.geometry = packet.geometryKey;
+    key.material = packet.materialKey;
+    key.instanceMaterial = packet.materialInstanceKey;
+    if (packet.materialInstanceKey.parameterTableCompatible)
+    {
+        key.material.material = {};
+        key.usesMaterialParameterTable = true;
+    }
+    layout.vertexStreams |= MeshPassVertexStreams::InstanceIndex;
+    layout.primitiveDataBinding = PrimitiveDataBinding::InstanceBuffer;
+    key.layout = layout;
+    key.indexCount = packet.arguments.indexCount;
+    key.firstIndex = packet.arguments.firstIndex;
+    key.vertexOffset = packet.arguments.vertexOffset;
+    key.flags = packet.flags;
+    return key;
+}
 
 uint64 GetStableHash(const RenderSubmissionLayout& layout) noexcept
 {
@@ -139,7 +171,15 @@ uint64 GetStableHash(const RenderDrawGroupKey& key) noexcept
     HashValue(hash, GetStableHash(key.pipeline));
     HashValue(hash, GetStableHash(key.geometry));
     HashValue(hash, GetStableHash(key.material));
+    HashValue(hash, key.instanceMaterial.textureBindingHash);
+    HashValue(hash, static_cast<uint8>(
+        key.instanceMaterial.parameterTableCompatible));
     HashValue(hash, GetStableHash(key.layout));
+    HashValue(hash, key.indexCount);
+    HashValue(hash, key.firstIndex);
+    HashValue(hash, static_cast<uint32>(key.vertexOffset));
+    HashValue(hash, static_cast<uint32>(key.flags));
+    HashValue(hash, static_cast<uint8>(key.usesMaterialParameterTable));
     return hash;
 }
 
@@ -380,16 +420,24 @@ MeshPassProcessorResult MeshPassProcessor::MakeRelevant(
             PrimitiveDataBinding::PerDrawConstants;
     }
 
-    result.groupKey.pass = result.packet.pass;
-    result.groupKey.pipeline = result.packet.pipelineKey;
-    result.groupKey.geometry = result.packet.geometryKey;
-    result.groupKey.material = result.packet.materialKey;
-    result.groupKey.layout.vertexStreams = vertexStreams;
-    result.groupKey.layout.bindings = bindings;
-    result.groupKey.layout.primitiveDataBinding =
+    RenderSubmissionLayout groupLayout;
+    groupLayout.vertexStreams = vertexStreams;
+    groupLayout.bindings = bindings;
+    groupLayout.primitiveDataBinding =
         result.disposition == MeshPassDisposition::GPUCandidate
             ? PrimitiveDataBinding::InstanceBuffer
             : PrimitiveDataBinding::PerDrawConstants;
+    result.groupKey = MakeRenderInstanceBatchKey(result.packet, groupLayout);
+    if (result.disposition == MeshPassDisposition::Direct)
+    {
+        // The prepared stream keeps the exact per-draw contract for packets
+        // that intrinsically require Direct submission. A later frame-local
+        // instance plan may derive the normalized instance key independently,
+        // but it must not rewrite the source packet's submission layout.
+        result.groupKey.material = result.packet.materialKey;
+        result.groupKey.layout = result.directLayout;
+        result.groupKey.usesMaterialParameterTable = false;
+    }
     return result;
 }
 } // namespace RVX

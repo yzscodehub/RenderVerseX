@@ -5,7 +5,7 @@
 // Descriptor sets:
 //   set 0 / space0: frame data
 //   set 1 / space1: object data
-//   set 2 / space2: material data and environment IBL textures
+//   set 2 / space2: material data, textures, and per-texture samplers
 //
 // Vertex inputs come from separate vertex buffers:
 //   Slot 0: Position buffer (float3)
@@ -114,6 +114,21 @@ cbuffer MaterialConstants : register(b0, space2)
     uint4 DoubleSided_MaterialPaddingBits;
 };
 
+struct MaterialParameterData
+{
+    float4 BaseColorFactor;
+    float MetallicFactor;
+    float RoughnessFactor;
+    float NormalScale;
+    float OcclusionStrength;
+    float4 EmissiveColor_Strength;
+    uint TextureFlags;
+    uint AlphaMode;
+    float AlphaCutoff;
+    uint Workflow;
+    uint4 DoubleSided_MaterialPaddingBits;
+};
+
 #define CameraPosition CameraPosition_Time.xyz
 #define Time CameraPosition_Time.w
 #define ReceivesShadow ObjectVelocityParams.y
@@ -144,10 +159,12 @@ Texture2D NormalTexture : register(t2, space2);
 Texture2D MetallicRoughnessTexture : register(t3, space2);
 Texture2D OcclusionTexture : register(t4, space2);
 Texture2D EmissiveTexture : register(t5, space2);
-SamplerState MaterialSampler : register(s6, space2);
-TextureCube IrradianceTexture : register(t7, space2);
-TextureCube PrefilteredEnvironmentTexture : register(t8, space2);
-Texture2D BRDFLUTTexture : register(t9, space2);
+SamplerState BaseColorSampler : register(s6, space2);
+SamplerState NormalSampler : register(s7, space2);
+SamplerState MetallicRoughnessSampler : register(s8, space2);
+SamplerState OcclusionSampler : register(s9, space2);
+SamplerState EmissiveSampler : register(s10, space2);
+StructuredBuffer<MaterialParameterData> MaterialParameterTable : register(t11, space2);
 Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);
 SamplerState DirectionalShadowSampler : register(s2, space0);
 StructuredBuffer<PointLight> PointLights : register(t4, space0);
@@ -155,6 +172,10 @@ StructuredBuffer<SpotLight> SpotLights : register(t5, space0);
 Texture2D<float> RayTracedShadowMaskTexture : register(t6, space0);
 StructuredBuffer<GPUCluster> ClusterData : register(t8, space0);
 StructuredBuffer<uint> ClusterLightIndices : register(t9, space0);
+TextureCube IrradianceTexture : register(t10, space0);
+TextureCube PrefilteredEnvironmentTexture : register(t11, space0);
+Texture2D BRDFLUTTexture : register(t12, space0);
+SamplerState IBLLinearClampSampler : register(s13, space0);
 #if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
 #endif
@@ -199,6 +220,7 @@ struct PSInput
     float2 TexCoord    : TEXCOORD2;
     float4 WorldTangent : TEXCOORD3;
     nointerpolation float ReceivesShadowValue : TEXCOORD4;
+    nointerpolation uint MaterialParameterSlot : TEXCOORD5;
 };
 
 // =============================================================================
@@ -271,6 +293,7 @@ PSInput VSMain(VSInput input)
     output.TexCoord = input.TexCoord;
     output.WorldTangent = float4(normalize(mul((float3x3)World, localTangent)), input.Tangent.w);
     output.ReceivesShadowValue = ReceivesShadow;
+    output.MaterialParameterSlot = 0xFFFFFFFFu;
 
     return output;
 }
@@ -286,6 +309,7 @@ PSInput VSMainRigid(RigidDirectVSInput input)
     output.TexCoord = input.TexCoord;
     output.WorldTangent = float4(normalize(mul((float3x3)World, input.Tangent.xyz)), input.Tangent.w);
     output.ReceivesShadowValue = ReceivesShadow;
+    output.MaterialParameterSlot = 0xFFFFFFFFu;
 
     return output;
 }
@@ -305,7 +329,27 @@ PSInput VSMainGPUDriven(
     output.TexCoord = input.TexCoord;
     output.WorldTangent = float4(normalize(mul((float3x3)instance.worldMatrix, input.Tangent.xyz)), input.Tangent.w);
     output.ReceivesShadowValue = ReceivesShadow;
+    output.MaterialParameterSlot = 0xFFFFFFFFu;
 
+    return output;
+}
+
+PSInput VSMainInstancedMaterial(
+    RigidVSInput input)
+{
+    GPUInstanceData instance = GPUDrivenInstances[input.InstanceIndex];
+
+    PSInput output;
+    float4 worldPos = mul(instance.worldMatrix, float4(input.Position, 1.0));
+    output.WorldPos = worldPos.xyz;
+    output.Position = mul(ViewProjection, worldPos);
+    output.WorldNormal = normalize(mul((float3x3)instance.normalMatrix, input.Normal));
+    output.TexCoord = input.TexCoord;
+    output.WorldTangent = float4(
+        normalize(mul((float3x3)instance.worldMatrix, input.Tangent.xyz)),
+        input.Tangent.w);
+    output.ReceivesShadowValue = ReceivesShadow;
+    output.MaterialParameterSlot = instance.materialId;
     return output;
 }
 #endif
@@ -316,7 +360,12 @@ PSInput VSMainGPUScene(RigidVSInput input)
     PSInput output;
     GPUSceneTransformRow transform;
     uint primitiveFlags;
-    if (!GPUSceneResolveRasterTransform(input.InstanceIndex, transform, primitiveFlags))
+    uint materialParameterSlot;
+    if (!GPUSceneResolveRasterTransform(
+            input.InstanceIndex,
+            transform,
+            primitiveFlags,
+            materialParameterSlot))
     {
         output.Position = GPUSceneInvalidClipPosition();
         output.WorldPos = float3(0.0f, 0.0f, 0.0f);
@@ -324,6 +373,7 @@ PSInput VSMainGPUScene(RigidVSInput input)
         output.TexCoord = float2(0.0f, 0.0f);
         output.WorldTangent = float4(0.0f, 0.0f, 0.0f, 0.0f);
         output.ReceivesShadowValue = 0.0f;
+        output.MaterialParameterSlot = 0xFFFFFFFFu;
         return output;
     }
 
@@ -342,6 +392,24 @@ PSInput VSMainGPUScene(RigidVSInput input)
         (primitiveFlags & RVX_GPU_SCENE_PRIMITIVE_RECEIVES_SHADOW) != 0u
             ? 1.0f
             : 0.0f;
+    output.MaterialParameterSlot = 0xFFFFFFFFu;
+    return output;
+}
+
+PSInput VSMainGPUSceneInstancedMaterial(RigidVSInput input)
+{
+    PSInput output = VSMainGPUScene(input);
+    GPUSceneTransformRow transform;
+    uint primitiveFlags;
+    uint materialParameterSlot;
+    if (GPUSceneResolveRasterTransform(
+            input.InstanceIndex,
+            transform,
+            primitiveFlags,
+            materialParameterSlot))
+    {
+        output.MaterialParameterSlot = materialParameterSlot;
+    }
     return output;
 }
 #endif
@@ -356,10 +424,13 @@ float3 SafeNormalize(float3 value, float3 fallback)
     return lenSq > 1.0e-8 ? value * rsqrt(lenSq) : fallback;
 }
 
-float3 SampleNormalMap(float2 uv, float3 worldNormal, float4 worldTangent)
+float3 SampleNormalMap(float2 uv,
+                       float3 worldNormal,
+                       float4 worldTangent,
+                       float normalScale)
 {
-    float3 tangentNormal = NormalTexture.Sample(MaterialSampler, uv).xyz * 2.0 - 1.0;
-    tangentNormal.xy *= NormalScale;
+    float3 tangentNormal = NormalTexture.Sample(NormalSampler, uv).xyz * 2.0 - 1.0;
+    tangentNormal.xy *= normalScale;
 
     float3 n = SafeNormalize(worldNormal, float3(0.0, 0.0, 1.0));
     float3 t = SafeNormalize(worldTangent.xyz, float3(1.0, 0.0, 0.0));
@@ -708,46 +779,75 @@ float ComposeDirectionalShadowVisibility(float rasterVisibility, float rayTraced
     return rasterVisibility * rayTracedVisibility;
 }
 
-float4 PSMain(PSInput input) : SV_TARGET
+MaterialParameterData ResolveMaterialParameters(uint materialSlot)
 {
-    float4 baseColor = BaseColorFactor;
-    if ((TextureFlags & MATERIAL_TEXTURE_BASE_COLOR) != 0)
+    if (materialSlot != 0xFFFFFFFFu)
     {
-        baseColor *= BaseColorTexture.Sample(MaterialSampler, input.TexCoord);
+        return MaterialParameterTable[materialSlot];
     }
 
-    if (AlphaMode == MATERIAL_ALPHA_MASK && baseColor.a < AlphaCutoff)
+    MaterialParameterData material;
+    material.BaseColorFactor = BaseColorFactor;
+    material.MetallicFactor = MetallicFactor;
+    material.RoughnessFactor = RoughnessFactor;
+    material.NormalScale = NormalScale;
+    material.OcclusionStrength = OcclusionStrength;
+    material.EmissiveColor_Strength = EmissiveColor_Strength;
+    material.TextureFlags = TextureFlags;
+    material.AlphaMode = AlphaMode;
+    material.AlphaCutoff = AlphaCutoff;
+    material.Workflow = Workflow;
+    material.DoubleSided_MaterialPaddingBits =
+        DoubleSided_MaterialPaddingBits;
+    return material;
+}
+
+float4 PSMain(PSInput input) : SV_TARGET
+{
+    const MaterialParameterData material = ResolveMaterialParameters(
+        input.MaterialParameterSlot);
+    float4 baseColor = material.BaseColorFactor;
+    if ((material.TextureFlags & MATERIAL_TEXTURE_BASE_COLOR) != 0)
+    {
+        baseColor *= BaseColorTexture.Sample(BaseColorSampler, input.TexCoord);
+    }
+
+    if (material.AlphaMode == MATERIAL_ALPHA_MASK &&
+        baseColor.a < material.AlphaCutoff)
     {
         discard;
     }
 
-    float metallic = MetallicFactor;
-    float roughness = RoughnessFactor;
-    if ((TextureFlags & MATERIAL_TEXTURE_METALLIC_ROUGHNESS) != 0)
+    float metallic = material.MetallicFactor;
+    float roughness = material.RoughnessFactor;
+    if ((material.TextureFlags & MATERIAL_TEXTURE_METALLIC_ROUGHNESS) != 0)
     {
-        float4 mr = MetallicRoughnessTexture.Sample(MaterialSampler, input.TexCoord);
+        float4 mr = MetallicRoughnessTexture.Sample(MetallicRoughnessSampler, input.TexCoord);
         roughness *= mr.g;
         metallic *= mr.b;
     }
 
     float occlusion = 1.0;
-    if ((TextureFlags & MATERIAL_TEXTURE_OCCLUSION) != 0)
+    if ((material.TextureFlags & MATERIAL_TEXTURE_OCCLUSION) != 0)
     {
-        occlusion = lerp(1.0, OcclusionTexture.Sample(MaterialSampler, input.TexCoord).r, OcclusionStrength);
+        occlusion = lerp(1.0,
+                         OcclusionTexture.Sample(OcclusionSampler, input.TexCoord).r,
+                         material.OcclusionStrength);
     }
 
-    float3 emissive = EmissiveColor * EmissiveStrength;
-    if ((TextureFlags & MATERIAL_TEXTURE_EMISSIVE) != 0)
+    float3 emissive = material.EmissiveColor_Strength.xyz *
+                      material.EmissiveColor_Strength.w;
+    if ((material.TextureFlags & MATERIAL_TEXTURE_EMISSIVE) != 0)
     {
-        emissive *= EmissiveTexture.Sample(MaterialSampler, input.TexCoord).rgb;
+        emissive *= EmissiveTexture.Sample(EmissiveSampler, input.TexCoord).rgb;
     }
 
-    if (Workflow == MATERIAL_WORKFLOW_UNLIT)
+    if (material.Workflow == MATERIAL_WORKFLOW_UNLIT)
     {
         return float4(baseColor.rgb + emissive, baseColor.a);
     }
 
-    if (Workflow == MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS)
+    if (material.Workflow == MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS)
     {
         // Compatibility fallback until explicit specular/glossiness factors and textures exist.
         metallic = 0.0;
@@ -756,15 +856,19 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 viewDir = SafeNormalize(CameraPosition - input.WorldPos, float3(0.0, 0.0, 1.0));
     float3 normal = SafeNormalize(input.WorldNormal, float3(0.0, 0.0, 1.0));
     float4 doubleSidedTangent = input.WorldTangent;
-    if (DoubleSided != 0 && dot(normal, viewDir) < 0.0)
+    if (material.DoubleSided_MaterialPaddingBits.x != 0 &&
+        dot(normal, viewDir) < 0.0)
     {
         normal = -normal;
         doubleSidedTangent.w = -doubleSidedTangent.w;
     }
 
-    if ((TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
+    if ((material.TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
     {
-        normal = SampleNormalMap(input.TexCoord, normal, doubleSidedTangent);
+        normal = SampleNormalMap(input.TexCoord,
+                                 normal,
+                                 doubleSidedTangent,
+                                 material.NormalScale);
     }
 
     float3 toLight = SafeNormalize(-LightDirection, float3(0.0, 1.0, 0.0));
@@ -803,14 +907,16 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 ambientSpecular;
     if (IBLTextureParams.x > 0.5)
     {
-        float3 irradiance = IrradianceTexture.Sample(MaterialSampler, normal).rgb * IBLTextureParams.z;
+        float3 irradiance = IrradianceTexture.Sample(IBLLinearClampSampler, normal).rgb * IBLTextureParams.z;
         float prefilteredMip = clampedRoughness * max(IBLTextureParams.y - 1.0, 0.0);
         float3 reflectionDir = reflect(-viewDir, normal);
         float3 prefilteredColor = PrefilteredEnvironmentTexture.SampleLevel(
-            MaterialSampler,
+            IBLLinearClampSampler,
             reflectionDir,
             prefilteredMip).rgb * IBLTextureParams.z;
-        float2 brdf = BRDFLUTTexture.Sample(MaterialSampler, float2(nDotV, clampedRoughness)).rg;
+        float2 brdf = BRDFLUTTexture.Sample(
+            IBLLinearClampSampler,
+            float2(nDotV, clampedRoughness)).rg;
 
         float3 diffuseEnergy = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic);
         ambientDiffuse = diffuseEnergy * irradiance * occlusion;

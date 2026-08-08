@@ -7,6 +7,7 @@
 
 #include "Core/Types.h"
 #include "Render/Material/MaterialClassification.h"
+#include "Render/Material/MaterialGPUData.h"
 #include "Render/Policy/RenderPolicyTypes.h"
 #include "Render/Renderer/MeshBatch.h"
 
@@ -80,6 +81,7 @@ namespace RVX
         PipelineKey pipelineKey;
         GeometryBindingKey geometryKey;
         MaterialBindingKey materialKey;
+        MaterialInstanceBindingKey materialInstanceKey;
         RenderDrawArguments arguments;
         RenderDrawFlags flags = RenderDrawFlags::None;
 

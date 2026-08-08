@@ -56,6 +56,11 @@ struct VSInput
     float4 BoneWeights : BLENDWEIGHT;
 };
 
+struct RigidDirectVSInput
+{
+    float3 Position : POSITION;
+};
+
 struct RigidVSInput
 {
     float3 Position : POSITION;
@@ -131,6 +136,14 @@ VSOutput VSMain(VSInput input)
     return output;
 }
 
+VSOutput VSMainRigid(RigidDirectVSInput input)
+{
+    VSOutput output;
+    const float4 worldPosition = mul(World, float4(input.Position, 1.0f));
+    output.Position = mul(ViewProjection, worldPosition);
+    return output;
+}
+
 #if !defined(RVX_GPU_SCENE_RASTER)
 VSOutput VSMainGPUDriven(
     RigidVSInput input)
@@ -149,7 +162,12 @@ VSOutput VSMainGPUScene(RigidVSInput input)
     VSOutput output;
     GPUSceneTransformRow transform;
     uint primitiveFlags;
-    if (!GPUSceneResolveRasterTransform(input.InstanceIndex, transform, primitiveFlags))
+    uint materialParameterSlot;
+    if (!GPUSceneResolveRasterTransform(
+            input.InstanceIndex,
+            transform,
+            primitiveFlags,
+            materialParameterSlot))
     {
         output.Position = GPUSceneInvalidClipPosition();
         return output;

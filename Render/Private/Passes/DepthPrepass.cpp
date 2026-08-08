@@ -17,6 +17,7 @@
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <limits>
@@ -215,6 +216,9 @@ struct DepthPrepass::PlannedDepthDraw
     MaterialBindingResult materialBinding;
     bool masked = false;
     bool skinned = false;
+    RHIBufferRef instanceIndexBuffer;
+    uint32 representedPacketCount = 1;
+    bool instanced = false;
 };
 
 struct DepthPrepass::PlannedGPUDrivenDepthDraw
@@ -435,12 +439,19 @@ bool DepthPrepass::IsSupported() const
 {
     return m_pipelineCache && m_pipelineCache->IsInitialized() &&
         m_pipelineCache->GetDepthOnlyPipeline() &&
+        m_pipelineCache->GetDepthOnlyPipeline(
+            DefaultLitDirectVertexInputMode::Rigid) &&
         m_pipelineCache->GetMaskedDepthOnlyPipeline();
 }
 
 void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
     m_depthTargetHandle = {};
+    m_directInstanceHandle = {};
+    m_directInstanceIndexHandle = {};
+    m_directInstancePlan = {};
+    m_directInstanceStream = {};
+    m_directInstancingPreflightFailed = false;
 
     if (!IsEnabled())
         return;
@@ -488,6 +499,74 @@ void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
             builder.Read(m_gpuDrivenDrawCountHandle, RHIResourceState::IndirectArgument);
         }
     }
+
+    if (!PrepareDirectInstanceStream(builder, view))
+    {
+        m_directInstancingPreflightFailed = true;
+    }
+}
+
+bool DepthPrepass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
+                                               const ViewData& view)
+{
+    if (view.instancingMode == RenderInstancingMode::Disabled)
+    {
+        return true;
+    }
+    if (m_renderScene == nullptr || view.instanceBatchPlans == nullptr ||
+        !view.instanceBatchPlans->depthValid ||
+        view.renderFrameExecutionPlan == nullptr ||
+        view.meshPassPreparation == nullptr || view.renderGraph == nullptr ||
+        m_pipelineCache == nullptr)
+    {
+        return false;
+    }
+    m_directInstancePlan = view.instanceBatchPlans->depth;
+    if (m_directInstancePlan.instancedBatchCount == 0)
+    {
+        return true;
+    }
+    const DirectDrawPacketBatchBuildResult direct = BuildDirectDrawPacketBatch(
+        *view.renderFrameExecutionPlan,
+        RenderPassKind::Depth,
+        view.meshPassPreparation->depth,
+        view.renderVisibility);
+    std::vector<GPUInstanceData> instances;
+    if (!direct.succeeded ||
+        !BuildRasterInstanceData(m_directInstancePlan,
+                                 direct.batch,
+                                 *m_renderScene,
+                                 instances))
+    {
+        return false;
+    }
+    IRHIDevice* device = m_pipelineCache->GetDevice();
+    if (device == nullptr ||
+        !CreateRasterInstanceStream(*device,
+                                    instances,
+                                    "DepthDirectInstancing",
+                                    m_directInstanceStream) ||
+        !RetainRenderSubmissionResource(
+            view.submissionResourceBatch,
+            Ref<RefCounted>(m_directInstanceStream.instances)) ||
+        !RetainRenderSubmissionResource(
+            view.submissionResourceBatch,
+            Ref<RefCounted>(m_directInstanceStream.instanceIndices)))
+    {
+        m_directInstanceStream = {};
+        return false;
+    }
+    m_directInstanceHandle = view.renderGraph->ImportBuffer(
+        m_directInstanceStream.instances.Get(),
+        RHIResourceState::ShaderResource);
+    m_directInstanceIndexHandle = view.renderGraph->ImportBuffer(
+        m_directInstanceStream.instanceIndices.Get(),
+        RHIResourceState::VertexBuffer);
+    builder.Read(m_directInstanceHandle, RHIShaderStage::Vertex);
+    builder.Read(m_directInstanceIndexHandle,
+                 RHIResourceState::VertexBuffer,
+                 RHIShaderStage::Vertex);
+    return true;
 }
 
 bool DepthPrepass::AreGPUDrivenDepthGroupsDrawable(
@@ -557,7 +636,7 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     if (!m_gpuDrivenDepthIndirectEnabled ||
         !m_pipelineCache ||
         !m_gpuCulling ||
-        !m_gpuCulling->GetInstanceIndexBuffer() ||
+        !m_gpuCulling->GetVisibleInstanceBuffer() ||
         (!usesGPUSceneRaster && !m_gpuCulling->GetInstanceBuffer()) ||
         (usesGPUSceneRaster &&
          (!m_gpuSceneRasterBinding ||
@@ -620,7 +699,7 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
     for (const PlannedGPUDrivenDepthDraw& batch : plannedBatches)
     {
         ctx.SetVertexBuffer(0, batch.buffers.positionBuffer);
-        ctx.SetVertexBuffer(6, m_gpuCulling->GetInstanceIndexBuffer());
+        ctx.SetVertexBuffer(6, m_gpuCulling->GetVisibleInstanceBuffer());
         if (batch.buffers.boneIndicesBuffer)
         {
             ctx.SetVertexBuffer(4, batch.buffers.boneIndicesBuffer);
@@ -819,7 +898,9 @@ bool DepthPrepass::BuildPlannedDirectBatch(
 
         RHIPipeline* pipeline = masked
             ? m_pipelineCache->GetMaskedDepthOnlyPipeline()
-            : m_pipelineCache->GetDepthOnlyPipeline();
+            : m_pipelineCache->GetDepthOnlyPipeline(
+                  skinned ? DefaultLitDirectVertexInputMode::Skinned
+                          : DefaultLitDirectVertexInputMode::Rigid);
         if (pipeline == nullptr)
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
@@ -900,7 +981,131 @@ bool DepthPrepass::BuildPlannedDirectBatch(
         outPlannedDraws.push_back(std::move(planned));
     }
 
+    ApplyDirectInstancePlan(view, outPlannedDraws);
     return true;
+}
+
+void DepthPrepass::ApplyDirectInstancePlan(
+    const ViewData& view,
+    std::vector<PlannedDepthDraw>& plannedDraws)
+{
+    if (view.instancingMode == RenderInstancingMode::Disabled ||
+        m_directInstancePlan.instancedBatchCount == 0)
+    {
+        return;
+    }
+    if (m_directInstancingPreflightFailed ||
+        !m_directInstanceStream.IsValid() ||
+        m_directInstancePlan.executedPacketCount != plannedDraws.size())
+    {
+        m_drawStats.instancingFallbackBatchCount +=
+            m_directInstancePlan.instancedBatchCount;
+        return;
+    }
+
+    struct InstancedBinding
+    {
+        uint32 leaderIndex = 0;
+        RHIPipeline* pipeline = nullptr;
+        ObjectConstantBinding objectBinding;
+    };
+    std::vector<InstancedBinding> bindings;
+    bindings.reserve(m_directInstancePlan.instancedBatchCount);
+    std::vector<bool> consumed(plannedDraws.size(), false);
+    for (const RenderInstanceBatch& batch : m_directInstancePlan.batches)
+    {
+        if (batch.members.empty())
+        {
+            m_drawStats.instancingFallbackBatchCount +=
+                m_directInstancePlan.instancedBatchCount;
+            return;
+        }
+        for (const RenderInstanceBatchMember& member : batch.members)
+        {
+            if (member.directPacketIndex >= plannedDraws.size() ||
+                consumed[member.directPacketIndex])
+            {
+                m_drawStats.instancingFallbackBatchCount +=
+                    m_directInstancePlan.instancedBatchCount;
+                return;
+            }
+            consumed[member.directPacketIndex] = true;
+        }
+        if (!batch.instanced)
+        {
+            continue;
+        }
+        const uint32 leaderIndex = batch.members.front().directPacketIndex;
+        const PlannedDepthDraw& leader = plannedDraws[leaderIndex];
+        RHIPipeline* pipeline = m_pipelineCache->GetGPUDrivenDepthOnlyPipeline();
+        ObjectConstantBinding binding;
+        if (pipeline == nullptr || leader.masked || leader.skinned ||
+            !m_pipelineCache->CreateObjectConstantBinding(
+                Mat4Identity(),
+                Mat4Identity(),
+                Mat4Identity(),
+                view.previousViewProjectionMatrix,
+                false,
+                true,
+                {},
+                m_directInstanceStream.instances.Get(),
+                binding) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(binding.constantBuffer)) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(binding.instanceBuffer)) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(binding.descriptorSet)))
+        {
+            m_drawStats.instancingFallbackBatchCount +=
+                m_directInstancePlan.instancedBatchCount;
+            return;
+        }
+        bindings.push_back({leaderIndex, pipeline, std::move(binding)});
+    }
+    if (!std::all_of(consumed.begin(), consumed.end(),
+                     [](bool value) { return value; }))
+    {
+        m_drawStats.instancingFallbackBatchCount +=
+            m_directInstancePlan.instancedBatchCount;
+        return;
+    }
+    std::vector<PlannedDepthDraw> batched;
+    batched.reserve(m_directInstancePlan.batches.size());
+    size_t bindingIndex = 0;
+    for (const RenderInstanceBatch& batch : m_directInstancePlan.batches)
+    {
+        const uint32 leaderIndex = batch.members.front().directPacketIndex;
+        if (!batch.instanced)
+        {
+            batched.push_back(std::move(plannedDraws[leaderIndex]));
+            continue;
+        }
+        if (bindingIndex >= bindings.size() ||
+            bindings[bindingIndex].leaderIndex != leaderIndex)
+        {
+            m_drawStats.instancingFallbackBatchCount +=
+                m_directInstancePlan.instancedBatchCount;
+            return;
+        }
+        PlannedDepthDraw leader = std::move(plannedDraws[leaderIndex]);
+        leader.pipeline = bindings[bindingIndex].pipeline;
+        leader.objectBinding =
+            std::move(bindings[bindingIndex].objectBinding);
+        leader.instanceIndexBuffer = m_directInstanceStream.instanceIndices;
+        leader.packet.packet.arguments.instanceCount =
+            static_cast<uint32>(batch.members.size());
+        leader.packet.packet.arguments.firstInstance = batch.firstInstance;
+        leader.representedPacketCount =
+            static_cast<uint32>(batch.members.size());
+        leader.instanced = true;
+        batched.push_back(std::move(leader));
+        ++bindingIndex;
+    }
+    plannedDraws = std::move(batched);
 }
 
 bool DepthPrepass::TryDrawPlannedDirect(
@@ -928,6 +1133,10 @@ bool DepthPrepass::TryDrawPlannedDirect(
             ctx.SetVertexBuffer(4, planned.buffers.boneIndicesBuffer);
             ctx.SetVertexBuffer(5, planned.buffers.boneWeightsBuffer);
         }
+        if (planned.instanced)
+        {
+            ctx.SetVertexBuffer(6, planned.instanceIndexBuffer.Get());
+        }
         ctx.SetIndexBuffer(planned.buffers.indexBuffer, RHIFormat::R32_UINT);
         const RenderDrawArguments& args = planned.packet.packet.arguments;
         RenderSubmissionRequest request;
@@ -946,7 +1155,13 @@ bool DepthPrepass::TryDrawPlannedDirect(
         if (submission.recorded)
         {
             ++m_drawStats.directDrawCount;
-            m_drawStats.executedPacketCount += submission.executedDrawCount;
+            ++m_drawStats.submittedDrawCount;
+            m_drawStats.submittedInstanceCount += args.instanceCount;
+            m_drawStats.executedPacketCount += planned.representedPacketCount;
+            if (planned.instanced)
+            {
+                ++m_drawStats.instancedBatchCount;
+            }
         }
     }
     m_drawStats.directPacketPathUsed = true;
@@ -1143,7 +1358,7 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
             uint32 gpuDrawItemCount = 0;
             if (!m_gpuCulling || !m_pipelineCache ||
                 (!usesGPUSceneRaster && !m_gpuCulling->GetInstanceBuffer()) ||
-                !m_gpuCulling->GetInstanceIndexBuffer() ||
+                !m_gpuCulling->GetVisibleInstanceBuffer() ||
                 !AreGPUDrivenDepthGroupsDrawable(
                     plannedGPUCount,
                     depthPlan->partition.drawGroupCount,

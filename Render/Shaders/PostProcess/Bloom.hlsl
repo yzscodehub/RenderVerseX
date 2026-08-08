@@ -13,6 +13,8 @@
 //
 // =============================================================================
 
+#include "../Include/FullscreenTriangle.hlsli"
+
 cbuffer BloomConstants : register(b0, space0)
 {
     float Threshold;
@@ -111,8 +113,8 @@ struct VSOutput
 VSOutput VSMain(uint vertexID : SV_VertexID)
 {
     VSOutput output;
-    output.TexCoord = float2((vertexID << 1) & 2, vertexID & 2);
-    output.Position = float4(output.TexCoord * 2.0 - 1.0, 0.0, 1.0);
+    output.TexCoord = RVX_GetFullscreenTriangleTexCoord(vertexID);
+    output.Position = RVX_GetFullscreenTrianglePosition(output.TexCoord);
     return output;
 }
 

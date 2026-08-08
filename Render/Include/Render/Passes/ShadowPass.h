@@ -11,7 +11,10 @@
 
 #include "Core/MathTypes.h"
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/Renderer/ShadowConstants.h"
+#include "Render/Submission/RasterInstanceStream.h"
+#include "Render/Submission/RenderInstanceBatchPlan.h"
 
 #include <memory>
 #include <string>
@@ -152,6 +155,9 @@ namespace RVX
                            uint32_t cascadeIndex,
                            const PrimaryDirectionalLightRecordInput& primaryLight);
         bool BuildPlannedShadowDraws(const ViewData& view);
+        bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
+                                         const ViewData& view);
+        void ApplyDirectInstancePlan(const ViewData& view);
 
         bool m_enabled = false;
         mutable std::string m_unsupportedReason = "ShadowPass has not been configured";
@@ -168,6 +174,11 @@ namespace RVX
         std::vector<RGTextureHandle> m_cascadeTextureHandles;
         std::vector<RHITextureViewRef> m_cascadeViews;
         std::vector<PlannedShadowDraw> m_plannedShadowDraws;
+        RGBufferHandle m_directInstanceHandle;
+        RGBufferHandle m_directInstanceIndexHandle;
+        RenderInstanceBatchPlan m_directInstancePlan;
+        RasterInstanceStream m_directInstanceStream;
+        bool m_directInstancingPreflightFailed = false;
         bool m_shadowDrawPreflightValid = false;
         ShadowPassStats m_stats;
         std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;

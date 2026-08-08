@@ -1373,6 +1373,61 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingShaderUsesSingleDisplayConvers
     EXPECT_EQ(countOccurrences(shaderSource, "pow("), static_cast<size_t>(1));
 }
 
+TEST_F(PipelineCacheValidationFixture, FullscreenTrianglePassesPreserveUpperLeftTextureOrientation)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path shaderDirectory = FindShaderDirectory();
+    const std::string toneMappingSource =
+        ReadTextFile(shaderDirectory / "PostProcess" / "ToneMapping.hlsl");
+    const std::string bloomSource =
+        ReadTextFile(shaderDirectory / "PostProcess" / "Bloom.hlsl");
+    const std::string skyboxSource =
+        ReadTextFile(shaderDirectory / "Skybox.hlsl");
+    const std::string fullscreenSource =
+        ReadTextFile(shaderDirectory / "Include" / "FullscreenTriangle.hlsli");
+    const std::string pipelineCacheSource =
+        ReadTextFile(shaderDirectory.parent_path() / "Private" / "PipelineCache.cpp");
+
+    EXPECT_NE(
+        toneMappingSource.find("RVX_GetFullscreenTriangleTexCoord(vertexID)"),
+        std::string::npos);
+    EXPECT_NE(
+        toneMappingSource.find("RVX_GetFullscreenTrianglePosition(output.TexCoord)"),
+        std::string::npos);
+    EXPECT_NE(
+        bloomSource.find("RVX_GetFullscreenTriangleTexCoord(vertexID)"),
+        std::string::npos);
+    EXPECT_NE(
+        bloomSource.find("RVX_GetFullscreenTrianglePosition(output.TexCoord)"),
+        std::string::npos);
+    EXPECT_NE(
+        skyboxSource.find("RVX_GetFullscreenTriangleSemanticNdc(texCoord)"),
+        std::string::npos);
+    EXPECT_NE(
+        skyboxSource.find("RVX_GetFullscreenTrianglePosition(texCoord)"),
+        std::string::npos);
+    EXPECT_NE(
+        fullscreenSource.find("#if RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y"),
+        std::string::npos);
+    EXPECT_NE(
+        fullscreenSource.find("texCoord * 2.0 - 1.0"),
+        std::string::npos);
+    EXPECT_NE(
+        fullscreenSource.find(
+            "texCoord * float2(2.0, -2.0) + float2(-1.0, 1.0)"),
+        std::string::npos);
+    EXPECT_NE(
+        pipelineCacheSource.find("RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y"),
+        std::string::npos);
+    EXPECT_NE(
+        pipelineCacheSource.find("backend == RHIBackendType::Vulkan || backend == RHIBackendType::OpenGL"),
+        std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, BloomShaderUsesMipChainCompositeModes)
 {
     if (!HasShaderFixtures())
@@ -1620,6 +1675,19 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     ASSERT_NE(frameClusterLightIndices, nullptr);
     EXPECT_EQ(frameClusterLightIndices->type, RVX::RHIBindingType::ShaderResourceBuffer);
     EXPECT_TRUE(RVX::HasFlag(frameClusterLightIndices->visibility, RVX::RHIShaderStage::Pixel));
+    for (RVX::uint32 binding = 10; binding <= 12; ++binding)
+    {
+        const auto* iblTexture = FindBinding(frameLayout, binding);
+        ASSERT_NE(iblTexture, nullptr);
+        EXPECT_EQ(iblTexture->type, RVX::RHIBindingType::SampledTexture);
+        EXPECT_TRUE(RVX::HasFlag(
+            iblTexture->visibility, RVX::RHIShaderStage::Pixel));
+    }
+    const auto* iblSampler = FindBinding(frameLayout, 13);
+    ASSERT_NE(iblSampler, nullptr);
+    EXPECT_EQ(iblSampler->type, RVX::RHIBindingType::Sampler);
+    EXPECT_TRUE(RVX::HasFlag(
+        iblSampler->visibility, RVX::RHIShaderStage::Pixel));
 
     ASSERT_FALSE(device.capturedDescriptorSetDescs.empty());
     const RVX::RHIDescriptorSetDesc& frameSetDesc = device.capturedDescriptorSetDescs.front();
@@ -1673,6 +1741,27 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_TRUE(RVX::HasFlag(fallbackClusterLightIndices->buffer->GetUsage(), RVX::RHIBufferUsage::Structured));
     EXPECT_TRUE(RVX::HasFlag(fallbackClusterLightIndices->buffer->GetUsage(), RVX::RHIBufferUsage::ShaderResource));
     EXPECT_EQ(fallbackClusterLightIndices->buffer->GetStride(), sizeof(RVX::LightIndex));
+    const auto* fallbackIrradiance = FindDescriptorBinding(frameSetDesc, 10);
+    const auto* fallbackPrefiltered = FindDescriptorBinding(frameSetDesc, 11);
+    const auto* fallbackBRDFLUT = FindDescriptorBinding(frameSetDesc, 12);
+    const auto* fallbackIBLSampler = FindDescriptorBinding(frameSetDesc, 13);
+    ASSERT_NE(fallbackIrradiance, nullptr);
+    ASSERT_NE(fallbackPrefiltered, nullptr);
+    ASSERT_NE(fallbackBRDFLUT, nullptr);
+    ASSERT_NE(fallbackIBLSampler, nullptr);
+    ASSERT_NE(fallbackIrradiance->textureView, nullptr);
+    ASSERT_NE(fallbackPrefiltered->textureView, nullptr);
+    ASSERT_NE(fallbackBRDFLUT->textureView, nullptr);
+    ASSERT_NE(fallbackIBLSampler->sampler, nullptr);
+    EXPECT_EQ(
+        fallbackIrradiance->textureView->GetTexture()->GetDimension(),
+        RVX::RHITextureDimension::TextureCube);
+    EXPECT_EQ(
+        fallbackPrefiltered->textureView,
+        fallbackIrradiance->textureView);
+    EXPECT_EQ(
+        fallbackBRDFLUT->textureView->GetTexture()->GetDimension(),
+        RVX::RHITextureDimension::Texture2D);
 
     const auto* object = FindBinding(objectLayout, 0);
     ASSERT_NE(object, nullptr);
@@ -1691,16 +1780,16 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
         EXPECT_EQ(texture->type, RVX::RHIBindingType::SampledTexture);
     }
 
-    const auto* sampler = FindBinding(materialLayout, 6);
-    ASSERT_NE(sampler, nullptr);
-    EXPECT_EQ(sampler->type, RVX::RHIBindingType::Sampler);
-
-    for (RVX::uint32 binding = 7; binding <= 9; ++binding)
+    for (RVX::uint32 binding = 6; binding <= 10; ++binding)
     {
-        const auto* iblTexture = FindBinding(materialLayout, binding);
-        ASSERT_NE(iblTexture, nullptr);
-        EXPECT_EQ(iblTexture->type, RVX::RHIBindingType::SampledTexture);
+        const auto* sampler = FindBinding(materialLayout, binding);
+        ASSERT_NE(sampler, nullptr);
+        EXPECT_EQ(sampler->type, RVX::RHIBindingType::Sampler);
     }
+    const auto* materialParameterTable = FindBinding(materialLayout, 11);
+    ASSERT_NE(materialParameterTable, nullptr);
+    EXPECT_EQ(materialParameterTable->type,
+              RVX::RHIBindingType::ShaderResourceBuffer);
 
     const auto* postProcessConstants = FindBinding(postProcessLayout, 0);
     ASSERT_NE(postProcessConstants, nullptr);
@@ -2042,6 +2131,16 @@ TEST_F(PipelineCacheValidationFixture, DX11DefaultLitContractBuildsLocalLightBin
     const auto* frameClusterLightIndices = FindBinding(frameLayout, 9);
     ASSERT_NE(frameClusterLightIndices, nullptr);
     EXPECT_EQ(frameClusterLightIndices->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    for (RVX::uint32 binding = 10; binding <= 12; ++binding)
+    {
+        const auto* frameIBLTexture = FindBinding(frameLayout, binding);
+        ASSERT_NE(frameIBLTexture, nullptr);
+        EXPECT_EQ(
+            frameIBLTexture->type, RVX::RHIBindingType::SampledTexture);
+    }
+    const auto* frameIBLSampler = FindBinding(frameLayout, 13);
+    ASSERT_NE(frameIBLSampler, nullptr);
+    EXPECT_EQ(frameIBLSampler->type, RVX::RHIBindingType::Sampler);
 }
 
 TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBufferPacking)
@@ -2480,6 +2579,12 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     }
 
     RVX::ViewData view;
+    view.viewProjectionMatrix = RVX::Mat4Identity();
+    view.viewProjectionMatrix[0][1] = 0.25f;
+    view.viewProjectionMatrix[1][0] = 0.5f;
+    view.viewProjectionMatrix[1][1] = 2.0f;
+    view.viewProjectionMatrix[2][1] = -0.75f;
+    view.viewProjectionMatrix[3][1] = 1.25f;
     view.directionalShadowEnabled = 1;
     view.cameraForward = RVX::Vec3(0.0f, 0.0f, -4.0f);
     view.directionalShadowCascadeCount = 3;
@@ -2489,6 +2594,9 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     view.directionalShadowViewProjections[0][1][1] = 2.0f;
     view.directionalShadowViewProjections[0][1][0] = 0.25f;
     view.directionalShadowViewProjections[0][1][2] = -0.5f;
+    view.directionalShadowViewProjections[0][0][1] = 0.125f;
+    view.directionalShadowViewProjections[0][2][1] = -0.375f;
+    view.directionalShadowViewProjections[0][3][1] = 0.625f;
     view.directionalShadowViewProjections[0][3][2] = 0.75f;
     view.directionalShadowViewProjections[1] = RVX::Mat4Identity();
     view.directionalShadowViewProjections[1][0][0] = 3.0f;
@@ -2513,6 +2621,11 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
 
     RVX::ViewConstants uploaded{};
     std::memcpy(&uploaded, dxViewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[0][1], 0.25f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[1][0], 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[1][1], 2.0f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[2][1], -0.75f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[3][1], 1.25f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.x, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.y, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.z, -1.0f);
@@ -2547,9 +2660,17 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     const FakeBuffer* vkViewBuffer = FindCapturedBuffer(vkDevice, "ViewConstantBuffer");
     ASSERT_NE(vkViewBuffer, nullptr);
     std::memcpy(&uploaded, vkViewBuffer->GetStorage().data(), sizeof(uploaded));
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][0], -0.25f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[0][1], -0.25f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[1][0], 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[1][1], -2.0f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[2][1], 0.75f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[3][1], -1.25f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][0], 0.25f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][1], -2.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][2], 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][2], -0.5f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][0][1], -0.125f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][2][1], 0.375f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][3][1], -0.625f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 2.0f / 512.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowReceiverParams.x, 0.03125f);
@@ -2620,6 +2741,101 @@ TEST_F(PipelineCacheValidationFixture, DirectionalShadowFrameResourcesReportFall
     result = reverseZCache.UpdateDirectionalShadowFrameResources(resources);
     EXPECT_FALSE(result.shadowSamplingEnabled);
     EXPECT_EQ(result.fallbackReason, RVX::DirectionalShadowFallbackReason::ReverseZUnsupported);
+}
+
+TEST_F(PipelineCacheValidationFixture, EnvironmentIBLUsesFrameBindingsAndLinearClampSampler)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    RVX::EnvironmentIBLFrameBindingResult result =
+        cache.UpdateEnvironmentIBLFrameResources({});
+    EXPECT_FALSE(result.textureIBLSamplingEnabled);
+    EXPECT_EQ(result.fallbackReason, RVX::EnvironmentIBLFallbackReason::Disabled);
+
+    RVX::EnvironmentIBLFrameResources resources;
+    resources.enabled = true;
+    result = cache.UpdateEnvironmentIBLFrameResources(resources);
+    EXPECT_FALSE(result.textureIBLSamplingEnabled);
+    EXPECT_EQ(
+        result.fallbackReason,
+        RVX::EnvironmentIBLFallbackReason::MissingIrradianceSRV);
+
+    RVX::RHITextureDesc cubeDesc = RVX::RHITextureDesc::Texture2D(
+        4, 4, RVX::RHIFormat::RGBA16_FLOAT);
+    cubeDesc.dimension = RVX::RHITextureDimension::TextureCube;
+    RVX::RHITextureRef irradianceTexture = device.CreateTexture(cubeDesc);
+    RVX::RHITextureRef prefilteredTexture = device.CreateTexture(cubeDesc);
+    RVX::RHITextureDesc lutDesc = RVX::RHITextureDesc::Texture2D(
+        4, 4, RVX::RHIFormat::RGBA16_FLOAT);
+    RVX::RHITextureRef brdfLUTTexture = device.CreateTexture(lutDesc);
+    ASSERT_TRUE(irradianceTexture);
+    ASSERT_TRUE(prefilteredTexture);
+    ASSERT_TRUE(brdfLUTTexture);
+
+    RVX::RHITextureViewDesc cubeViewDesc;
+    cubeViewDesc.dimension = RVX::RHITextureDimension::TextureCube;
+    cubeViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+    RVX::RHITextureViewRef irradianceView = device.CreateTextureView(
+        irradianceTexture.Get(), cubeViewDesc);
+    RVX::RHITextureViewRef prefilteredView = device.CreateTextureView(
+        prefilteredTexture.Get(), cubeViewDesc);
+    RVX::RHITextureViewDesc lutViewDesc;
+    lutViewDesc.dimension = RVX::RHITextureDimension::Texture2D;
+    lutViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+    RVX::RHITextureViewRef brdfLUTView = device.CreateTextureView(
+        brdfLUTTexture.Get(), lutViewDesc);
+    ASSERT_TRUE(irradianceView);
+    ASSERT_TRUE(prefilteredView);
+    ASSERT_TRUE(brdfLUTView);
+
+    resources.irradianceView = irradianceView.Get();
+    resources.prefilteredEnvironmentView = prefilteredView.Get();
+    resources.brdfLUTView = brdfLUTView.Get();
+    result = cache.UpdateEnvironmentIBLFrameResources(resources);
+    EXPECT_TRUE(result.textureIBLSamplingEnabled);
+    EXPECT_EQ(result.fallbackReason, RVX::EnvironmentIBLFallbackReason::None);
+
+    const FakeDescriptorSet* frameSet =
+        static_cast<const FakeDescriptorSet*>(cache.GetFrameDescriptorSet());
+    ASSERT_NE(frameSet, nullptr);
+    const RVX::RHIDescriptorSetDesc bindingsDesc{
+        nullptr, frameSet->GetBindings(), nullptr};
+    ASSERT_EQ(
+        FindDescriptorBinding(bindingsDesc, 10)->textureView,
+        irradianceView.Get());
+    ASSERT_EQ(
+        FindDescriptorBinding(bindingsDesc, 11)->textureView,
+        prefilteredView.Get());
+    ASSERT_EQ(
+        FindDescriptorBinding(bindingsDesc, 12)->textureView,
+        brdfLUTView.Get());
+    ASSERT_NE(FindDescriptorBinding(bindingsDesc, 13)->sampler, nullptr);
+
+    const auto samplerIt = std::find_if(
+        device.capturedSamplerDescs.begin(),
+        device.capturedSamplerDescs.end(),
+        [](const RVX::RHISamplerDesc& desc)
+        {
+            return desc.debugName != nullptr &&
+                std::string(desc.debugName) ==
+                    "EnvironmentIBLLinearClampSampler";
+        });
+    ASSERT_NE(samplerIt, device.capturedSamplerDescs.end());
+    EXPECT_EQ(samplerIt->minFilter, RVX::RHIFilterMode::Linear);
+    EXPECT_EQ(samplerIt->magFilter, RVX::RHIFilterMode::Linear);
+    EXPECT_EQ(samplerIt->mipFilter, RVX::RHIFilterMode::Linear);
+    EXPECT_EQ(samplerIt->addressU, RVX::RHIAddressMode::ClampToEdge);
+    EXPECT_EQ(samplerIt->addressV, RVX::RHIAddressMode::ClampToEdge);
+    EXPECT_EQ(samplerIt->addressW, RVX::RHIAddressMode::ClampToEdge);
+    EXPECT_FALSE(samplerIt->anisotropyEnable);
 }
 
 TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurviveShadowUpdates)
@@ -2852,9 +3068,12 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
     EXPECT_NE(shader.find("IBLDiffuseAmbient"), std::string::npos);
     EXPECT_NE(shader.find("IBLSpecularAmbient"), std::string::npos);
-    EXPECT_NE(shader.find("TextureCube IrradianceTexture : register(t7, space2);"), std::string::npos);
-    EXPECT_NE(shader.find("TextureCube PrefilteredEnvironmentTexture : register(t8, space2);"), std::string::npos);
-    EXPECT_NE(shader.find("Texture2D BRDFLUTTexture : register(t9, space2);"), std::string::npos);
+    EXPECT_NE(shader.find("TextureCube IrradianceTexture : register(t10, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("TextureCube PrefilteredEnvironmentTexture : register(t11, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("Texture2D BRDFLUTTexture : register(t12, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("SamplerState IBLLinearClampSampler : register(s13, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("IrradianceTexture.Sample(IBLLinearClampSampler"), std::string::npos);
+    EXPECT_NE(shader.find("BRDFLUTTexture.Sample(\n            IBLLinearClampSampler"), std::string::npos);
     EXPECT_NE(shader.find("Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);"),
               std::string::npos);
     EXPECT_NE(shader.find("SamplerState DirectionalShadowSampler : register(s2, space0);"), std::string::npos);
@@ -2915,7 +3134,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     };
     EXPECT_EQ(countShaderOccurrences(
                   "output.ReceivesShadowValue = ReceivesShadow;"),
-              3u);
+              4u);
     EXPECT_NE(shader.find("(primitiveFlags & RVX_GPU_SCENE_PRIMITIVE_RECEIVES_SHADOW) != 0u"),
               std::string::npos);
     EXPECT_NE(shader.find("const bool receivesShadow = input.ReceivesShadowValue > 0.5;"),
@@ -2943,6 +3162,52 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
               std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, DefaultLitUsesOneGGXAlphaRoughnessContract)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const std::string brdf =
+        ReadTextFile(FindShaderDirectory() / "Include" / "BRDF.hlsli");
+    const std::string defaultLit =
+        ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
+    EXPECT_NE(
+        brdf.find(
+            "float PerceptualRoughnessToAlpha(float perceptualRoughness)"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find("return perceptualRoughness * perceptualRoughness;"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find("float D_GGX(float NdotH, float alphaRoughness)"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find("float alphaRoughnessSquared = alphaRoughness * alphaRoughness;"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find("PerceptualRoughnessToAlpha(perceptualRoughness)"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find("D_GGX(NdotH, alphaRoughness)"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find(
+            "G_SmithGGXCorrelated(NdotV, NdotL, alphaRoughness)"),
+        std::string::npos);
+    EXPECT_EQ(
+        brdf.find("G_SmithGGXCorrelated(NdotV, NdotL, roughness)"),
+        std::string::npos);
+    EXPECT_NE(
+        defaultLit.find(
+            "float prefilteredMip = clampedRoughness * max(IBLTextureParams.y - 1.0, 0.0);"),
+        std::string::npos);
+    EXPECT_NE(
+        defaultLit.find("float2(nDotV, clampedRoughness)"),
+        std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoubleSidedFlags)
 {
     if (!HasShaderFixtures())
@@ -2954,15 +3219,20 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoub
     EXPECT_NE(shader.find("#define MATERIAL_WORKFLOW_METALLIC_ROUGHNESS 0"), std::string::npos);
     EXPECT_NE(shader.find("#define MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS 1"), std::string::npos);
     EXPECT_NE(shader.find("#define MATERIAL_WORKFLOW_UNLIT 2"), std::string::npos);
-    EXPECT_NE(shader.find("if (Workflow == MATERIAL_WORKFLOW_UNLIT)"), std::string::npos);
+    EXPECT_NE(shader.find("if (material.Workflow == MATERIAL_WORKFLOW_UNLIT)"), std::string::npos);
     EXPECT_NE(shader.find("return float4(baseColor.rgb + emissive, baseColor.a);"), std::string::npos);
-    EXPECT_NE(shader.find("if (Workflow == MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS)"), std::string::npos);
+    EXPECT_NE(shader.find("if (material.Workflow == MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS)"), std::string::npos);
     EXPECT_NE(shader.find("metallic = 0.0;"), std::string::npos);
     EXPECT_NE(shader.find("float4 doubleSidedTangent = input.WorldTangent;"), std::string::npos);
-    EXPECT_NE(shader.find("if (DoubleSided != 0 && dot(normal, viewDir) < 0.0)"), std::string::npos);
+    EXPECT_NE(shader.find("if (material.DoubleSided_MaterialPaddingBits.x != 0 &&"), std::string::npos);
     EXPECT_NE(shader.find("normal = -normal;"), std::string::npos);
     EXPECT_NE(shader.find("doubleSidedTangent.w = -doubleSidedTangent.w;"), std::string::npos);
-    EXPECT_NE(shader.find("SampleNormalMap(input.TexCoord, normal, doubleSidedTangent)"), std::string::npos);
+    EXPECT_NE(shader.find("material.NormalScale"), std::string::npos);
+    EXPECT_NE(shader.find("StructuredBuffer<MaterialParameterData> MaterialParameterTable"),
+              std::string::npos);
+    EXPECT_NE(shader.find("nointerpolation uint MaterialParameterSlot"),
+              std::string::npos);
+    EXPECT_NE(shader.find("VSMainInstancedMaterial"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, DefaultLitUsesFrameLocalLightResources)
@@ -5964,9 +6234,11 @@ TEST_F(PipelineCacheValidationFixture, DX12BackendImplementsRayTracingPipelineSh
     EXPECT_NE(tlasBuildBody.find("buildDesc.SourceAccelerationStructureData = update ? srcAS->GetGPUVirtualAddress() : 0;"),
               std::string::npos);
     const auto blasDxrBuild = blasBuildBody.find("BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);");
-    const auto blasUavBarrier = blasBuildBody.find("InsertAccelerationStructureUAVBarrier(m_commandList.Get(), dstAS);");
+    const auto blasUavBarrier =
+        blasBuildBody.find("InsertAccelerationStructureBarrier(dstAS);");
     const auto tlasDxrBuild = tlasBuildBody.find("BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);");
-    const auto tlasUavBarrier = tlasBuildBody.find("InsertAccelerationStructureUAVBarrier(m_commandList.Get(), dstAS);");
+    const auto tlasUavBarrier =
+        tlasBuildBody.find("InsertAccelerationStructureBarrier(dstAS);");
     ASSERT_NE(blasDxrBuild, std::string::npos);
     ASSERT_NE(blasUavBarrier, std::string::npos);
     ASSERT_NE(tlasDxrBuild, std::string::npos);
@@ -6009,8 +6281,8 @@ TEST_F(PipelineCacheValidationFixture, VulkanBackendDoesNotAdvertiseRayTracingBe
     EXPECT_EQ(commandSource.find("BuildTopLevelAccelerationStructure"), std::string::npos);
     EXPECT_EQ(commandSource.find("DispatchRays"), std::string::npos);
 
-    EXPECT_NE(deviceSource.find("const bool hasRayTracingExtensions ="), std::string::npos);
-    EXPECT_NE(deviceSource.find("VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME"), std::string::npos);
+    EXPECT_NE(deviceSource.find("constexpr bool hasRayTracingExtensions = false;"),
+              std::string::npos);
     EXPECT_NE(deviceSource.find("m_capabilities.supportsRaytracing = false;"), std::string::npos);
     EXPECT_NE(deviceSource.find("m_capabilities.supportsRaytracingPipeline = false;"), std::string::npos);
     EXPECT_NE(deviceSource.find("m_capabilities.supportsRayQuery = false;"), std::string::npos);
@@ -6440,7 +6712,10 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
     EXPECT_NE(source.find("ModelViewer smoke ray-traced shadow history ready"), std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced shadow history reset ready"), std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced shadow history resize ready"), std::string::npos);
-    EXPECT_NE(source.find("ModelViewer smoke resized RT history viewport"), std::string::npos);
+    EXPECT_NE(source.find("ModelViewer smoke requested native resize on frame"),
+              std::string::npos);
+    EXPECT_NE(source.find("ModelViewer smoke observed native framebuffer resize on frame"),
+              std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced reflection ready"), std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced reflection history ready"), std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced reflection history reset ready"), std::string::npos);
@@ -7513,7 +7788,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
 
     const std::string manifest = ReadTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName());
-    EXPECT_NE(manifest.find("version=13"), std::string::npos);
+    EXPECT_NE(manifest.find("version=16"), std::string::npos);
     EXPECT_NE(manifest.find("skyboxVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPipelineHash="), std::string::npos);

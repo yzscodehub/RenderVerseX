@@ -258,10 +258,30 @@ namespace RVX
         uint32 jitterIndex = 0;
     };
 
+    /** @brief Backend-neutral policy for Direct-lane raster instancing. */
+    enum class RenderInstancingMode : uint8
+    {
+        Disabled = 0,
+        Auto,
+    };
+
+    [[nodiscard]] inline const char* GetRenderInstancingModeName(
+        RenderInstancingMode mode) noexcept
+    {
+        switch (mode)
+        {
+            case RenderInstancingMode::Disabled: return "Disabled";
+            case RenderInstancingMode::Auto: return "Auto";
+            default: return "Invalid";
+        }
+    }
+
     struct RenderFrameSettings
     {
         float32 renderScale = 1.0f;
         uint32 debugView = 0;
+        // Remains opt-in until Direct-instancing cross-backend gates pass.
+        RenderInstancingMode instancingMode = RenderInstancingMode::Auto;
         RenderPostProcessSettings postProcess;
         RenderShadowSettings shadows;
         RenderGPUCullingSettings gpuCulling;

@@ -117,6 +117,32 @@ namespace RVX
         RayTracedShadowFallbackReason fallbackReason = RayTracedShadowFallbackReason::Disabled;
     };
 
+    enum class EnvironmentIBLFallbackReason : uint8
+    {
+        None = 0,
+        Disabled,
+        MissingIrradianceSRV,
+        MissingPrefilteredEnvironmentSRV,
+        MissingBRDFLUTSRV,
+        MissingSampler,
+        FallbackUnavailable,
+    };
+
+    struct EnvironmentIBLFrameResources
+    {
+        bool enabled = false;
+        RHITextureView* irradianceView = nullptr;
+        RHITextureView* prefilteredEnvironmentView = nullptr;
+        RHITextureView* brdfLUTView = nullptr;
+    };
+
+    struct EnvironmentIBLFrameBindingResult
+    {
+        bool textureIBLSamplingEnabled = false;
+        EnvironmentIBLFallbackReason fallbackReason =
+            EnvironmentIBLFallbackReason::Disabled;
+    };
+
     enum class FrameLightFallbackReason : uint8
     {
         None = 0,
@@ -210,6 +236,7 @@ namespace RVX
         RHIDescriptorSetLayoutRef materialSetLayout;
         RHIPipelineLayoutRef pipelineLayout;
         RHIPipelineRef opaquePipeline;
+        RHIPipelineRef instancedMaterialOpaquePipeline;
         RHIPipelineRef maskedPipeline;
         RHIPipelineRef depthPipeline;
         uint64 leaseVersion = 0;
@@ -400,6 +427,9 @@ namespace RVX
                                            RHIFormat renderTargetFormat,
                                            DefaultLitDirectVertexInputMode inputMode);
         RHIPipeline* GetGPUDrivenPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
+        RHIPipeline* GetInstancedMaterialPipelineForVariant(
+            MaterialPipelineVariant variant,
+            RHIFormat renderTargetFormat);
 
         /**
          * @brief Get the GPU-scene raster pipeline for opaque or masked materials.
@@ -409,12 +439,18 @@ namespace RVX
          */
         RHIPipeline* GetGPUScenePipelineForVariant(MaterialPipelineVariant variant,
                                                     RHIFormat renderTargetFormat);
+        /** @brief GPU-scene opaque pipeline sourcing scalar material parameters per instance. */
+        RHIPipeline* GetGPUSceneInstancedMaterialPipelineForVariant(
+            MaterialPipelineVariant variant,
+            RHIFormat renderTargetFormat);
 
         /**
          * @brief Get the depth-only pipeline for depth prepass
          * @return Depth-only pipeline or nullptr if not available
          */
         RHIPipeline* GetDepthOnlyPipeline() const { return m_depthOnlyPipeline.Get(); }
+        RHIPipeline* GetDepthOnlyPipeline(
+            DefaultLitDirectVertexInputMode inputMode);
         /** @brief Get the alpha-masked depth-only pipeline. */
         RHIPipeline* GetMaskedDepthOnlyPipeline() const
         {
@@ -436,6 +472,11 @@ namespace RVX
          * @brief Get the shadow-map depth-only pipeline for caster raster bias
          */
         RHIPipeline* GetShadowDepthPipeline(const ShadowDepthBiasState& biasState);
+        RHIPipeline* GetShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode);
+        RHIPipeline* GetInstancedShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState);
         static ShadowDepthBiasState SanitizeShadowDepthBiasState(const ShadowDepthBiasState& biasState);
 
         /**
@@ -673,6 +714,12 @@ namespace RVX
             const RayTracedShadowFrameResources& resources);
 
         /**
+         * @brief Update frame/view-scope environment IBL texture bindings.
+         */
+        EnvironmentIBLFrameBindingResult UpdateEnvironmentIBLFrameResources(
+            const EnvironmentIBLFrameResources& resources);
+
+        /**
          * @brief Update frame-scope local light buffer bindings.
          */
         FrameLightBindingResult UpdateFrameLightResources(const FrameLightResources& resources);
@@ -692,8 +739,14 @@ namespace RVX
             return m_lastRayTracedShadowFrameBindingResult;
         }
 
+        const EnvironmentIBLFrameBindingResult& GetLastEnvironmentIBLFrameBindingResult() const
+        {
+            return m_lastEnvironmentIBLFrameBindingResult;
+        }
+
         static const char* GetDirectionalShadowFallbackReasonName(DirectionalShadowFallbackReason reason);
         static const char* GetRayTracedShadowFallbackReasonName(RayTracedShadowFallbackReason reason);
+        static const char* GetEnvironmentIBLFallbackReasonName(EnvironmentIBLFallbackReason reason);
         static const char* GetFrameLightFallbackReasonName(FrameLightFallbackReason reason);
 
         /**
@@ -903,16 +956,28 @@ namespace RVX
                                                               const RHIDepthStencilState& depthStencilState,
                                                               const RHIBlendState& blendState,
                                                               RHIFormat renderTargetFormat);
+        RHIPipelineRef GetOrCreateInstancedMaterialDefaultLitPipeline(
+            MaterialPipelineVariant variant,
+            const char* debugName,
+            const RHIDepthStencilState& depthStencilState,
+            const RHIBlendState& blendState,
+            RHIFormat renderTargetFormat);
         RHIPipelineRef GetOrCreateGPUSceneDefaultLitPipeline(MaterialPipelineVariant variant,
                                                               const char* debugName,
                                                               const RHIDepthStencilState& depthStencilState,
                                                               const RHIBlendState& blendState,
-                                                              RHIFormat renderTargetFormat);
+                                                              RHIFormat renderTargetFormat,
+                                                              bool instancedMaterial = false);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateRigidDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateMaskedDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateGPUDrivenDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateGPUSceneDepthOnlyPipeline();
-        RHIPipelineRef GetOrCreateShadowDepthPipeline(const ShadowDepthBiasState& biasState);
+        RHIPipelineRef GetOrCreateShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode);
+        RHIPipelineRef GetOrCreateInstancedShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState);
         RHIPipelineRef GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
                                                  bool depthTest = true,
                                                  bool updatePrimaryStats = true);
@@ -942,15 +1007,26 @@ namespace RVX
                                                                      const RHIDepthStencilState& depthStencilState,
                                                                      const RHIBlendState& blendState,
                                                                      RHIFormat renderTargetFormat) const;
+        RHIGraphicsPipelineDesc BuildInstancedMaterialDefaultLitPipelineDesc(
+            const char* debugName,
+            const RHIDepthStencilState& depthStencilState,
+            const RHIBlendState& blendState,
+            RHIFormat renderTargetFormat) const;
         RHIGraphicsPipelineDesc BuildGPUSceneDefaultLitPipelineDesc(const char* debugName,
                                                                      const RHIDepthStencilState& depthStencilState,
                                                                      const RHIBlendState& blendState,
-                                                                     RHIFormat renderTargetFormat) const;
+                                                                     RHIFormat renderTargetFormat,
+                                                                     bool instancedMaterial = false) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildRigidDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildMaskedDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildGPUDrivenDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildGPUSceneDepthOnlyPipelineDesc() const;
-        RHIGraphicsPipelineDesc BuildShadowDepthPipelineDesc(const ShadowDepthBiasState& biasState) const;
+        RHIGraphicsPipelineDesc BuildShadowDepthPipelineDesc(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode) const;
+        RHIGraphicsPipelineDesc BuildInstancedShadowDepthPipelineDesc(
+            const ShadowDepthBiasState& biasState) const;
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
@@ -971,6 +1047,7 @@ namespace RVX
         bool CreateObjectConstantBuffer();
         bool EnsureFrameShadowFallbackResources();
         bool EnsureFrameRayTracedShadowFallbackResources();
+        bool EnsureFrameEnvironmentIBLFallbackResources();
         bool EnsureFrameLightFallbackResources();
         bool EnsureFrameClusteredLightFallbackResources();
         bool EnsureObjectInstanceFallbackBuffer();
@@ -1017,9 +1094,12 @@ namespace RVX
         RHIShaderRef m_vertexShader;
         RHIShaderRef m_rigidVertexShader;
         RHIShaderRef m_gpuDrivenVertexShader;
+        RHIShaderRef m_instancedMaterialVertexShader;
         RHIShaderRef m_gpuSceneVertexShader;
+        RHIShaderRef m_gpuSceneInstancedMaterialVertexShader;
         RHIShaderRef m_pixelShader;
         RHIShaderRef m_depthOnlyVertexShader;
+        RHIShaderRef m_rigidDepthOnlyVertexShader;
         RHIShaderRef m_maskedDepthOnlyVertexShader;
         RHIShaderRef m_maskedDepthOnlyPixelShader;
         RHIShaderRef m_gpuDrivenDepthOnlyVertexShader;
@@ -1064,9 +1144,12 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_rigidVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuDrivenVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_instancedMaterialVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuSceneVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_gpuSceneInstancedMaterialVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rigidDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuDrivenDepthOnlyVsCompileResult;
@@ -1132,9 +1215,11 @@ namespace RVX
         RHIPipelineRef m_maskedPipeline;
         RHIPipelineRef m_transparentPipeline;
         RHIPipelineRef m_depthOnlyPipeline;
+        RHIPipelineRef m_rigidDepthOnlyPipeline;
         RHIPipelineRef m_maskedDepthOnlyPipeline;
         RHIPipelineRef m_gpuDrivenDepthOnlyPipeline;
         RHIPipelineRef m_gpuSceneOpaquePipeline;
+        RHIPipelineRef m_gpuSceneInstancedMaterialOpaquePipeline;
         RHIPipelineRef m_gpuSceneMaskedPipeline;
         RHIPipelineRef m_gpuSceneDepthOnlyPipeline;
         RHIPipelineRef m_skyboxPipeline;
@@ -1192,6 +1277,11 @@ namespace RVX
         RHITextureRef m_fallbackRayTracedShadowMaskTexture;
         RHITextureViewRef m_fallbackRayTracedShadowMaskView;
         RHISamplerRef m_directionalShadowSampler;
+        RHITextureRef m_fallbackEnvironmentIBLCubemapTexture;
+        RHITextureViewRef m_fallbackEnvironmentIBLCubemapView;
+        RHITextureRef m_fallbackEnvironmentIBLBRDFLUTTexture;
+        RHITextureViewRef m_fallbackEnvironmentIBLBRDFLUTView;
+        RHISamplerRef m_environmentIBLSampler;
         RHIBufferRef m_fallbackLightConstantsBuffer;
         RHIBufferRef m_fallbackPointLightsBuffer;
         RHIBufferRef m_fallbackSpotLightsBuffer;
@@ -1201,6 +1291,9 @@ namespace RVX
         RHITextureView* m_currentDirectionalShadowView = nullptr;
         RHITextureView* m_currentRayTracedShadowMaskView = nullptr;
         RHISampler* m_currentDirectionalShadowSampler = nullptr;
+        RHITextureView* m_currentEnvironmentIBLIrradianceView = nullptr;
+        RHITextureView* m_currentEnvironmentIBLPrefilteredView = nullptr;
+        RHITextureView* m_currentEnvironmentIBLBRDFLUTView = nullptr;
         RHIBuffer* m_currentLightConstantsBuffer = nullptr;
         RHIBuffer* m_currentPointLightsBuffer = nullptr;
         RHIBuffer* m_currentSpotLightsBuffer = nullptr;
@@ -1210,6 +1303,7 @@ namespace RVX
         bool m_frameResourceBindingsDirty = false;
         DirectionalShadowFrameBindingResult m_lastDirectionalShadowFrameBindingResult;
         RayTracedShadowFrameBindingResult m_lastRayTracedShadowFrameBindingResult;
+        EnvironmentIBLFrameBindingResult m_lastEnvironmentIBLFrameBindingResult;
         FrameLightBindingResult m_lastFrameLightBindingResult;
         uint64 m_objectConstantStride = 0;
         uint64 m_objectConstantCursor = 0;

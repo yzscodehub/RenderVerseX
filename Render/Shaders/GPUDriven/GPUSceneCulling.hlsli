@@ -12,7 +12,7 @@
 #define RVX_GPU_SCENE_BOUNDS_FLAG_INVALID 2u
 #define RVX_GPU_SCENE_TRANSFORM_FLAG_NORMAL_VALID 2u
 
-// 40 bytes; mirrors RVX::GPUSceneCullingCandidate.
+// 48 bytes; mirrors RVX::GPUSceneCullingCandidate.
 struct GPUSceneCullingCandidate
 {
     uint primitiveSlot;
@@ -23,8 +23,10 @@ struct GPUSceneCullingCandidate
     uint objectIdHigh;
     uint requiredPassMask;
     uint drawGroupIndex;
-    uint drawGroupCommandOffset;
+    uint drawGroupVisibleOffset;
     uint rasterInstanceIndex;
+    uint materialParameterSlot;
+    uint padding0;
 };
 
 // 32 bytes.

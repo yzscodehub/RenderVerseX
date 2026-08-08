@@ -257,6 +257,9 @@ struct OpaquePass::PlannedOpaqueDraw
     bool allowNormalMap = false;
     bool previousWorldViewProjectionValid = false;
     bool skinned = false;
+    RHIBufferRef instanceIndexBuffer;
+    uint32 representedPacketCount = 1;
+    bool instanced = false;
 };
 
 struct OpaquePass::PlannedGPUDrivenOpaqueDraw
@@ -284,6 +287,14 @@ void OpaquePass::OnRemove()
     m_gpuCulling = nullptr;
     m_opaqueDrawItems = nullptr;
     m_maskedDrawItems = nullptr;
+    m_directInstancePlan = {};
+    m_directInstanceStream = {};
+    m_directInstanceHandle = {};
+    m_directInstanceIndexHandle = {};
+    m_directMaterialParameterHandle = {};
+    m_directMaterialParameterTable.Reset();
+    m_gpuMaterialParameterTable.Reset();
+    m_directInstancingPreflightFailed = false;
 }
 
 void OpaquePass::SetResources(PipelineCache* pipelines,
@@ -531,6 +542,16 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_directionalShadowReadHandle = {};
     m_rayTracedShadowMaskReadHandle = {};
     m_shadowStats = {};
+    m_directInstancePlan = {};
+    m_directInstanceStream = {};
+    m_directInstanceHandle = {};
+    m_directInstanceIndexHandle = {};
+    m_directMaterialParameterHandle = {};
+    m_directMaterialParameterTable.Reset();
+    m_gpuMaterialParameterHandle = {};
+    m_gpuMaterialParameterTable.Reset();
+    m_directInstancingPreflightFailed = false;
+    m_gpuMaterialTablePreflightFailed = false;
 
     const auto accumulateShadowReceivers = [this](const std::vector<RenderDrawItem>* drawItems)
     {
@@ -598,6 +619,28 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         }
     }
 
+    if (view.textureIBLEnabled != 0)
+    {
+        if (view.environmentIrradianceTexture.IsValid())
+        {
+            static_cast<void>(builder.Read(
+                view.environmentIrradianceTexture,
+                RHIShaderStage::Pixel));
+        }
+        if (view.environmentPrefilteredTexture.IsValid())
+        {
+            static_cast<void>(builder.Read(
+                view.environmentPrefilteredTexture,
+                RHIShaderStage::Pixel));
+        }
+        if (view.environmentBRDFLUTTexture.IsValid())
+        {
+            static_cast<void>(builder.Read(
+                view.environmentBRDFLUTTexture,
+                RHIShaderStage::Pixel));
+        }
+    }
+
     if (m_gpuDrivenOpaqueIndirectEnabled && m_gpuCulling)
     {
         if (m_gpuSceneRasterEnabled)
@@ -633,7 +676,207 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         {
             builder.Read(m_gpuDrivenDrawCountHandle, RHIResourceState::IndirectArgument);
         }
+
+        const bool needsMaterialParameterTable = std::any_of(
+            m_gpuCulling->GetDrawGroups().begin(),
+            m_gpuCulling->GetDrawGroups().end(),
+            [](const GPUCullingDrawGroup& group)
+            {
+                return group.batchKey.usesMaterialParameterTable;
+            });
+        if (needsMaterialParameterTable)
+        {
+            std::vector<MaterialParameterTableEntryRequest> requests;
+            if (view.meshPassPreparation != nullptr)
+            {
+                for (const MeshPassProcessorResult& result :
+                     view.meshPassPreparation->opaque.sortedGPUCandidates)
+                {
+                    if (!result.groupKey.usesMaterialParameterTable)
+                    {
+                        continue;
+                    }
+                    const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                        m_resourceRegistry, result.packet.geometryKey.mesh);
+                    if (!buffers.IsValid())
+                    {
+                        requests.clear();
+                        break;
+                    }
+                    requests.push_back({
+                        result.packet.materialKey.material,
+                        buffers.HasNormalMapTangentBasis()});
+                }
+            }
+
+            MaterialParameterTableSnapshot table;
+            if (requests.empty() || m_materialSystem == nullptr ||
+                !m_materialSystem->CreateMaterialParameterTableSnapshot(
+                    requests, view.viewCache, table) ||
+                !RetainRenderSubmissionResource(
+                    view.submissionResourceBatch,
+                    Ref<RefCounted>(table.buffer)))
+            {
+                m_gpuMaterialTablePreflightFailed = true;
+            }
+            else
+            {
+                m_gpuMaterialParameterTable = std::move(table.buffer);
+                m_gpuMaterialParameterHandle = view.renderGraph->ImportBuffer(
+                    m_gpuMaterialParameterTable.Get(),
+                    RHIResourceState::ShaderResource);
+                if (!m_gpuMaterialParameterHandle.IsValid())
+                {
+                    m_gpuMaterialTablePreflightFailed = true;
+                    m_gpuMaterialParameterTable.Reset();
+                }
+                else
+                {
+                    builder.Read(m_gpuMaterialParameterHandle,
+                                 RHIShaderStage::Pixel);
+                }
+            }
+        }
     }
+
+    if (!PrepareDirectInstanceStream(builder, view))
+    {
+        m_directInstancingPreflightFailed = true;
+    }
+}
+
+bool OpaquePass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
+                                             const ViewData& view)
+{
+    if (m_renderScene == nullptr ||
+        view.instancingMode == RenderInstancingMode::Disabled)
+    {
+        return true;
+    }
+    if (view.instanceBatchPlans == nullptr ||
+        !view.instanceBatchPlans->opaqueValid ||
+        view.renderFrameExecutionPlan == nullptr ||
+        view.meshPassPreparation == nullptr ||
+        view.renderVisibility == nullptr ||
+        view.renderGraph == nullptr || m_pipelineCache == nullptr)
+    {
+        return false;
+    }
+
+    m_directInstancePlan = view.instanceBatchPlans->opaque;
+    if (m_directInstancePlan.instancedBatchCount == 0)
+    {
+        return true;
+    }
+    const DirectDrawPacketBatchBuildResult direct = BuildDirectDrawPacketBatch(
+        *view.renderFrameExecutionPlan,
+        RenderPassKind::Opaque,
+        view.meshPassPreparation->opaque,
+        view.renderVisibility);
+    if (!direct.succeeded ||
+        direct.batch.packets.size() !=
+            m_directInstancePlan.executedPacketCount)
+    {
+        return false;
+    }
+
+    std::vector<MaterialParameterTableEntryRequest> materialRequests;
+    for (const RenderInstanceBatch& batch : m_directInstancePlan.batches)
+    {
+        if (!batch.instanced || !batch.key.usesMaterialParameterTable)
+        {
+            continue;
+        }
+        for (const RenderInstanceBatchMember& member : batch.members)
+        {
+            if (member.directPacketIndex >= direct.batch.packets.size())
+            {
+                return false;
+            }
+            const RenderDrawPacket& packet =
+                direct.batch.packets[member.directPacketIndex].packet;
+            const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+                m_resourceRegistry, packet.geometryKey.mesh);
+            if (!buffers.IsValid())
+            {
+                return false;
+            }
+            materialRequests.push_back({
+                packet.materialKey.material,
+                buffers.HasNormalMapTangentBasis()});
+        }
+    }
+    if (!materialRequests.empty())
+    {
+        MaterialParameterTableSnapshot table;
+        if (m_materialSystem == nullptr ||
+            !m_materialSystem->CreateMaterialParameterTableSnapshot(
+                materialRequests, view.viewCache, table) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(table.buffer)))
+        {
+            return false;
+        }
+        m_directMaterialParameterTable = std::move(table.buffer);
+    }
+
+    std::vector<GPUInstanceData> instances;
+    if (!BuildRasterInstanceData(m_directInstancePlan,
+                                 direct.batch,
+                                 *m_renderScene,
+                                 instances))
+    {
+        return false;
+    }
+
+    IRHIDevice* device = m_pipelineCache->GetDevice();
+    if (device == nullptr ||
+        !CreateRasterInstanceStream(*device,
+                                    instances,
+                                    "OpaqueDirectInstancing",
+                                    m_directInstanceStream) ||
+        !RetainRenderSubmissionResource(
+            view.submissionResourceBatch,
+            Ref<RefCounted>(m_directInstanceStream.instances)) ||
+        !RetainRenderSubmissionResource(
+            view.submissionResourceBatch,
+            Ref<RefCounted>(m_directInstanceStream.instanceIndices)))
+    {
+        m_directInstanceStream = {};
+        return false;
+    }
+
+    m_directInstanceHandle = view.renderGraph->ImportBuffer(
+        m_directInstanceStream.instances.Get(),
+        RHIResourceState::ShaderResource);
+    m_directInstanceIndexHandle = view.renderGraph->ImportBuffer(
+        m_directInstanceStream.instanceIndices.Get(),
+        RHIResourceState::VertexBuffer);
+    if (!m_directInstanceHandle.IsValid() ||
+        !m_directInstanceIndexHandle.IsValid())
+    {
+        m_directInstanceStream = {};
+        return false;
+    }
+    builder.Read(m_directInstanceHandle, RHIShaderStage::Vertex);
+    builder.Read(m_directInstanceIndexHandle,
+                 RHIResourceState::VertexBuffer,
+                 RHIShaderStage::Vertex);
+    if (m_directMaterialParameterTable)
+    {
+        m_directMaterialParameterHandle = view.renderGraph->ImportBuffer(
+            m_directMaterialParameterTable.Get(),
+            RHIResourceState::ShaderResource);
+        if (!m_directMaterialParameterHandle.IsValid())
+        {
+            m_directMaterialParameterTable.Reset();
+            return false;
+        }
+        builder.Read(m_directMaterialParameterHandle,
+                     RHIShaderStage::Pixel);
+    }
+    return true;
 }
 
 bool OpaquePass::AreGPUDrivenOpaqueGroupsDrawable(
@@ -729,7 +972,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         return false;
     }
     if ((!usesGPUSceneRaster && !m_gpuCulling->GetInstanceBuffer()) ||
-        !m_gpuCulling->GetInstanceIndexBuffer() ||
+        !m_gpuCulling->GetVisibleInstanceBuffer() ||
         (usesGPUSceneRaster &&
          (!m_gpuSceneRasterBinding ||
           !m_gpuSceneRasterBinding->IsReadyForBinding() ||
@@ -800,7 +1043,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
         ctx.SetDescriptorSet(1, objectSet, objectDynamicOffsets);
 
         ctx.SetVertexBuffer(0, batch.buffers.positionBuffer);
-        ctx.SetVertexBuffer(6, m_gpuCulling->GetInstanceIndexBuffer());
+        ctx.SetVertexBuffer(6, m_gpuCulling->GetVisibleInstanceBuffer());
         if (batch.buffers.normalBuffer)
         {
             ctx.SetVertexBuffer(1, batch.buffers.normalBuffer);
@@ -887,6 +1130,7 @@ bool OpaquePass::BuildPlannedDirectBatch(
         m_pipelineCache == nullptr || m_materialSystem == nullptr ||
         frameSet == nullptr)
     {
+        RVX_RENDER_ERROR("OpaquePass: Direct batch preflight is missing required frame dependencies");
         return false;
     }
 
@@ -898,6 +1142,10 @@ bool OpaquePass::BuildPlannedDirectBatch(
     if (!built.succeeded ||
         built.batch.packets.size() > std::numeric_limits<uint32>::max())
     {
+        RVX_RENDER_ERROR(
+            "OpaquePass: Direct packet batch construction failed (reason={}, packets={})",
+            GetRenderPolicyReasonName(built.reason),
+            built.batch.packets.size());
         return false;
     }
 
@@ -929,6 +1177,9 @@ bool OpaquePass::BuildPlannedDirectBatch(
             packet.arguments.instanceCount != 1 ||
             packet.arguments.firstInstance != 0)
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} failed draw-argument preflight",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
@@ -941,6 +1192,9 @@ bool OpaquePass::BuildPlannedDirectBatch(
             object.mesh != packet.geometryKey.mesh ||
             object.skinningMatrices.size() > std::numeric_limits<uint32>::max())
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} failed unique render-object resolution",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
@@ -978,6 +1232,9 @@ bool OpaquePass::BuildPlannedDirectBatch(
             HasDrawFlag(packet.flags, RenderDrawFlags::ReceivesShadow) !=
                 object.receivesShadow)
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} failed material/layout semantic preflight",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
@@ -992,6 +1249,9 @@ bool OpaquePass::BuildPlannedDirectBatch(
             buffers.indexBuffer == nullptr ||
             packet.geometryKey.submeshIndex >= buffers.submeshes.size())
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} has incomplete uploaded mesh buffers",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
@@ -1003,6 +1263,9 @@ bool OpaquePass::BuildPlannedDirectBatch(
             packet.arguments.firstIndex != submesh.indexOffset ||
             packet.arguments.vertexOffset != submesh.baseVertex)
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} does not match uploaded submesh arguments",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
@@ -1011,6 +1274,9 @@ bool OpaquePass::BuildPlannedDirectBatch(
         if (skinned &&
             (!object.HasSkinningData() || !buffers.HasSkinningVertexData()))
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} has incomplete skinning inputs",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
@@ -1026,6 +1292,9 @@ bool OpaquePass::BuildPlannedDirectBatch(
             (!missingMaterial &&
              (usesDefaultMaterial || !usesMaterial)))
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} has inconsistent material binding requirements",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
@@ -1037,18 +1306,27 @@ bool OpaquePass::BuildPlannedDirectBatch(
                     : DefaultLitDirectVertexInputMode::Rigid);
         if (pipeline == nullptr)
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} has no compatible graphics pipeline",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
 
         MaterialBindingOptions materialOptions;
         materialOptions.allowNormalMap = allowNormalMap;
+        materialOptions.materialParameterTable =
+            m_directMaterialParameterTable.Get();
         MaterialBindingResult materialBinding =
             m_materialSystem->PrepareMaterialBinding(
                 packet.materialKey.material, view.viewCache, materialOptions);
         if (!materialBinding.IsDrawable() ||
             (missingMaterial && !materialBinding.usedFallback))
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} material binding failed: {}",
+                draw.sourceOrdinal,
+                materialBinding.message);
             ++m_drawStats.skippedMaterialBindingCount;
             outPlannedDraws.clear();
             return false;
@@ -1060,9 +1338,20 @@ bool OpaquePass::BuildPlannedDirectBatch(
                 view.submissionResourceBatch,
                 Ref<RefCounted>(materialBinding.descriptorSetRef)))
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} material resources were rejected by submission ownership",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
+        ++m_drawStats.materialBindingCount;
+        if (materialBinding.usedFallback)
+        {
+            ++m_drawStats.materialFallbackBindingCount;
+        }
+        m_drawStats.materialTextureFlags |= materialBinding.textureFlags;
+        m_drawStats.materialFallbackTextureFlags |=
+            materialBinding.fallbackTextureFlags;
 
         PlannedOpaqueDraw planned;
         planned.packet = draw;
@@ -1079,6 +1368,9 @@ bool OpaquePass::BuildPlannedDirectBatch(
         if (planned.frameSet == nullptr ||
             planned.materialBinding.descriptorSet == nullptr)
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} produced incomplete frame/material descriptors",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
@@ -1104,13 +1396,150 @@ bool OpaquePass::BuildPlannedDirectBatch(
                 view.submissionResourceBatch,
                 Ref<RefCounted>(planned.objectBinding.descriptorSet)))
         {
+            RVX_RENDER_ERROR(
+                "OpaquePass: Direct packet {} object constants or submission ownership failed",
+                draw.sourceOrdinal);
             outPlannedDraws.clear();
             return false;
         }
         outPlannedDraws.push_back(std::move(planned));
     }
 
+    ApplyDirectInstancePlan(view, colorTargetFormat, outPlannedDraws);
     return true;
+}
+
+void OpaquePass::ApplyDirectInstancePlan(
+    const ViewData& view,
+    RHIFormat colorTargetFormat,
+    std::vector<PlannedOpaqueDraw>& plannedDraws)
+{
+    if (m_renderScene == nullptr ||
+        view.instancingMode == RenderInstancingMode::Disabled ||
+        m_directInstancePlan.instancedBatchCount == 0)
+    {
+        return;
+    }
+    if (m_directInstancingPreflightFailed ||
+        !m_directInstanceStream.IsValid() ||
+        m_directInstancePlan.executedPacketCount != plannedDraws.size())
+    {
+        m_drawStats.instancingFallbackBatchCount +=
+            m_directInstancePlan.instancedBatchCount;
+        return;
+    }
+
+    struct InstancedBinding
+    {
+        uint32 leaderIndex = 0;
+        RHIPipeline* pipeline = nullptr;
+        ObjectConstantBinding objectBinding;
+    };
+    std::vector<InstancedBinding> bindings;
+    bindings.reserve(m_directInstancePlan.instancedBatchCount);
+    std::vector<bool> consumed(plannedDraws.size(), false);
+
+    for (const RenderInstanceBatch& batch : m_directInstancePlan.batches)
+    {
+        if (batch.members.empty())
+        {
+            m_drawStats.instancingFallbackBatchCount +=
+                m_directInstancePlan.instancedBatchCount;
+            return;
+        }
+        for (const RenderInstanceBatchMember& member : batch.members)
+        {
+            if (member.directPacketIndex >= plannedDraws.size() ||
+                consumed[member.directPacketIndex])
+            {
+                m_drawStats.instancingFallbackBatchCount +=
+                    m_directInstancePlan.instancedBatchCount;
+                return;
+            }
+            consumed[member.directPacketIndex] = true;
+        }
+        if (!batch.instanced)
+        {
+            continue;
+        }
+
+        const uint32 leaderIndex = batch.members.front().directPacketIndex;
+        const PlannedOpaqueDraw& leader = plannedDraws[leaderIndex];
+        RHIPipeline* pipeline = batch.key.usesMaterialParameterTable
+            ? m_pipelineCache->GetInstancedMaterialPipelineForVariant(
+                  leader.packet.packet.pipelineKey.materialVariant,
+                  colorTargetFormat)
+            : m_pipelineCache->GetGPUDrivenPipelineForVariant(
+                  leader.packet.packet.pipelineKey.materialVariant,
+                  colorTargetFormat);
+        ObjectConstantBinding objectBinding;
+        if (pipeline == nullptr || leader.skinned ||
+            !m_pipelineCache->CreateObjectConstantBinding(
+                Mat4Identity(),
+                Mat4Identity(),
+                Mat4Identity(),
+                view.previousViewProjectionMatrix,
+                false,
+                leader.object.receivesShadow,
+                {},
+                m_directInstanceStream.instances.Get(),
+                objectBinding) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(objectBinding.constantBuffer)) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(objectBinding.instanceBuffer)) ||
+            !RetainRenderSubmissionResource(
+                view.submissionResourceBatch,
+                Ref<RefCounted>(objectBinding.descriptorSet)))
+        {
+            m_drawStats.instancingFallbackBatchCount +=
+                m_directInstancePlan.instancedBatchCount;
+            return;
+        }
+        bindings.push_back({leaderIndex, pipeline, std::move(objectBinding)});
+    }
+    if (!std::all_of(consumed.begin(), consumed.end(),
+                     [](bool value) { return value; }))
+    {
+        m_drawStats.instancingFallbackBatchCount +=
+            m_directInstancePlan.instancedBatchCount;
+        return;
+    }
+
+    std::vector<PlannedOpaqueDraw> batched;
+    batched.reserve(m_directInstancePlan.batches.size());
+    size_t bindingIndex = 0;
+    for (const RenderInstanceBatch& batch : m_directInstancePlan.batches)
+    {
+        const uint32 leaderIndex = batch.members.front().directPacketIndex;
+        if (!batch.instanced)
+        {
+            batched.push_back(std::move(plannedDraws[leaderIndex]));
+            continue;
+        }
+        if (bindingIndex >= bindings.size() ||
+            bindings[bindingIndex].leaderIndex != leaderIndex)
+        {
+            m_drawStats.instancingFallbackBatchCount +=
+                m_directInstancePlan.instancedBatchCount;
+            return;
+        }
+        PlannedOpaqueDraw leader = std::move(plannedDraws[leaderIndex]);
+        leader.pipeline = bindings[bindingIndex].pipeline;
+        leader.objectBinding = std::move(bindings[bindingIndex].objectBinding);
+        leader.instanceIndexBuffer = m_directInstanceStream.instanceIndices;
+        leader.packet.packet.arguments.instanceCount =
+            static_cast<uint32>(batch.members.size());
+        leader.packet.packet.arguments.firstInstance = batch.firstInstance;
+        leader.representedPacketCount =
+            static_cast<uint32>(batch.members.size());
+        leader.instanced = true;
+        batched.push_back(std::move(leader));
+        ++bindingIndex;
+    }
+    plannedDraws = std::move(batched);
 }
 
 bool OpaquePass::TryDrawPlannedDirect(
@@ -1137,6 +1566,10 @@ bool OpaquePass::TryDrawPlannedDirect(
             ctx.SetVertexBuffer(4, planned.buffers.boneIndicesBuffer);
             ctx.SetVertexBuffer(5, planned.buffers.boneWeightsBuffer);
         }
+        if (planned.instanced)
+        {
+            ctx.SetVertexBuffer(6, planned.instanceIndexBuffer.Get());
+        }
         ctx.SetIndexBuffer(planned.buffers.indexBuffer, RHIFormat::R32_UINT);
 
         const RenderDrawArguments& args = planned.packet.packet.arguments;
@@ -1156,7 +1589,13 @@ bool OpaquePass::TryDrawPlannedDirect(
         if (submission.recorded)
         {
             ++m_drawStats.directDrawCount;
-            m_drawStats.executedPacketCount += submission.executedDrawCount;
+            ++m_drawStats.submittedDrawCount;
+            m_drawStats.submittedInstanceCount += args.instanceCount;
+            m_drawStats.executedPacketCount += planned.representedPacketCount;
+            if (planned.instanced)
+            {
+                ++m_drawStats.instancedBatchCount;
+            }
         }
     }
     m_drawStats.directPacketPathUsed = true;
@@ -1166,6 +1605,24 @@ bool OpaquePass::TryDrawPlannedDirect(
 void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
     m_drawStats = {};
+    m_drawStats.instancingMode = view.instancingMode;
+    m_drawStats.instancingPlanAvailable =
+        m_drawStats.instancingMode == RenderInstancingMode::Auto &&
+        m_directInstancePlan.IsComplete();
+    m_drawStats.instancingPreflightSucceeded =
+        m_drawStats.instancingPlanAvailable &&
+        !m_directInstancingPreflightFailed;
+    if (m_drawStats.instancingPlanAvailable)
+    {
+        m_drawStats.plannedInstancingPacketCount =
+            m_directInstancePlan.executedPacketCount;
+        m_drawStats.plannedInstancingDrawCount =
+            m_directInstancePlan.submittedDrawCount;
+        m_drawStats.plannedInstancingInstanceCount =
+            m_directInstancePlan.submittedInstanceCount;
+        m_drawStats.plannedInstancingBatchCount =
+            m_directInstancePlan.instancedBatchCount;
+    }
     uint64 gpuLaneSubmissionCpuNanoseconds = 0;
     uint64 directLaneSubmissionCpuNanoseconds = 0;
     bool gpuLaneSubmissionTimingAvailable = false;
@@ -1215,6 +1672,13 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             report.status = status;
             report.executedVisibility = visibility;
             report.reason = reason;
+            report.materialBindingsAvailable = true;
+            report.materialBindingCount = m_drawStats.materialBindingCount;
+            report.materialFallbackBindingCount =
+                m_drawStats.materialFallbackBindingCount;
+            report.materialTextureFlags = m_drawStats.materialTextureFlags;
+            report.materialFallbackTextureFlags =
+                m_drawStats.materialFallbackTextureFlags;
             RenderPassLaneExecutionReport& lane =
                 gpuLane ? report.gpuDrivenLane : report.directLane;
             lane.status = status;
@@ -1591,8 +2055,9 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             const bool usesGPUSceneRaster = m_gpuSceneRasterEnabled;
             uint32 gpuDrawItemCount = 0;
             if (!m_gpuCulling || !m_materialSystem || !m_pipelineCache ||
+                m_gpuMaterialTablePreflightFailed ||
                 (!usesGPUSceneRaster && !m_gpuCulling->GetInstanceBuffer()) ||
-                !m_gpuCulling->GetInstanceIndexBuffer() ||
+                !m_gpuCulling->GetVisibleInstanceBuffer() ||
                 !AreGPUDrivenOpaqueGroupsDrawable(
                     plannedGPUCount,
                      opaquePlan->partition.drawGroupCount,
@@ -1637,14 +2102,40 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                     const GPUCullingDrawGroup& group = groups[groupIndex];
                     const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
                         m_resourceRegistry, group.mesh);
-                    RHIPipeline* pipeline = usesGPUSceneRaster
-                        ? (group.pipelineVariant == MaterialPipelineVariant::Masked
-                            ? (m_gpuSceneRasterBinding ? m_gpuSceneRasterBinding->maskedPipeline.Get() : nullptr)
-                            : (m_gpuSceneRasterBinding ? m_gpuSceneRasterBinding->opaquePipeline.Get() : nullptr))
-                        : m_pipelineCache->GetGPUDrivenPipelineForVariant(
-                            group.pipelineVariant, colorTargetFormat);
+                    RHIPipeline* pipeline = nullptr;
+                    if (usesGPUSceneRaster)
+                    {
+                        pipeline = group.batchKey.usesMaterialParameterTable
+                            ? (m_gpuSceneRasterBinding
+                                ? m_gpuSceneRasterBinding
+                                      ->instancedMaterialOpaquePipeline.Get()
+                                : nullptr)
+                            : (group.pipelineVariant ==
+                                       MaterialPipelineVariant::Masked
+                                ? (m_gpuSceneRasterBinding
+                                    ? m_gpuSceneRasterBinding
+                                          ->maskedPipeline.Get()
+                                    : nullptr)
+                                : (m_gpuSceneRasterBinding
+                                    ? m_gpuSceneRasterBinding
+                                          ->opaquePipeline.Get()
+                                    : nullptr));
+                    }
+                    else
+                    {
+                        pipeline = group.batchKey.usesMaterialParameterTable
+                            ? m_pipelineCache
+                                  ->GetInstancedMaterialPipelineForVariant(
+                                      group.pipelineVariant,
+                                      colorTargetFormat)
+                            : m_pipelineCache->GetGPUDrivenPipelineForVariant(
+                                  group.pipelineVariant,
+                                  colorTargetFormat);
+                    }
                     MaterialBindingOptions options;
                     options.allowNormalMap = buffers.HasNormalMapTangentBasis();
+                    options.materialParameterTable =
+                        m_gpuMaterialParameterTable.Get();
                     MaterialBindingResult binding = m_materialSystem->PrepareMaterialBinding(
                         group.material, view.viewCache, options);
                     if (!buffers.IsValid() || pipeline == nullptr || !binding.IsDrawable() ||
@@ -1656,6 +2147,14 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                         gpuPreflightReady = false;
                         break;
                     }
+                    ++m_drawStats.materialBindingCount;
+                    if (binding.usedFallback)
+                    {
+                        ++m_drawStats.materialFallbackBindingCount;
+                    }
+                    m_drawStats.materialTextureFlags |= binding.textureFlags;
+                    m_drawStats.materialFallbackTextureFlags |=
+                        binding.fallbackTextureFlags;
                     PlannedGPUDrivenOpaqueDraw planned;
                     planned.groupIndex = groupIndex;
                     planned.buffers = buffers;
@@ -1693,7 +2192,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         m_drawStats.plannedPacketCount =
             plannedGPUCount + plannedDirectCount;
         m_drawStats.compiledPacketCount = plannedGPUCount +
-            static_cast<uint32>(plannedDraws.size());
+            m_drawStats.compiledPacketCount;
 
         // The GPU lane retains its established indirect recording path. It
         // deliberately has no Direct fallback once the plan selected it.
@@ -1782,6 +2281,15 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                         : m_drawStats.failureReason;
                     report.skippedPacketCount =
                         opaquePlan->partition.skippedPacketCount;
+                    report.materialBindingsAvailable = true;
+                    report.materialBindingCount =
+                        m_drawStats.materialBindingCount;
+                    report.materialFallbackBindingCount =
+                        m_drawStats.materialFallbackBindingCount;
+                    report.materialTextureFlags =
+                        m_drawStats.materialTextureFlags;
+                    report.materialFallbackTextureFlags =
+                        m_drawStats.materialFallbackTextureFlags;
                     report.gpuDrivenLane.status = plannedGPU
                         ? (gpuRecorded ? RenderExecutionStatus::Completed
                                        : RenderExecutionStatus::Failed)

@@ -10,6 +10,8 @@
 #include "Core/Types.h"
 #include "Core/MathTypes.h"
 #include "Render/Material/MaterialClassification.h"
+#include "Render/Passes/MeshPassProcessor.h"
+#include "Render/Submission/RasterInstanceStream.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RHI/RHI.h"
 #include <array>
@@ -41,51 +43,6 @@ namespace RVX
         uint32 firstIndex = 0;
         int32 vertexOffset = 0;
     };
-
-    /**
-     * @brief GPU instance data for culling
-     */
-    struct alignas(16) GPUInstanceData
-    {
-        Mat4 worldMatrix;
-        Mat4 normalMatrix;
-        Vec4 boundingSphere;  // xyz = center, w = radius
-        Vec4 aabbMin;         // xyz = min, w = unused
-        Vec4 aabbMax;         // xyz = max, w = unused
-        uint32 meshId;
-        uint32 materialId;
-        uint32 indexCount;
-        uint32 firstIndex;
-        int32 vertexOffset;
-        uint32 sourceIndex = RVX_INVALID_INDEX;
-        uint32 drawGroupIndex;
-        uint32 drawGroupCommandOffset;
-        uint32 candidateIndex = RVX_INVALID_INDEX;
-        uint32 forceVisible = 0;
-        // Keep the structured-buffer element stride 16-byte aligned across
-        // DXIL and SPIR-V. These slots are reserved for future raster data.
-        uint32 padding[2] = {};
-    };
-
-    static_assert(sizeof(GPUInstanceData) == 224,
-                  "GPUInstanceData must match GPUInstanceData.hlsli");
-    static_assert(alignof(GPUInstanceData) == 16);
-    static_assert(offsetof(GPUInstanceData, worldMatrix) == 0);
-    static_assert(offsetof(GPUInstanceData, normalMatrix) == 64);
-    static_assert(offsetof(GPUInstanceData, boundingSphere) == 128);
-    static_assert(offsetof(GPUInstanceData, aabbMin) == 144);
-    static_assert(offsetof(GPUInstanceData, aabbMax) == 160);
-    static_assert(offsetof(GPUInstanceData, meshId) == 176);
-    static_assert(offsetof(GPUInstanceData, materialId) == 180);
-    static_assert(offsetof(GPUInstanceData, indexCount) == 184);
-    static_assert(offsetof(GPUInstanceData, firstIndex) == 188);
-    static_assert(offsetof(GPUInstanceData, vertexOffset) == 192);
-    static_assert(offsetof(GPUInstanceData, sourceIndex) == 196);
-    static_assert(offsetof(GPUInstanceData, drawGroupIndex) == 200);
-    static_assert(offsetof(GPUInstanceData, drawGroupCommandOffset) == 204);
-    static_assert(offsetof(GPUInstanceData, candidateIndex) == 208);
-    static_assert(offsetof(GPUInstanceData, forceVisible) == 212);
-    static_assert(offsetof(GPUInstanceData, padding) == 216);
 
     /**
      * @brief Fixed culling constant-buffer ABI shared by both compute paths.
@@ -125,13 +82,15 @@ namespace RVX
         uint32 objectIdHigh = 0;
         uint32 requiredPassMask = 0;
         uint32 drawGroupIndex = RVX_INVALID_INDEX;
-        uint32 drawGroupCommandOffset = 0;
+        uint32 drawGroupVisibleOffset = 0;
         uint32 rasterInstanceIndex = RVX_INVALID_INDEX;
+        uint32 materialParameterSlot = RVX_INVALID_INDEX;
+        uint32 padding0 = 0;
 
         constexpr bool operator==(const GPUSceneCullingCandidate&) const = default;
     };
 
-    static_assert(sizeof(GPUSceneCullingCandidate) == 40,
+    static_assert(sizeof(GPUSceneCullingCandidate) == 48,
                   "GPUSceneCullingCandidate must match GPUSceneCulling.hlsli");
     static_assert(offsetof(GPUSceneCullingCandidate, primitiveSlot) == 0);
     static_assert(offsetof(GPUSceneCullingCandidate, primitiveGeneration) == 4);
@@ -141,8 +100,10 @@ namespace RVX
     static_assert(offsetof(GPUSceneCullingCandidate, objectIdHigh) == 20);
     static_assert(offsetof(GPUSceneCullingCandidate, requiredPassMask) == 24);
     static_assert(offsetof(GPUSceneCullingCandidate, drawGroupIndex) == 28);
-    static_assert(offsetof(GPUSceneCullingCandidate, drawGroupCommandOffset) == 32);
+    static_assert(offsetof(GPUSceneCullingCandidate, drawGroupVisibleOffset) == 32);
     static_assert(offsetof(GPUSceneCullingCandidate, rasterInstanceIndex) == 36);
+    static_assert(offsetof(GPUSceneCullingCandidate, materialParameterSlot) == 40);
+    static_assert(offsetof(GPUSceneCullingCandidate, padding0) == 44);
 
     constexpr uint32 RVX_GPU_SCENE_CULLING_TABLE_COUNT = 6;
 
@@ -156,10 +117,15 @@ namespace RVX
         uint64 meshId = 0;
         uint64 materialId = 0;
         MaterialPipelineVariant pipelineVariant = MaterialPipelineVariant::Opaque;
+        RenderDrawGroupKey batchKey{};
         uint32 commandOffset = 0;
+        uint32 visibleInstanceOffset = 0;
         uint32 countBufferOffset = 0;
         uint32 maxDrawCount = 0;
         uint32 visibleDrawCount = 0;
+        uint32 indexCount = 0;
+        uint32 firstIndex = 0;
+        int32 vertexOffset = 0;
     };
 
     /**
@@ -419,7 +385,8 @@ namespace RVX
                               uint64 materialId = 0,
                               MaterialPipelineVariant pipelineVariant = MaterialPipelineVariant::Opaque,
                               RenderResourceHandle mesh = {},
-                              RenderResourceHandle material = {});
+                              RenderResourceHandle material = {},
+                              RenderDrawGroupKey batchKey = {});
 
         /**
          * @brief End the current draw group
@@ -689,6 +656,7 @@ namespace RVX
         std::vector<GPUSceneCullingCandidate> m_gpuSceneCandidates;
         uint64 m_gpuSceneCandidateVersion = 0;
         std::vector<uint32> m_visibleInstanceIndices;
+        std::vector<uint32> m_rasterVisibleInstanceIndices;
         std::vector<uint32> m_visibleSourceIndices;
         std::vector<IndirectDrawIndexedCommand> m_indirectCommands;
         std::vector<uint32> m_groupDrawCounts;
@@ -716,17 +684,21 @@ namespace RVX
         // Pipelines
         RHIShaderRef m_frustumCullShader;
         RHIShaderRef m_compactShader;
+        RHIShaderRef m_finalizeShader;
         RHIDescriptorSetLayoutRef m_cullingDescriptorSetLayout;
         RHIPipelineLayoutRef m_cullingPipelineLayout;
         RHIPipelineRef m_frustumCullPipeline;
         RHIPipelineRef m_occlusionCullPipeline;
         RHIPipelineRef m_compactPipeline;
+        RHIPipelineRef m_finalizePipeline;
         RHIShaderRef m_gpuSceneFrustumCullShader;
         RHIShaderRef m_gpuSceneCompactShader;
+        RHIShaderRef m_gpuSceneFinalizeShader;
         RHIDescriptorSetLayoutRef m_gpuSceneDescriptorSetLayout;
         RHIPipelineLayoutRef m_gpuScenePipelineLayout;
         RHIPipelineRef m_gpuSceneFrustumCullPipeline;
         RHIPipelineRef m_gpuSceneCompactPipeline;
+        RHIPipelineRef m_gpuSceneFinalizePipeline;
         RHIDescriptorSetRef m_gpuSceneDescriptorSet;
         std::array<RHIBufferRef, RVX_GPU_SCENE_CULLING_TABLE_COUNT>
             m_gpuSceneTableBuffers;

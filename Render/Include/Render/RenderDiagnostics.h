@@ -213,6 +213,23 @@ namespace RVX
         std::string message{};
     };
 
+    /** @brief Honest execution counts for the backend-neutral Direct instancing path. */
+    struct RenderInstancingDiagnostics
+    {
+        RenderInstancingMode requestedMode = RenderInstancingMode::Disabled;
+        bool opaquePlanAvailable = false;
+        bool opaquePreflightSucceeded = false;
+        uint32 opaquePlannedPacketCount = 0;
+        uint32 opaquePlannedDrawCount = 0;
+        uint32 opaquePlannedInstanceCount = 0;
+        uint32 opaquePlannedBatchCount = 0;
+        uint32 opaqueExecutedPacketCount = 0;
+        uint32 opaqueSubmittedDrawCount = 0;
+        uint32 opaqueSubmittedInstanceCount = 0;
+        uint32 opaqueInstancedBatchCount = 0;
+        uint32 opaqueFallbackBatchCount = 0;
+    };
+
     /** @brief Stable value projection of Render-owned ray tracing state. */
     struct RenderRayTracingDiagnostics
     {
@@ -368,6 +385,7 @@ namespace RVX
         RenderPolicyDiagnostics policy{};
         RenderParticleFeatureDiagnostics particles{};
         RenderMaterialFeatureDiagnostics material{};
+        RenderInstancingDiagnostics instancing{};
         RenderRayTracingDiagnostics rayTracing{};
         uint64 gpuMemoryBudget = 0;
         uint64 gpuUsedMemory = 0;

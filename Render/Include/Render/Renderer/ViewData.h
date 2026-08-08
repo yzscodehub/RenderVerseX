@@ -23,6 +23,7 @@ namespace RVX
     struct RenderFrameExecutionReport;
     struct RenderVisibilityResult;
     struct SceneMeshPassPreparation;
+    struct SceneRenderInstanceBatchPlans;
 
     /**
      * @brief View data collected for rendering a single view/camera
@@ -155,6 +156,18 @@ namespace RVX
         /// Optional motion-vector target for temporal reprojection
         RGTextureHandle velocityTarget;
 
+        /// Source cubemap sampled by SkyboxPass when the frame selects a cubemap sky.
+        RGTextureHandle environmentSkyTexture;
+
+        /// Diffuse environment convolution sampled by DefaultLit.
+        RGTextureHandle environmentIrradianceTexture;
+
+        /// Specular prefiltered environment sampled by DefaultLit.
+        RGTextureHandle environmentPrefilteredTexture;
+
+        /// Split-sum BRDF integration lookup sampled by DefaultLit.
+        RGTextureHandle environmentBRDFLUTTexture;
+
         // =====================================================================
         // Environment / IBL-Approximate Ambient
         // =====================================================================
@@ -205,6 +218,7 @@ namespace RVX
         /// Passes must not retain these pointers beyond the current frame.
         const RenderFrameExecutionPlan* renderFrameExecutionPlan = nullptr;
         const SceneMeshPassPreparation* meshPassPreparation = nullptr;
+        const SceneRenderInstanceBatchPlans* instanceBatchPlans = nullptr;
         RenderFrameExecutionReport* renderFrameExecutionReport = nullptr;
         /// Borrowed frame/view-owned visibility output. Passes must not retain it.
         const RenderVisibilityResult* renderVisibility = nullptr;
@@ -215,6 +229,9 @@ namespace RVX
 
         /// Current frame number
         uint64_t frameNumber = 0;
+
+        /// Backend-neutral Direct-lane instancing policy for this frame.
+        RenderInstancingMode instancingMode = RenderInstancingMode::Disabled;
 
         /// Reset temporal histories for this view, e.g. after camera cuts or large scene jumps
         bool resetTemporalHistory = false;

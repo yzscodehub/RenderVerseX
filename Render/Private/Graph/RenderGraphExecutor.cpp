@@ -33,6 +33,7 @@ namespace RVX
             graph.stats.lastExecutedPassCount = 0;
             graph.stats.lastExecutionCpuDurationNanoseconds = 0;
             graph.stats.accessSnapshotMismatchCount = 0;
+            graph.stats.executionQueueMismatchCount = 0;
             graph.lastQueueSyncs.clear();
 
             for (Pass& pass : graph.passes)
@@ -335,7 +336,8 @@ namespace RVX
 
         bool RunsOnComputeQueue(const Pass& pass)
         {
-            return pass.type == RenderGraphPassType::Compute;
+            return pass.plannedExecutionQueue ==
+                RenderGraph::DiagnosticExecutionQueue::Compute;
         }
 
         struct PlannedQueueSyncRequirements
@@ -409,6 +411,12 @@ namespace RVX
             if (!graph.stats.compileValid)
                 return RenderGraph::AsyncComputeFallbackReason::GraphNotCompiled;
 
+            if (graph.queueExecutionMode !=
+                RenderGraph::QueueExecutionMode::AsyncCompute)
+            {
+                return RenderGraph::AsyncComputeFallbackReason::AsyncPlanningDisabled;
+            }
+
             if (eligibleComputePasses == 0)
                 return RenderGraph::AsyncComputeFallbackReason::NoEligibleComputePasses;
 
@@ -439,6 +447,23 @@ namespace RVX
         if (!graph.stats.compileValid)
         {
             RVX_CORE_ERROR("RenderGraph execution skipped because the graph did not compile successfully");
+            return;
+        }
+
+        for (const Pass& pass : graph.passes)
+        {
+            if (!pass.culled &&
+                pass.plannedExecutionQueue !=
+                    RenderGraph::DiagnosticExecutionQueue::Graphics)
+            {
+                ++graph.stats.executionQueueMismatchCount;
+                RVX_CORE_ERROR(
+                    "RenderGraph graphics-only execution rejected pass '{}' planned for a non-Graphics queue",
+                    pass.name);
+            }
+        }
+        if (graph.stats.executionQueueMismatchCount != 0)
+        {
             return;
         }
 
@@ -623,7 +648,7 @@ namespace RVX
                 }
             }
 
-            if (pass.type == RenderGraphPassType::Compute)
+            if (RunsOnComputeQueue(pass))
             {
                 if (HasPlannedQueueRequirement(plannedSyncRequirements.requiresGraphicsForCompute, passIndex) &&
                     maxGraphicsDependencyOrder > graphicsVisibleToComputeOrder)

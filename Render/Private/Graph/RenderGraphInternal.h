@@ -164,6 +164,8 @@ namespace RVX
     {
         std::string name;
         RenderGraphPassType type = RenderGraphPassType::Graphics;
+        RenderGraph::DiagnosticExecutionQueue plannedExecutionQueue =
+            RenderGraph::DiagnosticExecutionQueue::Graphics;
         std::vector<ResourceUsage> usages;
         std::vector<uint32> readTextures;
         std::vector<uint32> writeTextures;
@@ -203,6 +205,8 @@ namespace RVX
         std::vector<QueueSyncPoint> lastQueueSyncs;
         RenderGraph::CompileStats stats;
         std::vector<std::string> compileDiagnostics;
+        RenderGraph::QueueExecutionMode queueExecutionMode =
+            RenderGraph::QueueExecutionMode::GraphicsOnly;
         // Memory aliasing
         std::vector<TransientHeap> transientHeaps;
         bool enableMemoryAliasing = false;

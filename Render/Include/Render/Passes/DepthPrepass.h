@@ -12,6 +12,8 @@
 #include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Submission/RasterInstanceStream.h"
+#include "Render/Submission/RenderInstanceBatchPlan.h"
 
 #include <atomic>
 #include <memory>
@@ -129,6 +131,11 @@ namespace RVX
         bool BuildPlannedDirectBatch(
             const ViewData& view,
             std::vector<PlannedDepthDraw>& outPlannedDraws);
+        bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
+                                         const ViewData& view);
+        void ApplyDirectInstancePlan(
+            const ViewData& view,
+            std::vector<PlannedDepthDraw>& plannedDraws);
 
         bool m_enabled = false;  // Disabled by default until depth-only pipeline is ready
         std::string m_unsupportedReason = "Depth-only pipeline is not available";
@@ -147,6 +154,11 @@ namespace RVX
         RGBufferHandle m_gpuDrivenInstanceIndexHandle;
         RGBufferHandle m_gpuDrivenIndirectHandle;
         RGBufferHandle m_gpuDrivenDrawCountHandle;
+        RGBufferHandle m_directInstanceHandle;
+        RGBufferHandle m_directInstanceIndexHandle;
+        RenderInstanceBatchPlan m_directInstancePlan;
+        RasterInstanceStream m_directInstanceStream;
+        bool m_directInstancingPreflightFailed = false;
         std::shared_ptr<const GPUSceneRasterBindingSnapshot> m_gpuSceneRasterBinding;
         std::shared_ptr<std::atomic_bool> m_gpuSceneRecordingFailure;
         DepthPrepassDrawStats m_drawStats;

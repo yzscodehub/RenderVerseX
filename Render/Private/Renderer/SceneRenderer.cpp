@@ -155,6 +155,7 @@ namespace
     MeshPassProcessorInput MakeMeshPassProcessorInput(
         RenderDrawPacket packet,
         const RenderResourceRegistry* registry,
+        const MaterialSystem* materialSystem,
         uint32 sourceOrdinal,
         float32 viewDepth)
     {
@@ -170,6 +171,10 @@ namespace
             packet.arguments.firstIndex = submesh.indexOffset;
             packet.arguments.vertexOffset = submesh.baseVertex;
         }
+        packet.materialInstanceKey = materialSystem
+            ? materialSystem->ResolveInstanceBindingKey(
+                  packet.materialKey.material)
+            : MaterialInstanceBindingKey{};
 
         MeshPassProcessorInput input;
         input.packet = packet;
@@ -1104,6 +1109,7 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
         diagnostics.gpuResourceStats = m_renderResourceRegistry->GetStats();
     }
     diagnostics.gpuDrivenCullingStats = m_gpuDrivenCullingStats;
+    diagnostics.instancing = m_instancingDiagnostics;
     diagnostics.policy = m_renderPolicyDiagnostics;
     diagnostics.rayTracingSceneStats = m_rayTracingSceneStats;
 
@@ -1261,6 +1267,7 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
                                  result.temporalHistoryReset);
 
     const RenderFrameSettings& frameSettings = m_renderScene.GetSettings();
+    m_viewData.instancingMode = frameSettings.instancingMode;
     SetGPUDrivenCullingMode(frameSettings.gpuCulling.mode);
     m_postProcessSettings.enableBloom =
         frameSettings.postProcess.enabled &&
@@ -1397,10 +1404,19 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
 
     const RenderEnvironmentSnapshot& environment =
         m_renderScene.GetEnvironment();
+    const RenderTextureResourceData* irradianceResource =
+        registry.ResolveTexture(environment.irradianceTexture);
+    const RenderTextureResourceData* prefilteredResource =
+        registry.ResolveTexture(environment.prefilteredTexture);
+    const RenderTextureResourceData* brdfLUTResource =
+        registry.ResolveTexture(environment.brdfLutTexture);
     const bool textureIBLReady =
         environment.irradianceTexture.IsValid() &&
         environment.prefilteredTexture.IsValid() &&
-        environment.brdfLutTexture.IsValid();
+        environment.brdfLutTexture.IsValid() &&
+        irradianceResource && irradianceResource->texture &&
+        prefilteredResource && prefilteredResource->texture &&
+        brdfLUTResource && brdfLUTResource->texture;
     ++m_environmentIBLStats.frameCount;
     m_environmentIBLStats.skyboxFound =
         m_renderScene.GetSky().skyTexture.IsValid();
@@ -1413,22 +1429,12 @@ RenderFrameApplyResult SceneRenderer::ApplyFramePacket(
                         : "PacketEnvironmentResourcesUnavailable";
     if (textureIBLReady)
     {
-        if (RHITexture* prefiltered = registry.ResolveTextureObject(
-                environment.prefilteredTexture))
-        {
-            m_environmentIBLStats.prefilteredMipLevels =
-                std::max(1U, prefiltered->GetMipLevels());
-        }
-    }
-    if (m_materialSystem)
-    {
-        m_materialSystem->SetEnvironmentIBLResources(
-            environment.irradianceTexture,
-            environment.prefilteredTexture,
-            environment.brdfLutTexture,
-            environment.intensity);
+        m_environmentIBLStats.prefilteredMipLevels =
+            std::max(1U, prefilteredResource->texture->GetMipLevels());
     }
     m_viewData.textureIBLEnabled = textureIBLReady ? 1 : 0;
+    m_viewData.textureIBLPrefilteredMipLevels =
+        m_environmentIBLStats.prefilteredMipLevels;
     m_viewData.textureIBLIntensity = environment.intensity;
     m_viewData.ambientFloorIntensity = textureIBLReady ? 0.0f : 0.08f;
 
@@ -1477,6 +1483,28 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     Render();
     if (HasSubmissionFailure())
     {
+        RVX_RENDER_ERROR(
+            "SceneRenderer: rejected recorded frame {} (rendered={}, graphCompileValid={}, executionStatus={})",
+            result.frameSequence,
+            m_frameDiagnostics.rendered,
+            m_frameDiagnostics.graphCompileValid,
+            GetRenderExecutionStatusName(
+                m_renderPolicyDiagnostics.executionReport.status));
+        for (const RenderPassExecutionReport& pass :
+             m_renderPolicyDiagnostics.executionReport.passes)
+        {
+            if (pass.status != RenderExecutionStatus::Failed)
+            {
+                continue;
+            }
+            RVX_RENDER_ERROR(
+                "SceneRenderer: failed pass={} reason={} gpuLane={} directLane={} skippedPackets={}",
+                GetRenderPassKindName(pass.pass),
+                GetRenderPolicyReasonName(pass.reason),
+                GetRenderExecutionStatusName(pass.gpuDrivenLane.status),
+                GetRenderExecutionStatusName(pass.directLane.status),
+                pass.skippedPacketCount);
+        }
         result.code = RenderFrameExecutionCode::SubmissionFailed;
         return result;
     }
@@ -1949,6 +1977,7 @@ void SceneRenderer::PrepareMeshPassPackets()
             MeshPassProcessorInput input = MakeMeshPassProcessorInput(
                 item.packet,
                 m_renderResourceRegistry,
+                m_materialSystem.get(),
                 materialSourceOrdinal++,
                 item.depthFromCamera);
             m_meshPassPreparation.depth.Record(depthProcessor.Process(input));
@@ -1966,6 +1995,7 @@ void SceneRenderer::PrepareMeshPassPackets()
         const MeshPassProcessorInput input = MakeMeshPassProcessorInput(
             item.packet,
             m_renderResourceRegistry,
+            m_materialSystem.get(),
             sourceOrdinal,
             item.depthFromCamera);
         m_meshPassPreparation.transparent.Record(
@@ -1988,6 +2018,7 @@ void SceneRenderer::PrepareMeshPassPackets()
                     MakeMeshPassProcessorInput(
                         packet,
                         m_renderResourceRegistry,
+                        m_materialSystem.get(),
                         shadowSourceOrdinal++,
                         0.0f);
                 m_meshPassPreparation.shadow.Record(
@@ -2015,6 +2046,7 @@ void SceneRenderer::PrepareMeshPassPackets()
             const MeshPassProcessorInput input = MakeMeshPassProcessorInput(
                BuildLegacyMaterialDrawPacket(batch),
                m_renderResourceRegistry,
+               m_materialSystem.get(),
                shadowSourceOrdinal++,
                 0.0f);
             m_meshPassPreparation.shadow.Record(
@@ -2097,6 +2129,8 @@ void SceneRenderer::InvalidateRenderFramePlan()
     m_renderPolicyDiagnostics = {};
     m_viewData.renderFrameExecutionPlan = nullptr;
     m_viewData.meshPassPreparation = nullptr;
+    m_viewData.instanceBatchPlans = nullptr;
+    m_instanceBatchPlans = {};
     m_viewData.renderFrameExecutionReport = nullptr;
     m_viewData.renderVisibility = nullptr;
     m_frameDiagnostics.policy = {};
@@ -2117,6 +2151,8 @@ void SceneRenderer::CompileRenderFramePlan()
     m_confirmedGPUDrivenTier = GPUDrivenTier::Direct;
     m_viewData.renderFrameExecutionPlan = nullptr;
     m_viewData.meshPassPreparation = nullptr;
+    m_viewData.instanceBatchPlans = nullptr;
+    m_instanceBatchPlans = {};
     m_viewData.renderFrameExecutionReport = nullptr;
 
     RenderPolicyResolverInput input;
@@ -2405,6 +2441,12 @@ void SceneRenderer::CompileRenderFramePlan()
         m_viewData.renderFrameExecutionPlan =
             &m_renderPolicyDiagnostics.selectedPlan;
         m_viewData.meshPassPreparation = &m_meshPassPreparation;
+        m_instanceBatchPlans = BuildSceneRenderInstanceBatchPlans(
+            m_renderPolicyDiagnostics.selectedPlan,
+            m_meshPassPreparation,
+            m_renderVisibility,
+            m_renderScene.GetSettings().instancingMode);
+        m_viewData.instanceBatchPlans = &m_instanceBatchPlans;
         m_viewData.renderFrameExecutionReport =
             &m_renderPolicyDiagnostics.executionReport;
         m_renderPolicyDiagnostics.executionReport.frameSequence =
@@ -2483,6 +2525,7 @@ void SceneRenderer::BuildGPUDrivenVisibilityInputs()
     m_gpuDrivenTier1PreparationFailed = false;
     m_gpuDrivenFrameFailure = false;
     m_gpuDrivenCullingStats = {};
+    m_instancingDiagnostics = {};
     m_gpuDrivenCullingStats.policyDecisionAvailable = true;
     m_gpuDrivenCullingStats.policyDecision = m_gpuDrivenPolicyDecision;
     m_gpuDrivenCullingStats.enabled = m_gpuDrivenCullingEnabled;
@@ -2739,18 +2782,36 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
         for (const RenderDrawGroupRange& group : stream.groups)
         {
             const RenderDrawGroupKey& key = group.key;
+            if (group.count == 0 ||
+                group.first >= stream.sortedGPUCandidatePacketIndices.size())
+            {
+                ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+                owner->EndFrame();
+                return;
+            }
+            const uint32 leaderSourcePacketIndex =
+                stream.sortedGPUCandidatePacketIndices[group.first];
+            if (leaderSourcePacketIndex >= stream.packets.size())
+            {
+                ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+                owner->EndFrame();
+                return;
+            }
+            const RenderDrawPacket& leaderPacket =
+                stream.packets[leaderSourcePacketIndex].packet;
             const uint64 meshId =
                 (static_cast<uint64>(key.geometry.mesh.slot) << 32U) |
                 key.geometry.mesh.generation;
             const uint64 materialId =
-                (static_cast<uint64>(key.material.material.slot) << 32U) |
-                key.material.material.generation;
+                (static_cast<uint64>(leaderPacket.materialKey.material.slot) << 32U) |
+                leaderPacket.materialKey.material.generation;
             const uint32 groupIndex = owner->BeginDrawGroup(
                 meshId,
                 materialId,
                 key.pipeline.materialVariant,
                 key.geometry.mesh,
-                key.material.material);
+                leaderPacket.materialKey.material,
+                key);
             if (groupIndex == RVX_INVALID_INDEX)
             {
                 ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
@@ -2819,9 +2880,11 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                             result.packet.objectId >> 32U);
                         gpuSceneCandidate.requiredPassMask = requiredPassMask;
                         gpuSceneCandidate.drawGroupIndex = groupIndex;
-                        gpuSceneCandidate.drawGroupCommandOffset =
-                            drawGroups[groupIndex].commandOffset;
+                        gpuSceneCandidate.drawGroupVisibleOffset =
+                            drawGroups[groupIndex].visibleInstanceOffset;
                         gpuSceneCandidate.rasterInstanceIndex = rasterInstanceIndex;
+                        gpuSceneCandidate.materialParameterSlot =
+                            result.packet.materialKey.material.slot;
                         if (!owner->AddGPUSceneCandidate(
                                 gpuSceneCandidate,
                                 requiredResidentVersion))
@@ -3567,6 +3630,36 @@ void SceneRenderer::Render()
                 m_gpuSceneUploader->CommitRealizedAccess(*m_renderGraph);
             }
             CommitGPUDrivenAccessSnapshots();
+            if (m_renderResourceRegistry)
+            {
+                const RenderEnvironmentSnapshot& environment =
+                    m_renderScene.GetEnvironment();
+                const auto commitEnvironmentTexture =
+                    [this](RenderResourceHandle resource,
+                           RGTextureHandle graphHandle)
+                {
+                    if (!resource.IsValid() || !graphHandle.IsValid())
+                    {
+                        return;
+                    }
+                    static_cast<void>(
+                        m_renderResourceRegistry->CommitTextureAccessSnapshot(
+                            resource,
+                            m_renderGraph->GetRealizedAccess(graphHandle)));
+                };
+                commitEnvironmentTexture(
+                    environment.irradianceTexture,
+                    m_viewData.environmentIrradianceTexture);
+                commitEnvironmentTexture(
+                    environment.prefilteredTexture,
+                    m_viewData.environmentPrefilteredTexture);
+                commitEnvironmentTexture(
+                    environment.brdfLutTexture,
+                    m_viewData.environmentBRDFLUTTexture);
+                commitEnvironmentTexture(
+                    m_renderScene.GetSky().skyTexture,
+                    m_viewData.environmentSkyTexture);
+            }
             if (m_activeRenderPassResults &&
                 m_activeRenderPassResults->identity == m_activeRenderPassIdentity)
             {
@@ -3629,6 +3722,30 @@ void SceneRenderer::Render()
             if (m_opaquePass)
             {
                 const OpaquePassDrawStats& opaqueStats = m_opaquePass->GetDrawStats();
+                m_instancingDiagnostics.requestedMode =
+                    opaqueStats.instancingMode;
+                m_instancingDiagnostics.opaquePlanAvailable =
+                    opaqueStats.instancingPlanAvailable;
+                m_instancingDiagnostics.opaquePreflightSucceeded =
+                    opaqueStats.instancingPreflightSucceeded;
+                m_instancingDiagnostics.opaquePlannedPacketCount =
+                    opaqueStats.plannedInstancingPacketCount;
+                m_instancingDiagnostics.opaquePlannedDrawCount =
+                    opaqueStats.plannedInstancingDrawCount;
+                m_instancingDiagnostics.opaquePlannedInstanceCount =
+                    opaqueStats.plannedInstancingInstanceCount;
+                m_instancingDiagnostics.opaquePlannedBatchCount =
+                    opaqueStats.plannedInstancingBatchCount;
+                m_instancingDiagnostics.opaqueExecutedPacketCount =
+                    opaqueStats.executedPacketCount;
+                m_instancingDiagnostics.opaqueSubmittedDrawCount =
+                    opaqueStats.submittedDrawCount;
+                m_instancingDiagnostics.opaqueSubmittedInstanceCount =
+                    opaqueStats.submittedInstanceCount;
+                m_instancingDiagnostics.opaqueInstancedBatchCount =
+                    opaqueStats.instancedBatchCount;
+                m_instancingDiagnostics.opaqueFallbackBatchCount =
+                    opaqueStats.instancingFallbackBatchCount;
                 m_gpuDrivenCullingStats.opaqueIndirectRequested = opaqueStats.gpuDrivenRequested;
                 m_gpuDrivenCullingStats.opaqueCullingReady = opaqueStats.gpuDrivenCullingReady;
                 m_gpuDrivenCullingStats.opaquePipelineReady = opaqueStats.gpuDrivenPipelineReady;
@@ -4857,8 +4974,8 @@ void SceneRenderer::AddGPUDrivenCullingPass(
                                   computeExecutionDomain));
         m_renderGraph->SetExportAccess(
             handles.visibleInstances,
-            MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
-                                  RHIShaderStage::AllGraphics,
+            MakeRHIAccessSnapshot(RHIResourceState::VertexBuffer,
+                                  RHIShaderStage::Vertex,
                                   graphicsDomain));
         m_renderGraph->SetExportAccess(
             handles.indirectDraws,
@@ -5062,6 +5179,10 @@ void SceneRenderer::BuildRenderGraph()
     m_viewData.renderGraph = m_renderGraph.get();
     m_viewData.viewCache = m_resourceViewCache.get();
     m_viewData.velocityTarget = {};
+    m_viewData.environmentSkyTexture = {};
+    m_viewData.environmentIrradianceTexture = {};
+    m_viewData.environmentPrefilteredTexture = {};
+    m_viewData.environmentBRDFLUTTexture = {};
     m_depthGraphHandle = {};
     m_backBufferGraphHandle = {};
     m_activeBackBufferIndex = RVX_INVALID_INDEX;
@@ -5071,6 +5192,121 @@ void SceneRenderer::BuildRenderGraph()
     m_externalRenderTargetStats = {};
     m_externalRenderTargetStats.requested =
         m_externalRenderTarget.colorTarget != nullptr || m_externalRenderTarget.depthTarget != nullptr;
+
+    EnvironmentIBLFrameResources environmentFrameResources;
+    RHITextureViewRef irradianceView;
+    RHITextureViewRef prefilteredView;
+    RHITextureViewRef brdfLUTView;
+    if (m_renderResourceRegistry && m_resourceViewCache && m_pipelineCache)
+    {
+        const RenderSkySnapshot& sky = m_renderScene.GetSky();
+        const RenderTextureResourceData* skyTexture =
+            m_renderResourceRegistry->ResolveTexture(sky.skyTexture);
+        if (sky.mode == RenderSkyMode::Cubemap && skyTexture &&
+            skyTexture->texture &&
+            skyTexture->texture->GetDimension() == RHITextureDimension::TextureCube &&
+            RetainRenderSubmissionResource(
+                m_submissionBatch.get(), Ref<RefCounted>(skyTexture->texture)))
+        {
+            m_viewData.environmentSkyTexture = m_renderGraph->ImportTexture(
+                skyTexture->texture.Get(), skyTexture->accessSnapshot);
+            m_renderGraph->SetExportState(
+                m_viewData.environmentSkyTexture,
+                RHIResourceState::ShaderResource);
+        }
+
+        const RenderEnvironmentSnapshot& environment =
+            m_renderScene.GetEnvironment();
+        const RenderTextureResourceData* irradiance =
+            m_renderResourceRegistry->ResolveTexture(
+                environment.irradianceTexture);
+        const RenderTextureResourceData* prefiltered =
+            m_renderResourceRegistry->ResolveTexture(
+                environment.prefilteredTexture);
+        const RenderTextureResourceData* brdfLUT =
+            m_renderResourceRegistry->ResolveTexture(
+                environment.brdfLutTexture);
+        if (irradiance && irradiance->texture &&
+            prefiltered && prefiltered->texture &&
+            brdfLUT && brdfLUT->texture)
+        {
+            irradianceView = RHITextureViewRef(
+                m_resourceViewCache->GetDefaultSRV(
+                    irradiance->texture.Get()));
+            prefilteredView = RHITextureViewRef(
+                m_resourceViewCache->GetDefaultSRV(
+                    prefiltered->texture.Get()));
+            brdfLUTView = RHITextureViewRef(
+                m_resourceViewCache->GetDefaultSRV(
+                    brdfLUT->texture.Get()));
+
+            const bool retained =
+                RetainRenderSubmissionResource(
+                    m_submissionBatch.get(),
+                    Ref<RefCounted>(irradianceView)) &&
+                RetainRenderSubmissionResource(
+                    m_submissionBatch.get(),
+                    Ref<RefCounted>(irradiance->texture)) &&
+                RetainRenderSubmissionResource(
+                    m_submissionBatch.get(),
+                    Ref<RefCounted>(prefilteredView)) &&
+                RetainRenderSubmissionResource(
+                    m_submissionBatch.get(),
+                    Ref<RefCounted>(prefiltered->texture)) &&
+                RetainRenderSubmissionResource(
+                    m_submissionBatch.get(),
+                    Ref<RefCounted>(brdfLUTView)) &&
+                RetainRenderSubmissionResource(
+                    m_submissionBatch.get(),
+                    Ref<RefCounted>(brdfLUT->texture));
+            if (irradianceView && prefilteredView && brdfLUTView && retained)
+            {
+                m_viewData.environmentIrradianceTexture =
+                    m_renderGraph->ImportTexture(
+                        irradiance->texture.Get(), irradiance->accessSnapshot);
+                m_viewData.environmentPrefilteredTexture =
+                    m_renderGraph->ImportTexture(
+                        prefiltered->texture.Get(), prefiltered->accessSnapshot);
+                m_viewData.environmentBRDFLUTTexture =
+                    m_renderGraph->ImportTexture(
+                        brdfLUT->texture.Get(), brdfLUT->accessSnapshot);
+                m_renderGraph->SetExportState(
+                    m_viewData.environmentIrradianceTexture,
+                    RHIResourceState::ShaderResource);
+                m_renderGraph->SetExportState(
+                    m_viewData.environmentPrefilteredTexture,
+                    RHIResourceState::ShaderResource);
+                m_renderGraph->SetExportState(
+                    m_viewData.environmentBRDFLUTTexture,
+                    RHIResourceState::ShaderResource);
+                environmentFrameResources.enabled = true;
+                environmentFrameResources.irradianceView =
+                    irradianceView.Get();
+                environmentFrameResources.prefilteredEnvironmentView =
+                    prefilteredView.Get();
+                environmentFrameResources.brdfLUTView = brdfLUTView.Get();
+            }
+        }
+    }
+
+    EnvironmentIBLFrameBindingResult environmentBinding;
+    if (m_pipelineCache)
+    {
+        environmentBinding =
+            m_pipelineCache->UpdateEnvironmentIBLFrameResources(
+                environmentFrameResources);
+    }
+    m_viewData.textureIBLEnabled =
+        environmentBinding.textureIBLSamplingEnabled ? 1 : 0;
+    m_viewData.ambientFloorIntensity =
+        environmentBinding.textureIBLSamplingEnabled ? 0.0f : 0.08f;
+    m_environmentIBLStats.textureIBLEnabled =
+        environmentBinding.textureIBLSamplingEnabled;
+    m_environmentIBLStats.fallbackReason =
+        environmentBinding.textureIBLSamplingEnabled
+            ? std::string{}
+            : PipelineCache::GetEnvironmentIBLFallbackReasonName(
+                  environmentBinding.fallbackReason);
 
     // Record the private CPU-shadow upload before a future Task 11D consumer
     // could import the buffers. It does not bind or schedule an execution path.
@@ -5321,6 +5557,7 @@ void SceneRenderer::BuildRenderGraph()
     AddGPUDrivenCullingPass(passRecordContext.identity);
     passRecordContext.executionPlan = m_viewData.renderFrameExecutionPlan;
     passRecordContext.meshPassPreparation = m_viewData.meshPassPreparation;
+    passRecordContext.instanceBatchPlans = m_viewData.instanceBatchPlans;
     passRecordContext.visibility = m_viewData.renderVisibility;
     passRecordContext.executionReport = m_viewData.renderFrameExecutionReport;
     passRecordContext.renderScene = &m_renderScene;
@@ -5352,7 +5589,10 @@ void SceneRenderer::BuildRenderGraph()
         inputs.gpuSceneCandidates = handles.gpuSceneCandidates;
         inputs.gpuScenePrimitives = handles.gpuScenePrimitives;
         inputs.gpuSceneTransforms = handles.gpuSceneTransforms;
-        inputs.instanceIndices = handles.instanceIndices;
+        // GPU culling produces the compacted raster-instance indirection
+        // stream. Graphics passes consume that stream directly at IA slot 6;
+        // the identity stream remains a Direct-instancing owner resource.
+        inputs.instanceIndices = handles.visibleInstances;
         inputs.indirectDraws = handles.indirectDraws;
         inputs.drawCount = handles.drawCount;
         inputs.gpuSceneRasterBinding = handles.gpuSceneRasterBinding;

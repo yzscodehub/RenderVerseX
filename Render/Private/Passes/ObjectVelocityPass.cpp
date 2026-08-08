@@ -166,10 +166,16 @@ namespace RVX
                     !RetainResource(batch, draw.buffers.boneWeightsBuffer) ||
                     !RetainResource(batch, draw.material.constantBuffer.Get()) ||
                     !RetainResource(batch, draw.material.descriptorSet.Get()) ||
-                    !RetainResource(batch, draw.material.layout.Get()) ||
-                    !RetainResource(batch, draw.material.sampler.Get()))
+                    !RetainResource(batch, draw.material.layout.Get()))
                 {
                     return false;
+                }
+                for (const RHISamplerRef& sampler : draw.material.samplers)
+                {
+                    if (!RetainResource(batch, sampler.Get()))
+                    {
+                        return false;
+                    }
                 }
                 for (const RHITextureViewRef& view : draw.material.textureViews)
                 {

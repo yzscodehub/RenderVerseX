@@ -17,11 +17,10 @@ namespace RVX
     // - UAV: slots 0-7 (DX11.0) or 0-63 (DX11.1)
     // - Sampler: slots 0-15
     //
-    // Default allocation:
-    // Set 0: CB 0-3,   SRV 0-31,  UAV 0-1,  Sampler 0-3
-    // Set 1: CB 4-7,   SRV 32-63, UAV 2-3,  Sampler 4-7
-    // Set 2: CB 8-11,  SRV 64-95, UAV 4-5,  Sampler 8-11
-    // Set 3: CB 12-13, SRV 96-127, UAV 6-7, Sampler 12-15
+    // Renderer ABI allocation:
+    // - CBs preserve sparse frame slots; object/material set b0 map to b1/b2.
+    // - SRVs and UAVs use fixed per-set ranges.
+    // - Frame/material samplers preserve their non-overlapping logical slots.
 
     class DX11BindingRemapper
     {

@@ -658,7 +658,13 @@ namespace
             return {};
         }
 
-        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        const std::istreambuf_iterator<char> begin(file);
+        const std::istreambuf_iterator<char> end;
+        std::string contents(begin, end);
+        contents.erase(
+            std::remove(contents.begin(), contents.end(), '\r'),
+            contents.end());
+        return contents;
     }
 } // namespace
 
@@ -971,7 +977,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackCullsInstancesAndBuildsIndirectCom
     EXPECT_EQ(1u, stats.distanceCulled);
     EXPECT_EQ(0u, stats.occlusionCulled);
 
-    ASSERT_EQ(1u, culling.GetIndirectCommands().size());
+    ASSERT_EQ(4u, culling.GetIndirectCommands().size());
     const IndirectDrawIndexedCommand& command = culling.GetIndirectCommands()[0];
     EXPECT_EQ(36u, command.indexCount);
     EXPECT_EQ(1u, command.instanceCount);
@@ -995,7 +1001,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackCullsInstancesAndBuildsIndirectCom
     EXPECT_EQ(command.firstInstance, uploadedCommand.firstInstance);
 
     const GPUCullingIndexedIndirectSubmission cullingSubmission =
-        culling.BuildIndexedIndirectSubmission();
+        culling.BuildIndexedIndirectGroupSubmission(0);
     EXPECT_EQ(RHIIndirectExecutionMode::FixedCount,
               cullingSubmission.execution.mode);
     EXPECT_EQ(culling.GetIndirectBuffer(),
@@ -1481,12 +1487,12 @@ TEST_F(GPUDrivenValidationFixture, DrawIndexedIndirectHonorsMaxDrawCount)
 
     culling.BeginFrame();
     EXPECT_EQ(0u, culling.AddInstance(MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 12)));
-    EXPECT_EQ(1u, culling.AddInstance(MakeInstance(Vec3(1.0f, 0.0f, -5.0f), 1.0f, 24)));
+    EXPECT_EQ(1u, culling.AddInstance(MakeInstance(Vec3(1.0f, 0.0f, -5.0f), 1.0f, 12)));
     culling.EndFrame();
 
     FakeCommandContext ctx;
     culling.Cull(ctx, TestView(), TestProjection());
-    ASSERT_EQ(2u, culling.GetDrawCount());
+    ASSERT_EQ(1u, culling.GetDrawCount());
 
     const GPUCullingIndexedIndirectSubmission cullingSubmission =
         culling.BuildIndexedIndirectSubmission(1);
@@ -1518,7 +1524,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuildsMeshGroupedIndirectRanges)
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.BeginDrawGroup(7001u));
     EXPECT_EQ(0u, culling.AddInstance(MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 36)));
-    EXPECT_EQ(1u, culling.AddInstance(MakeInstance(Vec3(100.0f, 0.0f, -5.0f), 1.0f, 12)));
+    EXPECT_EQ(1u, culling.AddInstance(MakeInstance(Vec3(100.0f, 0.0f, -5.0f), 1.0f, 36)));
     culling.EndDrawGroup();
     ASSERT_EQ(1u, culling.BeginDrawGroup(7002u));
     EXPECT_EQ(2u, culling.AddInstance(MakeInstance(Vec3(0.0f, 0.0f, -6.0f), 1.0f, 24)));
@@ -1536,7 +1542,8 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuildsMeshGroupedIndirectRanges)
     EXPECT_EQ(2u, culling.GetDrawGroups()[0].maxDrawCount);
     EXPECT_EQ(1u, culling.GetDrawGroups()[0].visibleDrawCount);
     EXPECT_EQ(7002u, culling.GetDrawGroups()[1].meshId);
-    EXPECT_EQ(2u, culling.GetDrawGroups()[1].commandOffset);
+    EXPECT_EQ(1u, culling.GetDrawGroups()[1].commandOffset);
+    EXPECT_EQ(2u, culling.GetDrawGroups()[1].visibleInstanceOffset);
     EXPECT_EQ(sizeof(uint32) * 2u, culling.GetDrawGroups()[1].countBufferOffset);
     EXPECT_EQ(1u, culling.GetDrawGroups()[1].maxDrawCount);
     EXPECT_EQ(1u, culling.GetDrawGroups()[1].visibleDrawCount);
@@ -1552,11 +1559,18 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuildsMeshGroupedIndirectRanges)
     const IndirectDrawIndexedCommand firstGroupCommand =
         ReadBufferValue<IndirectDrawIndexedCommand>(*indirectBuffer, 0);
     const IndirectDrawIndexedCommand secondGroupCommand =
-        ReadBufferValue<IndirectDrawIndexedCommand>(*indirectBuffer, 2);
+        ReadBufferValue<IndirectDrawIndexedCommand>(*indirectBuffer, 1);
     EXPECT_EQ(36u, firstGroupCommand.indexCount);
     EXPECT_EQ(0u, firstGroupCommand.firstInstance);
     EXPECT_EQ(24u, secondGroupCommand.indexCount);
     EXPECT_EQ(2u, secondGroupCommand.firstInstance);
+
+    const FakeBuffer* visibleBuffer =
+        device.FindBuffer("GPUCulling.VisibleInstanceBuffer");
+    ASSERT_NE(nullptr, visibleBuffer);
+    EXPECT_EQ(0u, ReadBufferValue<uint32>(*visibleBuffer, 0));
+    EXPECT_EQ(RVX_INVALID_INDEX, ReadBufferValue<uint32>(*visibleBuffer, 1));
+    EXPECT_EQ(2u, ReadBufferValue<uint32>(*visibleBuffer, 2));
 
     const GPUCullingIndexedIndirectSubmission wholeSubmission =
         culling.BuildIndexedIndirectSubmission();
@@ -1580,7 +1594,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuildsMeshGroupedIndirectRanges)
     const GPUCullingIndexedIndirectSubmission secondCullingSubmission =
         culling.BuildIndexedIndirectGroupSubmission(1);
     EXPECT_TRUE(secondCullingSubmission.execution.requiresFirstInstance);
-    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand) * 2u,
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand),
               secondCullingSubmission.execution.argumentOffset);
     const RenderSubmissionResult secondSubmission =
         RecordIndexedIndirectSubmission(ctx, secondCullingSubmission);
@@ -1588,7 +1602,7 @@ TEST_F(GPUDrivenValidationFixture, CpuFallbackBuildsMeshGroupedIndirectRanges)
     EXPECT_EQ(1u, secondSubmission.submittedDrawUpperBound);
     EXPECT_TRUE(secondSubmission.executedDrawCountAvailable);
     EXPECT_EQ(1u, secondSubmission.executedDrawCount);
-    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand) * 2u, ctx.lastIndirectOffset);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), ctx.lastIndirectOffset);
     EXPECT_EQ(1u, ctx.lastIndirectDrawCount);
 }
 
@@ -1744,7 +1758,7 @@ TEST_F(GPUDrivenValidationFixture, DrawItemsMapBackThroughVisibleSourceIndices)
     ASSERT_EQ(1u, culling.GetVisibleSourceIndices().size());
     EXPECT_EQ(0u, culling.GetVisibleSourceIndices()[0]);
 
-    ASSERT_EQ(1u, culling.GetIndirectCommands().size());
+    ASSERT_EQ(3u, culling.GetIndirectCommands().size());
     const IndirectDrawIndexedCommand& command = culling.GetIndirectCommands()[0];
     EXPECT_EQ(48u, command.indexCount);
     EXPECT_EQ(4u, command.firstIndex);
@@ -1941,7 +1955,7 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
               std::string::npos);
     EXPECT_NE(source.find("owner->BeginDrawGroup("), std::string::npos);
     EXPECT_NE(source.find("key.geometry.mesh"), std::string::npos);
-    EXPECT_NE(source.find("key.material.material"), std::string::npos);
+    EXPECT_NE(source.find("leaderPacket.materialKey.material"), std::string::npos);
     EXPECT_NE(source.find("key.pipeline.materialVariant"), std::string::npos);
 
     const std::string opaqueHeader =
@@ -2229,6 +2243,12 @@ TEST_F(GPUDrivenValidationFixture, InstanceIndexVertexStreamIsIdentityAndDrawCou
     EXPECT_EQ(63u, ReadBufferValue<uint32>(*instanceIndexBuffer, 63));
     EXPECT_EQ(instanceIndexBuffer, culling.GetInstanceIndexBuffer());
 
+    const FakeBuffer* visibleInstanceBuffer =
+        device.FindBuffer("GPUCulling.VisibleInstanceBuffer");
+    ASSERT_NE(nullptr, visibleInstanceBuffer);
+    EXPECT_TRUE(HasFlag(visibleInstanceBuffer->GetUsage(),
+                        RHIBufferUsage::Vertex));
+
     const FakeBuffer* drawCountBuffer =
         device.FindBuffer("GPUCulling.DrawCountBuffer");
     ASSERT_NE(nullptr, drawCountBuffer);
@@ -2337,11 +2357,15 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingDeclaresComputeCompactionAndIndirec
     EXPECT_NE(shader.find("gDrawCount[instanceIndex] = 0"), std::string::npos);
     EXPECT_NE(shader.find("uint drawGroupCount = Counts.y"),
               std::string::npos);
-    EXPECT_NE(shader.find("InterlockedAdd(gDrawCount[0], 1, totalDrawIndex)"), std::string::npos);
-    EXPECT_NE(shader.find("InterlockedAdd(gDrawCount[instance.drawGroupIndex + 1], 1, groupDrawIndex)"),
+    EXPECT_NE(shader.find("void CSFinalizeDrawGroups"), std::string::npos);
+    EXPECT_NE(shader.find("gDrawCount[instance.drawGroupIndex + 1]"),
               std::string::npos);
-    EXPECT_NE(shader.find("instance.drawGroupCommandOffset + groupDrawIndex"), std::string::npos);
-    EXPECT_NE(shader.find("command.firstInstance = instanceIndex"), std::string::npos);
+    EXPECT_NE(shader.find("instance.drawGroupVisibleOffset + groupVisibleIndex"),
+              std::string::npos);
+    EXPECT_NE(shader.find("command.instanceCount = visibleCount"),
+              std::string::npos);
+    EXPECT_NE(shader.find("command.firstInstance = instance.drawGroupVisibleOffset"),
+              std::string::npos);
 }
 
 TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirectContracts)
@@ -2359,6 +2383,9 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
         ReadTextFile(root / "Render" / "Shaders" / "Include" / "GPUInstanceData.hlsli");
     const std::string cullingHeader =
         ReadTextFile(root / "Render" / "Include" / "Render" / "GPUDriven" / "GPUCulling.h");
+    const std::string rasterInstanceHeader = ReadTextFile(
+        root / "Render" / "Include" / "Render" / "Submission" /
+        "RasterInstanceStream.h");
     const std::string pipelineHeader =
         ReadTextFile(root / "Render" / "Include" / "Render" / "PipelineCache.h");
     const std::string pipelineSource =
@@ -2375,6 +2402,7 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     ASSERT_FALSE(cullingShader.empty());
     ASSERT_FALSE(sharedInstance.empty());
     ASSERT_FALSE(cullingHeader.empty());
+    ASSERT_FALSE(rasterInstanceHeader.empty());
     ASSERT_FALSE(pipelineHeader.empty());
     ASSERT_FALSE(pipelineSource.empty());
     ASSERT_FALSE(opaqueHeader.empty());
@@ -2410,15 +2438,15 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     EXPECT_NE(sharedInstance.find("uint candidateIndex;"), std::string::npos);
     EXPECT_NE(sharedInstance.find("uint forceVisible;"), std::string::npos);
     EXPECT_NE(sharedInstance.find("uint2 padding;"), std::string::npos);
-    EXPECT_NE(cullingHeader.find("struct alignas(16) GPUInstanceData"),
+    EXPECT_NE(rasterInstanceHeader.find("struct alignas(16) GPUInstanceData"),
               std::string::npos);
-    EXPECT_NE(cullingHeader.find("sizeof(GPUInstanceData) == 224"),
+    EXPECT_NE(rasterInstanceHeader.find("sizeof(GPUInstanceData) == 224"),
               std::string::npos);
-    EXPECT_NE(cullingHeader.find("alignof(GPUInstanceData) == 16"),
+    EXPECT_NE(rasterInstanceHeader.find("alignof(GPUInstanceData) == 16"),
               std::string::npos);
-    EXPECT_NE(cullingHeader.find("offsetof(GPUInstanceData, forceVisible) == 212"),
+    EXPECT_NE(rasterInstanceHeader.find("offsetof(GPUInstanceData, forceVisible) == 212"),
               std::string::npos);
-    EXPECT_NE(cullingHeader.find("offsetof(GPUInstanceData, padding) == 216"),
+    EXPECT_NE(rasterInstanceHeader.find("offsetof(GPUInstanceData, padding) == 216"),
               std::string::npos);
     EXPECT_NE(pipelineHeader.find("GetGPUDrivenPipelineForVariant"), std::string::npos);
     EXPECT_NE(pipelineSource.find("GPUDrivenOpaquePipeline"), std::string::npos);
@@ -2434,7 +2462,7 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     EXPECT_NE(opaqueSource.find("TryDrawGPUDrivenIndirect"), std::string::npos);
     EXPECT_NE(opaqueSource.find("BuildIndexedIndirectGroupSubmission"), std::string::npos);
     EXPECT_NE(opaqueSource.find("IndexedIndirectRenderSubmissionStrategy"), std::string::npos);
-    EXPECT_NE(opaqueSource.find("ctx.SetVertexBuffer(6, m_gpuCulling->GetInstanceIndexBuffer())"),
+    EXPECT_NE(opaqueSource.find("ctx.SetVertexBuffer(6, m_gpuCulling->GetVisibleInstanceBuffer())"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("TransitionGPUDrivenGroupMaterialTextures"),
               std::string::npos);
@@ -2509,6 +2537,11 @@ TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)
     ShaderCompileResult compactResult = compiler->Compile(options);
     ASSERT_TRUE(compactResult.success) << compactResult.errorMessage;
     EXPECT_FALSE(compactResult.bytecode.empty());
+
+    options.entryPoint = "CSFinalizeDrawGroups";
+    ShaderCompileResult finalizeResult = compiler->Compile(options);
+    ASSERT_TRUE(finalizeResult.success) << finalizeResult.errorMessage;
+    EXPECT_FALSE(finalizeResult.bytecode.empty());
 }
 
 TEST_F(GPUDrivenValidationFixture,
@@ -2596,12 +2629,17 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_TRUE(compactResult.success) << compactResult.errorMessage;
     EXPECT_FALSE(compactResult.bytecode.empty());
     EXPECT_TRUE(compactResult.reflection.valid);
+
+    options.entryPoint = "CSFinalizeDrawGroups";
+    ShaderCompileResult finalizeResult = compiler->Compile(options);
+    ASSERT_TRUE(finalizeResult.success) << finalizeResult.errorMessage;
+    EXPECT_FALSE(finalizeResult.bytecode.empty());
 }
 
 TEST_F(GPUDrivenValidationFixture,
        GPUSceneCandidateAbiAndSealedInputPlumbingRemainRendererPrivate)
 {
-    EXPECT_EQ(40u, sizeof(GPUSceneCullingCandidate));
+    EXPECT_EQ(48u, sizeof(GPUSceneCullingCandidate));
 
     FakeDevice device;
     device.EnableTimelineRetirement();
@@ -2629,15 +2667,16 @@ TEST_F(GPUDrivenValidationFixture,
     candidate.objectIdLow = 42u;
     candidate.requiredPassMask = 2u;
     candidate.drawGroupIndex = 0u;
-    candidate.drawGroupCommandOffset = 0u;
+    candidate.drawGroupVisibleOffset = 0u;
     candidate.rasterInstanceIndex = 0u;
+    candidate.materialParameterSlot = 3u;
     GPUSceneCullingCandidate multiPassCandidate = candidate;
     multiPassCandidate.requiredPassMask = 3u;
     EXPECT_FALSE(culling.AddGPUSceneCandidate(multiPassCandidate, 19u));
     EXPECT_TRUE(culling.AddGPUSceneCandidate(candidate, 19u));
 
     ASSERT_EQ(1u, culling.AddInstance(
-        MakeInstance(Vec3(1.0f, 0.0f, -5.0f), 1.0f, 24)));
+        MakeInstance(Vec3(1.0f, 0.0f, -5.0f), 1.0f, 36)));
     GPUSceneCullingCandidate secondCandidate = candidate;
     secondCandidate.drawSlot = 4u;
     secondCandidate.rasterInstanceIndex = 1u;
@@ -2760,7 +2799,7 @@ TEST_F(GPUDrivenValidationFixture,
     lease.buffers = {};
     RenderSubmissionResourceBatch gpuSceneBatch;
     ASSERT_TRUE(recorded->RetainSubmissionResources(gpuSceneBatch));
-    constexpr uint32 gpuSceneOnlyRetainedObjectCount = 14u;
+    constexpr uint32 gpuSceneOnlyRetainedObjectCount = 16u;
     EXPECT_EQ(normalResourceCount + gpuSceneOnlyRetainedObjectCount,
               gpuSceneBatch.GetRetainedObjectCount());
     normalBatch.ReleaseUnsubmitted(retirement);
@@ -2796,8 +2835,9 @@ TEST_F(GPUDrivenValidationFixture,
     candidate.objectIdLow = 42u;
     candidate.requiredPassMask = 2u;
     candidate.drawGroupIndex = 0u;
-    candidate.drawGroupCommandOffset = 0u;
+    candidate.drawGroupVisibleOffset = 0u;
     candidate.rasterInstanceIndex = 0u;
+    candidate.materialParameterSlot = 3u;
     ASSERT_TRUE(culling.AddGPUSceneCandidate(candidate, 29u));
     culling.EndFrame();
 
@@ -2814,17 +2854,22 @@ TEST_F(GPUDrivenValidationFixture,
     FakeCommandContext gpuSceneContext;
     EXPECT_TRUE(gpuSceneRecorded->CullGPUScene(
         gpuSceneContext, view, projection));
-    ASSERT_EQ(2u, gpuSceneContext.dispatches.size());
+    ASSERT_EQ(3u, gpuSceneContext.dispatches.size());
     EXPECT_EQ((std::array<uint32, 3>{1u, 1u, 1u}),
               gpuSceneContext.dispatches[0]);
     EXPECT_EQ((std::array<uint32, 3>{1u, 1u, 1u}),
               gpuSceneContext.dispatches[1]);
-    EXPECT_EQ(3u, gpuSceneContext.bufferBarriers.size());
-    ASSERT_EQ(2u, gpuSceneContext.pipelines.size());
-    ASSERT_EQ(2u, gpuSceneContext.descriptorSets.size());
+    EXPECT_EQ((std::array<uint32, 3>{1u, 1u, 1u}),
+              gpuSceneContext.dispatches[2]);
+    EXPECT_EQ(5u, gpuSceneContext.bufferBarriers.size());
+    ASSERT_EQ(3u, gpuSceneContext.pipelines.size());
+    ASSERT_EQ(3u, gpuSceneContext.descriptorSets.size());
     EXPECT_NE(gpuSceneContext.pipelines[0], gpuSceneContext.pipelines[1]);
+    EXPECT_NE(gpuSceneContext.pipelines[1], gpuSceneContext.pipelines[2]);
     EXPECT_EQ(gpuSceneContext.descriptorSets[0],
               gpuSceneContext.descriptorSets[1]);
+    EXPECT_EQ(gpuSceneContext.descriptorSets[1],
+              gpuSceneContext.descriptorSets[2]);
     EXPECT_TRUE(gpuSceneRecorded->GetCulling().WasGpuExecutionUsedLastCull());
     EXPECT_FALSE(gpuSceneRecorded->GetCulling().WasCpuFallbackUsedLastCull());
     EXPECT_TRUE(gpuSceneRecorded->GetCulling().GetVisibleInstanceIndices().empty());
@@ -2883,9 +2928,9 @@ TEST_F(GPUDrivenValidationFixture,
     // fallback; the failed GPU-scene recording never invoked it implicitly.
     FakeCommandContext normalContext;
     normalRecorded->Cull(normalContext, view, projection);
-    EXPECT_EQ(2u, normalContext.dispatches.size());
-    ASSERT_EQ(2u, normalContext.pipelines.size());
-    ASSERT_EQ(2u, normalContext.descriptorSets.size());
+    EXPECT_EQ(3u, normalContext.dispatches.size());
+    ASSERT_EQ(3u, normalContext.pipelines.size());
+    ASSERT_EQ(3u, normalContext.descriptorSets.size());
     EXPECT_NE(gpuSceneContext.pipelines[0], normalContext.pipelines[0]);
     EXPECT_NE(gpuSceneContext.pipelines[1], normalContext.pipelines[1]);
     EXPECT_NE(gpuSceneContext.descriptorSets[0], normalContext.descriptorSets[0]);
@@ -2991,8 +3036,8 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_NE(std::string::npos, abortFrame);
     ASSERT_NE(std::string::npos, submitFrame);
     EXPECT_LT(acceptedFrame, releaseUnsubmitted);
-    EXPECT_LT(releaseUnsubmitted, abortFrame);
-    EXPECT_LT(abortFrame, submitFrame);
+    EXPECT_LT(abortFrame, releaseUnsubmitted);
+    EXPECT_LT(releaseUnsubmitted, submitFrame);
 }
 
 TEST_F(GPUDrivenValidationFixture,
@@ -3077,7 +3122,7 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_FALSE(shader.empty());
     ASSERT_FALSE(normalShader.empty());
 
-    EXPECT_NE(header.find("sizeof(GPUSceneCullingCandidate) == 40"),
+    EXPECT_NE(header.find("sizeof(GPUSceneCullingCandidate) == 48"),
               std::string::npos);
     EXPECT_NE(header.find("RVX_GPU_SCENE_CULLING_TABLE_COUNT = 6"),
               std::string::npos);
@@ -3107,6 +3152,8 @@ TEST_F(GPUDrivenValidationFixture,
               std::string::npos);
     EXPECT_NE(shader.find("void CSGPUSceneFrustumCull"), std::string::npos);
     EXPECT_NE(shader.find("void CSGPUSceneCompactDraws"), std::string::npos);
+    EXPECT_NE(shader.find("void CSGPUSceneFinalizeDrawGroups"),
+              std::string::npos);
     EXPECT_NE(shader.find("uint4 Counts"), std::string::npos);
     EXPECT_EQ(shader.find("float4 Counts"), std::string::npos);
     EXPECT_EQ(shader.find("(uint)Counts"), std::string::npos);
@@ -3187,6 +3234,11 @@ TEST_F(GPUDrivenValidationFixture, GPUSceneCullingShaderEntriesCompileForDX12)
     ShaderCompileResult compactResult = compiler->Compile(options);
     ASSERT_TRUE(compactResult.success) << compactResult.errorMessage;
     EXPECT_FALSE(compactResult.bytecode.empty());
+
+    options.entryPoint = "CSGPUSceneFinalizeDrawGroups";
+    ShaderCompileResult finalizeResult = compiler->Compile(options);
+    ASSERT_TRUE(finalizeResult.success) << finalizeResult.errorMessage;
+    EXPECT_FALSE(finalizeResult.bytecode.empty());
 }
 
 TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM60)
@@ -3272,6 +3324,9 @@ TEST_F(GPUDrivenValidationFixture, GPUDrivenVertexShaderEntriesCompileForDX12SM6
 
     compileGPUSceneVertexEntry(
         root / "Render" / "Shaders" / "DefaultLit.hlsl", "VSMainGPUScene");
+    compileGPUSceneVertexEntry(
+        root / "Render" / "Shaders" / "DefaultLit.hlsl",
+        "VSMainGPUSceneInstancedMaterial");
     compileGPUSceneVertexEntry(
         root / "Render" / "Shaders" / "DepthOnly.hlsl", "VSMainGPUScene");
 }

@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
@@ -388,6 +389,24 @@ namespace
         model.SetRootNode(root);
     }
 
+    void FillSharedMeshIndexedModel(ModelResource& model)
+    {
+        model.AddMesh(MakeMeshResource(1201));
+        model.AddMaterial(MakeMaterialResource(2201));
+        model.AddMaterial(MakeMaterialResource(2202));
+
+        auto root = std::make_shared<Node>("SharedRoot");
+        auto first = std::make_shared<Node>("SharedFirst");
+        first->SetMeshIndex(0);
+        first->SetMaterialIndices({0});
+        auto second = std::make_shared<Node>("SharedSecond");
+        second->SetMeshIndex(0);
+        second->SetMaterialIndices({1});
+        root->AddChild(first);
+        root->AddChild(second);
+        model.SetRootNode(root);
+    }
+
     TEST(ResourceInstantiationValidation, GLTFImporterMarksPBRTextureColorSpaceByMaterialSlot)
     {
         const std::string image = std::string("{\"uri\":\"") + InlineOnePixelPngUri() + "\"}";
@@ -427,6 +446,88 @@ namespace
         ExpectTextureReferenceUsageByInfo(result, material.GetMetallicRoughnessTexture(), TextureUsage::Data, false);
         ExpectTextureReferenceUsageByInfo(result, material.GetOcclusionTexture(), TextureUsage::Data, false);
         ExpectTextureReferenceUsageByInfo(result, material.GetEmissiveTexture(), TextureUsage::Color, true);
+    }
+
+    TEST(ResourceInstantiationValidation, GLTFImporterPreservesPerTextureSamplerSemantics)
+    {
+        const std::string image = std::string("{\"uri\":\"") +
+            InlineOnePixelPngUri() + "\"}";
+        const std::string json =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"images\":[" + image + "],"
+            "\"samplers\":["
+                "{\"magFilter\":9728,\"minFilter\":9728,\"wrapS\":33071,\"wrapT\":33648},"
+                "{\"magFilter\":9729,\"minFilter\":9729},"
+                "{\"magFilter\":9729,\"minFilter\":9985},"
+                "{\"magFilter\":9728,\"minFilter\":9986},"
+                "{\"magFilter\":9729,\"minFilter\":9987}"
+            "],"
+            "\"textures\":["
+                "{\"source\":0,\"sampler\":0},"
+                "{\"source\":0,\"sampler\":1},"
+                "{\"source\":0,\"sampler\":2},"
+                "{\"source\":0,\"sampler\":3},"
+                "{\"source\":0,\"sampler\":4},"
+                "{\"source\":0}"
+            "],"
+            "\"materials\":["
+                "{"
+                    "\"pbrMetallicRoughness\":{"
+                        "\"baseColorTexture\":{\"index\":0},"
+                        "\"metallicRoughnessTexture\":{\"index\":2}"
+                    "},"
+                    "\"normalTexture\":{\"index\":1},"
+                    "\"occlusionTexture\":{\"index\":3},"
+                    "\"emissiveTexture\":{\"index\":4}"
+                "},"
+                "{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":5}}}"
+            "]"
+            "}";
+
+        const std::filesystem::path path = WriteTemporaryGltf(
+            "rvx_gltf_sampler_semantics.gltf", json);
+        GLTFImporter importer;
+        const GLTFImportResult result = importer.Import(path.string());
+        std::filesystem::remove(path);
+
+        ASSERT_TRUE(result.success) << result.errorMessage;
+        ASSERT_EQ(2u, result.materials.size());
+
+        const Material& material = *result.materials[0];
+        ASSERT_TRUE(material.GetBaseColorTexture().has_value());
+        EXPECT_EQ(TextureInfo::WrapMode::ClampToEdge,
+                  material.GetBaseColorTexture()->wrapS);
+        EXPECT_EQ(TextureInfo::WrapMode::MirrorRepeat,
+                  material.GetBaseColorTexture()->wrapT);
+        EXPECT_EQ(TextureInfo::FilterMode::Nearest,
+                  material.GetBaseColorTexture()->minFilter);
+        EXPECT_EQ(TextureInfo::FilterMode::Nearest,
+                  material.GetBaseColorTexture()->magFilter);
+
+        ASSERT_TRUE(material.GetNormalTexture().has_value());
+        EXPECT_EQ(TextureInfo::FilterMode::Linear,
+                  material.GetNormalTexture()->minFilter);
+        ASSERT_TRUE(material.GetMetallicRoughnessTexture().has_value());
+        EXPECT_EQ(TextureInfo::FilterMode::LinearMipmapNearest,
+                  material.GetMetallicRoughnessTexture()->minFilter);
+        ASSERT_TRUE(material.GetOcclusionTexture().has_value());
+        EXPECT_EQ(TextureInfo::FilterMode::NearestMipmapLinear,
+                  material.GetOcclusionTexture()->minFilter);
+        ASSERT_TRUE(material.GetEmissiveTexture().has_value());
+        EXPECT_EQ(TextureInfo::FilterMode::LinearMipmapLinear,
+                  material.GetEmissiveTexture()->minFilter);
+
+        const auto& defaultSamplerTexture =
+            result.materials[1]->GetBaseColorTexture();
+        ASSERT_TRUE(defaultSamplerTexture.has_value());
+        EXPECT_EQ(TextureInfo::WrapMode::Repeat,
+                  defaultSamplerTexture->wrapS);
+        EXPECT_EQ(TextureInfo::WrapMode::Repeat,
+                  defaultSamplerTexture->wrapT);
+        EXPECT_EQ(TextureInfo::FilterMode::LinearMipmapLinear,
+                  defaultSamplerTexture->minFilter);
+        EXPECT_EQ(TextureInfo::FilterMode::Linear,
+                  defaultSamplerTexture->magFilter);
     }
 
     TEST(ResourceInstantiationValidation, GLTFImporterResolvesSharedImagePBRColorSpaceConflicts)
@@ -474,6 +575,223 @@ namespace
         ASSERT_TRUE(normalInfo.has_value());
         EXPECT_EQ(dataInfo->imageId, normalInfo->imageId);
         ExpectTextureReferenceUsageByInfo(result, normalInfo, TextureUsage::Normal, false);
+    }
+
+    TEST(ResourceInstantiationValidation, GLTFImporterPreservesPBRFactorCubeContract)
+    {
+        const std::filesystem::path repositoryRoot = FindRepositoryRoot();
+        ASSERT_FALSE(repositoryRoot.empty());
+        const std::filesystem::path fixturePath =
+            repositoryRoot / "Tests/Fixtures/Samples/PBRMaterialGrid.gltf";
+        ASSERT_TRUE(std::filesystem::exists(fixturePath));
+
+        GLTFImporter importer;
+        const GLTFImportResult result = importer.Import(fixturePath.string());
+
+        ASSERT_TRUE(result.success) << result.errorMessage;
+        ASSERT_EQ(1u, result.meshes.size());
+        ASSERT_EQ(125u, result.materials.size());
+        ASSERT_TRUE(result.textures.empty());
+
+        ASSERT_NE(nullptr, result.model);
+        const Node::Ptr factorFrontTopLeft =
+            result.model->GetNodeByName(
+                "PBRFactor_C0_terracotta_M0.00_R0.05");
+        const Node::Ptr factorBackBottomRight =
+            result.model->GetNodeByName(
+                "PBRFactor_C4_neutral_M1.00_R1.00");
+        ASSERT_NE(nullptr, factorFrontTopLeft);
+        ASSERT_NE(nullptr, factorBackBottomRight);
+        EXPECT_EQ(0, factorFrontTopLeft->GetMeshIndex());
+        EXPECT_EQ(0, factorBackBottomRight->GetMeshIndex());
+
+        size_t meshNodeCount = 0;
+        std::vector<Node::Ptr> pendingNodes{
+            result.model->GetRootNode()};
+        while (!pendingNodes.empty())
+        {
+            const Node::Ptr node = pendingNodes.back();
+            pendingNodes.pop_back();
+            ASSERT_NE(nullptr, node);
+            if (node->GetMeshIndex() >= 0)
+            {
+                EXPECT_EQ(0, node->GetMeshIndex());
+                ++meshNodeCount;
+            }
+            for (const Node::Ptr& child : node->GetChildren())
+            {
+                pendingNodes.push_back(child);
+            }
+        }
+        EXPECT_EQ(125u, meshNodeCount);
+        const Vec3 frontTopLeftPosition =
+            factorFrontTopLeft->GetLocalTransform().GetPosition();
+        const Vec3 backBottomRightPosition =
+            factorBackBottomRight->GetLocalTransform().GetPosition();
+        EXPECT_NEAR(-2.9f, frontTopLeftPosition.x, 0.001f);
+        EXPECT_NEAR(2.9f, frontTopLeftPosition.y, 0.001f);
+        EXPECT_NEAR(2.9f, frontTopLeftPosition.z, 0.001f);
+        EXPECT_NEAR(2.9f, backBottomRightPosition.x, 0.001f);
+        EXPECT_NEAR(-2.9f, backBottomRightPosition.y, 0.001f);
+        EXPECT_NEAR(-2.9f, backBottomRightPosition.z, 0.001f);
+
+        constexpr std::array<float, 5> metallicLevels{
+            0.0f, 64.0f / 255.0f, 128.0f / 255.0f, 191.0f / 255.0f, 1.0f};
+        constexpr std::array<float, 5> roughnessLevels{
+            13.0f / 255.0f, 64.0f / 255.0f, 128.0f / 255.0f,
+            191.0f / 255.0f, 1.0f};
+        constexpr std::array<Vec4, 5> baseColorLevels{
+            Vec4{0.72f, 0.18f, 0.06f, 1.0f},
+            Vec4{0.72f, 0.48f, 0.06f, 1.0f},
+            Vec4{0.08f, 0.45f, 0.12f, 1.0f},
+            Vec4{0.06f, 0.18f, 0.72f, 1.0f},
+            Vec4{0.50f, 0.50f, 0.50f, 1.0f}};
+        std::array<std::array<std::array<bool, 5>, 5>, 5>
+            factorCombinations{};
+        size_t factorMaterialCount = 0;
+        const auto findLevel = [](const auto& levels, float value)
+        {
+            for (size_t index = 0; index < levels.size(); ++index)
+            {
+                if (std::abs(levels[index] - value) <= 0.001f)
+                {
+                    return static_cast<int32>(index);
+                }
+            }
+            return -1;
+        };
+        const auto findBaseColor = [&baseColorLevels](const Vec4& value)
+        {
+            for (size_t index = 0; index < baseColorLevels.size(); ++index)
+            {
+                const Vec4& level = baseColorLevels[index];
+                if (glm::all(glm::lessThanEqual(
+                        glm::abs(value - level), Vec4(0.001f))))
+                {
+                    return static_cast<int32>(index);
+                }
+            }
+            return -1;
+        };
+        for (const Material::Ptr& material : result.materials)
+        {
+            ASSERT_NE(nullptr, material);
+            ASSERT_EQ(0u, material->GetName().rfind("PBRFactor_", 0));
+            ++factorMaterialCount;
+            EXPECT_FALSE(material->GetMetallicRoughnessTexture().has_value());
+            const int32 metallicIndex =
+                findLevel(metallicLevels, material->GetMetallicFactor());
+            const int32 roughnessIndex =
+                findLevel(roughnessLevels, material->GetRoughnessFactor());
+            const int32 baseColorIndex =
+                findBaseColor(material->GetBaseColor());
+            ASSERT_GE(metallicIndex, 0);
+            ASSERT_GE(roughnessIndex, 0);
+            ASSERT_GE(baseColorIndex, 0);
+            bool& seen = factorCombinations
+                [static_cast<size_t>(baseColorIndex)]
+                [static_cast<size_t>(roughnessIndex)]
+                [static_cast<size_t>(metallicIndex)];
+            EXPECT_FALSE(seen);
+            seen = true;
+        }
+        EXPECT_EQ(125u, factorMaterialCount);
+        for (const auto& slice : factorCombinations)
+        {
+            for (const auto& row : slice)
+            {
+                for (bool seen : row)
+                {
+                    EXPECT_TRUE(seen);
+                }
+            }
+        }
+    }
+
+    TEST(ResourceInstantiationValidation, GLTFImporterPreservesPBRTextureCubeContractAndUpperLeftOrigin)
+    {
+        const std::filesystem::path repositoryRoot = FindRepositoryRoot();
+        ASSERT_FALSE(repositoryRoot.empty());
+        const std::filesystem::path fixturePath = repositoryRoot /
+            "Tests/Fixtures/Samples/PBRMaterialTextureCube.gltf";
+        ASSERT_TRUE(std::filesystem::exists(fixturePath));
+
+        GLTFImporter importer;
+        const GLTFImportResult result = importer.Import(fixturePath.string());
+
+        ASSERT_TRUE(result.success) << result.errorMessage;
+        ASSERT_EQ(5u, result.meshes.size());
+        ASSERT_EQ(5u, result.materials.size());
+        ASSERT_EQ(1u, result.textures.size());
+        ASSERT_NE(nullptr, result.model);
+
+        const Node::Ptr front =
+            result.model->GetNodeByName("PBRTexture_C0_terracotta");
+        const Node::Ptr back =
+            result.model->GetNodeByName("PBRTexture_C4_neutral");
+        ASSERT_NE(nullptr, front);
+        ASSERT_NE(nullptr, back);
+        EXPECT_NEAR(
+            2.9f, front->GetLocalTransform().GetPosition().z, 0.001f);
+        EXPECT_NEAR(
+            -2.9f, back->GetLocalTransform().GetPosition().z, 0.001f);
+
+        for (const Material::Ptr& material : result.materials)
+        {
+            ASSERT_NE(nullptr, material);
+            EXPECT_EQ(0u, material->GetName().rfind("PBRTexture_", 0));
+            EXPECT_TRUE(material->GetMetallicRoughnessTexture().has_value());
+            EXPECT_NEAR(1.0f, material->GetMetallicFactor(), 0.001f);
+            EXPECT_NEAR(1.0f, material->GetRoughnessFactor(), 0.001f);
+        }
+
+        const TextureReference& texture = result.textures[0];
+        ASSERT_TRUE(texture.isRawPixelData);
+        ASSERT_EQ(5u, texture.rawWidth);
+        ASSERT_EQ(5u, texture.rawHeight);
+        ASSERT_EQ(5u * 5u * 4u, texture.embeddedData.size());
+
+        const auto channel = [&texture](uint32 x, uint32 y, uint32 component)
+        {
+            const size_t offset =
+                (static_cast<size_t>(y) * texture.rawWidth + x) * 4u + component;
+            return texture.embeddedData[offset];
+        };
+        constexpr uint8 expectedRoughness[] = {13u, 64u, 128u, 191u, 255u};
+        constexpr uint8 expectedMetallic[] = {0u, 64u, 128u, 191u, 255u};
+        for (uint32 row = 0; row < texture.rawHeight; ++row)
+        {
+            for (uint32 column = 0; column < texture.rawWidth; ++column)
+            {
+                EXPECT_EQ(expectedRoughness[row], channel(column, row, 1u));
+                EXPECT_EQ(expectedMetallic[column], channel(column, row, 2u));
+            }
+        }
+
+        const Mesh::Ptr& mesh = result.meshes.back();
+        ASSERT_NE(nullptr, mesh);
+        const VertexAttribute* positionAttribute =
+            mesh->GetAttribute(VertexBufferNames::Position);
+        const VertexAttribute* uvAttribute =
+            mesh->GetAttribute(VertexBufferNames::UV);
+        ASSERT_NE(nullptr, positionAttribute);
+        ASSERT_NE(nullptr, uvAttribute);
+        ASSERT_EQ(positionAttribute->GetVertexCount(), uvAttribute->GetVertexCount());
+
+        const auto* positions = static_cast<const float*>(positionAttribute->GetData());
+        const auto* uvs = static_cast<const float*>(uvAttribute->GetData());
+        size_t topVertex = 0;
+        size_t bottomVertex = 0;
+        for (size_t vertex = 1; vertex < positionAttribute->GetVertexCount(); ++vertex)
+        {
+            if (positions[vertex * 3u + 1u] > positions[topVertex * 3u + 1u])
+                topVertex = vertex;
+            if (positions[vertex * 3u + 1u] < positions[bottomVertex * 3u + 1u])
+                bottomVertex = vertex;
+        }
+
+        EXPECT_NEAR(0.1f, uvs[topVertex * 2u + 1u], 0.0001f);
+        EXPECT_NEAR(0.9f, uvs[bottomVertex * 2u + 1u], 0.0001f);
     }
 
     TEST(ResourceInstantiationValidation, MeshGenerateTangentsUsesFiniteFallbackForDegenerateUVs)
@@ -706,6 +1024,40 @@ namespace
         ASSERT_NE(nullptr, static_cast<Actor*>(entity)->GetComponent<StaticMeshComponent>());
         EXPECT_TRUE(entity->HasComponent<StaticMeshComponent>());
         EXPECT_FALSE(entity->HasComponent<MeshRendererComponent>());
+
+        sceneManager.Shutdown();
+    }
+
+    TEST(ResourceInstantiationValidation,
+         ModelResourceInstancesShareMeshAndRetainIndependentMaterials)
+    {
+        ComponentFactory::RegisterDefaults();
+
+        SceneManager sceneManager;
+        sceneManager.Initialize();
+
+        ModelResource model;
+        FillSharedMeshIndexedModel(model);
+        Actor* actor = model.InstantiateActor(&sceneManager);
+        ASSERT_NE(nullptr, actor);
+        auto* root = dynamic_cast<SceneEntity*>(actor);
+        ASSERT_NE(nullptr, root);
+        ASSERT_EQ(2u, root->GetChildren().size());
+
+        StaticMeshComponent* first =
+            root->GetChildren()[0]->GetComponent<StaticMeshComponent>();
+        StaticMeshComponent* second =
+            root->GetChildren()[1]->GetComponent<StaticMeshComponent>();
+        ASSERT_NE(nullptr, first);
+        ASSERT_NE(nullptr, second);
+        ASSERT_TRUE(first->GetMesh().IsValid());
+        ASSERT_TRUE(second->GetMesh().IsValid());
+        EXPECT_EQ(first->GetMesh().GetId(), second->GetMesh().GetId());
+        EXPECT_EQ(static_cast<ResourceId>(1201), first->GetMesh().GetId());
+        ASSERT_TRUE(first->GetMaterial(0).IsValid());
+        ASSERT_TRUE(second->GetMaterial(0).IsValid());
+        EXPECT_EQ(static_cast<ResourceId>(2201), first->GetMaterial(0).GetId());
+        EXPECT_EQ(static_cast<ResourceId>(2202), second->GetMaterial(0).GetId());
 
         sceneManager.Shutdown();
     }

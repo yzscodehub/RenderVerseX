@@ -136,10 +136,28 @@ namespace RVX
             const char lowerType = static_cast<char>(std::tolower(static_cast<unsigned char>(registerType)));
             switch (lowerType)
             {
-                case 'b': return space * 4;
+                // The renderer's SM5 constant-buffer ABI keeps the sparse
+                // frame bindings at their logical slots (b0, b3, b7) and
+                // reserves b1/b2/b4 for the object, material, and optional
+                // fourth descriptor sets. A fixed range per set would alias
+                // frame b7 with set 1 binding 3 after reflection.
+                case 'b':
+                    switch (space)
+                    {
+                        case 0: return 0;
+                        case 1: return 1;
+                        case 2: return 2;
+                        case 3: return 4;
+                        default: return 0;
+                    }
                 case 't': return space * 32;
                 case 'u': return space * 2;
-                case 's': return space * 4;
+                // The renderer's sampler ABI already assigns non-overlapping
+                // logical slots across the currently supported descriptor
+                // sets (frame s1/s2/s13 and material s6-s10). Preserve those
+                // slots for SM5 instead of adding a space base that can exceed
+                // D3D11's 16-sampler limit.
+                case 's': return 0;
                 default:  return 0;
             }
         }
@@ -162,11 +180,28 @@ namespace RVX
             switch (resource.type)
             {
                 case RHIBindingType::UniformBuffer:
-                    if (restoreFromRange(0, 0, 4) ||
-                        restoreFromRange(1, 4, 4) ||
-                        restoreFromRange(2, 8, 4) ||
-                        restoreFromRange(3, 12, 2))
+                    if (slot == 1)
                     {
+                        resource.set = 1;
+                        resource.binding = 0;
+                        return;
+                    }
+                    if (slot == 2)
+                    {
+                        resource.set = 2;
+                        resource.binding = 0;
+                        return;
+                    }
+                    if (slot == 4)
+                    {
+                        resource.set = 3;
+                        resource.binding = 0;
+                        return;
+                    }
+                    if (slot < 14)
+                    {
+                        resource.set = 0;
+                        resource.binding = slot;
                         return;
                     }
                     break;
@@ -191,10 +226,16 @@ namespace RVX
                     }
                     break;
                 case RHIBindingType::Sampler:
-                    if (restoreFromRange(0, 0, 4) ||
-                        restoreFromRange(1, 4, 4) ||
-                        restoreFromRange(2, 8, 8))
+                    if (slot >= 6 && slot <= 10)
                     {
+                        resource.set = 2;
+                        resource.binding = slot;
+                        return;
+                    }
+                    if (slot < 16)
+                    {
+                        resource.set = 0;
+                        resource.binding = slot;
                         return;
                     }
                     break;

@@ -168,17 +168,21 @@ void GPUCulling::Shutdown()
     m_activeFrameSlot = 0;
     m_frustumCullShader.Reset();
     m_compactShader.Reset();
+    m_finalizeShader.Reset();
     m_cullingDescriptorSetLayout.Reset();
     m_cullingPipelineLayout.Reset();
     m_frustumCullPipeline.Reset();
     m_occlusionCullPipeline.Reset();
     m_compactPipeline.Reset();
+    m_finalizePipeline.Reset();
     m_gpuSceneFrustumCullShader.Reset();
     m_gpuSceneCompactShader.Reset();
+    m_gpuSceneFinalizeShader.Reset();
     m_gpuSceneDescriptorSetLayout.Reset();
     m_gpuScenePipelineLayout.Reset();
     m_gpuSceneFrustumCullPipeline.Reset();
     m_gpuSceneCompactPipeline.Reset();
+    m_gpuSceneFinalizePipeline.Reset();
     m_gpuSceneDescriptorSet.Reset();
     m_gpuSceneTableBuffers = {};
     m_gpuSceneTableCapacities = {};
@@ -257,17 +261,21 @@ bool GPUCulling::RetainSealedSubmissionResources(
         retainBuffer(m_statsBuffer) &&
         retain(m_frustumCullShader) &&
         retain(m_compactShader) &&
+        retain(m_finalizeShader) &&
         retain(m_cullingDescriptorSetLayout) &&
         retain(m_cullingPipelineLayout) &&
         retain(m_frustumCullPipeline) &&
         retain(m_occlusionCullPipeline) &&
         retain(m_compactPipeline) &&
+        retain(m_finalizePipeline) &&
         retain(m_gpuSceneFrustumCullShader) &&
         retain(m_gpuSceneCompactShader) &&
+        retain(m_gpuSceneFinalizeShader) &&
         retain(m_gpuSceneDescriptorSetLayout) &&
         retain(m_gpuScenePipelineLayout) &&
         retain(m_gpuSceneFrustumCullPipeline) &&
         retain(m_gpuSceneCompactPipeline) &&
+        retain(m_gpuSceneFinalizePipeline) &&
         retain(m_gpuSceneDescriptorSet);
     if (!retainedCoreResources)
     {
@@ -471,37 +479,16 @@ void GPUCulling::CreateResources()
     // Indirect firstInstance offsets per-instance vertex fetches, but is not
     // folded into SV_InstanceID. Keep an identity stream so GPU vertex shaders
     // can recover the global structured-buffer index on every backend.
-    desc.size = static_cast<uint64>(m_config.maxInstances) * sizeof(uint32);
-    desc.usage = RHIBufferUsage::Vertex;
-    desc.memoryType = RHIMemoryType::Upload;
-    desc.stride = sizeof(uint32);
-    desc.debugName = "GPUCulling.InstanceIndexBuffer";
-    m_instanceIndexBuffer = m_device->CreateBuffer(desc);
-    if (m_instanceIndexBuffer && m_config.maxInstances > 0)
-    {
-        uint32* instanceIndices = static_cast<uint32*>(m_instanceIndexBuffer->Map());
-        if (!instanceIndices)
-        {
-            RVX_RENDER_ERROR("GPUCulling: failed to map instance index vertex buffer");
-            m_instanceIndexBuffer.Reset();
-        }
-        else
-        {
-            for (uint32 instanceIndex = 0;
-                 instanceIndex < m_config.maxInstances;
-                 ++instanceIndex)
-            {
-                instanceIndices[instanceIndex] = instanceIndex;
-            }
-            m_instanceIndexBuffer->Unmap();
-        }
-    }
+    m_instanceIndexBuffer = CreateRasterInstanceIndexBuffer(
+        *m_device,
+        m_config.maxInstances,
+        "GPUCulling.InstanceIndexBuffer");
 
     // Visibility flag buffer (GPU cull pass output, compact pass input)
     desc.size = m_config.maxInstances * sizeof(uint32);
     desc.usage = gpuWritableOutputs
-        ? MakeGpuWritableStructuredUsage(RHIBufferUsage::None)
-        : RHIBufferUsage::None;
+        ? MakeGpuWritableStructuredUsage(RHIBufferUsage::Vertex)
+        : RHIBufferUsage::Vertex;
     desc.memoryType = gpuWritableOutputs ? RHIMemoryType::Default : cpuOutputMemoryType;
     desc.stride = sizeof(uint32);
     desc.debugName = "GPUCulling.VisibilityBuffer";
@@ -510,12 +497,22 @@ void GPUCulling::CreateResources()
     // Visible instance buffer (output)
     desc.size = m_config.maxInstances * sizeof(uint32);
     desc.usage = gpuWritableOutputs
-        ? MakeGpuWritableStructuredUsage(RHIBufferUsage::None)
-        : RHIBufferUsage::None;
+        ? MakeGpuWritableStructuredUsage(RHIBufferUsage::Vertex)
+        : RHIBufferUsage::Vertex;
     desc.memoryType = gpuWritableOutputs ? RHIMemoryType::Default : cpuOutputMemoryType;
     desc.stride = sizeof(uint32);
     desc.debugName = "GPUCulling.VisibleInstanceBuffer";
     m_visibleInstanceBuffer = m_device->CreateBuffer(desc);
+    if (m_visibleInstanceBuffer)
+    {
+        m_accessSnapshots.visibleInstances = MakeRHIBufferAccessSnapshot(
+            gpuWritableOutputs
+                ? RHIResourceState::UnorderedAccess
+                : RHIResourceState::VertexBuffer,
+            gpuWritableOutputs ? RHIShaderStage::Compute : RHIShaderStage::Vertex,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Unknown);
+    }
 
     // Indirect draw buffer
     desc.size = m_config.maxInstances * sizeof(IndirectDrawIndexedCommand);
@@ -586,17 +583,21 @@ void GPUCulling::CreatePipelineResources()
     m_pipelineFallbackReason = GPUCullingFallbackReason::None;
     QueueRenderOwnerRetirement(m_frustumCullShader, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_compactShader, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_finalizeShader, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_cullingDescriptorSetLayout, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_cullingPipelineLayout, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_frustumCullPipeline, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_occlusionCullPipeline, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_compactPipeline, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_finalizePipeline, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_gpuSceneFrustumCullShader, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_gpuSceneCompactShader, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_gpuSceneFinalizeShader, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_gpuSceneDescriptorSetLayout, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_gpuScenePipelineLayout, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_gpuSceneFrustumCullPipeline, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_gpuSceneCompactPipeline, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(m_gpuSceneFinalizePipeline, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_gpuSceneDescriptorSet, m_pendingOwnerRetirements);
     m_gpuSceneTableBuffers = {};
     m_gpuSceneTableCapacities = {};
@@ -699,6 +700,17 @@ void GPUCulling::CreatePipelineResources()
     }
     m_compactShader = compactResult.shader;
 
+    shaderDesc.entryPoint = "CSFinalizeDrawGroups";
+    ShaderLoadResult finalizeResult = shaderManager.LoadFromFile(m_device, shaderDesc);
+    if (!finalizeResult.compileResult.success || !finalizeResult.shader)
+    {
+        RVX_RENDER_WARN("GPUCulling: failed to compile draw-group finalize shader: {}",
+                        finalizeResult.compileResult.errorMessage);
+        m_pipelineFallbackReason = GPUCullingFallbackReason::ShaderCompilationFailed;
+        return;
+    }
+    m_finalizeShader = finalizeResult.shader;
+
     RHIComputePipelineDesc pipelineDesc;
     pipelineDesc.pipelineLayout = m_cullingPipelineLayout.Get();
 
@@ -710,11 +722,16 @@ void GPUCulling::CreatePipelineResources()
     pipelineDesc.debugName = "GPUCulling.CompactPipeline";
     m_compactPipeline = m_device->CreateComputePipeline(pipelineDesc);
 
-    if (!m_frustumCullPipeline || !m_compactPipeline)
+    pipelineDesc.computeShader = m_finalizeShader.Get();
+    pipelineDesc.debugName = "GPUCulling.FinalizeDrawGroupsPipeline";
+    m_finalizePipeline = m_device->CreateComputePipeline(pipelineDesc);
+
+    if (!m_frustumCullPipeline || !m_compactPipeline || !m_finalizePipeline)
     {
         RVX_RENDER_WARN("GPUCulling: failed to create compute pipelines; CPU fallback remains active");
         m_frustumCullPipeline.Reset();
         m_compactPipeline.Reset();
+        m_finalizePipeline.Reset();
         m_pipelineFallbackReason = GPUCullingFallbackReason::PipelineCreationFailed;
         return;
     }
@@ -736,6 +753,7 @@ void GPUCulling::CreatePipelineResources()
             RVX_RENDER_WARN("GPUCulling: failed to create frame-slot descriptor set; CPU fallback remains active");
             m_frustumCullPipeline.Reset();
             m_compactPipeline.Reset();
+            m_finalizePipeline.Reset();
             m_pipelineFallbackReason =
                 GPUCullingFallbackReason::DescriptorSetCreationFailed;
             return;
@@ -813,6 +831,22 @@ void GPUCulling::CreatePipelineResources()
     }
     m_gpuSceneCompactShader = gpuSceneCompactResult.shader;
 
+    gpuSceneShaderDesc.entryPoint = "CSGPUSceneFinalizeDrawGroups";
+    ShaderLoadResult gpuSceneFinalizeResult = shaderManager.LoadFromFile(
+        m_device, gpuSceneShaderDesc);
+    if (!gpuSceneFinalizeResult.compileResult.success ||
+        !gpuSceneFinalizeResult.shader)
+    {
+        RVX_RENDER_WARN("GPUCulling: failed to compile GPU-scene draw-group finalize shader: {}",
+                        gpuSceneFinalizeResult.compileResult.errorMessage);
+        m_gpuSceneFrustumCullShader.Reset();
+        m_gpuSceneCompactShader.Reset();
+        m_gpuSceneDescriptorSetLayout.Reset();
+        m_gpuScenePipelineLayout.Reset();
+        return;
+    }
+    m_gpuSceneFinalizeShader = gpuSceneFinalizeResult.shader;
+
     RHIComputePipelineDesc gpuScenePipelineDesc;
     gpuScenePipelineDesc.pipelineLayout = m_gpuScenePipelineLayout.Get();
     gpuScenePipelineDesc.computeShader = m_gpuSceneFrustumCullShader.Get();
@@ -821,13 +855,19 @@ void GPUCulling::CreatePipelineResources()
     gpuScenePipelineDesc.computeShader = m_gpuSceneCompactShader.Get();
     gpuScenePipelineDesc.debugName = "GPUCulling.GPUSceneCompactPipeline";
     m_gpuSceneCompactPipeline = m_device->CreateComputePipeline(gpuScenePipelineDesc);
-    if (!m_gpuSceneFrustumCullPipeline || !m_gpuSceneCompactPipeline)
+    gpuScenePipelineDesc.computeShader = m_gpuSceneFinalizeShader.Get();
+    gpuScenePipelineDesc.debugName = "GPUCulling.GPUSceneFinalizeDrawGroupsPipeline";
+    m_gpuSceneFinalizePipeline = m_device->CreateComputePipeline(gpuScenePipelineDesc);
+    if (!m_gpuSceneFrustumCullPipeline || !m_gpuSceneCompactPipeline ||
+        !m_gpuSceneFinalizePipeline)
     {
         RVX_RENDER_WARN("GPUCulling: failed to create GPU-scene pipelines; GPU-scene recording remains disabled");
         m_gpuSceneFrustumCullPipeline.Reset();
         m_gpuSceneCompactPipeline.Reset();
+        m_gpuSceneFinalizePipeline.Reset();
         m_gpuSceneFrustumCullShader.Reset();
         m_gpuSceneCompactShader.Reset();
+        m_gpuSceneFinalizeShader.Reset();
         m_gpuSceneDescriptorSetLayout.Reset();
         m_gpuScenePipelineLayout.Reset();
     }
@@ -885,7 +925,8 @@ GPUCullingExecutionDecision GPUCulling::EvaluateGpuExecution(bool requirePipelin
     }
 
     const GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
-    if (!m_frustumCullPipeline || !m_compactPipeline || inputs == nullptr ||
+    if (!m_frustumCullPipeline || !m_compactPipeline || !m_finalizePipeline ||
+        inputs == nullptr ||
         !inputs->descriptorSet)
     {
         decision.fallbackReason = GPUCullingFallbackReason::PipelineResourcesUnavailable;
@@ -909,7 +950,8 @@ bool GPUCulling::IsGPUSceneExecutionReady() const
         m_gpuSceneDescriptorSetLayout &&
         m_gpuScenePipelineLayout &&
         m_gpuSceneFrustumCullPipeline &&
-        m_gpuSceneCompactPipeline;
+        m_gpuSceneCompactPipeline &&
+        m_gpuSceneFinalizePipeline;
 }
 
 GPUCullingExecutionDecision GPUCulling::GetExecutionDecision() const
@@ -941,11 +983,13 @@ std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGraph(
     // only the new per-recording buffers created above.
     sealed.m_frustumCullShader = m_frustumCullShader;
     sealed.m_compactShader = m_compactShader;
+    sealed.m_finalizeShader = m_finalizeShader;
     sealed.m_cullingDescriptorSetLayout = m_cullingDescriptorSetLayout;
     sealed.m_cullingPipelineLayout = m_cullingPipelineLayout;
     sealed.m_frustumCullPipeline = m_frustumCullPipeline;
     sealed.m_occlusionCullPipeline = m_occlusionCullPipeline;
     sealed.m_compactPipeline = m_compactPipeline;
+    sealed.m_finalizePipeline = m_finalizePipeline;
     sealed.m_pipelineFallbackReason = m_pipelineFallbackReason;
 
     GPUCullingFrameInputs* sealedInputs = sealed.GetActiveFrameInputs();
@@ -977,6 +1021,7 @@ std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGraph(
     sealed.m_gpuSceneCandidates = m_gpuSceneCandidates;
     sealed.m_gpuSceneCandidateVersion = m_gpuSceneCandidateVersion;
     sealed.m_visibleInstanceIndices = m_visibleInstanceIndices;
+    sealed.m_rasterVisibleInstanceIndices = m_rasterVisibleInstanceIndices;
     sealed.m_visibleSourceIndices = m_visibleSourceIndices;
     sealed.m_indirectCommands = m_indirectCommands;
     sealed.m_groupDrawCounts = m_groupDrawCounts;
@@ -1008,10 +1053,12 @@ std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGPUSceneGraph(
     GPUCulling& sealed = recordedState->m_culling;
     sealed.m_gpuSceneFrustumCullShader = m_gpuSceneFrustumCullShader;
     sealed.m_gpuSceneCompactShader = m_gpuSceneCompactShader;
+    sealed.m_gpuSceneFinalizeShader = m_gpuSceneFinalizeShader;
     sealed.m_gpuSceneDescriptorSetLayout = m_gpuSceneDescriptorSetLayout;
     sealed.m_gpuScenePipelineLayout = m_gpuScenePipelineLayout;
     sealed.m_gpuSceneFrustumCullPipeline = m_gpuSceneFrustumCullPipeline;
     sealed.m_gpuSceneCompactPipeline = m_gpuSceneCompactPipeline;
+    sealed.m_gpuSceneFinalizePipeline = m_gpuSceneFinalizePipeline;
     if (!sealed.ConfigureGPUSceneRecording(lease))
     {
         return nullptr;
@@ -1025,6 +1072,7 @@ void GPUCulling::BeginFrame()
     m_gpuSceneCandidates.clear();
     m_gpuSceneCandidateVersion = 0;
     m_visibleInstanceIndices.clear();
+    m_rasterVisibleInstanceIndices.clear();
     m_visibleSourceIndices.clear();
     m_indirectCommands.clear();
     m_groupDrawCounts.clear();
@@ -1042,7 +1090,8 @@ uint32 GPUCulling::BeginDrawGroup(uint64 meshId,
                                   uint64 materialId,
                                   MaterialPipelineVariant pipelineVariant,
                                   RenderResourceHandle mesh,
-                                  RenderResourceHandle material)
+                                  RenderResourceHandle material,
+                                  RenderDrawGroupKey batchKey)
 {
     if (m_drawGroups.size() >= m_config.maxInstances)
     {
@@ -1055,8 +1104,10 @@ uint32 GPUCulling::BeginDrawGroup(uint64 meshId,
     group.meshId = meshId;
     group.materialId = materialId;
     group.pipelineVariant = pipelineVariant;
-    group.commandOffset = m_instanceCount;
+    group.batchKey = std::move(batchKey);
     const uint32 groupIndex = static_cast<uint32>(m_drawGroups.size());
+    group.commandOffset = groupIndex;
+    group.visibleInstanceOffset = m_instanceCount;
     group.countBufferOffset = static_cast<uint32>((groupIndex + 1) * sizeof(uint32));
     m_drawGroups.push_back(group);
     m_groupDrawCounts.push_back(0);
@@ -1078,10 +1129,12 @@ uint32 GPUCulling::EnsureDefaultDrawGroup()
 
     if (m_drawGroups.empty())
     {
-        return BeginDrawGroup(0);
+        const uint32 groupIndex = BeginDrawGroup(0);
+        m_activeDrawGroupIndex = RVX_INVALID_INDEX;
+        return groupIndex;
     }
 
-    return 0;
+    return static_cast<uint32>(m_drawGroups.size() - 1u);
 }
 
 uint32 GPUCulling::AddInstance(const GPUInstanceData& instance)
@@ -1091,7 +1144,8 @@ uint32 GPUCulling::AddInstance(const GPUInstanceData& instance)
         return RVX_INVALID_INDEX;
     }
 
-    const uint32 groupIndex = EnsureDefaultDrawGroup();
+    const bool explicitGroup = m_activeDrawGroupIndex != RVX_INVALID_INDEX;
+    uint32 groupIndex = EnsureDefaultDrawGroup();
     if (groupIndex == RVX_INVALID_INDEX || groupIndex >= m_drawGroups.size())
     {
         return RVX_INVALID_INDEX;
@@ -1100,9 +1154,34 @@ uint32 GPUCulling::AddInstance(const GPUInstanceData& instance)
     uint32 index = m_instanceCount++;
     GPUInstanceData groupedInstance = instance;
     groupedInstance.drawGroupIndex = groupIndex;
-    groupedInstance.drawGroupCommandOffset = m_drawGroups[groupIndex].commandOffset;
+    groupedInstance.drawGroupVisibleOffset =
+        m_drawGroups[groupIndex].visibleInstanceOffset;
+    GPUCullingDrawGroup& group = m_drawGroups[groupIndex];
+    if (group.maxDrawCount == 0)
+    {
+        group.indexCount = instance.indexCount;
+        group.firstIndex = instance.firstIndex;
+        group.vertexOffset = instance.vertexOffset;
+    }
+    else if (group.indexCount != instance.indexCount ||
+             group.firstIndex != instance.firstIndex ||
+             group.vertexOffset != instance.vertexOffset)
+    {
+        --m_instanceCount;
+        if (explicitGroup)
+        {
+            return RVX_INVALID_INDEX;
+        }
+        groupIndex = BeginDrawGroup(0);
+        m_activeDrawGroupIndex = RVX_INVALID_INDEX;
+        if (groupIndex == RVX_INVALID_INDEX)
+        {
+            return RVX_INVALID_INDEX;
+        }
+        return AddInstance(instance);
+    }
     m_instances.push_back(groupedInstance);
-    ++m_drawGroups[groupIndex].maxDrawCount;
+    ++group.maxDrawCount;
     return index;
 }
 
@@ -1156,19 +1235,15 @@ uint32 GPUCulling::AddDrawItemInstance(const RenderScene& scene,
     instance.sourceIndex = sourceIndex;
     instance.candidateIndex = sourceIndex;
     instance.forceVisible = visibilityInput.forceVisible;
-    if (m_activeDrawGroupIndex == RVX_INVALID_INDEX && m_drawGroups.empty())
+    const uint32 instanceIndex = AddInstance(instance);
+    if (instanceIndex != RVX_INVALID_INDEX && instanceIndex < m_instances.size())
     {
-        BeginDrawGroup((static_cast<uint64>(drawItem.mesh.slot) << 32U) |
-                           drawItem.mesh.generation,
-                       (static_cast<uint64>(drawItem.material.slot) << 32U) |
-                           drawItem.material.generation,
-                       GetGPUCullingPipelineVariant(drawItem.renderMode),
-                       drawItem.mesh,
-                       drawItem.material);
-    }
-    else if (m_activeDrawGroupIndex != RVX_INVALID_INDEX && m_activeDrawGroupIndex < m_drawGroups.size())
-    {
-        GPUCullingDrawGroup& group = m_drawGroups[m_activeDrawGroupIndex];
+        const uint32 groupIndex = m_instances[instanceIndex].drawGroupIndex;
+        if (groupIndex >= m_drawGroups.size())
+        {
+            return RVX_INVALID_INDEX;
+        }
+        GPUCullingDrawGroup& group = m_drawGroups[groupIndex];
         group.mesh = drawItem.mesh;
         group.material = drawItem.material;
         group.meshId = (static_cast<uint64>(drawItem.mesh.slot) << 32U) |
@@ -1178,7 +1253,7 @@ uint32 GPUCulling::AddDrawItemInstance(const RenderScene& scene,
             drawItem.material.generation;
         group.pipelineVariant = GetGPUCullingPipelineVariant(drawItem.renderMode);
     }
-    return AddInstance(instance);
+    return instanceIndex;
 }
 
 uint32 GPUCulling::AddVisibilityCandidateInstance(
@@ -1187,6 +1262,19 @@ uint32 GPUCulling::AddVisibilityCandidateInstance(
     const RenderDrawPacket& packet,
     const GPUIndexedDrawDesc& drawDesc)
 {
+    if (m_activeDrawGroupIndex == RVX_INVALID_INDEX ||
+        m_activeDrawGroupIndex >= m_drawGroups.size())
+    {
+        return RVX_INVALID_INDEX;
+    }
+    const GPUCullingDrawGroup& activeGroup =
+        m_drawGroups[m_activeDrawGroupIndex];
+    if (activeGroup.batchKey.pass != RenderPassKind::None &&
+        MakeRenderInstanceBatchKey(packet, activeGroup.batchKey.layout) !=
+            activeGroup.batchKey)
+    {
+        return RVX_INVALID_INDEX;
+    }
     if (candidate.candidateIndex == RVX_INVALID_INDEX ||
         candidate.sourcePacketIndex == RVX_INVALID_INDEX ||
         candidate.pass == RenderPassKind::None ||
@@ -1246,6 +1334,7 @@ bool GPUCulling::AddGPUSceneCandidate(
         (candidate.objectIdLow == 0 && candidate.objectIdHigh == 0) ||
         candidate.requiredPassMask == 0 ||
         (candidate.requiredPassMask & (candidate.requiredPassMask - 1u)) != 0 ||
+        candidate.materialParameterSlot == RVX_INVALID_INDEX ||
         m_instances.empty() ||
         candidate.rasterInstanceIndex != m_instanceCount - 1u ||
         candidate.rasterInstanceIndex != m_gpuSceneCandidates.size() ||
@@ -1256,7 +1345,7 @@ bool GPUCulling::AddGPUSceneCandidate(
 
     const GPUInstanceData& instance = m_instances[candidate.rasterInstanceIndex];
     if (candidate.drawGroupIndex != instance.drawGroupIndex ||
-        candidate.drawGroupCommandOffset != instance.drawGroupCommandOffset ||
+        candidate.drawGroupVisibleOffset != instance.drawGroupVisibleOffset ||
         candidate.drawGroupIndex >= m_drawGroups.size())
     {
         return false;
@@ -1331,8 +1420,9 @@ void GPUCulling::UploadInstances()
 void GPUCulling::BuildCpuCullResults(const Mat4& viewMatrix, const Vec4* frustumPlanes)
 {
     m_visibleInstanceIndices.clear();
+    m_rasterVisibleInstanceIndices.assign(m_instanceCount, RVX_INVALID_INDEX);
     m_visibleSourceIndices.clear();
-    m_indirectCommands.clear();
+    m_indirectCommands.assign(m_drawGroups.size(), {});
     std::fill(m_groupDrawCounts.begin(), m_groupDrawCounts.end(), 0);
     for (GPUCullingDrawGroup& group : m_drawGroups)
     {
@@ -1401,30 +1491,38 @@ void GPUCulling::BuildCpuCullResults(const Mat4& viewMatrix, const Vec4* frustum
             m_visibleSourceIndices.push_back(instance.sourceIndex);
         }
 
-        IndirectDrawIndexedCommand command = {};
-        command.indexCount = instance.indexCount;
-        command.instanceCount = 1;
-        command.firstIndex = instance.firstIndex;
-        command.vertexOffset = instance.vertexOffset;
-        command.firstInstance = instanceIndex;
-
-        uint32 commandIndex = m_drawCount;
-        if (instance.drawGroupIndex < m_drawGroups.size())
+        if (instance.drawGroupIndex >= m_drawGroups.size())
         {
-            GPUCullingDrawGroup& group = m_drawGroups[instance.drawGroupIndex];
-            commandIndex = group.commandOffset + group.visibleDrawCount;
-            ++group.visibleDrawCount;
-            if (instance.drawGroupIndex < m_groupDrawCounts.size())
-            {
-                m_groupDrawCounts[instance.drawGroupIndex] = group.visibleDrawCount;
-            }
+            continue;
         }
-
-        if (m_indirectCommands.size() <= commandIndex)
+        GPUCullingDrawGroup& group = m_drawGroups[instance.drawGroupIndex];
+        const uint32 visibleIndex =
+            group.visibleInstanceOffset + group.visibleDrawCount;
+        if (visibleIndex >= m_rasterVisibleInstanceIndices.size())
         {
-            m_indirectCommands.resize(static_cast<size_t>(commandIndex) + 1);
+            continue;
         }
-        m_indirectCommands[commandIndex] = command;
+        m_rasterVisibleInstanceIndices[visibleIndex] = instanceIndex;
+        ++group.visibleDrawCount;
+    }
+
+    for (uint32 groupIndex = 0;
+         groupIndex < static_cast<uint32>(m_drawGroups.size());
+         ++groupIndex)
+    {
+        GPUCullingDrawGroup& group = m_drawGroups[groupIndex];
+        if (group.visibleDrawCount == 0)
+        {
+            continue;
+        }
+        IndirectDrawIndexedCommand& command =
+            m_indirectCommands[group.commandOffset];
+        command.indexCount = group.indexCount;
+        command.instanceCount = group.visibleDrawCount;
+        command.firstIndex = group.firstIndex;
+        command.vertexOffset = group.vertexOffset;
+        command.firstInstance = group.visibleInstanceOffset;
+        m_groupDrawCounts[groupIndex] = 1;
         ++m_drawCount;
     }
 
@@ -1495,11 +1593,11 @@ void GPUCulling::UploadCullOutputs(RHICommandContext* ctx)
                          ctx);
     }
 
-    if (!m_visibleInstanceIndices.empty() && m_visibleInstanceBuffer)
+    if (!m_rasterVisibleInstanceIndices.empty() && m_visibleInstanceBuffer)
     {
         UploadBufferData(m_visibleInstanceBuffer.Get(),
-                         m_visibleInstanceIndices.data(),
-                         static_cast<uint64>(m_visibleInstanceIndices.size() * sizeof(uint32)),
+                         m_rasterVisibleInstanceIndices.data(),
+                         static_cast<uint64>(m_rasterVisibleInstanceIndices.size() * sizeof(uint32)),
                          ctx);
     }
 
@@ -1584,6 +1682,7 @@ void GPUCulling::Cull(RHICommandContext& ctx,
                       RHITexture* hiZTexture)
 {
     m_visibleInstanceIndices.clear();
+    m_rasterVisibleInstanceIndices.clear();
     m_visibleSourceIndices.clear();
     m_indirectCommands.clear();
     std::fill(m_groupDrawCounts.begin(), m_groupDrawCounts.end(), 0);
@@ -1690,6 +1789,13 @@ void GPUCulling::Cull(RHICommandContext& ctx,
     ctx.SetPipeline(m_compactPipeline.Get());
     ctx.SetDescriptorSet(0, inputs->descriptorSet.Get());
     ctx.Dispatch(groupCount, 1, 1);
+
+    insertCullUAVBarriers();
+    ctx.SetPipeline(m_finalizePipeline.Get());
+    ctx.SetDescriptorSet(0, inputs->descriptorSet.Get());
+    const uint32 finalizeGroupCount =
+        (static_cast<uint32>(m_drawGroups.size()) + 63u) / 64u;
+    ctx.Dispatch(finalizeGroupCount, 1, 1);
 
     m_usedGpuExecutionLastCull = true;
     m_lastFallbackReason = GPUCullingFallbackReason::None;
@@ -1849,6 +1955,7 @@ bool GPUCulling::CullGPUScene(RHICommandContext& ctx,
                                const Mat4& projMatrix)
 {
     m_visibleInstanceIndices.clear();
+    m_rasterVisibleInstanceIndices.clear();
     m_visibleSourceIndices.clear();
     m_indirectCommands.clear();
     std::fill(m_groupDrawCounts.begin(), m_groupDrawCounts.end(), 0);
@@ -1950,6 +2057,14 @@ bool GPUCulling::CullGPUScene(RHICommandContext& ctx,
     ctx.SetDescriptorSet(0, m_gpuSceneDescriptorSet.Get());
     ctx.Dispatch(groupCount, 1, 1);
 
+    ctx.BufferBarrier(m_indirectBuffer.Get(), computeUAVAccess, computeUAVAccess);
+    ctx.BufferBarrier(m_drawCountBuffer.Get(), computeUAVAccess, computeUAVAccess);
+    ctx.SetPipeline(m_gpuSceneFinalizePipeline.Get());
+    ctx.SetDescriptorSet(0, m_gpuSceneDescriptorSet.Get());
+    const uint32 finalizeGroupCount =
+        (static_cast<uint32>(m_drawGroups.size()) + 63u) / 64u;
+    ctx.Dispatch(finalizeGroupCount, 1, 1);
+
     m_usedGpuExecutionLastCull = true;
     m_lastFallbackReason = GPUCullingFallbackReason::None;
     m_stats.totalInstances = m_instanceCount;
@@ -1959,6 +2074,7 @@ bool GPUCulling::CullGPUScene(RHICommandContext& ctx,
 void GPUCulling::CullCpuFallback(const Mat4& viewMatrix, const Mat4& projMatrix)
 {
     m_visibleInstanceIndices.clear();
+    m_rasterVisibleInstanceIndices.clear();
     m_visibleSourceIndices.clear();
     m_indirectCommands.clear();
     std::fill(m_groupDrawCounts.begin(), m_groupDrawCounts.end(), 0);
@@ -2011,8 +2127,8 @@ GPUCullingIndexedIndirectSubmission GPUCulling::BuildIndexedIndirectSubmission(
         submission.execution.mode = RHIIndirectExecutionMode::CountBuffer;
         submission.execution.countBuffer = m_drawCountBuffer.Get();
         submission.execution.maxDrawCount = maxDrawCount > 0
-            ? std::min(m_instanceCount, maxDrawCount)
-            : m_instanceCount;
+            ? std::min(1u, maxDrawCount)
+            : 1u;
         return submission;
     }
 
@@ -2047,12 +2163,12 @@ GPUCullingIndexedIndirectSubmission GPUCulling::BuildIndexedIndirectGroupSubmiss
         submission.execution.mode = RHIIndirectExecutionMode::CountBuffer;
         submission.execution.countBuffer = m_drawCountBuffer.Get();
         submission.execution.countOffset = group.countBufferOffset;
-        submission.execution.maxDrawCount = group.maxDrawCount;
+        submission.execution.maxDrawCount = 1;
         return submission;
     }
 
     submission.execution.mode = RHIIndirectExecutionMode::FixedCount;
-    submission.execution.maxDrawCount = group.visibleDrawCount;
+    submission.execution.maxDrawCount = group.visibleDrawCount > 0 ? 1u : 0u;
     return submission;
 }
 

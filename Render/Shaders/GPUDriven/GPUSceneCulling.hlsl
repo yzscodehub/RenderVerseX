@@ -51,17 +51,6 @@ bool AABBInsideFrustum(float3 center, float3 extent)
     return true;
 }
 
-IndirectDrawIndexedCommand EmptyCommand()
-{
-    IndirectDrawIndexedCommand command;
-    command.indexCount = 0u;
-    command.instanceCount = 0u;
-    command.firstIndex = 0u;
-    command.vertexOffset = 0;
-    command.firstInstance = 0u;
-    return command;
-}
-
 bool LoadValidatedCandidate(
     uint candidateIndex,
     out GPUSceneCullingCandidate candidate,
@@ -126,7 +115,6 @@ void CSGPUSceneFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     gVisibility[candidateIndex] = 0u;
-    gIndirectDraws[candidateIndex] = EmptyCommand();
     GPUSceneCullingCandidate candidate;
     GPUSceneBoundsRow bounds;
     GPUSceneDrawMetadataRow draw;
@@ -168,17 +156,41 @@ void CSGPUSceneCompactDraws(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    uint totalDrawIndex = 0u;
-    InterlockedAdd(gDrawCount[0], 1u, totalDrawIndex);
-    uint groupDrawIndex = 0u;
-    InterlockedAdd(gDrawCount[candidate.drawGroupIndex + 1u], 1u, groupDrawIndex);
-    gVisibleInstanceIndices[totalDrawIndex] = candidate.rasterInstanceIndex;
+    uint groupVisibleIndex = 0u;
+    InterlockedAdd(
+        gDrawCount[candidate.drawGroupIndex + 1u], 1u, groupVisibleIndex);
+    gVisibleInstanceIndices[
+        candidate.drawGroupVisibleOffset + groupVisibleIndex] =
+            candidate.rasterInstanceIndex;
+    if (groupVisibleIndex == 0u)
+    {
+        IndirectDrawIndexedCommand command;
+        command.indexCount = draw.indexCount;
+        command.instanceCount = 0u;
+        command.firstIndex = draw.firstIndex;
+        command.vertexOffset = draw.vertexOffset;
+        command.firstInstance = candidate.drawGroupVisibleOffset;
+        gIndirectDraws[candidate.drawGroupIndex] = command;
+    }
+}
 
-    IndirectDrawIndexedCommand command;
-    command.indexCount = draw.indexCount;
-    command.instanceCount = 1u;
-    command.firstIndex = draw.firstIndex;
-    command.vertexOffset = draw.vertexOffset;
-    command.firstInstance = candidate.rasterInstanceIndex;
-    gIndirectDraws[candidate.drawGroupCommandOffset + groupDrawIndex] = command;
+[numthreads(64, 1, 1)]
+void CSGPUSceneFinalizeDrawGroups(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint drawGroupIndex = dispatchThreadId.x;
+    if (drawGroupIndex >= Counts.y)
+    {
+        return;
+    }
+
+    const uint visibleCount = gDrawCount[drawGroupIndex + 1u];
+    IndirectDrawIndexedCommand command = gIndirectDraws[drawGroupIndex];
+    command.instanceCount = visibleCount;
+    gIndirectDraws[drawGroupIndex] = command;
+    gDrawCount[drawGroupIndex + 1u] = visibleCount > 0u ? 1u : 0u;
+    if (visibleCount > 0u)
+    {
+        uint ignored = 0u;
+        InterlockedAdd(gDrawCount[0], 1u, ignored);
+    }
 }

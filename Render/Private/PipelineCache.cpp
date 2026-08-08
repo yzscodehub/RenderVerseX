@@ -40,13 +40,18 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 13;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 16;
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEFAULT = 0x47444546u; // GDEF
+    constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_MATERIAL = 0x494D4154u; // IMAT
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_DEFAULT = 0x47534446u; // GSDF
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_INSTANCED_MATERIAL = 0x4753494Du; // GSIM
     constexpr uint32 RVX_PIPELINE_PURPOSE_SHADOW_DEPTH = 0x53484457u; // SHDW
+    constexpr uint32 RVX_PIPELINE_PURPOSE_RIGID_SHADOW_DEPTH = 0x52534844u; // RSHD
+    constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_SHADOW_DEPTH = 0x49534844u; // ISHD
     constexpr uint32 RVX_PIPELINE_PURPOSE_OBJECT_VELOCITY = 0x4F56454Cu; // OVEL
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEPTH = 0x47444550u; // GDEP
+    constexpr uint32 RVX_PIPELINE_PURPOSE_RIGID_DEPTH = 0x52444550u; // RDEP
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_DEPTH = 0x47534450u; // GSDP
     constexpr uint32 RVX_PIPELINE_PURPOSE_MASKED_DEPTH = 0x4D444550u; // MDEP
     constexpr uint32 RVX_PIPELINE_PURPOSE_UI = 0x5549504Cu; // UIPL
@@ -207,7 +212,7 @@ namespace
 
     bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
     {
-        if (set == 0 && binding <= 9)
+        if (set == 0 && binding <= 13)
         {
             return true;
         }
@@ -217,7 +222,7 @@ namespace
             return true;
         }
 
-        return set == 2 && binding <= 9;
+        return set == 2 && binding <= 11;
     }
 
     bool BindingTypeMatches(RHIBindingType actual, RHIBindingType expected)
@@ -248,6 +253,10 @@ namespace
         frameLayout.AddBinding(7, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
         frameLayout.AddBinding(8, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
         frameLayout.AddBinding(9, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(10, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(11, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(12, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(13, RHIBindingType::Sampler, RHIShaderStage::Pixel);
 
         auto& objectLayout = outLayouts[1];
         objectLayout.debugName = "DefaultObjectSetLayout";
@@ -263,9 +272,11 @@ namespace
         materialLayout.AddBinding(4, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         materialLayout.AddBinding(5, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         materialLayout.AddBinding(6, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(7, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(8, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(9, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(7, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(8, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(9, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(10, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(11, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     }
 
     Mat4 ApplyBackendClipConvention(const Mat4& matrix, RHIBackendType backend)
@@ -273,7 +284,14 @@ namespace
         Mat4 result = matrix;
         if (backend == RHIBackendType::Vulkan)
         {
-            result[1] = -result[1];
+            // GLM indexes matrices as [column][row]. Vulkan's positive-height
+            // viewport maps clip-space +Y downward, so negate the output Y
+            // row. Negating result[1] would instead mirror the input/world Y
+            // column and move geometry relative to the camera.
+            for (uint32 column = 0; column < 4; ++column)
+            {
+                result[column][1] = -result[column][1];
+            }
         }
         return result;
     }
@@ -709,7 +727,8 @@ bool GPUSceneRasterBindingSnapshot::IsReadyForBinding() const
     return objectConstantBuffer && candidateBuffer && primitiveBuffer &&
            transformBuffer && objectDescriptorSet && frameSetLayout &&
            objectSetLayout && materialSetLayout && pipelineLayout &&
-           opaquePipeline && maskedPipeline && depthPipeline &&
+           opaquePipeline && instancedMaterialOpaquePipeline &&
+           maskedPipeline && depthPipeline &&
            leaseVersion != 0 && candidateCount != 0 &&
            primitiveCapacity != 0 && transformCapacity != 0 &&
            objectDescriptorSet->IsReadyForBinding(objectSetLayout.Get());
@@ -735,6 +754,7 @@ bool GPUSceneRasterBindingSnapshot::RetainSubmissionResources(
            retain(objectDescriptorSet) && retain(frameSetLayout) &&
            retain(objectSetLayout) && retain(materialSetLayout) &&
            retain(pipelineLayout) && retain(opaquePipeline) &&
+           retain(instancedMaterialOpaquePipeline) &&
            retain(maskedPipeline) && retain(depthPipeline);
 }
 
@@ -858,7 +878,8 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
         return false;
     }
 
-    if (m_gpuSceneVertexShader && m_gpuSceneDepthOnlyVertexShader &&
+    if (m_gpuSceneVertexShader && m_gpuSceneInstancedMaterialVertexShader &&
+        m_gpuSceneDepthOnlyVertexShader &&
         !CreateGPUSceneRasterPipelineLayout())
     {
         if (m_gpuSceneRasterUnavailableReason.empty())
@@ -971,9 +992,11 @@ void PipelineCache::Shutdown()
     m_maskedPipeline.Reset();
     m_transparentPipeline.Reset();
     m_depthOnlyPipeline.Reset();
+    m_rigidDepthOnlyPipeline.Reset();
     m_maskedDepthOnlyPipeline.Reset();
     m_gpuDrivenDepthOnlyPipeline.Reset();
     m_gpuSceneOpaquePipeline.Reset();
+    m_gpuSceneInstancedMaterialOpaquePipeline.Reset();
     m_gpuSceneMaskedPipeline.Reset();
     m_gpuSceneDepthOnlyPipeline.Reset();
     m_skyboxPipeline.Reset();
@@ -1008,6 +1031,11 @@ void PipelineCache::Shutdown()
     m_fallbackRayTracedShadowMaskView.Reset();
     m_fallbackRayTracedShadowMaskTexture.Reset();
     m_directionalShadowSampler.Reset();
+    m_fallbackEnvironmentIBLCubemapView.Reset();
+    m_fallbackEnvironmentIBLCubemapTexture.Reset();
+    m_fallbackEnvironmentIBLBRDFLUTView.Reset();
+    m_fallbackEnvironmentIBLBRDFLUTTexture.Reset();
+    m_environmentIBLSampler.Reset();
     m_fallbackLightConstantsBuffer.Reset();
     m_fallbackPointLightsBuffer.Reset();
     m_fallbackSpotLightsBuffer.Reset();
@@ -1017,6 +1045,9 @@ void PipelineCache::Shutdown()
     m_currentDirectionalShadowView = nullptr;
     m_currentRayTracedShadowMaskView = nullptr;
     m_currentDirectionalShadowSampler = nullptr;
+    m_currentEnvironmentIBLIrradianceView = nullptr;
+    m_currentEnvironmentIBLPrefilteredView = nullptr;
+    m_currentEnvironmentIBLBRDFLUTView = nullptr;
     m_currentLightConstantsBuffer = nullptr;
     m_currentPointLightsBuffer = nullptr;
     m_currentSpotLightsBuffer = nullptr;
@@ -1026,6 +1057,7 @@ void PipelineCache::Shutdown()
     m_frameResourceBindingsDirty = false;
     m_lastFrameLightBindingResult = {};
     m_lastRayTracedShadowFrameBindingResult = {};
+    m_lastEnvironmentIBLFrameBindingResult = {};
     m_postProcessPipelineLayout.Reset();
     m_postProcessSetLayout.Reset();
     m_uiPipelineLayout.Reset();
@@ -1045,9 +1077,12 @@ void PipelineCache::Shutdown()
     m_vertexShader.Reset();
     m_rigidVertexShader.Reset();
     m_gpuDrivenVertexShader.Reset();
+    m_instancedMaterialVertexShader.Reset();
     m_gpuSceneVertexShader.Reset();
+    m_gpuSceneInstancedMaterialVertexShader.Reset();
     m_pixelShader.Reset();
     m_depthOnlyVertexShader.Reset();
+    m_rigidDepthOnlyVertexShader.Reset();
     m_maskedDepthOnlyVertexShader.Reset();
     m_maskedDepthOnlyPixelShader.Reset();
     m_gpuDrivenDepthOnlyVertexShader.Reset();
@@ -1092,9 +1127,12 @@ void PipelineCache::Shutdown()
     m_vsCompileResult.reset();
     m_rigidVsCompileResult.reset();
     m_gpuDrivenVsCompileResult.reset();
+    m_instancedMaterialVsCompileResult.reset();
     m_gpuSceneVsCompileResult.reset();
+    m_gpuSceneInstancedMaterialVsCompileResult.reset();
     m_psCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
+    m_rigidDepthOnlyVsCompileResult.reset();
     m_maskedDepthOnlyVsCompileResult.reset();
     m_maskedDepthOnlyPsCompileResult.reset();
     m_gpuDrivenDepthOnlyVsCompileResult.reset();
@@ -1201,6 +1239,11 @@ bool PipelineCache::CompileShaders()
     RVX_CORE_INFO("  Shader file found!");
 
     RHIBackendType backend = m_device->GetBackendType();
+    const ShaderMacro fullscreenUVYMappingDefine{
+        "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y",
+        backend == RHIBackendType::Vulkan || backend == RHIBackendType::OpenGL
+            ? "1"
+            : "0"};
     const bool compileRayTracingShaders =
         backend == RHIBackendType::DX12 && m_device->GetCapabilities().supportsRaytracingPipeline;
     RVX_CORE_INFO("  Backend type: {}", static_cast<int>(backend));
@@ -1439,6 +1482,26 @@ bool PipelineCache::CompileShaders()
     m_gpuDrivenVsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(gpuDrivenVsResult.compileResult));
 
+    ShaderLoadDesc instancedMaterialVsDesc = vsDesc;
+    instancedMaterialVsDesc.entryPoint = "VSMainInstancedMaterial";
+    auto instancedMaterialVsResult = m_shaderManager->LoadFromFile(
+        m_device, instancedMaterialVsDesc);
+    if (!instancedMaterialVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile instanced-material vertex shader: " +
+                     instancedMaterialVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!instancedMaterialVsResult.shader)
+    {
+        SetLastError("Failed to create instanced-material vertex shader");
+        return false;
+    }
+    m_instancedMaterialVertexShader = instancedMaterialVsResult.shader;
+    m_instancedMaterialVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(instancedMaterialVsResult.compileResult));
+
     ShaderLoadDesc psDesc = vsDesc;
     psDesc.entryPoint = "PSMain";
     psDesc.stage = RHIShaderStage::Pixel;
@@ -1483,6 +1546,26 @@ bool PipelineCache::CompileShaders()
     }
     m_depthOnlyVertexShader = depthVsResult.shader;
     m_depthOnlyVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(depthVsResult.compileResult));
+
+    ShaderLoadDesc rigidDepthVsDesc = depthVsDesc;
+    rigidDepthVsDesc.entryPoint = "VSMainRigid";
+    auto rigidDepthVsResult =
+        m_shaderManager->LoadFromFile(m_device, rigidDepthVsDesc);
+    if (!rigidDepthVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile rigid depth-only vertex shader: " +
+                     rigidDepthVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!rigidDepthVsResult.shader)
+    {
+        SetLastError("Failed to create rigid depth-only vertex shader");
+        return false;
+    }
+    m_rigidDepthOnlyVertexShader = rigidDepthVsResult.shader;
+    m_rigidDepthOnlyVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(rigidDepthVsResult.compileResult));
 
     ShaderLoadDesc maskedDepthVsDesc = depthVsDesc;
     maskedDepthVsDesc.entryPoint = "VSMainMasked";
@@ -1547,44 +1630,82 @@ bool PipelineCache::CompileShaders()
     m_gpuDrivenDepthOnlyVsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(gpuDrivenDepthVsResult.compileResult));
 
-    ShaderLoadDesc gpuSceneVsDesc = vsDesc;
-    gpuSceneVsDesc.entryPoint = "VSMainGPUScene";
-    gpuSceneVsDesc.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
-    auto gpuSceneVsResult = m_shaderManager->LoadFromFile(m_device, gpuSceneVsDesc);
-    if (!gpuSceneVsResult.compileResult.success)
+    const bool compileGPUSceneRasterShaders =
+        backend == RHIBackendType::DX12 ||
+        backend == RHIBackendType::Vulkan ||
+        backend == RHIBackendType::Metal;
+    if (!compileGPUSceneRasterShaders)
     {
-        DisableGPUSceneRaster("Failed to compile GPU-scene DefaultLit vertex shader: " +
-                              gpuSceneVsResult.compileResult.errorMessage);
-    }
-    else if (!gpuSceneVsResult.shader)
-    {
-        DisableGPUSceneRaster("Failed to create GPU-scene DefaultLit vertex shader");
+        DisableGPUSceneRaster(
+            "GPU-scene raster shaders are not qualified for this compatibility backend");
     }
     else
     {
-        ShaderLoadDesc gpuSceneDepthVsDesc = depthVsDesc;
-        gpuSceneDepthVsDesc.entryPoint = "VSMainGPUScene";
-        gpuSceneDepthVsDesc.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
-        auto gpuSceneDepthVsResult = m_shaderManager->LoadFromFile(
-            m_device, gpuSceneDepthVsDesc);
-        if (!gpuSceneDepthVsResult.compileResult.success)
+        ShaderLoadDesc gpuSceneVsDesc = vsDesc;
+        gpuSceneVsDesc.entryPoint = "VSMainGPUScene";
+        gpuSceneVsDesc.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
+        auto gpuSceneVsResult = m_shaderManager->LoadFromFile(m_device, gpuSceneVsDesc);
+        if (!gpuSceneVsResult.compileResult.success)
         {
-            DisableGPUSceneRaster(
-                "Failed to compile GPU-scene DepthOnly vertex shader: " +
-                gpuSceneDepthVsResult.compileResult.errorMessage);
+            DisableGPUSceneRaster("Failed to compile GPU-scene DefaultLit vertex shader: " +
+                                  gpuSceneVsResult.compileResult.errorMessage);
         }
-        else if (!gpuSceneDepthVsResult.shader)
+        else if (!gpuSceneVsResult.shader)
         {
-            DisableGPUSceneRaster("Failed to create GPU-scene DepthOnly vertex shader");
+            DisableGPUSceneRaster("Failed to create GPU-scene DefaultLit vertex shader");
         }
         else
         {
-            m_gpuSceneVertexShader = gpuSceneVsResult.shader;
-            m_gpuSceneVsCompileResult = std::make_unique<ShaderCompileResult>(
-                std::move(gpuSceneVsResult.compileResult));
-            m_gpuSceneDepthOnlyVertexShader = gpuSceneDepthVsResult.shader;
-            m_gpuSceneDepthOnlyVsCompileResult = std::make_unique<ShaderCompileResult>(
-                std::move(gpuSceneDepthVsResult.compileResult));
+            ShaderLoadDesc gpuSceneInstancedMaterialVsDesc = gpuSceneVsDesc;
+            gpuSceneInstancedMaterialVsDesc.entryPoint =
+                "VSMainGPUSceneInstancedMaterial";
+            auto gpuSceneInstancedMaterialVsResult = m_shaderManager->LoadFromFile(
+                m_device, gpuSceneInstancedMaterialVsDesc);
+            if (!gpuSceneInstancedMaterialVsResult.compileResult.success)
+            {
+                DisableGPUSceneRaster(
+                    "Failed to compile GPU-scene instanced-material vertex shader: " +
+                    gpuSceneInstancedMaterialVsResult.compileResult.errorMessage);
+            }
+            else if (!gpuSceneInstancedMaterialVsResult.shader)
+            {
+                DisableGPUSceneRaster(
+                    "Failed to create GPU-scene instanced-material vertex shader");
+            }
+            else
+            {
+                ShaderLoadDesc gpuSceneDepthVsDesc = depthVsDesc;
+                gpuSceneDepthVsDesc.entryPoint = "VSMainGPUScene";
+                gpuSceneDepthVsDesc.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
+                auto gpuSceneDepthVsResult = m_shaderManager->LoadFromFile(
+                    m_device, gpuSceneDepthVsDesc);
+                if (!gpuSceneDepthVsResult.compileResult.success)
+                {
+                    DisableGPUSceneRaster(
+                        "Failed to compile GPU-scene DepthOnly vertex shader: " +
+                        gpuSceneDepthVsResult.compileResult.errorMessage);
+                }
+                else if (!gpuSceneDepthVsResult.shader)
+                {
+                    DisableGPUSceneRaster(
+                        "Failed to create GPU-scene DepthOnly vertex shader");
+                }
+                else
+                {
+                    m_gpuSceneVertexShader = gpuSceneVsResult.shader;
+                    m_gpuSceneVsCompileResult = std::make_unique<ShaderCompileResult>(
+                        std::move(gpuSceneVsResult.compileResult));
+                    m_gpuSceneInstancedMaterialVertexShader =
+                        gpuSceneInstancedMaterialVsResult.shader;
+                    m_gpuSceneInstancedMaterialVsCompileResult =
+                        std::make_unique<ShaderCompileResult>(std::move(
+                            gpuSceneInstancedMaterialVsResult.compileResult));
+                    m_gpuSceneDepthOnlyVertexShader = gpuSceneDepthVsResult.shader;
+                    m_gpuSceneDepthOnlyVsCompileResult =
+                        std::make_unique<ShaderCompileResult>(
+                            std::move(gpuSceneDepthVsResult.compileResult));
+                }
+            }
         }
     }
 
@@ -1592,6 +1713,7 @@ bool PipelineCache::CompileShaders()
     toneMappingVsDesc.path = toneMappingShaderPath;
     toneMappingVsDesc.entryPoint = "VSMain";
     toneMappingVsDesc.stage = RHIShaderStage::Vertex;
+    toneMappingVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         toneMappingVsDesc.targetProfile = "vs_5_0";
@@ -1639,6 +1761,7 @@ bool PipelineCache::CompileShaders()
     bloomVsDesc.path = bloomShaderPath;
     bloomVsDesc.entryPoint = "VSMain";
     bloomVsDesc.stage = RHIShaderStage::Vertex;
+    bloomVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         bloomVsDesc.targetProfile = "vs_5_0";
@@ -2217,6 +2340,7 @@ bool PipelineCache::CompileShaders()
     skyboxVsDesc.path = skyboxShaderPath;
     skyboxVsDesc.entryPoint = "VSMain";
     skyboxVsDesc.stage = RHIShaderStage::Vertex;
+    skyboxVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         skyboxVsDesc.targetProfile = "vs_5_0";
@@ -2830,6 +2954,7 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
     ensureBinding(outLayouts[0], 8, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], 9, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[1], 1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
+    ensureBinding(outLayouts[2], 11, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
 
     for (uint32 setIndex = 0; setIndex < static_cast<uint32>(outLayouts.size()); ++setIndex)
     {
@@ -2925,6 +3050,13 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
         return false;
     if (!requireBinding(0, 9, RHIBindingType::ShaderResourceBuffer))
         return false;
+    for (uint32 binding = 10; binding <= 12; ++binding)
+    {
+        if (!requireBinding(0, binding, RHIBindingType::SampledTexture))
+            return false;
+    }
+    if (!requireBinding(0, 13, RHIBindingType::Sampler))
+        return false;
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
     if (!requireBinding(1, 1, RHIBindingType::ShaderResourceBuffer))
@@ -2941,11 +3073,8 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     if (!requireBinding(2, 6, RHIBindingType::Sampler))
         return false;
 
-    for (uint32 binding = 7; binding <= 9; ++binding)
-    {
-        if (!requireBinding(2, binding, RHIBindingType::SampledTexture))
-            return false;
-    }
+    if (!requireBinding(2, 11, RHIBindingType::ShaderResourceBuffer))
+        return false;
 
     return true;
 }
@@ -3056,6 +3185,12 @@ void PipelineCache::ResetFrameResourceBindings()
     m_currentDirectionalShadowView = m_fallbackDirectionalShadowView.Get();
     m_currentRayTracedShadowMaskView = m_fallbackRayTracedShadowMaskView.Get();
     m_currentDirectionalShadowSampler = m_directionalShadowSampler.Get();
+    m_currentEnvironmentIBLIrradianceView =
+        m_fallbackEnvironmentIBLCubemapView.Get();
+    m_currentEnvironmentIBLPrefilteredView =
+        m_fallbackEnvironmentIBLCubemapView.Get();
+    m_currentEnvironmentIBLBRDFLUTView =
+        m_fallbackEnvironmentIBLBRDFLUTView.Get();
     m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
     m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
     m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
@@ -3064,6 +3199,7 @@ void PipelineCache::ResetFrameResourceBindings()
     m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
     m_lastDirectionalShadowFrameBindingResult = {};
     m_lastRayTracedShadowFrameBindingResult = {};
+    m_lastEnvironmentIBLFrameBindingResult = {};
     m_lastFrameLightBindingResult = {};
     m_frameResourceBindingsDirty = true;
 }
@@ -3204,6 +3340,67 @@ RayTracedShadowFrameBindingResult PipelineCache::UpdateRayTracedShadowFrameResou
     }
 
     m_lastRayTracedShadowFrameBindingResult = result;
+    return result;
+}
+
+EnvironmentIBLFrameBindingResult PipelineCache::UpdateEnvironmentIBLFrameResources(
+    const EnvironmentIBLFrameResources& resources)
+{
+    EnvironmentIBLFrameBindingResult result;
+
+    if (!m_frameDescriptorSet || !m_viewConstantBuffer ||
+        !EnsureFrameEnvironmentIBLFallbackResources())
+    {
+        result.fallbackReason = EnvironmentIBLFallbackReason::FallbackUnavailable;
+        m_lastEnvironmentIBLFrameBindingResult = result;
+        return result;
+    }
+
+    RHITextureView* irradianceView = m_fallbackEnvironmentIBLCubemapView.Get();
+    RHITextureView* prefilteredView = m_fallbackEnvironmentIBLCubemapView.Get();
+    RHITextureView* brdfLUTView = m_fallbackEnvironmentIBLBRDFLUTView.Get();
+
+    if (!m_environmentIBLSampler)
+    {
+        result.fallbackReason = EnvironmentIBLFallbackReason::MissingSampler;
+    }
+    else if (!resources.enabled)
+    {
+        result.fallbackReason = EnvironmentIBLFallbackReason::Disabled;
+    }
+    else if (!resources.irradianceView)
+    {
+        result.fallbackReason = EnvironmentIBLFallbackReason::MissingIrradianceSRV;
+    }
+    else if (!resources.prefilteredEnvironmentView)
+    {
+        result.fallbackReason =
+            EnvironmentIBLFallbackReason::MissingPrefilteredEnvironmentSRV;
+    }
+    else if (!resources.brdfLUTView)
+    {
+        result.fallbackReason = EnvironmentIBLFallbackReason::MissingBRDFLUTSRV;
+    }
+    else
+    {
+        irradianceView = resources.irradianceView;
+        prefilteredView = resources.prefilteredEnvironmentView;
+        brdfLUTView = resources.brdfLUTView;
+        result.textureIBLSamplingEnabled = true;
+        result.fallbackReason = EnvironmentIBLFallbackReason::None;
+    }
+
+    m_currentEnvironmentIBLIrradianceView = irradianceView;
+    m_currentEnvironmentIBLPrefilteredView = prefilteredView;
+    m_currentEnvironmentIBLBRDFLUTView = brdfLUTView;
+
+    if (!UpdateDefaultFrameDescriptorSet())
+    {
+        result.textureIBLSamplingEnabled = false;
+        result.fallbackReason = EnvironmentIBLFallbackReason::FallbackUnavailable;
+    }
+
+    m_lastEnvironmentIBLFrameBindingResult = result;
     return result;
 }
 
@@ -3557,10 +3754,14 @@ bool PipelineCache::CreateGPUSceneRasterBindingSnapshot(
 
     RHIPipeline* opaquePipeline = GetGPUScenePipelineForVariant(
         MaterialPipelineVariant::Opaque, m_renderTargetFormat);
+    RHIPipeline* instancedMaterialOpaquePipeline =
+        GetGPUSceneInstancedMaterialPipelineForVariant(
+            MaterialPipelineVariant::Opaque, m_renderTargetFormat);
     RHIPipeline* maskedPipeline = GetGPUScenePipelineForVariant(
         MaterialPipelineVariant::Masked, m_renderTargetFormat);
     RHIPipeline* depthPipeline = GetGPUSceneDepthOnlyPipeline();
-    if (!opaquePipeline || !maskedPipeline || !depthPipeline)
+    if (!opaquePipeline || !instancedMaterialOpaquePipeline ||
+        !maskedPipeline || !depthPipeline)
     {
         return false;
     }
@@ -3617,6 +3818,8 @@ bool PipelineCache::CreateGPUSceneRasterBindingSnapshot(
     snapshot.materialSetLayout = m_setLayouts[2];
     snapshot.pipelineLayout = m_gpuSceneRasterPipelineLayout;
     snapshot.opaquePipeline = m_gpuSceneOpaquePipeline;
+    snapshot.instancedMaterialOpaquePipeline =
+        m_gpuSceneInstancedMaterialOpaquePipeline;
     snapshot.maskedPipeline = m_gpuSceneMaskedPipeline;
     snapshot.depthPipeline = m_gpuSceneDepthOnlyPipeline;
     snapshot.leaseVersion = resources.m_leaseVersion;
@@ -3770,7 +3973,9 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
             !m_fallbackRayTracedShadowMaskView || !m_fallbackLightConstantsBuffer ||
             !m_fallbackPointLightsBuffer || !m_fallbackSpotLightsBuffer ||
             !m_fallbackClusterConstantsBuffer || !m_fallbackClusterBuffer ||
-            !m_fallbackClusterLightIndexBuffer)
+            !m_fallbackClusterLightIndexBuffer ||
+            !m_fallbackEnvironmentIBLCubemapView ||
+            !m_fallbackEnvironmentIBLBRDFLUTView || !m_environmentIBLSampler)
         {
             return false;
         }
@@ -3867,6 +4072,22 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
                                 AlignConstantBufferSize(sizeof(GPUClusterConstants)));
         frameSetDesc.BindBuffer(8, transparentFrameBufferCopies[4].Get());
         frameSetDesc.BindBuffer(9, transparentFrameBufferCopies[5].Get());
+        frameSetDesc.BindTexture(
+            10,
+            m_currentEnvironmentIBLIrradianceView
+                ? m_currentEnvironmentIBLIrradianceView
+                : m_fallbackEnvironmentIBLCubemapView.Get());
+        frameSetDesc.BindTexture(
+            11,
+            m_currentEnvironmentIBLPrefilteredView
+                ? m_currentEnvironmentIBLPrefilteredView
+                : m_fallbackEnvironmentIBLCubemapView.Get());
+        frameSetDesc.BindTexture(
+            12,
+            m_currentEnvironmentIBLBRDFLUTView
+                ? m_currentEnvironmentIBLBRDFLUTView
+                : m_fallbackEnvironmentIBLBRDFLUTView.Get());
+        frameSetDesc.BindSampler(13, m_environmentIBLSampler.Get());
     }
     RHIDescriptorSetRef frameSet = m_device->CreateDescriptorSet(frameSetDesc);
     if (!frameSet || !frameSet->IsReadyForBinding(m_setLayouts[0].Get()))
@@ -4199,10 +4420,47 @@ RHIPipeline* PipelineCache::GetGPUDrivenDepthOnlyPipeline()
     return m_gpuDrivenDepthOnlyPipeline.Get();
 }
 
+RHIPipeline* PipelineCache::GetInstancedMaterialPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat)
+{
+    if (renderTargetFormat == RHIFormat::Unknown)
+    {
+        renderTargetFormat = m_renderTargetFormat;
+    }
+    if (variant != MaterialPipelineVariant::Opaque)
+    {
+        SetLastError(
+            "Instanced material parameters currently support opaque materials only");
+        return nullptr;
+    }
+    return GetOrCreateInstancedMaterialDefaultLitPipeline(
+        variant,
+        "InstancedMaterialOpaquePipeline",
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(),
+        renderTargetFormat).Get();
+}
+
+RHIPipeline* PipelineCache::GetDepthOnlyPipeline(
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        return m_depthOnlyPipeline.Get();
+    }
+    if (!m_rigidDepthOnlyPipeline)
+    {
+        m_rigidDepthOnlyPipeline = GetOrCreateRigidDepthOnlyPipeline();
+    }
+    return m_rigidDepthOnlyPipeline.Get();
+}
+
 bool PipelineCache::IsGPUSceneRasterReady() const
 {
     return m_initialized && m_gpuSceneRasterObjectSetLayout &&
            m_gpuSceneRasterPipelineLayout && m_gpuSceneVertexShader &&
+           m_gpuSceneInstancedMaterialVertexShader &&
            m_gpuSceneDepthOnlyVertexShader &&
            m_gpuSceneRasterUnavailableReason.empty();
 }
@@ -4263,12 +4521,59 @@ RHIPipeline* PipelineCache::GetGPUScenePipelineForVariant(
     }
 }
 
+RHIPipeline* PipelineCache::GetGPUSceneInstancedMaterialPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat)
+{
+    if (!IsGPUSceneRasterReady() ||
+        variant != MaterialPipelineVariant::Opaque)
+    {
+        return nullptr;
+    }
+    if (renderTargetFormat == RHIFormat::Unknown)
+    {
+        renderTargetFormat = m_renderTargetFormat;
+    }
+    RHIPipelineRef pipeline = GetOrCreateGPUSceneDefaultLitPipeline(
+        MaterialPipelineVariant::Opaque,
+        "GPUSceneInstancedMaterialOpaquePipeline",
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(),
+        renderTargetFormat,
+        true);
+    if (!pipeline)
+    {
+        DisableGPUSceneRaster(
+            "Failed to create GPU-scene instanced-material pipeline");
+        return nullptr;
+    }
+    m_gpuSceneInstancedMaterialOpaquePipeline = std::move(pipeline);
+    return m_gpuSceneInstancedMaterialOpaquePipeline.Get();
+}
+
+const char* PipelineCache::GetEnvironmentIBLFallbackReasonName(
+    EnvironmentIBLFallbackReason reason)
+{
+    switch (reason)
+    {
+        case EnvironmentIBLFallbackReason::None: return "None";
+        case EnvironmentIBLFallbackReason::Disabled: return "Disabled";
+        case EnvironmentIBLFallbackReason::MissingIrradianceSRV: return "MissingIrradianceSRV";
+        case EnvironmentIBLFallbackReason::MissingPrefilteredEnvironmentSRV: return "MissingPrefilteredEnvironmentSRV";
+        case EnvironmentIBLFallbackReason::MissingBRDFLUTSRV: return "MissingBRDFLUTSRV";
+        case EnvironmentIBLFallbackReason::MissingSampler: return "MissingSampler";
+        case EnvironmentIBLFallbackReason::FallbackUnavailable: return "FallbackUnavailable";
+        default: return "Unknown";
+    }
+}
+
 void PipelineCache::ResetGPUSceneRasterState()
 {
     const auto isGPUScenePipeline = [this](const RHIPipelineRef& pipeline)
     {
         const RHIPipeline* const candidate = pipeline.Get();
         return candidate && (candidate == m_gpuSceneOpaquePipeline.Get() ||
+                             candidate == m_gpuSceneInstancedMaterialOpaquePipeline.Get() ||
                              candidate == m_gpuSceneMaskedPipeline.Get() ||
                              candidate == m_gpuSceneDepthOnlyPipeline.Get());
     };
@@ -4285,13 +4590,16 @@ void PipelineCache::ResetGPUSceneRasterState()
     }
 
     m_gpuSceneOpaquePipeline.Reset();
+    m_gpuSceneInstancedMaterialOpaquePipeline.Reset();
     m_gpuSceneMaskedPipeline.Reset();
     m_gpuSceneDepthOnlyPipeline.Reset();
     m_gpuSceneRasterPipelineLayout.Reset();
     m_gpuSceneRasterObjectSetLayout.Reset();
     m_gpuSceneVertexShader.Reset();
+    m_gpuSceneInstancedMaterialVertexShader.Reset();
     m_gpuSceneDepthOnlyVertexShader.Reset();
     m_gpuSceneVsCompileResult.reset();
+    m_gpuSceneInstancedMaterialVsCompileResult.reset();
     m_gpuSceneDepthOnlyVsCompileResult.reset();
 }
 
@@ -4342,7 +4650,21 @@ ShadowDepthBiasState PipelineCache::SanitizeShadowDepthBiasState(const ShadowDep
 
 RHIPipeline* PipelineCache::GetShadowDepthPipeline(const ShadowDepthBiasState& biasState)
 {
-    return GetOrCreateShadowDepthPipeline(biasState).Get();
+    return GetShadowDepthPipeline(
+        biasState, DefaultLitDirectVertexInputMode::Skinned);
+}
+
+RHIPipeline* PipelineCache::GetShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    return GetOrCreateShadowDepthPipeline(biasState, inputMode).Get();
+}
+
+RHIPipeline* PipelineCache::GetInstancedShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState)
+{
+    return GetOrCreateInstancedShadowDepthPipeline(biasState).Get();
 }
 
 RHIPipeline* PipelineCache::GetSkyboxPipeline(RHIFormat outputFormat)
@@ -4728,6 +5050,106 @@ bool PipelineCache::EnsureFrameRayTracedShadowFallbackResources()
     return true;
 }
 
+bool PipelineCache::EnsureFrameEnvironmentIBLFallbackResources()
+{
+    if (!m_device)
+    {
+        return false;
+    }
+
+    if (!m_fallbackEnvironmentIBLCubemapTexture)
+    {
+        RHITextureDesc textureDesc = RHITextureDesc::Texture2D(
+            1, 1, RHIFormat::RGBA8_UNORM);
+        textureDesc.dimension = RHITextureDimension::TextureCube;
+        textureDesc.arraySize = 1;
+        textureDesc.debugName = "FallbackEnvironmentIBLCubemap";
+        m_fallbackEnvironmentIBLCubemapTexture =
+            m_device->CreateTexture(textureDesc);
+        if (!m_fallbackEnvironmentIBLCubemapTexture ||
+            !PrepareVulkanSampledTexture(
+                m_device, m_fallbackEnvironmentIBLCubemapTexture.Get()))
+        {
+            return false;
+        }
+    }
+
+    if (!m_fallbackEnvironmentIBLCubemapView)
+    {
+        RHITextureViewDesc viewDesc;
+        viewDesc.format = m_fallbackEnvironmentIBLCubemapTexture->GetFormat();
+        viewDesc.dimension = RHITextureDimension::TextureCube;
+        viewDesc.subresourceRange = RHISubresourceRange::All();
+        viewDesc.type = RHITextureViewType::ShaderResource;
+        viewDesc.debugName = "FallbackEnvironmentIBLCubemapSRV";
+        m_fallbackEnvironmentIBLCubemapView = m_device->CreateTextureView(
+            m_fallbackEnvironmentIBLCubemapTexture.Get(), viewDesc);
+        if (!m_fallbackEnvironmentIBLCubemapView)
+        {
+            return false;
+        }
+    }
+
+    if (!m_fallbackEnvironmentIBLBRDFLUTTexture)
+    {
+        RHITextureDesc textureDesc = RHITextureDesc::Texture2D(
+            1, 1, RHIFormat::RGBA8_UNORM);
+        textureDesc.debugName = "FallbackEnvironmentIBLBRDFLUT";
+        m_fallbackEnvironmentIBLBRDFLUTTexture =
+            m_device->CreateTexture(textureDesc);
+        if (!m_fallbackEnvironmentIBLBRDFLUTTexture ||
+            !PrepareVulkanSampledTexture(
+                m_device, m_fallbackEnvironmentIBLBRDFLUTTexture.Get()))
+        {
+            return false;
+        }
+    }
+
+    if (!m_fallbackEnvironmentIBLBRDFLUTView)
+    {
+        RHITextureViewDesc viewDesc;
+        viewDesc.format = m_fallbackEnvironmentIBLBRDFLUTTexture->GetFormat();
+        viewDesc.dimension = RHITextureDimension::Texture2D;
+        viewDesc.subresourceRange = RHISubresourceRange::All();
+        viewDesc.type = RHITextureViewType::ShaderResource;
+        viewDesc.debugName = "FallbackEnvironmentIBLBRDFLUTSRV";
+        m_fallbackEnvironmentIBLBRDFLUTView = m_device->CreateTextureView(
+            m_fallbackEnvironmentIBLBRDFLUTTexture.Get(), viewDesc);
+        if (!m_fallbackEnvironmentIBLBRDFLUTView)
+        {
+            return false;
+        }
+    }
+
+    if (!m_environmentIBLSampler)
+    {
+        RHISamplerDesc samplerDesc = RHISamplerDesc::LinearClamp();
+        samplerDesc.debugName = "EnvironmentIBLLinearClampSampler";
+        m_environmentIBLSampler = m_device->CreateSampler(samplerDesc);
+        if (!m_environmentIBLSampler)
+        {
+            return false;
+        }
+    }
+
+    if (!m_currentEnvironmentIBLIrradianceView)
+    {
+        m_currentEnvironmentIBLIrradianceView =
+            m_fallbackEnvironmentIBLCubemapView.Get();
+    }
+    if (!m_currentEnvironmentIBLPrefilteredView)
+    {
+        m_currentEnvironmentIBLPrefilteredView =
+            m_fallbackEnvironmentIBLCubemapView.Get();
+    }
+    if (!m_currentEnvironmentIBLBRDFLUTView)
+    {
+        m_currentEnvironmentIBLBRDFLUTView =
+            m_fallbackEnvironmentIBLBRDFLUTView.Get();
+    }
+    return true;
+}
+
 bool PipelineCache::EnsureFrameLightFallbackResources()
 {
     if (m_fallbackLightConstantsBuffer && m_fallbackPointLightsBuffer && m_fallbackSpotLightsBuffer)
@@ -4874,6 +5296,7 @@ bool PipelineCache::UpdateDefaultFrameDescriptorSet()
 {
     if (!m_viewConstantBuffer || m_setLayouts.empty() || !m_setLayouts[0] ||
         !EnsureFrameShadowFallbackResources() || !EnsureFrameRayTracedShadowFallbackResources() ||
+        !EnsureFrameEnvironmentIBLFallbackResources() ||
         !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources())
     {
         return false;
@@ -4906,15 +5329,25 @@ bool PipelineCache::UpdateDefaultFrameDescriptorSet()
     RHITextureView* rayTracedShadowMask = m_currentRayTracedShadowMaskView
                                               ? m_currentRayTracedShadowMaskView
                                               : m_fallbackRayTracedShadowMaskView.Get();
+    RHITextureView* irradianceView = m_currentEnvironmentIBLIrradianceView
+                                          ? m_currentEnvironmentIBLIrradianceView
+                                          : m_fallbackEnvironmentIBLCubemapView.Get();
+    RHITextureView* prefilteredView = m_currentEnvironmentIBLPrefilteredView
+                                           ? m_currentEnvironmentIBLPrefilteredView
+                                           : m_fallbackEnvironmentIBLCubemapView.Get();
+    RHITextureView* brdfLUTView = m_currentEnvironmentIBLBRDFLUTView
+                                      ? m_currentEnvironmentIBLBRDFLUTView
+                                      : m_fallbackEnvironmentIBLBRDFLUTView.Get();
 
     if (!shadowView || !shadowSampler || !lightConstants || !pointLights || !spotLights ||
-        !clusterConstants || !clusters || !clusterLightIndices || !rayTracedShadowMask)
+        !clusterConstants || !clusters || !clusterLightIndices || !rayTracedShadowMask ||
+        !irradianceView || !prefilteredView || !brdfLUTView || !m_environmentIBLSampler)
     {
         return false;
     }
 
     std::vector<RHIDescriptorBinding> bindings;
-    bindings.reserve(10);
+    bindings.reserve(14);
     bindings.push_back({0, m_viewConstantBuffer.Get(), 0, AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
     bindings.push_back({1, nullptr, 0, 0, shadowView, nullptr});
     bindings.push_back({2, nullptr, 0, 0, nullptr, shadowSampler});
@@ -4925,6 +5358,10 @@ bool PipelineCache::UpdateDefaultFrameDescriptorSet()
     bindings.push_back({7, clusterConstants, 0, AlignConstantBufferSize(sizeof(GPUClusterConstants)), nullptr, nullptr});
     bindings.push_back({8, clusters, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
     bindings.push_back({9, clusterLightIndices, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({10, nullptr, 0, 0, irradianceView, nullptr});
+    bindings.push_back({11, nullptr, 0, 0, prefilteredView, nullptr});
+    bindings.push_back({12, nullptr, 0, 0, brdfLUTView, nullptr});
+    bindings.push_back({13, nullptr, 0, 0, nullptr, m_environmentIBLSampler.Get()});
 
     RHIDescriptorSetDesc desc;
     desc.layout = m_setLayouts[0].Get();
@@ -4947,12 +5384,16 @@ RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
 {
     if (m_setLayouts.empty() || !m_setLayouts[0] || !m_viewConstantBuffer ||
         !EnsureFrameShadowFallbackResources() || !EnsureFrameRayTracedShadowFallbackResources() ||
+        !EnsureFrameEnvironmentIBLFallbackResources() ||
         !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources())
         return {};
 
     m_currentDirectionalShadowView = m_fallbackDirectionalShadowView.Get();
     m_currentRayTracedShadowMaskView = m_fallbackRayTracedShadowMaskView.Get();
     m_currentDirectionalShadowSampler = m_directionalShadowSampler.Get();
+    m_currentEnvironmentIBLIrradianceView = m_fallbackEnvironmentIBLCubemapView.Get();
+    m_currentEnvironmentIBLPrefilteredView = m_fallbackEnvironmentIBLCubemapView.Get();
+    m_currentEnvironmentIBLBRDFLUTView = m_fallbackEnvironmentIBLBRDFLUTView.Get();
     m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
     m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
     m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
@@ -4979,6 +5420,10 @@ RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
                            AlignConstantBufferSize(sizeof(GPUClusterConstants)));
     descSetDesc.BindBuffer(8, m_fallbackClusterBuffer.Get());
     descSetDesc.BindBuffer(9, m_fallbackClusterLightIndexBuffer.Get());
+    descSetDesc.BindTexture(10, m_fallbackEnvironmentIBLCubemapView.Get());
+    descSetDesc.BindTexture(11, m_fallbackEnvironmentIBLCubemapView.Get());
+    descSetDesc.BindTexture(12, m_fallbackEnvironmentIBLBRDFLUTView.Get());
+    descSetDesc.BindSampler(13, m_environmentIBLSampler.Get());
 
     return m_device->CreateDescriptorSet(descSetDesc);
 }
@@ -5534,15 +5979,111 @@ RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline()
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDefaultLitPipeline(
+RHIPipelineRef PipelineCache::GetOrCreateInstancedMaterialDefaultLitPipeline(
     MaterialPipelineVariant variant,
     const char* debugName,
     const RHIDepthStencilState& depthStencilState,
     const RHIBlendState& blendState,
     RHIFormat renderTargetFormat)
 {
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildInstancedMaterialDefaultLitPipelineDesc(
+            debugName,
+            depthStencilState,
+            blendState,
+            renderTargetFormat);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets == 0 ||
+        pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown ||
+        pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create instanced-material pipeline from incomplete state");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, variant, RVX_PIPELINE_PURPOSE_INSTANCED_MATERIAL);
+    m_stats.lastPipelineStateHash = stateHash;
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create instanced-material pipeline '" +
+                     std::string(debugName ? debugName : "") + "'");
+        return {};
+    }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateRigidDepthOnlyPipeline()
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildRigidDepthOnlyPipelineDesc();
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError(
+            "Cannot create rigid depth-only pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError(
+            "Cannot create rigid depth-only pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError(
+            "Cannot create rigid depth-only pipeline with invalid depth format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Opaque,
+        RVX_PIPELINE_PURPOSE_RIGID_DEPTH);
+    m_stats.lastPipelineStateHash = stateHash;
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create rigid depth-only pipeline");
+        return {};
+    }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDefaultLitPipeline(
+    MaterialPipelineVariant variant,
+    const char* debugName,
+    const RHIDepthStencilState& depthStencilState,
+    const RHIBlendState& blendState,
+    RHIFormat renderTargetFormat,
+    bool instancedMaterial)
+{
     RHIGraphicsPipelineDesc pipelineDesc = BuildGPUSceneDefaultLitPipelineDesc(
-        debugName, depthStencilState, blendState, renderTargetFormat);
+        debugName,
+        depthStencilState,
+        blendState,
+        renderTargetFormat,
+        instancedMaterial);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
         !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets == 0 ||
         pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown ||
@@ -5552,7 +6093,11 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDefaultLitPipeline(
     }
 
     const uint64 stateHash = ComputePipelineStateHash(
-        pipelineDesc, variant, RVX_PIPELINE_PURPOSE_GPU_SCENE_DEFAULT);
+        pipelineDesc,
+        variant,
+        instancedMaterial
+            ? RVX_PIPELINE_PURPOSE_GPU_SCENE_INSTANCED_MATERIAL
+            : RVX_PIPELINE_PURPOSE_GPU_SCENE_DEFAULT);
     m_stats.lastPipelineStateHash = stateHash;
     auto cached = m_pipelineCache.find(stateHash);
     if (cached != m_pipelineCache.end())
@@ -5696,10 +6241,13 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDepthOnlyPipeline()
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(const ShadowDepthBiasState& biasState)
+RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode)
 {
     const ShadowDepthBiasState sanitizedBias = SanitizeShadowDepthBiasState(biasState);
-    RHIGraphicsPipelineDesc pipelineDesc = BuildShadowDepthPipelineDesc(sanitizedBias);
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildShadowDepthPipelineDesc(sanitizedBias, inputMode);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create shadow depth pipeline without vertex shader");
@@ -5716,9 +6264,12 @@ RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(const ShadowDepthBi
         return {};
     }
 
-    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc,
-                                                      MaterialPipelineVariant::Opaque,
-                                                      RVX_PIPELINE_PURPOSE_SHADOW_DEPTH);
+    const uint32 purposeSalt =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? RVX_PIPELINE_PURPOSE_RIGID_SHADOW_DEPTH
+            : RVX_PIPELINE_PURPOSE_SHADOW_DEPTH;
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, MaterialPipelineVariant::Opaque, purposeSalt);
     m_stats.lastPipelineStateHash = stateHash;
 
     auto cached = m_pipelineCache.find(stateHash);
@@ -5736,6 +6287,42 @@ RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(const ShadowDepthBi
         return {};
     }
 
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateInstancedShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState)
+{
+    const ShadowDepthBiasState sanitizedBias =
+        SanitizeShadowDepthBiasState(biasState);
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildInstancedShadowDepthPipelineDesc(sanitizedBias);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pipelineLayout ||
+        pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create instanced shadow depth pipeline");
+        return {};
+    }
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Opaque,
+        RVX_PIPELINE_PURPOSE_INSTANCED_SHADOW_DEPTH);
+    m_stats.lastPipelineStateHash = stateHash;
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create instanced shadow depth pipeline");
+        return {};
+    }
     ++m_stats.pipelineCreateCount;
     m_pipelineCache[stateHash] = pipeline;
     return pipeline;
@@ -6619,15 +7206,47 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDefaultLitPipelineDesc(
+RHIGraphicsPipelineDesc PipelineCache::BuildInstancedMaterialDefaultLitPipelineDesc(
     const char* debugName,
     const RHIDepthStencilState& depthStencilState,
     const RHIBlendState& blendState,
     RHIFormat renderTargetFormat) const
 {
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildGPUDrivenDefaultLitPipelineDesc(
+            debugName,
+            depthStencilState,
+            blendState,
+            renderTargetFormat);
+    pipelineDesc.vertexShader = m_instancedMaterialVertexShader.Get();
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildRigidDepthOnlyPipelineDesc() const
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    pipelineDesc.vertexShader = m_rigidDepthOnlyVertexShader.Get();
+    pipelineDesc.debugName = "RigidDepthOnlyPipeline";
+    std::erase_if(pipelineDesc.inputLayout.elements,
+                  [](const RHIInputElement& element)
+                  {
+                      return element.inputSlot == 4 || element.inputSlot == 5;
+                  });
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDefaultLitPipelineDesc(
+    const char* debugName,
+    const RHIDepthStencilState& depthStencilState,
+    const RHIBlendState& blendState,
+    RHIFormat renderTargetFormat,
+    bool instancedMaterial) const
+{
     RHIGraphicsPipelineDesc pipelineDesc = BuildGPUDrivenDefaultLitPipelineDesc(
         debugName, depthStencilState, blendState, renderTargetFormat);
-    pipelineDesc.vertexShader = m_gpuSceneVertexShader.Get();
+    pipelineDesc.vertexShader = instancedMaterial
+        ? m_gpuSceneInstancedMaterialVertexShader.Get()
+        : m_gpuSceneVertexShader.Get();
     pipelineDesc.pipelineLayout = m_gpuSceneRasterPipelineLayout.Get();
     return pipelineDesc;
 }
@@ -6667,9 +7286,14 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDepthOnlyPipelineDesc() con
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildShadowDepthPipelineDesc(const ShadowDepthBiasState& biasState) const
+RHIGraphicsPipelineDesc PipelineCache::BuildShadowDepthPipelineDesc(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode) const
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? BuildRigidDepthOnlyPipelineDesc()
+            : BuildDepthOnlyPipelineDesc();
     const ShadowDepthBiasState sanitizedBias = SanitizeShadowDepthBiasState(biasState);
     pipelineDesc.debugName = "ShadowDepthPipeline";
     pipelineDesc.rasterizerState.depthBias = sanitizedBias.constantBias;
@@ -6846,6 +7470,21 @@ RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(RHI
         2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
     pipelineDesc.inputLayout.AddElementAtLocation(
         3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildInstancedShadowDepthPipelineDesc(
+    const ShadowDepthBiasState& biasState) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildGPUDrivenDepthOnlyPipelineDesc();
+    const ShadowDepthBiasState sanitizedBias =
+        SanitizeShadowDepthBiasState(biasState);
+    pipelineDesc.debugName = "InstancedShadowDepthPipeline";
+    pipelineDesc.rasterizerState.depthBias = sanitizedBias.constantBias;
+    pipelineDesc.rasterizerState.slopeScaledDepthBias =
+        sanitizedBias.slopeScaledBias;
+    pipelineDesc.rasterizerState.depthBiasClamp = sanitizedBias.biasClamp;
     return pipelineDesc;
 }
 
@@ -7114,12 +7753,19 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_rigidVsCompileResult.get());
         if (shader == m_gpuDrivenVertexShader.Get())
             return ComputeShaderHash(m_gpuDrivenVsCompileResult.get());
+        if (shader == m_instancedMaterialVertexShader.Get())
+            return ComputeShaderHash(m_instancedMaterialVsCompileResult.get());
         if (shader == m_gpuSceneVertexShader.Get())
             return ComputeShaderHash(m_gpuSceneVsCompileResult.get());
+        if (shader == m_gpuSceneInstancedMaterialVertexShader.Get())
+            return ComputeShaderHash(
+                m_gpuSceneInstancedMaterialVsCompileResult.get());
         if (shader == m_pixelShader.Get())
             return ComputeShaderHash(m_psCompileResult.get());
         if (shader == m_depthOnlyVertexShader.Get())
             return ComputeShaderHash(m_depthOnlyVsCompileResult.get());
+        if (shader == m_rigidDepthOnlyVertexShader.Get())
+            return ComputeShaderHash(m_rigidDepthOnlyVsCompileResult.get());
         if (shader == m_maskedDepthOnlyVertexShader.Get())
             return ComputeShaderHash(m_maskedDepthOnlyVsCompileResult.get());
         if (shader == m_maskedDepthOnlyPixelShader.Get())
