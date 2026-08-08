@@ -10,6 +10,7 @@
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
 #include "ResourceSceneAdapters/ResourceSceneAdapters.h"
+#include "ResourceSceneAdapters/SceneAssetInstantiation.h"
 #include "Scene/SceneRuntime.h"
 #include "World/PhysicsSubsystem.h"
 #include "World/SpatialSubsystem.h"
@@ -121,8 +122,10 @@ void World::Load(const std::string& path)
         return;
     }
 
-    Actor* rootActor = model->InstantiateActor(newScene->GetSceneManager());
-    if (!rootActor)
+    SceneAssetInstance instance =
+        SceneAssetInstantiator::InstantiateModel(*newScene, *model);
+    Actor* rootActor = newScene->ResolveActor(instance.rootActor);
+    if (!instance.IsValid() || !rootActor)
     {
         newScene->Shutdown();
         RVX_CORE_WARN("World::Load loaded a model but failed to instantiate it: {}", path);

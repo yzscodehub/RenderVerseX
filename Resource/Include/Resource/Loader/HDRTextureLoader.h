@@ -14,15 +14,25 @@
  * - EXR (OpenEXR) via tinyexr
  */
 
+#include "Core/MathTypes.h"
+#include "Core/Types.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/TextureResource.h"
-#include "Core/MathTypes.h"
 #include <string>
 #include <memory>
 #include <array>
 
 namespace RVX::Resource
 {
+    /** @brief Engine-owned IBL bake quality profiles. */
+    enum class HDRIBLQualityProfile : uint8
+    {
+        Validation = 0,
+        Low,
+        Default,
+        High
+    };
+
     /**
      * @brief IBL data generated from environment map
      */
@@ -84,6 +94,12 @@ namespace RVX::Resource
         /// Exposure multiplier
         float exposure = 1.0f;
     };
+
+    /** @brief Resolve one named IBL profile into explicit deterministic bake options. */
+    [[nodiscard]] HDRLoadOptions ResolveHDRIBLQualityProfile(
+        HDRIBLQualityProfile profile,
+        float exposure = 1.0f,
+        bool applyGamma = false);
 
     /**
      * @brief Cubemap face data
@@ -159,6 +175,12 @@ namespace RVX::Resource
          */
         IBLData LoadIBL(const std::string& path,
                         const HDRLoadOptions& options = HDRLoadOptions());
+
+        /** @brief Load IBL using an engine-owned quality profile. */
+        IBLData LoadIBL(const std::string& path,
+                        HDRIBLQualityProfile profile,
+                        float exposure = 1.0f,
+                        bool applyGamma = false);
 
         /**
          * @brief Convert equirectangular map to cubemap

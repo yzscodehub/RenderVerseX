@@ -25,6 +25,57 @@
 
 namespace RVX::Resource
 {
+    HDRLoadOptions ResolveHDRIBLQualityProfile(
+        HDRIBLQualityProfile profile,
+        float exposure,
+        bool applyGamma)
+    {
+        HDRLoadOptions options;
+        options.generateCubemap = true;
+        options.generateIBL = true;
+        options.applyGamma = applyGamma;
+        options.exposure = exposure;
+
+        switch (profile)
+        {
+            case HDRIBLQualityProfile::Validation:
+                options.cubemapResolution = 8;
+                options.irradianceResolution = 2;
+                options.prefilteredResolution = 8;
+                options.prefilteredMipLevels = 4;
+                options.brdfLUTResolution = 8;
+                options.convolutionSamples = 16;
+                break;
+            case HDRIBLQualityProfile::Low:
+                options.cubemapResolution = 32;
+                options.irradianceResolution = 8;
+                options.prefilteredResolution = 32;
+                options.prefilteredMipLevels = 5;
+                options.brdfLUTResolution = 32;
+                options.convolutionSamples = 64;
+                break;
+            case HDRIBLQualityProfile::High:
+                options.cubemapResolution = 128;
+                options.irradianceResolution = 32;
+                options.prefilteredResolution = 128;
+                options.prefilteredMipLevels = 7;
+                options.brdfLUTResolution = 128;
+                options.convolutionSamples = 256;
+                break;
+            case HDRIBLQualityProfile::Default:
+            default:
+                options.cubemapResolution = 64;
+                options.irradianceResolution = 16;
+                options.prefilteredResolution = 64;
+                options.prefilteredMipLevels = 6;
+                options.brdfLUTResolution = 64;
+                options.convolutionSamples = 128;
+                break;
+        }
+
+        return options;
+    }
+
     // =========================================================================
     // Constants
     // =========================================================================
@@ -517,6 +568,16 @@ namespace RVX::Resource
         }
 
         return ibl;
+    }
+
+    IBLData HDRTextureLoader::LoadIBL(const std::string& path,
+                                      HDRIBLQualityProfile profile,
+                                      float exposure,
+                                      bool applyGamma)
+    {
+        return LoadIBL(
+            path,
+            ResolveHDRIBLQualityProfile(profile, exposure, applyGamma));
     }
 
     // =========================================================================

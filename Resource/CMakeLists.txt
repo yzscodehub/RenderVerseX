@@ -39,6 +39,7 @@ target_sources(RVX_Resource PRIVATE
     Private/Types/MaterialResource.cpp
     Private/Types/ModelResource.cpp
     Private/Types/AudioResource.cpp
+    Private/Types/EnvironmentResource.cpp
 
     # Loaders
     Private/Loader/MeshLoader.cpp

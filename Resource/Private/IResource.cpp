@@ -93,6 +93,7 @@ const char* GetResourceTypeName(ResourceType type)
         case ResourceType::Model:      return "Model";
         case ResourceType::Prefab:     return "Prefab";
         case ResourceType::Script:     return "Script";
+        case ResourceType::Environment:return "Environment";
         default:                       return "Custom";
     }
 }

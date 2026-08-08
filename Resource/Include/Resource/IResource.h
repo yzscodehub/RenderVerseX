@@ -51,6 +51,7 @@ namespace RVX::Resource
         Model,
         Prefab,
         Script,
+        Environment,
         // Extensible...
         Custom = 1000
     };
