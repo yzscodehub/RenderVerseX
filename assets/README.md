@@ -36,3 +36,37 @@ asset checked into the repository with deterministic capture expectations.
 Generated imports, compressed textures, mesh optimization output, thumbnails,
 and shader caches belong under the build or derived-data directory, never next
 to the immutable source asset.
+
+## Optional environment catalog
+
+`catalog.json` records only environment files whose exact source page, author,
+license, and local file are all known. `cowboy-town-hall-8k` and
+`valley-of-desolation-4k` are Poly Haven CC0 assets. The catalog intentionally
+omits files with incomplete provenance; an unlisted file must be selected only
+as an explicit `--environment-file` and is never accepted by hermetic smoke
+validation.
+
+The bundled `pbr-reference-environment` remains the deterministic CI default.
+To inspect a catalog environment manually from PowerShell, keep the generated
+PBR grid as the explicit model and select the environment by catalog ID:
+
+```powershell
+$sample = ".\build\win_x64_debug\Samples\RenderVerseSamples\Debug\RenderVerseSamples.exe"
+& $sample --sample pbr-materials `
+  --model ".\Tests\Fixtures\Samples\PBRMaterialGrid.gltf" `
+  --environment valley-of-desolation-4k `
+  --catalog ".\assets\catalog.json" `
+  --asset-root ".\assets" `
+  --backend vulkan --frames 8 --wait-ready `
+  --quality low --width 1280 --height 720
+```
+
+With both `RVX_ENABLE_EXTERNAL_ASSET_TESTS=ON` and
+`RVX_ENABLE_EXTERNAL_ENVIRONMENT_TESTS=ON`, the test configuration registers
+the same path as an opt-in screenshot, report-provenance, and PBR/IBL readiness
+gate for each enabled primary backend. The large EXR files are not copied into
+the sample executable and are not required by ordinary CI. Enabling the
+environment gate with an incomplete catalog root fails configuration instead
+of silently choosing another environment. Catalog schema or provenance errors
+still fail before engine startup when the strict catalog loader resolves the
+selected ID.

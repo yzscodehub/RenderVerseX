@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <limits>
 
 namespace RVX
 {
@@ -53,15 +54,44 @@ namespace RVX
         frame.target = bounds.GetCenter();
         frame.distance =
             (radius / std::sin(limitingHalfFov)) * fitMargin;
-        frame.nearPlane =
-            std::max(radius * 0.001f, frame.distance - radius * 1.10f);
-        frame.farPlane =
-            std::max(frame.nearPlane + radius, frame.distance + radius * 2.0f);
+        const ModelCameraClipRange clipRange =
+            BuildModelCameraClipRange(frame.distance, radius);
+        frame.nearPlane = clipRange.nearPlane;
+        frame.farPlane = clipRange.farPlane;
         frame.valid = IsFiniteVector(frame.target) &&
                       std::isfinite(frame.distance) && frame.distance > 0.0f &&
-                      std::isfinite(frame.nearPlane) && frame.nearPlane > 0.0f &&
-                      std::isfinite(frame.farPlane) &&
-                      frame.farPlane > frame.nearPlane;
+                      clipRange.valid;
         return frame;
+    }
+
+    ModelCameraClipRange BuildModelCameraClipRange(
+        float distance,
+        float boundsRadius,
+        float nearRadiusMargin,
+        float farRadiusMargin)
+    {
+        ModelCameraClipRange range;
+        if (!std::isfinite(distance) || distance <= 0.0f ||
+            !std::isfinite(boundsRadius) || boundsRadius <= 0.0f ||
+            !std::isfinite(nearRadiusMargin) || nearRadiusMargin < 1.0f ||
+            !std::isfinite(farRadiusMargin) || farRadiusMargin <= 0.0f)
+        {
+            return range;
+        }
+
+        const float scaleAwareNearFloor = std::max(
+            boundsRadius * 0.001f,
+            std::numeric_limits<float>::epsilon());
+        range.nearPlane = std::max(
+            scaleAwareNearFloor,
+            distance - boundsRadius * nearRadiusMargin);
+        range.farPlane = std::max(
+            range.nearPlane + boundsRadius,
+            distance + boundsRadius * farRadiusMargin);
+        range.valid = std::isfinite(range.nearPlane) &&
+                      std::isfinite(range.farPlane) &&
+                      range.nearPlane > 0.0f &&
+                      range.farPlane > range.nearPlane;
+        return range;
     }
 } // namespace RVX

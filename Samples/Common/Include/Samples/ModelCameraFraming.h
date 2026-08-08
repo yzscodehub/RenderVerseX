@@ -20,6 +20,14 @@ namespace RVX
         bool valid = false;
     };
 
+    /** @brief Perspective clip range derived from the current orbit distance. */
+    struct ModelCameraClipRange
+    {
+        float nearPlane = 0.1f;
+        float farPlane = 1000.0f;
+        bool valid = false;
+    };
+
     /**
      * @brief Fit a perspective camera to a world-space AABB.
      * @param bounds Finite world-space model bounds.
@@ -32,4 +40,17 @@ namespace RVX
                                            float aspect,
                                            float verticalFovRadians,
                                            float fitMargin = 1.10f);
+
+    /**
+     * @brief Derive scale-aware clip planes for an interactive orbit camera.
+     * @param distance Current camera distance from the orbit target.
+     * @param boundsRadius Radius of the scene bounds around the orbit target.
+     * @param nearRadiusMargin Extra radius kept in front of the nearest bound.
+     * @param farRadiusMargin Extra radii kept behind the target.
+     */
+    ModelCameraClipRange BuildModelCameraClipRange(
+        float distance,
+        float boundsRadius,
+        float nearRadiusMargin = 1.10f,
+        float farRadiusMargin = 2.0f);
 } // namespace RVX

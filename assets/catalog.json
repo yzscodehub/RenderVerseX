@@ -1,0 +1,38 @@
+{
+  "schemaId": "RVX.SampleAssetCatalog",
+  "schemaVersion": 1,
+  "assets": [
+    {
+      "id": "cowboy-town-hall-8k",
+      "kind": "environment",
+      "path": "textures/cowboy_town_hall_8k.exr",
+      "license": {
+        "spdxId": "CC0-1.0",
+        "file": "LICENSE.polyhaven-cc0.txt"
+      },
+      "source": {
+        "name": "Cowboy Town Hall HDRI",
+        "uri": "https://polyhaven.com/a/cowboy_town_hall",
+        "author": "Dimitrios Savva (photography); Jarod Guest (processing)"
+      },
+      "attribution": "Cowboy Town Hall HDRI from Poly Haven.",
+      "redistributable": true
+    },
+    {
+      "id": "valley-of-desolation-4k",
+      "kind": "environment",
+      "path": "textures/valley_of_desolation_4k.exr",
+      "license": {
+        "spdxId": "CC0-1.0",
+        "file": "LICENSE.polyhaven-cc0.txt"
+      },
+      "source": {
+        "name": "Valley Of Desolation HDRI",
+        "uri": "https://polyhaven.com/a/valley_of_desolation",
+        "author": "Dario Barresi"
+      },
+      "attribution": "Valley Of Desolation HDRI from Poly Haven.",
+      "redistributable": true
+    }
+  ]
+}

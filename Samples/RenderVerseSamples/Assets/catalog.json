@@ -1,0 +1,86 @@
+{
+  "schemaId": "RVX.SampleAssetCatalog",
+  "schemaVersion": 1,
+  "assets": [
+    {
+      "id": "r7-triangle",
+      "kind": "model",
+      "path": "models/r7-triangle/scene.gltf",
+      "license": {
+        "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
+        "file": "LICENSE.generated-fixtures.txt"
+      },
+      "source": {
+        "name": "RenderVerseX R7 visual gate fixture",
+        "uri": "repo://Tests/Fixtures/ModelViewer/R7Triangle.gltf",
+        "author": "RenderVerseX contributors"
+      },
+      "attribution": "Generated test geometry; no third-party source asset.",
+      "redistributable": true
+    },
+    {
+      "id": "shadow-plane-caster",
+      "kind": "model",
+      "path": "models/shadow-plane-caster/scene.gltf",
+      "license": {
+        "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
+        "file": "LICENSE.generated-fixtures.txt"
+      },
+      "source": {
+        "name": "RenderVerseX shadow visual gate fixture",
+        "uri": "repo://Tests/Fixtures/ModelViewer/ShadowPlaneCaster.gltf",
+        "author": "RenderVerseX contributors"
+      },
+      "attribution": "Generated test geometry; no third-party source asset.",
+      "redistributable": true
+    },
+    {
+      "id": "pbr-material-grid",
+      "kind": "model",
+      "path": "models/pbr-material-grid/scene.gltf",
+      "license": {
+        "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
+        "file": "LICENSE.generated-fixtures.txt"
+      },
+      "source": {
+        "name": "RenderVerseX PBR 5x5x5 factor cube",
+        "uri": "repo://Tests/Fixtures/Samples/PBRMaterialGrid.gltf",
+        "author": "RenderVerseX contributors"
+      },
+      "attribution": "Generated 5x5x5 factor-driven PBR parameter cube; no third-party source asset.",
+      "redistributable": true
+    },
+    {
+      "id": "pbr-material-texture-cube",
+      "kind": "model",
+      "path": "models/pbr-material-texture-cube/scene.gltf",
+      "license": {
+        "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
+        "file": "LICENSE.generated-fixtures.txt"
+      },
+      "source": {
+        "name": "RenderVerseX PBR 5x5x5 texture cube",
+        "uri": "repo://Tests/Fixtures/Samples/PBRMaterialTextureCube.gltf",
+        "author": "RenderVerseX contributors"
+      },
+      "attribution": "Generated 5x5x5 texture-driven PBR parameter cube; no third-party source asset.",
+      "redistributable": true
+    },
+    {
+      "id": "pbr-reference-environment",
+      "kind": "environment",
+      "path": "environments/pbr-reference/environment.hdr",
+      "license": {
+        "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
+        "file": "LICENSE.generated-fixtures.txt"
+      },
+      "source": {
+        "name": "RenderVerseX hermetic PBR reference environment",
+        "uri": "repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp",
+        "author": "RenderVerseX contributors"
+      },
+      "attribution": "Deterministically generated HDR fixture; no third-party source asset.",
+      "redistributable": true
+    }
+  ]
+}

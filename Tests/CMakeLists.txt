@@ -8,8 +8,11 @@ include(GoogleTest)
 option(RVX_ENABLE_EXTERNAL_ASSET_TESTS
     "Register opt-in rendering tests backed by a developer or CI asset library"
     OFF)
+option(RVX_ENABLE_EXTERNAL_ENVIRONMENT_TESTS
+    "Register opt-in PBR/IBL tests backed by cataloged external environments"
+    OFF)
 set(RVX_EXTERNAL_TEST_ASSET_ROOT "" CACHE PATH
-    "Asset library root used when RVX_ENABLE_EXTERNAL_ASSET_TESTS is ON")
+    "Asset library root used by enabled external asset test suites")
 
 # Collect all enabled backend libraries
 set(RVX_ALL_BACKENDS "")
@@ -611,6 +614,20 @@ if(TARGET RVX_SampleCommon)
         SOURCES SampleCLIValidation/main.cpp
         LIBS RVX::SampleCommon
         LABELS unit
+        TIMEOUT 30
+    )
+    rvx_add_gtest(
+        NAME SampleRegistryValidation
+        SOURCES SampleRegistryValidation/main.cpp
+        LIBS RVX::SampleCommon
+        LABELS "unit;samples"
+        TIMEOUT 30
+    )
+    rvx_add_gtest(
+        NAME SampleAssetCatalogValidation
+        SOURCES SampleAssetCatalogValidation/main.cpp
+        LIBS RVX::SampleCommon
+        LABELS "unit;samples;assets"
         TIMEOUT 30
     )
 endif()
@@ -1369,6 +1386,1047 @@ set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
 
 target_compile_features(SampleReportContentValidation PRIVATE cxx_std_20)
 
+function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKEND_NAME BACKEND_LABEL)
+    cmake_parse_arguments(
+        RVX_SAMPLE
+        "WAIT_READY"
+        "READY_TIMEOUT_MS;READY_MAX_FRAMES"
+        "SAMPLE_ARGS;REPORT_ARGS"
+        ${ARGN})
+    if(RVX_SAMPLE_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR
+            "rvx_add_renderverse_primary_smoke received unparsed arguments: ${RVX_SAMPLE_UNPARSED_ARGUMENTS}")
+    endif()
+
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        return()
+    endif()
+
+    set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+        RenderVerseSamples
+    )
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/RenderVerseSamples")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/RenderVerseSamples")
+    endforeach()
+
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}${SAMPLE_LABEL}")
+    set(smoke_actual
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.ppm")
+    set(smoke_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.json")
+    set(smoke_readiness_args)
+    set(smoke_frame_report_args --frame-count 8)
+    if(RVX_SAMPLE_WAIT_READY)
+        if(NOT RVX_SAMPLE_READY_TIMEOUT_MS)
+            set(RVX_SAMPLE_READY_TIMEOUT_MS 30000)
+        endif()
+        if(NOT RVX_SAMPLE_READY_MAX_FRAMES)
+            set(RVX_SAMPLE_READY_MAX_FRAMES 64)
+        endif()
+        list(APPEND smoke_readiness_args
+            --wait-ready
+            --ready-timeout-ms ${RVX_SAMPLE_READY_TIMEOUT_MS}
+            --ready-max-frames ${RVX_SAMPLE_READY_MAX_FRAMES})
+        set(smoke_frame_report_args --min-frame-count 8)
+    endif()
+
+    add_test(
+        NAME ${test_prefix}Smoke
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample ${SAMPLE_ID}
+            --backend ${BACKEND_NAME}
+            --smoke
+            --frames 8
+            --width 320
+            --height 180
+            --quality low
+            --screenshot "${smoke_actual}"
+            --report "${smoke_report}"
+            --diagnostics
+            --validation
+            ${smoke_readiness_args}
+            ${RVX_SAMPLE_SAMPLE_ARGS}
+    )
+    set_tests_properties(${test_prefix}Smoke PROPERTIES
+        LABELS "visual;gpu;sample;primary;${BACKEND_NAME}"
+        TIMEOUT 120
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+
+    add_test(
+        NAME ${test_prefix}ImageContentValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${smoke_actual}"
+            --min-width 320
+            --min-height 180
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+    )
+    set_tests_properties(${test_prefix}ImageContentValidation PROPERTIES
+        LABELS "visual;gpu;sample;primary;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS ${test_prefix}Smoke
+    )
+
+    add_test(
+        NAME ${test_prefix}ReportValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${smoke_report}"
+            --sample-name ${SAMPLE_ID}
+            --category visual
+            --backend ${BACKEND_NAME}
+            --quality low
+            ${smoke_frame_report_args}
+            --asset-id ${ASSET_ID}
+            --asset-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+            --require-redistributable
+            --min-visible-objects 1
+            --require-enabled-feature ModelResourceLoad
+            --require-enabled-feature SceneInstantiation
+            --require-enabled-feature RenderGraph
+            --require-enabled-feature SceneRendering
+            --require-ready
+            ${RVX_SAMPLE_REPORT_ARGS}
+    )
+    set_tests_properties(${test_prefix}ReportValidation PROPERTIES
+        LABELS "visual;gpu;sample;primary;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS ${test_prefix}Smoke
+    )
+endfunction()
+
+function(rvx_add_renderverse_pbr_response_validation BACKEND_NAME BACKEND_LABEL SAMPLE_LABEL)
+    if(NOT TARGET ImageContentValidation)
+        return()
+    endif()
+
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}${SAMPLE_LABEL}")
+    set(smoke_actual
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.ppm")
+    add_test(
+        NAME ${test_prefix}ResponseValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${smoke_actual}"
+            --min-width 320
+            --min-height 180
+            --require-pbr-grid-response
+            --min-pbr-metallic-luma-delta 40
+            --min-pbr-roughness-contrast-delta 2
+            --sample-step 2
+    )
+    set_tests_properties(${test_prefix}ResponseValidation PROPERTIES
+        LABELS "visual;gpu;sample;primary;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS ${test_prefix}Smoke
+    )
+endfunction()
+
+function(rvx_add_renderverse_pbr_texture_smoke BACKEND_NAME BACKEND_LABEL)
+    rvx_add_renderverse_primary_smoke(
+        pbr-materials PBRMaterialsTexture pbr-material-texture-cube
+        ${BACKEND_NAME} ${BACKEND_LABEL}
+        WAIT_READY
+        SAMPLE_ARGS
+            --asset pbr-material-texture-cube
+        REPORT_ARGS
+        --require-enabled-feature PBRMetallicRoughnessMaterials
+        --require-enabled-feature PBRMetallicRoughnessTexture
+        --require-enabled-feature PBRMaterialParameterCube
+        --require-enabled-feature PBRBaseColorFamilyAxis
+        --require-enabled-feature MetallicRoughnessTextureCube
+        --require-opaque-execution
+        --require-opaque-materials-ready
+        --require-opaque-material-texture-flags 4
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature ControlledStudioLighting
+        --require-enabled-feature BoundsCameraFraming
+        --require-resource-diagnostic "pbr materials=5"
+        --require-resource-diagnostic "metallic-roughness texture=5x5"
+        --require-resource-diagnostic "metallic levels=5"
+        --require-resource-diagnostic "roughness levels=5"
+        --require-resource-diagnostic "base-color families=5"
+        --require-resource-diagnostic "matrix shape=5x5x5"
+        --require-resource-diagnostic "total material spheres=125"
+        --require-resource-diagnostic "matrix x-axis=metallic 0.00,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix y-axis=roughness 0.05,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix z-axis=base-color terracotta,gold,green,blue,neutral"
+        --require-resource-diagnostic "material workflow=metallic-roughness texture"
+        --require-resource-diagnostic "texture cube materials=5"
+        --require-resource-diagnostic "texture cube combinations=125"
+    )
+    rvx_add_renderverse_pbr_response_validation(
+        ${BACKEND_NAME} ${BACKEND_LABEL} PBRMaterialsTexture)
+endfunction()
+
+function(rvx_add_renderverse_pbr_workflow_parity BACKEND_NAME BACKEND_LABEL)
+    if(NOT TARGET VisualGoldenValidation)
+        return()
+    endif()
+
+    set(factor_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamples${BACKEND_LABEL}PBRMaterials_320x180.ppm")
+    set(texture_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamples${BACKEND_LABEL}PBRMaterialsTexture_320x180.ppm")
+    set(diff_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/RenderVerseSamples${BACKEND_LABEL}PBRMaterialsWorkflowDiff.ppm")
+    set(parity_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/RenderVerseSamples${BACKEND_LABEL}PBRMaterialsWorkflowParity.json")
+    add_test(
+        NAME RenderVerseSamples${BACKEND_LABEL}PBRMaterialsWorkflowParity
+        COMMAND $<TARGET_FILE:VisualGoldenValidation>
+            --expected "${factor_capture}"
+            --actual "${texture_capture}"
+            --diff "${diff_capture}"
+            --report "${parity_report}"
+            --tolerance 0.0
+            --max-different-pixels 0
+    )
+    set_tests_properties(
+        RenderVerseSamples${BACKEND_LABEL}PBRMaterialsWorkflowParity
+        PROPERTIES
+        LABELS "visual;gpu;sample;primary;pbr;parity;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS "RenderVerseSamples${BACKEND_LABEL}PBRMaterialsSmoke;RenderVerseSamples${BACKEND_LABEL}PBRMaterialsTextureSmoke"
+    )
+endfunction()
+
+function(rvx_add_renderverse_external_environment_validation BACKEND_NAME BACKEND_LABEL)
+    if(NOT RVX_ENABLE_EXTERNAL_ENVIRONMENT_TESTS OR
+       NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        return()
+    endif()
+    if(NOT RVX_ENABLE_EXTERNAL_ASSET_TESTS)
+        message(FATAL_ERROR
+            "RVX_ENABLE_EXTERNAL_ENVIRONMENT_TESTS requires RVX_ENABLE_EXTERNAL_ASSET_TESTS")
+    endif()
+    if(NOT RVX_EXTERNAL_TEST_ASSET_ROOT)
+        message(FATAL_ERROR
+            "RVX_ENABLE_EXTERNAL_ASSET_TESTS requires RVX_EXTERNAL_TEST_ASSET_ROOT")
+    endif()
+
+    cmake_path(ABSOLUTE_PATH RVX_EXTERNAL_TEST_ASSET_ROOT
+        NORMALIZE OUTPUT_VARIABLE RVX_EXTERNAL_ENVIRONMENT_ROOT)
+    set(external_catalog "${RVX_EXTERNAL_ENVIRONMENT_ROOT}/catalog.json")
+    set(external_environment
+        "${RVX_EXTERNAL_ENVIRONMENT_ROOT}/textures/valley_of_desolation_4k.exr")
+    set(external_catalog_companion
+        "${RVX_EXTERNAL_ENVIRONMENT_ROOT}/textures/cowboy_town_hall_8k.exr")
+    set(external_license
+        "${RVX_EXTERNAL_ENVIRONMENT_ROOT}/LICENSE.polyhaven-cc0.txt")
+    foreach(required_file
+            "${external_catalog}"
+            "${external_environment}"
+            "${external_catalog_companion}"
+            "${external_license}")
+        if(NOT EXISTS "${required_file}")
+            message(FATAL_ERROR
+                "External environment gate requires ${required_file}")
+        endif()
+    endforeach()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/ExternalAssets")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/ExternalAssets")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}ExternalPolyHavenPBR")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ExternalAssets/${test_prefix}_320x180.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/ExternalAssets/${test_prefix}_320x180.json")
+
+    add_test(
+        NAME ${test_prefix}Validation
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample pbr-materials
+            --model "${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/Samples/PBRMaterialGrid.gltf"
+            --environment valley-of-desolation-4k
+            --catalog "${external_catalog}"
+            --asset-root "${RVX_EXTERNAL_ENVIRONMENT_ROOT}"
+            --backend ${BACKEND_NAME}
+            --frames 8
+            --wait-ready
+            --ready-timeout-ms 120000
+            --ready-max-frames 120
+            --width 320
+            --height 180
+            --quality low
+            --screenshot "${capture}"
+            --report "${report}"
+            --diagnostics
+            --validation
+    )
+    set_tests_properties(${test_prefix}Validation PROPERTIES
+        LABELS "visual;gpu;sample;pbr;external-assets;qualification-candidate;${BACKEND_NAME}"
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+
+    add_test(
+        NAME ${test_prefix}ImageContentValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 320
+            --min-height 180
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+    )
+    set_tests_properties(${test_prefix}ImageContentValidation PROPERTIES
+        LABELS "visual;gpu;sample;pbr;external-assets;qualification-candidate;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS ${test_prefix}Validation
+    )
+
+    add_test(
+        NAME ${test_prefix}ReportValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name pbr-materials
+            --category visual
+            --backend ${BACKEND_NAME}
+            --quality low
+            --min-frame-count 8
+            --min-visible-objects 1
+            --environment-asset-id valley-of-desolation-4k
+            --environment-license-spdx CC0-1.0
+            --environment-source-uri https://polyhaven.com/a/valley_of_desolation
+            --require-environment-redistributable
+            --require-opaque-execution
+            --require-opaque-materials-ready
+            --require-texture-ibl
+            --require-ready
+            --require-readiness-wait
+            --require-enabled-feature PBRMetallicRoughnessMaterials
+            --require-enabled-feature EnvironmentResourceLoad
+            --require-enabled-feature EnvironmentIBL
+            --require-enabled-feature DiffuseIBL
+            --require-enabled-feature SpecularIBL
+    )
+    set_tests_properties(${test_prefix}ReportValidation PROPERTIES
+        LABELS "visual;gpu;sample;pbr;external-assets;qualification-candidate;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS ${test_prefix}Validation
+    )
+endfunction()
+
+function(rvx_add_renderverse_readiness_smoke BACKEND_NAME BACKEND_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        return()
+    endif()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}PBRMaterialsReadiness")
+    set(smoke_actual
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.ppm")
+    set(smoke_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_320x180.json")
+
+    add_test(
+        NAME ${test_prefix}Smoke
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample pbr-materials
+            --backend ${BACKEND_NAME}
+            --smoke
+            --frames 1
+            --wait-ready
+            --ready-timeout-ms 60000
+            --ready-max-frames 192
+            --width 320
+            --height 180
+            --quality low
+            --screenshot "${smoke_actual}"
+            --report "${smoke_report}"
+            --diagnostics
+            --validation
+    )
+    set_tests_properties(${test_prefix}Smoke PROPERTIES
+        LABELS "visual;gpu;sample;primary;readiness;${BACKEND_NAME}"
+        TIMEOUT 120
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+
+    add_test(
+        NAME ${test_prefix}ImageContentValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${smoke_actual}"
+            --min-width 320
+            --min-height 180
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+    )
+    set_tests_properties(${test_prefix}ImageContentValidation PROPERTIES
+        LABELS "visual;gpu;sample;primary;readiness;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS ${test_prefix}Smoke
+    )
+
+    add_test(
+        NAME ${test_prefix}ReportValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${smoke_report}"
+            --sample-name pbr-materials
+            --category visual
+            --backend ${BACKEND_NAME}
+            --quality low
+            --min-frame-count 2
+            --min-visible-objects 1
+            --environment-asset-id pbr-reference-environment
+            --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+            --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+            --require-environment-redistributable
+            --require-opaque-execution
+            --require-opaque-materials-ready
+            --require-texture-ibl
+            --require-ready
+            --require-readiness-wait
+    )
+    set_tests_properties(${test_prefix}ReportValidation PROPERTIES
+        LABELS "visual;gpu;sample;primary;readiness;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS ${test_prefix}Smoke
+    )
+endfunction()
+
+function(rvx_add_renderverse_gpu_driven_parity BACKEND_NAME BACKEND_LABEL)
+    if(NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation OR
+       NOT TARGET VisualGoldenValidation)
+        return()
+    endif()
+
+    set(test_prefix "RenderVerseSamples${BACKEND_LABEL}GPUDriven")
+    set(gpu_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_GPU_320x180.ppm")
+    set(direct_capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_Direct_320x180.ppm")
+    set(parity_diff
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_Parity_320x180.diff.ppm")
+    set(parity_report
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/RenderVerseSamples/${test_prefix}_Parity_320x180.json")
+    set(gpu_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_GPU_320x180.json")
+    set(direct_report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/RenderVerseSamples/${test_prefix}_Direct_320x180.json")
+
+    foreach(render_path gpu-driven direct)
+        if(render_path STREQUAL "gpu-driven")
+            set(path_label GPU)
+            set(capture "${gpu_capture}")
+            set(report "${gpu_report}")
+            set(execution_gate --require-gpu-driven-execution)
+            set(request_feature GPUDrivenPathRequested)
+            set(render_path_args)
+        else()
+            set(path_label Direct)
+            set(capture "${direct_capture}")
+            set(report "${direct_report}")
+            set(execution_gate --require-direct-execution)
+            set(request_feature DirectPathRequested)
+            set(render_path_args --render-path direct)
+        endif()
+
+        add_test(
+            NAME ${test_prefix}${path_label}Smoke
+            COMMAND $<TARGET_FILE:RenderVerseSamples>
+                --sample gpu-driven
+                ${render_path_args}
+                --backend ${BACKEND_NAME}
+                --smoke
+                --frames 1
+                --wait-ready
+                --ready-timeout-ms 30000
+                --ready-max-frames 64
+                --width 320
+                --height 180
+                --quality low
+                --screenshot "${capture}"
+                --report "${report}"
+                --diagnostics
+                --validation
+        )
+        set_tests_properties(${test_prefix}${path_label}Smoke PROPERTIES
+            LABELS "visual;gpu;sample;primary;gpu-driven;parity;${BACKEND_NAME}"
+            TIMEOUT 120
+            WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        )
+
+        add_test(
+            NAME ${test_prefix}${path_label}ImageContentValidation
+            COMMAND $<TARGET_FILE:ImageContentValidation>
+                --image "${capture}"
+                --min-width 320
+                --min-height 180
+                --min-unique-colors 16
+                --min-luma-range 8
+                --near-black-threshold 8
+                --max-near-black-ratio 0.95
+                --sample-step 2
+        )
+        set_tests_properties(
+            ${test_prefix}${path_label}ImageContentValidation PROPERTIES
+            LABELS "visual;gpu;sample;primary;gpu-driven;parity;${BACKEND_NAME}"
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            DEPENDS ${test_prefix}${path_label}Smoke
+        )
+
+        add_test(
+            NAME ${test_prefix}${path_label}ReportValidation
+            COMMAND $<TARGET_FILE:SampleReportContentValidation>
+                --report "${report}"
+                --sample-name gpu-driven
+                --category visual
+                --backend ${BACKEND_NAME}
+                --quality low
+                --render-path ${render_path}
+                --min-frame-count 2
+                --asset-id r7-triangle
+                --asset-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+                --require-redistributable
+                --min-visible-objects 25
+                --require-ready
+                --require-readiness-wait
+                --require-enabled-feature ModelResourceLoad
+                --require-enabled-feature SceneInstantiation
+                --require-enabled-feature SharedSceneExtractionInput
+                --require-enabled-feature SharedModelResourceInstancing
+                --require-enabled-feature RenderPathPolicySelection
+                --require-enabled-feature ${request_feature}
+                --require-resource-diagnostic "scene model instances=25"
+                --require-resource-diagnostic "unique model resources=1"
+                ${execution_gate}
+        )
+        set_tests_properties(
+            ${test_prefix}${path_label}ReportValidation PROPERTIES
+            LABELS "visual;gpu;sample;primary;gpu-driven;parity;${BACKEND_NAME}"
+            TIMEOUT 30
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            DEPENDS ${test_prefix}${path_label}Smoke
+        )
+    endforeach()
+
+    add_test(
+        NAME ${test_prefix}CrossPathParityValidation
+        COMMAND $<TARGET_FILE:VisualGoldenValidation>
+            --expected "${gpu_capture}"
+            --actual "${direct_capture}"
+            --diff "${parity_diff}"
+            --report "${parity_report}"
+            --tolerance 0.0
+            --max-different-pixels 0
+    )
+    set_tests_properties(${test_prefix}CrossPathParityValidation PROPERTIES
+        LABELS "visual;gpu;sample;primary;gpu-driven;parity;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS "${test_prefix}GPUSmoke;${test_prefix}DirectSmoke"
+    )
+endfunction()
+
+if(WIN32 AND RVX_ENABLE_DX12)
+    rvx_add_renderverse_primary_smoke(
+        model-rendering ModelRendering shadow-plane-caster dx12 DX12)
+    rvx_add_renderverse_primary_smoke(
+        asset-gallery AssetGallery r7-triangle dx12 DX12
+        REPORT_ARGS
+        --min-visible-objects 3
+        --require-enabled-feature ResourceSceneAdapters
+        --require-enabled-feature CatalogStaticGallery
+        --require-enabled-feature BoundsCameraFraming
+        --require-unsupported-feature RuntimeAssetSwitching
+        --require-asset-entry r7-triangle
+        --require-asset-entry shadow-plane-caster
+        --require-asset-entry pbr-material-grid
+        --require-resource-diagnostic "gallery assets=3"
+    )
+    rvx_add_renderverse_primary_smoke(
+        lighting-shadows LightingShadows shadow-plane-caster dx12 DX12
+        REPORT_ARGS
+        --require-enabled-feature ShadowCasterReceiverFixture
+        --require-enabled-feature CascadedDirectionalShadowRequested
+        --require-enabled-feature DirectionalShadow
+        --require-directional-shadow
+        --require-resource-diagnostic "shadow atlas resolution=1024"
+        --require-resource-diagnostic "shadow cascade count=1"
+    )
+    rvx_add_renderverse_primary_smoke(
+        render-pipeline RenderPipeline shadow-plane-caster dx12 DX12
+        REPORT_ARGS
+        --require-enabled-feature EngineRenderPipelineConfiguration
+        --require-enabled-feature DirectionalShadow
+        --require-enabled-feature PostProcessRenderGraph
+        --require-directional-shadow
+        --min-render-graph-passes 8
+        --min-enabled-post-process-effects 2
+        --min-post-process-graph-passes 2
+        --forbid-unsupported-post-process
+        --require-resource-diagnostic "pipeline ownership=Render/RenderGraph/PostProcessStack"
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewer r7-triangle dx12 DX12
+        SAMPLE_ARGS
+            --environment pbr-reference-environment
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature TextureEnvironmentScene
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewerProcedural r7-triangle dx12 DX12
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --require-enabled-feature ProceduralSkyScene
+        --require-fallback-reason PacketEnvironmentResourcesUnavailable
+    )
+    rvx_add_renderverse_primary_smoke(
+        pbr-materials PBRMaterials pbr-material-grid dx12 DX12
+        WAIT_READY
+        READY_TIMEOUT_MS 60000
+        READY_MAX_FRAMES 192
+        REPORT_ARGS
+        --require-enabled-feature PBRMetallicRoughnessMaterials
+        --require-enabled-feature PBRMaterialParameterCube
+        --require-enabled-feature PBRBaseColorFamilyAxis
+        --require-enabled-feature MetallicRoughnessFactorCube
+        --require-enabled-feature SharedMeshSceneInstances
+        --require-opaque-execution
+        --require-opaque-materials-ready
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature ControlledStudioLighting
+        --require-enabled-feature BoundsCameraFraming
+        --require-resource-diagnostic "pbr materials=125"
+        --require-resource-diagnostic "metallic levels=5"
+        --require-resource-diagnostic "roughness levels=5"
+        --require-resource-diagnostic "base-color families=5"
+        --require-resource-diagnostic "matrix shape=5x5x5"
+        --require-resource-diagnostic "total material spheres=125"
+        --require-resource-diagnostic "matrix x-axis=metallic 0.00,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix y-axis=roughness 0.05,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix z-axis=base-color terracotta,gold,green,blue,neutral"
+        --require-resource-diagnostic "material workflow=factors"
+        --require-resource-diagnostic "factor cube materials=125"
+        --require-resource-diagnostic "factor cube combinations=125"
+        --require-resource-diagnostic "model meshes=1"
+        --require-resource-diagnostic "scene mesh instances=125"
+        --require-resource-diagnostic "unique mesh resources=1"
+        --require-resource-diagnostic "material overrides=125"
+        --require-resource-diagnostic "opaque draw packets=125"
+    )
+    rvx_add_renderverse_pbr_response_validation(dx12 DX12 PBRMaterials)
+    rvx_add_renderverse_pbr_texture_smoke(dx12 DX12)
+    rvx_add_renderverse_pbr_workflow_parity(dx12 DX12)
+    rvx_add_renderverse_external_environment_validation(dx12 DX12)
+    rvx_add_renderverse_readiness_smoke(dx12 DX12)
+    rvx_add_renderverse_gpu_driven_parity(dx12 DX12)
+endif()
+if(RVX_ENABLE_VULKAN)
+    rvx_add_renderverse_primary_smoke(
+        model-rendering ModelRendering shadow-plane-caster vulkan Vulkan)
+    rvx_add_renderverse_primary_smoke(
+        asset-gallery AssetGallery r7-triangle vulkan Vulkan
+        REPORT_ARGS
+        --min-visible-objects 3
+        --require-enabled-feature ResourceSceneAdapters
+        --require-enabled-feature CatalogStaticGallery
+        --require-enabled-feature BoundsCameraFraming
+        --require-unsupported-feature RuntimeAssetSwitching
+        --require-asset-entry r7-triangle
+        --require-asset-entry shadow-plane-caster
+        --require-asset-entry pbr-material-grid
+        --require-resource-diagnostic "gallery assets=3"
+    )
+    rvx_add_renderverse_primary_smoke(
+        lighting-shadows LightingShadows shadow-plane-caster vulkan Vulkan
+        REPORT_ARGS
+        --require-enabled-feature ShadowCasterReceiverFixture
+        --require-enabled-feature CascadedDirectionalShadowRequested
+        --require-enabled-feature DirectionalShadow
+        --require-directional-shadow
+        --require-resource-diagnostic "shadow atlas resolution=1024"
+        --require-resource-diagnostic "shadow cascade count=1"
+    )
+    rvx_add_renderverse_primary_smoke(
+        render-pipeline RenderPipeline shadow-plane-caster vulkan Vulkan
+        REPORT_ARGS
+        --require-enabled-feature EngineRenderPipelineConfiguration
+        --require-enabled-feature DirectionalShadow
+        --require-enabled-feature PostProcessRenderGraph
+        --require-directional-shadow
+        --min-render-graph-passes 8
+        --min-enabled-post-process-effects 2
+        --min-post-process-graph-passes 2
+        --forbid-unsupported-post-process
+        --require-resource-diagnostic "pipeline ownership=Render/RenderGraph/PostProcessStack"
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewer r7-triangle vulkan Vulkan
+        SAMPLE_ARGS
+            --environment pbr-reference-environment
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature TextureEnvironmentScene
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewerProcedural r7-triangle vulkan Vulkan
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --require-enabled-feature ProceduralSkyScene
+        --require-fallback-reason PacketEnvironmentResourcesUnavailable
+    )
+    rvx_add_renderverse_primary_smoke(
+        pbr-materials PBRMaterials pbr-material-grid vulkan Vulkan
+        WAIT_READY
+        READY_TIMEOUT_MS 60000
+        READY_MAX_FRAMES 192
+        REPORT_ARGS
+        --require-enabled-feature PBRMetallicRoughnessMaterials
+        --require-enabled-feature PBRMaterialParameterCube
+        --require-enabled-feature PBRBaseColorFamilyAxis
+        --require-enabled-feature MetallicRoughnessFactorCube
+        --require-enabled-feature SharedMeshSceneInstances
+        --require-opaque-execution
+        --require-opaque-materials-ready
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature ControlledStudioLighting
+        --require-enabled-feature BoundsCameraFraming
+        --require-resource-diagnostic "pbr materials=125"
+        --require-resource-diagnostic "metallic levels=5"
+        --require-resource-diagnostic "roughness levels=5"
+        --require-resource-diagnostic "base-color families=5"
+        --require-resource-diagnostic "matrix shape=5x5x5"
+        --require-resource-diagnostic "total material spheres=125"
+        --require-resource-diagnostic "matrix x-axis=metallic 0.00,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix y-axis=roughness 0.05,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix z-axis=base-color terracotta,gold,green,blue,neutral"
+        --require-resource-diagnostic "material workflow=factors"
+        --require-resource-diagnostic "factor cube materials=125"
+        --require-resource-diagnostic "factor cube combinations=125"
+        --require-resource-diagnostic "model meshes=1"
+        --require-resource-diagnostic "scene mesh instances=125"
+        --require-resource-diagnostic "unique mesh resources=1"
+        --require-resource-diagnostic "material overrides=125"
+        --require-resource-diagnostic "opaque draw packets=125"
+    )
+    rvx_add_renderverse_pbr_response_validation(vulkan Vulkan PBRMaterials)
+    rvx_add_renderverse_pbr_texture_smoke(vulkan Vulkan)
+    rvx_add_renderverse_pbr_workflow_parity(vulkan Vulkan)
+    rvx_add_renderverse_external_environment_validation(vulkan Vulkan)
+    rvx_add_renderverse_readiness_smoke(vulkan Vulkan)
+    rvx_add_renderverse_gpu_driven_parity(vulkan Vulkan)
+endif()
+if(APPLE AND RVX_ENABLE_METAL)
+    rvx_add_renderverse_primary_smoke(
+        model-rendering ModelRendering shadow-plane-caster metal Metal)
+    rvx_add_renderverse_primary_smoke(
+        asset-gallery AssetGallery r7-triangle metal Metal
+        REPORT_ARGS
+        --min-visible-objects 3
+        --require-enabled-feature ResourceSceneAdapters
+        --require-enabled-feature CatalogStaticGallery
+        --require-enabled-feature BoundsCameraFraming
+        --require-unsupported-feature RuntimeAssetSwitching
+        --require-asset-entry r7-triangle
+        --require-asset-entry shadow-plane-caster
+        --require-asset-entry pbr-material-grid
+        --require-resource-diagnostic "gallery assets=3"
+    )
+    rvx_add_renderverse_primary_smoke(
+        lighting-shadows LightingShadows shadow-plane-caster metal Metal
+        REPORT_ARGS
+        --require-enabled-feature ShadowCasterReceiverFixture
+        --require-enabled-feature CascadedDirectionalShadowRequested
+        --require-enabled-feature DirectionalShadow
+        --require-directional-shadow
+        --require-resource-diagnostic "shadow atlas resolution=1024"
+        --require-resource-diagnostic "shadow cascade count=1"
+    )
+    rvx_add_renderverse_primary_smoke(
+        render-pipeline RenderPipeline shadow-plane-caster metal Metal
+        REPORT_ARGS
+        --require-enabled-feature EngineRenderPipelineConfiguration
+        --require-enabled-feature DirectionalShadow
+        --require-enabled-feature PostProcessRenderGraph
+        --require-directional-shadow
+        --min-render-graph-passes 8
+        --min-enabled-post-process-effects 2
+        --min-post-process-graph-passes 2
+        --forbid-unsupported-post-process
+        --require-resource-diagnostic "pipeline ownership=Render/RenderGraph/PostProcessStack"
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewer r7-triangle metal Metal
+        SAMPLE_ARGS
+            --environment pbr-reference-environment
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature TextureEnvironmentScene
+    )
+    rvx_add_renderverse_primary_smoke(
+        model-viewer ModelViewerProcedural r7-triangle metal Metal
+        REPORT_ARGS
+        --require-enabled-feature BoundsCameraFraming
+        --require-enabled-feature OrbitCamera
+        --require-enabled-feature ProceduralSkyScene
+        --require-fallback-reason PacketEnvironmentResourcesUnavailable
+    )
+    rvx_add_renderverse_primary_smoke(
+        pbr-materials PBRMaterials pbr-material-grid metal Metal
+        WAIT_READY
+        READY_TIMEOUT_MS 60000
+        READY_MAX_FRAMES 192
+        REPORT_ARGS
+        --require-enabled-feature PBRMetallicRoughnessMaterials
+        --require-enabled-feature PBRMaterialParameterCube
+        --require-enabled-feature PBRBaseColorFamilyAxis
+        --require-enabled-feature MetallicRoughnessFactorCube
+        --require-enabled-feature SharedMeshSceneInstances
+        --require-opaque-execution
+        --require-opaque-materials-ready
+        --environment-asset-id pbr-reference-environment
+        --environment-license-spdx LicenseRef-RenderVerseX-Generated-Fixture
+        --environment-source-uri repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp
+        --require-environment-redistributable
+        --require-texture-ibl
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
+        --require-enabled-feature EnvironmentResourceLoad
+        --require-enabled-feature EnvironmentIBL
+        --require-enabled-feature DiffuseIBL
+        --require-enabled-feature SpecularIBL
+        --require-enabled-feature TextureIBL
+        --require-enabled-feature ControlledStudioLighting
+        --require-enabled-feature BoundsCameraFraming
+        --require-resource-diagnostic "pbr materials=125"
+        --require-resource-diagnostic "metallic levels=5"
+        --require-resource-diagnostic "roughness levels=5"
+        --require-resource-diagnostic "base-color families=5"
+        --require-resource-diagnostic "matrix shape=5x5x5"
+        --require-resource-diagnostic "total material spheres=125"
+        --require-resource-diagnostic "matrix x-axis=metallic 0.00,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix y-axis=roughness 0.05,0.25,0.50,0.75,1.00"
+        --require-resource-diagnostic "matrix z-axis=base-color terracotta,gold,green,blue,neutral"
+        --require-resource-diagnostic "material workflow=factors"
+        --require-resource-diagnostic "factor cube materials=125"
+        --require-resource-diagnostic "factor cube combinations=125"
+        --require-resource-diagnostic "model meshes=1"
+        --require-resource-diagnostic "scene mesh instances=125"
+        --require-resource-diagnostic "unique mesh resources=1"
+        --require-resource-diagnostic "material overrides=125"
+        --require-resource-diagnostic "opaque draw packets=125"
+    )
+    rvx_add_renderverse_pbr_response_validation(metal Metal PBRMaterials)
+    rvx_add_renderverse_pbr_texture_smoke(metal Metal)
+    rvx_add_renderverse_pbr_workflow_parity(metal Metal)
+    rvx_add_renderverse_external_environment_validation(metal Metal)
+    rvx_add_renderverse_readiness_smoke(metal Metal)
+    rvx_add_renderverse_gpu_driven_parity(metal Metal)
+endif()
+
+if(TARGET RenderVerseSamples)
+    add_test(
+        NAME RenderVerseSamplesUnknownAssetFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample model-rendering
+            --asset definitely-unknown
+            --backend auto
+            --frames 1
+    )
+    set_tests_properties(RenderVerseSamplesUnknownAssetFailsClosed PROPERTIES
+        LABELS "unit;samples;assets"
+        TIMEOUT 30
+        WILL_FAIL TRUE
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+
+    add_test(
+        NAME RenderVerseSamplesUnsupportedRenderPathFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample model-rendering
+            --render-path gpu-driven
+            --backend auto
+            --frames 1
+    )
+    set_tests_properties(
+        RenderVerseSamplesUnsupportedRenderPathFailsClosed PROPERTIES
+        LABELS "unit;samples;policy"
+        TIMEOUT 30
+        WILL_FAIL TRUE
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+
+    add_test(
+        NAME RenderVerseSamplesMissingModelFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample model-rendering
+            --model "${CMAKE_CURRENT_BINARY_DIR}/DefinitelyMissing/model.gltf"
+            --backend auto
+            --frames 1
+    )
+    set_tests_properties(RenderVerseSamplesMissingModelFailsClosed PROPERTIES
+        LABELS "unit;samples;assets"
+        TIMEOUT 30
+        WILL_FAIL TRUE
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+
+    add_test(
+        NAME RenderVerseSamplesUnknownEnvironmentFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample pbr-materials
+            --environment definitely-unknown
+            --backend auto
+            --frames 1
+    )
+    set_tests_properties(RenderVerseSamplesUnknownEnvironmentFailsClosed PROPERTIES
+        LABELS "unit;samples;assets"
+        TIMEOUT 30
+        WILL_FAIL TRUE
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+
+    add_test(
+        NAME RenderVerseSamplesEnvironmentKindMismatchFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample pbr-materials
+            --environment pbr-material-grid
+            --backend auto
+            --frames 1
+    )
+    set_tests_properties(RenderVerseSamplesEnvironmentKindMismatchFailsClosed PROPERTIES
+        LABELS "unit;samples;assets"
+        TIMEOUT 30
+        WILL_FAIL TRUE
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+
+    add_test(
+        NAME RenderVerseSamplesUnsupportedEnvironmentFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample model-rendering
+            --environment pbr-reference-environment
+            --backend auto
+            --frames 1
+    )
+    set_tests_properties(RenderVerseSamplesUnsupportedEnvironmentFailsClosed PROPERTIES
+        LABELS "unit;samples;assets"
+        TIMEOUT 30
+        WILL_FAIL TRUE
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+
+    add_test(
+        NAME RenderVerseSamplesMissingEnvironmentFileFailsClosed
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample pbr-materials
+            --environment-file
+                "${CMAKE_CURRENT_BINARY_DIR}/DefinitelyMissing/environment.exr"
+            --backend auto
+            --frames 1
+    )
+    set_tests_properties(RenderVerseSamplesMissingEnvironmentFileFailsClosed PROPERTIES
+        LABELS "unit;samples;assets"
+        TIMEOUT 30
+        WILL_FAIL TRUE
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+endif()
+
 function(rvx_add_showcase_smoke_test TARGET_NAME)
     if(NOT RVX_ENABLE_DX11 OR NOT TARGET ${TARGET_NAME} OR NOT TARGET ImageContentValidation)
         return()
@@ -1683,8 +2741,9 @@ if(RVX_ENABLE_DX11 AND TARGET ResourceRuntimeShowcase AND TARGET SampleReportCon
 endif()
 
 add_executable(ModelViewerHDRIFixtureWriter
-    ModelViewerHDRIFixtureWriter/main.cpp
+    ${CMAKE_SOURCE_DIR}/Samples/Common/Tools/SampleHDRFixtureWriter.cpp
 )
+
 set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
     ModelViewerHDRIFixtureWriter
 )

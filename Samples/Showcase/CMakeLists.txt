@@ -1,5 +1,9 @@
 # =============================================================================
-# Showcase Samples - integrated engine feature demonstrations
+# Legacy Showcase validation/report harnesses.
+#
+# Product-facing visual examples live in RenderVerseSamples. Several targets
+# below intentionally remain source aliases during incremental migration; their
+# target names alone are not evidence of a complete visual implementation.
 # =============================================================================
 
 function(rvx_add_engine_showcase TARGET_NAME SOURCE_FILE DEFAULT_MODE)
@@ -43,6 +47,7 @@ function(rvx_add_engine_showcase TARGET_NAME SOURCE_FILE DEFAULT_MODE)
     endif()
 
     set_target_properties(${TARGET_NAME} PROPERTIES
+        FOLDER "Samples/LegacyShowcase"
         VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 endfunction()

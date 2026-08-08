@@ -1,0 +1,8 @@
+SHA-256 hashes recorded for the local source environment files on 2026-08-06:
+
+17D4AE443B8BA5378C2626965C1592E2350F2D7BB0168DAC435D5D2031462166  textures/aarfontein_dusk_4k.exr
+01AEDFAA0851C656AB839B5E1B1CB289B97D3202F4D4D9656904194C3899BA63  textures/cowboy_town_hall_8k.exr
+ADD015370503F4927F08AE128E9F50BF1EF28A3B2BE4370D5032D5FB9B2ACE05  textures/valley_of_desolation_4k.exr
+
+aarfontein_dusk_4k.exr is intentionally absent from catalog.json until its
+exact source page, authorship, and license provenance have been confirmed.

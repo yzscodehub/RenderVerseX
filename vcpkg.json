@@ -86,6 +86,7 @@
       "name": "recastnavigation",
       "platform": "windows | linux | osx"
     },
-    "miniaudio"
+    "miniaudio",
+    "nlohmann-json"
   ]
 }

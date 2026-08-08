@@ -66,7 +66,9 @@ namespace RVX
                 result.diagnostics.lastCapture.requestId ==
                     request.captureRequestId &&
                 result.diagnostics.lastCapture.code !=
-                    RenderFrameCaptureResultCode::None)
+                    RenderFrameCaptureResultCode::None &&
+                result.diagnostics.lastCapture.code !=
+                    RenderFrameCaptureResultCode::Completed)
             {
                 result.code = RuntimeFrameWaitCode::CaptureFailed;
                 return result;

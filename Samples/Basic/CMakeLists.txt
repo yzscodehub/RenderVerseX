@@ -1,5 +1,8 @@
 # =============================================================================
-# Basic Samples - focused low-level demonstrations
+# Basic low-level contracts and diagnostics.
+#
+# FeatureSamples/main.cpp aliases are retained for compatibility and focused
+# validation. They are not independent product-level visual scene controllers.
 # =============================================================================
 
 add_subdirectory(BasicRHI)
@@ -27,6 +30,7 @@ function(rvx_add_basic_sample TARGET_NAME SAMPLE_KIND)
     target_compile_features(${TARGET_NAME} PRIVATE cxx_std_20)
 
     set_target_properties(${TARGET_NAME} PROPERTIES
+        FOLDER "Samples/BasicContracts"
         VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 endfunction()

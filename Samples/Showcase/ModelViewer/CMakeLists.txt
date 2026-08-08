@@ -1,7 +1,9 @@
 # =============================================================================
-# ModelViewer Sample
+# Legacy ModelViewer validation harness
 # =============================================================================
-# Demonstrates the integrated Resource/Scene/Render pipeline
+# Retained while specialized GPU-driven, ray-tracing, particle, and historical
+# visual gates migrate to dedicated samples or validation executables.
+# Product-facing model inspection lives in RenderVerseSamples --sample model-viewer.
 # =============================================================================
 
 add_executable(ModelViewer main.cpp)
@@ -42,5 +44,6 @@ endif()
 
 # Set working directory for debugging
 set_target_properties(ModelViewer PROPERTIES
+    FOLDER "Samples/LegacyValidation"
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>"
 )

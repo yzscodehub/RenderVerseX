@@ -1,0 +1,52 @@
+#pragma once
+
+/** @file SampleRunner.h @brief Shared executable host for sample scenes. */
+
+#include "Samples/SampleCLI.h"
+#include "Samples/SampleInfo.h"
+#include "RenderContracts/RenderFramePacket.h"
+
+#include <filesystem>
+#include <string>
+
+namespace RVX
+{
+    class SampleRegistry;
+
+    struct SampleRunnerCLIOptions
+    {
+        SampleCLIOptions common;
+        std::string sampleId = "model-rendering";
+        std::string assetId;
+        std::filesystem::path modelPath;
+        std::string environmentId;
+        std::filesystem::path environmentPath;
+        std::filesystem::path catalogPath;
+        std::filesystem::path assetRoot;
+        SampleRenderPath renderPath = SampleRenderPath::Auto;
+        RenderInstancingMode instancingMode = RenderInstancingMode::Auto;
+        uint32 readyTimeoutMs = 120000;
+        uint32 readyMaxFrames = 0;
+        bool renderPathExplicit = false;
+        bool waitReady = false;
+        bool listSamples = false;
+    };
+
+    bool ParseSampleRunnerCLI(int argc,
+                              const char* const* argv,
+                              SampleRunnerCLIOptions& options,
+                              std::string* outError = nullptr);
+
+    void PrintSampleRunnerUsage(const SampleRegistry& registry,
+                                const char* executableName);
+
+    class SampleRunner final
+    {
+    public:
+        explicit SampleRunner(const SampleRegistry& registry) noexcept;
+        int Run(int argc, char* argv[]) const;
+
+    private:
+        const SampleRegistry& m_registry;
+    };
+} // namespace RVX

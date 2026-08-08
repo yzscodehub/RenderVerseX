@@ -54,6 +54,37 @@ FORBIDDEN_RENDER_INCLUDE_PREFIXES = (
     "Scene/",
     "World/",
 )
+FORBIDDEN_SCENE_LINKS = (
+    "RVX::RenderContracts",
+    "RVX_RenderContracts",
+    "RVX::Render",
+    "RVX_Render",
+    "RVX::RHI",
+    "RVX_RHI",
+)
+FORBIDDEN_SCENE_INCLUDE_PREFIXES = (
+    "Render/",
+    "RenderContracts/",
+    "RHI/",
+    "RHI_BackendFactory/",
+    "RHI_DX11/",
+    "RHI_DX12/",
+    "RHI_Metal/",
+    "RHI_OpenGL/",
+    "RHI_Vulkan/",
+)
+FORBIDDEN_PRODUCT_SAMPLE_INCLUDE_PREFIXES = (
+    "RHI/",
+    "RHI_BackendFactory/",
+    "RHI_DX11/",
+    "RHI_DX12/",
+    "RHI_Metal/",
+    "RHI_OpenGL/",
+    "RHI_Vulkan/",
+    "Render/RenderGraph",
+    "Runtime/Camera/Camera.h",
+    "Scene/SceneManager.h",
+)
 REQUIRED_SUBSYSTEM_METHODS = (
     "Configure",
     "TryPublishFrame",
@@ -201,6 +232,95 @@ def check_render_includes(root: Path, findings: list[Finding]) -> None:
                         f"Render source includes forbidden Runtime window header '{included}'",
                     )
                 )
+
+
+def check_scene_dependency_boundary(root: Path, findings: list[Finding]) -> None:
+    cmake_path = root / "Scene/CMakeLists.txt"
+    cmake = read_text(cmake_path)
+    link_blocks = "\n".join(
+        match.group("body")
+        for match in re.finditer(
+            r"target_link_libraries\s*\(\s*RVX_Scene\b(?P<body>.*?)\)",
+            cmake,
+            re.DOTALL,
+        )
+    )
+    if not link_blocks:
+        findings.append(
+            Finding(cmake_path.relative_to(root), 1, "RVX_Scene link declaration is missing")
+        )
+    else:
+        for dependency in FORBIDDEN_SCENE_LINKS:
+            if dependency in link_blocks:
+                findings.append(
+                    Finding(
+                        cmake_path.relative_to(root),
+                        line_number(cmake, cmake.find(dependency)),
+                        f"RVX_Scene must not link forbidden module '{dependency}'",
+                    )
+                )
+
+    scene_root = root / "Scene"
+    include_pattern = re.compile(r'^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]', re.MULTILINE)
+    for path in scene_root.rglob("*"):
+        if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+            continue
+        text = read_text(path)
+        for match in include_pattern.finditer(text):
+            included = match.group(1)
+            if included.startswith(FORBIDDEN_SCENE_INCLUDE_PREFIXES):
+                findings.append(
+                    Finding(
+                        path.relative_to(root),
+                        line_number(text, match.start()),
+                        f"Scene source includes forbidden rendering header '{included}'",
+                    )
+                )
+
+
+def check_product_sample_boundary(root: Path, findings: list[Finding]) -> None:
+    sample_root = root / "Samples/RenderVerseSamples"
+    include_pattern = re.compile(r'^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]', re.MULTILINE)
+    for path in sample_root.rglob("*"):
+        if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+            continue
+        text = read_text(path)
+        for match in include_pattern.finditer(text):
+            included = match.group(1)
+            if included.startswith(FORBIDDEN_PRODUCT_SAMPLE_INCLUDE_PREFIXES):
+                findings.append(
+                    Finding(
+                        path.relative_to(root),
+                        line_number(text, match.start()),
+                        f"product sample includes engine-owned rendering header '{included}'",
+                    )
+                )
+        backend_match = re.search(r"\bRHIBackendType\s*::", text)
+        if backend_match:
+            findings.append(
+                Finding(
+                    path.relative_to(root),
+                    line_number(text, backend_match.start()),
+                    "product sample scene must not branch on the selected RHI backend",
+                )
+            )
+
+    context_path = root / "Samples/Common/Include/Samples/SampleContext.h"
+    context = read_text(context_path)
+    for forbidden_type in (
+        r"\bCamera\s*\*",
+        r"\bSceneManager\s*[&*]",
+        r"\bRenderFrameSettings\s*&",
+    ):
+        match = re.search(forbidden_type, context)
+        if match:
+            findings.append(
+                Finding(
+                    context_path.relative_to(root),
+                    line_number(context, match.start()),
+                    "SampleContext must expose Scene/CameraComponent facades, not legacy raw ownership",
+                )
+            )
 
 
 def check_subsystem_surface(root: Path, findings: list[Finding]) -> None:
@@ -409,6 +529,8 @@ def main() -> int:
     find_symbols(root, findings)
     check_render_links(root, findings)
     check_render_includes(root, findings)
+    check_scene_dependency_boundary(root, findings)
+    check_product_sample_boundary(root, findings)
     check_subsystem_surface(root, findings)
     check_scene_renderer_surface(root, findings)
     check_production_executor_boundary(root, findings)
