@@ -178,8 +178,19 @@ namespace RVX
         uint64 lastCpuDurationNanoseconds = 0;
         std::vector<RHITextureBarrier> textureBarriers;
         std::vector<RHIBufferBarrier> bufferBarriers;
+        std::vector<RHITextureBarrier> postTextureBarriers;
+        std::vector<RHIBufferBarrier> postBufferBarriers;
         std::vector<AliasingBarrier> aliasingBarriers;  // For memory aliasing
         std::function<void(RHICommandContext&)> execute;
+    };
+
+    struct InitialQueueReleaseBatch
+    {
+        RenderGraph::DiagnosticExecutionQueue queue =
+            RenderGraph::DiagnosticExecutionQueue::Unknown;
+        std::vector<uint32> targetPassIndices;
+        std::vector<RHITextureBarrier> textureBarriers;
+        std::vector<RHIBufferBarrier> bufferBarriers;
     };
 
     struct RenderGraphImpl
@@ -202,6 +213,7 @@ namespace RVX
         std::vector<uint32> executionOrder;
         std::vector<std::vector<uint32>> passDependencies;
         std::vector<std::vector<uint32>> passDependents;
+        std::vector<InitialQueueReleaseBatch> initialQueueReleaseBatches;
         std::vector<QueueSyncPoint> lastQueueSyncs;
         RenderGraph::CompileStats stats;
         std::vector<std::string> compileDiagnostics;
@@ -228,6 +240,9 @@ namespace RVX
         const std::vector<uint32>& executionOrder);
     RenderGraph::SubmissionPlan BuildRenderGraphSubmissionPlan(const RenderGraphImpl& graph);
     void ExecuteRenderGraph(RenderGraphImpl& graph, RHICommandContext& ctx);
+    bool RecordRenderGraphQueueSubmission(
+        RenderGraphImpl& graph,
+        RenderGraph::RecordedQueueSubmission& submission);
     void ExecuteRenderGraphAsync(RenderGraphImpl& graph,
                                   RHICommandContext& graphicsCtx,
                                   RHICommandContext* computeCtx,

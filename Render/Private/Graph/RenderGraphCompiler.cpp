@@ -2,6 +2,7 @@
 #include "Core/Assert.h"
 #include "Core/Log.h"
 #include <algorithm>
+#include <iterator>
 #include <string>
 
 namespace RVX
@@ -26,6 +27,21 @@ namespace RVX
             RHISubresourceRange range = RHISubresourceRange::All();
             range.aspect = GetDefaultTextureAspect(desc);
             return range;
+        }
+
+        RenderGraph::DiagnosticExecutionQueue ToDiagnosticQueue(
+            GPUQueueDomain domain)
+        {
+            switch (domain)
+            {
+                case GPUQueueDomain::Graphics:
+                    return RenderGraph::DiagnosticExecutionQueue::Graphics;
+                case GPUQueueDomain::Compute:
+                    return RenderGraph::DiagnosticExecutionQueue::Compute;
+                case GPUQueueDomain::Copy:
+                    return RenderGraph::DiagnosticExecutionQueue::Copy;
+            }
+            return RenderGraph::DiagnosticExecutionQueue::Unknown;
         }
 
         bool AcquireTransientTexture(RenderGraphImpl& graph,
@@ -110,6 +126,54 @@ namespace RVX
             if (size == RVX_WHOLE_SIZE || size == 0)
                 return fullSize > offset ? fullSize - offset : 0;
             return std::min(size, fullSize > offset ? fullSize - offset : 0);
+        }
+
+        bool TextureRangesOverlap(const RHISubresourceRange& left,
+                                  const RHISubresourceRange& right,
+                                  const TextureResource& resource)
+        {
+            uint32 leftMip = 0;
+            uint32 leftMipCount = 0;
+            uint32 leftLayer = 0;
+            uint32 leftLayerCount = 0;
+            uint32 rightMip = 0;
+            uint32 rightMipCount = 0;
+            uint32 rightLayer = 0;
+            uint32 rightLayerCount = 0;
+            ResolveSubresourceRange(left,
+                                    resource,
+                                    leftMip,
+                                    leftMipCount,
+                                    leftLayer,
+                                    leftLayerCount);
+            ResolveSubresourceRange(right,
+                                    resource,
+                                    rightMip,
+                                    rightMipCount,
+                                    rightLayer,
+                                    rightLayerCount);
+            const bool mipOverlap =
+                leftMip < rightMip + rightMipCount &&
+                rightMip < leftMip + leftMipCount;
+            const bool layerOverlap =
+                leftLayer < rightLayer + rightLayerCount &&
+                rightLayer < leftLayer + leftLayerCount;
+            return mipOverlap && layerOverlap;
+        }
+
+        bool BufferRangesOverlap(uint64 leftOffset,
+                                 uint64 leftSize,
+                                 uint64 rightOffset,
+                                 uint64 rightSize,
+                                 uint64 fullSize)
+        {
+            const uint64 resolvedLeft = ResolveBufferRangeSize(
+                leftOffset, leftSize, fullSize);
+            const uint64 resolvedRight = ResolveBufferRangeSize(
+                rightOffset, rightSize, fullSize);
+            return resolvedLeft != 0 && resolvedRight != 0 &&
+                   leftOffset < rightOffset + resolvedRight &&
+                   rightOffset < leftOffset + resolvedLeft;
         }
 
         void EnsureBufferRangeTracking(BufferResource& resource)
@@ -1502,6 +1566,7 @@ namespace RVX
             graph.compatibilityStateProjectionCount;
         graph.passDependencies.clear();
         graph.passDependents.clear();
+        graph.initialQueueReleaseBatches.clear();
         graph.totalMemoryWithoutAliasing = 0;
         graph.totalMemoryWithAliasing = 0;
         graph.aliasedTextureCount = 0;
@@ -1524,6 +1589,8 @@ namespace RVX
         {
             pass.textureBarriers.clear();
             pass.bufferBarriers.clear();
+            pass.postTextureBarriers.clear();
+            pass.postBufferBarriers.clear();
             pass.readTextures.clear();
             pass.writeTextures.clear();
             pass.readBuffers.clear();
@@ -1662,12 +1729,55 @@ namespace RVX
         std::vector<int32> lastWriterBuf(graph.buffers.size(), -1);
         std::vector<std::vector<uint32>> lastReadersTex(graph.textures.size());
         std::vector<std::vector<uint32>> lastReadersBuf(graph.buffers.size());
+        std::vector<int32> lastUserTex(graph.textures.size(), -1);
+        std::vector<int32> lastUserBuf(graph.buffers.size(), -1);
+        std::vector<GPUQueueDomain> lastUserDomainTex(
+            graph.textures.size(), GPUQueueDomain::Graphics);
+        std::vector<GPUQueueDomain> lastUserDomainBuf(
+            graph.buffers.size(), GPUQueueDomain::Graphics);
 
         for (uint32 passIndex = 0; passIndex < graph.passes.size(); ++passIndex)
         {
             if (!passNeeded.empty() && passNeeded[passIndex] == 0)
                 continue;
             const auto& pass = graph.passes[passIndex];
+
+            // Exclusive queue ownership is itself an ordering dependency,
+            // including read-to-read transfers that ordinary hazard analysis
+            // would otherwise consider independent.
+            for (const ResourceUsage& usage : pass.usages)
+            {
+                if (usage.type == ResourceType::Texture)
+                {
+                    const int32 previous = lastUserTex[usage.index];
+                    if (previous >= 0 &&
+                        previous != static_cast<int32>(passIndex) &&
+                        lastUserDomainTex[usage.index] != usage.desiredAccess.domain)
+                    {
+                        AddDependencyEdge(adjacency,
+                                          indegree,
+                                          static_cast<uint32>(previous),
+                                          passIndex);
+                    }
+                    lastUserTex[usage.index] = static_cast<int32>(passIndex);
+                    lastUserDomainTex[usage.index] = usage.desiredAccess.domain;
+                }
+                else
+                {
+                    const int32 previous = lastUserBuf[usage.index];
+                    if (previous >= 0 &&
+                        previous != static_cast<int32>(passIndex) &&
+                        lastUserDomainBuf[usage.index] != usage.desiredAccess.domain)
+                    {
+                        AddDependencyEdge(adjacency,
+                                          indegree,
+                                          static_cast<uint32>(previous),
+                                          passIndex);
+                    }
+                    lastUserBuf[usage.index] = static_cast<int32>(passIndex);
+                    lastUserDomainBuf[usage.index] = usage.desiredAccess.domain;
+                }
+            }
 
             for (uint32 texIndex : pass.readTextures)
             {
@@ -1812,7 +1922,204 @@ namespace RVX
         // Compute aliasing barriers for resources that share memory
         ComputeAliasingBarriers(graph);
 
-        auto generatePassBarriers = [&](Pass& pass)
+        const auto findTextureReleasePass =
+            [&graph](uint32 targetPassIndex,
+                     uint32 resourceIndex,
+                     const RHISubresourceRange& range,
+                     GPUQueueDomain sourceDomain)
+        {
+            uint32 releasePassIndex = RVX_INVALID_INDEX;
+            for (uint32 candidatePassIndex : graph.executionOrder)
+            {
+                if (candidatePassIndex == targetPassIndex)
+                    break;
+                if (candidatePassIndex >= graph.passes.size())
+                    continue;
+                const Pass& candidate = graph.passes[candidatePassIndex];
+                if (candidate.culled)
+                    continue;
+                for (const ResourceUsage& usage : candidate.usages)
+                {
+                    if (usage.type != ResourceType::Texture ||
+                        usage.index != resourceIndex ||
+                        usage.desiredAccess.domain != sourceDomain)
+                    {
+                        continue;
+                    }
+                    const RHISubresourceRange candidateRange =
+                        usage.hasSubresourceRange
+                            ? usage.subresourceRange
+                            : AllSubresourcesForTexture(
+                                  graph.textures[resourceIndex].desc);
+                    if (TextureRangesOverlap(
+                            candidateRange,
+                            range,
+                            graph.textures[resourceIndex]))
+                    {
+                        releasePassIndex = candidatePassIndex;
+                    }
+                }
+            }
+            return releasePassIndex;
+        };
+
+        const auto findBufferReleasePass =
+            [&graph](uint32 targetPassIndex,
+                     uint32 resourceIndex,
+                     uint64 offset,
+                     uint64 size,
+                     GPUQueueDomain sourceDomain)
+        {
+            uint32 releasePassIndex = RVX_INVALID_INDEX;
+            for (uint32 candidatePassIndex : graph.executionOrder)
+            {
+                if (candidatePassIndex == targetPassIndex)
+                    break;
+                if (candidatePassIndex >= graph.passes.size())
+                    continue;
+                const Pass& candidate = graph.passes[candidatePassIndex];
+                if (candidate.culled)
+                    continue;
+                for (const ResourceUsage& usage : candidate.usages)
+                {
+                    if (usage.type != ResourceType::Buffer ||
+                        usage.index != resourceIndex ||
+                        usage.desiredAccess.domain != sourceDomain)
+                    {
+                        continue;
+                    }
+                    const uint64 candidateOffset = usage.hasRange
+                        ? usage.offset
+                        : 0;
+                    const uint64 candidateSize = usage.hasRange
+                        ? usage.size
+                        : RVX_WHOLE_SIZE;
+                    if (BufferRangesOverlap(
+                            candidateOffset,
+                            candidateSize,
+                            offset,
+                            size,
+                            graph.buffers[resourceIndex].desc.size))
+                    {
+                        releasePassIndex = candidatePassIndex;
+                    }
+                }
+            }
+            return releasePassIndex;
+        };
+
+        const auto appendTextureBarrier =
+            [&graph, &findTextureReleasePass](uint32 targetPassIndex,
+                                               uint32 resourceIndex,
+                                               RHITextureBarrier barrier)
+        {
+            if (HasDependencyKind(
+                    barrier.dependencyKind,
+                    RHIDependencyKind::Ownership) &&
+                barrier.accessBefore.domain != barrier.accessAfter.domain)
+            {
+                const uint32 releasePassIndex = findTextureReleasePass(
+                    targetPassIndex,
+                    resourceIndex,
+                    barrier.subresourceRange,
+                    barrier.accessBefore.domain);
+                if (releasePassIndex != RVX_INVALID_INDEX)
+                {
+                    graph.passes[releasePassIndex]
+                        .postTextureBarriers.push_back(barrier);
+                }
+                else
+                {
+                    const RenderGraph::DiagnosticExecutionQueue sourceQueue =
+                        ToDiagnosticQueue(barrier.accessBefore.domain);
+                    auto releaseBatch = std::find_if(
+                        graph.initialQueueReleaseBatches.begin(),
+                        graph.initialQueueReleaseBatches.end(),
+                        [sourceQueue](const InitialQueueReleaseBatch& candidate)
+                        {
+                            return candidate.queue == sourceQueue;
+                        });
+                    if (releaseBatch == graph.initialQueueReleaseBatches.end())
+                    {
+                        InitialQueueReleaseBatch batch;
+                        batch.queue = sourceQueue;
+                        graph.initialQueueReleaseBatches.push_back(
+                            std::move(batch));
+                        releaseBatch = std::prev(
+                            graph.initialQueueReleaseBatches.end());
+                    }
+                    if (std::find(releaseBatch->targetPassIndices.begin(),
+                                  releaseBatch->targetPassIndices.end(),
+                                  targetPassIndex) ==
+                        releaseBatch->targetPassIndices.end())
+                    {
+                        releaseBatch->targetPassIndices.push_back(
+                            targetPassIndex);
+                    }
+                    releaseBatch->textureBarriers.push_back(barrier);
+                }
+            }
+            graph.passes[targetPassIndex].textureBarriers.push_back(
+                std::move(barrier));
+        };
+
+        const auto appendBufferBarrier =
+            [&graph, &findBufferReleasePass](uint32 targetPassIndex,
+                                             uint32 resourceIndex,
+                                             RHIBufferBarrier barrier)
+        {
+            if (HasDependencyKind(
+                    barrier.dependencyKind,
+                    RHIDependencyKind::Ownership) &&
+                barrier.accessBefore.domain != barrier.accessAfter.domain)
+            {
+                const uint32 releasePassIndex = findBufferReleasePass(
+                    targetPassIndex,
+                    resourceIndex,
+                    barrier.offset,
+                    barrier.size,
+                    barrier.accessBefore.domain);
+                if (releasePassIndex != RVX_INVALID_INDEX)
+                {
+                    graph.passes[releasePassIndex]
+                        .postBufferBarriers.push_back(barrier);
+                }
+                else
+                {
+                    const RenderGraph::DiagnosticExecutionQueue sourceQueue =
+                        ToDiagnosticQueue(barrier.accessBefore.domain);
+                    auto releaseBatch = std::find_if(
+                        graph.initialQueueReleaseBatches.begin(),
+                        graph.initialQueueReleaseBatches.end(),
+                        [sourceQueue](const InitialQueueReleaseBatch& candidate)
+                        {
+                            return candidate.queue == sourceQueue;
+                        });
+                    if (releaseBatch == graph.initialQueueReleaseBatches.end())
+                    {
+                        InitialQueueReleaseBatch batch;
+                        batch.queue = sourceQueue;
+                        graph.initialQueueReleaseBatches.push_back(
+                            std::move(batch));
+                        releaseBatch = std::prev(
+                            graph.initialQueueReleaseBatches.end());
+                    }
+                    if (std::find(releaseBatch->targetPassIndices.begin(),
+                                  releaseBatch->targetPassIndices.end(),
+                                  targetPassIndex) ==
+                        releaseBatch->targetPassIndices.end())
+                    {
+                        releaseBatch->targetPassIndices.push_back(
+                            targetPassIndex);
+                    }
+                    releaseBatch->bufferBarriers.push_back(barrier);
+                }
+            }
+            graph.passes[targetPassIndex].bufferBarriers.push_back(
+                std::move(barrier));
+        };
+
+        auto generatePassBarriers = [&](uint32 passIndex, Pass& pass)
         {
             if (pass.culled)
                 return;
@@ -1869,10 +2176,19 @@ namespace RVX
                                         desiredAccess,
                                         effectiveDiscard) != RHIDependencyKind::None)
                                 {
-                                    pass.textureBarriers.push_back(
+                                    RHIAccessSnapshot barrierBefore = currentAccess;
+                                    if (barrierBefore.contentValidity !=
+                                            RHIContentValidity::Valid &&
+                                        effectiveDiscard == RHIDiscardIntent::Discard)
+                                    {
+                                        barrierBefore.domain = desiredAccess.domain;
+                                    }
+                                    appendTextureBarrier(
+                                        passIndex,
+                                        usage.index,
                                         MakeRHITextureBarrier(
                                             resource.GetTexture(),
-                                            currentAccess,
+                                            barrierBefore,
                                             desiredAccess,
                                             RHISubresourceRange{mip, 1, layer, 1, range.aspect},
                                             effectiveDiscard));
@@ -1909,10 +2225,19 @@ namespace RVX
                                 desiredAccess,
                                 effectiveDiscard) != RHIDependencyKind::None)
                         {
-                            pass.textureBarriers.push_back(
+                            RHIAccessSnapshot barrierBefore = currentAccess;
+                            if (barrierBefore.contentValidity !=
+                                    RHIContentValidity::Valid &&
+                                effectiveDiscard == RHIDiscardIntent::Discard)
+                            {
+                                barrierBefore.domain = desiredAccess.domain;
+                            }
+                            appendTextureBarrier(
+                                passIndex,
+                                usage.index,
                                 MakeRHITextureBarrier(
                                     resource.GetTexture(),
-                                    currentAccess,
+                                    barrierBefore,
                                     desiredAccess,
                                     AllSubresourcesForTexture(resource.desc),
                                     effectiveDiscard));
@@ -1938,6 +2263,7 @@ namespace RVX
                     {
                         uint64 applySize = isWhole ? resource.desc.size : rangeSize;
                         EnsureBufferRangeTracking(resource);
+                        std::vector<RHIBufferBarrier> generatedBarriers;
                         ApplyBufferRangeTransition(
                             resource,
                             offset,
@@ -1945,7 +2271,23 @@ namespace RVX
                             desiredAccess,
                             usage.discardIntent,
                             usage.access == RGAccessType::Write,
-                            pass.bufferBarriers);
+                            generatedBarriers);
+                        for (RHIBufferBarrier& barrier : generatedBarriers)
+                        {
+                            if (barrier.accessBefore.contentValidity !=
+                                    RHIContentValidity::Valid &&
+                                barrier.discardIntent == RHIDiscardIntent::Discard)
+                            {
+                                barrier.accessBefore.domain =
+                                    barrier.accessAfter.domain;
+                                barrier.dependencyKind = ClassifyRHIDependency(
+                                    barrier.accessBefore,
+                                    barrier.accessAfter,
+                                    barrier.discardIntent);
+                            }
+                            appendBufferBarrier(
+                                passIndex, usage.index, std::move(barrier));
+                        }
                         if (isWhole)
                         {
                             resource.currentAccessSnapshot.uniformAccess = desiredAccess;
@@ -1971,10 +2313,19 @@ namespace RVX
                                 desiredAccess,
                                 effectiveDiscard) != RHIDependencyKind::None)
                         {
-                            pass.bufferBarriers.push_back(
+                            RHIAccessSnapshot barrierBefore = currentAccess;
+                            if (barrierBefore.contentValidity !=
+                                    RHIContentValidity::Valid &&
+                                effectiveDiscard == RHIDiscardIntent::Discard)
+                            {
+                                barrierBefore.domain = desiredAccess.domain;
+                            }
+                            appendBufferBarrier(
+                                passIndex,
+                                usage.index,
                                 MakeRHIBufferBarrier(
                                     resource.GetBuffer(),
-                                    currentAccess,
+                                    barrierBefore,
                                     desiredAccess,
                                     offset,
                                     isWhole ? RVX_WHOLE_SIZE : rangeSize,
@@ -1986,13 +2337,6 @@ namespace RVX
                 }
             }
 
-            uint32 mergedTex = MergeTextureBarriers(pass.textureBarriers);
-            uint32 mergedBuf = MergeBufferBarriers(pass.bufferBarriers);
-            graph.stats.mergedTextureBarrierCount += mergedTex;
-            graph.stats.mergedBufferBarrierCount += mergedBuf;
-            graph.stats.mergedBarrierCount += mergedTex + mergedBuf;
-            graph.stats.textureBarrierCount += static_cast<uint32>(pass.textureBarriers.size());
-            graph.stats.bufferBarrierCount += static_cast<uint32>(pass.bufferBarriers.size());
         };
 
         if (!graph.executionOrder.empty())
@@ -2001,16 +2345,151 @@ namespace RVX
             {
                 if (passIndex < graph.passes.size())
                 {
-                    generatePassBarriers(graph.passes[passIndex]);
+                    generatePassBarriers(passIndex, graph.passes[passIndex]);
                 }
             }
         }
         else
         {
-            for (auto& pass : graph.passes)
+            for (uint32 passIndex = 0;
+                 passIndex < static_cast<uint32>(graph.passes.size());
+                 ++passIndex)
             {
-                generatePassBarriers(pass);
+                generatePassBarriers(passIndex, graph.passes[passIndex]);
             }
+        }
+
+        // Export transitions execute on the synthetic terminal Graphics batch.
+        // Publish the release half on the last in-graph owner now; the executor
+        // records the matching acquire half on the terminal context.
+        for (uint32 resourceIndex = 0;
+             resourceIndex < static_cast<uint32>(graph.textures.size());
+             ++resourceIndex)
+        {
+            TextureResource& resource = graph.textures[resourceIndex];
+            if (!resource.exportAccess || !resource.GetTexture())
+                continue;
+            RHIAccessSnapshot desired = *resource.exportAccess;
+            const auto appendRelease = [&](const RHIAccessSnapshot& current,
+                                           const RHISubresourceRange& range)
+            {
+                desired.contentValidity = current.contentValidity;
+                RHITextureBarrier barrier = MakeRHITextureBarrier(
+                    resource.GetTexture(), current, desired, range);
+                if (!HasDependencyKind(
+                        barrier.dependencyKind,
+                        RHIDependencyKind::Ownership) ||
+                    current.domain == desired.domain)
+                {
+                    return;
+                }
+                const uint32 releasePassIndex = findTextureReleasePass(
+                    RVX_INVALID_INDEX,
+                    resourceIndex,
+                    range,
+                    current.domain);
+                if (releasePassIndex != RVX_INVALID_INDEX)
+                {
+                    graph.passes[releasePassIndex]
+                        .postTextureBarriers.push_back(std::move(barrier));
+                }
+            };
+            if (resource.hasSubresourceTracking)
+            {
+                for (uint32 mip = 0; mip < resource.desc.mipLevels; ++mip)
+                {
+                    for (uint32 layer = 0;
+                         layer < GetTexturePhysicalLayerCount(resource.desc);
+                         ++layer)
+                    {
+                        const uint32 key = mip + layer * resource.desc.mipLevels;
+                        const auto it = resource.subresourceAccesses.find(key);
+                        const RHIAccessSnapshot& current =
+                            it != resource.subresourceAccesses.end()
+                                ? it->second
+                                : resource.currentAccessSnapshot.uniformAccess;
+                        appendRelease(
+                            current,
+                            RHISubresourceRange{
+                                mip,
+                                1,
+                                layer,
+                                1,
+                                GetDefaultTextureAspect(resource.desc)});
+                    }
+                }
+            }
+            else
+            {
+                appendRelease(
+                    resource.currentAccessSnapshot.uniformAccess,
+                    AllSubresourcesForTexture(resource.desc));
+            }
+        }
+
+        for (uint32 resourceIndex = 0;
+             resourceIndex < static_cast<uint32>(graph.buffers.size());
+             ++resourceIndex)
+        {
+            BufferResource& resource = graph.buffers[resourceIndex];
+            if (!resource.exportAccess || !resource.GetBuffer())
+                continue;
+            RHIAccessSnapshot desired = *resource.exportAccess;
+            const auto appendRelease = [&](const RHIAccessSnapshot& current,
+                                           uint64 offset,
+                                           uint64 size)
+            {
+                desired.contentValidity = current.contentValidity;
+                RHIBufferBarrier barrier = MakeRHIBufferBarrier(
+                    resource.GetBuffer(), current, desired, offset, size);
+                if (!HasDependencyKind(
+                        barrier.dependencyKind,
+                        RHIDependencyKind::Ownership) ||
+                    current.domain == desired.domain)
+                {
+                    return;
+                }
+                const uint32 releasePassIndex = findBufferReleasePass(
+                    RVX_INVALID_INDEX,
+                    resourceIndex,
+                    offset,
+                    size,
+                    current.domain);
+                if (releasePassIndex != RVX_INVALID_INDEX)
+                {
+                    graph.passes[releasePassIndex]
+                        .postBufferBarriers.push_back(std::move(barrier));
+                }
+            };
+            if (resource.hasRangeTracking)
+            {
+                for (const BufferResource::RangeState& range :
+                     resource.rangeStates)
+                {
+                    appendRelease(
+                        range.access, range.offset, range.size);
+                }
+            }
+            else
+            {
+                appendRelease(
+                    resource.currentAccessSnapshot.uniformAccess,
+                    0,
+                    RVX_WHOLE_SIZE);
+            }
+        }
+
+        for (Pass& pass : graph.passes)
+        {
+            const uint32 mergedTexture =
+                MergeTextureBarriers(pass.textureBarriers) +
+                MergeTextureBarriers(pass.postTextureBarriers);
+            const uint32 mergedBuffer =
+                MergeBufferBarriers(pass.bufferBarriers) +
+                MergeBufferBarriers(pass.postBufferBarriers);
+            graph.stats.mergedTextureBarrierCount += mergedTexture;
+            graph.stats.mergedBufferBarrierCount += mergedBuffer;
+            graph.stats.mergedBarrierCount += mergedTexture + mergedBuffer;
         }
 
         std::unordered_map<RHITexture*, RHIResourceState> lastTextureState;
@@ -2064,7 +2543,9 @@ namespace RVX
             if (pass.culled)
                 continue;
             graph.stats.textureBarrierCount += static_cast<uint32>(pass.textureBarriers.size());
+            graph.stats.textureBarrierCount += static_cast<uint32>(pass.postTextureBarriers.size());
             graph.stats.bufferBarrierCount += static_cast<uint32>(pass.bufferBarriers.size());
+            graph.stats.bufferBarrierCount += static_cast<uint32>(pass.postBufferBarriers.size());
         }
         graph.stats.barrierCount = graph.stats.textureBarrierCount + graph.stats.bufferBarrierCount;
     }

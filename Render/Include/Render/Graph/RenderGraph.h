@@ -16,7 +16,7 @@
 namespace RVX
 {
     inline constexpr const char* RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID = "RVX.RenderGraph.Diagnostics";
-    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 5;
+    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 6;
 
     class RenderSubmissionResourceBatch;
     class TransientResourcePool;
@@ -125,8 +125,8 @@ namespace RVX
         enum class QueueExecutionMode : uint8
         {
             GraphicsOnly = 0,
-            /** @brief Experimental planning mode; not yet wired to production frame submission. */
-            AsyncCompute,
+            /** @brief Record and submit an explicit Graphics/Compute/Copy DAG. */
+            MultiQueue,
         };
 
         RenderGraph();
@@ -140,7 +140,7 @@ namespace RVX
          * @return False when passes have already been recorded and the mode cannot change.
          *
          * GraphicsOnly is the fail-closed default: Graphics, Compute, and Copy
-         * passes all declare Graphics-domain resource access. AsyncCompute must
+         * passes all declare Graphics-domain resource access. MultiQueue must
          * be selected before AddPass so barriers and execution agree.
          */
         bool SetQueueExecutionMode(QueueExecutionMode mode);
@@ -193,6 +193,22 @@ namespace RVX
 
         // Execute the graph (graphics only)
         void Execute(RHICommandContext& ctx);
+
+        struct RecordedQueueSubmission
+        {
+            RHIQueueSubmissionPlan plan;
+            std::vector<RHICommandContextRef> ownedContexts;
+        };
+
+        /** @brief Record one independent command context per planned queue batch. */
+        bool RecordQueueSubmission(RecordedQueueSubmission& submission);
+
+        /**
+         * @brief Rebuild this recorded graph with Graphics-only access domains.
+         * @note This is the only legal fallback after a MultiQueue plan cannot
+         * be recorded; MultiQueue barriers must never execute on one context.
+         */
+        bool RecompileGraphicsOnly();
 
         /**
          * @brief Execute the graph with async compute support
@@ -300,6 +316,7 @@ namespace RVX
             Unknown,
             Graphics,
             Compute,
+            Copy,
         };
 
         enum class DiagnosticSyncReason : uint8
@@ -402,7 +419,10 @@ namespace RVX
             uint32 dependencyLevel = 0;
             DiagnosticExecutionQueue queue = DiagnosticExecutionQueue::Unknown;
             std::vector<uint32> passIndices;
+            std::vector<uint32> prerequisiteBatchIndices;
             std::vector<uint32> prerequisiteSyncIndices;
+            bool syntheticInitialRelease = false;
+            bool syntheticTerminal = false;
         };
 
         struct PlannedQueueSyncDiagnostic
@@ -427,8 +447,10 @@ namespace RVX
             uint32 dependencyLevelCount = 0;
             uint32 asyncOverlapCandidateLevelCount = 0;
             uint32 computeBatchCount = 0;
+            uint32 copyBatchCount = 0;
             uint32 queueSyncCount = 0;
             uint32 crossQueueSyncCount = 0;
+            uint32 terminalGraphicsBatchIndex = RVX_INVALID_INDEX;
         };
 
         struct QueueSyncDiagnostic
@@ -460,8 +482,10 @@ namespace RVX
             uint32 plannedDependencyLevelCount = 0;
             uint32 plannedAsyncOverlapCandidateLevelCount = 0;
             uint32 plannedComputeBatchCount = 0;
+            uint32 plannedCopyBatchCount = 0;
             uint32 plannedQueueSyncCount = 0;
             uint32 plannedCrossQueueSyncCount = 0;
+            uint32 plannedTerminalGraphicsBatchIndex = RVX_INVALID_INDEX;
             uint32 plannedQueueSyncCoveredCount = 0;
             uint32 plannedQueueSyncUncoveredCount = 0;
             uint32 actualQueueBatchCount = 0;

@@ -54,6 +54,17 @@ namespace RVX
             }
         }
 
+        GPUQueueDomain GetContextQueueDomain(VulkanDevice* device,
+                                             RHICommandQueueType queueType)
+        {
+            GPUQueueDomain domain = GPUQueueDomain::Graphics;
+            static_cast<void>(TryGetGPUQueueDomain(
+                device->GetCapabilities().queueTopology,
+                queueType,
+                domain));
+            return domain;
+        }
+
         enum class QueueFamilyTransferRole : uint8
         {
             None = 0,
@@ -208,6 +219,27 @@ namespace RVX
             return;
         }
 
+        if (barrier.hasScopedAccess &&
+            barrier.accessBefore.domain != barrier.accessAfter.domain &&
+            GetQueueFamilyIndex(m_device, barrier.accessBefore.domain) ==
+                GetQueueFamilyIndex(m_device, barrier.accessAfter.domain))
+        {
+            const GPUQueueDomain contextDomain =
+                GetContextQueueDomain(m_device, m_queueType);
+            if (contextDomain == barrier.accessBefore.domain)
+            {
+                // Same-family transfers need one transition after the queue
+                // dependency, not duplicate release/acquire barriers.
+                return;
+            }
+            if (contextDomain != barrier.accessAfter.domain)
+            {
+                RVX_RHI_ERROR(
+                    "Vulkan same-family buffer transfer was recorded on an unrelated queue");
+                return;
+            }
+        }
+
         const VulkanPipelineStageSupport enabledStages =
             m_device->GetEnabledPipelineStageSupport();
         VkBufferMemoryBarrier2 bufferBarrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
@@ -283,6 +315,25 @@ namespace RVX
         if (!vkTexture || vkTexture->GetImage() == VK_NULL_HANDLE)
         {
             return;
+        }
+
+        if (barrier.hasScopedAccess &&
+            barrier.accessBefore.domain != barrier.accessAfter.domain &&
+            GetQueueFamilyIndex(m_device, barrier.accessBefore.domain) ==
+                GetQueueFamilyIndex(m_device, barrier.accessAfter.domain))
+        {
+            const GPUQueueDomain contextDomain =
+                GetContextQueueDomain(m_device, m_queueType);
+            if (contextDomain == barrier.accessBefore.domain)
+            {
+                return;
+            }
+            if (contextDomain != barrier.accessAfter.domain)
+            {
+                RVX_RHI_ERROR(
+                    "Vulkan same-family texture transfer was recorded on an unrelated queue");
+                return;
+            }
         }
 
         const VulkanPipelineStageSupport enabledStages =
@@ -1509,6 +1560,280 @@ namespace RVX
             device->EnqueueDeferredSemaphoreDestroy(std::move(semaphoresToDestroy), finalQueue);
         }
         return signalFenceValue;
+    }
+
+    uint64 SubmitVulkanQueuePlan(VulkanDevice* device,
+                                 const RHIQueueSubmissionPlan& plan,
+                                 RHIFence* terminalFence)
+    {
+        if (!device)
+        {
+            return 0;
+        }
+
+        const RHIQueueSubmissionPlanValidationResult validation =
+            ValidateRHIQueueSubmissionPlan(plan);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("SubmitVulkanQueuePlan rejected invalid plan: {}",
+                          validation.message);
+            return 0;
+        }
+
+        std::lock_guard<std::mutex> lock(device->GetGraphicsQueueMutex());
+
+        struct BatchState
+        {
+            VkQueue queue = VK_NULL_HANDLE;
+            std::vector<VkCommandBufferSubmitInfo> commandBuffers;
+            VkSemaphore completionSemaphore = VK_NULL_HANDLE;
+        };
+
+        std::vector<BatchState> batches(plan.batches.size());
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(plan.batches.size());
+             ++batchIndex)
+        {
+            const RHIQueueSubmissionBatch& source = plan.batches[batchIndex];
+            BatchState& batch = batches[batchIndex];
+            batch.queue = GetQueueForType(device, source.queueType);
+            if (batch.queue == VK_NULL_HANDLE)
+            {
+                RVX_RHI_ERROR("SubmitVulkanQueuePlan encountered an unavailable queue");
+                return 0;
+            }
+            batch.commandBuffers.reserve(source.contexts.size());
+            for (RHICommandContext* context : source.contexts)
+            {
+                auto* vkContext = static_cast<VulkanCommandContext*>(context);
+                VkCommandBufferSubmitInfo commandInfo = {
+                    VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+                commandInfo.commandBuffer = vkContext->GetCommandBuffer();
+                commandInfo.deviceMask = 0;
+                batch.commandBuffers.push_back(commandInfo);
+            }
+        }
+
+        std::vector<uint8> needsCrossQueueSignal(plan.batches.size(), 0);
+        for (uint32 targetIndex = 0;
+             targetIndex < static_cast<uint32>(plan.batches.size());
+             ++targetIndex)
+        {
+            for (uint32 sourceIndex :
+                 plan.batches[targetIndex].prerequisiteBatchIndices)
+            {
+                if (batches[sourceIndex].queue != batches[targetIndex].queue)
+                {
+                    needsCrossQueueSignal[sourceIndex] = 1;
+                }
+            }
+        }
+
+        const auto destroySemaphores = [device, &batches]()
+        {
+            for (BatchState& batch : batches)
+            {
+                if (batch.completionSemaphore != VK_NULL_HANDLE)
+                {
+                    vkDestroySemaphore(device->GetDevice(),
+                                       batch.completionSemaphore,
+                                       nullptr);
+                    batch.completionSemaphore = VK_NULL_HANDLE;
+                }
+            }
+        };
+
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(batches.size());
+             ++batchIndex)
+        {
+            if (needsCrossQueueSignal[batchIndex] == 0)
+            {
+                continue;
+            }
+
+            VkSemaphoreTypeCreateInfo timelineInfo = {
+                VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+            timelineInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+            timelineInfo.initialValue = 0;
+
+            VkSemaphoreCreateInfo semaphoreInfo = {
+                VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            semaphoreInfo.pNext = &timelineInfo;
+            const VkResult createResult = vkCreateSemaphore(
+                device->GetDevice(),
+                &semaphoreInfo,
+                nullptr,
+                &batches[batchIndex].completionSemaphore);
+            if (createResult != VK_SUCCESS)
+            {
+                device->ReportRuntimeFailure(
+                    createResult,
+                    RHIDeviceFaultOperation::CommandSubmission,
+                    "Vulkan queue-plan timeline semaphore creation failed");
+                destroySemaphores();
+                return 0;
+            }
+        }
+
+        VulkanSwapChain* swapChain = device->GetPrimarySwapChain();
+        const bool hasAcquiredImage =
+            swapChain && swapChain->HasAcquiredImage();
+        uint32 firstGraphicsBatchIndex = RVX_INVALID_INDEX;
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(plan.batches.size());
+             ++batchIndex)
+        {
+            if (plan.batches[batchIndex].queueType ==
+                RHICommandQueueType::Graphics)
+            {
+                firstGraphicsBatchIndex = batchIndex;
+                break;
+            }
+        }
+
+        auto* vkTerminalFence = terminalFence
+            ? static_cast<VulkanFence*>(terminalFence)
+            : nullptr;
+        const uint64 terminalFenceValue = vkTerminalFence
+            ? vkTerminalFence->AllocateSignalValue()
+            : 0;
+        bool submittedAnyBatch = false;
+
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(plan.batches.size());
+             ++batchIndex)
+        {
+            const RHIQueueSubmissionBatch& source = plan.batches[batchIndex];
+            BatchState& batch = batches[batchIndex];
+            std::vector<VkSemaphoreSubmitInfo> waits;
+            std::vector<VkSemaphoreSubmitInfo> signals;
+
+            for (uint32 prerequisiteIndex : source.prerequisiteBatchIndices)
+            {
+                const BatchState& prerequisite = batches[prerequisiteIndex];
+                if (prerequisite.queue == batch.queue)
+                {
+                    continue;
+                }
+                if (prerequisite.completionSemaphore == VK_NULL_HANDLE)
+                {
+                    RVX_RHI_ERROR(
+                        "SubmitVulkanQueuePlan found a cross-queue dependency without a source signal");
+                    if (submittedAnyBatch &&
+                        device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
+                    {
+                        static_cast<void>(vkDeviceWaitIdle(device->GetDevice()));
+                    }
+                    destroySemaphores();
+                    return 0;
+                }
+
+                VkSemaphoreSubmitInfo waitInfo = {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+                waitInfo.semaphore = prerequisite.completionSemaphore;
+                waitInfo.value = 1;
+                waitInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                waitInfo.deviceIndex = 0;
+                waits.push_back(waitInfo);
+            }
+
+            if (hasAcquiredImage && batchIndex == firstGraphicsBatchIndex)
+            {
+                VkSemaphoreSubmitInfo waitInfo = {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+                waitInfo.semaphore = device->GetImageAvailableSemaphore();
+                waitInfo.value = 0;
+                waitInfo.stageMask =
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                waitInfo.deviceIndex = 0;
+                waits.push_back(waitInfo);
+            }
+
+            if (batch.completionSemaphore != VK_NULL_HANDLE)
+            {
+                VkSemaphoreSubmitInfo signalInfo = {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+                signalInfo.semaphore = batch.completionSemaphore;
+                signalInfo.value = 1;
+                signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                signalInfo.deviceIndex = 0;
+                signals.push_back(signalInfo);
+            }
+
+            const bool isTerminal =
+                batchIndex == plan.terminalGraphicsBatchIndex;
+            if (isTerminal && hasAcquiredImage)
+            {
+                VkSemaphoreSubmitInfo signalInfo = {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+                signalInfo.semaphore = device->GetRenderFinishedSemaphore();
+                signalInfo.value = 0;
+                signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                signalInfo.deviceIndex = 0;
+                signals.push_back(signalInfo);
+            }
+            if (isTerminal && vkTerminalFence)
+            {
+                VkSemaphoreSubmitInfo signalInfo = {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+                signalInfo.semaphore = vkTerminalFence->GetSemaphore();
+                signalInfo.value = terminalFenceValue;
+                signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                signalInfo.deviceIndex = 0;
+                signals.push_back(signalInfo);
+            }
+
+            VkSubmitInfo2 submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+            submitInfo.waitSemaphoreInfoCount = static_cast<uint32>(waits.size());
+            submitInfo.pWaitSemaphoreInfos = waits.empty() ? nullptr : waits.data();
+            submitInfo.commandBufferInfoCount =
+                static_cast<uint32>(batch.commandBuffers.size());
+            submitInfo.pCommandBufferInfos = batch.commandBuffers.data();
+            submitInfo.signalSemaphoreInfoCount =
+                static_cast<uint32>(signals.size());
+            submitInfo.pSignalSemaphoreInfos =
+                signals.empty() ? nullptr : signals.data();
+
+            const VkFence frameFence = isTerminal
+                ? device->GetArmedFrameFenceForSubmission()
+                : VK_NULL_HANDLE;
+            const VkResult submitResult = vkQueueSubmit2(
+                batch.queue, 1, &submitInfo, frameFence);
+            if (submitResult != VK_SUCCESS)
+            {
+                device->ReportRuntimeFailure(
+                    submitResult,
+                    RHIDeviceFaultOperation::CommandSubmission,
+                    "Vulkan queue-plan batch submission failed");
+                if (submittedAnyBatch &&
+                    device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
+                {
+                    static_cast<void>(vkDeviceWaitIdle(device->GetDevice()));
+                }
+                destroySemaphores();
+                return 0;
+            }
+            submittedAnyBatch = true;
+            if (frameFence != VK_NULL_HANDLE)
+            {
+                device->MarkArmedFrameFenceSubmitted(frameFence);
+            }
+        }
+
+        std::vector<VkSemaphore> semaphoresToDestroy;
+        for (BatchState& batch : batches)
+        {
+            if (batch.completionSemaphore != VK_NULL_HANDLE)
+            {
+                semaphoresToDestroy.push_back(batch.completionSemaphore);
+                batch.completionSemaphore = VK_NULL_HANDLE;
+            }
+        }
+        device->EnqueueDeferredSemaphoreDestroy(
+            std::move(semaphoresToDestroy),
+            batches[plan.terminalGraphicsBatchIndex].queue);
+        return terminalFenceValue;
     }
 
     // =============================================================================

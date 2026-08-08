@@ -3604,6 +3604,14 @@ void SceneRenderer::Render()
 
     // Clear the render graph for this frame
     m_renderGraph->Clear();
+    const bool queuePlanSupported =
+        m_renderContext->GetDevice() &&
+        m_renderContext->GetDevice()
+            ->GetCapabilities().supportsQueueSubmissionPlan;
+    static_cast<void>(m_renderGraph->SetQueueExecutionMode(
+        queuePlanSupported
+            ? RenderGraph::QueueExecutionMode::MultiQueue
+            : RenderGraph::QueueExecutionMode::GraphicsOnly));
 
     // Build the render graph (creates depth buffer if needed, imports resources)
     BuildRenderGraph();
@@ -3621,7 +3629,22 @@ void SceneRenderer::Render()
 
     // Compile the render graph (computes barriers, memory aliasing, pass culling)
     m_renderGraph->Compile();
-    const bool graphCompileValid = m_renderGraph->GetCompileStats().compileValid;
+    bool graphCompileValid = m_renderGraph->GetCompileStats().compileValid;
+    if (graphCompileValid &&
+        m_renderGraph->GetQueueExecutionMode() ==
+            RenderGraph::QueueExecutionMode::MultiQueue)
+    {
+        const RenderGraph::SubmissionPlan planned =
+            m_renderGraph->GetSubmissionPlan();
+        if (planned.computeBatchCount == 0 &&
+            planned.copyBatchCount == 0)
+        {
+            // A graph that maps entirely to Graphics gains no concurrency from
+            // queue-plan recording. Keep the established single-context path
+            // and avoid manufacturing extra command-list boundaries.
+            graphCompileValid = m_renderGraph->RecompileGraphicsOnly();
+        }
+    }
 
     if (RenderSubmissionTracker* tracker =
             RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext))
@@ -3635,8 +3658,41 @@ void SceneRenderer::Render()
     const char* executionSkippedReason = nullptr;
     if (ctx && graphCompileValid)
     {
-        m_renderGraph->Execute(*ctx);
+        if (m_renderGraph->GetQueueExecutionMode() ==
+            RenderGraph::QueueExecutionMode::MultiQueue)
+        {
+            RenderGraph::RecordedQueueSubmission submission;
+            if (m_renderGraph->RecordQueueSubmission(submission))
+            {
+                if (!m_renderContext->AdoptQueueSubmission(
+                        std::move(submission.plan),
+                        std::move(submission.ownedContexts)))
+                {
+                    graphCompileValid = false;
+                    executionSkippedReason =
+                        "RenderContext rejected the validated queue submission plan";
+                }
+            }
+            else
+            {
+                graphCompileValid = m_renderGraph->RecompileGraphicsOnly();
+                if (graphCompileValid)
+                {
+                    m_renderGraph->Execute(*ctx);
+                }
+                else
+                {
+                    executionSkippedReason =
+                        "MultiQueue recording failed and GraphicsOnly rebuild was invalid";
+                }
+            }
+        }
+        else
+        {
+            m_renderGraph->Execute(*ctx);
+        }
         graphExecuted = !m_gpuSceneCullingCommandRecordingFailed &&
+            graphCompileValid &&
             (!m_gpuSceneRasterCommandRecordingFailed ||
              !m_gpuSceneRasterCommandRecordingFailed->load());
         if (!graphExecuted)

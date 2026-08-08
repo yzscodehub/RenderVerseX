@@ -393,6 +393,15 @@ namespace RVX
             fail("multi-queue batch submit requires queue fence signal support");
         }
 
+        if (capabilities.supportsQueueSubmissionPlan &&
+            (!capabilities.supportsDefaultQueueFenceSignal ||
+             capabilities.emulatesQueueFences ||
+             capabilities.queueTopology.completionMode !=
+                 RHIQueueCompletionMode::NativeTimeline))
+        {
+            fail("queue submission plans require native timeline completion and default-queue fence signaling");
+        }
+
         if (capabilities.supportsQueueFenceWait && capabilities.emulatesQueueFences)
         {
             fail("emulated queue fences cannot advertise GPU queue waits");

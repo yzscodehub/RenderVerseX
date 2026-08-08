@@ -145,6 +145,14 @@ namespace RVX
          */
         GPUCompletionPoint EndFrame();
 
+        /**
+         * @brief Adopt a recorded queue DAG between the frame Graphics prelude
+         * and a final Graphics gateway used by capture and presentation.
+         */
+        bool AdoptQueueSubmission(
+            RHIQueueSubmissionPlan plan,
+            std::vector<RHICommandContextRef> ownedContexts);
+
         /** @brief End recording without submitting or enabling presentation. */
         void AbortFrame();
 
@@ -218,6 +226,13 @@ namespace RVX
         // Per-frame command contexts
         std::array<RHICommandContextRef, RVX_MAX_FRAME_COUNT> m_graphicsContexts;
         std::array<RHICommandContextRef, RVX_MAX_FRAME_COUNT> m_computeContexts;
+        std::array<std::vector<RHICommandContextRef>, RVX_MAX_FRAME_COUNT>
+            m_inFlightQueueContexts;
+        RHIQueueSubmissionPlan m_pendingQueuePlan;
+        std::vector<RHICommandContextRef> m_pendingQueueContexts;
+        RHICommandContextRef m_pendingGraphicsGateway;
+        bool m_queueSubmissionPending = false;
+        bool m_graphicsContextRecording = false;
         
         // Frame synchronization
         FrameSynchronizer m_frameSynchronizer;

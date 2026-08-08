@@ -16,6 +16,7 @@
 #include "RHI/RHIUpload.h"
 #include "RHI/RHINativeSurface.h"
 #include "RHI/RHIDeviceStatus.h"
+#include "RHI/RHIQueueSubmission.h"
 
 namespace RVX
 {
@@ -159,6 +160,21 @@ namespace RVX
          * @return Submitted fence value when signalFence is provided and queued; 0 when no fence was signaled or submission failed.
          */
         virtual uint64 SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence = nullptr) = 0;
+
+        /**
+         * @brief Submit an explicitly ordered multi-queue dependency graph.
+         * @param plan Validated queue batches in topological order.
+         * @param terminalFence Optional fence signaled only by the terminal
+         * Graphics batch after every branch has joined it.
+         * @return Submitted fence value when terminalFence is queued; otherwise 0.
+         */
+        virtual uint64 SubmitQueuePlan(const RHIQueueSubmissionPlan& plan,
+                                       RHIFence* terminalFence = nullptr)
+        {
+            (void)plan;
+            (void)terminalFence;
+            return 0;
+        }
 
         // =========================================================================
         // SwapChain

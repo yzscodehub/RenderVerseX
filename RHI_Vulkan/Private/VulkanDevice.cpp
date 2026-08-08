@@ -1189,6 +1189,7 @@ namespace RVX
         m_capabilities.supportsExplicitQueueFenceSignal = true;
         m_capabilities.supportsQueueFenceWait = false;
         m_capabilities.supportsMultiQueueBatchSubmit = true;
+        m_capabilities.supportsQueueSubmissionPlan = true;
         m_capabilities.emulatesQueueFences = false;
 
         RVX_RHI_DEBUG("Vulkan Capabilities: Raytracing={}, RaytracingExtensions={}, MeshShaders={}, VRS={}",
@@ -1859,6 +1860,12 @@ namespace RVX
     uint64 VulkanDevice::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
         return SubmitVulkanCommandContexts(this, contexts, signalFence);
+    }
+
+    uint64 VulkanDevice::SubmitQueuePlan(const RHIQueueSubmissionPlan& plan,
+                                         RHIFence* terminalFence)
+    {
+        return SubmitVulkanQueuePlan(this, plan, terminalFence);
     }
 
     RHISwapChainRef VulkanDevice::CreateSwapChain(const RHISwapChainDesc& desc)

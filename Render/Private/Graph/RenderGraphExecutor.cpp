@@ -151,6 +151,12 @@ namespace RVX
             {
                 pass.execute(ctx);
             }
+            if (!pass.postBufferBarriers.empty() ||
+                !pass.postTextureBarriers.empty())
+            {
+                ctx.Barriers(pass.postBufferBarriers,
+                             pass.postTextureBarriers);
+            }
             ctx.EndEvent();
 
             const auto endTime = std::chrono::steady_clock::now();
@@ -317,6 +323,27 @@ namespace RVX
             }
         }
 
+        void EmitInitialQueueReleaseBarriers(
+            const RenderGraphImpl& graph,
+            RenderGraph::DiagnosticExecutionQueue queue,
+            RHICommandContext& ctx)
+        {
+            const auto release = std::find_if(
+                graph.initialQueueReleaseBatches.begin(),
+                graph.initialQueueReleaseBatches.end(),
+                [queue](const InitialQueueReleaseBatch& candidate)
+                {
+                    return candidate.queue == queue;
+                });
+            if (release != graph.initialQueueReleaseBatches.end() &&
+                (!release->bufferBarriers.empty() ||
+                 !release->textureBarriers.empty()))
+            {
+                ctx.Barriers(release->bufferBarriers,
+                             release->textureBarriers);
+            }
+        }
+
         uint32 CountEligibleAsyncComputePasses(const RenderGraphImpl& graph)
         {
             uint32 count = 0;
@@ -412,7 +439,7 @@ namespace RVX
                 return RenderGraph::AsyncComputeFallbackReason::GraphNotCompiled;
 
             if (graph.queueExecutionMode !=
-                RenderGraph::QueueExecutionMode::AsyncCompute)
+                RenderGraph::QueueExecutionMode::MultiQueue)
             {
                 return RenderGraph::AsyncComputeFallbackReason::AsyncPlanningDisabled;
             }
@@ -504,6 +531,176 @@ namespace RVX
 
         EmitExportBarriers(graph, ctx);
         graph.executionRealized = true;
+    }
+
+    bool RecordRenderGraphQueueSubmission(
+        RenderGraphImpl& graph,
+        RenderGraph::RecordedQueueSubmission& submission)
+    {
+        submission = {};
+        ResetExecutionDiagnostics(graph);
+        if (!graph.stats.compileValid ||
+            graph.queueExecutionMode !=
+                RenderGraph::QueueExecutionMode::MultiQueue ||
+            !graph.device ||
+            !graph.device->GetCapabilities().supportsQueueSubmissionPlan)
+        {
+            return false;
+        }
+
+        const RenderGraph::SubmissionPlan planned =
+            BuildRenderGraphSubmissionPlan(graph);
+        if (planned.queueBatches.empty() ||
+            planned.terminalGraphicsBatchIndex == RVX_INVALID_INDEX)
+        {
+            return false;
+        }
+
+        ValidatePlannedAccessSources(graph);
+        submission.plan.batches.reserve(planned.queueBatches.size());
+        submission.ownedContexts.reserve(planned.queueBatches.size());
+
+        for (const RenderGraph::PlannedQueueBatchDiagnostic& plannedBatch :
+             planned.queueBatches)
+        {
+            RHICommandQueueType queueType = RHICommandQueueType::Graphics;
+            switch (plannedBatch.queue)
+            {
+                case RenderGraph::DiagnosticExecutionQueue::Compute:
+                    queueType = RHICommandQueueType::Compute;
+                    break;
+                case RenderGraph::DiagnosticExecutionQueue::Copy:
+                    queueType = RHICommandQueueType::Copy;
+                    break;
+                case RenderGraph::DiagnosticExecutionQueue::Graphics:
+                    queueType = RHICommandQueueType::Graphics;
+                    break;
+                case RenderGraph::DiagnosticExecutionQueue::Unknown:
+                default:
+                    RVX_CORE_ERROR(
+                        "RenderGraph queue plan contains an unknown execution queue");
+                    submission = {};
+                    return false;
+            }
+
+            if (std::any_of(
+                    plannedBatch.passIndices.begin(),
+                    plannedBatch.passIndices.end(),
+                    [&graph](uint32 passIndex)
+                    {
+                        return passIndex >= graph.passes.size();
+                    }))
+            {
+                RVX_CORE_ERROR(
+                    "RenderGraph queue batch {} references an invalid pass",
+                    plannedBatch.batchIndex);
+                submission = {};
+                return false;
+            }
+
+            RHICommandContextRef context =
+                graph.device->CreateCommandContext(queueType);
+            if (!context || context->GetQueueType() != queueType)
+            {
+                RVX_CORE_ERROR(
+                    "RenderGraph failed to create a context for queue batch {}",
+                    plannedBatch.batchIndex);
+                submission = {};
+                return false;
+            }
+
+            RHIQueueSubmissionBatch batch;
+            batch.queueType = queueType;
+            batch.contexts.push_back(context.Get());
+            batch.prerequisiteBatchIndices =
+                plannedBatch.prerequisiteBatchIndices;
+            submission.ownedContexts.push_back(std::move(context));
+            submission.plan.batches.push_back(std::move(batch));
+        }
+        submission.plan.terminalGraphicsBatchIndex =
+            planned.terminalGraphicsBatchIndex;
+
+        const RHIQueueSubmissionPlanValidationResult validation =
+            ValidateRHIQueueSubmissionPlan(submission.plan);
+        if (!validation)
+        {
+            RVX_CORE_ERROR(
+                "RenderGraph produced an invalid RHI queue plan: {}",
+                validation.message);
+            submission = {};
+            return false;
+        }
+
+        // All fallible plan construction and validation completes before any
+        // pass callback records commands. A GraphicsOnly fallback can
+        // therefore never execute a pass callback twice.
+        uint32 executionSerial = 0;
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(planned.queueBatches.size());
+             ++batchIndex)
+        {
+            const RenderGraph::PlannedQueueBatchDiagnostic& plannedBatch =
+                planned.queueBatches[batchIndex];
+            RHICommandContextRef& context =
+                submission.ownedContexts[batchIndex];
+            context->Reset();
+            context->Begin();
+            if (plannedBatch.syntheticInitialRelease)
+            {
+                EmitInitialQueueReleaseBarriers(
+                    graph, plannedBatch.queue, *context);
+            }
+            for (uint32 passIndex : plannedBatch.passIndices)
+            {
+                Pass& pass = graph.passes[passIndex];
+                if (!pass.culled)
+                {
+                    ExecutePassOnContext(pass,
+                                         *context,
+                                         plannedBatch.queue,
+                                         executionSerial++,
+                                         graph);
+                }
+            }
+            if (plannedBatch.syntheticTerminal)
+            {
+                EmitExportBarriers(graph, *context);
+            }
+            context->End();
+        }
+
+        graph.stats.asyncComputeScheduledPasses = 0;
+        graph.stats.asyncGraphicsScheduledPasses = 0;
+        for (const Pass& pass : graph.passes)
+        {
+            if (!pass.executedLastRun)
+                continue;
+            if (pass.lastExecutionQueue ==
+                RenderGraph::DiagnosticExecutionQueue::Compute)
+            {
+                ++graph.stats.asyncComputeScheduledPasses;
+            }
+            else
+            {
+                ++graph.stats.asyncGraphicsScheduledPasses;
+            }
+        }
+        graph.stats.asyncCrossQueueDependencyCount =
+            planned.crossQueueSyncCount;
+        graph.stats.asyncFinalQueueJoinCount = static_cast<uint32>(
+            std::count_if(
+                planned.queueSyncs.begin(),
+                planned.queueSyncs.end(),
+                [](const RenderGraph::PlannedQueueSyncDiagnostic& sync)
+                {
+                    return sync.reason ==
+                        RenderGraph::DiagnosticSyncReason::FinalQueueJoin;
+                }));
+        graph.stats.asyncFallbackUsed = false;
+        graph.stats.asyncFallbackReason =
+            RenderGraph::AsyncComputeFallbackReason::None;
+        graph.executionRealized = true;
+        return true;
     }
 
     void ExecuteRenderGraphAsync(RenderGraphImpl& graph,

@@ -887,6 +887,41 @@ namespace RVX
             return;
         }
 
+        // D3D12 fixes committed Upload and Readback resources in
+        // GENERIC_READ and COPY_DEST respectively. They cannot participate in
+        // state transitions (including the Common split used for cross-queue
+        // ownership). Queue Signal/Wait still provides the required ordering,
+        // so the physical barrier is intentionally empty for these heaps.
+        if (dx12Buffer->GetMemoryType() != RHIMemoryType::Default)
+        {
+            if (barrier.hasScopedAccess &&
+                barrier.accessBefore.domain != barrier.accessAfter.domain)
+            {
+                GPUQueueDomain contextDomain = GPUQueueDomain::Graphics;
+                if (!TryGetGPUQueueDomain(
+                        m_device->GetCapabilities().queueTopology,
+                        GetQueueType(),
+                        contextDomain))
+                {
+                    RVX_RHI_ERROR(
+                        "DX12 fixed-state buffer ownership barrier used an invalid queue domain");
+                    return;
+                }
+                if (contextDomain != barrier.accessBefore.domain &&
+                    contextDomain != barrier.accessAfter.domain)
+                {
+                    RVX_RHI_ERROR(
+                        "DX12 fixed-state buffer ownership barrier recorded on an unrelated queue");
+                }
+            }
+            return;
+        }
+
+        RHIAccessSnapshot scopedBefore = barrier.accessBefore;
+        RHIAccessSnapshot scopedAfter = barrier.accessAfter;
+        RHIResourceState legacyBefore = barrier.stateBefore;
+        RHIResourceState legacyAfter = barrier.stateAfter;
+
         if (barrier.hasScopedAccess &&
             barrier.accessBefore.domain != barrier.accessAfter.domain)
         {
@@ -901,12 +936,23 @@ namespace RVX
             }
             if (contextDomain == barrier.accessBefore.domain)
             {
-                // The queue fence published by SubmitCommandContexts is the
-                // release operation. D3D12 records the state transition once,
-                // on the acquiring queue after its GPU wait.
-                return;
+                scopedAfter = MakeRHIAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    contextDomain,
+                    barrier.accessBefore.contentValidity);
+                legacyAfter = RHIResourceState::Common;
             }
-            if (contextDomain != barrier.accessAfter.domain)
+            else if (contextDomain == barrier.accessAfter.domain)
+            {
+                scopedBefore = MakeRHIAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    contextDomain,
+                    barrier.accessBefore.contentValidity);
+                legacyBefore = RHIResourceState::Common;
+            }
+            else
             {
                 RVX_RHI_ERROR("DX12 buffer ownership barrier recorded on an unrelated queue");
                 return;
@@ -920,20 +966,19 @@ namespace RVX
             {
                 return;
             }
-            if (!barrier.hasScopedAccess &&
-                barrier.stateBefore == barrier.stateAfter)
+            if (!barrier.hasScopedAccess && legacyBefore == legacyAfter)
             {
                 return;
             }
 
             const RHIAccessSnapshot before = ResolveBarrierAccess(
                 barrier.hasScopedAccess,
-                barrier.accessBefore,
-                barrier.stateBefore);
+                scopedBefore,
+                legacyBefore);
             const RHIAccessSnapshot after = ResolveBarrierAccess(
                 barrier.hasScopedAccess,
-                barrier.accessAfter,
-                barrier.stateAfter);
+                scopedAfter,
+                legacyAfter);
 
             D3D12_BUFFER_BARRIER nativeBarrier = {};
             ResolveEnhancedBarrierAccess(
@@ -951,13 +996,13 @@ namespace RVX
             return;
         }
 
-        if (barrier.stateBefore == barrier.stateAfter)
+        if (legacyBefore == legacyAfter)
         {
             if (!barrier.hasScopedAccess ||
                 !HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory) ||
                 !HasAnyAccess(
-                    barrier.accessBefore.memoryAccess |
-                        barrier.accessAfter.memoryAccess,
+                    scopedBefore.memoryAccess |
+                        scopedAfter.memoryAccess,
                     RHIMemoryAccess::ShaderWrite))
             {
                 return;
@@ -976,8 +1021,8 @@ namespace RVX
         d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
         d3dBarrier.Transition.pResource = dx12Buffer->GetResource();
         d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(barrier.stateBefore);
-        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
+        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(legacyBefore);
+        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(legacyAfter);
 
         m_pendingLegacyBarriers.push_back(d3dBarrier);
     }
@@ -995,6 +1040,11 @@ namespace RVX
             return;
         }
 
+        RHIAccessSnapshot scopedBefore = barrier.accessBefore;
+        RHIAccessSnapshot scopedAfter = barrier.accessAfter;
+        RHIResourceState legacyBefore = barrier.stateBefore;
+        RHIResourceState legacyAfter = barrier.stateAfter;
+
         if (barrier.hasScopedAccess &&
             barrier.accessBefore.domain != barrier.accessAfter.domain)
         {
@@ -1009,9 +1059,23 @@ namespace RVX
             }
             if (contextDomain == barrier.accessBefore.domain)
             {
-                return;
+                scopedAfter = MakeRHIAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    contextDomain,
+                    barrier.accessBefore.contentValidity);
+                legacyAfter = RHIResourceState::Common;
             }
-            if (contextDomain != barrier.accessAfter.domain)
+            else if (contextDomain == barrier.accessAfter.domain)
+            {
+                scopedBefore = MakeRHIAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    contextDomain,
+                    barrier.accessBefore.contentValidity);
+                legacyBefore = RHIResourceState::Common;
+            }
+            else
             {
                 RVX_RHI_ERROR("DX12 texture ownership barrier recorded on an unrelated queue");
                 return;
@@ -1025,20 +1089,19 @@ namespace RVX
             {
                 return;
             }
-            if (!barrier.hasScopedAccess &&
-                barrier.stateBefore == barrier.stateAfter)
+            if (!barrier.hasScopedAccess && legacyBefore == legacyAfter)
             {
                 return;
             }
 
             const RHIAccessSnapshot before = ResolveBarrierAccess(
                 barrier.hasScopedAccess,
-                barrier.accessBefore,
-                barrier.stateBefore);
+                scopedBefore,
+                legacyBefore);
             const RHIAccessSnapshot after = ResolveBarrierAccess(
                 barrier.hasScopedAccess,
-                barrier.accessAfter,
-                barrier.stateAfter);
+                scopedAfter,
+                legacyAfter);
 
             D3D12_TEXTURE_BARRIER nativeBarrier = {};
             ResolveEnhancedBarrierAccess(
@@ -1070,13 +1133,13 @@ namespace RVX
             return;
         }
 
-        if (barrier.stateBefore == barrier.stateAfter)
+        if (legacyBefore == legacyAfter)
         {
             if (!barrier.hasScopedAccess ||
                 !HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory) ||
                 !HasAnyAccess(
-                    barrier.accessBefore.memoryAccess |
-                        barrier.accessAfter.memoryAccess,
+                    scopedBefore.memoryAccess |
+                        scopedAfter.memoryAccess,
                     RHIMemoryAccess::ShaderWrite))
             {
                 return;
@@ -1094,8 +1157,8 @@ namespace RVX
         d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
         d3dBarrier.Transition.pResource = dx12Texture->GetResource();
-        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(barrier.stateBefore);
-        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
+        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(legacyBefore);
+        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(legacyAfter);
 
         // Handle subresource range
         const auto& range = barrier.subresourceRange;
@@ -2666,6 +2729,187 @@ namespace RVX
                 entry.context->DetachCommandAllocator(),
                 entry.context->GetD3DListType(),
                 entry.queue);
+        }
+        return submittedValue;
+    }
+
+    uint64 SubmitDX12QueuePlan(DX12Device* device,
+                               const RHIQueueSubmissionPlan& plan,
+                               RHIFence* terminalFence)
+    {
+        if (!device)
+        {
+            return 0;
+        }
+
+        const RHIQueueSubmissionPlanValidationResult validation =
+            ValidateRHIQueueSubmissionPlan(plan);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("SubmitDX12QueuePlan rejected invalid plan: {}",
+                          validation.message);
+            return 0;
+        }
+
+        struct BatchState
+        {
+            ID3D12CommandQueue* queue = nullptr;
+            std::vector<DX12CommandContext*> contexts;
+            std::vector<ID3D12CommandList*> commandLists;
+            ComPtr<ID3D12Fence> completionFence;
+        };
+
+        std::vector<BatchState> batches(plan.batches.size());
+        std::vector<uint8> needsCrossQueueSignal(plan.batches.size(), 0);
+        for (uint32 targetIndex = 0;
+             targetIndex < static_cast<uint32>(plan.batches.size());
+             ++targetIndex)
+        {
+            const RHIQueueSubmissionBatch& target = plan.batches[targetIndex];
+            for (uint32 sourceIndex : target.prerequisiteBatchIndices)
+            {
+                if (plan.batches[sourceIndex].queueType != target.queueType)
+                {
+                    needsCrossQueueSignal[sourceIndex] = 1;
+                }
+            }
+        }
+
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(plan.batches.size());
+             ++batchIndex)
+        {
+            const RHIQueueSubmissionBatch& source = plan.batches[batchIndex];
+            BatchState& batch = batches[batchIndex];
+            batch.queue = device->GetQueue(source.queueType);
+            if (!batch.queue)
+            {
+                RVX_RHI_ERROR("SubmitDX12QueuePlan encountered an unavailable queue");
+                return 0;
+            }
+            batch.contexts.reserve(source.contexts.size());
+            batch.commandLists.reserve(source.contexts.size());
+            for (RHICommandContext* context : source.contexts)
+            {
+                auto* dx12Context = static_cast<DX12CommandContext*>(context);
+                batch.contexts.push_back(dx12Context);
+                batch.commandLists.push_back(dx12Context->GetCommandList());
+            }
+
+            if (needsCrossQueueSignal[batchIndex] != 0)
+            {
+                const HRESULT createResult = device->GetD3DDevice()->CreateFence(
+                    0,
+                    D3D12_FENCE_FLAG_NONE,
+                    IID_PPV_ARGS(&batch.completionFence));
+                if (FAILED(createResult))
+                {
+                    device->HandleDeviceLost(
+                        createResult,
+                        RHIDeviceFaultOperation::CommandSubmission);
+                    return 0;
+                }
+            }
+        }
+
+        const auto abandonAllocators = [&batches]()
+        {
+            for (BatchState& batch : batches)
+            {
+                for (DX12CommandContext* context : batch.contexts)
+                {
+                    static_cast<void>(context->DetachCommandAllocator());
+                }
+            }
+        };
+
+        uint64 submittedValue = 0;
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(plan.batches.size());
+             ++batchIndex)
+        {
+            const RHIQueueSubmissionBatch& source = plan.batches[batchIndex];
+            BatchState& batch = batches[batchIndex];
+            for (uint32 prerequisiteIndex : source.prerequisiteBatchIndices)
+            {
+                BatchState& prerequisite = batches[prerequisiteIndex];
+                if (prerequisite.queue == batch.queue)
+                {
+                    continue;
+                }
+                if (!prerequisite.completionFence)
+                {
+                    RVX_RHI_ERROR(
+                        "SubmitDX12QueuePlan found a cross-queue dependency without a source signal");
+                    abandonAllocators();
+                    return 0;
+                }
+                const HRESULT waitResult = batch.queue->Wait(
+                    prerequisite.completionFence.Get(), 1);
+                if (FAILED(waitResult))
+                {
+                    device->HandleDeviceLost(
+                        waitResult,
+                        RHIDeviceFaultOperation::CommandSubmission);
+                    abandonAllocators();
+                    return 0;
+                }
+            }
+
+            batch.queue->ExecuteCommandLists(
+                static_cast<UINT>(batch.commandLists.size()),
+                batch.commandLists.data());
+
+            if (batch.completionFence)
+            {
+                const HRESULT signalResult = batch.queue->Signal(
+                    batch.completionFence.Get(), 1);
+                if (FAILED(signalResult))
+                {
+                    device->HandleDeviceLost(
+                        signalResult,
+                        RHIDeviceFaultOperation::CommandSubmission);
+                    abandonAllocators();
+                    return 0;
+                }
+            }
+
+            if (batchIndex == plan.terminalGraphicsBatchIndex && terminalFence)
+            {
+                auto* dx12Fence = static_cast<DX12Fence*>(terminalFence);
+                submittedValue = dx12Fence->AllocateSignalValue();
+                const HRESULT signalResult = batch.queue->Signal(
+                    dx12Fence->GetFence(), submittedValue);
+                if (FAILED(signalResult))
+                {
+                    device->HandleDeviceLost(
+                        signalResult,
+                        RHIDeviceFaultOperation::CommandSubmission);
+                    abandonAllocators();
+                    return 0;
+                }
+            }
+        }
+
+        const HRESULT deviceStatus = device->GetDeviceRemovedReason();
+        if (FAILED(deviceStatus))
+        {
+            device->HandleDeviceLost(
+                deviceStatus,
+                RHIDeviceFaultOperation::CommandSubmission);
+            abandonAllocators();
+            return 0;
+        }
+
+        for (BatchState& batch : batches)
+        {
+            for (DX12CommandContext* context : batch.contexts)
+            {
+                device->GetAllocatorPool().Release(
+                    context->DetachCommandAllocator(),
+                    context->GetD3DListType(),
+                    batch.queue);
+            }
         }
         return submittedValue;
     }

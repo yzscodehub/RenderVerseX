@@ -83,6 +83,89 @@ namespace RVX::Tests
             RHICapabilities m_capabilities;
         };
 
+        class QueueContractContext final : public RHICommandContext
+        {
+        public:
+            explicit QueueContractContext(RHICommandQueueType queueType)
+                : m_queueType(queueType)
+            {
+            }
+
+            RHICommandQueueType GetQueueType() const override { return m_queueType; }
+            void Begin() override {}
+            void End() override {}
+            void Reset() override {}
+            void BeginEvent(const char*, uint32 = 0) override {}
+            void EndEvent() override {}
+            void SetMarker(const char*, uint32 = 0) override {}
+            void BufferBarrier(const RHIBufferBarrier&) override {}
+            void TextureBarrier(const RHITextureBarrier&) override {}
+            void Barriers(std::span<const RHIBufferBarrier>,
+                          std::span<const RHITextureBarrier>) override {}
+            void BeginBarrier(const RHIBufferBarrier&) override {}
+            void BeginBarrier(const RHITextureBarrier&) override {}
+            void EndBarrier(const RHIBufferBarrier&) override {}
+            void EndBarrier(const RHITextureBarrier&) override {}
+            void BeginRenderPass(const RHIRenderPassDesc&) override {}
+            void EndRenderPass() override {}
+            void SetPipeline(RHIPipeline*) override {}
+            void SetVertexBuffer(uint32, RHIBuffer*, uint64 = 0) override {}
+            void SetVertexBuffers(uint32,
+                                  std::span<RHIBuffer* const>,
+                                  std::span<const uint64> = {}) override {}
+            void SetIndexBuffer(RHIBuffer*, RHIFormat, uint64 = 0) override {}
+            void SetDescriptorSet(uint32,
+                                  RHIDescriptorSet*,
+                                  std::span<const uint32> = {}) override {}
+            void SetPushConstants(const void*, uint32, uint32 = 0) override {}
+            void SetViewport(const RHIViewport&) override {}
+            void SetViewports(std::span<const RHIViewport>) override {}
+            void SetScissor(const RHIRect&) override {}
+            void SetScissors(std::span<const RHIRect>) override {}
+            void Draw(uint32, uint32 = 1, uint32 = 0, uint32 = 0) override {}
+            void DrawIndexed(uint32,
+                             uint32 = 1,
+                             uint32 = 0,
+                             int32 = 0,
+                             uint32 = 0) override {}
+            void DrawIndirect(RHIBuffer*, uint64, uint32, uint32) override {}
+            void DrawIndexedIndirect(RHIBuffer*, uint64, uint32, uint32) override {}
+            void Dispatch(uint32, uint32, uint32) override {}
+            void DispatchIndirect(RHIBuffer*, uint64) override {}
+            void CopyBuffer(RHIBuffer*, RHIBuffer*, uint64, uint64, uint64) override {}
+            void CopyTexture(RHITexture*,
+                             RHITexture*,
+                             const RHITextureCopyDesc& = {}) override {}
+            void CopyBufferToTexture(
+                RHIBuffer*,
+                RHITexture*,
+                const RHIBufferTextureCopyDesc&) override {}
+            void CopyTextureToBuffer(
+                RHITexture*,
+                RHIBuffer*,
+                const RHIBufferTextureCopyDesc&) override {}
+            void BeginQuery(RHIQueryPool*, uint32) override {}
+            void EndQuery(RHIQueryPool*, uint32) override {}
+            void WriteTimestamp(RHIQueryPool*, uint32) override {}
+            void ResolveQueries(RHIQueryPool*,
+                                uint32,
+                                uint32,
+                                RHIBuffer*,
+                                uint64) override {}
+            void ResetQueries(RHIQueryPool*, uint32, uint32) override {}
+            void SetStencilReference(uint32) override {}
+            void SetBlendConstants(const float[4]) override {}
+            void SetDepthBias(float, float, float = 0.0f) override {}
+            void SetDepthBounds(float, float) override {}
+            void SetStencilReferenceSeparate(uint32, uint32) override {}
+            void SetLineWidth(float) override {}
+            void SignalFence(RHIFence*, uint64) override {}
+            void WaitFence(RHIFence*, uint64) override {}
+
+        private:
+            RHICommandQueueType m_queueType = RHICommandQueueType::Graphics;
+        };
+
         class DescriptorContractBuffer final : public RHIBuffer
         {
         public:
@@ -1428,6 +1511,16 @@ namespace RVX::Tests
 
         EXPECT_FALSE(result);
         EXPECT_NE(result.message.find("emulated queue fences"), std::string::npos);
+
+        capabilities = MakeValidCapabilities(RHIBackendType::DX12);
+        capabilities.supportsQueueSubmissionPlan = true;
+        EXPECT_TRUE(ValidateRHICapabilities(capabilities));
+
+        capabilities.queueTopology.completionMode =
+            RHIQueueCompletionMode::CompatibilityWaitIdle;
+        result = ValidateRHICapabilities(capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_NE(result.message.find("queue submission plans"), std::string::npos);
     }
 
     TEST(RHIContractValidation, RejectsAsyncComputeWithoutComputePipeline)
@@ -1626,7 +1719,7 @@ namespace RVX::Tests
         const std::string text = device.ExportCapabilityReportText();
 
         EXPECT_NE(text.find("RHI Capability Report"), std::string::npos);
-        EXPECT_NE(text.find("Schema: 5"), std::string::npos);
+        EXPECT_NE(text.find("Schema: 6"), std::string::npos);
         EXPECT_NE(text.find("Backend: OpenGL"), std::string::npos);
         EXPECT_NE(text.find("Adapter: OpenGL Test Adapter"), std::string::npos);
         EXPECT_NE(text.find("DriverVersion: TestDriver.1"), std::string::npos);
@@ -1652,7 +1745,7 @@ namespace RVX::Tests
         const FakeRHIDevice device(capabilities);
         const std::string json = device.ExportCapabilityReportJson();
 
-        EXPECT_NE(json.find("\"schemaVersion\": 5"), std::string::npos);
+        EXPECT_NE(json.find("\"schemaVersion\": 6"), std::string::npos);
         EXPECT_NE(json.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos);
         EXPECT_NE(json.find("\"id\": \"rhiCapabilityReportJson\""), std::string::npos);
         EXPECT_NE(json.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos);
@@ -1813,6 +1906,60 @@ namespace RVX::Tests
 
         color.SetOptimizedClearDepthStencil({1.0f, 0});
         EXPECT_FALSE(IsRHIOptimizedClearValueCompatible(color));
+    }
+
+    TEST(RHIContractValidation, QueueSubmissionPlanRequiresTopologicalTerminalJoin)
+    {
+        QueueContractContext copy(RHICommandQueueType::Copy);
+        QueueContractContext compute(RHICommandQueueType::Compute);
+        QueueContractContext graphics(RHICommandQueueType::Graphics);
+
+        RHIQueueSubmissionPlan plan;
+        plan.batches = {
+            {RHICommandQueueType::Copy, {&copy}, {}},
+            {RHICommandQueueType::Compute, {&compute}, {0}},
+            {RHICommandQueueType::Graphics, {&graphics}, {1}},
+        };
+        plan.terminalGraphicsBatchIndex = 2;
+        EXPECT_TRUE(ValidateRHIQueueSubmissionPlan(plan));
+
+        plan.batches[2].prerequisiteBatchIndices = {1, 0};
+        EXPECT_TRUE(ValidateRHIQueueSubmissionPlan(plan));
+
+        plan.batches[2].prerequisiteBatchIndices = {1};
+        plan.batches[1].prerequisiteBatchIndices.clear();
+        const auto disconnected = ValidateRHIQueueSubmissionPlan(plan);
+        EXPECT_FALSE(disconnected);
+        EXPECT_NE(disconnected.message.find("does not join"), std::string::npos);
+    }
+
+    TEST(RHIContractValidation, QueueSubmissionPlanRejectsInvalidOwnershipAndOrdering)
+    {
+        QueueContractContext compute(RHICommandQueueType::Compute);
+        QueueContractContext graphics(RHICommandQueueType::Graphics);
+
+        RHIQueueSubmissionPlan plan;
+        plan.batches = {
+            {RHICommandQueueType::Compute, {&compute}, {}},
+            {RHICommandQueueType::Graphics, {&graphics}, {0}},
+        };
+        plan.terminalGraphicsBatchIndex = 1;
+        ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(plan));
+
+        plan.batches[0].queueType = RHICommandQueueType::Graphics;
+        EXPECT_FALSE(ValidateRHIQueueSubmissionPlan(plan));
+        plan.batches[0].queueType = RHICommandQueueType::Compute;
+
+        plan.batches[1].prerequisiteBatchIndices = {1};
+        EXPECT_FALSE(ValidateRHIQueueSubmissionPlan(plan));
+        plan.batches[1].prerequisiteBatchIndices = {0};
+
+        plan.batches[1].contexts = {&compute};
+        EXPECT_FALSE(ValidateRHIQueueSubmissionPlan(plan));
+        plan.batches[1].contexts = {&graphics};
+
+        plan.batches[0].queueType = static_cast<RHICommandQueueType>(0xFF);
+        EXPECT_FALSE(ValidateRHIQueueSubmissionPlan(plan));
     }
 
 } // namespace RVX::Tests

@@ -9,7 +9,7 @@
 namespace RVX
 {
     inline constexpr const char* RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID = "RVX.RHI.CapabilityReport";
-    inline constexpr uint32 RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 5;
+    inline constexpr uint32 RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 6;
 
     // =============================================================================
     // DX11 Threading Mode
@@ -96,6 +96,7 @@ namespace RVX
         bool supportsExplicitQueueFenceSignal = false; // Fence signal on an explicitly selected GPU queue.
         bool supportsQueueFenceWait = false;           // GPU queue can wait on a fence value without CPU blocking.
         bool supportsMultiQueueBatchSubmit = false;    // SubmitCommandContexts can submit mixed queue types in one batch.
+        bool supportsQueueSubmissionPlan = false;      // SubmitQueuePlan can execute an explicit dependency DAG.
         bool emulatesQueueFences = false;              // Queue fence behavior is emulated rather than native GPU sync.
         RHIQueueTopology queueTopology;                // Logical queues mapped to stable physical completion domains.
 

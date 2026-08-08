@@ -321,6 +321,46 @@ namespace RVX
         return {terminalDomain, submittedValue};
     }
 
+    GPUCompletionPoint RenderSubmissionTracker::Submit(
+        const RHIQueueSubmissionPlan& plan)
+    {
+        constexpr GPUQueueDomain terminalDomain = GPUQueueDomain::Graphics;
+        if (!m_device ||
+            m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready ||
+            !ValidateRHIQueueSubmissionPlan(plan))
+        {
+            if (m_device &&
+                m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+            {
+                MarkDeviceLost();
+            }
+            return {};
+        }
+
+        DomainState* state = GetDomainState(terminalDomain);
+        if (!state || state->lost || !state->fence ||
+            state->lastSubmittedValue == std::numeric_limits<uint64>::max() ||
+            m_topology.completionMode != RHIQueueCompletionMode::NativeTimeline ||
+            !m_device->GetCapabilities().supportsQueueSubmissionPlan)
+        {
+            if (state)
+            {
+                state->lost = true;
+            }
+            return {};
+        }
+
+        const uint64 submittedValue =
+            m_device->SubmitQueuePlan(plan, state->fence.Get());
+        if (submittedValue == 0 || submittedValue <= state->lastSubmittedValue)
+        {
+            state->lost = true;
+            return {};
+        }
+        state->lastSubmittedValue = submittedValue;
+        return {terminalDomain, submittedValue};
+    }
+
     GPUCompletionStatus RenderSubmissionTracker::Query(GPUCompletionPoint point) const
     {
         if (!IsDeclaredGPUQueueDomain(point.domain) || point.value == 0)

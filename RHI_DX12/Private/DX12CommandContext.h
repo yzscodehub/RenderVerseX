@@ -11,6 +11,7 @@ namespace RVX
     class DX12Device;
     class DX12Pipeline;
     class DX12AccelerationStructure;
+    struct RHIQueueSubmissionPlan;
 
     // =============================================================================
     // DX12 Command Context Implementation
@@ -203,5 +204,6 @@ namespace RVX
     RHICommandContextRef CreateDX12CommandContext(DX12Device* device, RHICommandQueueType type);
     uint64 SubmitDX12CommandContext(DX12Device* device, RHICommandContext* context, RHIFence* signalFence);
     uint64 SubmitDX12CommandContexts(DX12Device* device, std::span<RHICommandContext* const> contexts, RHIFence* signalFence);
+    uint64 SubmitDX12QueuePlan(DX12Device* device, const RHIQueueSubmissionPlan& plan, RHIFence* terminalFence);
 
 } // namespace RVX

@@ -14,6 +14,7 @@ namespace RVX
 {
     class IRHIDevice;
     class RHICommandContext;
+    struct RHIQueueSubmissionPlan;
     class RenderContext;
     class RenderSubmissionTracker;
     struct RenderContextInternalAccess;
@@ -109,6 +110,7 @@ namespace RVX
         friend struct RenderContextInternalAccess;
 
         GPUCompletionPoint SubmitGraphics(RHICommandContext* context);
+        GPUCompletionPoint SubmitQueuePlan(const RHIQueueSubmissionPlan& plan);
 
         IRHIDevice* m_device = nullptr;
         uint32_t m_frameCount = 0;

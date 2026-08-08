@@ -1251,6 +1251,7 @@ TEST(DX12Validation, SynchronizationCapabilities)
     EXPECT_TRUE(caps.supportsExplicitQueueFenceSignal);
     EXPECT_TRUE(caps.supportsQueueFenceWait);
     EXPECT_TRUE(caps.supportsMultiQueueBatchSubmit);
+    EXPECT_TRUE(caps.supportsQueueSubmissionPlan);
     EXPECT_FALSE(caps.emulatesQueueFences);
     EXPECT_EQ(caps.queueTopology.completionMode, RHIQueueCompletionMode::NativeTimeline);
     EXPECT_EQ(caps.queueTopology.activeDomainCount, 3);
@@ -1258,6 +1259,52 @@ TEST(DX12Validation, SynchronizationCapabilities)
     EXPECT_EQ(caps.queueTopology.logicalQueueDomains[1], GPUQueueDomain::Compute);
     EXPECT_EQ(caps.queueTopology.logicalQueueDomains[2], GPUQueueDomain::Copy);
     EXPECT_TRUE(ValidateRHICapabilities(caps));
+}
+
+TEST(DX12Validation, QueueSubmissionPlanExecutesCopyComputeGraphicsDag)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    ASSERT_TRUE(device->GetCapabilities().supportsQueueSubmissionPlan);
+
+    const std::array<RHICommandQueueType, 6> queueTypes = {
+        RHICommandQueueType::Copy,
+        RHICommandQueueType::Compute,
+        RHICommandQueueType::Graphics,
+        RHICommandQueueType::Compute,
+        RHICommandQueueType::Graphics,
+        RHICommandQueueType::Graphics,
+    };
+    std::array<RHICommandContextRef, 6> contexts;
+    RHIQueueSubmissionPlan plan;
+    for (uint32 index = 0; index < contexts.size(); ++index)
+    {
+        contexts[index] = device->CreateCommandContext(queueTypes[index]);
+        ASSERT_NE(contexts[index].Get(), nullptr);
+        contexts[index]->Begin();
+        contexts[index]->End();
+        RHIQueueSubmissionBatch batch;
+        batch.queueType = queueTypes[index];
+        batch.contexts.push_back(contexts[index].Get());
+        if (index != 0)
+        {
+            batch.prerequisiteBatchIndices.push_back(index - 1u);
+        }
+        plan.batches.push_back(std::move(batch));
+    }
+    plan.terminalGraphicsBatchIndex = 5;
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(plan));
+
+    RHIFenceRef terminalFence = device->CreateFence(0);
+    ASSERT_NE(terminalFence.Get(), nullptr);
+    const uint64 submittedValue =
+        device->SubmitQueuePlan(plan, terminalFence.Get());
+    ASSERT_NE(submittedValue, 0u);
+    device->WaitForFence(terminalFence.Get(), submittedValue);
+    device->WaitIdle();
+    EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
 }
 
 TEST(DX12Validation, UploadGatewayTransfersCopyOwnershipToGraphics)
@@ -1323,6 +1370,94 @@ TEST(DX12Validation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)
 
     context.WaitIdle();
     EXPECT_TRUE(context.GetFrameSynchronizer()->IsFrameComplete(frameSlot));
+    context.Shutdown();
+}
+
+TEST(DX12Validation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
+{
+    RenderContextConfig config;
+    config.backendType = RHIBackendType::DX12;
+    config.enableValidation = true;
+    config.frameBuffering = 2;
+    config.appName = "DX12RenderContextQueueGatewayValidation";
+
+    RenderContext context;
+    if (!context.Initialize(config))
+    {
+        GTEST_SKIP() << "DX12 RenderContext is not available";
+    }
+    if (RVX::Test::IsSoftwareAdapterName(
+            context.GetDevice()->GetCapabilities().adapterName))
+    {
+        context.Shutdown();
+        GTEST_SKIP() << "DX12 RenderContext uses a software adapter";
+    }
+
+    ASSERT_TRUE(
+        context.GetDevice()->GetCapabilities().supportsQueueSubmissionPlan);
+    RHICommandContextRef computeContext =
+        context.GetDevice()->CreateCommandContext(
+            RHICommandQueueType::Compute);
+    RHICommandContextRef graphTerminalContext =
+        context.GetDevice()->CreateCommandContext(
+            RHICommandQueueType::Graphics);
+    ASSERT_NE(computeContext.Get(), nullptr);
+    ASSERT_NE(graphTerminalContext.Get(), nullptr);
+    computeContext->Reset();
+    computeContext->Begin();
+    computeContext->SetMarker("QueueGatewayCompute");
+    computeContext->End();
+    graphTerminalContext->Reset();
+    graphTerminalContext->Begin();
+    graphTerminalContext->SetMarker("QueueGatewayGraphTerminal");
+    graphTerminalContext->End();
+
+    RHIQueueSubmissionPlan plan;
+    plan.batches.push_back(
+        {RHICommandQueueType::Compute, {computeContext.Get()}, {}});
+    plan.batches.push_back(
+        {RHICommandQueueType::Graphics,
+         {graphTerminalContext.Get()},
+         {0u}});
+    plan.terminalGraphicsBatchIndex = 1u;
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(plan));
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 256u;
+    bufferDesc.usage = RHIBufferUsage::CopyDst;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.debugName = "DX12QueueGatewayBarrierBuffer";
+    RHIBufferRef barrierBuffer = context.GetDevice()->CreateBuffer(bufferDesc);
+    ASSERT_NE(barrierBuffer.Get(), nullptr);
+
+    ASSERT_TRUE(context.BeginFrame());
+    RHICommandContext* graphicsPrelude = context.GetGraphicsContext();
+    ASSERT_NE(graphicsPrelude, nullptr);
+    std::vector<RHICommandContextRef> ownedContexts;
+    ownedContexts.push_back(std::move(computeContext));
+    ownedContexts.push_back(std::move(graphTerminalContext));
+    ASSERT_TRUE(context.AdoptQueueSubmission(std::move(plan),
+                                             std::move(ownedContexts)));
+
+    RHICommandContext* graphicsGateway = context.GetGraphicsContext();
+    ASSERT_NE(graphicsGateway, nullptr);
+    EXPECT_NE(graphicsGateway, graphicsPrelude);
+    EXPECT_EQ(graphicsGateway->GetQueueType(),
+              RHICommandQueueType::Graphics);
+    graphicsGateway->BufferBarrier(barrierBuffer.Get(),
+                                   RHIResourceState::Common,
+                                   RHIResourceState::CopyDest);
+    graphicsGateway->BufferBarrier(barrierBuffer.Get(),
+                                   RHIResourceState::CopyDest,
+                                   RHIResourceState::Common);
+
+    const GPUCompletionPoint submittedPoint = context.EndFrame();
+    EXPECT_EQ(submittedPoint.domain, GPUQueueDomain::Graphics);
+    EXPECT_GT(submittedPoint.value, 0u);
+    context.WaitIdle();
+    EXPECT_EQ(context.GetDevice()->QueryRuntimeStatus(),
+              RHIDeviceRuntimeStatus::Ready);
+    barrierBuffer.Reset();
     context.Shutdown();
 }
 

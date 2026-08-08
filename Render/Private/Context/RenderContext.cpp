@@ -7,6 +7,8 @@
 #include "Core/Log.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
 
+#include <algorithm>
+
 namespace RVX
 {
 
@@ -65,6 +67,9 @@ bool RenderContext::Initialize(const RenderContextConfig& config,
     m_initialized = true;
     m_frameActive = false;
     m_frameReadyToPresent = false;
+    m_queueSubmissionPending = false;
+    m_graphicsContextRecording = false;
+    m_pendingGraphicsGateway.Reset();
     m_frameIndex = 0;
     m_frameNumber = 0;
     m_surface = {};
@@ -96,6 +101,11 @@ void RenderContext::Shutdown(bool waitForIdle)
     m_initialized = false;
     m_frameActive = false;
     m_frameReadyToPresent = false;
+    m_queueSubmissionPending = false;
+    m_graphicsContextRecording = false;
+    m_pendingQueuePlan = {};
+    m_pendingQueueContexts.clear();
+    m_pendingGraphicsGateway.Reset();
     m_surface = {};
 
     RVX_CORE_INFO("RenderContext shutdown complete");
@@ -237,6 +247,7 @@ bool RenderContext::BeginFrame()
         RVX_CORE_ERROR("RenderContext: Frame slot {} completion was lost", m_frameIndex);
         return false;
     }
+    m_inFlightQueueContexts[m_frameIndex].clear();
 
     // Begin device frame
     m_device->BeginFrame();
@@ -253,6 +264,132 @@ bool RenderContext::BeginFrame()
     ctx->Begin();
 
     m_frameActive = true;
+    m_graphicsContextRecording = true;
+    return true;
+}
+
+bool RenderContext::AdoptQueueSubmission(
+    RHIQueueSubmissionPlan plan,
+    std::vector<RHICommandContextRef> ownedContexts)
+{
+    size_t plannedContextCount = 0;
+    for (const RHIQueueSubmissionBatch& batch : plan.batches)
+    {
+        plannedContextCount += batch.contexts.size();
+    }
+    const bool ownsEveryContext =
+        ownedContexts.size() == plannedContextCount &&
+        std::all_of(
+            plan.batches.begin(),
+            plan.batches.end(),
+            [&ownedContexts](const RHIQueueSubmissionBatch& batch)
+            {
+                return std::all_of(
+                    batch.contexts.begin(),
+                    batch.contexts.end(),
+                    [&ownedContexts](RHICommandContext* context)
+                    {
+                        return std::any_of(
+                            ownedContexts.begin(),
+                            ownedContexts.end(),
+                            [context](const RHICommandContextRef& owned)
+                            {
+                                return owned.Get() == context;
+                            });
+                    });
+            });
+    RHICommandContext* graphicsPrelude =
+        m_frameIndex < RVX_MAX_FRAME_COUNT
+            ? m_graphicsContexts[m_frameIndex].Get()
+            : nullptr;
+    if (!m_frameActive || m_queueSubmissionPending || !m_device ||
+        !m_graphicsContextRecording || !graphicsPrelude ||
+        graphicsPrelude->GetQueueType() != RHICommandQueueType::Graphics ||
+        !m_device->GetCapabilities().supportsQueueSubmissionPlan ||
+        !ValidateRHIQueueSubmissionPlan(plan) || !ownsEveryContext)
+    {
+        return false;
+    }
+
+    RHICommandContextRef graphicsGateway =
+        m_device->CreateCommandContext(RHICommandQueueType::Graphics);
+    if (!graphicsGateway ||
+        graphicsGateway->GetQueueType() != RHICommandQueueType::Graphics)
+    {
+        RVX_CORE_ERROR(
+            "RenderContext: Failed to create the terminal Graphics gateway context");
+        return false;
+    }
+
+    // Wrap the graph-owned DAG in two Graphics batches. The prelude orders any
+    // work recorded before RenderGraph against every graph root. The gateway
+    // remains recording after adoption so capture/readback work is guaranteed
+    // to execute after the graph terminal and becomes the only frame-fence and
+    // presentation terminal.
+    RHIQueueSubmissionPlan augmentedPlan;
+    augmentedPlan.batches.reserve(plan.batches.size() + 2u);
+
+    RHIQueueSubmissionBatch preludeBatch;
+    preludeBatch.queueType = RHICommandQueueType::Graphics;
+    preludeBatch.contexts.push_back(graphicsPrelude);
+    augmentedPlan.batches.push_back(std::move(preludeBatch));
+
+    for (RHIQueueSubmissionBatch& sourceBatch : plan.batches)
+    {
+        RHIQueueSubmissionBatch batch;
+        batch.queueType = sourceBatch.queueType;
+        batch.contexts = std::move(sourceBatch.contexts);
+        batch.prerequisiteBatchIndices.reserve(
+            sourceBatch.prerequisiteBatchIndices.size() + 1u);
+        for (uint32 prerequisite : sourceBatch.prerequisiteBatchIndices)
+        {
+            batch.prerequisiteBatchIndices.push_back(prerequisite + 1u);
+        }
+        if (sourceBatch.prerequisiteBatchIndices.empty())
+        {
+            batch.prerequisiteBatchIndices.push_back(0u);
+        }
+        augmentedPlan.batches.push_back(std::move(batch));
+    }
+
+    RHIQueueSubmissionBatch gatewayBatch;
+    gatewayBatch.queueType = RHICommandQueueType::Graphics;
+    gatewayBatch.contexts.push_back(graphicsGateway.Get());
+    gatewayBatch.prerequisiteBatchIndices.push_back(
+        plan.terminalGraphicsBatchIndex + 1u);
+    augmentedPlan.batches.push_back(std::move(gatewayBatch));
+    augmentedPlan.terminalGraphicsBatchIndex =
+        static_cast<uint32>(augmentedPlan.batches.size() - 1u);
+
+    const RHIQueueSubmissionPlanValidationResult augmentedValidation =
+        ValidateRHIQueueSubmissionPlan(augmentedPlan);
+    if (!augmentedValidation)
+    {
+        RVX_CORE_ERROR(
+            "RenderContext: Invalid framed queue submission plan: {}",
+            augmentedValidation.message);
+        return false;
+    }
+
+    std::vector<RHICommandContextRef> augmentedOwnedContexts;
+    augmentedOwnedContexts.reserve(ownedContexts.size() + 2u);
+    augmentedOwnedContexts.push_back(m_graphicsContexts[m_frameIndex]);
+    for (RHICommandContextRef& context : ownedContexts)
+    {
+        augmentedOwnedContexts.push_back(std::move(context));
+    }
+    augmentedOwnedContexts.push_back(graphicsGateway);
+
+    graphicsPrelude->End();
+    m_graphicsContextRecording = false;
+    graphicsGateway->Reset();
+    graphicsGateway->Begin();
+
+    m_pendingQueuePlan = std::move(augmentedPlan);
+    m_pendingQueueContexts = std::move(augmentedOwnedContexts);
+    m_pendingGraphicsGateway = std::move(graphicsGateway);
+    m_queueSubmissionPending = true;
+    m_graphicsContextRecording = true;
     return true;
 }
 
@@ -267,20 +404,40 @@ GPUCompletionPoint RenderContext::EndFrame()
 
     // End the command context
     RHICommandContext* ctx = GetGraphicsContext();
-    if (ctx)
+    if (ctx && m_graphicsContextRecording)
     {
         ctx->End();
+        m_graphicsContextRecording = false;
     }
 
     // Submit commands
     GPUCompletionPoint submittedPoint;
-    if (m_device && ctx)
+    if (m_device && m_queueSubmissionPending)
+    {
+        submittedPoint =
+            m_frameSynchronizer.SubmitQueuePlan(m_pendingQueuePlan);
+        if (submittedPoint.domain == GPUQueueDomain::Graphics &&
+            submittedPoint.value != 0)
+        {
+            m_inFlightQueueContexts[m_frameIndex] =
+                std::move(m_pendingQueueContexts);
+        }
+        else
+        {
+            m_pendingQueueContexts.clear();
+        }
+        m_pendingQueuePlan = {};
+        m_queueSubmissionPending = false;
+        m_pendingGraphicsGateway.Reset();
+    }
+    else if (m_device && ctx)
     {
         submittedPoint = m_frameSynchronizer.SubmitGraphics(ctx);
-        if (submittedPoint.domain == GPUQueueDomain::Graphics && submittedPoint.value != 0)
-        {
-            m_frameSynchronizer.SignalFrame(m_frameIndex, submittedPoint);
-        }
+    }
+    if (submittedPoint.domain == GPUQueueDomain::Graphics &&
+        submittedPoint.value != 0)
+    {
+        m_frameSynchronizer.SignalFrame(m_frameIndex, submittedPoint);
     }
 
     // End device frame
@@ -303,8 +460,16 @@ void RenderContext::AbortFrame()
     }
     if (RHICommandContext* context = GetGraphicsContext())
     {
-        context->End();
+        if (m_graphicsContextRecording)
+        {
+            context->End();
+        }
     }
+    m_graphicsContextRecording = false;
+    m_queueSubmissionPending = false;
+    m_pendingQueuePlan = {};
+    m_pendingQueueContexts.clear();
+    m_pendingGraphicsGateway.Reset();
     if (m_device)
     {
         m_device->EndFrame();
@@ -344,6 +509,10 @@ void RenderContext::WaitIdle()
 
 RHICommandContext* RenderContext::GetGraphicsContext() const
 {
+    if (m_queueSubmissionPending && m_pendingGraphicsGateway)
+    {
+        return m_pendingGraphicsGateway.Get();
+    }
     if (m_frameIndex >= RVX_MAX_FRAME_COUNT)
         return nullptr;
     return m_graphicsContexts[m_frameIndex].Get();
@@ -404,7 +573,13 @@ void RenderContext::DestroyCommandContexts()
     {
         m_graphicsContexts[i].Reset();
         m_computeContexts[i].Reset();
+        m_inFlightQueueContexts[i].clear();
     }
+    m_pendingQueuePlan = {};
+    m_pendingQueueContexts.clear();
+    m_pendingGraphicsGateway.Reset();
+    m_queueSubmissionPending = false;
+    m_graphicsContextRecording = false;
 }
 
 bool RenderContext::WaitForSurfaceGeneration()

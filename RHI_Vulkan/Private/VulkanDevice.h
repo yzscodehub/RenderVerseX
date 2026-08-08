@@ -164,6 +164,7 @@ namespace RVX
         RHICommandContextRef CreateCommandContext(RHICommandQueueType type) override;
         uint64 SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence) override;
         uint64 SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence) override;
+        uint64 SubmitQueuePlan(const RHIQueueSubmissionPlan& plan, RHIFence* terminalFence) override;
 
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc& desc) override;
 

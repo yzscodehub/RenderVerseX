@@ -147,4 +147,14 @@ GPUCompletionPoint FrameSynchronizer::SubmitGraphics(RHICommandContext* context)
     return m_submissionTracker->Submit(context);
 }
 
+GPUCompletionPoint FrameSynchronizer::SubmitQueuePlan(
+    const RHIQueueSubmissionPlan& plan)
+{
+    if (!m_submissionTracker)
+    {
+        return {};
+    }
+    return m_submissionTracker->Submit(plan);
+}
+
 } // namespace RVX

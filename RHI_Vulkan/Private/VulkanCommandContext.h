@@ -7,6 +7,7 @@ namespace RVX
 {
     class VulkanDevice;
     class VulkanPipeline;
+    struct RHIQueueSubmissionPlan;
 
     // =============================================================================
     // Vulkan Command Context
@@ -116,5 +117,6 @@ namespace RVX
     RHICommandContextRef CreateVulkanCommandContext(VulkanDevice* device, RHICommandQueueType type);
     uint64 SubmitVulkanCommandContext(VulkanDevice* device, RHICommandContext* context, RHIFence* signalFence);
     uint64 SubmitVulkanCommandContexts(VulkanDevice* device, std::span<RHICommandContext* const> contexts, RHIFence* signalFence);
+    uint64 SubmitVulkanQueuePlan(VulkanDevice* device, const RHIQueueSubmissionPlan& plan, RHIFence* terminalFence);
 
 } // namespace RVX

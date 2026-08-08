@@ -1253,6 +1253,7 @@ namespace RVX
         m_capabilities.supportsExplicitQueueFenceSignal = true;
         m_capabilities.supportsQueueFenceWait = true;
         m_capabilities.supportsMultiQueueBatchSubmit = true;
+        m_capabilities.supportsQueueSubmissionPlan = true;
         m_capabilities.emulatesQueueFences = false;
         m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
         m_capabilities.queueTopology.logicalQueueDomains = {
@@ -1647,6 +1648,12 @@ namespace RVX
     uint64 DX12Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
         return SubmitDX12CommandContexts(this, contexts, signalFence);
+    }
+
+    uint64 DX12Device::SubmitQueuePlan(const RHIQueueSubmissionPlan& plan,
+                                       RHIFence* terminalFence)
+    {
+        return SubmitDX12QueuePlan(this, plan, terminalFence);
     }
 
     // =============================================================================

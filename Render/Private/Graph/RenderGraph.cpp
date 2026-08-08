@@ -3,6 +3,7 @@
 #include "Core/Log.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <fstream>
 #include <sstream>
@@ -90,21 +91,34 @@ namespace RVX
                 return domain;
             }
 
-            if (device && passType == RenderGraphPassType::Compute)
+            if (device)
             {
                 const RHICapabilities& capabilities = device->GetCapabilities();
-                const bool canScheduleAsyncCompute =
+                const bool supportsLegacyTwoQueueRecording =
                     capabilities.supportsAsyncCompute &&
                     capabilities.supportsExplicitQueueFenceSignal &&
                     capabilities.supportsQueueFenceWait;
-                if (!canScheduleAsyncCompute)
+                if (!capabilities.supportsQueueSubmissionPlan &&
+                    !supportsLegacyTwoQueueRecording)
                 {
                     return GPUQueueDomain::Graphics;
                 }
-                TryGetGPUQueueDomain(
-                    capabilities.queueTopology,
-                    RHICommandQueueType::Compute,
-                    domain);
+                if (passType == RenderGraphPassType::Compute &&
+                    capabilities.supportsAsyncCompute)
+                {
+                    TryGetGPUQueueDomain(
+                        capabilities.queueTopology,
+                        RHICommandQueueType::Compute,
+                        domain);
+                }
+                else if (passType == RenderGraphPassType::Copy &&
+                         capabilities.supportsQueueSubmissionPlan)
+                {
+                    TryGetGPUQueueDomain(
+                        capabilities.queueTopology,
+                        RHICommandQueueType::Copy,
+                        domain);
+                }
             }
             return domain;
         }
@@ -112,9 +126,16 @@ namespace RVX
         RenderGraph::DiagnosticExecutionQueue GetPlannedExecutionQueue(
             GPUQueueDomain domain)
         {
-            return domain == GPUQueueDomain::Compute
-                ? RenderGraph::DiagnosticExecutionQueue::Compute
-                : RenderGraph::DiagnosticExecutionQueue::Graphics;
+            switch (domain)
+            {
+                case GPUQueueDomain::Compute:
+                    return RenderGraph::DiagnosticExecutionQueue::Compute;
+                case GPUQueueDomain::Copy:
+                    return RenderGraph::DiagnosticExecutionQueue::Copy;
+                case GPUQueueDomain::Graphics:
+                default:
+                    return RenderGraph::DiagnosticExecutionQueue::Graphics;
+            }
         }
 
         RHIShaderStage GetDefaultShaderStages(RenderGraphPassType passType)
@@ -194,6 +215,8 @@ namespace RVX
                     return "Graphics";
                 case RenderGraph::DiagnosticExecutionQueue::Compute:
                     return "Compute";
+                case RenderGraph::DiagnosticExecutionQueue::Copy:
+                    return "Copy";
                 case RenderGraph::DiagnosticExecutionQueue::Unknown:
                 default:
                     return "Unknown";
@@ -390,7 +413,25 @@ namespace RVX
                 }
             }
 
-            plan.queueBatchCount = static_cast<uint32>(plan.queueBatches.size());
+            std::stable_sort(
+                plan.queueBatches.begin(),
+                plan.queueBatches.end(),
+                [](const RenderGraph::PlannedQueueBatchDiagnostic& left,
+                   const RenderGraph::PlannedQueueBatchDiagnostic& right)
+                {
+                    if (left.dependencyLevel != right.dependencyLevel)
+                    {
+                        return left.dependencyLevel < right.dependencyLevel;
+                    }
+                    return left.queue < right.queue;
+                });
+            for (uint32 batchIndex = 0;
+                 batchIndex < static_cast<uint32>(plan.queueBatches.size());
+                 ++batchIndex)
+            {
+                plan.queueBatches[batchIndex].batchIndex = batchIndex;
+            }
+
             uint32 maxPlannedDependencyLevel = 0;
             bool hasPlannedDependencyLevel = false;
             for (const RenderGraph::PlannedQueueBatchDiagnostic& batch : plan.queueBatches)
@@ -401,24 +442,24 @@ namespace RVX
                 {
                     plan.computeBatchCount++;
                 }
+                else if (batch.queue == RenderGraph::DiagnosticExecutionQueue::Copy)
+                {
+                    plan.copyBatchCount++;
+                }
             }
-            plan.dependencyLevelCount =
+            const uint32 passDependencyLevelCount =
                 hasPlannedDependencyLevel ? (maxPlannedDependencyLevel + 1u) : 0u;
 
-            for (uint32 level = 0; level < plan.dependencyLevelCount; ++level)
+            for (uint32 level = 0; level < passDependencyLevelCount; ++level)
             {
-                bool hasGraphics = false;
-                bool hasCompute = false;
+                uint32 queueCount = 0;
                 for (const RenderGraph::PlannedQueueBatchDiagnostic& batch : plan.queueBatches)
                 {
                     if (batch.dependencyLevel != level)
                         continue;
-
-                    hasGraphics = hasGraphics || batch.queue == RenderGraph::DiagnosticExecutionQueue::Graphics;
-                    hasCompute = hasCompute || batch.queue == RenderGraph::DiagnosticExecutionQueue::Compute;
+                    ++queueCount;
                 }
-
-                if (hasGraphics && hasCompute)
+                if (queueCount > 1)
                 {
                     plan.asyncOverlapCandidateLevelCount++;
                 }
@@ -435,6 +476,73 @@ namespace RVX
                     }
                 }
             }
+
+            const auto addPrerequisite =
+                [&plan](uint32 sourceBatchIndex,
+                        uint32 targetBatchIndex,
+                        RenderGraph::DiagnosticSyncReason reason,
+                        uint32 sourcePassIndex,
+                        uint32 targetPassIndex)
+            {
+                if (sourceBatchIndex == targetBatchIndex ||
+                    sourceBatchIndex >= plan.queueBatches.size() ||
+                    targetBatchIndex >= plan.queueBatches.size())
+                {
+                    return;
+                }
+                RenderGraph::PlannedQueueBatchDiagnostic& targetBatch =
+                    plan.queueBatches[targetBatchIndex];
+                if (std::find(
+                        targetBatch.prerequisiteBatchIndices.begin(),
+                        targetBatch.prerequisiteBatchIndices.end(),
+                        sourceBatchIndex) ==
+                    targetBatch.prerequisiteBatchIndices.end())
+                {
+                    targetBatch.prerequisiteBatchIndices.push_back(
+                        sourceBatchIndex);
+                }
+
+                const RenderGraph::PlannedQueueBatchDiagnostic& sourceBatch =
+                    plan.queueBatches[sourceBatchIndex];
+                if (sourceBatch.queue == targetBatch.queue)
+                {
+                    return;
+                }
+                auto syncIt = std::find_if(
+                    plan.queueSyncs.begin(),
+                    plan.queueSyncs.end(),
+                    [&](const RenderGraph::PlannedQueueSyncDiagnostic& sync)
+                    {
+                        return sync.sourceBatchIndex == sourceBatchIndex &&
+                               sync.targetBatchIndex == targetBatchIndex;
+                    });
+                uint32 syncIndex = RVX_INVALID_INDEX;
+                if (syncIt == plan.queueSyncs.end())
+                {
+                    RenderGraph::PlannedQueueSyncDiagnostic sync;
+                    sync.syncIndex = static_cast<uint32>(plan.queueSyncs.size());
+                    sync.sourceBatchIndex = sourceBatchIndex;
+                    sync.targetBatchIndex = targetBatchIndex;
+                    sync.sourceQueue = sourceBatch.queue;
+                    sync.targetQueue = targetBatch.queue;
+                    sync.reason = reason;
+                    sync.sourcePassIndex = sourcePassIndex;
+                    sync.targetPassIndex = targetPassIndex;
+                    syncIndex = sync.syncIndex;
+                    plan.queueSyncs.push_back(sync);
+                }
+                else
+                {
+                    syncIndex = syncIt->syncIndex;
+                }
+                if (std::find(
+                        targetBatch.prerequisiteSyncIndices.begin(),
+                        targetBatch.prerequisiteSyncIndices.end(),
+                        syncIndex) == targetBatch.prerequisiteSyncIndices.end())
+                {
+                    targetBatch.prerequisiteSyncIndices.push_back(syncIndex);
+                }
+            };
 
             for (RenderGraph::PlannedQueueBatchDiagnostic& targetBatch : plan.queueBatches)
             {
@@ -460,50 +568,91 @@ namespace RVX
                             continue;
                         }
 
-                        const RenderGraph::PlannedQueueBatchDiagnostic& sourceBatch =
-                            plan.queueBatches[sourceBatchIndex];
-                        if (sourceBatch.queue == targetBatch.queue)
-                            continue;
-
-                        auto syncIt = std::find_if(
-                            plan.queueSyncs.begin(),
-                            plan.queueSyncs.end(),
-                            [&](const RenderGraph::PlannedQueueSyncDiagnostic& sync)
-                            {
-                                return sync.sourceBatchIndex == sourceBatchIndex &&
-                                       sync.targetBatchIndex == targetBatch.batchIndex;
-                            });
-
-                        uint32 syncIndex = RVX_INVALID_INDEX;
-                        if (syncIt == plan.queueSyncs.end())
-                        {
-                            RenderGraph::PlannedQueueSyncDiagnostic sync;
-                            sync.syncIndex = static_cast<uint32>(plan.queueSyncs.size());
-                            sync.sourceBatchIndex = sourceBatchIndex;
-                            sync.targetBatchIndex = targetBatch.batchIndex;
-                            sync.sourceQueue = sourceBatch.queue;
-                            sync.targetQueue = targetBatch.queue;
-                            sync.reason = RenderGraph::DiagnosticSyncReason::CrossQueueDependency;
-                            sync.sourcePassIndex = sourcePassIndex;
-                            sync.targetPassIndex = targetPassIndex;
-                            syncIndex = sync.syncIndex;
-                            plan.queueSyncs.push_back(sync);
-                        }
-                        else
-                        {
-                            syncIndex = syncIt->syncIndex;
-                        }
-
-                        if (std::find(
-                                targetBatch.prerequisiteSyncIndices.begin(),
-                                targetBatch.prerequisiteSyncIndices.end(),
-                                syncIndex) == targetBatch.prerequisiteSyncIndices.end())
-                        {
-                            targetBatch.prerequisiteSyncIndices.push_back(syncIndex);
-                        }
+                        addPrerequisite(
+                            sourceBatchIndex,
+                            targetBatch.batchIndex,
+                            RenderGraph::DiagnosticSyncReason::CrossQueueDependency,
+                            sourcePassIndex,
+                            targetPassIndex);
                     }
                 }
             }
+
+            // Preserve submission order between independent batches targeting
+            // the same native queue without manufacturing a GPU semaphore.
+            std::array<uint32, 4> previousBatchByQueue = {
+                RVX_INVALID_INDEX,
+                RVX_INVALID_INDEX,
+                RVX_INVALID_INDEX,
+                RVX_INVALID_INDEX};
+            for (uint32 batchIndex = 0;
+                 batchIndex < static_cast<uint32>(plan.queueBatches.size());
+                 ++batchIndex)
+            {
+                const uint32 queueIndex = static_cast<uint32>(
+                    plan.queueBatches[batchIndex].queue);
+                if (queueIndex < previousBatchByQueue.size() &&
+                    previousBatchByQueue[queueIndex] != RVX_INVALID_INDEX)
+                {
+                    addPrerequisite(previousBatchByQueue[queueIndex],
+                                    batchIndex,
+                                    RenderGraph::DiagnosticSyncReason::CrossQueueDependency,
+                                    RVX_INVALID_INDEX,
+                                    RVX_INVALID_INDEX);
+                }
+                if (queueIndex < previousBatchByQueue.size())
+                {
+                    previousBatchByQueue[queueIndex] = batchIndex;
+                }
+            }
+
+            if (!plan.queueBatches.empty())
+            {
+                std::vector<uint8> hasDependent(plan.queueBatches.size(), 0);
+                for (const RenderGraph::PlannedQueueBatchDiagnostic& batch :
+                     plan.queueBatches)
+                {
+                    for (uint32 prerequisite : batch.prerequisiteBatchIndices)
+                    {
+                        if (prerequisite < hasDependent.size())
+                        {
+                            hasDependent[prerequisite] = 1;
+                        }
+                    }
+                }
+
+                RenderGraph::PlannedQueueBatchDiagnostic terminal;
+                terminal.batchIndex = static_cast<uint32>(plan.queueBatches.size());
+                terminal.dependencyLevel = maxPlannedDependencyLevel + 1u;
+                terminal.queue = RenderGraph::DiagnosticExecutionQueue::Graphics;
+                terminal.syntheticTerminal = true;
+                plan.queueBatches.push_back(std::move(terminal));
+                plan.terminalGraphicsBatchIndex =
+                    static_cast<uint32>(plan.queueBatches.size() - 1u);
+
+                for (uint32 batchIndex = 0;
+                     batchIndex < static_cast<uint32>(hasDependent.size());
+                     ++batchIndex)
+                {
+                    if (hasDependent[batchIndex] != 0)
+                        continue;
+                    const auto& source = plan.queueBatches[batchIndex];
+                    const uint32 sourcePassIndex = source.passIndices.empty()
+                        ? RVX_INVALID_INDEX
+                        : source.passIndices.back();
+                    addPrerequisite(
+                        batchIndex,
+                        plan.terminalGraphicsBatchIndex,
+                        RenderGraph::DiagnosticSyncReason::FinalQueueJoin,
+                        sourcePassIndex,
+                        RVX_INVALID_INDEX);
+                }
+            }
+
+            plan.queueBatchCount = static_cast<uint32>(plan.queueBatches.size());
+            plan.dependencyLevelCount = plan.queueBatches.empty()
+                ? 0u
+                : maxPlannedDependencyLevel + 2u;
             plan.queueSyncCount = static_cast<uint32>(plan.queueSyncs.size());
             for (const RenderGraph::PlannedQueueSyncDiagnostic& sync : plan.queueSyncs)
             {
@@ -511,6 +660,236 @@ namespace RVX
                 {
                     plan.crossQueueSyncCount++;
                 }
+            }
+            return plan;
+        }
+
+        RenderGraph::SubmissionPlan AddInitialQueueReleaseBatches(
+            const RenderGraphImpl& graph,
+            RenderGraph::SubmissionPlan plan)
+        {
+            std::vector<const InitialQueueReleaseBatch*> releases;
+            for (const InitialQueueReleaseBatch& release :
+                 graph.initialQueueReleaseBatches)
+            {
+                if (release.queue !=
+                        RenderGraph::DiagnosticExecutionQueue::Unknown &&
+                    (!release.textureBarriers.empty() ||
+                     !release.bufferBarriers.empty()))
+                {
+                    releases.push_back(&release);
+                }
+            }
+            if (releases.empty())
+            {
+                return plan;
+            }
+            std::sort(
+                releases.begin(),
+                releases.end(),
+                [](const InitialQueueReleaseBatch* left,
+                   const InitialQueueReleaseBatch* right)
+                {
+                    return left->queue < right->queue;
+                });
+
+            const uint32 releaseCount = static_cast<uint32>(releases.size());
+            for (RenderGraph::PlannedQueueBatchDiagnostic& batch :
+                 plan.queueBatches)
+            {
+                batch.batchIndex += releaseCount;
+                ++batch.dependencyLevel;
+                for (uint32& prerequisite : batch.prerequisiteBatchIndices)
+                {
+                    prerequisite += releaseCount;
+                }
+            }
+            for (RenderGraph::PlannedQueueSyncDiagnostic& sync :
+                 plan.queueSyncs)
+            {
+                sync.sourceBatchIndex += releaseCount;
+                sync.targetBatchIndex += releaseCount;
+            }
+            if (plan.terminalGraphicsBatchIndex != RVX_INVALID_INDEX)
+            {
+                plan.terminalGraphicsBatchIndex += releaseCount;
+            }
+
+            std::vector<RenderGraph::PlannedQueueBatchDiagnostic> batches;
+            batches.reserve(plan.queueBatches.size() + releaseCount);
+            for (uint32 releaseIndex = 0;
+                 releaseIndex < releaseCount;
+                 ++releaseIndex)
+            {
+                RenderGraph::PlannedQueueBatchDiagnostic batch;
+                batch.batchIndex = releaseIndex;
+                batch.dependencyLevel = 0;
+                batch.queue = releases[releaseIndex]->queue;
+                batch.syntheticInitialRelease = true;
+                batches.push_back(std::move(batch));
+            }
+            for (RenderGraph::PlannedQueueBatchDiagnostic& batch :
+                 plan.queueBatches)
+            {
+                batches.push_back(std::move(batch));
+            }
+            plan.queueBatches = std::move(batches);
+
+            std::vector<uint32> batchIndexByPass(graph.passes.size(),
+                                                 RVX_INVALID_INDEX);
+            for (const RenderGraph::PlannedQueueBatchDiagnostic& batch :
+                 plan.queueBatches)
+            {
+                for (uint32 passIndex : batch.passIndices)
+                {
+                    if (passIndex < batchIndexByPass.size())
+                    {
+                        batchIndexByPass[passIndex] = batch.batchIndex;
+                    }
+                }
+            }
+
+            const auto addPrerequisite =
+                [&plan](uint32 sourceBatchIndex,
+                        uint32 targetBatchIndex,
+                        uint32 targetPassIndex)
+            {
+                if (sourceBatchIndex >= plan.queueBatches.size() ||
+                    targetBatchIndex >= plan.queueBatches.size() ||
+                    sourceBatchIndex == targetBatchIndex)
+                {
+                    return;
+                }
+                RenderGraph::PlannedQueueBatchDiagnostic& target =
+                    plan.queueBatches[targetBatchIndex];
+                if (std::find(target.prerequisiteBatchIndices.begin(),
+                              target.prerequisiteBatchIndices.end(),
+                              sourceBatchIndex) ==
+                    target.prerequisiteBatchIndices.end())
+                {
+                    target.prerequisiteBatchIndices.push_back(
+                        sourceBatchIndex);
+                }
+                const RenderGraph::PlannedQueueBatchDiagnostic& source =
+                    plan.queueBatches[sourceBatchIndex];
+                if (source.queue == target.queue)
+                {
+                    return;
+                }
+
+                const auto existing = std::find_if(
+                    plan.queueSyncs.begin(),
+                    plan.queueSyncs.end(),
+                    [sourceBatchIndex, targetBatchIndex](
+                        const RenderGraph::PlannedQueueSyncDiagnostic& sync)
+                    {
+                        return sync.sourceBatchIndex == sourceBatchIndex &&
+                               sync.targetBatchIndex == targetBatchIndex;
+                    });
+                uint32 syncIndex = RVX_INVALID_INDEX;
+                if (existing == plan.queueSyncs.end())
+                {
+                    RenderGraph::PlannedQueueSyncDiagnostic sync;
+                    sync.syncIndex = static_cast<uint32>(
+                        plan.queueSyncs.size());
+                    sync.sourceBatchIndex = sourceBatchIndex;
+                    sync.targetBatchIndex = targetBatchIndex;
+                    sync.sourceQueue = source.queue;
+                    sync.targetQueue = target.queue;
+                    sync.reason = RenderGraph::DiagnosticSyncReason::
+                        CrossQueueDependency;
+                    sync.targetPassIndex = targetPassIndex;
+                    syncIndex = sync.syncIndex;
+                    plan.queueSyncs.push_back(std::move(sync));
+                }
+                else
+                {
+                    syncIndex = existing->syncIndex;
+                }
+                if (std::find(target.prerequisiteSyncIndices.begin(),
+                              target.prerequisiteSyncIndices.end(),
+                              syncIndex) ==
+                    target.prerequisiteSyncIndices.end())
+                {
+                    target.prerequisiteSyncIndices.push_back(syncIndex);
+                }
+            };
+
+            for (uint32 releaseIndex = 0;
+                 releaseIndex < releaseCount;
+                 ++releaseIndex)
+            {
+                const InitialQueueReleaseBatch& release =
+                    *releases[releaseIndex];
+                for (uint32 targetPassIndex : release.targetPassIndices)
+                {
+                    if (targetPassIndex < batchIndexByPass.size() &&
+                        batchIndexByPass[targetPassIndex] != RVX_INVALID_INDEX)
+                    {
+                        addPrerequisite(releaseIndex,
+                                        batchIndexByPass[targetPassIndex],
+                                        targetPassIndex);
+                    }
+                }
+
+                const auto sameQueueBatch = std::find_if(
+                    plan.queueBatches.begin() + releaseCount,
+                    plan.queueBatches.end(),
+                    [&release](
+                        const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+                    {
+                        return batch.queue == release.queue;
+                    });
+                if (sameQueueBatch != plan.queueBatches.end())
+                {
+                    addPrerequisite(releaseIndex,
+                                    sameQueueBatch->batchIndex,
+                                    sameQueueBatch->passIndices.empty()
+                                        ? RVX_INVALID_INDEX
+                                        : sameQueueBatch->passIndices.front());
+                }
+            }
+
+            for (RenderGraph::PlannedQueueBatchDiagnostic& batch :
+                 plan.queueBatches)
+            {
+                std::sort(batch.prerequisiteBatchIndices.begin(),
+                          batch.prerequisiteBatchIndices.end());
+                std::sort(batch.prerequisiteSyncIndices.begin(),
+                          batch.prerequisiteSyncIndices.end());
+            }
+
+            plan.queueBatchCount = static_cast<uint32>(
+                plan.queueBatches.size());
+            plan.queueSyncCount = static_cast<uint32>(plan.queueSyncs.size());
+            plan.crossQueueSyncCount = static_cast<uint32>(std::count_if(
+                plan.queueSyncs.begin(),
+                plan.queueSyncs.end(),
+                [](const RenderGraph::PlannedQueueSyncDiagnostic& sync)
+                {
+                    return sync.reason == RenderGraph::DiagnosticSyncReason::
+                        CrossQueueDependency;
+                }));
+            plan.computeBatchCount += static_cast<uint32>(std::count_if(
+                releases.begin(),
+                releases.end(),
+                [](const InitialQueueReleaseBatch* release)
+                {
+                    return release->queue ==
+                        RenderGraph::DiagnosticExecutionQueue::Compute;
+                }));
+            plan.copyBatchCount += static_cast<uint32>(std::count_if(
+                releases.begin(),
+                releases.end(),
+                [](const InitialQueueReleaseBatch* release)
+                {
+                    return release->queue ==
+                        RenderGraph::DiagnosticExecutionQueue::Copy;
+                }));
+            ++plan.dependencyLevelCount;
+            if (releaseCount > 1)
+            {
+                ++plan.asyncOverlapCandidateLevelCount;
             }
             return plan;
         }
@@ -538,7 +917,10 @@ namespace RVX
     RenderGraph::SubmissionPlan BuildRenderGraphSubmissionPlan(const RenderGraphImpl& graph)
     {
         std::vector<RenderGraph::PassDiagnostic> passDiagnostics = BuildRenderGraphPassDiagnostics(graph);
-        return BuildRenderGraphSubmissionPlan(passDiagnostics, graph.executionOrder);
+        return AddInitialQueueReleaseBatches(
+            graph,
+            BuildRenderGraphSubmissionPlan(
+                passDiagnostics, graph.executionOrder));
     }
 
     RGTextureHandle RGTextureHandle::Subresource(uint32 mipLevel, uint32 arraySlice) const
@@ -960,6 +1342,13 @@ namespace RVX
             setup(builder);
         }
 
+        const GPUQueueDomain physicalDomain = GetPhysicalDomain(
+            m_impl->device, type, m_impl->queueExecutionMode);
+        for (ResourceUsage& usage : pass.usages)
+        {
+            usage.desiredAccess.domain = physicalDomain;
+        }
+
         m_impl->passes.push_back(std::move(pass));
     }
 
@@ -1350,6 +1739,108 @@ namespace RVX
         ExecuteRenderGraph(*m_impl, ctx);
     }
 
+    bool RenderGraph::RecordQueueSubmission(
+        RecordedQueueSubmission& submission)
+    {
+        return RecordRenderGraphQueueSubmission(*m_impl, submission);
+    }
+
+    bool RenderGraph::RecompileGraphicsOnly()
+    {
+        const auto textureSnapshotIsGraphicsOwned = [](
+            const RHITextureAccessSnapshot& snapshot)
+        {
+            return snapshot.uniformAccess.domain ==
+                       GPUQueueDomain::Graphics &&
+                   std::all_of(
+                       snapshot.subresourceOverrides.begin(),
+                       snapshot.subresourceOverrides.end(),
+                       [](const RHITextureSubresourceAccessSnapshot& entry)
+                       {
+                           return entry.access.domain ==
+                               GPUQueueDomain::Graphics;
+                       });
+        };
+        const auto bufferSnapshotIsGraphicsOwned = [](
+            const RHIBufferAccessSnapshot& snapshot)
+        {
+            return snapshot.uniformAccess.domain ==
+                       GPUQueueDomain::Graphics &&
+                   std::all_of(
+                       snapshot.rangeOverrides.begin(),
+                       snapshot.rangeOverrides.end(),
+                       [](const RHIBufferRangeAccessSnapshot& entry)
+                       {
+                           return entry.access.domain ==
+                               GPUQueueDomain::Graphics;
+                       });
+        };
+
+        // A one-context rebuild cannot acquire externally owned resources:
+        // Vulkan requires the release half on the source queue. Reject before
+        // mutating the graph so callers never execute MultiQueue ownership
+        // barriers on a Graphics context under the guise of a fallback.
+        for (const TextureResource& texture : m_impl->textures)
+        {
+            if (texture.imported &&
+                !textureSnapshotIsGraphicsOwned(
+                    texture.initialAccessSnapshot))
+            {
+                RVX_CORE_ERROR(
+                    "RenderGraph GraphicsOnly rebuild rejected a texture whose initial owner is not Graphics");
+                return false;
+            }
+        }
+        for (const BufferResource& buffer : m_impl->buffers)
+        {
+            if (buffer.imported &&
+                !bufferSnapshotIsGraphicsOwned(
+                    buffer.initialAccessSnapshot))
+            {
+                RVX_CORE_ERROR(
+                    "RenderGraph GraphicsOnly rebuild rejected a buffer whose initial owner is not Graphics");
+                return false;
+            }
+        }
+
+        m_impl->queueExecutionMode = QueueExecutionMode::GraphicsOnly;
+        for (Pass& pass : m_impl->passes)
+        {
+            pass.plannedExecutionQueue =
+                DiagnosticExecutionQueue::Graphics;
+            for (ResourceUsage& usage : pass.usages)
+            {
+                usage.desiredAccess.domain = GPUQueueDomain::Graphics;
+            }
+        }
+        for (TextureResource& texture : m_impl->textures)
+        {
+            if (texture.exportAccess)
+            {
+                texture.exportAccess->domain = GPUQueueDomain::Graphics;
+            }
+        }
+        for (BufferResource& buffer : m_impl->buffers)
+        {
+            if (buffer.exportAccess)
+            {
+                buffer.exportAccess->domain = GPUQueueDomain::Graphics;
+            }
+        }
+        CompileRenderGraph(*m_impl);
+        if (m_impl->stats.compileValid &&
+            !m_impl->initialQueueReleaseBatches.empty())
+        {
+            m_impl->stats.compileValid = false;
+            ++m_impl->stats.validationErrorCount;
+            m_impl->compileDiagnostics.push_back(
+                "GraphicsOnly rebuild produced a non-Graphics initial release batch");
+            RVX_CORE_ERROR(
+                "RenderGraph GraphicsOnly rebuild produced a non-Graphics initial release batch");
+        }
+        return m_impl->stats.compileValid;
+    }
+
     void RenderGraph::ExecuteAsync(RHICommandContext& graphicsCtx,
                                    RHICommandContext* computeCtx,
                                    RHIFence* computeFence,
@@ -1380,15 +1871,19 @@ namespace RVX
         diagnostics.executionOrder = m_impl->executionOrder;
 
         diagnostics.passes = BuildRenderGraphPassDiagnostics(*m_impl);
-        SubmissionPlan submissionPlan = BuildRenderGraphSubmissionPlan(diagnostics.passes, diagnostics.executionOrder);
+        SubmissionPlan submissionPlan =
+            BuildRenderGraphSubmissionPlan(*m_impl);
         diagnostics.plannedQueueBatches = submissionPlan.queueBatches;
         diagnostics.plannedQueueSyncs = submissionPlan.queueSyncs;
         diagnostics.plannedQueueBatchCount = submissionPlan.queueBatchCount;
         diagnostics.plannedDependencyLevelCount = submissionPlan.dependencyLevelCount;
         diagnostics.plannedAsyncOverlapCandidateLevelCount = submissionPlan.asyncOverlapCandidateLevelCount;
         diagnostics.plannedComputeBatchCount = submissionPlan.computeBatchCount;
+        diagnostics.plannedCopyBatchCount = submissionPlan.copyBatchCount;
         diagnostics.plannedQueueSyncCount = submissionPlan.queueSyncCount;
         diagnostics.plannedCrossQueueSyncCount = submissionPlan.crossQueueSyncCount;
+        diagnostics.plannedTerminalGraphicsBatchIndex =
+            submissionPlan.terminalGraphicsBatchIndex;
 
         std::vector<uint32> executedPassIndices;
         executedPassIndices.reserve(diagnostics.passes.size());
@@ -1634,8 +2129,8 @@ namespace RVX
            << ", compatibility projections="
            << diagnostics.compileStats.compatibilityStateProjectionCount << "\n";
         ss << "Queue contract: mode="
-           << (m_impl->queueExecutionMode == QueueExecutionMode::AsyncCompute
-                   ? "AsyncCompute"
+           << (m_impl->queueExecutionMode == QueueExecutionMode::MultiQueue
+                   ? "MultiQueue"
                    : "GraphicsOnly")
            << ", execution mismatches="
            << diagnostics.compileStats.executionQueueMismatchCount << "\n";
@@ -1660,6 +2155,17 @@ namespace RVX
         ss << "Schedule efficiency: plannedBatches=" << diagnostics.plannedQueueBatchCount
            << ", plannedLevels=" << diagnostics.plannedDependencyLevelCount
            << ", plannedComputeBatches=" << diagnostics.plannedComputeBatchCount
+           << ", plannedCopyBatches=" << diagnostics.plannedCopyBatchCount
+           << ", terminalGraphicsBatch=";
+        if (diagnostics.plannedTerminalGraphicsBatchIndex == RVX_INVALID_INDEX)
+        {
+            ss << "invalid";
+        }
+        else
+        {
+            ss << diagnostics.plannedTerminalGraphicsBatchIndex;
+        }
+        ss
            << ", plannedOverlapLevels=" << diagnostics.plannedAsyncOverlapCandidateLevelCount
            << ", plannedSyncs=" << diagnostics.plannedQueueSyncCount
            << ", plannedCrossQueueSyncs=" << diagnostics.plannedCrossQueueSyncCount
@@ -1685,7 +2191,14 @@ namespace RVX
             ss << "  [" << batch.batchIndex << "] level=" << batch.dependencyLevel
                << " queue=" << ToDiagnosticString(batch.queue)
                << " passes=" << FormatPassIndexList(batch.passIndices)
-               << " prerequisites=" << FormatPassIndexList(batch.prerequisiteSyncIndices) << "\n";
+               << " prerequisites="
+               << FormatPassIndexList(batch.prerequisiteBatchIndices)
+               << " prerequisiteSyncs="
+               << FormatPassIndexList(batch.prerequisiteSyncIndices)
+               << " initialRelease="
+               << (batch.syntheticInitialRelease ? "true" : "false")
+               << " terminal="
+               << (batch.syntheticTerminal ? "true" : "false") << "\n";
         }
 
         ss << "\nPlanned Queue Syncs:\n";
@@ -1900,6 +2413,10 @@ namespace RVX
         ss << "    \"plannedAsyncOverlapCandidateLevelCount\": "
            << diagnostics.plannedAsyncOverlapCandidateLevelCount << ",\n";
         ss << "    \"plannedComputeBatchCount\": " << diagnostics.plannedComputeBatchCount << ",\n";
+        ss << "    \"plannedCopyBatchCount\": " << diagnostics.plannedCopyBatchCount << ",\n";
+        ss << "    \"plannedTerminalGraphicsBatchIndex\": ";
+        WriteOptionalIndex(ss, diagnostics.plannedTerminalGraphicsBatchIndex);
+        ss << ",\n";
         ss << "    \"plannedQueueSyncCount\": " << diagnostics.plannedQueueSyncCount << ",\n";
         ss << "    \"plannedCrossQueueSyncCount\": " << diagnostics.plannedCrossQueueSyncCount << ",\n";
         ss << "    \"plannedQueueSyncCoveredCount\": " << diagnostics.plannedQueueSyncCoveredCount << ",\n";
@@ -2025,9 +2542,16 @@ namespace RVX
             ss << "      \"passIndices\": ";
             WriteIndexArray(ss, batch.passIndices);
             ss << ",\n";
+            ss << "      \"prerequisiteBatchIndices\": ";
+            WriteIndexArray(ss, batch.prerequisiteBatchIndices);
+            ss << ",\n";
             ss << "      \"prerequisiteSyncIndices\": ";
             WriteIndexArray(ss, batch.prerequisiteSyncIndices);
-            ss << "\n";
+            ss << ",\n";
+            ss << "      \"syntheticInitialRelease\": "
+               << JsonBool(batch.syntheticInitialRelease) << ",\n";
+            ss << "      \"syntheticTerminal\": "
+               << JsonBool(batch.syntheticTerminal) << "\n";
             ss << "    }" << (i + 1 < diagnostics.plannedQueueBatches.size() ? "," : "") << "\n";
         }
         ss << "  ],\n";
@@ -2224,6 +2748,7 @@ namespace RVX
         m_impl->executionOrder.clear();
         m_impl->passDependencies.clear();
         m_impl->passDependents.clear();
+        m_impl->initialQueueReleaseBatches.clear();
         m_impl->lastQueueSyncs.clear();
         m_impl->compileDiagnostics.clear();
         m_impl->transientHeaps.clear();

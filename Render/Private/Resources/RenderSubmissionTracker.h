@@ -3,6 +3,7 @@
 /** @file RenderSubmissionTracker.h @brief Render-internal per-domain GPU completion tracking */
 
 #include "RHI/RHIQueueTopology.h"
+#include "RHI/RHIQueueSubmission.h"
 #include "RHI/RHISynchronization.h"
 
 #include <array>
@@ -51,6 +52,8 @@ namespace RVX
         GPUCompletionPoint Submit(
             std::span<RHICommandContext* const> contexts,
             GPUQueueDomain terminalDomain);
+        /** @brief Submit a validated DAG whose terminal batch joins on Graphics. */
+        GPUCompletionPoint Submit(const RHIQueueSubmissionPlan& plan);
 
         GPUCompletionStatus Query(GPUCompletionPoint point) const;
         GPUCompletionStatus Query(const GPUCompletionToken& token) const;
