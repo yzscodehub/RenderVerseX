@@ -142,6 +142,12 @@ TEST(PhysicsWorldIntegrationValidation, DynamicRigidBodyRegistersStepsAndSyncsSc
     rigidBody->SetLinearDamping(0.0f);
     rigidBody->SetAngularDamping(0.0f);
 
+    // Simulate a bridge that missed the retained change window. It must
+    // rebuild from the typed registry instead of scanning actors.
+    ASSERT_NE(world.GetScene(), nullptr);
+    ASSERT_GT(world.GetScene()->GetLastComponentChangeSequence(), 0u);
+    world.GetScene()->ClearComponentChanges();
+
     world.Tick(1.0f / 60.0f);
 
     ASSERT_NE(nullptr, rigidBody->GetBody());

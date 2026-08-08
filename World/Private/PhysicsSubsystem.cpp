@@ -10,6 +10,8 @@
 #include "Scene/SceneRuntime.h"
 #include "World/World.h"
 
+#include <algorithm>
+
 namespace RVX
 {
 
@@ -39,10 +41,11 @@ void PhysicsSubsystem::Deinitialize()
     {
         m_registeredScene->UnregisterSystem(m_sceneSystemHandle);
     }
+    DetachComponents();
     m_sceneSystemHandle = InvalidSceneSystemHandle;
     m_registeredScene = nullptr;
-
-    DetachComponents();
+    m_rigidBodyHandles.clear();
+    m_lastComponentChangeSequence = 0;
 
     if (m_physicsWorld)
     {
@@ -63,6 +66,7 @@ void PhysicsSubsystem::Tick(float deltaTime)
         return;
     }
 
+    ApplyComponentChanges();
     std::vector<RigidBodyComponent*> components;
     GatherRigidBodyComponents(components);
     AttachComponents(components);
@@ -105,14 +109,20 @@ void PhysicsSubsystem::GatherRigidBodyComponents(std::vector<RigidBodyComponent*
 {
     outComponents.clear();
 
-    const World* world = GetWorld();
-    const Scene* scene = world ? world->GetScene() : nullptr;
-    if (!scene)
+    if (!m_registeredScene)
     {
         return;
     }
 
-    outComponents = scene->GetComponents<RigidBodyComponent>();
+    outComponents.reserve(m_rigidBodyHandles.size());
+    for (ComponentHandle handle : m_rigidBodyHandles)
+    {
+        if (auto* component = dynamic_cast<RigidBodyComponent*>(
+                m_registeredScene->ResolveComponent(handle)))
+        {
+            outComponents.push_back(component);
+        }
+    }
 }
 
 void PhysicsSubsystem::RebindScene()
@@ -123,17 +133,91 @@ void PhysicsSubsystem::RebindScene()
         return;
 
     if (m_registeredScene)
+    {
         m_registeredScene->UnregisterSystem(m_sceneSystemHandle);
+        DetachComponents();
+    }
 
     m_registeredScene = scene;
     m_sceneSystemHandle = InvalidSceneSystemHandle;
+    m_rigidBodyHandles.clear();
+    m_lastComponentChangeSequence = 0;
     if (m_registeredScene)
     {
+        RebuildRigidBodyHandles();
         m_sceneSystemHandle = m_registeredScene->RegisterSystem(
             "PhysicsSubsystem",
             SceneUpdatePhase::FixedPhysics,
             [this](float deltaTime) { Tick(deltaTime); });
     }
+}
+
+void PhysicsSubsystem::RebuildRigidBodyHandles()
+{
+    m_rigidBodyHandles.clear();
+    if (!m_registeredScene)
+    {
+        m_lastComponentChangeSequence = 0;
+        return;
+    }
+
+    for (RigidBodyComponent* component :
+         m_registeredScene->GetComponentsImplementing<RigidBodyComponent>())
+    {
+        if (component && component->GetComponentHandle().IsValid())
+            m_rigidBodyHandles.push_back(component->GetComponentHandle());
+    }
+    std::sort(m_rigidBodyHandles.begin(), m_rigidBodyHandles.end());
+    m_lastComponentChangeSequence =
+        m_registeredScene->GetLastComponentChangeSequence();
+}
+
+void PhysicsSubsystem::ApplyComponentChanges()
+{
+    if (!m_registeredScene)
+        return;
+
+    const uint64 lastAvailable =
+        m_registeredScene->GetLastComponentChangeSequence();
+    if (lastAvailable <= m_lastComponentChangeSequence)
+        return;
+
+    const auto& changes = m_registeredScene->GetComponentChanges();
+    if (changes.empty() ||
+        m_registeredScene->GetFirstComponentChangeSequence() >
+            m_lastComponentChangeSequence + 1)
+    {
+        RebuildRigidBodyHandles();
+        return;
+    }
+
+    for (const SceneComponentChange& change : changes)
+    {
+        if (change.changeSequence <= m_lastComponentChangeSequence)
+            continue;
+
+        if (change.kind == SceneComponentChangeKind::Registered)
+        {
+            if (dynamic_cast<RigidBodyComponent*>(
+                    m_registeredScene->ResolveComponent(change.component)))
+            {
+                const auto insertion = std::lower_bound(
+                    m_rigidBodyHandles.begin(),
+                    m_rigidBodyHandles.end(),
+                    change.component);
+                if (insertion == m_rigidBodyHandles.end() ||
+                    *insertion != change.component)
+                {
+                    m_rigidBodyHandles.insert(insertion, change.component);
+                }
+            }
+        }
+        else if (change.kind == SceneComponentChangeKind::Unregistered)
+        {
+            std::erase(m_rigidBodyHandles, change.component);
+        }
+    }
+    m_lastComponentChangeSequence = lastAvailable;
 }
 
 void PhysicsSubsystem::AttachComponents(std::vector<RigidBodyComponent*>& components)

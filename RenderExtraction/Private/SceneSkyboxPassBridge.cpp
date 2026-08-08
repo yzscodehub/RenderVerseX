@@ -7,7 +7,7 @@
 
 #include "Scene/Components/SkyboxComponent.h"
 #include "Scene/SceneEntity.h"
-#include "Scene/SceneManager.h"
+#include "Scene/SceneRuntime.h"
 #include "World/World.h"
 
 namespace RVX
@@ -51,27 +51,25 @@ namespace RVX
         {
             return fail(SceneSkyboxPassBridgeFallbackReason::NullWorld);
         }
-        SceneManager* sceneManager = world->GetSceneManager();
-        if (sceneManager == nullptr)
+        Scene* scene = world->GetScene();
+        if (scene == nullptr)
         {
             return fail(
                 SceneSkyboxPassBridgeFallbackReason::NullSceneManager);
         }
 
         SkyboxComponent* skybox = nullptr;
-        sceneManager->ForEachActiveEntity(
-            [&skybox](SceneEntity* entity)
+        for (SkyboxComponent* candidate :
+             scene->GetComponentsImplementing<SkyboxComponent>())
+        {
+            if (candidate != nullptr && candidate->IsEnabled() &&
+                candidate->GetOwner() != nullptr &&
+                candidate->GetOwner()->IsActive())
             {
-                if (skybox != nullptr || entity == nullptr)
-                {
-                    return;
-                }
-                auto* candidate = entity->GetComponent<SkyboxComponent>();
-                if (candidate != nullptr && candidate->IsEnabled())
-                {
-                    skybox = candidate;
-                }
-            });
+                skybox = candidate;
+                break;
+            }
+        }
         if (skybox == nullptr)
         {
             return fail(

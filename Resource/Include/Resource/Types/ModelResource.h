@@ -22,6 +22,7 @@ namespace RVX
 {
     // Forward declarations
     class Actor;
+    class Scene;
     class SceneManager;
     class SceneEntity;
     class Skeleton;
@@ -43,7 +44,7 @@ namespace RVX::Resource
      * auto model = resourceManager.Load<ModelResource>("models/helmet.gltf");
      * 
      * // Instantiate to scene (creates SceneEntity tree)
-     * auto* entity = model->Instantiate(world->GetSceneManager());
+     * auto* entity = model->Instantiate(world->GetScene());
      * entity->SetPosition(Vec3(0, 0, 0));
      * @endcode
      */
@@ -134,14 +135,23 @@ namespace RVX::Resource
 
         /// Instantiate the model into the scene
         /// Creates a SceneEntity tree with StaticMeshComponents attached
+        SceneEntity* Instantiate(Scene* scene) const;
+
+        /// Compatibility overload for the legacy SceneManager facade.
         SceneEntity* Instantiate(SceneManager* scene) const;
 
         /// Instantiate the model into the scene and return the actor view.
         /// Compatibility implementation currently creates SceneEntity instances.
+        Actor* InstantiateActor(Scene* scene) const;
+
+        /// Compatibility overload for the legacy SceneManager facade.
         Actor* InstantiateActor(SceneManager* scene) const;
 
     private:
         /// Recursive helper for instantiation
+        SceneEntity* InstantiateActorNode(const Node* node,
+                                          Scene* scene,
+                                          SceneEntity* parent) const;
         SceneEntity* InstantiateActorNode(const Node* node, SceneManager* scene, SceneEntity* parent) const;
 
         /// Count nodes recursively

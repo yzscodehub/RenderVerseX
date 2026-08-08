@@ -7,8 +7,8 @@
 #include "Core/Camera/Camera.h"
 #include "Core/Log.h"
 #include "World/World.h"
-#include "Scene/SceneManager.h"
 #include "Scene/SceneEntity.h"
+#include "Scene/SceneRuntime.h"
 #include "Spatial/Index/SpatialFactory.h"
 
 #include <unordered_set>
@@ -21,10 +21,10 @@ void SpatialSubsystem::Initialize()
     RVX_CORE_INFO("SpatialSubsystem initializing...");
 
     World* world = GetWorld();
-    SceneManager* scene = world ? world->GetSceneManager() : nullptr;
+    Scene* scene = world ? world->GetScene() : nullptr;
     if (!scene)
     {
-        // Fallback for tests or custom embedding without a SceneManager.
+        // Fallback for tests or custom embedding without a Scene.
         m_index = Spatial::SpatialFactory::Create(Spatial::SpatialIndexType::BVH);
     }
     else
@@ -47,7 +47,7 @@ void SpatialSubsystem::Tick(float deltaTime)
     (void)deltaTime;
 
     World* world = GetWorld();
-    SceneManager* scene = world ? world->GetSceneManager() : nullptr;
+    Scene* scene = world ? world->GetScene() : nullptr;
     if (scene)
     {
         m_needsRebuild = false;
@@ -64,21 +64,21 @@ void SpatialSubsystem::Tick(float deltaTime)
 Spatial::ISpatialIndex* SpatialSubsystem::GetIndex()
 {
     World* world = GetWorld();
-    SceneManager* scene = world ? world->GetSceneManager() : nullptr;
+    Scene* scene = world ? world->GetScene() : nullptr;
     return scene ? scene->GetSpatialIndex() : m_index.get();
 }
 
 const Spatial::ISpatialIndex* SpatialSubsystem::GetIndex() const
 {
     World* world = GetWorld();
-    SceneManager* scene = world ? world->GetSceneManager() : nullptr;
+    Scene* scene = world ? world->GetScene() : nullptr;
     return scene ? scene->GetSpatialIndex() : m_index.get();
 }
 
 void SpatialSubsystem::SetIndex(Spatial::SpatialIndexPtr index)
 {
     World* world = GetWorld();
-    SceneManager* scene = world ? world->GetSceneManager() : nullptr;
+    Scene* scene = world ? world->GetScene() : nullptr;
     if (scene)
     {
         scene->SetSpatialIndex(std::move(index));
@@ -97,7 +97,7 @@ void SpatialSubsystem::RebuildIndex()
     if (!world)
         return;
 
-    SceneManager* scene = world->GetSceneManager();
+    Scene* scene = world->GetScene();
     if (scene)
     {
         scene->RebuildSpatialIndex();
@@ -130,7 +130,7 @@ void SpatialSubsystem::QueryVisible(const Frustum& frustum,
                                     std::vector<SceneEntity*>& outEntities)
 {
     World* world = GetWorld();
-    auto* scene = world ? world->GetSceneManager() : nullptr;
+    auto* scene = world ? world->GetScene() : nullptr;
     if (scene)
     {
         scene->SynchronizeSpatialIndex();
@@ -166,7 +166,7 @@ bool SpatialSubsystem::Raycast(const Ray& ray,
                                RaycastHit& outHit)
 {
     World* world = GetWorld();
-    auto* scene = world ? world->GetSceneManager() : nullptr;
+    auto* scene = world ? world->GetScene() : nullptr;
     if (scene)
     {
         scene->SynchronizeSpatialIndex();
@@ -200,7 +200,7 @@ void SpatialSubsystem::RaycastAll(const Ray& ray,
                                   std::vector<RaycastHit>& outHits)
 {
     World* world = GetWorld();
-    auto* scene = world ? world->GetSceneManager() : nullptr;
+    auto* scene = world ? world->GetScene() : nullptr;
     if (scene)
     {
         scene->SynchronizeSpatialIndex();
@@ -268,7 +268,7 @@ void SpatialSubsystem::QuerySphere(const Vec3& center, float radius,
                                    std::vector<SceneEntity*>& outEntities)
 {
     World* world = GetWorld();
-    auto* scene = world ? world->GetSceneManager() : nullptr;
+    auto* scene = world ? world->GetScene() : nullptr;
     if (scene)
     {
         scene->SynchronizeSpatialIndex();
@@ -297,7 +297,7 @@ void SpatialSubsystem::QuerySphere(const Vec3& center, float radius,
 void SpatialSubsystem::QueryBox(const AABB& box, std::vector<SceneEntity*>& outEntities)
 {
     World* world = GetWorld();
-    auto* scene = world ? world->GetSceneManager() : nullptr;
+    auto* scene = world ? world->GetScene() : nullptr;
     if (scene)
     {
         scene->SynchronizeSpatialIndex();

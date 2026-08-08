@@ -54,18 +54,30 @@ namespace RVX
             }
         }
 
-        bool BuildStaticMeshProxy(const StaticMeshComponent& component,
+        bool BuildStaticMeshProxy(const Scene* scene,
+                                  const StaticMeshComponent& component,
                                   RenderPrimitiveProxy& outProxy)
         {
             if (!component.HasRenderData())
                 return false;
 
             const ISkinningPaletteProvider* skinningProvider = nullptr;
-            if (auto* entity =
-                    dynamic_cast<SceneEntity*>(component.GetOwner()))
+            if (scene && component.GetOwner())
             {
-                for (const auto& [componentType, owned] :
-                     entity->GetComponents())
+                const auto providers =
+                    scene->GetComponentsForActorImplementing<
+                        ISkinningPaletteProvider>(
+                        component.GetOwner()->GetHandle());
+                if (providers.size() > 1)
+                    return false;
+                if (!providers.empty())
+                    skinningProvider = providers.front();
+            }
+            else if (auto* entity =
+                         dynamic_cast<SceneEntity*>(component.GetOwner()))
+            {
+                // Compatibility-only SceneManager extraction path.
+                for (const auto& [componentType, owned] : entity->GetComponents())
                 {
                     (void)componentType;
                     auto* candidate = dynamic_cast<
@@ -212,7 +224,7 @@ namespace RVX
             }
 
             RenderPrimitiveProxy proxy;
-            if (!BuildStaticMeshProxy(*staticMesh, proxy))
+            if (!BuildStaticMeshProxy(scene, *staticMesh, proxy))
             {
                 MarkFallback(
                     result,
@@ -372,7 +384,7 @@ namespace RVX
             }
 
             RenderPrimitiveProxy proxy;
-            if (!BuildStaticMeshProxy(*staticMesh, proxy))
+            if (!BuildStaticMeshProxy(nullptr, *staticMesh, proxy))
             {
                 MarkFallback(result,
                              RenderProxySceneBridgeFallbackReason::PrimitiveProxyCreationFailed,

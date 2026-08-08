@@ -142,3 +142,60 @@ TEST(SceneComponentRegistryValidation, RegistrationRequestedDuringTickIsDeferred
     EXPECT_EQ(scene.GetComponentChanges().front().kind,
               RVX::SceneComponentChangeKind::Registered);
 }
+
+TEST(SceneComponentRegistryValidation, CachedInterfaceAndActorQueriesTrackChanges)
+{
+    RVX::Scene scene;
+    ASSERT_TRUE(scene.Initialize());
+    auto* firstActor = scene.SpawnActor<RegistryActor>({.name = "First"});
+    auto* secondActor = scene.SpawnActor<RegistryActor>({.name = "Second"});
+    ASSERT_NE(firstActor, nullptr);
+    ASSERT_NE(secondActor, nullptr);
+    scene.ClearComponentChanges();
+
+    // Materialize an empty interface view before matching components exist.
+    EXPECT_TRUE(
+        scene.GetComponentsImplementing<RegistryBaseComponent>().empty());
+    const RVX::uint64 initialSequence =
+        scene.GetLastComponentChangeSequence();
+
+    auto* first = firstActor->AddComponent<RegistryComponentA>();
+    auto* second = secondActor->AddComponent<RegistryComponentB>();
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+
+    const auto all =
+        scene.GetComponentsImplementing<RegistryBaseComponent>();
+    ASSERT_EQ(all.size(), 2u);
+    const auto firstActorComponents =
+        scene.GetComponentsForActorImplementing<RegistryBaseComponent>(
+            firstActor->GetHandle());
+    const auto secondActorComponents =
+        scene.GetComponentsForActorImplementing<RegistryBaseComponent>(
+            secondActor->GetHandle());
+    ASSERT_EQ(firstActorComponents.size(), 1u);
+    ASSERT_EQ(secondActorComponents.size(), 1u);
+    EXPECT_EQ(firstActorComponents.front(), first);
+    EXPECT_EQ(secondActorComponents.front(), second);
+
+    const auto& registeredChanges = scene.GetComponentChanges();
+    ASSERT_EQ(registeredChanges.size(), 2u);
+    EXPECT_EQ(registeredChanges[0].changeSequence, initialSequence + 1);
+    EXPECT_EQ(registeredChanges[1].changeSequence, initialSequence + 2);
+
+    scene.ClearComponentChanges();
+    EXPECT_EQ(scene.GetFirstComponentChangeSequence(),
+              scene.GetLastComponentChangeSequence() + 1);
+    ASSERT_TRUE(firstActor->RemoveComponent<RegistryComponentA>());
+
+    const auto& removalChanges = scene.GetComponentChanges();
+    ASSERT_EQ(removalChanges.size(), 1u);
+    EXPECT_EQ(removalChanges.front().changeSequence, initialSequence + 3);
+    EXPECT_TRUE(
+        scene.GetComponentsForActorImplementing<RegistryBaseComponent>(
+            firstActor->GetHandle()).empty());
+    const auto remaining =
+        scene.GetComponentsImplementing<RegistryBaseComponent>();
+    ASSERT_EQ(remaining.size(), 1u);
+    EXPECT_EQ(remaining.front(), second);
+}

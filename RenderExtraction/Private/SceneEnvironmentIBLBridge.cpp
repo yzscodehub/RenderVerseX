@@ -8,7 +8,7 @@
 #include "Resource/Types/TextureResource.h"
 #include "Scene/Components/SkyboxComponent.h"
 #include "Scene/SceneEntity.h"
-#include "Scene/SceneManager.h"
+#include "Scene/SceneRuntime.h"
 #include "World/World.h"
 
 #include <algorithm>
@@ -55,25 +55,24 @@ namespace RVX
             return fail(SceneEnvironmentIBLFallbackReason::NullWorld);
         }
 
-        SceneManager* sceneManager = world->GetSceneManager();
-        if (!sceneManager)
+        Scene* scene = world->GetScene();
+        if (!scene)
         {
             return fail(SceneEnvironmentIBLFallbackReason::NullSceneManager);
         }
 
         SkyboxComponent* skybox = nullptr;
-        sceneManager->ForEachActiveEntity(
-            [&skybox](SceneEntity* entity)
+        for (SkyboxComponent* candidate :
+             scene->GetComponentsImplementing<SkyboxComponent>())
+        {
+            if (candidate && candidate->IsEnabled() &&
+                candidate->ContributesToLighting() &&
+                candidate->GetOwner() && candidate->GetOwner()->IsActive())
             {
-                if (skybox || !entity)
-                    return;
-
-                auto* candidate = entity->GetComponent<SkyboxComponent>();
-                if (candidate && candidate->IsEnabled() && candidate->ContributesToLighting())
-                {
-                    skybox = candidate;
-                }
-            });
+                skybox = candidate;
+                break;
+            }
+        }
 
         if (!skybox)
         {

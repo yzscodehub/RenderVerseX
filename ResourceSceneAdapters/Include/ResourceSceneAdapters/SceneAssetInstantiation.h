@@ -72,5 +72,9 @@ namespace RVX
 
         [[nodiscard]] static bool Destroy(Scene& scene,
                                           SceneAssetInstance& instance);
+
+        /** @brief Cancel an in-flight instance and roll back all Scene state. */
+        [[nodiscard]] static bool Cancel(Scene& scene,
+                                         SceneAssetInstance& instance);
     };
 } // namespace RVX

@@ -47,7 +47,7 @@ namespace RVX
      * @brief World - container for all scene content
      * 
      * The World provides:
-     * - Scene management (via SceneManager)
+     * - Scene management (via the authoritative Scene runtime)
      * - Spatial queries (via SpatialSubsystem)
      * - Picking services
      * - WorldSubsystem lifecycle management
@@ -57,8 +57,8 @@ namespace RVX
      * World world;
      * world.Initialize();
      * 
-     * // Get scene manager
-     * SceneManager* scene = world.GetSceneManager();
+     * // Get the authoritative scene runtime
+     * Scene* scene = world.GetScene();
      * 
      * // Spatial queries
      * auto* spatial = world.GetSubsystem<SpatialSubsystem>();
@@ -207,27 +207,27 @@ namespace RVX
         // =====================================================================
 
         /**
-         * @brief Create a new camera
+         * @brief Create a legacy Camera facade backed by a CameraComponent
          * @param name Name of the camera (default: "Main")
          * @return Pointer to the created camera
          */
         Camera* CreateCamera(const std::string& name = "Main");
 
         /**
-         * @brief Get a camera by name
+         * @brief Get a legacy Camera facade by name
          * @param name Name of the camera
          * @return Pointer to the camera or nullptr if not found
          */
         Camera* GetCamera(const std::string& name = "Main") const;
 
         /**
-         * @brief Destroy a camera by name
+         * @brief Destroy a legacy Camera facade and its CameraComponent actor
          * @param name Name of the camera to destroy
          */
         void DestroyCamera(const std::string& name);
 
         /**
-         * @brief Set the active camera for rendering
+         * @brief Compatibility adapter selecting the facade's CameraComponent
          * @param camera The camera to set as active (must be owned by this world)
          */
         void SetActiveCamera(Camera* camera);
@@ -247,7 +247,7 @@ namespace RVX
         }
 
         /**
-         * @brief Get the currently active camera
+         * @brief Get the active legacy Camera facade, when one selected it
          * @return Pointer to the active camera or nullptr
          */
         Camera* GetActiveCamera() const

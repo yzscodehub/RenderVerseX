@@ -43,6 +43,15 @@ namespace RVX
         void SetOrthographic(float width, float height, float nearZ, float farZ);
         void SetViewport(const CameraViewport& viewport);
 
+        [[nodiscard]] CameraProjection GetProjectionType() const { return m_projectionType; }
+        [[nodiscard]] float GetFieldOfView() const { return m_fov; }
+        [[nodiscard]] float GetAspectRatio() const { return m_aspect; }
+        [[nodiscard]] float GetNearPlane() const { return m_nearZ; }
+        [[nodiscard]] float GetFarPlane() const { return m_farZ; }
+        [[nodiscard]] float GetOrthographicWidth() const { return m_orthoWidth; }
+        [[nodiscard]] float GetOrthographicHeight() const { return m_orthoHeight; }
+        [[nodiscard]] const CameraViewport& GetViewport() const { return m_viewport; }
+
         // =========================================================================
         // Transform
         // =========================================================================
@@ -71,6 +80,8 @@ namespace RVX
         float m_aspect = 1.0f;
         float m_nearZ = 0.1f;
         float m_farZ = 1000.0f;
+        float m_orthoWidth = 2.0f;
+        float m_orthoHeight = 2.0f;
 
         Mat4 m_view = Mat4Identity();
         Mat4 m_projection = Mat4Identity();

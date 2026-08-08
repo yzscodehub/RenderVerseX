@@ -4,6 +4,7 @@
 #include "Scene/ComponentFactory.h"
 #include "Scene/SceneComponent.h"
 #include "Scene/SceneManager.h"
+#include "Scene/SceneRuntime.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -1445,6 +1446,31 @@ SceneEntity* Prefab::Instantiate(SceneManager& sceneManager) const
     return InstantiateInternal(sceneManager, Vec3(0.0f), Quat(1.0f, 0.0f, 0.0f, 0.0f), nullptr);
 }
 
+SceneEntity* Prefab::Instantiate(Scene& scene) const
+{
+    return InstantiateInternal(
+        scene,
+        Vec3(0.0f),
+        Quat(1.0f, 0.0f, 0.0f, 0.0f),
+        nullptr);
+}
+
+SceneEntity* Prefab::Instantiate(Scene& scene, const Vec3& position) const
+{
+    return InstantiateInternal(
+        scene,
+        position,
+        Quat(1.0f, 0.0f, 0.0f, 0.0f),
+        nullptr);
+}
+
+SceneEntity* Prefab::Instantiate(Scene& scene,
+                                 const Vec3& position,
+                                 const Quat& rotation) const
+{
+    return InstantiateInternal(scene, position, rotation, nullptr);
+}
+
 SceneEntity* Prefab::Instantiate(SceneManager& sceneManager, const Vec3& position) const
 {
     return InstantiateInternal(sceneManager, position, Quat(1.0f, 0.0f, 0.0f, 0.0f), nullptr);
@@ -1457,12 +1483,28 @@ SceneEntity* Prefab::Instantiate(SceneManager& sceneManager, const Vec3& positio
 
 SceneEntity* Prefab::InstantiateAsChild(SceneEntity* parent) const
 {
-    if (!parent || !parent->GetSceneManager())
+    if (!parent)
     {
         return nullptr;
     }
-    
-    return InstantiateInternal(*parent->GetSceneManager(), Vec3(0.0f), Quat(1.0f, 0.0f, 0.0f, 0.0f), parent);
+
+    if (Scene* scene = parent->GetScene())
+    {
+        return InstantiateInternal(
+            *scene,
+            Vec3(0.0f),
+            Quat(1.0f, 0.0f, 0.0f, 0.0f),
+            parent);
+    }
+    if (!parent->GetSceneManager())
+        return nullptr;
+
+    // Compatibility-only path for standalone legacy SceneManager ownership.
+    return InstantiateInternal(
+        *parent->GetSceneManager(),
+        Vec3(0.0f),
+        Quat(1.0f, 0.0f, 0.0f, 0.0f),
+        parent);
 }
 
 const PrefabEntityData* Prefab::GetEntityData(size_t index) const
@@ -1558,6 +1600,17 @@ void Prefab::Clear()
 {
     m_entities.clear();
     m_nextEntityId = 1;
+}
+
+SceneEntity* Prefab::InstantiateInternal(Scene& scene,
+                                         const Vec3& position,
+                                         const Quat& rotation,
+                                         SceneEntity* parent) const
+{
+    // Scene owns identity and lifecycle; SceneManager is only its temporary
+    // SceneEntity storage implementation until the Phase 7 facade removal.
+    return InstantiateInternal(
+        *scene.GetSceneManager(), position, rotation, parent);
 }
 
 SceneEntity* Prefab::InstantiateInternal(SceneManager& sceneManager, const Vec3& position,

@@ -1,4 +1,5 @@
 #include "Core/Log.h"
+#include "Resource/ResourceSubsystem.h"
 #include "Resource/Types/EnvironmentResource.h"
 #include "Resource/Types/ModelResource.h"
 #include "ResourceSceneAdapters/ResourceSceneAdapters.h"
@@ -74,6 +75,61 @@ TEST(SceneAssetInstantiationValidation, RejectsModelWithoutRootWithoutMutation)
     const RVX::SceneAssetInstance instance =
         RVX::SceneAssetInstantiator::InstantiateModel(scene, model);
     EXPECT_EQ(instance.readiness, RVX::SceneAssetReadiness::Failed);
+    EXPECT_EQ(scene.GetActorCount(), 0U);
+    scene.Shutdown();
+}
+
+TEST(SceneAssetInstantiationValidation, CancelRollsBackHierarchyAndRuntimeBindings)
+{
+    RVX::Scene scene;
+    ASSERT_TRUE(scene.Initialize());
+
+    RVX::Resource::ModelResource model;
+    auto root = std::make_shared<RVX::Node>("Root");
+    root->AddChild(std::make_shared<RVX::Node>("Child"));
+    model.SetRootNode(root);
+
+    RVX::SceneAssetInstance instance =
+        RVX::SceneAssetInstantiator::InstantiateModel(scene, model);
+    ASSERT_TRUE(instance.IsValid());
+    const auto actors = instance.actors;
+
+    EXPECT_TRUE(RVX::SceneAssetInstantiator::Cancel(scene, instance));
+    EXPECT_EQ(instance.readiness, RVX::SceneAssetReadiness::Failed);
+    EXPECT_FALSE(instance.rootActor.IsValid());
+    EXPECT_TRUE(instance.actors.empty());
+    EXPECT_NE(instance.diagnostic.find("cancelled"), std::string::npos);
+    for (RVX::Actor::Handle actor : actors)
+        EXPECT_EQ(scene.ResolveActor(actor), nullptr);
+    EXPECT_EQ(scene.GetActorCount(), 0U);
+    scene.Shutdown();
+}
+
+TEST(SceneAssetInstantiationValidation, FailedCpuDependencyRollsBackHierarchy)
+{
+    RVX::Scene scene;
+    ASSERT_TRUE(scene.Initialize());
+
+    RVX::Resource::ModelResource model;
+    model.SetRootNode(std::make_shared<RVX::Node>("Root"));
+    auto* unloadedMesh = new RVX::Resource::MeshResource();
+    unloadedMesh->SetId(91);
+    model.AddMesh(
+        RVX::Resource::ResourceHandle<RVX::Resource::MeshResource>(
+            unloadedMesh));
+
+    RVX::SceneAssetInstance instance =
+        RVX::SceneAssetInstantiator::InstantiateModel(scene, model);
+    ASSERT_TRUE(instance.IsValid());
+    ASSERT_EQ(scene.GetActorCount(), 1U);
+
+    RVX::Resource::ResourceSubsystem resources;
+    EXPECT_EQ(RVX::SceneAssetInstantiator::UpdateReadiness(
+                  scene, model, resources, instance),
+              RVX::SceneAssetReadiness::Failed);
+    EXPECT_FALSE(instance.rootActor.IsValid());
+    EXPECT_TRUE(instance.actors.empty());
+    EXPECT_NE(instance.diagnostic.find("failed"), std::string::npos);
     EXPECT_EQ(scene.GetActorCount(), 0U);
     scene.Shutdown();
 }

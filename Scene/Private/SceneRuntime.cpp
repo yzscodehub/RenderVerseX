@@ -6,11 +6,16 @@
 #include "Scene/SceneComponent.h"
 
 #include <algorithm>
+#include <glm/gtc/quaternion.hpp>
 #include <unordered_set>
 #include <utility>
 
 namespace RVX
 {
+namespace
+{
+    constexpr size_t RVX_SCENE_COMPONENT_CHANGE_FEED_CAPACITY = 4096;
+}
 
 Scene::Scene()
     : m_sceneManager(this, &m_actorHandles)
@@ -42,6 +47,7 @@ void Scene::Shutdown()
 
     m_activeCamera = nullptr;
     m_activeCameraComponent = InvalidComponentHandle;
+    m_legacyCameraComponents.clear();
     m_cameras.clear();
     ClearPureActors();
     m_sceneManager.Shutdown();
@@ -51,9 +57,12 @@ void Scene::Shutdown()
     }
     m_components.clear();
     m_componentsByType.clear();
+    m_componentsByActor.clear();
+    m_componentQueryViews.clear();
     m_pendingComponentRegistrations.clear();
     m_componentChanges.clear();
     m_sceneRevision = 0;
+    m_componentChangeSequence = 0;
     m_initialized = false;
 }
 
@@ -473,13 +482,13 @@ void Scene::NotifyComponentChanged(ComponentHandle handle)
         return;
 
     ++m_sceneRevision;
-    m_componentChanges.push_back({SceneComponentChangeKind::Updated,
-                                  handle,
-                                  component->GetOwner()
-                                      ? component->GetOwner()->GetHandle()
-                                      : Actor::InvalidHandle,
-                                  std::type_index(typeid(*component)),
-                                  m_sceneRevision});
+    AppendComponentChange({SceneComponentChangeKind::Updated,
+                           handle,
+                           component->GetOwner()
+                               ? component->GetOwner()->GetHandle()
+                               : Actor::InvalidHandle,
+                           std::type_index(typeid(*component)),
+                           m_sceneRevision});
 }
 
 void Scene::RegisterComponent(ActorComponent* component)
@@ -511,6 +520,17 @@ void Scene::RegisterComponent(ActorComponent* component)
     component->AssignComponentHandle(handle);
     m_components.emplace(handle, component);
     m_componentsByType[std::type_index(typeid(*component))].push_back(handle);
+    m_componentsByActor[component->GetOwner()->GetHandle()].push_back(handle);
+    for (auto& [queryType, view] : m_componentQueryViews)
+    {
+        (void)queryType;
+        if (!view.matches || !view.matches(component))
+            continue;
+        const auto insertion =
+            std::lower_bound(view.handles.begin(), view.handles.end(), handle);
+        if (insertion == view.handles.end() || *insertion != handle)
+            view.handles.insert(insertion, handle);
+    }
     if (auto* sceneComponent = dynamic_cast<SceneComponent*>(component))
     {
         m_transformStore.Register(handle,
@@ -520,11 +540,11 @@ void Scene::RegisterComponent(ActorComponent* component)
     }
 
     ++m_sceneRevision;
-    m_componentChanges.push_back({SceneComponentChangeKind::Registered,
-                                  handle,
-                                  component->GetOwner()->GetHandle(),
-                                  std::type_index(typeid(*component)),
-                                  m_sceneRevision});
+    AppendComponentChange({SceneComponentChangeKind::Registered,
+                           handle,
+                           component->GetOwner()->GetHandle(),
+                           std::type_index(typeid(*component)),
+                           m_sceneRevision});
 }
 
 void Scene::UnregisterComponent(ActorComponent* component)
@@ -555,20 +575,52 @@ void Scene::UnregisterComponent(ActorComponent* component)
             m_componentsByType.erase(typeIt);
     }
 
+    auto actorIt = m_componentsByActor.find(actorHandle);
+    if (actorIt != m_componentsByActor.end())
+    {
+        auto& handles = actorIt->second;
+        std::erase(handles, handle);
+        if (handles.empty())
+            m_componentsByActor.erase(actorIt);
+    }
+    for (auto& [queryType, view] : m_componentQueryViews)
+    {
+        (void)queryType;
+        std::erase(view.handles, handle);
+    }
+
     m_components.erase(componentIt);
     if (handle == m_activeCameraComponent)
+    {
         m_activeCameraComponent = InvalidComponentHandle;
+        m_activeCamera = nullptr;
+    }
     if (dynamic_cast<SceneComponent*>(component))
         m_transformStore.Unregister(handle);
     m_componentHandles.Free(handle);
     component->AssignComponentHandle(InvalidComponentHandle);
 
     ++m_sceneRevision;
-    m_componentChanges.push_back({SceneComponentChangeKind::Unregistered,
-                                  handle,
-                                  actorHandle,
-                                  componentType,
-                                  m_sceneRevision});
+    AppendComponentChange({SceneComponentChangeKind::Unregistered,
+                           handle,
+                           actorHandle,
+                           componentType,
+                           m_sceneRevision});
+}
+
+void Scene::AppendComponentChange(SceneComponentChange change)
+{
+    change.changeSequence = ++m_componentChangeSequence;
+    if (m_componentChanges.size() >=
+        RVX_SCENE_COMPONENT_CHANGE_FEED_CAPACITY)
+    {
+        constexpr size_t pruneCount =
+            RVX_SCENE_COMPONENT_CHANGE_FEED_CAPACITY / 4;
+        m_componentChanges.erase(
+            m_componentChanges.begin(),
+            m_componentChanges.begin() + pruneCount);
+    }
+    m_componentChanges.push_back(std::move(change));
 }
 
 void Scene::AttachActor(Actor* actor)
@@ -721,11 +773,30 @@ Camera* Scene::CreateCamera(const std::string& name)
     if (it != m_cameras.end())
         return it->second.get();
 
+    if (!m_initialized || !IsUpdateThread() || m_isUpdating)
+        return nullptr;
+
+    SceneEntity* actor = SpawnActor({.name = "LegacyCamera:" + name});
+    if (!actor)
+        return nullptr;
+    auto* component = actor->AddComponent<CameraComponent>();
+    if (!component || !component->GetComponentHandle().IsValid())
+    {
+        static_cast<void>(DestroyActor(actor));
+        return nullptr;
+    }
+
     auto camera = std::make_unique<Camera>();
     Camera* result = camera.get();
     m_cameras.emplace(name, std::move(camera));
-    if (!m_activeCamera)
+    m_legacyCameraComponents.emplace(
+        result, component->GetComponentHandle());
+    SynchronizeLegacyCamera(result);
+    if (!m_activeCameraComponent.IsValid())
+    {
         m_activeCamera = result;
+        m_activeCameraComponent = component->GetComponentHandle();
+    }
     return result;
 }
 
@@ -741,8 +812,24 @@ void Scene::DestroyCamera(const std::string& name)
     if (it == m_cameras.end())
         return;
 
-    if (m_activeCamera == it->second.get())
+    Camera* camera = it->second.get();
+    const auto componentIt = m_legacyCameraComponents.find(camera);
+    const ComponentHandle component =
+        componentIt != m_legacyCameraComponents.end()
+            ? componentIt->second
+            : InvalidComponentHandle;
+    if (m_activeCamera == camera || m_activeCameraComponent == component)
+    {
         m_activeCamera = nullptr;
+        m_activeCameraComponent = InvalidComponentHandle;
+    }
+
+    if (auto* cameraComponent =
+            dynamic_cast<CameraComponent*>(ResolveComponent(component)))
+    {
+        static_cast<void>(DestroyActor(cameraComponent->GetOwner()));
+    }
+    m_legacyCameraComponents.erase(camera);
     m_cameras.erase(it);
 }
 
@@ -761,8 +848,16 @@ void Scene::SetActiveCamera(Camera* camera)
                                     });
     if (owned != m_cameras.end())
     {
+        const auto component = m_legacyCameraComponents.find(camera);
+        if (component == m_legacyCameraComponents.end() ||
+            dynamic_cast<CameraComponent*>(
+                ResolveComponent(component->second)) == nullptr)
+        {
+            return;
+        }
+        SynchronizeLegacyCamera(camera);
         m_activeCamera = camera;
-        m_activeCameraComponent = InvalidComponentHandle;
+        m_activeCameraComponent = component->second;
     }
 }
 
@@ -771,6 +866,7 @@ bool Scene::SetActiveCamera(ComponentHandle camera)
     if (!camera.IsValid())
     {
         m_activeCameraComponent = InvalidComponentHandle;
+        m_activeCamera = nullptr;
         return false;
     }
 
@@ -784,8 +880,49 @@ bool Scene::SetActiveCamera(ComponentHandle camera)
 
 CameraComponent* Scene::GetActiveCameraComponent() const
 {
+    if (m_activeCamera)
+        const_cast<Scene*>(this)->SynchronizeLegacyCamera(m_activeCamera);
     return dynamic_cast<CameraComponent*>(
         ResolveComponent(m_activeCameraComponent));
+}
+
+void Scene::SynchronizeLegacyCamera(Camera* camera)
+{
+    if (!camera)
+        return;
+
+    const auto componentIt = m_legacyCameraComponents.find(camera);
+    if (componentIt == m_legacyCameraComponents.end())
+        return;
+    auto* component = dynamic_cast<CameraComponent*>(
+        ResolveComponent(componentIt->second));
+    if (!component || !component->GetOwner())
+        return;
+
+    if (camera->GetProjectionType() == CameraProjection::Perspective)
+    {
+        component->SetPerspective(camera->GetFieldOfView(),
+                                  camera->GetAspectRatio(),
+                                  camera->GetNearPlane(),
+                                  camera->GetFarPlane());
+    }
+    else
+    {
+        component->SetProjectionType(ProjectionType::Orthographic);
+        component->SetOrthographicSize(
+            camera->GetOrthographicHeight() * 0.5f);
+        component->SetAspectRatio(camera->GetAspectRatio());
+        component->SetNearPlane(camera->GetNearPlane());
+        component->SetFarPlane(camera->GetFarPlane());
+    }
+
+    const CameraViewport& viewport = camera->GetViewport();
+    component->SetViewport(
+        viewport.x, viewport.y, viewport.width, viewport.height);
+    const Mat4 world = glm::inverse(camera->GetView());
+    component->GetOwner()->SetPosition(Vec3(world[3]));
+    component->GetOwner()->SetRotation(
+        glm::normalize(glm::quat_cast(world)));
 }
 
 } // namespace RVX

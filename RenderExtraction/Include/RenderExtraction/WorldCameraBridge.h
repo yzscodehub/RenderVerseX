@@ -10,7 +10,6 @@
 
 namespace RVX
 {
-    class Camera;
     class World;
 
     struct RenderViewExtractionParameters
@@ -44,8 +43,6 @@ namespace RVX
             const RenderViewExtractionParameters& parameters,
             RenderViewSnapshot& outView) const;
 
-        // Task-13 compatibility seam for the legacy synchronous renderer.
-        Camera* GetActiveCamera(World* world) const;
     };
 
 } // namespace RVX

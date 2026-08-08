@@ -13,6 +13,13 @@ namespace RVX
 {
 namespace
 {
+    enum class RequiredResourceReadiness : uint8
+    {
+        Ready = 0,
+        Pending,
+        Failed
+    };
+
     void CollectActorHandles(SceneEntity* entity,
                              std::vector<Actor::Handle>& handles)
     {
@@ -28,6 +35,19 @@ namespace
         return status.code == RenderResourceStatusCode::StaleGeneration ||
                status.code == RenderResourceStatusCode::InvalidHandle ||
                status.state == RenderResourcePublicState::Failed;
+    }
+
+    SceneAssetReadiness FailAndRollback(Scene& scene,
+                                        SceneAssetInstance& instance,
+                                        std::string diagnostic)
+    {
+        if (Actor* root = scene.ResolveActor(instance.rootActor))
+            static_cast<void>(scene.DestroyActor(root));
+        instance.rootActor = Actor::InvalidHandle;
+        instance.actors.clear();
+        instance.readiness = SceneAssetReadiness::Failed;
+        instance.diagnostic = std::move(diagnostic);
+        return instance.readiness;
     }
 } // namespace
 
@@ -45,7 +65,7 @@ SceneAssetInstance SceneAssetInstantiator::InstantiateModel(
         return result;
     }
 
-    Actor* actor = model.InstantiateActor(scene.GetSceneManager());
+    Actor* actor = model.InstantiateActor(&scene);
     auto* root = dynamic_cast<SceneEntity*>(actor);
     if (!root)
     {
@@ -68,21 +88,24 @@ SceneAssetInstance SceneAssetInstantiator::InstantiateModel(
 
     if (!options.materialOverrides.empty())
     {
-        for (StaticMeshComponent* primitive :
-             scene.GetComponentsImplementing<StaticMeshComponent>())
+        for (Actor::Handle actorHandle : result.actors)
         {
-            if (!primitive || !primitive->GetOwner())
-                continue;
-            const Actor::Handle owner = primitive->GetOwner()->GetHandle();
-            if (std::find(result.actors.begin(), result.actors.end(), owner) ==
-                result.actors.end())
+            for (StaticMeshComponent* primitive :
+                 scene.GetComponentsForActorImplementing<
+                     StaticMeshComponent>(actorHandle))
             {
-                continue;
-            }
-            for (size_t index = 0; index < options.materialOverrides.size(); ++index)
-            {
-                if (options.materialOverrides[index].IsValid())
-                    primitive->SetMaterial(index, options.materialOverrides[index]);
+                if (!primitive)
+                    continue;
+                for (size_t index = 0;
+                     index < options.materialOverrides.size();
+                     ++index)
+                {
+                    if (options.materialOverrides[index].IsValid())
+                    {
+                        primitive->SetMaterial(
+                            index, options.materialOverrides[index]);
+                    }
+                }
             }
         }
     }
@@ -100,52 +123,77 @@ SceneAssetReadiness SceneAssetInstantiator::UpdateReadiness(
     if (!instance.rootActor.IsValid() ||
         scene.ResolveActor(instance.rootActor) == nullptr)
     {
-        instance.readiness = SceneAssetReadiness::Failed;
-        instance.diagnostic = "Instantiated scene root no longer exists";
-        return instance.readiness;
+        return FailAndRollback(
+            scene, instance, "Instantiated scene root no longer exists");
     }
 
     bool uploadPending = false;
     const auto inspect = [&](AssetId assetId, RenderResourceKind kind)
     {
         if (!assetId.IsValid())
-            return false;
+            return RequiredResourceReadiness::Failed;
         const Resource::RenderResourceResolveResult resolved =
             resources.ResolveRenderResource(assetId, kind);
-        if (resolved.code != Resource::RenderResourceResolveCode::Resolved)
+        if (resolved.code == Resource::RenderResourceResolveCode::NotFound)
         {
             uploadPending = true;
-            return true;
+            return RequiredResourceReadiness::Pending;
         }
-        if (IsFailedStatus(resolved.status))
-            return false;
+        if (resolved.code != Resource::RenderResourceResolveCode::Resolved ||
+            IsFailedStatus(resolved.status))
+        {
+            return RequiredResourceReadiness::Failed;
+        }
         if (resolved.status.state != RenderResourcePublicState::GPUReady)
+        {
             uploadPending = true;
-        return true;
+            return RequiredResourceReadiness::Pending;
+        }
+        return RequiredResourceReadiness::Ready;
     };
 
     for (const auto& mesh : model.GetMeshes())
     {
-        if (!mesh.IsLoaded() || !inspect(AssetId{mesh.GetId()},
-                                         RenderResourceKind::Mesh))
+        if (!mesh.IsLoaded())
         {
-            instance.readiness = mesh.IsLoading()
-                                     ? SceneAssetReadiness::Loading
-                                     : SceneAssetReadiness::Failed;
-            instance.diagnostic = "A required model mesh is unavailable";
+            if (!mesh.IsLoading())
+            {
+                return FailAndRollback(
+                    scene, instance,
+                    "A required model mesh failed before GPU upload");
+            }
+            instance.readiness = SceneAssetReadiness::Loading;
+            instance.diagnostic.clear();
             return instance.readiness;
+        }
+        if (inspect(AssetId{mesh.GetId()}, RenderResourceKind::Mesh) ==
+            RequiredResourceReadiness::Failed)
+        {
+            return FailAndRollback(
+                scene, instance,
+                "A required model mesh became invalid during GPU upload");
         }
     }
     for (const auto& material : model.GetMaterials())
     {
-        if (!material.IsLoaded() ||
-            !inspect(AssetId{material.GetId()}, RenderResourceKind::Material))
+        if (!material.IsLoaded())
         {
-            instance.readiness = material.IsLoading()
-                                     ? SceneAssetReadiness::Loading
-                                     : SceneAssetReadiness::Failed;
-            instance.diagnostic = "A required model material is unavailable";
+            if (!material.IsLoading())
+            {
+                return FailAndRollback(
+                    scene, instance,
+                    "A required model material failed before GPU upload");
+            }
+            instance.readiness = SceneAssetReadiness::Loading;
+            instance.diagnostic.clear();
             return instance.readiness;
+        }
+        if (inspect(AssetId{material.GetId()}, RenderResourceKind::Material) ==
+            RequiredResourceReadiness::Failed)
+        {
+            return FailAndRollback(
+                scene, instance,
+                "A required model material became invalid during GPU upload");
         }
     }
 
@@ -172,6 +220,17 @@ bool SceneAssetInstantiator::Destroy(Scene& scene,
     if (destroyed)
         instance = {};
     return destroyed;
+}
+
+bool SceneAssetInstantiator::Cancel(Scene& scene,
+                                    SceneAssetInstance& instance)
+{
+    const bool existed =
+        instance.rootActor.IsValid() &&
+        scene.ResolveActor(instance.rootActor) != nullptr;
+    static_cast<void>(FailAndRollback(
+        scene, instance, "Scene asset instantiation was cancelled"));
+    return existed;
 }
 
 } // namespace RVX

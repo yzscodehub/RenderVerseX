@@ -7,6 +7,7 @@
 
 #include "Core/Subsystem/WorldSubsystem.h"
 #include "Physics/PhysicsWorld.h"
+#include "Scene/SceneIdentity.h"
 #include "Scene/SceneSystemScheduler.h"
 
 #include <memory>
@@ -20,9 +21,10 @@ namespace RVX
     /**
      * @brief Per-world physics simulation and Scene synchronization.
      *
-     * PhysicsSubsystem owns the PhysicsWorld for a World, discovers
-     * RigidBodyComponent instances in the SceneManager, registers them with the
-     * physics simulation, then performs Scene -> Physics -> Scene transform sync.
+     * PhysicsSubsystem owns the PhysicsWorld for a World, maintains its
+     * RigidBodyComponent handle set from the Scene change feed, registers those
+     * components with the simulation, then performs Scene -> Physics -> Scene
+     * transform synchronization.
      */
     class PhysicsSubsystem : public WorldSubsystem
     {
@@ -48,6 +50,8 @@ namespace RVX
 
     private:
         void GatherRigidBodyComponents(std::vector<RigidBodyComponent*>& outComponents) const;
+        void RebuildRigidBodyHandles();
+        void ApplyComponentChanges();
         void AttachComponents(std::vector<RigidBodyComponent*>& components);
         void DetachComponents();
 
@@ -58,6 +62,8 @@ namespace RVX
         float m_physicsAccumulatorSeconds = 0.0f;
         SceneSystemHandle m_sceneSystemHandle = InvalidSceneSystemHandle;
         Scene* m_registeredScene = nullptr;
+        std::vector<ComponentHandle> m_rigidBodyHandles;
+        uint64 m_lastComponentChangeSequence = 0;
     };
 
 } // namespace RVX

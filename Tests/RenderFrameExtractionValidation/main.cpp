@@ -371,6 +371,19 @@ TEST(RenderFrameExtractionValidation, ExtractsCompleteOwnedPacketValues)
     camera->LookAt({0.0f, 0.0f, 0.0f});
     world.SetActiveCamera(camera);
 
+    ASSERT_TRUE(world.GetScene()->GetActiveCameraHandle().IsValid());
+    CameraComponent* activeCamera =
+        world.GetScene()->GetActiveCameraComponent();
+    ASSERT_NE(activeCamera, nullptr);
+    EXPECT_EQ(activeCamera->GetComponentHandle(),
+              world.GetScene()->GetActiveCameraHandle());
+    EXPECT_FLOAT_EQ(activeCamera->GetNearPlane(), 0.25f);
+    EXPECT_FLOAT_EQ(activeCamera->GetFarPlane(), 2500.0f);
+    EXPECT_NEAR(activeCamera->GetOwner()->GetWorldPosition().y, 2.0f,
+                0.0001f);
+    EXPECT_NEAR(activeCamera->GetOwner()->GetWorldPosition().z, 8.0f,
+                0.0001f);
+
     SceneEntity* primitiveEntity = CreateEntity(world, "Primitive");
     ASSERT_NE(primitiveEntity, nullptr);
     auto* primitive = static_cast<Actor*>(primitiveEntity)

@@ -23,6 +23,8 @@
 namespace RVX
 {
 
+class Scene;
+
 /**
  * @brief Property value type for overrides
  */
@@ -188,13 +190,22 @@ public:
     // Instantiation
     // =========================================================================
 
-    /// Instantiate the prefab in a scene
+    /// Instantiate the prefab through the authoritative Scene runtime.
+    SceneEntity* Instantiate(Scene& scene) const;
+
+    /// Instantiate at a specific position through the authoritative Scene runtime.
+    SceneEntity* Instantiate(Scene& scene, const Vec3& position) const;
+
+    /// Instantiate with position and rotation through the authoritative Scene runtime.
+    SceneEntity* Instantiate(Scene& scene, const Vec3& position, const Quat& rotation) const;
+
+    /// Compatibility overload for legacy callers that still own a SceneManager facade.
     SceneEntity* Instantiate(SceneManager& sceneManager) const;
 
-    /// Instantiate at a specific position
+    /// Compatibility overload for legacy callers that still own a SceneManager facade.
     SceneEntity* Instantiate(SceneManager& sceneManager, const Vec3& position) const;
 
-    /// Instantiate with position and rotation
+    /// Compatibility overload for legacy callers that still own a SceneManager facade.
     SceneEntity* Instantiate(SceneManager& sceneManager, const Vec3& position, const Quat& rotation) const;
 
     /// Instantiate as child of another entity
@@ -246,6 +257,12 @@ public:
     void SetSourcePath(const std::string& path) { m_sourcePath = path; }
 
 private:
+    SceneEntity* InstantiateInternal(Scene& scene,
+                                     const Vec3& position,
+                                     const Quat& rotation,
+                                     SceneEntity* parent) const;
+    // Compatibility implementation: Scene still delegates SceneEntity storage
+    // to its internal SceneManager until the Phase 7 facade removal.
     SceneEntity* InstantiateInternal(SceneManager& sceneManager, const Vec3& position, 
                                       const Quat& rotation, SceneEntity* parent) const;
     void SerializeEntity(const SceneEntity* entity, int32_t parentIndex);

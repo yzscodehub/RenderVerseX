@@ -18,6 +18,7 @@
 #include <type_traits>
 #include <typeindex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <thread>
 
@@ -40,6 +41,7 @@ namespace RVX
         Actor::Handle actor = Actor::InvalidHandle;
         std::type_index componentType{typeid(void)};
         uint64 sceneRevision = 0;
+        uint64 changeSequence = 0;
     };
 
     /**
@@ -154,6 +156,16 @@ namespace RVX
             return m_componentChanges;
         }
         void ClearComponentChanges() { m_componentChanges.clear(); }
+        [[nodiscard]] uint64 GetLastComponentChangeSequence() const
+        {
+            return m_componentChangeSequence;
+        }
+        [[nodiscard]] uint64 GetFirstComponentChangeSequence() const
+        {
+            return m_componentChanges.empty()
+                       ? m_componentChangeSequence + 1
+                       : m_componentChanges.front().changeSequence;
+        }
 
         template<typename T>
         std::vector<T*> GetComponents() const
@@ -179,32 +191,102 @@ namespace RVX
         template<typename T>
         std::vector<T*> GetComponentsImplementing() const
         {
-            std::vector<std::pair<ComponentHandle, T*>> ordered;
-            ordered.reserve(m_components.size());
-            for (const auto& [handle, component] : m_components)
+            const std::type_index queryType(typeid(T));
+            auto [viewIt, inserted] =
+                m_componentQueryViews.try_emplace(queryType);
+            ComponentQueryView& view = viewIt->second;
+            if (inserted)
             {
-                if (auto* typed = dynamic_cast<T*>(component))
-                    ordered.emplace_back(handle, typed);
+                view.matches = [](ActorComponent* component)
+                {
+                    return dynamic_cast<T*>(component) != nullptr;
+                };
+                view.handles.reserve(m_components.size());
+                for (const auto& [handle, component] : m_components)
+                {
+                    if (view.matches(component))
+                        view.handles.push_back(handle);
+                }
+                std::sort(view.handles.begin(), view.handles.end());
             }
-            std::sort(ordered.begin(), ordered.end(),
-                      [](const auto& left, const auto& right)
-                      {
-                          return left.first < right.first;
-                      });
 
             std::vector<T*> result;
-            result.reserve(ordered.size());
-            for (const auto& [handle, component] : ordered)
+            result.reserve(view.handles.size());
+            for (ComponentHandle handle : view.handles)
             {
-                (void)handle;
-                result.push_back(component);
+                if (auto* component = ResolveComponent(handle))
+                {
+                    if (auto* typed = dynamic_cast<T*>(component))
+                        result.push_back(typed);
+                }
             }
             return result;
         }
 
+        /** @brief Query one actor's registered components without scanning the scene. */
+        template<typename T>
+        std::vector<T*> GetComponentsForActorImplementing(
+            Actor::Handle actor) const
+        {
+            std::vector<T*> result;
+            const auto actorIt = m_componentsByActor.find(actor);
+            if (actorIt == m_componentsByActor.end())
+                return result;
+
+            result.reserve(actorIt->second.size());
+            for (ComponentHandle handle : actorIt->second)
+            {
+                if (auto* component = ResolveComponent(handle))
+                {
+                    if (auto* typed = dynamic_cast<T*>(component))
+                        result.push_back(typed);
+                }
+            }
+            return result;
+        }
+
+        // Authoritative spatial facade. SceneManager remains an internal
+        // compatibility implementation detail until the legacy cutover.
+        Spatial::ISpatialIndex* GetSpatialIndex()
+        {
+            return m_sceneManager.GetSpatialIndex();
+        }
+        const Spatial::ISpatialIndex* GetSpatialIndex() const
+        {
+            return m_sceneManager.GetSpatialIndex();
+        }
+        void SetSpatialIndex(Spatial::SpatialIndexPtr index)
+        {
+            m_sceneManager.SetSpatialIndex(std::move(index));
+        }
+        void RebuildSpatialIndex() { m_sceneManager.RebuildSpatialIndex(); }
+        void SynchronizeSpatialIndex()
+        {
+            m_sceneManager.SynchronizeSpatialIndex();
+        }
+        [[nodiscard]] SpatialQueryTarget ResolveSpatialQueryTarget(
+            const Spatial::QueryResult& result) const
+        {
+            return m_sceneManager.ResolveSpatialQueryTarget(result);
+        }
+        void RegisterSpatialPrimitive(PrimitiveComponent* primitive)
+        {
+            m_sceneManager.RegisterPrimitive(primitive);
+        }
+        void UnregisterSpatialPrimitive(PrimitiveComponent* primitive)
+        {
+            m_sceneManager.UnregisterPrimitive(primitive);
+        }
+        void MarkSpatialPrimitiveDirty(PrimitiveComponent* primitive)
+        {
+            m_sceneManager.MarkPrimitiveSpatialDirty(primitive);
+        }
+
+        /** @brief Compatibility facade backed by a scene CameraComponent. */
         Camera* CreateCamera(const std::string& name = "Main");
         Camera* GetCamera(const std::string& name = "Main") const;
         void DestroyCamera(const std::string& name);
+        /** @brief Compatibility adapter selecting the facade's component. */
         void SetActiveCamera(Camera* camera);
         Camera* GetActiveCamera() const { return m_activeCamera; }
 
@@ -237,6 +319,14 @@ namespace RVX
         void TickComponentsForPhase(SceneUpdatePhase phase, float deltaTime);
         void ApplyMutationCommands();
         void ClearPureActors();
+        void AppendComponentChange(SceneComponentChange change);
+        void SynchronizeLegacyCamera(Camera* camera);
+
+        struct ComponentQueryView
+        {
+            std::function<bool(ActorComponent*)> matches;
+            std::vector<ComponentHandle> handles;
+        };
 
         HandlePool<Actor::Handle> m_actorHandles;
         SceneManager m_sceneManager;
@@ -252,9 +342,13 @@ namespace RVX
         TransformStore m_transformStore;
         std::unordered_map<ComponentHandle, ActorComponent*> m_components;
         std::unordered_map<std::type_index, std::vector<ComponentHandle>> m_componentsByType;
+        std::unordered_map<Actor::Handle, std::vector<ComponentHandle>> m_componentsByActor;
+        mutable std::unordered_map<std::type_index, ComponentQueryView>
+            m_componentQueryViews;
         std::vector<ActorComponent*> m_pendingComponentRegistrations;
         std::vector<SceneComponentChange> m_componentChanges;
         std::unordered_map<std::string, std::unique_ptr<Camera>> m_cameras;
+        std::unordered_map<Camera*, ComponentHandle> m_legacyCameraComponents;
         Camera* m_activeCamera = nullptr;
         ComponentHandle m_activeCameraComponent = InvalidComponentHandle;
         SceneSystemScheduler m_systemScheduler;
@@ -262,6 +356,7 @@ namespace RVX
         std::vector<std::function<void(Scene&)>> m_pendingMutations;
         std::thread::id m_updateThreadId;
         uint64 m_sceneRevision = 0;
+        uint64 m_componentChangeSequence = 0;
         bool m_isDispatchingActorLifecycles = false;
         bool m_isUpdating = false;
         bool m_initialized = false;

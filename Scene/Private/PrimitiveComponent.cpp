@@ -1,6 +1,7 @@
 #include "Scene/PrimitiveComponent.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneManager.h"
+#include "Scene/SceneRuntime.h"
 
 namespace RVX
 {
@@ -8,19 +9,37 @@ namespace RVX
 void PrimitiveComponent::OnRegister()
 {
     auto* entity = dynamic_cast<SceneEntity*>(GetOwner());
-    if (!entity || !entity->GetSceneManager())
+    if (!entity)
         return;
 
-    entity->GetSceneManager()->RegisterPrimitive(this);
+    if (Scene* scene = entity->GetScene())
+    {
+        scene->RegisterSpatialPrimitive(this);
+    }
+    else if (SceneManager* compatibilityManager =
+                 entity->GetSceneManager())
+    {
+        // Compatibility-only path for standalone legacy SceneManager users.
+        compatibilityManager->RegisterPrimitive(this);
+    }
 }
 
 void PrimitiveComponent::OnUnregister()
 {
     auto* entity = dynamic_cast<SceneEntity*>(GetOwner());
-    if (!entity || !entity->GetSceneManager())
+    if (!entity)
         return;
 
-    entity->GetSceneManager()->UnregisterPrimitive(this);
+    if (Scene* scene = entity->GetScene())
+    {
+        scene->UnregisterSpatialPrimitive(this);
+    }
+    else if (SceneManager* compatibilityManager =
+                 entity->GetSceneManager())
+    {
+        // Compatibility-only path for standalone legacy SceneManager users.
+        compatibilityManager->UnregisterPrimitive(this);
+    }
 }
 
 void PrimitiveComponent::SetEnabled(bool enabled)
@@ -82,10 +101,11 @@ void PrimitiveComponent::MarkSpatialDirty()
     auto* entity = dynamic_cast<SceneEntity*>(GetOwner());
     if (entity)
     {
-        if (entity->GetSceneManager())
-        {
-            entity->GetSceneManager()->MarkPrimitiveSpatialDirty(this);
-        }
+        if (entity->GetScene())
+            entity->GetScene()->MarkSpatialPrimitiveDirty(this);
+        else if (SceneManager* compatibilityManager =
+                     entity->GetSceneManager())
+            compatibilityManager->MarkPrimitiveSpatialDirty(this);
 
         entity->MarkBoundsDirty();
     }

@@ -15,6 +15,12 @@ namespace RVX
     void Camera::SetOrthographic(float width, float height, float nearZ, float farZ)
     {
         m_projectionType = CameraProjection::Orthographic;
+        m_orthoWidth = width;
+        m_orthoHeight = height;
+        if (height != 0.0f)
+        {
+            m_aspect = width / height;
+        }
         m_nearZ = nearZ;
         m_farZ = farZ;
         m_projection = MakeOrthographic(width, height, nearZ, farZ);

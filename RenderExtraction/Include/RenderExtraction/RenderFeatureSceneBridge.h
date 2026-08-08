@@ -49,6 +49,7 @@ namespace RVX
         bool BuildSnapshot(World* world,
                            RenderFeatureSnapshot& outSnapshot,
                            RenderFeatureSceneBridgeResult* outResult = nullptr) const;
+        /** @brief Compatibility-only snapshot path for legacy SceneManager tests. */
         bool BuildSnapshot(SceneManager* sceneManager,
                            RenderFeatureSnapshot& outSnapshot,
                            RenderFeatureSceneBridgeResult* outResult = nullptr) const;

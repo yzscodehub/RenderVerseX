@@ -1342,8 +1342,8 @@ namespace
         sceneManager.Shutdown();
     }
 
-    TEST(ResourceInstantiationValidation, PrefabInstantiatesRegisteredActorClasses)
-    {
+TEST(ResourceInstantiationValidation, PrefabInstantiatesRegisteredActorClasses)
+{
         ActorFactory::ClearAll();
         ActorFactory::Register<PrefabCustomSceneActor>("PrefabCustomSceneActor");
 
@@ -1380,7 +1380,31 @@ namespace
 
         sceneManager.Shutdown();
         ActorFactory::ClearAll();
-    }
+}
+
+TEST(ResourceInstantiationValidation, PrefabSceneApiKeepsPersistentAndRuntimeIdentitySeparate)
+{
+    PrefabEntityData data;
+    data.name = "ScenePrefabRoot";
+    data.prefabEntityId = 77;
+    auto prefab = Prefab::CreateFromData({data});
+    ASSERT_NE(prefab, nullptr);
+    ASSERT_NE(prefab->GetRootData(), nullptr);
+    const uint64 persistentId = prefab->GetRootData()->prefabEntityId;
+
+    Scene scene;
+    ASSERT_TRUE(scene.Initialize());
+    SceneEntity* first = prefab->Instantiate(scene);
+    SceneEntity* second = prefab->Instantiate(scene);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    EXPECT_NE(first->GetHandle(), second->GetHandle());
+    EXPECT_EQ(scene.ResolveActor(first->GetHandle()), first);
+    EXPECT_EQ(scene.ResolveActor(second->GetHandle()), second);
+    EXPECT_EQ(prefab->GetRootData()->prefabEntityId, persistentId);
+    EXPECT_EQ(persistentId, 77u);
+    scene.Shutdown();
+}
 
     TEST(ResourceInstantiationValidation, PrefabInstantiateFailsForMissingActorClassAndCleansUp)
     {

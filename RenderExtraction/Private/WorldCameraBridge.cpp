@@ -5,7 +5,6 @@
 
 #include "RenderExtraction/WorldCameraBridge.h"
 
-#include "Core/Camera/Camera.h"
 #include "Scene/Components/CameraComponent.h"
 #include "World/World.h"
 
@@ -24,29 +23,17 @@ WorldCameraBridgeCode WorldCameraBridge::Extract(
         return WorldCameraBridgeCode::NullWorld;
     }
     CameraComponent* cameraComponent = world->GetActiveCameraComponent();
-    Camera* camera = world->GetActiveCamera();
-    if (cameraComponent == nullptr && camera == nullptr)
+    if (cameraComponent == nullptr)
     {
         return WorldCameraBridgeCode::MissingActiveCamera;
     }
 
-    if (cameraComponent != nullptr)
-    {
-        outView.viewMatrix = cameraComponent->GetViewMatrix();
-        outView.projectionMatrix = cameraComponent->GetProjectionMatrix();
-        outView.viewProjectionMatrix =
-            cameraComponent->GetViewProjectionMatrix();
-        outView.nearPlane = cameraComponent->GetNearPlane();
-        outView.farPlane = cameraComponent->GetFarPlane();
-    }
-    else
-    {
-        outView.viewMatrix = camera->GetView();
-        outView.projectionMatrix = camera->GetProjection();
-        outView.viewProjectionMatrix = camera->GetViewProjection();
-        outView.nearPlane = parameters.nearPlane;
-        outView.farPlane = parameters.farPlane;
-    }
+    outView.viewMatrix = cameraComponent->GetViewMatrix();
+    outView.projectionMatrix = cameraComponent->GetProjectionMatrix();
+    outView.viewProjectionMatrix =
+        cameraComponent->GetViewProjectionMatrix();
+    outView.nearPlane = cameraComponent->GetNearPlane();
+    outView.farPlane = cameraComponent->GetFarPlane();
     outView.inverseViewProjectionMatrix =
         glm::inverse(outView.viewProjectionMatrix);
     const Mat4 inverseView = glm::inverse(outView.viewMatrix);
@@ -61,11 +48,6 @@ WorldCameraBridgeCode WorldCameraBridge::Extract(
     outView.deltaTime = parameters.deltaTime;
     outView.exposure = parameters.exposure;
     return WorldCameraBridgeCode::Complete;
-}
-
-Camera* WorldCameraBridge::GetActiveCamera(World* world) const
-{
-    return world ? world->GetActiveCamera() : nullptr;
 }
 
 } // namespace RVX
