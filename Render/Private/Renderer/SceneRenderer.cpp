@@ -143,6 +143,8 @@ namespace
             case RenderResourcePublicState::Uploading:
                 return MeshPassResourceAvailability::Pending;
             case RenderResourcePublicState::GPUReady:
+            case RenderResourcePublicState::ReplacementQueued:
+            case RenderResourcePublicState::Replacing:
                 return gpuDataReady
                            ? MeshPassResourceAvailability::Ready
                            : MeshPassResourceAvailability::Unavailable;

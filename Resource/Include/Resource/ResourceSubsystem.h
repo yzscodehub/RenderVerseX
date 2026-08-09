@@ -48,6 +48,9 @@ namespace RVX::Resource
         uint64 retryAttempts = 0;
         uint64 releasesAccepted = 0;
         uint64 terminalRequestsReclaimed = 0;
+        uint64 replacementsQueued = 0;
+        uint64 replacementsCoalesced = 0;
+        uint64 replacementFailures = 0;
         uint64 buildFailures = 0;
         uint64 gatewayRejections = 0;
         uint64 wrongThreadMutations = 0;
@@ -85,9 +88,11 @@ namespace RVX::Resource
             AssetId assetId,
             RenderResourceKind kind) const;
 
-        /** @brief Publish a runtime-created CPU resource through the normal gateway. */
+        /** @brief Publish or atomically replace a runtime-created GPU resource. */
         [[nodiscard]] bool PublishRenderResource(
-            ResourceHandle<IResource> resource);
+            ResourceHandle<IResource> resource,
+            RenderResourceContentOperation operation =
+                RenderResourceContentOperation::Create);
 
         /**
          * @brief Seal new upload production while preserving mappings needed
@@ -192,6 +197,8 @@ namespace RVX::Resource
             RenderUploadPriority priority = RenderUploadPriority::Normal;
             uint64 fifoOrder = 0;
             uint64 sourceRevision = 0;
+            RenderResourceContentOperation operation =
+                RenderResourceContentOperation::Create;
         };
 
         struct PendingUpload
@@ -223,9 +230,12 @@ namespace RVX::Resource
         bool IsOnUpdateThread() const;
         bool RequireUpdateThread(const char* operation);
         void HandleLifecycleEvent(const ResourceLifecycleEvent& event);
-        void QueueReadyResource(const ResourceLifecycleEvent& event);
+        void QueueReadyResource(
+            const ResourceLifecycleEvent& event,
+            RenderResourceContentOperation operation);
         [[nodiscard]] bool QueueRenderResourceTree(
-            ResourceHandle<IResource> resource);
+            ResourceHandle<IResource> resource,
+            RenderResourceContentOperation operation);
         void ProcessPendingResources();
         void ProcessPendingUploads();
         bool TryBuildPendingResource(PendingResource& pending);

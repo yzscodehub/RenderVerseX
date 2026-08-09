@@ -50,7 +50,9 @@ namespace RVX::Resource
             uint64 sequence,
             const RenderResourceDependencyResolver& dependencyResolver,
             RenderUploadPriority priority = RenderUploadPriority::Normal,
-            uint64 sourceRevision = 0);
+            uint64 sourceRevision = 0,
+            RenderResourceContentOperation operation =
+                RenderResourceContentOperation::Create);
     };
 } // namespace RVX::Resource
 

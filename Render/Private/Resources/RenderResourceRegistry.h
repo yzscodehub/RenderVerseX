@@ -102,7 +102,10 @@ namespace RVX
         [[nodiscard]] bool BeginPending(
             RenderResourceHandle handle,
             RenderResourceKind kind,
-            const std::vector<RenderResourceHandle>& dependencies);
+            const std::vector<RenderResourceHandle>& dependencies,
+            RenderResourceContentOperation operation =
+                RenderResourceContentOperation::Create,
+            uint64 sourceRevision = 0);
         [[nodiscard]] bool AddPendingMeshBuffer(
             RenderResourceHandle handle,
             RenderMeshBufferSemantic semantic,
@@ -169,6 +172,12 @@ namespace RVX
         [[nodiscard]] RenderResourceStatus QueryStatus(
             RenderResourceHandle handle) const noexcept;
         [[nodiscard]] bool HasPending(RenderResourceHandle handle) const;
+        /** @brief Last successfully committed content source revision. */
+        [[nodiscard]] uint64 GetCommittedSourceRevision(
+            RenderResourceHandle handle) const noexcept;
+        /** @brief Source revision reserved by the in-flight content update. */
+        [[nodiscard]] uint64 GetPendingSourceRevision(
+            RenderResourceHandle handle) const noexcept;
         [[nodiscard]] uint32 GetEntryCount() const;
         [[nodiscard]] RenderResourceRegistryStats GetStats() const;
         /** @brief Monotonic revision for readiness/content identity changes. */
@@ -187,8 +196,15 @@ namespace RVX
             uint64 contentRevision = 0;
             RenderResourceKind kind = RenderResourceKind::Invalid;
             std::vector<RenderResourceHandle> dependencies;
+            std::vector<RenderResourceHandle> pendingDependencies;
             std::optional<RenderResourceGPUData> pending;
             std::optional<RenderResourceGPUData> committed;
+            RenderResourceContentOperation pendingOperation =
+                RenderResourceContentOperation::Create;
+            uint64 pendingSourceRevision = 0;
+            uint64 committedSourceRevision = 0;
+            /** Strict high-water mark, retained across failed replacements. */
+            uint64 lastAcceptedSourceRevision = 0;
             GPUCompletionToken lastUse;
         };
 

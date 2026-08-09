@@ -13,7 +13,7 @@ namespace
     [[nodiscard]] bool IsKnownState(RenderResourcePublicState state) noexcept
     {
         return static_cast<uint8>(state) <=
-               static_cast<uint8>(RenderResourcePublicState::Evicting);
+               static_cast<uint8>(RenderResourcePublicState::Replacing);
     }
 
     [[nodiscard]] bool IsKnownFailure(
@@ -58,7 +58,9 @@ namespace
                state == RenderResourcePublicState::UploadQueued ||
                state == RenderResourcePublicState::Uploading ||
                state == RenderResourcePublicState::GPUReady ||
-               state == RenderResourcePublicState::Failed;
+               state == RenderResourcePublicState::Failed ||
+               state == RenderResourcePublicState::ReplacementQueued ||
+               state == RenderResourcePublicState::Replacing;
     }
 
     [[nodiscard]] bool IsValidTransition(
@@ -92,6 +94,9 @@ namespace
             return (expected.state == RenderResourcePublicState::Reserved &&
                     desired.state ==
                         RenderResourcePublicState::UploadQueued) ||
+                   (expected.state == RenderResourcePublicState::GPUReady &&
+                    desired.state ==
+                        RenderResourcePublicState::ReplacementQueued) ||
                    (IsLiveState(expected.state) &&
                     desired.state == RenderResourcePublicState::Evicting);
         }
@@ -106,7 +111,13 @@ namespace
             return (expected.state ==
                         RenderResourcePublicState::UploadQueued &&
                     desired.state == RenderResourcePublicState::Uploading) ||
+                   (expected.state ==
+                        RenderResourcePublicState::ReplacementQueued &&
+                    desired.state == RenderResourcePublicState::Replacing) ||
                    (expected.state == RenderResourcePublicState::Uploading &&
+                    (desired.state == RenderResourcePublicState::GPUReady ||
+                     desired.state == RenderResourcePublicState::Failed)) ||
+                   (expected.state == RenderResourcePublicState::Replacing &&
                     (desired.state == RenderResourcePublicState::GPUReady ||
                      desired.state == RenderResourcePublicState::Failed)) ||
                    (expected.state == RenderResourcePublicState::Evicting &&

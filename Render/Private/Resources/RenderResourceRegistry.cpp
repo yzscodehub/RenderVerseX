@@ -44,52 +44,92 @@ namespace RVX
     bool RenderResourceRegistry::BeginPending(
         RenderResourceHandle handle,
         RenderResourceKind kind,
-        const std::vector<RenderResourceHandle>& dependencies)
+        const std::vector<RenderResourceHandle>& dependencies,
+        RenderResourceContentOperation operation,
+        uint64 sourceRevision)
     {
         if (m_statusTable == nullptr || m_retirementQueue == nullptr ||
-            !handle.IsValid() || kind == RenderResourceKind::Invalid)
+            !handle.IsValid() || kind == RenderResourceKind::Invalid ||
+            (operation != RenderResourceContentOperation::Create &&
+             operation != RenderResourceContentOperation::Replace) ||
+            (operation == RenderResourceContentOperation::Replace &&
+             sourceRevision == 0))
         {
             return false;
         }
 
         const RenderResourceStatus status = m_statusTable->Query(handle);
+        const RenderResourcePublicState expectedState =
+            operation == RenderResourceContentOperation::Replace
+                ? RenderResourcePublicState::Replacing
+                : RenderResourcePublicState::Uploading;
         if (status.code != RenderResourceStatusCode::Current ||
-            status.state != RenderResourcePublicState::Uploading)
+            status.state != expectedState)
         {
             return false;
         }
 
         auto existing = m_entries.find(handle.slot);
-        if (existing != m_entries.end())
+        if (operation == RenderResourceContentOperation::Create)
         {
-            if (existing->second.generation != handle.generation ||
-                existing->second.pending.has_value() ||
-                existing->second.committed.has_value())
+            if (existing != m_entries.end() &&
+                (existing->second.generation != handle.generation ||
+                 existing->second.pending.has_value() ||
+                 existing->second.committed.has_value()))
             {
                 return false;
             }
         }
+        else if (existing == m_entries.end() ||
+                 existing->second.generation != handle.generation ||
+                 existing->second.kind != kind ||
+                 existing->second.pending.has_value() ||
+                 !existing->second.committed.has_value() ||
+                 sourceRevision <= existing->second.lastAcceptedSourceRevision)
+        {
+            return false;
+        }
+
+        auto makePendingData = [kind]() -> std::optional<RenderResourceGPUData>
+        {
+            switch (kind)
+            {
+                case RenderResourceKind::Mesh:
+                    return RenderMeshResourceData{};
+                case RenderResourceKind::Texture:
+                    return RenderTextureResourceData{};
+                case RenderResourceKind::Material:
+                    return RenderMaterialResourceData{};
+                case RenderResourceKind::Invalid:
+                default:
+                    return std::nullopt;
+            }
+        };
+        std::optional<RenderResourceGPUData> pending = makePendingData();
+        if (!pending)
+        {
+            return false;
+        }
+
+        if (operation == RenderResourceContentOperation::Replace)
+        {
+            Entry& entry = existing->second;
+            entry.pending = std::move(pending);
+            entry.pendingOperation = operation;
+            entry.pendingSourceRevision = sourceRevision;
+            entry.lastAcceptedSourceRevision = sourceRevision;
+            entry.pendingDependencies = dependencies;
+            return true;
+        }
 
         Entry entry;
         entry.generation = handle.generation;
-        entry.contentRevision = BumpContentRevision();
         entry.kind = kind;
-        entry.dependencies = dependencies;
-        switch (kind)
-        {
-            case RenderResourceKind::Mesh:
-                entry.pending.emplace(RenderMeshResourceData{});
-                break;
-            case RenderResourceKind::Texture:
-                entry.pending.emplace(RenderTextureResourceData{});
-                break;
-            case RenderResourceKind::Material:
-                entry.pending.emplace(RenderMaterialResourceData{});
-                break;
-            case RenderResourceKind::Invalid:
-            default:
-                return false;
-        }
+        entry.pendingDependencies = dependencies;
+        entry.pending = std::move(pending);
+        entry.pendingOperation = operation;
+        entry.pendingSourceRevision = sourceRevision;
+        entry.lastAcceptedSourceRevision = sourceRevision;
         m_entries.insert_or_assign(handle.slot, std::move(entry));
         return true;
     }
@@ -243,12 +283,44 @@ namespace RVX
     bool RenderResourceRegistry::Commit(RenderResourceHandle handle)
     {
         Entry* entry = FindExact(handle);
-        if (entry == nullptr || !entry->pending || entry->committed)
+        if (entry == nullptr || !entry->pending)
         {
             return false;
         }
+        if (entry->pendingOperation == RenderResourceContentOperation::Create)
+        {
+            if (entry->committed)
+            {
+                return false;
+            }
+        }
+        else if (entry->pendingOperation == RenderResourceContentOperation::Replace)
+        {
+            if (!entry->committed)
+            {
+                return false;
+            }
+            // A replacement becomes visible only after every prior use of the
+            // committed content and the replacement upload are covered by the
+            // entry token. RetireData transfers old strong references before
+            // the new content is published.
+            if (!RetireData(*entry->committed, entry->lastUse))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            return false;
+        }
+
         entry->committed = std::move(entry->pending);
         entry->pending.reset();
+        entry->dependencies = std::move(entry->pendingDependencies);
+        entry->pendingDependencies.clear();
+        entry->committedSourceRevision = entry->pendingSourceRevision;
+        entry->pendingSourceRevision = 0;
+        entry->pendingOperation = RenderResourceContentOperation::Create;
         entry->contentRevision = BumpContentRevision();
         return true;
     }
@@ -265,16 +337,19 @@ namespace RVX
             return false;
         }
         entry->pending.reset();
-        if (!entry->committed)
+        entry->pendingDependencies.clear();
+        entry->pendingSourceRevision = 0;
+        entry->pendingOperation = RenderResourceContentOperation::Create;
+        const bool hasCommitted = entry->committed.has_value();
+        if (!hasCommitted)
         {
             m_entries.erase(handle.slot);
         }
-        else
-        {
-            entry->contentRevision = BumpContentRevision();
-            return true;
-        }
-        BumpContentRevision();
+        // A failed replacement preserves the prior committed data and its
+        // content revision. Consumers must not rebuild against an update that
+        // never became visible.
+        if (!hasCommitted)
+            BumpContentRevision();
         return true;
     }
 
@@ -520,7 +595,9 @@ namespace RVX
         }
         const RenderResourceStatus status = m_statusTable->Query(handle);
         return status.code == RenderResourceStatusCode::Current &&
-               status.state == RenderResourcePublicState::GPUReady;
+               (status.state == RenderResourcePublicState::GPUReady ||
+                status.state == RenderResourcePublicState::ReplacementQueued ||
+                status.state == RenderResourcePublicState::Replacing);
     }
 
     RenderResourceStatus RenderResourceRegistry::QueryStatus(
@@ -536,6 +613,20 @@ namespace RVX
     {
         const Entry* entry = FindExact(handle);
         return entry != nullptr && entry->pending.has_value();
+    }
+
+    uint64 RenderResourceRegistry::GetCommittedSourceRevision(
+        RenderResourceHandle handle) const noexcept
+    {
+        const Entry* entry = FindExact(handle);
+        return entry != nullptr ? entry->committedSourceRevision : 0;
+    }
+
+    uint64 RenderResourceRegistry::GetPendingSourceRevision(
+        RenderResourceHandle handle) const noexcept
+    {
+        const Entry* entry = FindExact(handle);
+        return entry != nullptr ? entry->pendingSourceRevision : 0;
     }
 
     uint32 RenderResourceRegistry::GetEntryCount() const
@@ -618,51 +709,92 @@ namespace RVX
         RenderResourceGPUData& data,
         const GPUCompletionToken& completion)
     {
-        auto retire = [this, &completion](auto& typedRef,
-                                          uint64 estimatedBytes)
+        std::vector<RenderRetirementEntry> retirements;
+        auto retain = [&retirements, &completion](const auto& typedRef,
+                                                   uint64 estimatedBytes)
         {
             if (!typedRef)
             {
                 return true;
             }
             Ref<RefCounted> object(typedRef);
-            if (!m_retirementQueue->Enqueue(
-                    RenderRetirementEntry{completion,
-                                          std::move(object),
-                                          estimatedBytes}))
+            retirements.push_back(RenderRetirementEntry{
+                completion, std::move(object), estimatedBytes});
+            return true;
+        };
+
+        try
+        {
+            if (auto* mesh = std::get_if<RenderMeshResourceData>(&data))
+            {
+                retirements.reserve(mesh->buffers.size());
+                for (const RenderOwnedBuffer& owned : mesh->buffers)
+                {
+                    if (!retain(owned.buffer, owned.estimatedBytes))
+                    {
+                        return false;
+                    }
+                }
+            }
+            else if (auto* texture =
+                         std::get_if<RenderTextureResourceData>(&data))
+            {
+                if (!retain(texture->texture, texture->estimatedBytes))
+                {
+                    return false;
+                }
+            }
+            else if (auto* material =
+                         std::get_if<RenderMaterialResourceData>(&data))
+            {
+                retirements.reserve(material->samplers.size() + 1U);
+                if (!retain(material->constants, material->constantBytes))
+                {
+                    return false;
+                }
+                for (const RHISamplerRef& sampler : material->samplers)
+                {
+                    if (!retain(sampler, 0))
+                    {
+                        return false;
+                    }
+                }
+            }
+            else
             {
                 return false;
             }
-            typedRef.Reset();
-            return true;
-        };
+        }
+        catch (...)
+        {
+            return false;
+        }
+
+        if (!retirements.empty() &&
+            !m_retirementQueue->EnqueueBatch(std::move(retirements)))
+        {
+            return false;
+        }
 
         if (auto* mesh = std::get_if<RenderMeshResourceData>(&data))
         {
             for (RenderOwnedBuffer& owned : mesh->buffers)
             {
-                if (!retire(owned.buffer, owned.estimatedBytes))
-                {
-                    return false;
-                }
+                owned.buffer.Reset();
             }
-            return true;
         }
-        if (auto* texture = std::get_if<RenderTextureResourceData>(&data))
+        else if (auto* texture =
+                     std::get_if<RenderTextureResourceData>(&data))
         {
-            return retire(texture->texture, texture->estimatedBytes);
+            texture->texture.Reset();
         }
-        auto* material = std::get_if<RenderMaterialResourceData>(&data);
-        if (material == nullptr ||
-            !retire(material->constants, material->constantBytes))
+        else if (auto* material =
+                     std::get_if<RenderMaterialResourceData>(&data))
         {
-            return false;
-        }
-        for (RHISamplerRef& sampler : material->samplers)
-        {
-            if (!retire(sampler, 0))
+            material->constants.Reset();
+            for (RHISamplerRef& sampler : material->samplers)
             {
-                return false;
+                sampler.Reset();
             }
         }
         return true;
@@ -679,7 +811,10 @@ namespace RVX
         }
         const RenderResourceStatus status = m_statusTable->Query(handle);
         return status.code == RenderResourceStatusCode::Current &&
-               status.state == RenderResourcePublicState::GPUReady;
+               entry->committed.has_value() &&
+               (status.state == RenderResourcePublicState::GPUReady ||
+                status.state == RenderResourcePublicState::ReplacementQueued ||
+                status.state == RenderResourcePublicState::Replacing);
     }
 
     uint64 RenderResourceRegistry::BumpContentRevision() noexcept

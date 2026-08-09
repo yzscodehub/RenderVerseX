@@ -988,6 +988,22 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+# Render resource content replacement contract validation
+rvx_add_gtest(
+    NAME RenderResourceReplacementValidation
+    SOURCES RenderResourceReplacementValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RHI
+        RVX::RenderContracts
+        RVX_RenderRuntimeCore
+    INCLUDES
+        ${CMAKE_SOURCE_DIR}/Render/Private
+        ${CMAKE_SOURCE_DIR}/RenderContracts/Include
+    LABELS "unit;render;resource"
+    TIMEOUT 30
+)
+
 rvx_add_gtest(
     NAME RenderIncrementalSceneScaleValidation
     SOURCES RenderIncrementalSceneScaleValidation/main.cpp

@@ -12,7 +12,9 @@ namespace
                state == RenderResourcePublicState::UploadQueued ||
                state == RenderResourcePublicState::Uploading ||
                state == RenderResourcePublicState::GPUReady ||
-               state == RenderResourcePublicState::Failed;
+               state == RenderResourcePublicState::Failed ||
+               state == RenderResourcePublicState::ReplacementQueued ||
+               state == RenderResourcePublicState::Replacing;
     }
 } // namespace
 

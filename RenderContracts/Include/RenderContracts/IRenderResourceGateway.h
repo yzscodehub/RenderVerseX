@@ -18,7 +18,22 @@ namespace RVX
         Uploading = 3,
         GPUReady = 4,
         Failed = 5,
-        Evicting = 6
+        Evicting = 6,
+        /** Internal status-table state; gateway exposes GPUReady + Queued. */
+        ReplacementQueued = 7,
+        /** Internal status-table state; gateway exposes GPUReady + Uploading. */
+        Replacing = 8
+    };
+
+    /**
+     * @brief Orthogonal progress for a replacement whose prior committed
+     * content remains publicly GPU-ready.
+     */
+    enum class RenderResourceReplacementState : uint8
+    {
+        None = 0,
+        Queued = 1,
+        Uploading = 2
     };
 
     enum class RenderResourceFailureCode : uint16
@@ -73,7 +88,19 @@ namespace RVX
     {
         RenderResourceStatusCode code = RenderResourceStatusCode::InvalidHandle;
         RenderResourcePublicState state = RenderResourcePublicState::Released;
+        /**
+         * A GPUReady state may retain a replacement failure while its prior
+         * committed content remains usable. Failed means no usable content.
+         */
         RenderResourceFailureCode failure = RenderResourceFailureCode::None;
+        /**
+         * Replacement activity is orthogonal to public availability. Queued
+         * and Uploading both retain the prior committed GPU-ready content.
+         */
+        RenderResourceReplacementState replacementState =
+            RenderResourceReplacementState::None;
+        /** Zero when no replacement is currently accepted for this handle. */
+        uint64 pendingSourceRevision = 0;
     };
 
     struct RenderResourceReserveResult
@@ -104,6 +131,11 @@ namespace RVX
             const ResourceUploadRequestRef& request) noexcept = 0;
         virtual RenderReleaseResult RequestRelease(
             RenderResourceHandle handle) noexcept = 0;
+        /**
+         * @brief Query update-side availability. Internal replacement progress
+         * is reported through RenderResourceStatus::replacementState while the
+         * last committed content remains GPUReady.
+         */
         [[nodiscard]] virtual RenderResourceStatus QueryResourceStatus(
             RenderResourceHandle handle) const noexcept = 0;
     };

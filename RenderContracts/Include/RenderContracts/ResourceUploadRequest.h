@@ -11,13 +11,71 @@
 #include "RenderContracts/RenderMaterial.h"
 
 #include <memory>
+#include <span>
+#include <utility>
 #include <variant>
 #include <vector>
 
 namespace RVX
 {
     inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_ID = 0x52565855U;
-    inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION = 1;
+    // Schema v2 adds transactional content replacement and shared immutable
+    // upload storage. Existing source builders remain compatible by using the
+    // default Create operation and the current schema constant.
+    inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION = 2;
+
+    /**
+     * @brief Immutable byte storage shared between a prepared resource and an
+     * upload request. New producers should provide this storage directly so
+     * the upload transport does not take a second ownership copy.
+     */
+    class UploadByteStorage final
+    {
+    public:
+        static std::shared_ptr<const UploadByteStorage> Create(
+            std::vector<uint8> bytes)
+        {
+            return std::shared_ptr<const UploadByteStorage>(
+                new UploadByteStorage(
+                    std::make_shared<const std::vector<uint8>>(
+                        std::move(bytes))));
+        }
+
+        static std::shared_ptr<const UploadByteStorage> CreateShared(
+            std::shared_ptr<const std::vector<uint8>> bytes)
+        {
+            if (!bytes)
+                return {};
+            return std::shared_ptr<const UploadByteStorage>(
+                new UploadByteStorage(std::move(bytes)));
+        }
+
+        UploadByteStorage(const UploadByteStorage&) = delete;
+        UploadByteStorage& operator=(const UploadByteStorage&) = delete;
+        UploadByteStorage(UploadByteStorage&&) = delete;
+        UploadByteStorage& operator=(UploadByteStorage&&) = delete;
+
+        [[nodiscard]] std::span<const uint8> GetBytes() const noexcept
+        {
+            return *m_bytes;
+        }
+
+    private:
+        explicit UploadByteStorage(
+            std::shared_ptr<const std::vector<uint8>> bytes)
+            : m_bytes(std::move(bytes))
+        {
+        }
+
+        const std::shared_ptr<const std::vector<uint8>> m_bytes;
+    };
+    using UploadByteStorageRef = std::shared_ptr<const UploadByteStorage>;
+
+    enum class RenderResourceContentOperation : uint8
+    {
+        Create = 0,
+        Replace = 1
+    };
 
     enum class MeshUploadIndexType : uint8
     {
@@ -112,7 +170,10 @@ namespace RVX
     struct MeshUploadPayload
     {
         MeshUploadCreateInfo createInfo;
+        /** @deprecated Compatibility storage for existing request builders. */
         std::vector<uint8> bytes;
+        /** @brief Preferred immutable byte storage for new producers. */
+        UploadByteStorageRef byteStorage;
         UploadByteRange indexRange;
         UploadByteRange positionRange;
         UploadByteRange normalRange;
@@ -148,7 +209,10 @@ namespace RVX
     struct TextureUploadPayload
     {
         TextureUploadCreateInfo createInfo;
+        /** @deprecated Compatibility storage for existing request builders. */
         std::vector<uint8> bytes;
+        /** @brief Preferred immutable byte storage for new producers. */
+        UploadByteStorageRef byteStorage;
         std::vector<TextureUploadSubresource> subresources;
     };
 
@@ -179,6 +243,16 @@ namespace RVX
         TextureUploadPayload,
         MaterialUploadPayload>;
 
+    /**
+     * @brief Resolve the sole immutable byte source for an upload payload.
+     * A payload must select either compatibility bytes or shared storage, not
+     * both; ResourceUploadRequest::Create validates that invariant.
+     */
+    [[nodiscard]] std::span<const uint8> GetUploadPayloadBytes(
+        const MeshUploadPayload& payload) noexcept;
+    [[nodiscard]] std::span<const uint8> GetUploadPayloadBytes(
+        const TextureUploadPayload& payload) noexcept;
+
     struct ResourceUploadDiagnosticProvenance
     {
         uint64 sourceRevision = 0;
@@ -194,6 +268,13 @@ namespace RVX
         AssetId assetId;
         RenderResourceHandle handle;
         RenderResourceKind kind = RenderResourceKind::Invalid;
+        RenderResourceContentOperation operation =
+            RenderResourceContentOperation::Create;
+        /**
+         * @brief Strictly increasing content revision for Replace. Zero is
+         * permitted only for compatibility Create requests.
+         */
+        uint64 sourceRevision = 0;
         ResourceUploadPayload payload;
         std::vector<RenderResourceHandle> dependencies;
         RenderDependencyReadiness dependencyReadiness =
@@ -218,7 +299,11 @@ namespace RVX
         DiagnosticByteCountMismatch = 10,
         InvalidDependency = 11,
         DuplicateDependency = 12,
-        SelfDependency = 13
+        SelfDependency = 13,
+        InvalidContentOperation = 14,
+        InvalidSourceRevision = 15,
+        ConflictingByteStorage = 16,
+        ConflictingSourceRevision = 17
     };
 
     class ResourceUploadRequest;
@@ -251,6 +336,8 @@ namespace RVX
         [[nodiscard]] AssetId GetAssetId() const noexcept;
         [[nodiscard]] RenderResourceHandle GetHandle() const noexcept;
         [[nodiscard]] RenderResourceKind GetKind() const noexcept;
+        [[nodiscard]] RenderResourceContentOperation GetOperation() const noexcept;
+        [[nodiscard]] uint64 GetSourceRevision() const noexcept;
         [[nodiscard]] uint64 GetDerivedPayloadBytes() const noexcept;
         [[nodiscard]] uint64 GetDeclaredPayloadBytes() const noexcept;
         [[nodiscard]] const ResourceUploadPayload& GetPayload() const noexcept;
@@ -272,6 +359,9 @@ namespace RVX
         AssetId m_assetId{};
         RenderResourceHandle m_handle{};
         RenderResourceKind m_kind = RenderResourceKind::Invalid;
+        RenderResourceContentOperation m_operation =
+            RenderResourceContentOperation::Create;
+        uint64 m_sourceRevision = 0;
         ResourceUploadPayload m_payload{MeshUploadPayload{}};
         std::vector<RenderResourceHandle> m_dependencies{};
         RenderDependencyReadiness m_dependencyReadiness =
@@ -318,6 +408,8 @@ namespace RVX
     static_assert(static_cast<uint8>(MaterialUploadFilterMode::LinearMipmapNearest) == 3);
     static_assert(static_cast<uint8>(MaterialUploadFilterMode::NearestMipmapLinear) == 4);
     static_assert(static_cast<uint8>(MaterialUploadFilterMode::LinearMipmapLinear) == 5);
+    static_assert(static_cast<uint8>(RenderResourceContentOperation::Create) == 0);
+    static_assert(static_cast<uint8>(RenderResourceContentOperation::Replace) == 1);
     static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::Created) == 0);
     static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::InvalidSchema) == 1);
     static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::InvalidSequence) == 2);
@@ -332,4 +424,8 @@ namespace RVX
     static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::InvalidDependency) == 11);
     static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::DuplicateDependency) == 12);
     static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::SelfDependency) == 13);
+    static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::InvalidContentOperation) == 14);
+    static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::InvalidSourceRevision) == 15);
+    static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::ConflictingByteStorage) == 16);
+    static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::ConflictingSourceRevision) == 17);
 } // namespace RVX

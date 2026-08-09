@@ -250,7 +250,7 @@ namespace
     TEST(RenderContractsValidation, RejectsSchema)
     {
         auto info = MakeValidTextureRequestInfo();
-        info.schemaVersion = 2;
+        info.schemaVersion = RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION + 1U;
         ExpectCreationCode(info, ResourceUploadRequestCreateCode::InvalidSchema);
     }
 
@@ -413,7 +413,7 @@ namespace
     TEST(RenderContractsValidation, FactoryUsesDocumentedFirstFailureOrder)
     {
         auto info = MakeValidTextureRequestInfo();
-        info.schemaVersion = 2;
+        info.schemaVersion = RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION + 1U;
         info.sequence = 0;
         info.assetId = {};
         info.handle = {};

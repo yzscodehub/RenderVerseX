@@ -1470,7 +1470,37 @@ namespace
             auto status = statuses.find(request->GetHandle());
             if (status == statuses.end())
                 return {RenderUploadEnqueueCode::StaleGeneration};
-            status->second.state = RenderResourcePublicState::UploadQueued;
+            const bool replacement = request->GetOperation() ==
+                                     RenderResourceContentOperation::Replace;
+            const uint64 lastRevision =
+                acceptedSourceRevisions[request->GetHandle()];
+            if ((replacement &&
+                 (status->second.state !=
+                      RenderResourcePublicState::GPUReady ||
+                  status->second.replacementState !=
+                      RenderResourceReplacementState::None ||
+                  request->GetSourceRevision() == 0 ||
+                  request->GetSourceRevision() <= lastRevision)) ||
+                (!replacement &&
+                 status->second.state !=
+                     RenderResourcePublicState::Reserved))
+            {
+                return {RenderUploadEnqueueCode::InvalidRequest};
+            }
+            if (replacement)
+            {
+                status->second.replacementState =
+                    RenderResourceReplacementState::Queued;
+                status->second.pendingSourceRevision =
+                    request->GetSourceRevision();
+            }
+            else
+            {
+                status->second.state =
+                    RenderResourcePublicState::UploadQueued;
+            }
+            acceptedSourceRevisions[request->GetHandle()] =
+                request->GetSourceRevision();
             acceptedRequests[request->GetHandle()] = request;
             ++acceptedCount;
             return {RenderUploadEnqueueCode::Accepted};
@@ -1517,6 +1547,9 @@ namespace
             auto& status = statuses.at(handle);
             status.state = state;
             status.failure = failure;
+            status.replacementState =
+                RenderResourceReplacementState::None;
+            status.pendingSourceRevision = 0;
             acceptedRequests.erase(handle);
         }
 
@@ -1548,6 +1581,9 @@ namespace
         std::unordered_map<RenderResourceHandle,
                            ResourceUploadRequestRef,
                            RenderResourceHandleHash> acceptedRequests;
+        std::unordered_map<RenderResourceHandle,
+                           uint64,
+                           RenderResourceHandleHash> acceptedSourceRevisions;
     };
 
     ResourceManagerConfig MakeRenderResourceTestConfig(const fs::path& root)
@@ -1584,18 +1620,22 @@ TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderOwnsMeshAndTextureBytes
     ASSERT_NE(meshBuild.request, nullptr);
     const auto meshPayload =
         std::get<MeshUploadPayload>(meshBuild.request->GetPayload());
-    ASSERT_FALSE(meshPayload.bytes.empty());
+    const std::span<const uint8> meshBytes =
+        GetUploadPayloadBytes(meshPayload);
+    ASSERT_TRUE(meshPayload.bytes.empty());
+    ASSERT_NE(meshPayload.byteStorage, nullptr);
+    ASSERT_FALSE(meshBytes.empty());
     EXPECT_FALSE(meshPayload.createInfo.hasTangentBasis);
     ASSERT_EQ(meshPayload.tangentRange.stride, sizeof(Vec4));
     ASSERT_EQ(meshPayload.tangentRange.size,
               positions.size() * sizeof(Vec4));
     ASSERT_LE(meshPayload.tangentRange.offset + meshPayload.tangentRange.size,
-              meshPayload.bytes.size());
+              meshBytes.size());
     for (size_t vertexIndex = 0; vertexIndex < positions.size(); ++vertexIndex)
     {
         Vec4 tangent{};
         std::memcpy(&tangent,
-                    meshPayload.bytes.data() + meshPayload.tangentRange.offset +
+                    meshBytes.data() + meshPayload.tangentRange.offset +
                         vertexIndex * meshPayload.tangentRange.stride,
                     sizeof(tangent));
         EXPECT_FLOAT_EQ(tangent.x, 1.0f);
@@ -1603,10 +1643,13 @@ TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderOwnsMeshAndTextureBytes
         EXPECT_FLOAT_EQ(tangent.z, 0.0f);
         EXPECT_FLOAT_EQ(tangent.w, 1.0f);
     }
-    const std::vector<uint8> ownedMeshBytes = meshPayload.bytes;
+    const std::vector<uint8> ownedMeshBytes(meshBytes.begin(), meshBytes.end());
 
     mesh->SetPositions(std::vector<Vec3>(3, Vec3{42.0f}));
-    EXPECT_EQ(std::get<MeshUploadPayload>(meshBuild.request->GetPayload()).bytes,
+    const std::span<const uint8> retainedMeshBytes = GetUploadPayloadBytes(
+        std::get<MeshUploadPayload>(meshBuild.request->GetPayload()));
+    EXPECT_EQ(std::vector<uint8>(retainedMeshBytes.begin(),
+                                 retainedMeshBytes.end()),
               ownedMeshBytes);
 
     const std::vector<Vec4> authoredTangents = {
@@ -1619,6 +1662,8 @@ TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderOwnsMeshAndTextureBytes
     ASSERT_EQ(authoredMeshBuild.code, RenderUploadRequestBuildCode::Built);
     const auto& authoredMeshPayload =
         std::get<MeshUploadPayload>(authoredMeshBuild.request->GetPayload());
+    const std::span<const uint8> authoredMeshBytes =
+        GetUploadPayloadBytes(authoredMeshPayload);
     EXPECT_TRUE(authoredMeshPayload.createInfo.hasTangentBasis);
     ASSERT_EQ(authoredMeshPayload.tangentRange.stride, sizeof(Vec4));
     ASSERT_EQ(authoredMeshPayload.tangentRange.size,
@@ -1628,7 +1673,7 @@ TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderOwnsMeshAndTextureBytes
     {
         Vec4 tangent{};
         std::memcpy(&tangent,
-                    authoredMeshPayload.bytes.data() +
+                    authoredMeshBytes.data() +
                         authoredMeshPayload.tangentRange.offset +
                         vertexIndex * authoredMeshPayload.tangentRange.stride,
                     sizeof(tangent));
@@ -1651,13 +1696,20 @@ TEST(ResourceRuntimePolicyValidation, RenderUploadBuilderOwnsMeshAndTextureBytes
     ASSERT_EQ(textureBuild.code, RenderUploadRequestBuildCode::Built);
     const auto& texturePayload =
         std::get<TextureUploadPayload>(textureBuild.request->GetPayload());
-    ASSERT_EQ(texturePayload.bytes.size(), 16U);
+    const std::span<const uint8> textureBytes =
+        GetUploadPayloadBytes(texturePayload);
+    ASSERT_TRUE(texturePayload.bytes.empty());
+    ASSERT_NE(texturePayload.byteStorage, nullptr);
+    ASSERT_EQ(textureBytes.size(), 16U);
+    EXPECT_EQ(textureBytes.data(), texture.GetData().data());
     ASSERT_EQ(texturePayload.subresources.size(), 1U);
     EXPECT_EQ(texturePayload.subresources.front().rowPitch, 8U);
     EXPECT_EQ(texturePayload.subresources.front().slicePitch, 16U);
     texture.SetData(std::vector<uint8>(16, 99), metadata);
-    EXPECT_EQ(std::get<TextureUploadPayload>(textureBuild.request->GetPayload())
-                  .bytes.front(),
+    EXPECT_EQ(GetUploadPayloadBytes(
+                  std::get<TextureUploadPayload>(
+                      textureBuild.request->GetPayload()))
+                  .front(),
               7U);
 }
 
@@ -1806,6 +1858,108 @@ TEST(ResourceRuntimePolicyValidation,
     subsystem.BeginRenderShutdown();
     subsystem.Deinitialize();
 
+    std::error_code removeError;
+    fs::remove_all(root, removeError);
+}
+
+TEST(ResourceRuntimePolicyValidation,
+     ResourceSubsystemReplacesInPlaceAndCoalescesLatestRevision)
+{
+    const fs::path root = MakeTempDirectory("RuntimeReplacement");
+    FakeResourceGateway gateway;
+    ResourceSubsystem subsystem;
+    subsystem.SetRenderResourceGateway(&gateway);
+    subsystem.Initialize(MakeRenderResourceTestConfig(root));
+
+    auto* texture = new TextureResource();
+    texture->SetId(305);
+    TextureMetadata metadata;
+    metadata.width = 1;
+    metadata.height = 1;
+    metadata.format = TextureFormat::RGBA8;
+    texture->SetData(std::vector<uint8>{1, 1, 1, 255}, metadata);
+    ResourceHandle<TextureResource> textureHandle(texture);
+
+    ASSERT_TRUE(subsystem.PublishRenderResource(textureHandle));
+    subsystem.Tick(0.0f);
+    const RenderResourceResolveResult resolved =
+        subsystem.ResolveRenderResource(AssetId{textureHandle.GetId()},
+                                        RenderResourceKind::Texture);
+    ASSERT_EQ(resolved.code, RenderResourceResolveCode::Resolved);
+    const auto createRequest =
+        gateway.GetAcceptedRequest(resolved.handle).lock();
+    ASSERT_NE(createRequest, nullptr);
+    EXPECT_EQ(createRequest->GetOperation(),
+              RenderResourceContentOperation::Create);
+    const uint64 createRevision = createRequest->GetSourceRevision();
+    ASSERT_NE(createRevision, 0U);
+    gateway.PublishTerminal(resolved.handle,
+                            RenderResourcePublicState::GPUReady);
+    subsystem.Tick(0.0f);
+
+    texture->SetData(std::vector<uint8>{2, 2, 2, 255}, metadata);
+    ASSERT_TRUE(subsystem.PublishRenderResource(
+        textureHandle,
+        RenderResourceContentOperation::Replace));
+    subsystem.Tick(0.0f);
+    const auto firstReplacement =
+        gateway.GetAcceptedRequest(resolved.handle).lock();
+    ASSERT_NE(firstReplacement, nullptr);
+    EXPECT_EQ(firstReplacement->GetOperation(),
+              RenderResourceContentOperation::Replace);
+    EXPECT_GT(firstReplacement->GetSourceRevision(), createRevision);
+    const auto& firstPayload =
+        std::get<TextureUploadPayload>(firstReplacement->GetPayload());
+    EXPECT_EQ(GetUploadPayloadBytes(firstPayload).front(), 2U);
+    EXPECT_EQ(gateway.QueryResourceStatus(resolved.handle).state,
+              RenderResourcePublicState::GPUReady);
+    EXPECT_EQ(gateway.QueryResourceStatus(resolved.handle).replacementState,
+              RenderResourceReplacementState::Queued);
+
+    texture->SetData(std::vector<uint8>{3, 3, 3, 255}, metadata);
+    ASSERT_TRUE(subsystem.PublishRenderResource(
+        textureHandle,
+        RenderResourceContentOperation::Replace));
+    subsystem.Tick(0.0f);
+    texture->SetData(std::vector<uint8>{4, 4, 4, 255}, metadata);
+    ASSERT_TRUE(subsystem.PublishRenderResource(
+        textureHandle,
+        RenderResourceContentOperation::Replace));
+    subsystem.Tick(0.0f);
+    EXPECT_EQ(gateway.acceptedCount, 2U);
+
+    gateway.PublishTerminal(resolved.handle,
+                            RenderResourcePublicState::GPUReady);
+    subsystem.Tick(0.0f);
+    const auto latestReplacement =
+        gateway.GetAcceptedRequest(resolved.handle).lock();
+    ASSERT_NE(latestReplacement, nullptr);
+    EXPECT_EQ(latestReplacement->GetOperation(),
+              RenderResourceContentOperation::Replace);
+    EXPECT_GT(latestReplacement->GetSourceRevision(),
+              firstReplacement->GetSourceRevision());
+    const auto& latestPayload =
+        std::get<TextureUploadPayload>(latestReplacement->GetPayload());
+    EXPECT_EQ(GetUploadPayloadBytes(latestPayload).front(), 4U);
+
+    gateway.PublishTerminal(resolved.handle,
+                            RenderResourcePublicState::GPUReady,
+                            RenderResourceFailureCode::RuntimeFailure);
+    subsystem.Tick(0.0f);
+    const RenderResourceResolveResult afterFailure =
+        subsystem.ResolveRenderResource(AssetId{textureHandle.GetId()},
+                                        RenderResourceKind::Texture);
+    EXPECT_EQ(afterFailure.code, RenderResourceResolveCode::Resolved);
+    EXPECT_EQ(afterFailure.handle, resolved.handle);
+    EXPECT_EQ(afterFailure.status.state,
+              RenderResourcePublicState::GPUReady);
+    EXPECT_EQ(afterFailure.status.failure,
+              RenderResourceFailureCode::RuntimeFailure);
+    EXPECT_EQ(gateway.releaseAttempts, 0U);
+    EXPECT_EQ(subsystem.GetRenderResourceStats().replacementsCoalesced, 1U);
+
+    subsystem.BeginRenderShutdown();
+    subsystem.Deinitialize();
     std::error_code removeError;
     fs::remove_all(root, removeError);
 }

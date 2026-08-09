@@ -34,7 +34,14 @@ namespace
                    RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION &&
                request.GetSequence() != 0 && request.GetAssetId().IsValid() &&
                request.GetHandle().IsValid() &&
-               request.GetKind() != RenderResourceKind::Invalid;
+               request.GetKind() != RenderResourceKind::Invalid &&
+               (request.GetOperation() ==
+                    RenderResourceContentOperation::Create ||
+                request.GetOperation() ==
+                    RenderResourceContentOperation::Replace) &&
+               (request.GetOperation() !=
+                    RenderResourceContentOperation::Replace ||
+                request.GetSourceRevision() != 0);
     }
 
     RHICommandQueueType GetUploadQueueType(const IRHIDevice* device)
@@ -966,16 +973,24 @@ namespace
         }
 
         const RenderResourceHandle handle = request->GetHandle();
+        const bool replacement = request->GetOperation() ==
+                                 RenderResourceContentOperation::Replace;
+        const RenderResourcePublicState queuedState = replacement
+            ? RenderResourcePublicState::ReplacementQueued
+            : RenderResourcePublicState::UploadQueued;
+        const RenderResourcePublicState uploadingState = replacement
+            ? RenderResourcePublicState::Replacing
+            : RenderResourcePublicState::Uploading;
         const RenderResourceStatus queuedStatus = m_statusTable->Query(handle);
         if (queuedStatus.code != RenderResourceStatusCode::Current ||
-            queuedStatus.state != RenderResourcePublicState::UploadQueued ||
+            queuedStatus.state != queuedState ||
             !m_statusTable->CompareExchange(
                 handle,
                 PackedRenderResourceStatus{handle.generation,
-                                           RenderResourcePublicState::UploadQueued,
+                                           queuedState,
                                            queuedStatus.failure},
                 PackedRenderResourceStatus{handle.generation,
-                                           RenderResourcePublicState::Uploading,
+                                           uploadingState,
                                            RenderResourceFailureCode::None},
                 RenderStatusWriter::Render))
         {
@@ -992,7 +1007,9 @@ namespace
         }
         if (!m_registry->BeginPending(handle,
                                       request->GetKind(),
-                                      request->GetDependencies()))
+                                      request->GetDependencies(),
+                                      request->GetOperation(),
+                                      request->GetSourceRevision()))
         {
             return FailBeforeSubmission(
                 request,
@@ -1269,6 +1286,11 @@ namespace
         {
             return false;
         }
+        const std::span<const uint8> bytes = GetUploadPayloadBytes(payload);
+        if (bytes.empty())
+        {
+            return false;
+        }
         if (!m_registry->SetPendingMeshMetadata(handle,
                                                 payload.createInfo,
                                                 payload.submeshes))
@@ -1294,7 +1316,7 @@ namespace
             if (!RecordMeshBuffer(handle,
                                   spec.semantic,
                                   spec.usage,
-                                  payload.bytes,
+                                  bytes,
                                   spec.range,
                                   context,
                                   stagingBuffers,
@@ -1313,8 +1335,9 @@ namespace
         std::vector<RHIStagingBufferRef>& stagingBuffers,
         UploadOwnershipTransfers& ownershipTransfers)
     {
+        const std::span<const uint8> bytes = GetUploadPayloadBytes(payload);
         const RHIFormat format = ToRHIFormat(payload.createInfo);
-        if (format == RHIFormat::Unknown || payload.bytes.empty() ||
+        if (format == RHIFormat::Unknown || bytes.empty() ||
             payload.subresources.empty())
         {
             return false;
@@ -1339,9 +1362,9 @@ namespace
         {
             if (subresource.mipLevel >= payload.createInfo.mipLevels ||
                 subresource.arrayLayer >= payload.createInfo.arrayLayers ||
-                subresource.bytes.offset > payload.bytes.size() ||
+                subresource.bytes.offset > bytes.size() ||
                 subresource.bytes.size >
-                    payload.bytes.size() - subresource.bytes.offset)
+                    bytes.size() - subresource.bytes.offset)
             {
                 return false;
             }
@@ -1466,7 +1489,7 @@ namespace
         if (!texture ||
             !m_registry->SetPendingTexture(handle,
                                            texture,
-                                           payload.bytes.size(),
+                                           bytes.size(),
                                            MakeRHITextureAccessSnapshot(
                                                RHIResourceState::Common,
                                                RHIShaderStage::All,
@@ -1494,7 +1517,7 @@ namespace
         for (const PreparedTextureSlice& layout : layouts)
         {
             const uint8* source =
-                payload.bytes.data() + layout.sourceOffset;
+                bytes.data() + layout.sourceOffset;
             for (uint32 row = 0; row < layout.rowCount; ++row)
             {
                 const uint8* sourceRow =
@@ -1584,7 +1607,7 @@ namespace
         RenderResourceHandle handle,
         RenderMeshBufferSemantic semantic,
         RHIBufferUsage usage,
-        const std::vector<uint8>& bytes,
+        std::span<const uint8> bytes,
         UploadByteRange range,
         RHICommandContext& context,
         std::vector<RHIStagingBufferRef>& stagingBuffers,
@@ -1726,6 +1749,9 @@ namespace
     {
         const RenderResourceHandle handle =
             request == nullptr ? RenderResourceHandle{} : request->GetHandle();
+        const bool replacement = request != nullptr &&
+                                 request->GetOperation() ==
+                                     RenderResourceContentOperation::Replace;
         if (handle.IsValid() && m_registry->HasPending(handle))
         {
             RVX_ASSERT_MSG(m_registry->RetirePending(handle),
@@ -1738,6 +1764,11 @@ namespace
         if (status.code == RenderResourceStatusCode::Current &&
             status.state == RenderResourcePublicState::Evicting)
         {
+            if (m_registry->HasExactEntry(handle))
+            {
+                RVX_ASSERT_MSG(m_registry->Release(handle),
+                               "Failed to retire cancelled committed content");
+            }
             ++m_stats.cancelled;
             static_cast<void>(PublishTerminal(
                 handle,
@@ -1748,7 +1779,8 @@ namespace
         {
             static_cast<void>(PublishTerminal(
                 handle,
-                RenderResourcePublicState::Failed,
+                replacement ? RenderResourcePublicState::GPUReady
+                            : RenderResourcePublicState::Failed,
                 failure));
         }
         return code;
@@ -1760,6 +1792,10 @@ namespace
     {
         InFlightUpload& upload = m_inFlight[index];
         const RenderResourceHandle handle = upload.handle;
+        const bool replacement =
+            upload.request != nullptr &&
+            upload.request->GetOperation() ==
+                RenderResourceContentOperation::Replace;
         const RenderResourceStatus status = m_statusTable->Query(handle);
         const bool cancelled = upload.cancelled ||
                                (status.code == RenderResourceStatusCode::Current &&
@@ -1773,6 +1809,11 @@ namespace
         {
             RVX_ASSERT_MSG(m_registry->RetirePending(handle),
                            "Failed to retire cancelled render upload");
+            if (m_registry->HasExactEntry(handle))
+            {
+                RVX_ASSERT_MSG(m_registry->Release(handle),
+                               "Failed to retire cancelled committed content");
+            }
             terminalState = RenderResourcePublicState::Released;
             failure = RenderResourceFailureCode::Cancelled;
             ++m_stats.cancelled;
@@ -1795,6 +1836,10 @@ namespace
         {
             RVX_ASSERT_MSG(m_registry->RetirePending(handle),
                            "Failed to retire failed render upload");
+            if (replacement && completionStatus != GPUCompletionStatus::Lost)
+            {
+                terminalState = RenderResourcePublicState::GPUReady;
+            }
             ++m_stats.failed;
         }
 
@@ -1844,7 +1889,8 @@ namespace
              observed.state != RenderResourcePublicState::Evicting) ||
             ((state == RenderResourcePublicState::GPUReady ||
               state == RenderResourcePublicState::Failed) &&
-             observed.state != RenderResourcePublicState::Uploading))
+             observed.state != RenderResourcePublicState::Uploading &&
+             observed.state != RenderResourcePublicState::Replacing))
         {
             return false;
         }

@@ -682,8 +682,12 @@ namespace
         EXPECT_EQ(processor.PollCompletion(), GPUCompletionStatus::Pending);
 
         CompleteAndPoll();
-        EXPECT_EQ(gateway->QueryResourceStatus(handle).state,
+        const RenderResourceStatus completedStatus =
+            gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(completedStatus.state,
                   RenderResourcePublicState::GPUReady);
+        EXPECT_EQ(completedStatus.replacementState,
+                  RenderResourceReplacementState::None);
         const RenderMeshResourceData* mesh = registry.ResolveMesh(handle);
         ASSERT_NE(mesh, nullptr);
         EXPECT_EQ(mesh->buffers.size(), 2U);
@@ -1112,6 +1116,209 @@ namespace
         EXPECT_NE(registry.ResolveTexture(second), nullptr);
     }
 
+    TEST_F(RenderResourceRuntimeFixture,
+           ContentReplacementKeepsCommittedTextureUsableUntilCompletion)
+    {
+        const AssetId asset{141};
+        const RenderResourceHandle handle =
+            Reserve(asset, RenderResourceKind::Texture);
+        ResourceUploadRequestRef initialOwner =
+            CreateAndQueue(MakeTextureInfo(asset, handle));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const RenderTextureResourceData* const initial =
+            registry.ResolveTexture(handle);
+        ASSERT_NE(initial, nullptr);
+        RHITexture* const initialTexture = initial->texture.Get();
+        const uint64 initialContentRevision =
+            registry.GetContentRevision(handle);
+
+        ResourceUploadRequestCreateInfo replacement =
+            MakeTextureInfo(asset, handle);
+        replacement.sequence = 142;
+        replacement.operation = RenderResourceContentOperation::Replace;
+        replacement.sourceRevision = 1;
+        ResourceUploadRequestRef replacementOwner =
+            CreateAndQueue(std::move(replacement));
+
+        const RenderResourceStatus queuedStatus =
+            gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(queuedStatus.state, RenderResourcePublicState::GPUReady);
+        EXPECT_EQ(queuedStatus.replacementState,
+                  RenderResourceReplacementState::Queued);
+        EXPECT_EQ(queuedStatus.pendingSourceRevision, 1U);
+        EXPECT_TRUE(registry.IsGPUReadyExact(handle));
+        ASSERT_NE(registry.ResolveTexture(handle), nullptr);
+        EXPECT_EQ(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
+
+        const RenderResourceReserveResult existing =
+            gateway->ReserveResource(asset, RenderResourceKind::Texture);
+        EXPECT_EQ(existing.code, RenderResourceReserveCode::Existing);
+        EXPECT_EQ(existing.status.state, RenderResourcePublicState::GPUReady);
+        EXPECT_EQ(existing.status.replacementState,
+                  RenderResourceReplacementState::Queued);
+        EXPECT_EQ(existing.status.pendingSourceRevision, 1U);
+
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        const RenderResourceStatus uploadingStatus =
+            gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(uploadingStatus.state,
+                  RenderResourcePublicState::GPUReady);
+        EXPECT_EQ(uploadingStatus.replacementState,
+                  RenderResourceReplacementState::Uploading);
+        EXPECT_EQ(uploadingStatus.pendingSourceRevision, 1U);
+        EXPECT_TRUE(registry.IsGPUReadyExact(handle));
+        ASSERT_NE(registry.ResolveTexture(handle), nullptr);
+        EXPECT_EQ(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
+
+        CompleteAndPoll();
+        const RenderResourceStatus completedStatus =
+            gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(completedStatus.state,
+                  RenderResourcePublicState::GPUReady);
+        EXPECT_EQ(completedStatus.replacementState,
+                  RenderResourceReplacementState::None);
+        EXPECT_EQ(completedStatus.pendingSourceRevision, 0U);
+        ASSERT_NE(registry.ResolveTexture(handle), nullptr);
+        EXPECT_NE(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
+        EXPECT_GT(registry.GetContentRevision(handle), initialContentRevision);
+        EXPECT_EQ(registry.GetCommittedSourceRevision(handle), 1U);
+        EXPECT_EQ(registry.GetPendingSourceRevision(handle), 0U);
+        EXPECT_EQ(retirement.GetDiagnostics().entryCount, 1U);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           FailedReplacementPreservesCommittedContentAndRejectsStaleRevision)
+    {
+        const AssetId asset{142};
+        const RenderResourceHandle handle =
+            Reserve(asset, RenderResourceKind::Texture);
+        ResourceUploadRequestRef initialOwner =
+            CreateAndQueue(MakeTextureInfo(asset, handle));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const RenderTextureResourceData* const initial =
+            registry.ResolveTexture(handle);
+        ASSERT_NE(initial, nullptr);
+        RHITexture* const initialTexture = initial->texture.Get();
+        const uint64 initialContentRevision =
+            registry.GetContentRevision(handle);
+
+        ResourceUploadRequestCreateInfo failed = MakeTextureInfo(asset, handle);
+        failed.sequence = 143;
+        failed.operation = RenderResourceContentOperation::Replace;
+        failed.sourceRevision = 1;
+        ResourceUploadRequestRef failedOwner = CreateAndQueue(std::move(failed));
+        device.failContextCreation = true;
+        EXPECT_EQ(DequeueAndProcess(),
+                  RenderUploadProcessCode::ResourceCreationFailed);
+        device.failContextCreation = false;
+
+        const RenderResourceStatus failedStatus =
+            gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(failedStatus.state, RenderResourcePublicState::GPUReady);
+        EXPECT_EQ(failedStatus.failure,
+                  RenderResourceFailureCode::ResourceCreationFailed);
+        EXPECT_EQ(failedStatus.replacementState,
+                  RenderResourceReplacementState::None);
+        EXPECT_EQ(failedStatus.pendingSourceRevision, 0U);
+        ASSERT_NE(registry.ResolveTexture(handle), nullptr);
+        EXPECT_EQ(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
+        EXPECT_EQ(registry.GetContentRevision(handle), initialContentRevision);
+        EXPECT_EQ(registry.GetCommittedSourceRevision(handle), 0U);
+
+        ResourceUploadRequestCreateInfo stale = MakeTextureInfo(asset, handle);
+        stale.sequence = 144;
+        stale.operation = RenderResourceContentOperation::Replace;
+        stale.sourceRevision = 1;
+        const ResourceUploadRequestCreateResult staleCreated =
+            ResourceUploadRequest::Create(std::move(stale));
+        ASSERT_EQ(staleCreated.code, ResourceUploadRequestCreateCode::Created);
+        ASSERT_NE(staleCreated.request, nullptr);
+        EXPECT_EQ(gateway->TryEnqueueUpload(staleCreated.request).code,
+                  RenderUploadEnqueueCode::InvalidRequest);
+        EXPECT_EQ(gateway->QueryResourceStatus(handle).state,
+                  RenderResourcePublicState::GPUReady);
+        ASSERT_NE(registry.ResolveTexture(handle), nullptr);
+        EXPECT_EQ(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
+        EXPECT_EQ(registry.GetContentRevision(handle), initialContentRevision);
+
+        ResourceUploadRequestCreateInfo retry = MakeTextureInfo(asset, handle);
+        retry.sequence = 145;
+        retry.operation = RenderResourceContentOperation::Replace;
+        retry.sourceRevision = 2;
+        ResourceUploadRequestRef retryOwner = CreateAndQueue(std::move(retry));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+        EXPECT_EQ(registry.GetCommittedSourceRevision(handle), 2U);
+        ASSERT_NE(registry.ResolveTexture(handle), nullptr);
+        EXPECT_NE(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           CreateRevisionSeedsReplacementAdmissionHighWaterMark)
+    {
+        const AssetId asset{146};
+        const RenderResourceHandle handle =
+            Reserve(asset, RenderResourceKind::Texture);
+        ResourceUploadRequestCreateInfo initial = MakeTextureInfo(asset, handle);
+        initial.sourceRevision = 50;
+        ResourceUploadRequestRef initialOwner =
+            CreateAndQueue(std::move(initial));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+        ASSERT_EQ(registry.GetCommittedSourceRevision(handle), 50U);
+
+        ResourceUploadRequestCreateInfo stale = MakeTextureInfo(asset, handle);
+        stale.sequence = 147;
+        stale.operation = RenderResourceContentOperation::Replace;
+        stale.sourceRevision = 1;
+        const ResourceUploadRequestCreateResult staleCreated =
+            ResourceUploadRequest::Create(std::move(stale));
+        ASSERT_EQ(staleCreated.code, ResourceUploadRequestCreateCode::Created);
+        ASSERT_NE(staleCreated.request, nullptr);
+        EXPECT_EQ(gateway->TryEnqueueUpload(staleCreated.request).code,
+                  RenderUploadEnqueueCode::InvalidRequest);
+        const RenderResourceStatus status =
+            gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(status.state, RenderResourcePublicState::GPUReady);
+        EXPECT_EQ(status.replacementState,
+                  RenderResourceReplacementState::None);
+        EXPECT_EQ(registry.GetCommittedSourceRevision(handle), 50U);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           QueuedReplacementBecomesFailedWhenDeviceIsLost)
+    {
+        const AssetId asset{148};
+        const RenderResourceHandle handle =
+            Reserve(asset, RenderResourceKind::Texture);
+        ResourceUploadRequestRef initialOwner =
+            CreateAndQueue(MakeTextureInfo(asset, handle));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        ResourceUploadRequestCreateInfo replacement =
+            MakeTextureInfo(asset, handle);
+        replacement.sequence = 149;
+        replacement.operation = RenderResourceContentOperation::Replace;
+        replacement.sourceRevision = 1;
+        ResourceUploadRequestRef replacementOwner =
+            CreateAndQueue(std::move(replacement));
+        EXPECT_EQ(gateway->CancelPendingUploadsOnRenderThread(
+                      RenderResourceFailureCode::DeviceLost),
+                  1U);
+
+        const RenderResourceStatus status =
+            gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(status.state, RenderResourcePublicState::Failed);
+        EXPECT_EQ(status.failure, RenderResourceFailureCode::DeviceLost);
+        EXPECT_EQ(status.replacementState,
+                  RenderResourceReplacementState::None);
+    }
+
     TEST_F(RenderResourceRuntimeFixture, RenderDropsRequestBeforeTerminalPublication)
     {
         const AssetId asset{15};
@@ -1196,6 +1403,46 @@ namespace
         registry.Shutdown();
         static_cast<void>(retirement.ForceDeviceLostTeardown());
         tracker.Shutdown();
+    }
+
+    TEST(RenderResourceRuntimeValidation,
+         UploadWakeMayReenterPublicStatusQuery)
+    {
+        struct WakeContext
+        {
+            RenderResourceGateway* gateway = nullptr;
+            RenderResourceHandle handle{};
+            RenderResourceStatus observed{};
+            bool invoked = false;
+        } context;
+        const auto wake = [](void* raw) noexcept
+        {
+            auto* wakeContext = static_cast<WakeContext*>(raw);
+            wakeContext->observed = wakeContext->gateway->QueryResourceStatus(
+                wakeContext->handle);
+            wakeContext->invoked = true;
+        };
+
+        RenderTransportConfig config;
+        config.statusSlotCapacity = 1024;
+        RenderResourceGateway gateway(config, wake, &context);
+        context.gateway = &gateway;
+        const AssetId asset{18};
+        const RenderResourceReserveResult reserved =
+            gateway.ReserveResource(asset, RenderResourceKind::Texture);
+        ASSERT_EQ(reserved.code, RenderResourceReserveCode::Reserved);
+        context.handle = reserved.handle;
+        ResourceUploadRequestCreateResult created =
+            ResourceUploadRequest::Create(
+                MakeTextureInfo(asset, reserved.handle));
+        ASSERT_EQ(created.code, ResourceUploadRequestCreateCode::Created);
+
+        EXPECT_EQ(gateway.TryEnqueueUpload(created.request).code,
+                  RenderUploadEnqueueCode::Accepted);
+        EXPECT_TRUE(context.invoked);
+        EXPECT_EQ(context.observed.code, RenderResourceStatusCode::Current);
+        EXPECT_EQ(context.observed.state,
+                  RenderResourcePublicState::UploadQueued);
     }
 } // namespace
 } // namespace RVX

@@ -19,7 +19,9 @@ namespace
         {
             return true;
         }
-        return status.state == RenderResourcePublicState::GPUReady ||
+        return (status.state == RenderResourcePublicState::GPUReady &&
+                status.replacementState ==
+                    RenderResourceReplacementState::None) ||
                status.state == RenderResourcePublicState::Failed ||
                status.state == RenderResourcePublicState::Released;
     }
@@ -158,14 +160,17 @@ namespace
     }
 
     bool ResourceSubsystem::PublishRenderResource(
-        ResourceHandle<IResource> resource)
+        ResourceHandle<IResource> resource,
+        RenderResourceContentOperation operation)
     {
         if (!m_initialized || m_renderShuttingDown ||
-            !RequireUpdateThread("PublishRenderResource"))
+            !RequireUpdateThread("PublishRenderResource") ||
+            (operation != RenderResourceContentOperation::Create &&
+             operation != RenderResourceContentOperation::Replace))
         {
             return false;
         }
-        return QueueRenderResourceTree(std::move(resource));
+        return QueueRenderResourceTree(std::move(resource), operation);
     }
 
     void ResourceSubsystem::BeginRenderShutdown()
@@ -353,12 +358,15 @@ namespace
         {
             case ResourceLifecycleEventType::Ready:
                 ++m_renderStats.readyEvents;
-                QueueReadyResource(event);
+                QueueReadyResource(
+                    event,
+                    RenderResourceContentOperation::Create);
                 break;
             case ResourceLifecycleEventType::Reloaded:
                 ++m_renderStats.reloadEvents;
-                ReleaseAsset(AssetId{event.resourceId});
-                QueueReadyResource(event);
+                QueueReadyResource(
+                    event,
+                    RenderResourceContentOperation::Replace);
                 break;
             case ResourceLifecycleEventType::BeforeUnload:
                 ++m_renderStats.unloadEvents;
@@ -368,7 +376,8 @@ namespace
     }
 
     void ResourceSubsystem::QueueReadyResource(
-        const ResourceLifecycleEvent& event)
+        const ResourceLifecycleEvent& event,
+        RenderResourceContentOperation operation)
     {
         if (m_renderShuttingDown || !event.resource ||
             event.resourceId == InvalidResourceId)
@@ -376,11 +385,12 @@ namespace
             return;
         }
 
-        static_cast<void>(QueueRenderResourceTree(event.resource));
+        static_cast<void>(QueueRenderResourceTree(event.resource, operation));
     }
 
     bool ResourceSubsystem::QueueRenderResourceTree(
-        ResourceHandle<IResource> rootResource)
+        ResourceHandle<IResource> rootResource,
+        RenderResourceContentOperation operation)
     {
         if (!rootResource ||
             rootResource.GetId() == InvalidResourceId)
@@ -429,8 +439,12 @@ namespace
             if (tracked != m_trackedResources.end())
             {
                 if (tracked->second.kind != kind)
+                {
                     ++m_renderStats.gatewayRejections;
-                continue;
+                    continue;
+                }
+                if (operation != RenderResourceContentOperation::Replace)
+                    continue;
             }
             const auto pending = std::find_if(
                 m_pendingResources.begin(),
@@ -440,15 +454,45 @@ namespace
                     return value.assetId == assetId;
                 });
             if (pending != m_pendingResources.end())
+            {
+                if (operation == RenderResourceContentOperation::Replace)
+                {
+                    pending->resource = resource;
+                    pending->sourceRevision = sourceRevision;
+                    if (pending->operation !=
+                        RenderResourceContentOperation::Create)
+                    {
+                        pending->operation =
+                            RenderResourceContentOperation::Replace;
+                    }
+                    if (HigherPriority(GetUploadPriority(resource->GetType()),
+                                       pending->priority))
+                    {
+                        pending->priority =
+                            GetUploadPriority(resource->GetType());
+                    }
+                    ++m_renderStats.replacementsCoalesced;
+                }
                 continue;
+            }
 
+            const RenderResourceContentOperation effectiveOperation =
+                tracked == m_trackedResources.end()
+                    ? RenderResourceContentOperation::Create
+                    : operation;
             m_pendingResources.push_back(PendingResource{
                 assetId,
                 kind,
                 resource,
                 GetUploadPriority(resource->GetType()),
                 m_nextFifoOrder++,
-                sourceRevision});
+                sourceRevision,
+                effectiveOperation});
+            if (effectiveOperation ==
+                RenderResourceContentOperation::Replace)
+            {
+                ++m_renderStats.replacementsQueued;
+            }
         }
         return renderResourceFound;
     }
@@ -511,8 +555,7 @@ namespace
                     "UploadQueued",
                     {{"assetId", pending.assetId.value},
                      {"requestSequence", acceptedRequest->GetSequence()},
-                     {"sourceRevision",
-                      acceptedRequest->GetProvenance().sourceRevision},
+                     {"sourceRevision", acceptedRequest->GetSourceRevision()},
                      {"bytes", acceptedRequest->GetDeclaredPayloadBytes()},
                      {"kind", static_cast<uint64>(acceptedRequest->GetKind())}});
                 m_retainedRequests.emplace(
@@ -538,6 +581,29 @@ namespace
             ++m_renderStats.gatewayRejections;
             const RenderResourceStatus status =
                 m_gateway->QueryResourceStatus(pending.handle);
+            const bool replacement = pending.request != nullptr &&
+                pending.request->GetOperation() ==
+                    RenderResourceContentOperation::Replace;
+            if (replacement)
+            {
+                ++m_renderStats.replacementFailures;
+                if (status.code != RenderResourceStatusCode::Current ||
+                    status.state == RenderResourcePublicState::Failed ||
+                    status.state == RenderResourcePublicState::Released)
+                {
+                    const auto tracked =
+                        m_trackedResources.find(pending.assetId);
+                    if (tracked != m_trackedResources.end() &&
+                        tracked->second.handle == pending.handle)
+                    {
+                        m_trackedResources.erase(tracked);
+                    }
+                }
+                m_localTerminalRequests.push_back(
+                    std::move(pending.request));
+                m_pendingUploads.erase(m_pendingUploads.begin() + index);
+                continue;
+            }
             bool waitForTerminal = IsTerminalStatus(status) ||
                                    status.state ==
                                        RenderResourcePublicState::Evicting;
@@ -602,6 +668,7 @@ namespace
                 ++m_renderStats.existingReservations;
             m_trackedResources[pending.assetId] =
                 TrackedResource{pending.kind, reserve.handle};
+            pending.operation = RenderResourceContentOperation::Create;
         }
         else
         {
@@ -620,11 +687,23 @@ namespace
         if (status.code != RenderResourceStatusCode::Current)
         {
             m_trackedResources.erase(pending.assetId);
+            pending.operation = RenderResourceContentOperation::Create;
             ++m_renderStats.gatewayRejections;
             return false;
         }
-        if (status.state != RenderResourcePublicState::Reserved)
-            return true;
+        if (pending.operation == RenderResourceContentOperation::Replace)
+        {
+            if (status.state != RenderResourcePublicState::GPUReady ||
+                status.replacementState !=
+                    RenderResourceReplacementState::None)
+            {
+                return false;
+            }
+        }
+        else if (status.state != RenderResourcePublicState::Reserved)
+        {
+            return status.state == RenderResourcePublicState::GPUReady;
+        }
 
         const auto queued = std::find_if(
             m_pendingUploads.begin(),
@@ -650,7 +729,8 @@ namespace
                     return ResolveDependency(assetId, kind);
                 },
                 pending.priority,
-                pending.sourceRevision);
+                pending.sourceRevision,
+                pending.operation);
         if (build.code ==
             RenderUploadRequestBuildCode::DependencyUnavailable)
         {
@@ -661,6 +741,12 @@ namespace
             !build.request)
         {
             ++m_renderStats.buildFailures;
+            if (pending.operation ==
+                RenderResourceContentOperation::Replace)
+            {
+                ++m_renderStats.replacementFailures;
+                return true;
+            }
             const RenderReleaseResult release =
                 m_gateway->RequestRelease(reserve.handle);
             if (release.code == RenderReleaseCode::Accepted)

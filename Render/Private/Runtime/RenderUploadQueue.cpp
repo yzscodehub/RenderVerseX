@@ -23,7 +23,14 @@ namespace
                request->GetSequence() != 0U &&
                request->GetAssetId().IsValid() &&
                request->GetHandle().IsValid() &&
-               request->GetKind() != RenderResourceKind::Invalid;
+               request->GetKind() != RenderResourceKind::Invalid &&
+               (request->GetOperation() ==
+                    RenderResourceContentOperation::Create ||
+                request->GetOperation() ==
+                    RenderResourceContentOperation::Replace) &&
+               (request->GetOperation() !=
+                    RenderResourceContentOperation::Replace ||
+                request->GetSourceRevision() != 0);
     }
 
     [[nodiscard]] RenderUploadEnqueueCode MapStatusForEnqueue(
@@ -68,7 +75,8 @@ namespace
 
     RenderUploadEnqueueResult RenderUploadQueue::TryEnqueue(
         const ResourceUploadRequestRef& request,
-        RenderUploadQueueSnapshot* observation) noexcept
+        RenderUploadQueueSnapshot* observation,
+        bool notifyConsumer) noexcept
     {
         {
             std::lock_guard lock(m_mutex);
@@ -80,8 +88,16 @@ namespace
 
             const RenderResourceHandle handle = request->GetHandle();
             const RenderResourceStatus status = m_statusTable.Query(handle);
+            const bool replacement = request->GetOperation() ==
+                                     RenderResourceContentOperation::Replace;
+            const RenderResourcePublicState expectedState = replacement
+                ? RenderResourcePublicState::GPUReady
+                : RenderResourcePublicState::Reserved;
+            const RenderResourcePublicState queuedState = replacement
+                ? RenderResourcePublicState::ReplacementQueued
+                : RenderResourcePublicState::UploadQueued;
             if (status.code != RenderResourceStatusCode::Current ||
-                status.state != RenderResourcePublicState::Reserved)
+                status.state != expectedState)
             {
                 return MakeUploadResult(MapStatusForEnqueue(status));
             }
@@ -103,7 +119,7 @@ namespace
                 handle.generation, status.state, status.failure};
             const PackedRenderResourceStatus desired{
                 handle.generation,
-                RenderResourcePublicState::UploadQueued,
+                queuedState,
                 status.failure};
             if (!m_statusTable.CompareExchange(handle,
                                                expected,
@@ -137,7 +153,8 @@ namespace
             }
         }
 
-        Wake();
+        if (notifyConsumer)
+            NotifyConsumer();
         return MakeUploadResult(RenderUploadEnqueueCode::Accepted);
     }
 
@@ -178,7 +195,7 @@ namespace
                                          m_byteHighWaterMark};
     }
 
-    void RenderUploadQueue::Wake() const noexcept
+    void RenderUploadQueue::NotifyConsumer() const noexcept
     {
         if (m_wakeFunction != nullptr)
         {

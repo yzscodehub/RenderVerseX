@@ -8,6 +8,7 @@
 #include "Resource/IResource.h"
 #include "Resource/Loader/TextureReference.h"
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -96,7 +97,12 @@ namespace RVX::Resource
         // Data Access
         // =====================================================================
 
-        const std::vector<uint8_t>& GetData() const { return m_data; }
+        const std::vector<uint8_t>& GetData() const { return *m_data; }
+        [[nodiscard]] const std::shared_ptr<const std::vector<uint8_t>>&
+            GetDataStorage() const noexcept
+        {
+            return m_data;
+        }
         void SetData(std::vector<uint8_t> data, const TextureMetadata& metadata);
 
         // =====================================================================
@@ -110,7 +116,8 @@ namespace RVX::Resource
 
     private:
         TextureMetadata m_metadata;
-        std::vector<uint8_t> m_data;
+        std::shared_ptr<const std::vector<uint8_t>> m_data =
+            std::make_shared<const std::vector<uint8_t>>();
         bool m_isDefaultFallback = false;
         std::string m_fallbackReason;
 

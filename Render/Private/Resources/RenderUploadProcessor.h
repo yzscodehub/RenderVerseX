@@ -10,6 +10,7 @@
 #include "RHI/RHISampler.h"
 #include "RHI/RHIUpload.h"
 
+#include <span>
 #include <vector>
 
 namespace RVX
@@ -153,7 +154,7 @@ namespace RVX
             RenderResourceHandle handle,
             RenderMeshBufferSemantic semantic,
             RHIBufferUsage usage,
-            const std::vector<uint8>& bytes,
+            std::span<const uint8> bytes,
             UploadByteRange range,
             RHICommandContext& context,
             std::vector<RHIStagingBufferRef>& stagingBuffers,

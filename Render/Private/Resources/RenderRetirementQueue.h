@@ -31,6 +31,14 @@ namespace RVX
 
         /** @brief Transfer a final strong reference into the queue. */
         [[nodiscard]] bool Enqueue(RenderRetirementEntry&& entry);
+        /**
+         * @brief Atomically append a group of retirement references.
+         * Validation and capacity growth complete before any source ownership is
+         * moved into the queue, so a failed resource replacement cannot retire
+         * only part of its previous committed content.
+         */
+        [[nodiscard]] bool EnqueueBatch(
+            std::vector<RenderRetirementEntry> entries);
 
         /** @brief Release entries whose complete tokens are satisfied. */
         [[nodiscard]] GPUCompletionStatus Poll();

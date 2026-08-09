@@ -1,5 +1,7 @@
 #include "Runtime/RenderResourceGateway.h"
 
+#include "Core/Assert.h"
+
 #include <stdexcept>
 
 namespace RVX
@@ -26,6 +28,7 @@ namespace RVX
                          runtimeFatalFunction,
                          runtimeFatalContext),
           m_reservationIdentities(config.statusSlotCapacity),
+          m_replacementPublications(config.statusSlotCapacity),
           m_beforeMutationFunction(beforeMutationFunction),
           m_beforeMutationContext(beforeMutationContext)
     {
@@ -56,6 +59,9 @@ namespace RVX
                 ReservationIdentity{assetId,
                                     kind,
                                     result.handle.generation};
+            // ReservationDirectory owns the raw status table. Public callers
+            // must never observe its replacement-only transport states.
+            result.status = QueryResourceStatus(result.handle);
         }
         return result;
     }
@@ -101,7 +107,42 @@ namespace RVX
                 }
             }
         }
-        observed.result = m_uploadQueue.TryEnqueue(request, &observed.queue);
+        if (request != nullptr)
+        {
+            // Keep the revision ledger locked across the state-table mutation
+            // performed by TryEnqueue. This makes the public status projection
+            // atomic and seeds the generation high-water mark from Create.
+            {
+                std::lock_guard lock(m_replacementMutex);
+                if (request->GetOperation() ==
+                        RenderResourceContentOperation::Replace &&
+                    !CanAcceptReplacementLocked(*request))
+                {
+                    observed.result.code =
+                        RenderUploadEnqueueCode::InvalidRequest;
+                    return observed;
+                }
+                observed.result = m_uploadQueue.TryEnqueue(
+                    request,
+                    &observed.queue,
+                    false);
+                if (observed.result.code ==
+                    RenderUploadEnqueueCode::Accepted)
+                {
+                    RecordSourceRevisionLocked(*request);
+                }
+            }
+            if (observed.result.code == RenderUploadEnqueueCode::Accepted)
+            {
+                // Never invoke the external wake callback while holding the
+                // revision projection mutex; callbacks may query the gateway.
+                m_uploadQueue.NotifyConsumer();
+            }
+        }
+        else
+        {
+            observed.result = m_uploadQueue.TryEnqueue(request, &observed.queue);
+        }
         return observed;
     }
 
@@ -128,13 +169,61 @@ namespace RVX
         }
         observed.result =
             m_releaseQueue.RequestRelease(handle, &observed.queue);
+        if (observed.result.code == RenderReleaseCode::Accepted)
+        {
+            ForgetReplacementPublication(handle);
+        }
         return observed;
     }
 
     RenderResourceStatus RenderResourceGateway::QueryResourceStatus(
         RenderResourceHandle handle) const noexcept
     {
-        return m_statusTable.Query(handle);
+        // Serialize the state snapshot with replacement enqueue/release ledger
+        // updates. Query remains side-effect free.
+        std::lock_guard lock(m_replacementMutex);
+        return ProjectPublicStatusLocked(handle, m_statusTable.Query(handle));
+    }
+
+    RenderResourceStatus RenderResourceGateway::ProjectPublicStatusLocked(
+        RenderResourceHandle handle,
+        RenderResourceStatus status) const noexcept
+    {
+        if (status.code != RenderResourceStatusCode::Current)
+        {
+            return status;
+        }
+
+        uint64 pendingSourceRevision = 0;
+        if (handle.IsValid() &&
+            handle.slot < m_replacementPublications.size())
+        {
+            const ReplacementPublication& publication =
+                m_replacementPublications[handle.slot];
+            if (publication.generation == handle.generation)
+            {
+                pendingSourceRevision = publication.pendingSourceRevision;
+            }
+        }
+
+        // Replacement queueing/uploading is an internal transport concern.
+        // Update-thread consumers must keep rendering the last committed
+        // content and make readiness decisions from its public GPUReady state.
+        if (status.state == RenderResourcePublicState::ReplacementQueued)
+        {
+            status.state = RenderResourcePublicState::GPUReady;
+            status.replacementState =
+                RenderResourceReplacementState::Queued;
+            status.pendingSourceRevision = pendingSourceRevision;
+        }
+        else if (status.state == RenderResourcePublicState::Replacing)
+        {
+            status.state = RenderResourcePublicState::GPUReady;
+            status.replacementState =
+                RenderResourceReplacementState::Uploading;
+            status.pendingSourceRevision = pendingSourceRevision;
+        }
+        return status;
     }
 
     void RenderResourceGateway::BeginShutdown() noexcept
@@ -149,23 +238,33 @@ namespace RVX
         while (ResourceUploadRequestRef request = m_uploadQueue.TryDequeue())
         {
             const RenderResourceHandle handle = request->GetHandle();
+            const bool replacement = request->GetOperation() ==
+                                     RenderResourceContentOperation::Replace;
             request.reset();
 
             const RenderResourceStatus queued = m_statusTable.Query(handle);
             if (queued.code != RenderResourceStatusCode::Current ||
-                queued.state != RenderResourcePublicState::UploadQueued)
+                queued.state != (replacement
+                                     ? RenderResourcePublicState::ReplacementQueued
+                                     : RenderResourcePublicState::UploadQueued))
             {
                 continue;
             }
+            const RenderResourcePublicState queuedState = replacement
+                ? RenderResourcePublicState::ReplacementQueued
+                : RenderResourcePublicState::UploadQueued;
+            const RenderResourcePublicState uploadingState = replacement
+                ? RenderResourcePublicState::Replacing
+                : RenderResourcePublicState::Uploading;
             if (!m_statusTable.CompareExchange(
                     handle,
                     PackedRenderResourceStatus{
                         handle.generation,
-                        RenderResourcePublicState::UploadQueued,
+                        queuedState,
                         queued.failure},
                     PackedRenderResourceStatus{
                         handle.generation,
-                        RenderResourcePublicState::Uploading,
+                        uploadingState,
                         RenderResourceFailureCode::None},
                     RenderStatusWriter::Render))
             {
@@ -175,11 +274,14 @@ namespace RVX
                     handle,
                     PackedRenderResourceStatus{
                         handle.generation,
-                        RenderResourcePublicState::Uploading,
+                        uploadingState,
                         RenderResourceFailureCode::None},
                     PackedRenderResourceStatus{
                         handle.generation,
-                        RenderResourcePublicState::Failed,
+                        replacement &&
+                                failure != RenderResourceFailureCode::DeviceLost
+                            ? RenderResourcePublicState::GPUReady
+                            : RenderResourcePublicState::Failed,
                         failure},
                     RenderStatusWriter::Render))
             {
@@ -230,6 +332,74 @@ namespace RVX
         const noexcept
     {
         return m_statusTable;
+    }
+
+    bool RenderResourceGateway::CanAcceptReplacementLocked(
+        const ResourceUploadRequest& request) const noexcept
+    {
+        const RenderResourceHandle handle = request.GetHandle();
+        if (!handle.IsValid() ||
+            request.GetSourceRevision() == 0 ||
+            handle.slot >= m_replacementPublications.size())
+        {
+            return false;
+        }
+        const ReplacementPublication& publication =
+            m_replacementPublications[handle.slot];
+        return publication.generation != handle.generation ||
+               request.GetSourceRevision() >
+                   publication.lastAcceptedSourceRevision;
+    }
+
+    void RenderResourceGateway::RecordSourceRevisionLocked(
+        const ResourceUploadRequest& request) noexcept
+    {
+        const RenderResourceHandle handle = request.GetHandle();
+        const bool replacement = request.GetOperation() ==
+                                 RenderResourceContentOperation::Replace;
+        RVX_ASSERT_MSG(handle.IsValid() &&
+                           (!replacement || request.GetSourceRevision() != 0) &&
+                           handle.slot < m_replacementPublications.size(),
+                       "Resource publication requires a valid handle and revision contract");
+        ReplacementPublication& publication =
+            m_replacementPublications[handle.slot];
+        if (replacement)
+        {
+            RVX_ASSERT_MSG(publication.generation != handle.generation ||
+                               request.GetSourceRevision() >
+                                   publication.lastAcceptedSourceRevision,
+                           "Replacement source revision must strictly increase");
+            publication = ReplacementPublication{
+                handle.generation,
+                request.GetSourceRevision(),
+                request.GetSourceRevision()};
+            return;
+        }
+
+        // Create establishes the baseline revision for this generation. Zero
+        // remains valid for compatibility builders, but a nonzero baseline
+        // prevents a later replacement from moving content backwards.
+        publication = ReplacementPublication{
+            handle.generation,
+            request.GetSourceRevision(),
+            0};
+    }
+
+    void RenderResourceGateway::ForgetReplacementPublication(
+        RenderResourceHandle handle) const noexcept
+    {
+        if (!handle.IsValid() ||
+            handle.slot >= m_replacementPublications.size())
+        {
+            return;
+        }
+        std::lock_guard lock(m_replacementMutex);
+        ReplacementPublication& publication =
+            m_replacementPublications[handle.slot];
+        if (publication.generation == handle.generation)
+        {
+            publication = {};
+        }
     }
 
     uint32 RenderResourceGateway::ValidateConfigAndGetStatusCapacity(

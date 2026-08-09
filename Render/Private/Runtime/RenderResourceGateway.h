@@ -13,6 +13,7 @@
 #include "Runtime/RenderUploadQueue.h"
 
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 namespace RVX
@@ -100,8 +101,25 @@ namespace RVX
             uint32 generation = 0;
         };
 
+        struct ReplacementPublication
+        {
+            uint32 generation = 0;
+            /** Strict high-water mark for this live resource generation. */
+            uint64 lastAcceptedSourceRevision = 0;
+            /** Last accepted revision; exposed only while status is replacing. */
+            uint64 pendingSourceRevision = 0;
+        };
+
         static uint32 ValidateConfigAndGetStatusCapacity(
             const RenderTransportConfig& config);
+        [[nodiscard]] bool CanAcceptReplacementLocked(
+            const ResourceUploadRequest& request) const noexcept;
+        void RecordSourceRevisionLocked(
+            const ResourceUploadRequest& request) noexcept;
+        [[nodiscard]] RenderResourceStatus ProjectPublicStatusLocked(
+            RenderResourceHandle handle,
+            RenderResourceStatus status) const noexcept;
+        void ForgetReplacementPublication(RenderResourceHandle handle) const noexcept;
 
         std::atomic<bool> m_shuttingDown = false;
         RenderResourceStatusTable m_statusTable;
@@ -109,6 +127,8 @@ namespace RVX
         RenderUploadQueue m_uploadQueue;
         RenderReleaseQueue m_releaseQueue;
         std::vector<ReservationIdentity> m_reservationIdentities;
+        mutable std::mutex m_replacementMutex;
+        mutable std::vector<ReplacementPublication> m_replacementPublications;
         BeforeMutationFunction m_beforeMutationFunction = nullptr;
         void* m_beforeMutationContext = nullptr;
     };

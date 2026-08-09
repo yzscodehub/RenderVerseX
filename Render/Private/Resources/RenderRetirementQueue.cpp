@@ -53,25 +53,78 @@ namespace RVX
 
     bool RenderRetirementQueue::Enqueue(RenderRetirementEntry&& entry)
     {
-        if (!m_tracker || !IsOnRenderThread() || !entry.object)
+        // Preserve the single-entry contract: a caller that is not on the
+        // render thread retains ownership when retirement is rejected. The
+        // batch path owns its by-value staging vector, but this forwarding
+        // overload must not move from the caller before that precondition.
+        if (!m_tracker || !IsOnRenderThread())
+        {
+            return false;
+        }
+        std::vector<RenderRetirementEntry> entries;
+        try
+        {
+            entries.push_back(std::move(entry));
+        }
+        catch (...)
+        {
+            return false;
+        }
+        return EnqueueBatch(std::move(entries));
+    }
+
+    bool RenderRetirementQueue::EnqueueBatch(
+        std::vector<RenderRetirementEntry> entries)
+    {
+        if (!m_tracker || !IsOnRenderThread())
         {
             return false;
         }
 
-        GPUCompletionToken normalized;
-        if (!MergeGPUCompletionToken(normalized, entry.completion))
+        size_t retainedCount = 0;
+        for (RenderRetirementEntry& entry : entries)
+        {
+            if (!entry.object)
+            {
+                return false;
+            }
+            GPUCompletionToken normalized;
+            if (!MergeGPUCompletionToken(normalized, entry.completion))
+            {
+                return false;
+            }
+            entry.completion = normalized;
+            if (entry.completion.count != 0)
+            {
+                ++retainedCount;
+            }
+        }
+
+        try
+        {
+            if (retainedCount > std::numeric_limits<size_t>::max() -
+                                    m_entries.size())
+            {
+                return false;
+            }
+            m_entries.reserve(m_entries.size() + retainedCount);
+        }
+        catch (...)
         {
             return false;
         }
-        entry.completion = normalized;
 
-        if (entry.completion.count == 0)
+        for (RenderRetirementEntry& entry : entries)
         {
-            entry.object.Reset();
-            return true;
+            if (entry.completion.count == 0)
+            {
+                entry.object.Reset();
+                continue;
+            }
+            // Capacity was reserved above and RenderRetirementEntry is
+            // noexcept-movable, so this append cannot leave a partial batch.
+            m_entries.push_back(std::move(entry));
         }
-
-        m_entries.push_back(std::move(entry));
         return true;
     }
 

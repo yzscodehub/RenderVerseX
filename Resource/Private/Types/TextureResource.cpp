@@ -9,7 +9,7 @@ TextureResource::~TextureResource() = default;
 
 void TextureResource::SetData(std::vector<uint8_t> data, const TextureMetadata& metadata)
 {
-    m_data = std::move(data);
+    m_data = std::make_shared<const std::vector<uint8_t>>(std::move(data));
     m_metadata = metadata;
 }
 
@@ -21,7 +21,7 @@ void TextureResource::MarkDefaultFallback(std::string reason)
 
 size_t TextureResource::GetMemoryUsage() const
 {
-    return sizeof(*this) + m_data.size();
+    return sizeof(*this) + m_data->size();
 }
 
 size_t TextureResource::GetGPUMemoryUsage() const

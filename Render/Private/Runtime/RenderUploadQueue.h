@@ -36,15 +36,16 @@ namespace RVX
 
         RenderUploadEnqueueResult TryEnqueue(
             const ResourceUploadRequestRef& request,
-            RenderUploadQueueSnapshot* observation = nullptr) noexcept;
+            RenderUploadQueueSnapshot* observation = nullptr,
+            bool notifyConsumer = true) noexcept;
+        /** @brief Notify after a caller has committed adjacent publication state. */
+        void NotifyConsumer() const noexcept;
         [[nodiscard]] ResourceUploadRequestRef TryDequeue() noexcept;
         [[nodiscard]] uint32 GetRetainedCount() const noexcept;
         [[nodiscard]] uint64 GetRetainedBytes() const noexcept;
         [[nodiscard]] RenderUploadQueueSnapshot GetSnapshot() const noexcept;
 
     private:
-        void Wake() const noexcept;
-
         RenderResourceStatusTable& m_statusTable;
         uint32 m_requestCapacity = 0;
         uint64 m_byteCapacity = 0;

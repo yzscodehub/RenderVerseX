@@ -202,7 +202,8 @@ namespace
         RenderResourceHandle handle,
         uint64 sequence,
         RenderUploadPriority priority,
-        uint64 sourceRevision)
+        uint64 sourceRevision,
+        RenderResourceContentOperation operation)
     {
         const std::shared_ptr<Mesh> mesh = resource.GetMesh();
         const AABB bounds = resource.GetBounds();
@@ -330,12 +331,18 @@ namespace
         {
             return {RenderUploadRequestBuildCode::PayloadOverflow};
         }
+        payload.byteStorage =
+            UploadByteStorage::Create(std::move(payload.bytes));
+        if (!payload.byteStorage)
+            return {RenderUploadRequestBuildCode::InvalidResource};
 
         ResourceUploadRequestCreateInfo info;
         info.sequence = sequence;
         info.assetId = AssetId{resource.GetId()};
         info.handle = handle;
         info.kind = RenderResourceKind::Mesh;
+        info.operation = operation;
+        info.sourceRevision = sourceRevision;
         info.payload = std::move(payload);
         info.declaredPayloadBytes = declaredBytes;
         info.priority = priority;
@@ -349,7 +356,8 @@ namespace
         RenderResourceHandle handle,
         uint64 sequence,
         RenderUploadPriority priority,
-        uint64 sourceRevision)
+        uint64 sourceRevision,
+        RenderResourceContentOperation operation)
     {
         const TextureMetadata& metadata = resource.GetMetadata();
         const TextureFormatLayout layout = GetTextureLayout(metadata.format);
@@ -371,7 +379,12 @@ namespace
         payload.createInfo.isCubemap = metadata.isCubemap;
         payload.createInfo.isArray = metadata.isArray;
         payload.createInfo.isSRGB = metadata.isSRGB;
-        payload.bytes = resource.GetData();
+        payload.byteStorage =
+            UploadByteStorage::CreateShared(resource.GetDataStorage());
+        const std::span<const uint8> textureBytes =
+            GetUploadPayloadBytes(payload);
+        if (!payload.byteStorage || textureBytes.empty())
+            return {RenderUploadRequestBuildCode::InvalidResource};
 
         uint64 offset = 0;
         for (uint32 mip = 0; mip < metadata.mipLevels; ++mip)
@@ -404,7 +417,7 @@ namespace
             {
                 uint64 end = 0;
                 if (!CheckedAdd(offset, subresourceBytes, end) ||
-                    end > payload.bytes.size())
+                    end > textureBytes.size())
                 {
                     return {RenderUploadRequestBuildCode::InvalidResource};
                 }
@@ -417,7 +430,7 @@ namespace
                 offset = end;
             }
         }
-        if (offset != payload.bytes.size())
+        if (offset != textureBytes.size())
         {
             return {RenderUploadRequestBuildCode::InvalidResource};
         }
@@ -428,7 +441,7 @@ namespace
                 static_cast<uint64>(payload.subresources.size()),
                 sizeof(TextureUploadSubresource),
                 subresourceTableBytes) ||
-            !CheckedAdd(static_cast<uint64>(payload.bytes.size()),
+            !CheckedAdd(static_cast<uint64>(textureBytes.size()),
                         subresourceTableBytes,
                         declaredBytes))
         {
@@ -440,6 +453,8 @@ namespace
         info.assetId = AssetId{resource.GetId()};
         info.handle = handle;
         info.kind = RenderResourceKind::Texture;
+        info.operation = operation;
+        info.sourceRevision = sourceRevision;
         info.payload = std::move(payload);
         info.declaredPayloadBytes = declaredBytes;
         info.priority = priority;
@@ -454,7 +469,8 @@ namespace
         uint64 sequence,
         const RenderResourceDependencyResolver& dependencyResolver,
         RenderUploadPriority priority,
-        uint64 sourceRevision)
+        uint64 sourceRevision,
+        RenderResourceContentOperation operation)
     {
         MaterialUploadPayload payload;
         payload.sourceData = resource.GetMaterialSourceData();
@@ -560,6 +576,8 @@ namespace
         info.assetId = AssetId{resource.GetId()};
         info.handle = handle;
         info.kind = RenderResourceKind::Material;
+        info.operation = operation;
+        info.sourceRevision = sourceRevision;
         info.payload = std::move(payload);
         info.dependencies = std::move(dependencies);
         info.declaredPayloadBytes = declaredBytes;
@@ -576,7 +594,8 @@ namespace
         uint64 sequence,
         const RenderResourceDependencyResolver& dependencyResolver,
         RenderUploadPriority priority,
-        uint64 sourceRevision)
+        uint64 sourceRevision,
+        RenderResourceContentOperation operation)
     {
         if (resource.GetId() == InvalidResourceId || !handle.IsValid() ||
             sequence == 0)
@@ -594,7 +613,8 @@ namespace
                                        handle,
                                        sequence,
                                        priority,
-                                       sourceRevision)
+                                       sourceRevision,
+                                       operation)
                            : RenderUploadRequestBuildResult{
                                  RenderUploadRequestBuildCode::InvalidResource};
             }
@@ -607,7 +627,8 @@ namespace
                                           handle,
                                           sequence,
                                           priority,
-                                          sourceRevision)
+                                          sourceRevision,
+                                          operation)
                            : RenderUploadRequestBuildResult{
                                  RenderUploadRequestBuildCode::InvalidResource};
             }
@@ -621,7 +642,8 @@ namespace
                                            sequence,
                                            dependencyResolver,
                                            priority,
-                                           sourceRevision)
+                                           sourceRevision,
+                                           operation)
                            : RenderUploadRequestBuildResult{
                                  RenderUploadRequestBuildCode::InvalidResource};
             }

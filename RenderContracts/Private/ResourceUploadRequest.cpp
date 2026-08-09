@@ -9,6 +9,26 @@
 
 namespace RVX
 {
+    std::span<const uint8> GetUploadPayloadBytes(
+        const MeshUploadPayload& payload) noexcept
+    {
+        if (payload.byteStorage)
+        {
+            return payload.byteStorage->GetBytes();
+        }
+        return std::span<const uint8>(payload.bytes);
+    }
+
+    std::span<const uint8> GetUploadPayloadBytes(
+        const TextureUploadPayload& payload) noexcept
+    {
+        if (payload.byteStorage)
+        {
+            return payload.byteStorage->GetBytes();
+        }
+        return std::span<const uint8>(payload.bytes);
+    }
+
 namespace
 {
     bool IsFinite(float32 value)
@@ -178,6 +198,21 @@ namespace
         return range.size != 0;
     }
 
+    template<typename TPayload>
+    ResourceUploadRequestCreateCode ValidateByteStorage(
+        const TPayload& payload)
+    {
+        if (payload.byteStorage && !payload.bytes.empty())
+        {
+            return ResourceUploadRequestCreateCode::ConflictingByteStorage;
+        }
+        if (GetUploadPayloadBytes(payload).empty())
+        {
+            return ResourceUploadRequestCreateCode::InvalidPayload;
+        }
+        return ResourceUploadRequestCreateCode::Created;
+    }
+
     ResourceUploadRequestCreateCode ValidateRange(
         const UploadByteRange& range,
         uint64 ownerSize,
@@ -221,8 +256,14 @@ namespace
         const MeshUploadPayload& payload)
     {
         const MeshUploadCreateInfo& createInfo = payload.createInfo;
+        const ResourceUploadRequestCreateCode storageCode =
+            ValidateByteStorage(payload);
+        if (storageCode != ResourceUploadRequestCreateCode::Created)
+        {
+            return storageCode;
+        }
         if (!IsDeclared(createInfo.indexType) ||
-            !IsDeclared(createInfo.topology) || payload.bytes.empty() ||
+            !IsDeclared(createInfo.topology) ||
             createInfo.vertexCount == 0 || !IsFinite(createInfo.boundsMin) ||
             !IsFinite(createInfo.boundsMax) ||
             createInfo.boundsMin.x > createInfo.boundsMax.x ||
@@ -286,7 +327,8 @@ namespace
     ResourceUploadRequestCreateCode ValidateMeshRanges(
         const MeshUploadPayload& payload)
     {
-        const uint64 byteCount = static_cast<uint64>(payload.bytes.size());
+        const uint64 byteCount = static_cast<uint64>(
+            GetUploadPayloadBytes(payload).size());
         ResourceUploadRequestCreateCode code = ValidateRange(
             payload.positionRange, byteCount, true,
             payload.createInfo.vertexCount);
@@ -341,10 +383,16 @@ namespace
         const TextureUploadPayload& payload)
     {
         const TextureUploadCreateInfo& createInfo = payload.createInfo;
+        const ResourceUploadRequestCreateCode storageCode =
+            ValidateByteStorage(payload);
+        if (storageCode != ResourceUploadRequestCreateCode::Created)
+        {
+            return storageCode;
+        }
         if (createInfo.width == 0 || createInfo.height == 0 ||
             createInfo.depth == 0 || createInfo.mipLevels == 0 ||
             createInfo.arrayLayers == 0 || !IsKnown(createInfo.format) ||
-            payload.bytes.empty() || payload.subresources.empty())
+            payload.subresources.empty())
         {
             return ResourceUploadRequestCreateCode::InvalidPayload;
         }
@@ -383,7 +431,8 @@ namespace
             return ResourceUploadRequestCreateCode::InvalidPayload;
         }
 
-        const uint64 byteCount = static_cast<uint64>(payload.bytes.size());
+        const uint64 byteCount = static_cast<uint64>(
+            GetUploadPayloadBytes(payload).size());
         for (size_t index = 0; index < payload.subresources.size(); ++index)
         {
             const TextureUploadSubresource& subresource =
@@ -537,8 +586,10 @@ namespace
                     ResourceUploadRequestCreateCode::Created;
                 if constexpr (std::is_same_v<PayloadType, MeshUploadPayload>)
                 {
+                    const std::span<const uint8> bytes =
+                        GetUploadPayloadBytes(payload);
                     result = Detail::AccumulateOwnedBytes(
-                        static_cast<uint64>(payload.bytes.size()), sizeof(uint8), total);
+                        static_cast<uint64>(bytes.size()), sizeof(uint8), total);
                     if (result == ResourceUploadRequestCreateCode::Created)
                     {
                         result = Detail::AccumulateOwnedBytes(
@@ -548,8 +599,10 @@ namespace
                 }
                 else if constexpr (std::is_same_v<PayloadType, TextureUploadPayload>)
                 {
+                    const std::span<const uint8> bytes =
+                        GetUploadPayloadBytes(payload);
                     result = Detail::AccumulateOwnedBytes(
-                        static_cast<uint64>(payload.bytes.size()), sizeof(uint8), total);
+                        static_cast<uint64>(bytes.size()), sizeof(uint8), total);
                     if (result == ResourceUploadRequestCreateCode::Created)
                     {
                         result = Detail::AccumulateOwnedBytes(
@@ -627,6 +680,30 @@ ResourceUploadRequestCreateResult ResourceUploadRequest::Create(
     {
         return fail(ResourceUploadRequestCreateCode::InvalidKind);
     }
+    if (info.operation != RenderResourceContentOperation::Create &&
+        info.operation != RenderResourceContentOperation::Replace)
+    {
+        return fail(ResourceUploadRequestCreateCode::InvalidContentOperation);
+    }
+    if (info.sourceRevision != 0 &&
+        info.provenance.sourceRevision != 0 &&
+        info.sourceRevision != info.provenance.sourceRevision)
+    {
+        return fail(ResourceUploadRequestCreateCode::ConflictingSourceRevision);
+    }
+    // Compatibility Create builders may still provide the revision only in
+    // provenance. Replace always requires the explicit v2 authority field.
+    if (info.operation == RenderResourceContentOperation::Create &&
+        info.sourceRevision == 0)
+    {
+        info.sourceRevision = info.provenance.sourceRevision;
+    }
+    if (info.operation == RenderResourceContentOperation::Replace &&
+        info.sourceRevision == 0)
+    {
+        return fail(ResourceUploadRequestCreateCode::InvalidSourceRevision);
+    }
+    info.provenance.sourceRevision = info.sourceRevision;
     if (!PayloadMatchesKind(info))
     {
         return fail(ResourceUploadRequestCreateCode::PayloadKindMismatch);
@@ -688,6 +765,8 @@ ResourceUploadRequest::ResourceUploadRequest(ResourceUploadRequestCreateInfo&& i
     , m_assetId(info.assetId)
     , m_handle(info.handle)
     , m_kind(info.kind)
+    , m_operation(info.operation)
+    , m_sourceRevision(info.sourceRevision)
     , m_payload(std::move(info.payload))
     , m_dependencies(std::move(info.dependencies))
     , m_dependencyReadiness(info.dependencyReadiness)
@@ -704,6 +783,14 @@ uint64 ResourceUploadRequest::GetSequence() const noexcept { return m_sequence; 
 AssetId ResourceUploadRequest::GetAssetId() const noexcept { return m_assetId; }
 RenderResourceHandle ResourceUploadRequest::GetHandle() const noexcept { return m_handle; }
 RenderResourceKind ResourceUploadRequest::GetKind() const noexcept { return m_kind; }
+RenderResourceContentOperation ResourceUploadRequest::GetOperation() const noexcept
+{
+    return m_operation;
+}
+uint64 ResourceUploadRequest::GetSourceRevision() const noexcept
+{
+    return m_sourceRevision;
+}
 uint64 ResourceUploadRequest::GetDerivedPayloadBytes() const noexcept
 {
     return m_derivedPayloadBytes;
