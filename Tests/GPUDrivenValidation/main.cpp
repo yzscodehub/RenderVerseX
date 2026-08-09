@@ -1903,7 +1903,7 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_EQ(setModeBody.find("GetExecutionDecision"), std::string::npos);
 
     const size_t applyDefinition =
-        source.find("RenderFrameApplyResult SceneRenderer::ApplyFramePacket");
+        source.find("void SceneRenderer::PrepareFrameApplyResources");
     const size_t invalidateCall =
         source.find("InvalidateRenderFramePlan();", applyDefinition);
     const size_t registryAssignment =
