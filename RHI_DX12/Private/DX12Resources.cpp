@@ -232,12 +232,24 @@ namespace RVX
             if (m_desc.size <= RVX_DX12_MAX_CBV_SIZE && cbvSize <= RVX_DX12_MAX_CBV_SIZE)
             {
                 m_cbvHandle = heapManager.AllocateCpuCbvSrvUav();
+                if (!m_cbvHandle.IsValid())
+                {
+                    m_requiredViewsValid = false;
+                    RVX_RHI_ERROR("Failed to allocate DX12 CBV descriptor for buffer '{}'", GetDebugName());
+                    return;
+                }
 
                 D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
                 cbvDesc.BufferLocation = m_resource->GetGPUVirtualAddress();
                 cbvDesc.SizeInBytes = static_cast<UINT>(cbvSize);
 
-                d3dDevice->CreateConstantBufferView(&cbvDesc, m_cbvHandle.cpuHandle);
+                if (!TryCreateDX12CpuDescriptor(m_cbvHandle, [&](D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) {
+                        d3dDevice->CreateConstantBufferView(&cbvDesc, cpuHandle);
+                    }))
+                {
+                    m_requiredViewsValid = false;
+                    return;
+                }
             }
             else
             {
@@ -254,6 +266,12 @@ namespace RVX
             HasFlag(m_desc.usage, RHIBufferUsage::Structured))
         {
             m_srvHandle = heapManager.AllocateCpuCbvSrvUav();
+            if (!m_srvHandle.IsValid())
+            {
+                m_requiredViewsValid = false;
+                RVX_RHI_ERROR("Failed to allocate DX12 SRV descriptor for buffer '{}'", GetDebugName());
+                return;
+            }
 
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -275,13 +293,25 @@ namespace RVX
                 srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
             }
 
-            d3dDevice->CreateShaderResourceView(m_resource.Get(), &srvDesc, m_srvHandle.cpuHandle);
+            if (!TryCreateDX12CpuDescriptor(m_srvHandle, [&](D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) {
+                    d3dDevice->CreateShaderResourceView(m_resource.Get(), &srvDesc, cpuHandle);
+                }))
+            {
+                m_requiredViewsValid = false;
+                return;
+            }
         }
 
         // UAV
         if (HasFlag(m_desc.usage, RHIBufferUsage::UnorderedAccess))
         {
             m_uavHandle = heapManager.AllocateCpuCbvSrvUav();
+            if (!m_uavHandle.IsValid())
+            {
+                m_requiredViewsValid = false;
+                RVX_RHI_ERROR("Failed to allocate DX12 UAV descriptor for buffer '{}'", GetDebugName());
+                return;
+            }
 
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
@@ -302,7 +332,13 @@ namespace RVX
                 uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
             }
 
-            d3dDevice->CreateUnorderedAccessView(m_resource.Get(), nullptr, &uavDesc, m_uavHandle.cpuHandle);
+            if (!TryCreateDX12CpuDescriptor(m_uavHandle, [&](D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) {
+                    d3dDevice->CreateUnorderedAccessView(m_resource.Get(), nullptr, &uavDesc, cpuHandle);
+                }))
+            {
+                m_requiredViewsValid = false;
+                return;
+            }
         }
     }
 
@@ -398,10 +434,8 @@ namespace RVX
     // DX12 Texture Implementation
     // =============================================================================
     DX12Texture::DX12Texture(DX12Device* device, const RHITextureDesc& desc)
-        : m_device(device)
-        , m_desc(desc)
+        : m_desc(desc)
         , m_dxgiFormat(ToDXGIFormat(desc.format))
-        , m_ownsResource(true)
     {
         if (desc.debugName)
         {
@@ -502,234 +536,16 @@ namespace RVX
             m_resource->SetName(wname);
         }
 
-        CreateViews();
     }
 
-    DX12Texture::DX12Texture(DX12Device* device, ComPtr<ID3D12Resource> resource, const RHITextureDesc& desc)
-        : m_device(device)
-        , m_desc(desc)
+    DX12Texture::DX12Texture(DX12Device*, ComPtr<ID3D12Resource> resource, const RHITextureDesc& desc)
+        : m_desc(desc)
         , m_dxgiFormat(ToDXGIFormat(desc.format))
         , m_resource(resource)
-        , m_ownsResource(false)
     {
         if (desc.debugName)
         {
             SetDebugName(desc.debugName);
-        }
-
-        CreateViews();
-    }
-
-    DX12Texture::~DX12Texture()
-    {
-        auto& heapManager = m_device->GetDescriptorHeapManager();
-
-        if (m_srvHandle.IsValid())
-            heapManager.FreeCpuCbvSrvUav(m_srvHandle);
-        if (m_uavHandle.IsValid())
-            heapManager.FreeCpuCbvSrvUav(m_uavHandle);
-        for (auto& rtvHandle : m_rtvHandles)
-        {
-            if (rtvHandle.IsValid())
-                heapManager.FreeRTV(rtvHandle);
-        }
-        if (m_dsvHandle.IsValid())
-            heapManager.FreeDSV(m_dsvHandle);
-    }
-
-    void DX12Texture::CreateViews()
-    {
-        auto d3dDevice = m_device->GetD3DDevice();
-        auto& heapManager = m_device->GetDescriptorHeapManager();
-
-        // SRV
-        if (HasFlag(m_desc.usage, RHITextureUsage::ShaderResource) || !m_ownsResource)
-        {
-            m_srvHandle = heapManager.AllocateCpuCbvSrvUav();
-
-            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-
-            // Use depth SRV format for depth textures
-            if (IsDepthFormat(m_desc.format))
-            {
-                srvDesc.Format = GetDepthSRVFormat(m_dxgiFormat);
-            }
-            else
-            {
-                srvDesc.Format = m_dxgiFormat;
-            }
-
-            switch (m_desc.dimension)
-            {
-                case RHITextureDimension::Texture1D:
-                    if (m_desc.arraySize > 1)
-                    {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
-                        srvDesc.Texture1DArray.MipLevels = m_desc.mipLevels;
-                        srvDesc.Texture1DArray.ArraySize = m_desc.arraySize;
-                    }
-                    else
-                    {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
-                        srvDesc.Texture1D.MipLevels = m_desc.mipLevels;
-                    }
-                    break;
-
-                case RHITextureDimension::Texture2D:
-                    if (m_desc.arraySize > 1)
-                    {
-                        if (static_cast<uint32>(m_desc.sampleCount) > 1)
-                        {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
-                            srvDesc.Texture2DMSArray.ArraySize = m_desc.arraySize;
-                        }
-                        else
-                        {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-                            srvDesc.Texture2DArray.MipLevels = m_desc.mipLevels;
-                            srvDesc.Texture2DArray.ArraySize = m_desc.arraySize;
-                        }
-                    }
-                    else
-                    {
-                        if (static_cast<uint32>(m_desc.sampleCount) > 1)
-                        {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
-                        }
-                        else
-                        {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                            srvDesc.Texture2D.MipLevels = m_desc.mipLevels;
-                        }
-                    }
-                    break;
-
-                case RHITextureDimension::TextureCube:
-                    if (m_desc.arraySize > 1)
-                    {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
-                        srvDesc.TextureCubeArray.MipLevels = m_desc.mipLevels;
-                        srvDesc.TextureCubeArray.NumCubes = m_desc.arraySize;
-                    }
-                    else
-                    {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-                        srvDesc.TextureCube.MipLevels = m_desc.mipLevels;
-                    }
-                    break;
-
-                case RHITextureDimension::Texture3D:
-                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-                    srvDesc.Texture3D.MipLevels = m_desc.mipLevels;
-                    break;
-            }
-
-            d3dDevice->CreateShaderResourceView(m_resource.Get(), &srvDesc, m_srvHandle.cpuHandle);
-        }
-
-        // UAV
-        if (HasFlag(m_desc.usage, RHITextureUsage::UnorderedAccess))
-        {
-            m_uavHandle = heapManager.AllocateCpuCbvSrvUav();
-
-            D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-            uavDesc.Format = m_dxgiFormat;
-
-            switch (m_desc.dimension)
-            {
-                case RHITextureDimension::Texture1D:
-                    if (m_desc.arraySize > 1)
-                    {
-                        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1DARRAY;
-                        uavDesc.Texture1DArray.ArraySize = m_desc.arraySize;
-                    }
-                    else
-                    {
-                        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
-                    }
-                    break;
-
-                case RHITextureDimension::Texture2D:
-                    if (m_desc.arraySize > 1)
-                    {
-                        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-                        uavDesc.Texture2DArray.ArraySize = m_desc.arraySize;
-                    }
-                    else
-                    {
-                        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-                    }
-                    break;
-
-                case RHITextureDimension::TextureCube:
-                    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-                    uavDesc.Texture2DArray.ArraySize = GetTexturePhysicalLayerCount(m_desc);
-                    break;
-
-                case RHITextureDimension::Texture3D:
-                    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
-                    uavDesc.Texture3D.WSize = m_desc.depth;
-                    break;
-            }
-
-            d3dDevice->CreateUnorderedAccessView(m_resource.Get(), nullptr, &uavDesc, m_uavHandle.cpuHandle);
-        }
-
-        // RTV
-        if (HasFlag(m_desc.usage, RHITextureUsage::RenderTarget))
-        {
-            uint32 rtvCount = GetTexturePhysicalLayerCount(m_desc);
-            m_rtvHandles.resize(rtvCount);
-
-            for (uint32 i = 0; i < rtvCount; ++i)
-            {
-                m_rtvHandles[i] = heapManager.AllocateRTV();
-
-                D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
-                rtvDesc.Format = m_dxgiFormat;
-
-                if (rtvCount > 1)
-                {
-                    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
-                    rtvDesc.Texture2DArray.FirstArraySlice = i;
-                    rtvDesc.Texture2DArray.ArraySize = 1;
-                }
-                else
-                {
-                    if (static_cast<uint32>(m_desc.sampleCount) > 1)
-                    {
-                        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
-                    }
-                    else
-                    {
-                        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-                    }
-                }
-
-                d3dDevice->CreateRenderTargetView(m_resource.Get(), &rtvDesc, m_rtvHandles[i].cpuHandle);
-            }
-        }
-
-        // DSV
-        if (HasFlag(m_desc.usage, RHITextureUsage::DepthStencil))
-        {
-            m_dsvHandle = heapManager.AllocateDSV();
-
-            D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
-            dsvDesc.Format = m_dxgiFormat;
-            dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
-
-            if (static_cast<uint32>(m_desc.sampleCount) > 1)
-            {
-                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
-            }
-            else
-            {
-                dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-            }
-
-            d3dDevice->CreateDepthStencilView(m_resource.Get(), &dsvDesc, m_dsvHandle.cpuHandle);
         }
     }
 
@@ -739,7 +555,6 @@ namespace RVX
     DX12TextureView::DX12TextureView(DX12Device* device, RHITexture* texture, const RHITextureViewDesc& desc)
         : RHITextureView(RHITextureRef(texture))
         , m_device(device)
-        , m_texture(texture)
         , m_format(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format)
         , m_subresourceRange(desc.subresourceRange)
     {
@@ -770,6 +585,11 @@ namespace RVX
             }
 
             m_srvHandle = heapManager.AllocateCpuCbvSrvUav();
+            if (!m_srvHandle.IsValid())
+            {
+                RVX_RHI_ERROR("Failed to allocate DX12 texture SRV descriptor");
+                return;
+            }
 
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -828,12 +648,22 @@ namespace RVX
                     break;
             }
 
-            d3dDevice->CreateShaderResourceView(dx12Texture->GetResource(), &srvDesc, m_srvHandle.cpuHandle);
+            if (!TryCreateDX12CpuDescriptor(m_srvHandle, [&](D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) {
+                    d3dDevice->CreateShaderResourceView(dx12Texture->GetResource(), &srvDesc, cpuHandle);
+                }))
+            {
+                return;
+            }
         }
 
         if (desc.type == RHITextureViewType::RenderTarget)
         {
             m_rtvHandle = heapManager.AllocateRTV();
+            if (!m_rtvHandle.IsValid())
+            {
+                RVX_RHI_ERROR("Failed to allocate DX12 texture RTV descriptor");
+                return;
+            }
 
             D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
             rtvDesc.Format = dxgiFormat;
@@ -873,12 +703,22 @@ namespace RVX
                 }
             }
 
-            d3dDevice->CreateRenderTargetView(dx12Texture->GetResource(), &rtvDesc, m_rtvHandle.cpuHandle);
+            if (!TryCreateDX12CpuDescriptor(m_rtvHandle, [&](D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) {
+                    d3dDevice->CreateRenderTargetView(dx12Texture->GetResource(), &rtvDesc, cpuHandle);
+                }))
+            {
+                return;
+            }
         }
 
         if (desc.type == RHITextureViewType::DepthStencil)
         {
             m_dsvHandle = heapManager.AllocateDSV();
+            if (!m_dsvHandle.IsValid())
+            {
+                RVX_RHI_ERROR("Failed to allocate DX12 texture DSV descriptor");
+                return;
+            }
 
             D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
             dsvDesc.Format = dxgiFormat;
@@ -911,12 +751,22 @@ namespace RVX
                 dsvDesc.Texture2D.MipSlice = desc.subresourceRange.baseMipLevel;
             }
 
-            d3dDevice->CreateDepthStencilView(dx12Texture->GetResource(), &dsvDesc, m_dsvHandle.cpuHandle);
+            if (!TryCreateDX12CpuDescriptor(m_dsvHandle, [&](D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) {
+                    d3dDevice->CreateDepthStencilView(dx12Texture->GetResource(), &dsvDesc, cpuHandle);
+                }))
+            {
+                return;
+            }
         }
 
         if (desc.type == RHITextureViewType::UnorderedAccess)
         {
             m_uavHandle = heapManager.AllocateCpuCbvSrvUav();
+            if (!m_uavHandle.IsValid())
+            {
+                RVX_RHI_ERROR("Failed to allocate DX12 texture UAV descriptor");
+                return;
+            }
 
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
             uavDesc.Format = dxgiFormat;
@@ -934,7 +784,12 @@ namespace RVX
                 uavDesc.Texture2D.MipSlice = desc.subresourceRange.baseMipLevel;
             }
 
-            d3dDevice->CreateUnorderedAccessView(dx12Texture->GetResource(), nullptr, &uavDesc, m_uavHandle.cpuHandle);
+            if (!TryCreateDX12CpuDescriptor(m_uavHandle, [&](D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) {
+                    d3dDevice->CreateUnorderedAccessView(dx12Texture->GetResource(), nullptr, &uavDesc, cpuHandle);
+                }))
+            {
+                return;
+            }
         }
     }
 
@@ -962,6 +817,11 @@ namespace RVX
         auto& heapManager = device->GetDescriptorHeapManager();
 
         m_handle = heapManager.AllocateCpuSampler();
+        if (!m_handle.IsValid())
+        {
+            RVX_RHI_ERROR("Failed to allocate DX12 sampler descriptor");
+            return;
+        }
 
         auto toD3D12Filter = [](RHIFilterMode min, RHIFilterMode mag, RHIFilterMode mip, bool anisotropic) -> D3D12_FILTER {
             if (anisotropic) return D3D12_FILTER_ANISOTROPIC;
@@ -995,7 +855,12 @@ namespace RVX
         samplerDesc.MinLOD = desc.minLod;
         samplerDesc.MaxLOD = desc.maxLod;
 
-        d3dDevice->CreateSampler(&samplerDesc, m_handle.cpuHandle);
+        if (!TryCreateDX12CpuDescriptor(m_handle, [&](D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle) {
+                d3dDevice->CreateSampler(&samplerDesc, cpuHandle);
+            }))
+        {
+            return;
+        }
     }
 
     DX12Sampler::~DX12Sampler()
@@ -1100,7 +965,13 @@ namespace RVX
     // =============================================================================
     RHIBufferRef CreateDX12Buffer(DX12Device* device, const RHIBufferDesc& desc)
     {
-        return Ref<DX12Buffer>(new DX12Buffer(device, desc));
+        auto buffer = Ref<DX12Buffer>(new DX12Buffer(device, desc));
+        if (!buffer->AreRequiredViewsValid())
+        {
+            RVX_RHI_ERROR("DX12: Failed to create required buffer descriptors");
+            return nullptr;
+        }
+        return buffer;
     }
 
     RHITextureRef CreateDX12Texture(DX12Device* device, const RHITextureDesc& desc)
@@ -1153,7 +1024,13 @@ namespace RVX
 
     RHISamplerRef CreateDX12Sampler(DX12Device* device, const RHISamplerDesc& desc)
     {
-        return Ref<DX12Sampler>(new DX12Sampler(device, desc));
+        auto sampler = Ref<DX12Sampler>(new DX12Sampler(device, desc));
+        if (!sampler->IsValid())
+        {
+            RVX_RHI_ERROR("DX12: Failed to create sampler descriptor");
+            return nullptr;
+        }
+        return sampler;
     }
 
     RHIShaderRef CreateDX12Shader(DX12Device* device, const RHIShaderDesc& desc)
@@ -1453,8 +1330,14 @@ namespace RVX
             resource->SetName(wname);
         }
 
-        // Use the external resource constructor (memory owned by heap)
-        return Ref<DX12Buffer>(new DX12Buffer(device, resource, desc, false));
+        // Use the external resource constructor (memory owned by heap).
+        auto buffer = Ref<DX12Buffer>(new DX12Buffer(device, resource, desc, false));
+        if (!buffer->AreRequiredViewsValid())
+        {
+            RVX_RHI_ERROR("DX12: Failed to create required placed-buffer descriptors");
+            return nullptr;
+        }
+        return buffer;
     }
 
 } // namespace RVX

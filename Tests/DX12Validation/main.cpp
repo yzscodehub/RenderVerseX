@@ -1,6 +1,7 @@
 #include "Common/GpuTestUtils.h"
 #include "Core/Core.h"
 #include "DX12CommandContext.h"
+#include "DX12DescriptorHeap.h"
 #include "DX12Device.h"
 #include "DX12IndirectExecution.h"
 #include "DX12Pipeline.h"
@@ -1186,6 +1187,178 @@ TEST(DX12Validation, Texture2DArrayLayerViewsCreateNativeDescriptors)
     auto* dx12Srv = dynamic_cast<DX12TextureView*>(srv.Get());
     ASSERT_NE(nullptr, dx12Srv);
     EXPECT_TRUE(dx12Srv->GetSRVHandle().IsValid());
+}
+
+TEST(DX12Validation, PagedCpuDescriptorAllocatorIsLazyGenerationSafeAndBudgeted)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(nullptr, dx12Device);
+
+    DX12PagedDescriptorAllocator allocator;
+    ASSERT_TRUE(allocator.Initialize(
+        dx12Device->GetD3DDevice(),
+        D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+        2,
+        2));
+
+    DX12DescriptorAllocatorStats stats = allocator.GetStats();
+    EXPECT_EQ(0u, stats.currentPages);
+    EXPECT_EQ(0u, stats.activeDescriptors);
+    EXPECT_EQ(4u, stats.GetMaximumCapacity());
+
+    const DX12DescriptorHandle first = allocator.Allocate();
+    const DX12DescriptorHandle second = allocator.Allocate();
+    ASSERT_TRUE(first.IsValid());
+    ASSERT_TRUE(second.IsValid());
+    EXPECT_EQ(0u, first.pageIndex);
+    EXPECT_EQ(0u, first.slotIndex);
+    EXPECT_EQ(0u, second.pageIndex);
+    EXPECT_EQ(1u, second.slotIndex);
+    EXPECT_EQ(1u, allocator.GetStats().currentPages);
+
+    const DX12DescriptorHandle third = allocator.Allocate();
+    const DX12DescriptorHandle fourth = allocator.Allocate();
+    ASSERT_TRUE(third.IsValid());
+    ASSERT_TRUE(fourth.IsValid());
+    EXPECT_EQ(1u, third.pageIndex);
+    EXPECT_EQ(1u, fourth.pageIndex);
+    EXPECT_EQ(2u, allocator.GetStats().currentPages);
+
+    const DX12DescriptorHandle overBudget = allocator.Allocate();
+    EXPECT_FALSE(overBudget.IsValid());
+    stats = allocator.GetStats();
+    EXPECT_EQ(4u, stats.activeDescriptors);
+    EXPECT_EQ(4u, stats.peakActiveDescriptors);
+    EXPECT_EQ(1u, stats.allocationFailures);
+
+    ASSERT_TRUE(allocator.Free(first));
+    const DX12DescriptorHandle reused = allocator.Allocate();
+    ASSERT_TRUE(reused.IsValid());
+    EXPECT_EQ(first.pageIndex, reused.pageIndex);
+    EXPECT_EQ(first.slotIndex, reused.slotIndex);
+    EXPECT_NE(first.generation, reused.generation);
+    EXPECT_FALSE(allocator.Free(first));
+
+    DX12PagedDescriptorAllocator foreignAllocator;
+    ASSERT_TRUE(foreignAllocator.Initialize(
+        dx12Device->GetD3DDevice(),
+        D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+        1,
+        1));
+    const DX12DescriptorHandle foreign = foreignAllocator.Allocate();
+    ASSERT_TRUE(foreign.IsValid());
+    EXPECT_FALSE(allocator.Free(foreign));
+    EXPECT_TRUE(foreignAllocator.Free(foreign));
+
+    EXPECT_TRUE(allocator.Free(reused));
+    EXPECT_FALSE(allocator.Free(reused));
+    EXPECT_TRUE(allocator.Free(second));
+    EXPECT_TRUE(allocator.Free(third));
+    EXPECT_TRUE(allocator.Free(fourth));
+
+    stats = allocator.GetStats();
+    EXPECT_EQ(0u, stats.activeDescriptors);
+    EXPECT_EQ(3u, stats.validationFailures);
+}
+
+TEST(DX12Validation, InvalidCpuDescriptorGateNeverInvokesNativeCreation)
+{
+    DX12DescriptorHandle invalidHandle;
+    bool nativeCreateInvoked = false;
+    const bool created = TryCreateDX12CpuDescriptor(
+        invalidHandle,
+        [&](D3D12_CPU_DESCRIPTOR_HANDLE) {
+            nativeCreateInvoked = true;
+        });
+
+    EXPECT_FALSE(created);
+    EXPECT_FALSE(nativeCreateInvoked);
+}
+
+TEST(DX12Validation, TexturesAllocateDescriptorsOnlyForExplicitViews)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(nullptr, dx12Device);
+    DX12DescriptorHeapManager& heaps = dx12Device->GetDescriptorHeapManager();
+
+    const DX12DescriptorAllocatorStats cpuBefore = heaps.GetCpuCbvSrvUavStats();
+    const DX12DescriptorAllocatorStats samplerBefore = heaps.GetCpuSamplerStats();
+    const DX12DescriptorAllocatorStats rtvBefore = heaps.GetRTVStats();
+    const DX12DescriptorAllocatorStats dsvBefore = heaps.GetDSVStats();
+    EXPECT_EQ(16384u, cpuBefore.pageSize);
+    EXPECT_EQ(64u, cpuBefore.maxPages);
+    EXPECT_EQ(256u, samplerBefore.pageSize);
+    EXPECT_EQ(8u, samplerBefore.maxPages);
+    EXPECT_EQ(512u, rtvBefore.pageSize);
+    EXPECT_EQ(32u, rtvBefore.maxPages);
+    EXPECT_EQ(256u, dsvBefore.pageSize);
+    EXPECT_EQ(16u, dsvBefore.maxPages);
+
+    RHITextureRef sampled = device->CreateTexture(
+        RHITextureDesc::Texture2D(64, 64, RHIFormat::RGBA8_UNORM));
+    RHITextureRef renderTarget = device->CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    RHITextureRef depth = device->CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureRef storage = device->CreateTexture(RHITextureDesc::Texture2D(
+        64,
+        64,
+        RHIFormat::R32_FLOAT,
+        RHITextureUsage::ShaderResource | RHITextureUsage::UnorderedAccess));
+    ASSERT_NE(nullptr, sampled.Get());
+    ASSERT_NE(nullptr, renderTarget.Get());
+    ASSERT_NE(nullptr, depth.Get());
+    ASSERT_NE(nullptr, storage.Get());
+
+    // Native textures carry no hidden default views or descriptor allocations.
+    EXPECT_EQ(cpuBefore.activeDescriptors, heaps.GetCpuCbvSrvUavStats().activeDescriptors);
+    EXPECT_EQ(rtvBefore.activeDescriptors, heaps.GetRTVStats().activeDescriptors);
+    EXPECT_EQ(dsvBefore.activeDescriptors, heaps.GetDSVStats().activeDescriptors);
+
+    RHITextureViewDesc srvDesc;
+    srvDesc.type = RHITextureViewType::ShaderResource;
+    srvDesc.format = RHIFormat::RGBA8_UNORM;
+    RHITextureViewRef srv = device->CreateTextureView(sampled.Get(), srvDesc);
+
+    RHITextureViewDesc rtvDesc;
+    rtvDesc.type = RHITextureViewType::RenderTarget;
+    rtvDesc.format = RHIFormat::RGBA8_UNORM;
+    RHITextureViewRef rtv = device->CreateTextureView(renderTarget.Get(), rtvDesc);
+
+    RHITextureViewDesc dsvDesc;
+    dsvDesc.type = RHITextureViewType::DepthStencil;
+    dsvDesc.format = RHIFormat::D32_FLOAT;
+    dsvDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+    RHITextureViewRef dsv = device->CreateTextureView(depth.Get(), dsvDesc);
+
+    RHITextureViewDesc uavDesc;
+    uavDesc.type = RHITextureViewType::UnorderedAccess;
+    uavDesc.format = RHIFormat::R32_FLOAT;
+    RHITextureViewRef uav = device->CreateTextureView(storage.Get(), uavDesc);
+
+    ASSERT_NE(nullptr, srv.Get());
+    ASSERT_NE(nullptr, rtv.Get());
+    ASSERT_NE(nullptr, dsv.Get());
+    ASSERT_NE(nullptr, uav.Get());
+    EXPECT_EQ(cpuBefore.activeDescriptors + 2u, heaps.GetCpuCbvSrvUavStats().activeDescriptors);
+    EXPECT_EQ(rtvBefore.activeDescriptors + 1u, heaps.GetRTVStats().activeDescriptors);
+    EXPECT_EQ(dsvBefore.activeDescriptors + 1u, heaps.GetDSVStats().activeDescriptors);
+
+    srv.Reset();
+    rtv.Reset();
+    dsv.Reset();
+    uav.Reset();
+    EXPECT_EQ(cpuBefore.activeDescriptors, heaps.GetCpuCbvSrvUavStats().activeDescriptors);
+    EXPECT_EQ(rtvBefore.activeDescriptors, heaps.GetRTVStats().activeDescriptors);
+    EXPECT_EQ(dsvBefore.activeDescriptors, heaps.GetDSVStats().activeDescriptors);
 }
 
 TEST(DX12Validation, Sampler)
