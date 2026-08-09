@@ -5,6 +5,8 @@
 
 #include "Render/Passes/TransparentPass.h"
 
+#include "Passes/MaterialTextureGraphBindings.h"
+
 #include "Core/Log.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
@@ -43,6 +45,7 @@ namespace RVX
             SubmeshGPUInfo submesh{};
             std::array<uint32, 1> objectDynamicOffsets{0};
             MaterialBindingSnapshot material{};
+            bool skinned = false;
         };
 
         struct GraphPassData
@@ -55,7 +58,8 @@ namespace RVX
             PipelineCache* pipelineCache = nullptr;
             MaterialSystem* materialSystem = nullptr;
             FrameLightResources lightResources{};
-            RHIPipelineRef pipeline;
+            RHIPipelineRef skinnedPipeline;
+            RHIPipelineRef rigidPipeline;
             RasterDrawBindingSnapshot bindings{};
             std::vector<DrawRecord> draws;
             RGTextureHandle colorHandle{};
@@ -86,7 +90,8 @@ namespace RVX
                     return false;
                 }
             }
-            if (!RetainResource(builder, data.pipeline.Get()))
+            if (!RetainResource(builder, data.skinnedPipeline.Get()) ||
+                !RetainResource(builder, data.rigidPipeline.Get()))
             {
                 return false;
             }
@@ -143,7 +148,14 @@ namespace RVX
             const RenderObject& object = scene.GetObject(item.objectIndex);
             MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
                 data.resourceRegistry, object.mesh);
-            if (!buffers.IsValid() || item.submeshIndex >= buffers.submeshes.size())
+            if (!buffers.IsValid() || !buffers.normalBuffer ||
+                !buffers.uvBuffer || !buffers.tangentBuffer ||
+                item.submeshIndex >= buffers.submeshes.size())
+            {
+                return false;
+            }
+            const bool skinned = object.HasSkinningData();
+            if (skinned && !buffers.HasSkinningVertexData())
             {
                 return false;
             }
@@ -151,6 +163,7 @@ namespace RVX
             DrawRecord record;
             record.buffers = buffers;
             record.submesh = buffers.submeshes[item.submeshIndex];
+            record.skinned = skinned;
             MaterialBindingOptions materialOptions;
             materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
             if (!data.materialSystem->CreateMaterialBindingSnapshot(
@@ -216,11 +229,32 @@ namespace RVX
             {
                 return false;
             }
-            data.pipeline = RHIPipelineRef(data.pipelineCache->GetPipelineForVariant(
-                MaterialPipelineVariant::Transparent, data.colorFormat));
-            if (!data.pipeline)
+            data.skinnedPipeline = RHIPipelineRef(
+                data.pipelineCache->GetPipelineForVariant(
+                    MaterialPipelineVariant::Transparent,
+                    data.colorFormat,
+                    DefaultLitDirectVertexInputMode::Skinned));
+            data.rigidPipeline = RHIPipelineRef(
+                data.pipelineCache->GetPipelineForVariant(
+                    MaterialPipelineVariant::Transparent,
+                    data.colorFormat,
+                    DefaultLitDirectVertexInputMode::Rigid));
+            if (!data.skinnedPipeline || !data.rigidPipeline)
             {
                 return false;
+            }
+
+            for (const RenderDrawItem& item :
+                 data.frameSnapshot->transparentDrawItems)
+            {
+                if (!DeclareMaterialTextureGraphReads(
+                        builder,
+                        data.resourceRegistry,
+                        item.material,
+                        *data.results))
+                {
+                    return false;
+                }
             }
 
             data.draws.reserve(candidateCount);
@@ -322,7 +356,8 @@ namespace RVX
             RHICommandContext& ctx = context.Commands();
             if (!data.contextValid || !data.results ||
                 data.results->identity != data.identity || data.draws.empty() ||
-                !data.pipeline || !data.bindings.IsValid() ||
+                !data.skinnedPipeline || !data.rigidPipeline ||
+                !data.bindings.IsValid() ||
                 !data.identity.IsValid() || data.identity.graph == nullptr ||
                 !data.identity.Matches(*data.identity.graph) ||
                 !data.colorHandle.IsValid() ||
@@ -379,14 +414,24 @@ namespace RVX
             scissor.height = colorTexture->GetHeight();
             ctx.SetScissor(scissor);
 
-            ctx.SetPipeline(data.pipeline.Get());
-            ctx.SetDescriptorSet(0, data.bindings.frameDescriptorSet.Get());
+            RHIPipeline* currentPipeline = nullptr;
             for (const DrawRecord& draw : data.draws)
             {
                 if (!draw.buffers.IsValid() || !draw.buffers.positionBuffer ||
                     !draw.buffers.indexBuffer || !draw.material.IsDrawable())
                 {
                     continue;
+                }
+
+                RHIPipeline* pipeline = draw.skinned
+                    ? data.skinnedPipeline.Get()
+                    : data.rigidPipeline.Get();
+                if (pipeline != currentPipeline)
+                {
+                    ctx.SetPipeline(pipeline);
+                    ctx.SetDescriptorSet(
+                        0, data.bindings.frameDescriptorSet.Get());
+                    currentPipeline = pipeline;
                 }
 
                 ctx.SetDescriptorSet(
@@ -401,10 +446,11 @@ namespace RVX
                     ctx.SetVertexBuffer(2, draw.buffers.uvBuffer);
                 if (draw.buffers.tangentBuffer)
                     ctx.SetVertexBuffer(3, draw.buffers.tangentBuffer);
-                if (draw.buffers.boneIndicesBuffer)
+                if (draw.skinned)
+                {
                     ctx.SetVertexBuffer(4, draw.buffers.boneIndicesBuffer);
-                if (draw.buffers.boneWeightsBuffer)
                     ctx.SetVertexBuffer(5, draw.buffers.boneWeightsBuffer);
+                }
                 ctx.SetIndexBuffer(draw.buffers.indexBuffer, RHIFormat::R32_UINT);
                 ctx.DrawIndexed(draw.submesh.indexCount,
                                 1,
@@ -545,7 +591,8 @@ namespace RVX
                 if (!PrepareRecording(data, builder))
                 {
                     data.draws.clear();
-                    data.pipeline.Reset();
+                    data.skinnedPipeline.Reset();
+                    data.rigidPipeline.Reset();
                     data.bindings = {};
                     data.colorHandle = {};
                     data.depthHandle = {};

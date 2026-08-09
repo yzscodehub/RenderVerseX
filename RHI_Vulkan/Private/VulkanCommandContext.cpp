@@ -665,11 +665,25 @@ namespace RVX
             return;
         }
         const auto& expectedLayouts = pipelineLayout->GetDescriptorSetLayouts();
-        if (slot >= expectedLayouts.size() ||
-            !vkSet->IsReadyForBinding(expectedLayouts[slot]) ||
-            vkSet->GetLayout() != expectedLayouts[slot])
+        const RHIDescriptorSetLayout* const expectedLayout =
+            slot < expectedLayouts.size() ? expectedLayouts[slot] : nullptr;
+        VulkanDescriptorSetLayout* const actualLayout = vkSet->GetLayout();
+        const bool layoutMatches = actualLayout != nullptr &&
+            actualLayout == expectedLayout;
+        const bool readyForBinding = expectedLayout != nullptr &&
+            vkSet->IsReadyForBinding(expectedLayout);
+        if (!layoutMatches || !readyForBinding)
         {
-            RVX_RHI_ERROR("VulkanCommandContext: descriptor set layout does not match pipeline slot {}", slot);
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: descriptor set layout does not match pipeline '{}' slot {} "
+                "(actual='{}' {}, expected='{}' {}, ready={})",
+                m_currentPipeline->GetDebugName(),
+                slot,
+                actualLayout ? actualLayout->GetDebugName() : "<null>",
+                static_cast<const void*>(actualLayout),
+                expectedLayout ? expectedLayout->GetDebugName() : "<null>",
+                static_cast<const void*>(expectedLayout),
+                readyForBinding);
             return;
         }
 

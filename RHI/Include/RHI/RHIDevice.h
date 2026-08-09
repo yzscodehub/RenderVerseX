@@ -60,6 +60,18 @@ namespace RVX
         RHIDescriptorAllocatorStats renderTargets;
         RHIDescriptorAllocatorStats depthStencils;
     };
+
+    /** @brief Backend-neutral native validation/debug-layer telemetry. */
+    struct RHINativeValidationDiagnostics
+    {
+        bool available = false;
+        bool enabled = false;
+        bool readComplete = true;
+        uint64 messageCount = 0;
+        uint64 warningCount = 0;
+        uint64 errorCount = 0;
+        uint64 corruptionCount = 0;
+    };
     // =============================================================================
     // Device Description
     // =============================================================================
@@ -260,6 +272,13 @@ namespace RVX
 
         /** @brief Optional descriptor telemetry; empty on backends without CPU heaps. */
         virtual RHIDescriptorDiagnostics GetDescriptorDiagnostics() const
+        {
+            return {};
+        }
+
+        /** @brief Optional cumulative native validation telemetry. */
+        virtual RHINativeValidationDiagnostics
+            GetNativeValidationDiagnostics() const
         {
             return {};
         }

@@ -48,6 +48,7 @@ namespace RVX
         SampleRenderPath renderPath = SampleRenderPath::Auto;
         bool smoke = false;
         bool diagnostics = false;
+        bool deterministicCameraOrbit = false;
     };
 
     /**

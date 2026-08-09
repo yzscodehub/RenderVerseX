@@ -388,7 +388,29 @@ void GPUCulling::CommitAccessSnapshots(
         inputs->instanceAccess = snapshots.instances;
         inputs->gpuSceneCandidateAccess = snapshots.gpuSceneCandidates;
         inputs->constantsAccess = snapshots.constants;
+        inputs->accessSnapshots = snapshots;
     }
+}
+
+bool GPUCulling::CommitFrameSlotAccessSnapshots(
+    uint32 frameSlot,
+    const GPUCullingAccessSnapshots& snapshots)
+{
+    if (frameSlot >= m_frameInputs.size())
+    {
+        return false;
+    }
+
+    GPUCullingFrameInputs& inputs = m_frameInputs[frameSlot];
+    inputs.instanceAccess = snapshots.instances;
+    inputs.gpuSceneCandidateAccess = snapshots.gpuSceneCandidates;
+    inputs.constantsAccess = snapshots.constants;
+    inputs.accessSnapshots = snapshots;
+    if (frameSlot == m_activeFrameSlot)
+    {
+        RefreshActiveInputAccessSnapshots();
+    }
+    return true;
 }
 
 GPUCulling::GPUCullingFrameInputs* GPUCulling::GetActiveFrameInputs()
@@ -410,8 +432,22 @@ void GPUCulling::RefreshActiveInputAccessSnapshots()
 {
     if (const GPUCullingFrameInputs* inputs = GetActiveFrameInputs())
     {
+        m_instanceIndexBuffer = inputs->instanceIndexBuffer;
+        m_visibilityBuffer = inputs->visibilityBuffer;
+        m_visibleInstanceBuffer = inputs->visibleInstanceBuffer;
+        m_indirectBuffer = inputs->indirectBuffer;
+        m_drawCountBuffer = inputs->drawCountBuffer;
+        m_statsBuffer = inputs->statsBuffer;
+        m_gpuSceneDescriptorSet = inputs->gpuSceneDescriptorSet;
+        m_gpuSceneTableBuffers = inputs->gpuSceneTableBuffers;
+        m_gpuSceneTableCapacities = inputs->gpuSceneTableCapacities;
+        m_gpuSceneLeaseVersion = inputs->gpuSceneLeaseVersion;
+        m_gpuSceneEnabled = m_gpuSceneDescriptorSet &&
+            m_gpuSceneLeaseVersion != 0;
+        m_accessSnapshots = inputs->accessSnapshots;
         m_accessSnapshots.instances = inputs->instanceAccess;
-        m_accessSnapshots.gpuSceneCandidates = inputs->gpuSceneCandidateAccess;
+        m_accessSnapshots.gpuSceneCandidates =
+            inputs->gpuSceneCandidateAccess;
         m_accessSnapshots.constants = inputs->constantsAccess;
     }
 }
@@ -427,7 +463,25 @@ void GPUCulling::QueueFrameInputRetirements()
         QueueRenderOwnerRetirement(
             inputs.constantsBuffer, m_pendingOwnerRetirements);
         QueueRenderOwnerRetirement(
+            inputs.instanceIndexBuffer, m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            inputs.visibilityBuffer, m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            inputs.visibleInstanceBuffer, m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            inputs.indirectBuffer, m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            inputs.drawCountBuffer, m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            inputs.statsBuffer, m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
             inputs.descriptorSet, m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            inputs.gpuSceneDescriptorSet, m_pendingOwnerRetirements);
+        for (RHIBufferRef& tableBuffer : inputs.gpuSceneTableBuffers)
+        {
+            tableBuffer.Reset();
+        }
     }
     m_frameInputs.clear();
 }
@@ -438,16 +492,20 @@ void GPUCulling::CreateResources()
 
     const uint32 frameSlotCount = std::max(
         1u, static_cast<uint32>(m_frameInputs.size()));
+    m_instanceIndexBuffer.Reset();
+    m_visibilityBuffer.Reset();
+    m_visibleInstanceBuffer.Reset();
+    m_indirectBuffer.Reset();
+    m_drawCountBuffer.Reset();
+    m_statsBuffer.Reset();
+    m_gpuSceneDescriptorSet.Reset();
+    m_gpuSceneTableBuffers = {};
+    m_gpuSceneTableCapacities = {};
+    m_gpuSceneLeaseVersion = 0;
+    m_gpuSceneEnabled = false;
     QueueFrameInputRetirements();
     m_frameInputs.resize(frameSlotCount);
     m_activeFrameSlot = std::min(m_activeFrameSlot, frameSlotCount - 1u);
-
-    QueueRenderOwnerRetirement(m_instanceIndexBuffer, m_pendingOwnerRetirements);
-    QueueRenderOwnerRetirement(m_visibilityBuffer, m_pendingOwnerRetirements);
-    QueueRenderOwnerRetirement(m_visibleInstanceBuffer, m_pendingOwnerRetirements);
-    QueueRenderOwnerRetirement(m_indirectBuffer, m_pendingOwnerRetirements);
-    QueueRenderOwnerRetirement(m_drawCountBuffer, m_pendingOwnerRetirements);
-    QueueRenderOwnerRetirement(m_statsBuffer, m_pendingOwnerRetirements);
     m_accessSnapshots = {};
 
     const bool gpuWritableOutputs = SupportsGpuExecution();
@@ -476,13 +534,26 @@ void GPUCulling::CreateResources()
         }
     }
 
-    // Indirect firstInstance offsets per-instance vertex fetches, but is not
-    // folded into SV_InstanceID. Keep an identity stream so GPU vertex shaders
-    // can recover the global structured-buffer index on every backend.
-    m_instanceIndexBuffer = CreateRasterInstanceIndexBuffer(
-        *m_device,
-        m_config.maxInstances,
-        "GPUCulling.InstanceIndexBuffer");
+    // Outputs are per completion-safe frame slot as well.  Sharing them across
+    // slots would allow the next compute dispatch to overwrite indirect data
+    // still consumed by a prior frame; allocating them per recording instead
+    // causes unbounded Vulkan allocator churn.
+    for (GPUCullingFrameInputs& inputs : m_frameInputs)
+    {
+        inputs.instanceIndexBuffer = CreateRasterInstanceIndexBuffer(
+            *m_device,
+            m_config.maxInstances,
+            "GPUCulling.InstanceIndexBuffer");
+        if (inputs.instanceIndexBuffer)
+        {
+            inputs.accessSnapshots.instanceIndices =
+                MakeRHIBufferAccessSnapshot(
+                    RHIResourceState::VertexBuffer,
+                    RHIShaderStage::Vertex,
+                    GPUQueueDomain::Graphics,
+                    RHIContentValidity::Unknown);
+        }
+    }
 
     // Visibility flag buffer (GPU cull pass output, compact pass input)
     desc.size = m_config.maxInstances * sizeof(uint32);
@@ -492,7 +563,10 @@ void GPUCulling::CreateResources()
     desc.memoryType = gpuWritableOutputs ? RHIMemoryType::Default : cpuOutputMemoryType;
     desc.stride = sizeof(uint32);
     desc.debugName = "GPUCulling.VisibilityBuffer";
-    m_visibilityBuffer = m_device->CreateBuffer(desc);
+    for (GPUCullingFrameInputs& inputs : m_frameInputs)
+    {
+        inputs.visibilityBuffer = m_device->CreateBuffer(desc);
+    }
 
     // Visible instance buffer (output)
     desc.size = m_config.maxInstances * sizeof(uint32);
@@ -502,16 +576,22 @@ void GPUCulling::CreateResources()
     desc.memoryType = gpuWritableOutputs ? RHIMemoryType::Default : cpuOutputMemoryType;
     desc.stride = sizeof(uint32);
     desc.debugName = "GPUCulling.VisibleInstanceBuffer";
-    m_visibleInstanceBuffer = m_device->CreateBuffer(desc);
-    if (m_visibleInstanceBuffer)
+    for (GPUCullingFrameInputs& inputs : m_frameInputs)
     {
-        m_accessSnapshots.visibleInstances = MakeRHIBufferAccessSnapshot(
-            gpuWritableOutputs
-                ? RHIResourceState::UnorderedAccess
-                : RHIResourceState::VertexBuffer,
-            gpuWritableOutputs ? RHIShaderStage::Compute : RHIShaderStage::Vertex,
-            GPUQueueDomain::Graphics,
-            RHIContentValidity::Unknown);
+        inputs.visibleInstanceBuffer = m_device->CreateBuffer(desc);
+        if (inputs.visibleInstanceBuffer)
+        {
+            inputs.accessSnapshots.visibleInstances =
+                MakeRHIBufferAccessSnapshot(
+                    gpuWritableOutputs
+                        ? RHIResourceState::UnorderedAccess
+                        : RHIResourceState::VertexBuffer,
+                    gpuWritableOutputs
+                        ? RHIShaderStage::Compute
+                        : RHIShaderStage::Vertex,
+                    GPUQueueDomain::Graphics,
+                    RHIContentValidity::Unknown);
+        }
     }
 
     // Indirect draw buffer
@@ -522,7 +602,10 @@ void GPUCulling::CreateResources()
     desc.memoryType = RHIMemoryType::Default;
     desc.stride = sizeof(IndirectDrawIndexedCommand);
     desc.debugName = "GPUCulling.IndirectDrawBuffer";
-    m_indirectBuffer = m_device->CreateBuffer(desc);
+    for (GPUCullingFrameInputs& inputs : m_frameInputs)
+    {
+        inputs.indirectBuffer = m_device->CreateBuffer(desc);
+    }
 
     // Draw count buffer. Element 0 is the legacy total draw count; grouped
     // draws use one counter per GPUCullingDrawGroup at the same index.
@@ -535,7 +618,10 @@ void GPUCulling::CreateResources()
     desc.memoryType = gpuWritableOutputs ? RHIMemoryType::Default : cpuOutputMemoryType;
     desc.stride = sizeof(uint32);
     desc.debugName = "GPUCulling.DrawCountBuffer";
-    m_drawCountBuffer = m_device->CreateBuffer(desc);
+    for (GPUCullingFrameInputs& inputs : m_frameInputs)
+    {
+        inputs.drawCountBuffer = m_device->CreateBuffer(desc);
+    }
 
     // Per-flight culling constants must not be overwritten while a previous
     // compute dispatch is still consuming them.
@@ -556,16 +642,6 @@ void GPUCulling::CreateResources()
                 RHIContentValidity::Unknown);
         }
     }
-    if (m_instanceIndexBuffer)
-    {
-        m_accessSnapshots.instanceIndices = MakeRHIBufferAccessSnapshot(
-            RHIResourceState::VertexBuffer,
-            RHIShaderStage::Vertex,
-            GPUQueueDomain::Graphics,
-            RHIContentValidity::Unknown);
-    }
-    RefreshActiveInputAccessSnapshots();
-
     // Statistics buffer (optional)
     if (m_statsEnabled)
     {
@@ -574,8 +650,13 @@ void GPUCulling::CreateResources()
         desc.memoryType = RHIMemoryType::Readback;
         desc.stride = sizeof(uint32);
         desc.debugName = "GPUCulling.StatsBuffer";
-        m_statsBuffer = m_device->CreateBuffer(desc);
+        for (GPUCullingFrameInputs& inputs : m_frameInputs)
+        {
+            inputs.statsBuffer = m_device->CreateBuffer(desc);
+        }
     }
+
+    RefreshActiveInputAccessSnapshots();
 }
 
 void GPUCulling::CreatePipelineResources()
@@ -598,7 +679,17 @@ void GPUCulling::CreatePipelineResources()
     QueueRenderOwnerRetirement(m_gpuSceneFrustumCullPipeline, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_gpuSceneCompactPipeline, m_pendingOwnerRetirements);
     QueueRenderOwnerRetirement(m_gpuSceneFinalizePipeline, m_pendingOwnerRetirements);
-    QueueRenderOwnerRetirement(m_gpuSceneDescriptorSet, m_pendingOwnerRetirements);
+    m_gpuSceneDescriptorSet.Reset();
+    for (GPUCullingFrameInputs& inputs : m_frameInputs)
+    {
+        QueueRenderOwnerRetirement(
+            inputs.descriptorSet, m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            inputs.gpuSceneDescriptorSet, m_pendingOwnerRetirements);
+        inputs.gpuSceneTableBuffers = {};
+        inputs.gpuSceneTableCapacities = {};
+        inputs.gpuSceneLeaseVersion = 0;
+    }
     m_gpuSceneTableBuffers = {};
     m_gpuSceneTableCapacities = {};
     m_gpuSceneLeaseVersion = 0;
@@ -615,13 +706,15 @@ void GPUCulling::CreatePipelineResources()
         std::all_of(m_frameInputs.begin(), m_frameInputs.end(),
                     [](const GPUCullingFrameInputs& inputs)
                     {
-                        return inputs.instanceBuffer && inputs.constantsBuffer;
+                        return inputs.instanceBuffer &&
+                            inputs.constantsBuffer &&
+                            inputs.instanceIndexBuffer &&
+                            inputs.visibilityBuffer &&
+                            inputs.visibleInstanceBuffer &&
+                            inputs.indirectBuffer &&
+                            inputs.drawCountBuffer;
                     });
-    if (!hasCompleteFrameInputs || !m_instanceIndexBuffer ||
-        !m_visibilityBuffer ||
-        !m_visibleInstanceBuffer ||
-        !m_indirectBuffer ||
-        !m_drawCountBuffer)
+    if (!hasCompleteFrameInputs)
     {
         m_pipelineFallbackReason = GPUCullingFallbackReason::PipelineResourcesUnavailable;
         return;
@@ -743,10 +836,10 @@ void GPUCulling::CreatePipelineResources()
         descriptorDesc.SetLayout(m_cullingDescriptorSetLayout.Get())
             .BindBuffer(0, inputs.constantsBuffer.Get())
             .BindBuffer(1, inputs.instanceBuffer.Get())
-            .BindBuffer(2, m_visibilityBuffer.Get())
-            .BindBuffer(3, m_visibleInstanceBuffer.Get())
-            .BindBuffer(4, m_indirectBuffer.Get())
-            .BindBuffer(5, m_drawCountBuffer.Get());
+            .BindBuffer(2, inputs.visibilityBuffer.Get())
+            .BindBuffer(3, inputs.visibleInstanceBuffer.Get())
+            .BindBuffer(4, inputs.indirectBuffer.Get())
+            .BindBuffer(5, inputs.drawCountBuffer.Get());
         inputs.descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
         if (!inputs.descriptorSet)
         {
@@ -962,8 +1055,15 @@ GPUCullingExecutionDecision GPUCulling::GetExecutionDecision() const
 std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGraph(
     const GPUCullingRecordingIdentity& identity) const
 {
+    const GPUCullingFrameInputs* sourceInputs = GetActiveFrameInputs();
     if (!identity.IsValid() || m_device == nullptr ||
-        GetActiveFrameInputs() == nullptr)
+        sourceInputs == nullptr || !sourceInputs->instanceBuffer ||
+        !sourceInputs->constantsBuffer ||
+        !sourceInputs->instanceIndexBuffer ||
+        !sourceInputs->visibilityBuffer ||
+        !sourceInputs->visibleInstanceBuffer ||
+        !sourceInputs->indirectBuffer ||
+        !sourceInputs->drawCountBuffer)
     {
         RVX_RENDER_WARN("GPUCulling: rejected an invalid graph-recording seal");
         return nullptr;
@@ -975,12 +1075,21 @@ std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGraph(
     sealed.m_config = m_config;
     sealed.m_occlusionRequested = m_occlusionRequested;
     sealed.m_statsEnabled = m_statsEnabled;
-    sealed.m_frameInputs.resize(1);
-    sealed.CreateResources();
+    GPUCullingFrameInputs sealedInputs = *sourceInputs;
+    sealedInputs.gpuSceneCandidateBuffer.Reset();
+    sealedInputs.gpuSceneDescriptorSet.Reset();
+    sealedInputs.gpuSceneCandidateAccess = {};
+    sealedInputs.accessSnapshots.gpuSceneCandidates = {};
+    sealedInputs.gpuSceneTableBuffers = {};
+    sealedInputs.gpuSceneTableCapacities = {};
+    sealedInputs.gpuSceneLeaseVersion = 0;
+    sealed.m_frameInputs.push_back(std::move(sealedInputs));
+    sealed.m_activeFrameSlot = 0;
+    sealed.RefreshActiveInputAccessSnapshots();
 
-    // Pipelines and layouts are immutable RHI objects.  The recorded state
-    // owns strong references to them, while its descriptor set below binds
-    // only the new per-recording buffers created above.
+    // Pipelines/layouts and the waited frame-slot resources are immutable for
+    // the lifetime of this recording.  Strong references prevent teardown;
+    // the RenderContext slot fence prevents reuse before GPU completion.
     sealed.m_frustumCullShader = m_frustumCullShader;
     sealed.m_compactShader = m_compactShader;
     sealed.m_finalizeShader = m_finalizeShader;
@@ -991,31 +1100,6 @@ std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGraph(
     sealed.m_compactPipeline = m_compactPipeline;
     sealed.m_finalizePipeline = m_finalizePipeline;
     sealed.m_pipelineFallbackReason = m_pipelineFallbackReason;
-
-    GPUCullingFrameInputs* sealedInputs = sealed.GetActiveFrameInputs();
-    if (sealed.m_cullingDescriptorSetLayout && sealedInputs != nullptr &&
-        sealedInputs->constantsBuffer && sealedInputs->instanceBuffer &&
-        sealed.m_visibilityBuffer && sealed.m_visibleInstanceBuffer &&
-        sealed.m_indirectBuffer && sealed.m_drawCountBuffer)
-    {
-        RHIDescriptorSetDesc descriptorDesc;
-        descriptorDesc.debugName = "GPUCulling.RecordedDescriptorSet";
-        descriptorDesc.SetLayout(sealed.m_cullingDescriptorSetLayout.Get())
-            .BindBuffer(0, sealedInputs->constantsBuffer.Get())
-            .BindBuffer(1, sealedInputs->instanceBuffer.Get())
-            .BindBuffer(2, sealed.m_visibilityBuffer.Get())
-            .BindBuffer(3, sealed.m_visibleInstanceBuffer.Get())
-            .BindBuffer(4, sealed.m_indirectBuffer.Get())
-            .BindBuffer(5, sealed.m_drawCountBuffer.Get());
-        sealedInputs->descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
-        if (!sealedInputs->descriptorSet)
-        {
-            sealed.m_frustumCullPipeline.Reset();
-            sealed.m_compactPipeline.Reset();
-            sealed.m_pipelineFallbackReason =
-                GPUCullingFallbackReason::DescriptorSetCreationFailed;
-        }
-    }
 
     sealed.m_instances = m_instances;
     sealed.m_gpuSceneCandidates = m_gpuSceneCandidates;
@@ -1033,7 +1117,6 @@ std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGraph(
     sealed.m_usedGpuExecutionLastCull = m_usedGpuExecutionLastCull;
     sealed.m_lastFallbackReason = m_lastFallbackReason;
     sealed.m_stats = m_stats;
-    sealed.UploadInstances();
 
     recordedState->m_identity = identity;
     recordedState->m_sourceFrameSlot = m_activeFrameSlot;
@@ -1042,8 +1125,13 @@ std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGraph(
 
 std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGPUSceneGraph(
     const GPUCullingRecordingIdentity& identity,
-    const GPUSceneResidentGraphLease& lease) const
+    const GPUSceneResidentGraphLease& lease)
 {
+    if (!ConfigureGPUSceneRecording(lease))
+    {
+        return nullptr;
+    }
+
     std::shared_ptr<GPUCullingRecordedState> recordedState = SealForGraph(identity);
     if (!recordedState)
     {
@@ -1051,6 +1139,29 @@ std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGPUSceneGraph(
     }
 
     GPUCulling& sealed = recordedState->m_culling;
+    const GPUCullingFrameInputs* sourceInputs = GetActiveFrameInputs();
+    GPUCullingFrameInputs* sealedInputs = sealed.GetActiveFrameInputs();
+    if (sourceInputs == nullptr || sealedInputs == nullptr ||
+        !sourceInputs->gpuSceneCandidateBuffer ||
+        !sourceInputs->gpuSceneDescriptorSet)
+    {
+        return nullptr;
+    }
+    sealedInputs->gpuSceneCandidateBuffer =
+        sourceInputs->gpuSceneCandidateBuffer;
+    sealedInputs->gpuSceneDescriptorSet =
+        sourceInputs->gpuSceneDescriptorSet;
+    sealedInputs->gpuSceneCandidateAccess =
+        sourceInputs->gpuSceneCandidateAccess;
+    sealedInputs->accessSnapshots.gpuSceneCandidates =
+        sourceInputs->accessSnapshots.gpuSceneCandidates;
+    sealedInputs->gpuSceneTableBuffers =
+        sourceInputs->gpuSceneTableBuffers;
+    sealedInputs->gpuSceneTableCapacities =
+        sourceInputs->gpuSceneTableCapacities;
+    sealedInputs->gpuSceneLeaseVersion =
+        sourceInputs->gpuSceneLeaseVersion;
+    sealed.RefreshActiveInputAccessSnapshots();
     sealed.m_gpuSceneFrustumCullShader = m_gpuSceneFrustumCullShader;
     sealed.m_gpuSceneCompactShader = m_gpuSceneCompactShader;
     sealed.m_gpuSceneFinalizeShader = m_gpuSceneFinalizeShader;
@@ -1059,10 +1170,6 @@ std::shared_ptr<GPUCullingRecordedState> GPUCulling::SealForGPUSceneGraph(
     sealed.m_gpuSceneFrustumCullPipeline = m_gpuSceneFrustumCullPipeline;
     sealed.m_gpuSceneCompactPipeline = m_gpuSceneCompactPipeline;
     sealed.m_gpuSceneFinalizePipeline = m_gpuSceneFinalizePipeline;
-    if (!sealed.ConfigureGPUSceneRecording(lease))
-    {
-        return nullptr;
-    }
     return recordedState;
 }
 
@@ -1412,6 +1519,7 @@ void GPUCulling::UploadInstances()
             lastGpuDomain,
             RHIContentValidity::Valid);
         m_accessSnapshots.instances = inputs->instanceAccess;
+        inputs->accessSnapshots.instances = inputs->instanceAccess;
     }
 
     m_stats.totalInstances = m_instanceCount;
@@ -1734,6 +1842,7 @@ void GPUCulling::Cull(RHICommandContext& ctx,
                 lastGpuDomain,
                 RHIContentValidity::Valid);
             m_accessSnapshots.constants = inputs->constantsAccess;
+            inputs->accessSnapshots.constants = inputs->constantsAccess;
         }
     }
 
@@ -1830,6 +1939,8 @@ void GPUCulling::UploadGPUSceneCandidates()
         lastGpuDomain,
         RHIContentValidity::Valid);
     m_accessSnapshots.gpuSceneCandidates = inputs->gpuSceneCandidateAccess;
+    inputs->accessSnapshots.gpuSceneCandidates =
+        inputs->gpuSceneCandidateAccess;
 }
 
 bool GPUCulling::ConfigureGPUSceneRecording(
@@ -1838,11 +1949,46 @@ bool GPUCulling::ConfigureGPUSceneRecording(
     GPUCullingFrameInputs* inputs = GetActiveFrameInputs();
     if (!lease.IsValid() || !HasCompleteGPUSceneCandidates(lease.version) ||
         !IsGPUSceneExecutionReady() || inputs == nullptr ||
-        !inputs->constantsBuffer ||
-        !m_visibilityBuffer || !m_visibleInstanceBuffer || !m_indirectBuffer ||
-        !m_drawCountBuffer)
+        !inputs->constantsBuffer || !inputs->visibilityBuffer ||
+        !inputs->visibleInstanceBuffer || !inputs->indirectBuffer ||
+        !inputs->drawCountBuffer)
     {
         return false;
+    }
+
+    // Validate the complete immutable binding before allocating or updating
+    // any slot-owned resource.  A malformed lease therefore cannot partially
+    // mutate the frame slot and cannot poison a previously valid descriptor.
+    GPUCullingConstants constants = MakeDefaultGPUCullingConstants();
+    constants.counts[0] = m_instanceCount;
+    constants.counts[1] = static_cast<uint32>(m_drawGroups.size());
+    for (uint32 tableIndex = 0;
+         tableIndex < RVX_GPU_SCENE_CULLING_TABLE_COUNT;
+         ++tableIndex)
+    {
+        if (lease.capacities[tableIndex] == 0)
+        {
+            return false;
+        }
+        const uint32 rowStride = GetGPUSceneTableRowStride(tableIndex);
+        const uint64 requiredBytes =
+            static_cast<uint64>(lease.capacities[tableIndex]) * rowStride;
+        if (rowStride == 0 || !lease.buffers[tableIndex] ||
+            lease.buffers[tableIndex]->GetStride() != rowStride ||
+            requiredBytes > lease.buffers[tableIndex]->GetSize())
+        {
+            return false;
+        }
+        if (tableIndex < 4)
+        {
+            constants.gpuSceneTableCounts0[tableIndex] =
+                lease.capacities[tableIndex];
+        }
+        else
+        {
+            constants.gpuSceneTableCounts1[tableIndex - 4] =
+                lease.capacities[tableIndex];
+        }
     }
 
     if (!inputs->gpuSceneCandidateBuffer)
@@ -1876,37 +2022,6 @@ bool GPUCulling::ConfigureGPUSceneRecording(
     // A GPU-scene descriptor is usable only with constants written from the
     // same exact lease.  This seals all capacity reads before any later
     // consumer can dispatch these pipelines.
-    GPUCullingConstants constants = MakeDefaultGPUCullingConstants();
-    constants.counts[0] = m_instanceCount;
-    constants.counts[1] = static_cast<uint32>(m_drawGroups.size());
-    for (uint32 tableIndex = 0;
-         tableIndex < RVX_GPU_SCENE_CULLING_TABLE_COUNT;
-         ++tableIndex)
-    {
-        if (lease.capacities[tableIndex] == 0)
-        {
-            return false;
-        }
-        const uint32 rowStride = GetGPUSceneTableRowStride(tableIndex);
-        const uint64 requiredBytes =
-            static_cast<uint64>(lease.capacities[tableIndex]) * rowStride;
-        if (rowStride == 0 || !lease.buffers[tableIndex] ||
-            lease.buffers[tableIndex]->GetStride() != rowStride ||
-            requiredBytes > lease.buffers[tableIndex]->GetSize())
-        {
-            return false;
-        }
-        if (tableIndex < 4)
-        {
-            constants.gpuSceneTableCounts0[tableIndex] =
-                lease.capacities[tableIndex];
-        }
-        else
-        {
-            constants.gpuSceneTableCounts1[tableIndex - 4] =
-                lease.capacities[tableIndex];
-        }
-    }
     if (!UploadBufferData(
             inputs->constantsBuffer.Get(), &constants, sizeof(constants), nullptr))
     {
@@ -1920,33 +2035,58 @@ bool GPUCulling::ConfigureGPUSceneRecording(
         lastGpuDomain,
         RHIContentValidity::Valid);
     m_accessSnapshots.constants = inputs->constantsAccess;
+    inputs->accessSnapshots.constants = inputs->constantsAccess;
 
-    RHIDescriptorSetDesc descriptorDesc;
-    descriptorDesc.debugName = "GPUCulling.GPUSceneRecordedDescriptorSet";
-    descriptorDesc.SetLayout(m_gpuSceneDescriptorSetLayout.Get())
-        .BindBuffer(0, inputs->constantsBuffer.Get())
-        .BindBuffer(1, inputs->gpuSceneCandidateBuffer.Get())
-        .BindBuffer(2, m_visibilityBuffer.Get())
-        .BindBuffer(3, m_visibleInstanceBuffer.Get())
-        .BindBuffer(4, m_indirectBuffer.Get())
-        .BindBuffer(5, m_drawCountBuffer.Get());
-    for (uint32 tableIndex = 0;
-         tableIndex < RVX_GPU_SCENE_CULLING_TABLE_COUNT;
-         ++tableIndex)
+    bool descriptorMatches = inputs->gpuSceneDescriptorSet &&
+        inputs->gpuSceneLeaseVersion == lease.version &&
+        inputs->gpuSceneTableCapacities == lease.capacities;
+    if (descriptorMatches)
     {
-        descriptorDesc.BindBuffer(6 + tableIndex, lease.buffers[tableIndex].Get());
+        for (uint32 tableIndex = 0;
+             tableIndex < RVX_GPU_SCENE_CULLING_TABLE_COUNT;
+             ++tableIndex)
+        {
+            if (inputs->gpuSceneTableBuffers[tableIndex].Get() !=
+                lease.buffers[tableIndex].Get())
+            {
+                descriptorMatches = false;
+                break;
+            }
+        }
     }
 
-    m_gpuSceneDescriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
-    if (!m_gpuSceneDescriptorSet)
+    if (!descriptorMatches)
     {
-        return false;
+        RHIDescriptorSetDesc descriptorDesc;
+        descriptorDesc.debugName = "GPUCulling.GPUSceneFrameSlotDescriptorSet";
+        descriptorDesc.SetLayout(m_gpuSceneDescriptorSetLayout.Get())
+            .BindBuffer(0, inputs->constantsBuffer.Get())
+            .BindBuffer(1, inputs->gpuSceneCandidateBuffer.Get())
+            .BindBuffer(2, inputs->visibilityBuffer.Get())
+            .BindBuffer(3, inputs->visibleInstanceBuffer.Get())
+            .BindBuffer(4, inputs->indirectBuffer.Get())
+            .BindBuffer(5, inputs->drawCountBuffer.Get());
+        for (uint32 tableIndex = 0;
+             tableIndex < RVX_GPU_SCENE_CULLING_TABLE_COUNT;
+             ++tableIndex)
+        {
+            descriptorDesc.BindBuffer(
+                6 + tableIndex, lease.buffers[tableIndex].Get());
+        }
+
+        RHIDescriptorSetRef descriptorSet =
+            m_device->CreateDescriptorSet(descriptorDesc);
+        if (!descriptorSet)
+        {
+            return false;
+        }
+        inputs->gpuSceneDescriptorSet = std::move(descriptorSet);
+        inputs->gpuSceneTableBuffers = lease.buffers;
+        inputs->gpuSceneTableCapacities = lease.capacities;
+        inputs->gpuSceneLeaseVersion = lease.version;
     }
 
-    m_gpuSceneTableBuffers = lease.buffers;
-    m_gpuSceneTableCapacities = lease.capacities;
-    m_gpuSceneLeaseVersion = lease.version;
-    m_gpuSceneEnabled = true;
+    RefreshActiveInputAccessSnapshots();
     return true;
 }
 
@@ -2035,6 +2175,7 @@ bool GPUCulling::CullGPUScene(RHICommandContext& ctx,
         lastGpuDomain,
         RHIContentValidity::Valid);
     m_accessSnapshots.constants = inputs->constantsAccess;
+    inputs->accessSnapshots.constants = inputs->constantsAccess;
 
     const uint32 clearThreadCount = std::max(
         m_instanceCount,

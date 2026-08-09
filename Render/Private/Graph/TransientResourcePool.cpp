@@ -935,6 +935,7 @@ namespace RVX
                 it->second.availableAfter = {};
                 if (m_impl->stats.inFlightTextureLeases > 0)
                     --m_impl->stats.inFlightTextureLeases;
+                ++m_impl->stats.completionRetirementCount;
             }
             if (it->second.state == TransientResourceLeaseState::Free)
             {
@@ -1035,6 +1036,7 @@ namespace RVX
                 it->second.availableAfter = {};
                 if (m_impl->stats.inFlightBufferLeases > 0)
                     --m_impl->stats.inFlightBufferLeases;
+                ++m_impl->stats.completionRetirementCount;
             }
             if (it->second.state == TransientResourceLeaseState::Free)
             {

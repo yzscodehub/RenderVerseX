@@ -1,5 +1,7 @@
 #include "Render/Passes/ObjectVelocityPass.h"
 
+#include "Passes/MaterialTextureGraphBindings.h"
+
 #include "Core/Log.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
@@ -37,6 +39,7 @@ namespace RVX
             std::array<uint32, 1> objectDynamicOffsets{0};
             MaterialBindingSnapshot material{};
             bool masked = false;
+            bool skinned = false;
         };
 
         struct GraphPassData
@@ -49,7 +52,9 @@ namespace RVX
             PipelineCache* pipelineCache = nullptr;
             MaterialSystem* materialSystem = nullptr;
             RHIPipelineRef opaquePipeline;
+            RHIPipelineRef rigidOpaquePipeline;
             RHIPipelineRef maskedPipeline;
+            RHIPipelineRef rigidMaskedPipeline;
             RasterDrawBindingSnapshot bindings{};
             std::vector<DrawRecord> draws;
             RGTextureHandle velocityHandle{};
@@ -149,7 +154,9 @@ namespace RVX
                 }
             }
             if (!RetainResource(builder, data.opaquePipeline.Get()) ||
-                !RetainResource(builder, data.maskedPipeline.Get()))
+                !RetainResource(builder, data.rigidOpaquePipeline.Get()) ||
+                !RetainResource(builder, data.maskedPipeline.Get()) ||
+                !RetainResource(builder, data.rigidMaskedPipeline.Get()))
             {
                 return false;
             }
@@ -222,11 +229,18 @@ namespace RVX
                 ++stats.skippedMissingUVCount;
                 return false;
             }
+            const bool skinned = object.HasSkinningData();
+            if (skinned && !buffers.HasSkinningVertexData())
+            {
+                ++stats.skippedMissingResourceCount;
+                return false;
+            }
 
             DrawRecord record;
             record.buffers = buffers;
             record.submesh = buffers.submeshes[item.submeshIndex];
             record.masked = masked;
+            record.skinned = skinned;
             if (masked)
             {
                 MaterialBindingOptions materialOptions;
@@ -292,12 +306,38 @@ namespace RVX
             }
             const RHIFormat outputFormat = stats.outputFormat;
             data.opaquePipeline = RHIPipelineRef(
-                data.pipelineCache->GetObjectVelocityPipeline(outputFormat));
+                data.pipelineCache->GetObjectVelocityPipeline(
+                    outputFormat,
+                    DefaultLitDirectVertexInputMode::Skinned));
+            data.rigidOpaquePipeline = RHIPipelineRef(
+                data.pipelineCache->GetObjectVelocityPipeline(
+                    outputFormat,
+                    DefaultLitDirectVertexInputMode::Rigid));
             data.maskedPipeline = RHIPipelineRef(
-                data.pipelineCache->GetMaskedObjectVelocityPipeline(outputFormat));
-            if (!data.opaquePipeline || !data.maskedPipeline)
+                data.pipelineCache->GetMaskedObjectVelocityPipeline(
+                    outputFormat,
+                    DefaultLitDirectVertexInputMode::Skinned));
+            data.rigidMaskedPipeline = RHIPipelineRef(
+                data.pipelineCache->GetMaskedObjectVelocityPipeline(
+                    outputFormat,
+                    DefaultLitDirectVertexInputMode::Rigid));
+            if (!data.opaquePipeline || !data.rigidOpaquePipeline ||
+                !data.maskedPipeline || !data.rigidMaskedPipeline)
             {
                 return false;
+            }
+
+            for (const RenderDrawItem& item :
+                 data.frameSnapshot->maskedDrawItems)
+            {
+                if (!DeclareMaterialTextureGraphReads(
+                        builder,
+                        data.resourceRegistry,
+                        item.material,
+                        *data.results))
+                {
+                    return false;
+                }
             }
 
             data.draws.reserve(stats.drawItemCount);
@@ -466,8 +506,19 @@ namespace RVX
                     ++stats.skippedMissingResourceCount;
                     continue;
                 }
-                RHIPipeline* pipeline = draw.masked
-                    ? data.maskedPipeline.Get() : data.opaquePipeline.Get();
+                RHIPipeline* pipeline = nullptr;
+                if (draw.masked)
+                {
+                    pipeline = draw.skinned
+                        ? data.maskedPipeline.Get()
+                        : data.rigidMaskedPipeline.Get();
+                }
+                else
+                {
+                    pipeline = draw.skinned
+                        ? data.opaquePipeline.Get()
+                        : data.rigidOpaquePipeline.Get();
+                }
                 if (pipeline != currentPipeline)
                 {
                     ctx.SetPipeline(pipeline);
@@ -484,10 +535,11 @@ namespace RVX
                 ctx.SetVertexBuffer(0, draw.buffers.positionBuffer);
                 if (draw.masked)
                     ctx.SetVertexBuffer(2, draw.buffers.uvBuffer);
-                if (draw.buffers.boneIndicesBuffer)
+                if (draw.skinned)
+                {
                     ctx.SetVertexBuffer(4, draw.buffers.boneIndicesBuffer);
-                if (draw.buffers.boneWeightsBuffer)
                     ctx.SetVertexBuffer(5, draw.buffers.boneWeightsBuffer);
+                }
                 ctx.SetIndexBuffer(draw.buffers.indexBuffer, RHIFormat::R32_UINT);
                 ctx.DrawIndexed(draw.submesh.indexCount,
                                 1,
@@ -576,7 +628,14 @@ namespace RVX
         if (!m_pipelineCache->GetFrameDescriptorSet() ||
             !m_pipelineCache->GetObjectDescriptorSet() ||
             !m_pipelineCache->GetObjectVelocityPipeline(RHIFormat::RG16_FLOAT) ||
-            !m_pipelineCache->GetMaskedObjectVelocityPipeline(RHIFormat::RG16_FLOAT))
+            !m_pipelineCache->GetObjectVelocityPipeline(
+                RHIFormat::RG16_FLOAT,
+                DefaultLitDirectVertexInputMode::Rigid) ||
+            !m_pipelineCache->GetMaskedObjectVelocityPipeline(
+                RHIFormat::RG16_FLOAT) ||
+            !m_pipelineCache->GetMaskedObjectVelocityPipeline(
+                RHIFormat::RG16_FLOAT,
+                DefaultLitDirectVertexInputMode::Rigid))
         {
             m_unsupportedReason = "Object velocity pipeline resources are not available";
             return false;

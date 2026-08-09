@@ -1694,6 +1694,66 @@ void SceneRenderer::PublishProvisionalFrameAccessSnapshots(
         m_backBufferAccessSnapshots[m_activeBackBufferIndex] =
             *backBufferAccess;
     }
+
+    const auto publishExternalTexture =
+        [this](const RenderGraphExternalTextureAccess& access)
+    {
+        if (!access.resource.IsValid() ||
+            !access.graphTexture.IsValid() ||
+            m_renderResourceRegistry == nullptr ||
+            m_renderGraph == nullptr)
+        {
+            return;
+        }
+        const auto duplicate = std::find_if(
+            m_frameAccessSnapshotRollback.resourceTextures.begin(),
+            m_frameAccessSnapshotRollback.resourceTextures.end(),
+            [&access](
+                const FrameAccessSnapshotRollback::ResourceTexture& rollback)
+            {
+                return rollback.resource == access.resource;
+            });
+        if (duplicate !=
+            m_frameAccessSnapshotRollback.resourceTextures.end())
+        {
+            return;
+        }
+        const RenderTextureResourceData* texture =
+            m_renderResourceRegistry->ResolveTexture(access.resource);
+        if (texture == nullptr || !texture->texture)
+        {
+            return;
+        }
+        const RHITextureAccessSnapshot realized =
+            m_renderGraph->GetRealizedAccess(access.graphTexture);
+        m_frameAccessSnapshotRollback.resourceTextures.push_back(
+            {access.resource, texture->accessSnapshot});
+        if (!m_renderResourceRegistry->CommitTextureAccessSnapshot(
+                access.resource, realized))
+        {
+            m_frameAccessSnapshotRollback.resourceTextures.pop_back();
+            RVX_RENDER_ERROR(
+                "SceneRenderer: failed to publish provisional texture access for resource {}:{}",
+                access.resource.slot,
+                access.resource.generation);
+            return;
+        }
+        m_frameAccessSnapshotRollback.pending = true;
+    };
+    for (const RenderGraphExternalTextureAccess& access :
+         m_frameExternalTextureAccesses)
+    {
+        publishExternalTexture(access);
+    }
+    if (m_activeRenderPassResults != nullptr &&
+        m_activeRenderPassResults->identity == m_activeRenderPassIdentity)
+    {
+        for (const RenderGraphExternalTextureAccess& access :
+             m_activeRenderPassResults->externalTextureAccesses)
+        {
+            publishExternalTexture(access);
+        }
+    }
 }
 
 void SceneRenderer::ConfirmProvisionalFrameAccessSnapshots() noexcept
@@ -1718,6 +1778,23 @@ void SceneRenderer::RestoreProvisionalFrameAccessSnapshots() noexcept
         m_backBufferAccessSnapshots[
             m_frameAccessSnapshotRollback.backBufferIndex] =
             m_frameAccessSnapshotRollback.backBufferAccess;
+    }
+    if (m_renderResourceRegistry != nullptr)
+    {
+        for (auto it =
+                 m_frameAccessSnapshotRollback.resourceTextures.rbegin();
+             it != m_frameAccessSnapshotRollback.resourceTextures.rend();
+             ++it)
+        {
+            if (!m_renderResourceRegistry->CommitTextureAccessSnapshot(
+                    it->resource, it->access))
+            {
+                RVX_RENDER_ERROR(
+                    "SceneRenderer: failed to restore texture access for resource {}:{}",
+                    it->resource.slot,
+                    it->resource.generation);
+            }
+        }
     }
     m_frameAccessSnapshotRollback = {};
 }
@@ -3452,7 +3529,7 @@ bool SceneRenderer::HasSubmissionFailure() const noexcept
 
 void SceneRenderer::Render()
 {
-    if (!m_initialized || !m_renderGraph || !m_renderContext)
+    if (!m_initialized || !m_renderContext)
     {
         RefreshFrameDiagnostics(true,
                                 false,
@@ -3705,36 +3782,6 @@ void SceneRenderer::Render()
                 m_gpuSceneUploader->CommitRealizedAccess(*m_renderGraph);
             }
             CommitGPUDrivenAccessSnapshots();
-            if (m_renderResourceRegistry)
-            {
-                const RenderEnvironmentSnapshot& environment =
-                    m_renderScene.GetEnvironment();
-                const auto commitEnvironmentTexture =
-                    [this](RenderResourceHandle resource,
-                           RGTextureHandle graphHandle)
-                {
-                    if (!resource.IsValid() || !graphHandle.IsValid())
-                    {
-                        return;
-                    }
-                    static_cast<void>(
-                        m_renderResourceRegistry->CommitTextureAccessSnapshot(
-                            resource,
-                            m_renderGraph->GetRealizedAccess(graphHandle)));
-                };
-                commitEnvironmentTexture(
-                    environment.irradianceTexture,
-                    m_viewData.environmentIrradianceTexture);
-                commitEnvironmentTexture(
-                    environment.prefilteredTexture,
-                    m_viewData.environmentPrefilteredTexture);
-                commitEnvironmentTexture(
-                    environment.brdfLutTexture,
-                    m_viewData.environmentBRDFLUTTexture);
-                commitEnvironmentTexture(
-                    m_renderScene.GetSky().skyTexture,
-                    m_viewData.environmentSkyTexture);
-            }
             if (m_activeRenderPassResults &&
                 m_activeRenderPassResults->identity == m_activeRenderPassIdentity)
             {
@@ -5222,7 +5269,8 @@ void SceneRenderer::CommitGPUDrivenAccessSnapshots()
     {
         return;
     }
-    const auto commit = [this](const std::shared_ptr<GPUCullingRecordedState>& recordedState,
+    const auto commit = [this](GPUCulling* owner,
+                               const std::shared_ptr<GPUCullingRecordedState>& recordedState,
                                const GPUCullingGraphHandles& handles)
     {
         if (!recordedState || !handles.IsValid())
@@ -5243,9 +5291,22 @@ void SceneRenderer::CommitGPUDrivenAccessSnapshots()
         snapshots.indirectDraws = m_renderGraph->GetRealizedAccess(handles.indirectDraws);
         snapshots.drawCount = m_renderGraph->GetRealizedAccess(handles.drawCount);
         recordedState->CommitAccessSnapshots(snapshots);
+        if (owner == nullptr ||
+            !owner->CommitFrameSlotAccessSnapshots(
+                recordedState->GetSourceFrameSlot(), snapshots))
+        {
+            RVX_RENDER_ERROR(
+                "SceneRenderer: failed to publish GPU-culling access to source frame slot {}",
+                recordedState->GetSourceFrameSlot());
+            MarkGPUDrivenFrameFailure();
+        }
     };
-    commit(m_depthGPUCullingRecordedState, m_depthGPUCullingGraphHandles);
-    commit(m_opaqueGPUCullingRecordedState, m_opaqueGPUCullingGraphHandles);
+    commit(m_depthGPUCulling.get(),
+           m_depthGPUCullingRecordedState,
+           m_depthGPUCullingGraphHandles);
+    commit(m_opaqueGPUCulling.get(),
+           m_opaqueGPUCullingRecordedState,
+           m_opaqueGPUCullingGraphHandles);
 }
 
 void SceneRenderer::BuildRenderGraph()
@@ -5259,6 +5320,7 @@ void SceneRenderer::BuildRenderGraph()
     m_depthGraphHandle = {};
     m_backBufferGraphHandle = {};
     m_activeBackBufferIndex = RVX_INVALID_INDEX;
+    m_frameExternalTextureAccesses.clear();
     const uint64 postProcessFrameCount = m_postProcessStats.frameCount + 1;
     m_postProcessStats = {};
     m_postProcessStats.frameCount = postProcessFrameCount;
@@ -5283,6 +5345,11 @@ void SceneRenderer::BuildRenderGraph()
         {
             m_viewData.environmentSkyTexture = m_renderGraph->ImportTexture(
                 skyTexture->texture, skyTexture->accessSnapshot);
+            if (m_viewData.environmentSkyTexture.IsValid())
+            {
+                m_frameExternalTextureAccesses.push_back(
+                    {sky.skyTexture, m_viewData.environmentSkyTexture});
+            }
             m_renderGraph->SetExportState(
                 m_viewData.environmentSkyTexture,
                 RHIResourceState::ShaderResource);
@@ -5343,6 +5410,15 @@ void SceneRenderer::BuildRenderGraph()
                 m_viewData.environmentBRDFLUTTexture =
                     m_renderGraph->ImportTexture(
                         brdfLUT->texture, brdfLUT->accessSnapshot);
+                m_frameExternalTextureAccesses.push_back(
+                    {environment.irradianceTexture,
+                     m_viewData.environmentIrradianceTexture});
+                m_frameExternalTextureAccesses.push_back(
+                    {environment.prefilteredTexture,
+                     m_viewData.environmentPrefilteredTexture});
+                m_frameExternalTextureAccesses.push_back(
+                    {environment.brdfLutTexture,
+                     m_viewData.environmentBRDFLUTTexture});
                 m_renderGraph->SetExportState(
                     m_viewData.environmentIrradianceTexture,
                     RHIResourceState::ShaderResource);

@@ -324,6 +324,11 @@ namespace RenderRuntimeDetail
         NativeSurfaceDesc m_currentSurface;
         uint64 m_latestResizeGeneration = 0;
         uint64 m_pendingResizeGeneration = 0;
+        // Serialized with frame publication. Frames at or below this sequence
+        // were authored for the surface superseded by the pending resize.
+        uint64 m_pendingResizeFrameSequenceCutoff = 0;
+        // Render-thread-only compatibility barrier for the active surface.
+        uint64 m_surfaceFrameSequenceCutoff = 0;
 
         std::mutex m_waitMutex;
         std::condition_variable m_waitCv;
@@ -337,6 +342,7 @@ namespace RenderRuntimeDetail
         std::atomic<uint64> m_lastSubmittedFrameSequence = 0;
         std::atomic<uint64> m_lastPresentedFrameSequence = 0;
         std::atomic<uint64> m_frameReplacementCount = 0;
+        std::atomic<uint64> m_surfaceIncompatibleFrameDropCount = 0;
         std::atomic<uint64> m_invalidFrameCount = 0;
         std::atomic<uint64> m_outOfOrderFrameCount = 0;
         std::atomic<uint64> m_resizeAcceptedCount = 0;

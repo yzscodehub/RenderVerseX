@@ -172,9 +172,6 @@ namespace RVX
                                            ResourceViewCache* viewCache,
                                            MaterialBindingOptions options,
                                            MaterialBindingSnapshot& outSnapshot);
-        void TransitionMaterialTextures(RenderResourceHandle material,
-                                        RHICommandContext& ctx,
-                                        MaterialBindingOptions options = {}) const;
         RHIDescriptorSet* GetDefaultMaterialSet();
 
         std::array<uint32, 1> GetCurrentMaterialDynamicOffset() const;

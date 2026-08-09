@@ -11,6 +11,9 @@ option(RVX_ENABLE_EXTERNAL_ASSET_TESTS
 option(RVX_ENABLE_EXTERNAL_ENVIRONMENT_TESTS
     "Register opt-in PBR/IBL tests backed by cataloged external environments"
     OFF)
+option(RVX_ENABLE_LONG_RUNNING_QUALIFICATION_TESTS
+    "Register 10,000-frame / five-minute sustained rendering qualifications"
+    OFF)
 set(RVX_EXTERNAL_TEST_ASSET_ROOT "" CACHE PATH
     "Asset library root used by enabled external asset test suites")
 
@@ -1749,6 +1752,89 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         DEPENDS ${test_prefix}Validation
     )
+
+    foreach(render_path direct gpu-driven)
+        if(render_path STREQUAL "direct")
+            set(path_label Direct)
+        else()
+            set(path_label GPUDriven)
+        endif()
+        set(lifetime_prefix "${test_prefix}${path_label}")
+        set(lifetime_report
+            "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_600.json")
+        set(lifetime_sample_report
+            "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_sample.json")
+        add_test(
+            NAME ${lifetime_prefix}Lifetime600
+            COMMAND $<TARGET_FILE:RenderVerseSamples>
+                --sample model-viewer
+                --asset free-1975-porsche-911-930-turbo
+                --catalog "${external_catalog}"
+                --asset-root "${RVX_EXTERNAL_MODEL_ROOT}"
+                --backend ${BACKEND_NAME}
+                --render-path ${render_path}
+                --smoke
+                --frames 1
+                --wait-ready
+                --ready-timeout-ms 180000
+                --ready-max-frames 1024
+                --width 320
+                --height 180
+                --quality low
+                --deterministic-orbit
+                --lifetime-warmup-frames 120
+                --lifetime-observation-frames 480
+                --lifetime-report "${lifetime_report}"
+                --report "${lifetime_sample_report}"
+                --diagnostics
+                --validation
+        )
+        set_tests_properties(${lifetime_prefix}Lifetime600 PROPERTIES
+            LABELS "visual;gpu;sample;model-viewer;lifetime;external-assets;qualification;${BACKEND_NAME};${render_path}"
+            TIMEOUT 1200
+            WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        )
+
+        if(RVX_ENABLE_LONG_RUNNING_QUALIFICATION_TESTS)
+            set(soak_report
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_10000.json")
+            set(soak_sample_report
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_10000_sample.json")
+            add_test(
+                NAME ${lifetime_prefix}Lifetime10000
+                COMMAND $<TARGET_FILE:RenderVerseSamples>
+                    --sample model-viewer
+                    --asset free-1975-porsche-911-930-turbo
+                    --catalog "${external_catalog}"
+                    --asset-root "${RVX_EXTERNAL_MODEL_ROOT}"
+                    --backend ${BACKEND_NAME}
+                    --render-path ${render_path}
+                    --smoke
+                    --frames 1
+                    --wait-ready
+                    --ready-timeout-ms 180000
+                    --ready-max-frames 1024
+                    --width 320
+                    --height 180
+                    --quality low
+                    --deterministic-orbit
+                    --lifetime-warmup-frames 120
+                    --lifetime-observation-frames 9880
+                    --lifetime-min-duration-ms 300000
+                    --lifetime-resize-interval 2400
+                    --lifetime-resize-settle-frames 60
+                    --lifetime-report "${soak_report}"
+                    --report "${soak_sample_report}"
+                    --diagnostics
+                    --validation
+            )
+            set_tests_properties(${lifetime_prefix}Lifetime10000 PROPERTIES
+                LABELS "visual;gpu;sample;model-viewer;lifetime;soak;external-assets;qualification;${BACKEND_NAME};${render_path}"
+                TIMEOUT 3600
+                WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+            )
+        endif()
+    endforeach()
 endfunction()
 
 function(rvx_add_renderverse_external_environment_validation BACKEND_NAME BACKEND_LABEL)

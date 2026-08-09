@@ -57,35 +57,69 @@ namespace RVX
         float mouseX = 0.0f;
         float mouseY = 0.0f;
         input.GetMousePosition(mouseX, mouseY);
-        if (input.IsMouseButtonDown(MouseButton::Left))
-        {
-            const float deltaX = mouseX - m_lastMouseX;
-            const float deltaY = mouseY - m_lastMouseY;
-            m_current.yaw -= deltaX * m_current.orbitSpeed;
-            m_current.pitch = std::clamp(
-                m_current.pitch + deltaY * m_current.orbitSpeed,
-                m_current.minPitch,
-                m_current.maxPitch);
-        }
-
         float scrollX = 0.0f;
         float scrollY = 0.0f;
         input.GetScrollDelta(scrollX, scrollY);
         static_cast<void>(scrollX);
-        if (scrollY != 0.0f)
+
+        SampleOrbitCameraInput cameraInput;
+        cameraInput.orbitActive =
+            input.IsMouseButtonDown(MouseButton::Left);
+        cameraInput.pointerDelta =
+            Vec2(mouseX - m_lastMouseX, mouseY - m_lastMouseY);
+        cameraInput.scrollDelta = scrollY;
+        cameraInput.reset = input.IsKeyPressed(Key::R);
+
+        m_lastMouseX = mouseX;
+        m_lastMouseY = mouseY;
+        ApplyInput(cameraInput, camera);
+    }
+
+    void SampleOrbitCameraController::ApplyInput(
+        const SampleOrbitCameraInput& input,
+        CameraComponent& camera)
+    {
+        if (!m_initialized)
+        {
+            return;
+        }
+
+        if (input.orbitActive)
+        {
+            m_current.yaw -= input.pointerDelta.x * m_current.orbitSpeed;
+            m_current.pitch = std::clamp(
+                m_current.pitch +
+                    input.pointerDelta.y * m_current.orbitSpeed,
+                m_current.minPitch,
+                m_current.maxPitch);
+        }
+        if (input.scrollDelta != 0.0f)
         {
             m_current.distance = std::clamp(
-                m_current.distance - scrollY * m_current.zoomSpeed,
+                m_current.distance -
+                    input.scrollDelta * m_current.zoomSpeed,
                 m_current.minDistance,
                 m_current.maxDistance);
         }
-        if (input.IsKeyPressed(Key::R))
+        if (input.reset)
         {
             Reset();
         }
 
-        m_lastMouseX = mouseX;
-        m_lastMouseY = mouseY;
+        Apply(camera);
+    }
+
+    void SampleOrbitCameraController::SetAspectRatio(
+        float aspectRatio,
+        CameraComponent& camera)
+    {
+        if (!m_initialized || !std::isfinite(aspectRatio) ||
+            aspectRatio <= 0.0f)
+        {
+            return;
+        }
+        m_initial.aspectRatio = aspectRatio;
+        m_current.aspectRatio = aspectRatio;
         Apply(camera);
     }
 

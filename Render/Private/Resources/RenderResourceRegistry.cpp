@@ -470,38 +470,6 @@ namespace RVX
         return texture == nullptr ? nullptr : texture->texture.Get();
     }
 
-    bool RenderResourceRegistry::TransitionTexture(
-        RenderResourceHandle handle,
-        RHICommandContext& context,
-        RHIResourceState desiredState)
-    {
-        Entry* entry = FindExact(handle);
-        if (entry == nullptr || !entry->committed)
-        {
-            return false;
-        }
-        auto* texture = std::get_if<RenderTextureResourceData>(
-            &*entry->committed);
-        if (texture == nullptr || !texture->texture)
-        {
-            return false;
-        }
-        RHIAccessSnapshot desiredAccess = MakeRHIAccessSnapshot(
-            desiredState,
-            RHIShaderStage::All,
-            texture->accessSnapshot.uniformAccess.domain,
-            texture->accessSnapshot.uniformAccess.contentValidity);
-        if (texture->accessSnapshot.uniformAccess != desiredAccess)
-        {
-            context.TextureBarrier(texture->texture.Get(),
-                                   texture->accessSnapshot.uniformAccess,
-                                   desiredAccess);
-            texture->accessSnapshot.uniformAccess = desiredAccess;
-            texture->accessSnapshot.subresourceOverrides.clear();
-        }
-        return true;
-    }
-
     bool RenderResourceRegistry::CommitTextureAccessSnapshot(
         RenderResourceHandle handle,
         const RHITextureAccessSnapshot& accessSnapshot)

@@ -14,6 +14,7 @@
 #include "Scene/SceneRuntime.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace RVX
@@ -51,6 +52,8 @@ namespace RVX
             SampleAssetPolicy::UserModelOrDefault,
             "",
             SampleEnvironmentPolicy::Optional,
+            true,
+            SampleRenderPath::Auto,
         };
     } // namespace
 
@@ -69,6 +72,8 @@ namespace RVX
         {
             return false;
         }
+
+        m_renderPath = context.options.renderPath;
 
         SceneEntity* modelRoot = m_model.ResolveRoot(context.scene);
         if (!modelRoot)
@@ -190,6 +195,24 @@ namespace RVX
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
+        switch (m_renderPath)
+        {
+            case SampleRenderPath::Auto:
+                context.renderSettings.gpuCulling.mode =
+                    RenderGPUDrivenMode::Auto;
+                break;
+            case SampleRenderPath::Direct:
+                context.renderSettings.gpuCulling.mode =
+                    RenderGPUDrivenMode::ForceDisabled;
+                break;
+            case SampleRenderPath::GPUDriven:
+                context.renderSettings.gpuCulling.mode =
+                    RenderGPUDrivenMode::ForceEnabled;
+                break;
+            default:
+                outError = "Model Viewer received an invalid render path";
+                return false;
+        }
         return true;
     }
 
@@ -205,6 +228,28 @@ namespace RVX
                 SetModelRenderablesEnabled(context.scene, m_model, true));
             m_renderablesEnabled = true;
         }
+        if (m_renderablesEnabled &&
+            context.options.deterministicCameraOrbit)
+        {
+            SampleOrbitCameraInput input;
+            input.orbitActive = true;
+            const float phase =
+                static_cast<float>(m_automationFrameCount) * 0.041f;
+            input.pointerDelta = Vec2(0.8f, std::sin(phase) * 0.18f);
+            const uint32 zoomPhase = m_automationFrameCount % 240u;
+            if (zoomPhase == 60u)
+            {
+                input.scrollDelta = 1.0f;
+                ++m_automationZoomEventCount;
+            }
+            else if (zoomPhase == 180u)
+            {
+                input.scrollDelta = -1.0f;
+                ++m_automationZoomEventCount;
+            }
+            m_orbitCamera.ApplyInput(input, context.camera);
+            ++m_automationFrameCount;
+        }
     }
 
     void ModelViewerSample::OnInput(SampleContext& context)
@@ -215,6 +260,19 @@ namespace RVX
         }
     }
 
+    void ModelViewerSample::OnViewportResize(SampleContext& context,
+                                             uint32 width,
+                                             uint32 height)
+    {
+        if (width == 0 || height == 0)
+        {
+            return;
+        }
+        m_orbitCamera.SetAspectRatio(
+            static_cast<float>(width) / static_cast<float>(height),
+            context.camera);
+    }
+
     void ModelViewerSample::AppendReport(
         SampleFeatureReporter& reporter) const
     {
@@ -223,6 +281,18 @@ namespace RVX
             reporter.Enable("ModelResourceLoad");
             reporter.Enable("SceneInstantiation");
             reporter.Enable("ModelInspection");
+            reporter.Enable("RenderPathPolicySelection");
+            reporter.ResourceDiagnostic(
+                "render path=" +
+                std::string(GetSampleRenderPathName(m_renderPath)));
+            if (m_renderPath == SampleRenderPath::GPUDriven)
+            {
+                reporter.Enable("GPUDrivenPathRequested");
+            }
+            else if (m_renderPath == SampleRenderPath::Direct)
+            {
+                reporter.Enable("DirectPathRequested");
+            }
             if (m_model.instance.IsRenderReady() && m_renderablesEnabled)
             {
                 reporter.Enable("ModelRenderReady");
@@ -242,6 +312,17 @@ namespace RVX
             {
                 reporter.Enable("BoundsCameraFraming");
                 reporter.Enable("OrbitCamera");
+                if (m_automationFrameCount != 0)
+                {
+                    reporter.Enable("DeterministicOrbitCamera");
+                    reporter.Enable("OrbitZoomAutomation");
+                    reporter.ResourceDiagnostic(
+                        "deterministic orbit frames=" +
+                        std::to_string(m_automationFrameCount));
+                    reporter.ResourceDiagnostic(
+                        "deterministic zoom events=" +
+                        std::to_string(m_automationZoomEventCount));
+                }
                 reporter.ResourceDiagnostic(
                     "model bounds min=" + std::to_string(m_bounds.GetMin().x) +
                     "," + std::to_string(m_bounds.GetMin().y) + "," +
@@ -315,6 +396,48 @@ namespace RVX
                 "Model Viewer is waiting for the selected texture IBL";
             return false;
         }
+        if (m_renderPath == SampleRenderPath::GPUDriven)
+        {
+            const bool gpuReady =
+                diagnostics.gpuDrivenPolicyDecisionAvailable &&
+                diagnostics.gpuDrivenRequestedMode == "ForceEnabled" &&
+                diagnostics.gpuDrivenPolicyReason == "None" &&
+                diagnostics.gpuDrivenEnabled &&
+                diagnostics.gpuDrivenGraphPassRecorded &&
+                diagnostics.gpuDrivenExecutionRecorded &&
+                diagnostics.gpuDrivenOpaqueIndirectRequested &&
+                diagnostics.gpuDrivenOpaqueIndirectEligible &&
+                diagnostics.gpuDrivenOpaqueIndirectSubmitted &&
+                diagnostics.gpuDrivenOpaqueIndirectBatchCount > 0;
+            if (!gpuReady)
+            {
+                outPendingReason =
+                    "Model Viewer is waiting for forced GPU-driven indirect execution";
+                return false;
+            }
+        }
+        else if (m_renderPath == SampleRenderPath::Direct)
+        {
+            const bool directReady =
+                diagnostics.gpuDrivenPolicyDecisionAvailable &&
+                diagnostics.gpuDrivenRequestedMode == "ForceDisabled" &&
+                diagnostics.gpuDrivenPolicyReason == "ForcedDisabled" &&
+                !diagnostics.gpuDrivenEnabled &&
+                !diagnostics.gpuDrivenOpaqueIndirectRequested &&
+                !diagnostics.gpuDrivenOpaqueIndirectEligible &&
+                !diagnostics.gpuDrivenOpaqueIndirectSubmitted &&
+                diagnostics.gpuDrivenOpaqueIndirectBatchCount == 0 &&
+                diagnostics.gpuDrivenOpaqueDirectDrawCount > 0 &&
+                diagnostics.opaqueExecutionCompleted &&
+                diagnostics.opaqueExecutedDrawCountAvailable &&
+                diagnostics.opaqueExecutedDrawCount > 0;
+            if (!directReady)
+            {
+                outPendingReason =
+                    "Model Viewer is waiting for forced Direct execution";
+                return false;
+            }
+        }
         return true;
     }
 
@@ -332,6 +455,9 @@ namespace RVX
         m_environment = {};
         m_bounds.Reset();
         m_cameraFrame = {};
+        m_renderPath = SampleRenderPath::Auto;
+        m_automationFrameCount = 0;
+        m_automationZoomEventCount = 0;
         m_renderablesEnabled = false;
         m_textureEnvironment = false;
         m_skyboxCreated = false;

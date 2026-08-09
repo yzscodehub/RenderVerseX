@@ -18,6 +18,9 @@ namespace RVX
         bool Setup(SampleContext& context, std::string& outError) override;
         void Update(SampleContext& context, float deltaTime) override;
         void OnInput(SampleContext& context) override;
+        void OnViewportResize(SampleContext& context,
+                              uint32 width,
+                              uint32 height) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
         bool IsReady(const SampleRenderDiagnostics& diagnostics,
                      std::string& outPendingReason) const override;
@@ -31,6 +34,9 @@ namespace RVX
         AABB m_bounds;
         ModelCameraFrame m_cameraFrame;
         SampleOrbitCameraController m_orbitCamera;
+        SampleRenderPath m_renderPath = SampleRenderPath::Auto;
+        uint32 m_automationFrameCount = 0;
+        uint32 m_automationZoomEventCount = 0;
         bool m_renderablesEnabled = false;
         bool m_textureEnvironment = false;
         bool m_skyboxCreated = false;

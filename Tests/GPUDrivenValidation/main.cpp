@@ -390,6 +390,7 @@ namespace
         }
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc& desc) override
         {
+            ++createDescriptorSetCalls;
             return m_enablePipelineObjects
                 ? RHIDescriptorSetRef(new FakeDescriptorSet(desc))
                 : RHIDescriptorSetRef{};
@@ -476,6 +477,7 @@ namespace
         std::vector<RHIFenceRef> fences;
         std::shared_ptr<BufferLifetimeState> bufferLifetimeState;
         uint32 createDescriptorSetLayoutCalls = 0;
+        uint32 createDescriptorSetCalls = 0;
         uint32 createComputePipelineCalls = 0;
         bool failTransientUploadMap = false;
 
@@ -1168,6 +1170,11 @@ TEST_F(GPUDrivenValidationFixture,
 
     const GPUCullingRecordingIdentity identity{
         101u, 7u, 88u, 1u, 5u};
+    const RHIBuffer* const slot1InstanceBuffer = culling.GetInstanceBuffer();
+    const RHIBuffer* const slot1IndirectBuffer = culling.GetIndirectBuffer();
+    const size_t createdBufferCountBeforeSeal = device.createdBuffers.size();
+    const uint32 descriptorSetCountBeforeSeal =
+        device.createDescriptorSetCalls;
     const std::shared_ptr<GPUCullingRecordedState> recorded =
         culling.SealForGraph(identity);
     ASSERT_NE(nullptr, recorded);
@@ -1175,11 +1182,19 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_TRUE(recorded->Matches(identity));
     EXPECT_EQ(1u, recorded->GetSourceFrameSlot());
     ASSERT_NE(nullptr, recorded->GetCulling().GetInstanceBuffer());
-    EXPECT_NE(culling.GetInstanceBuffer(),
+    EXPECT_EQ(slot1InstanceBuffer,
               recorded->GetCulling().GetInstanceBuffer());
+    EXPECT_EQ(slot1IndirectBuffer,
+              recorded->GetCulling().GetIndirectBuffer());
+    EXPECT_EQ(createdBufferCountBeforeSeal, device.createdBuffers.size());
+    EXPECT_EQ(descriptorSetCountBeforeSeal,
+              device.createDescriptorSetCalls);
 
-    // Reuse the source slot before graph execution. The sealed state must
-    // retain the old slot contents, groups, and output resources.
+    // RenderContext may prepare another waited slot while this graph remains
+    // recorded, but it must not recycle source slot 1 before its completion.
+    ASSERT_TRUE(culling.SetFrameSlot(0));
+    EXPECT_NE(slot1InstanceBuffer, culling.GetInstanceBuffer());
+    EXPECT_NE(slot1IndirectBuffer, culling.GetIndirectBuffer());
     culling.BeginFrame();
     ASSERT_EQ(0u, culling.AddInstance(
         MakeInstance(Vec3(0.0f, 0.0f, -5.0f), 1.0f, 12)));
@@ -1258,6 +1273,12 @@ TEST_F(GPUDrivenValidationFixture,
     ASSERT_NE(nullptr, fence);
     fence->Complete(submittedPoint.value);
     EXPECT_EQ(retirement.Poll(), GPUCompletionStatus::Completed);
+    EXPECT_EQ(destroyedBeforeStateRelease,
+              device.bufferLifetimeState->destroyedCount);
+
+    // Completion releases submission ownership, while the frame slot remains
+    // persistent until its owning culler is shut down or safely resized.
+    culling.Shutdown();
     EXPECT_EQ(destroyedBeforeStateRelease + expectedSealedPrimaryObjectCount,
               device.bufferLifetimeState->destroyedCount);
 }
@@ -1877,19 +1898,27 @@ TEST_F(GPUDrivenValidationFixture, SceneRendererWiresMeshDrawPacketsBeforeTypedP
     EXPECT_EQ(transparentSource.find("TransparentPass::SetRenderTargets"), std::string::npos);
 
     const size_t renderDefinition = source.find("void SceneRenderer::Render()");
+    const size_t renderGuardEnd = source.find(
+        "PreparePassesForFrame();", renderDefinition);
     const size_t compileCall = source.find("CompileRenderFramePlan();", renderDefinition);
     const size_t cullingCall = source.find(
         "BuildGPUDrivenVisibilityInputs();", compileCall);
-    const size_t clearGraph = source.find("m_renderGraph->Clear();", cullingCall);
-    const size_t buildGraphCall = source.find("BuildRenderGraph();", clearGraph);
+    const size_t createGraph = source.find(
+        "m_renderGraph = std::make_unique<RenderGraph>();", cullingCall);
+    const size_t buildGraphCall = source.find("BuildRenderGraph();", createGraph);
     ASSERT_NE(renderDefinition, std::string::npos);
+    ASSERT_NE(renderGuardEnd, std::string::npos);
+    EXPECT_EQ(source.substr(renderDefinition,
+                            renderGuardEnd - renderDefinition)
+                  .find("!m_renderGraph"),
+              std::string::npos);
     ASSERT_NE(compileCall, std::string::npos);
     ASSERT_NE(cullingCall, std::string::npos);
-    ASSERT_NE(clearGraph, std::string::npos);
+    ASSERT_NE(createGraph, std::string::npos);
     ASSERT_NE(buildGraphCall, std::string::npos);
     EXPECT_LT(compileCall, cullingCall);
-    EXPECT_LT(cullingCall, clearGraph);
-    EXPECT_LT(clearGraph, buildGraphCall);
+    EXPECT_LT(cullingCall, createGraph);
+    EXPECT_LT(createGraph, buildGraphCall);
 
     const size_t setModeDefinition =
         source.find("void SceneRenderer::SetGPUDrivenCullingMode");
@@ -2464,9 +2493,11 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     EXPECT_NE(opaqueSource.find("IndexedIndirectRenderSubmissionStrategy"), std::string::npos);
     EXPECT_NE(opaqueSource.find("ctx.SetVertexBuffer(6, m_gpuCulling->GetVisibleInstanceBuffer())"),
               std::string::npos);
-    EXPECT_NE(opaqueSource.find("TransitionGPUDrivenGroupMaterialTextures"),
+    EXPECT_NE(opaqueSource.find("DeclareMaterialTextureGraphReads"),
               std::string::npos);
-    EXPECT_NE(opaqueSource.find("for (const GPUCullingDrawGroup& group : gpuCulling.GetDrawGroups())"),
+    EXPECT_NE(opaqueSource.find("gpuCulling->GetDrawGroups()"),
+              std::string::npos);
+    EXPECT_EQ(opaqueSource.find("TransitionGPUDrivenGroupMaterialTextures"),
               std::string::npos);
     EXPECT_EQ(opaqueSource.find("TransitionVisibleMaterialTextures"),
               std::string::npos);
@@ -2738,6 +2769,20 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_EQ(RHIContentValidity::Valid,
               recorded->GetAccessSnapshots().constants.uniformAccess.contentValidity);
 
+    const size_t bufferCountAfterFirstSeal = device.createdBuffers.size();
+    const uint32 descriptorCountAfterFirstSeal =
+        device.createDescriptorSetCalls;
+    const std::shared_ptr<GPUCullingRecordedState> repeatedRecording =
+        culling.SealForGPUSceneGraph(identity, lease);
+    ASSERT_NE(nullptr, repeatedRecording);
+    EXPECT_EQ(bufferCountAfterFirstSeal, device.createdBuffers.size());
+    EXPECT_EQ(descriptorCountAfterFirstSeal,
+              device.createDescriptorSetCalls);
+    EXPECT_EQ(recorded->GetCulling().GetGPUSceneCandidateBuffer(),
+              repeatedRecording->GetCulling().GetGPUSceneCandidateBuffer());
+    EXPECT_EQ(recorded->GetCulling().GetIndirectBuffer(),
+              repeatedRecording->GetCulling().GetIndirectBuffer());
+
     const GPUSceneRasterResourceSnapshot rasterResources =
         recorded->GetGPUSceneRasterResourceSnapshot();
     ASSERT_TRUE(rasterResources.IsValid());
@@ -2991,19 +3036,24 @@ TEST_F(GPUDrivenValidationFixture,
               std::string::npos);
 
     const size_t renderStart = source.find("void SceneRenderer::Render()");
-    const size_t graphExecute = source.find("m_renderGraph->Execute(*ctx);", renderStart);
+    const size_t graphPrepare = source.find(
+        "graphExecutor.Prepare(compiledPlan, executionEnvironment);", renderStart);
+    const size_t graphAdopt = source.find(
+        "m_renderContext->AdoptRenderGraphExecution(", graphPrepare);
     const size_t failedFrameGate = source.find(
-        "graphExecuted = !m_gpuSceneCullingCommandRecordingFailed &&", graphExecute);
+        "graphExecuted = !m_gpuSceneCullingCommandRecordingFailed &&", graphPrepare);
     const size_t uploaderCommit = source.find(
-        "m_gpuSceneUploader->CommitRealizedAccess(*m_renderGraph);", graphExecute);
+        "m_gpuSceneUploader->CommitRealizedAccess(*m_renderGraph);", graphPrepare);
     const size_t cullingCommit = source.find(
-        "CommitGPUDrivenAccessSnapshots();", graphExecute);
+        "CommitGPUDrivenAccessSnapshots();", graphPrepare);
     ASSERT_NE(std::string::npos, renderStart);
-    ASSERT_NE(std::string::npos, graphExecute);
+    ASSERT_NE(std::string::npos, graphPrepare);
+    ASSERT_NE(std::string::npos, graphAdopt);
     ASSERT_NE(std::string::npos, failedFrameGate);
     ASSERT_NE(std::string::npos, uploaderCommit);
     ASSERT_NE(std::string::npos, cullingCommit);
-    EXPECT_LT(graphExecute, failedFrameGate);
+    EXPECT_LT(graphPrepare, graphAdopt);
+    EXPECT_LT(graphAdopt, failedFrameGate);
     EXPECT_LT(failedFrameGate, uploaderCommit);
     EXPECT_LT(failedFrameGate, cullingCommit);
     const size_t commitSuccessGuard = source.rfind(
@@ -3129,8 +3179,11 @@ TEST_F(GPUDrivenValidationFixture,
     EXPECT_NE(header.find("SealForGPUSceneGraph"), std::string::npos);
     EXPECT_NE(source.find("ConfigureGPUSceneRecording"), std::string::npos);
     EXPECT_NE(source.find("FindGPUSceneCullingShaderPath"), std::string::npos);
-    EXPECT_NE(source.find("BindBuffer(6 + tableIndex"), std::string::npos);
-    EXPECT_NE(source.find("m_gpuSceneTableBuffers = lease.buffers"),
+    EXPECT_NE(source.find("GPUCulling.GPUSceneFrameSlotDescriptorSet"),
+              std::string::npos);
+    EXPECT_NE(source.find("inputs->gpuSceneTableBuffers = lease.buffers"),
+              std::string::npos);
+    EXPECT_NE(source.find("inputs->gpuSceneLeaseVersion = lease.version"),
               std::string::npos);
 
     EXPECT_NE(sharedShader.find("struct GPUScenePrimitiveRow"), std::string::npos);

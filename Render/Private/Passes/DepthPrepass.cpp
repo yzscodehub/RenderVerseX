@@ -4,6 +4,8 @@
  */
 
 #include "Render/Passes/DepthPrepass.h"
+
+#include "Passes/MaterialTextureGraphBindings.h"
 #include "Core/Log.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/Graph/ResourceViewCache.h"
@@ -417,6 +419,23 @@ void DepthPrepass::AddToGraph(
             data.recorder->InitializeGraphRecorder(
                 renderScene, opaqueDrawItems, maskedDrawItems, gpuCulling,
                 data.gpuInputs, gpuPlanned);
+            if (maskedDrawItems != nullptr)
+            {
+                for (const RenderDrawItem& item : *maskedDrawItems)
+                {
+                    if (!DeclareMaterialTextureGraphReads(
+                            builder,
+                            resourceRegistry,
+                            item.material,
+                            *results))
+                    {
+                        data.contextValid = false;
+                        PublishDepthContextFailure(
+                            data.execution, results->depthStats);
+                        return;
+                    }
+                }
+            }
             data.recorder->Setup(builder, data.execution.view);
         },
         [results](const GraphPassData& data,
@@ -441,7 +460,9 @@ bool DepthPrepass::IsSupported() const
         m_pipelineCache->GetDepthOnlyPipeline() &&
         m_pipelineCache->GetDepthOnlyPipeline(
             DefaultLitDirectVertexInputMode::Rigid) &&
-        m_pipelineCache->GetMaskedDepthOnlyPipeline();
+        m_pipelineCache->GetMaskedDepthOnlyPipeline() &&
+        m_pipelineCache->GetMaskedDepthOnlyPipeline(
+            DefaultLitDirectVertexInputMode::Rigid);
 }
 
 void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
@@ -909,11 +930,12 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             return false;
         }
 
+        const DefaultLitDirectVertexInputMode inputMode = skinned
+            ? DefaultLitDirectVertexInputMode::Skinned
+            : DefaultLitDirectVertexInputMode::Rigid;
         RHIPipeline* pipeline = masked
-            ? m_pipelineCache->GetMaskedDepthOnlyPipeline()
-            : m_pipelineCache->GetDepthOnlyPipeline(
-                  skinned ? DefaultLitDirectVertexInputMode::Skinned
-                          : DefaultLitDirectVertexInputMode::Rigid);
+            ? m_pipelineCache->GetMaskedDepthOnlyPipeline(inputMode)
+            : m_pipelineCache->GetDepthOnlyPipeline(inputMode);
         if (pipeline == nullptr)
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;

@@ -9,6 +9,7 @@ add_library(RVX_SampleCommon STATIC
     Private/SampleAssetCatalog.cpp
     Private/SampleCLI.cpp
     Private/SampleEnvironmentLoader.cpp
+    Private/SampleLifetimeQualification.cpp
     Private/SampleModelLoader.cpp
     Private/SampleOrbitCameraController.cpp
     Private/SampleRegistry.cpp
@@ -35,6 +36,10 @@ target_link_libraries(RVX_SampleCommon PUBLIC
 target_link_libraries(RVX_SampleCommon PRIVATE
     nlohmann_json::nlohmann_json
 )
+
+if(WIN32)
+    target_link_libraries(RVX_SampleCommon PRIVATE Psapi)
+endif()
 
 add_library(RVX::SampleCommon ALIAS RVX_SampleCommon)
 

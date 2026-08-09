@@ -26,12 +26,24 @@ namespace RVX
         float boundsRadius = 0.0f;
     };
 
+    /** @brief Backend-neutral orbit intent shared by live and deterministic input. */
+    struct SampleOrbitCameraInput
+    {
+        bool orbitActive = false;
+        Vec2 pointerDelta{0.0f};
+        float scrollDelta = 0.0f;
+        bool reset = false;
+    };
+
     class SampleOrbitCameraController final
     {
     public:
         void Initialize(const SampleOrbitCameraSettings& settings,
                         InputSubsystem* input = nullptr);
         void Update(InputSubsystem& input, CameraComponent& camera);
+        void ApplyInput(const SampleOrbitCameraInput& input,
+                        CameraComponent& camera);
+        void SetAspectRatio(float aspectRatio, CameraComponent& camera);
         void Apply(CameraComponent& camera) const;
         void Reset();
 

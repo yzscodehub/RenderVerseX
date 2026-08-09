@@ -844,6 +844,9 @@ namespace
                     {
                         m_latestResizeGeneration = surface.generation;
                         m_pendingResizeGeneration = surface.generation;
+                        m_pendingResizeFrameSequenceCutoff =
+                            m_lastPublishedFrameSequence.load(
+                                std::memory_order_acquire);
                         if (result.replacedGeneration == 0U)
                         {
                             result.code = RenderResizeCode::Accepted;
@@ -1050,6 +1053,7 @@ namespace
             }
 
             bool progressed = false;
+            uint64 resizeFrameSequenceCutoff = 0;
             BasicRenderControlBatch<NativeSurfaceDesc, NativeSurfaceDesc>
                 controls;
             {
@@ -1058,6 +1062,9 @@ namespace
                 if (controls.resize.has_value())
                 {
                     m_pendingResizeGeneration = 0;
+                    resizeFrameSequenceCutoff =
+                        m_pendingResizeFrameSequenceCutoff;
+                    m_pendingResizeFrameSequenceCutoff = 0;
                 }
             }
             if (controls.stopRequested)
@@ -1084,6 +1091,17 @@ namespace
                 {
                     std::lock_guard lock(m_publicationMutex);
                     m_currentSurface = surface;
+                }
+                m_surfaceFrameSequenceCutoff = std::max(
+                    m_surfaceFrameSequenceCutoff,
+                    resizeFrameSequenceCutoff);
+                if (m_pendingFrameV5 != nullptr &&
+                    m_pendingFrameV5->GetHeader().sequence <=
+                        m_surfaceFrameSequenceCutoff)
+                {
+                    m_pendingFrameV5.reset();
+                    m_surfaceIncompatibleFrameDropCount.fetch_add(
+                        1, std::memory_order_relaxed);
                 }
                 progressed = true;
             }
@@ -1129,9 +1147,15 @@ namespace
                 m_frameReplacementCount.fetch_add(
                     acquiredFrameV5.discardedCount,
                     std::memory_order_relaxed);
-                if (m_pendingFrameV5 == nullptr ||
-                    acquiredFrameV5.packet->GetHeader().sequence >
-                        m_pendingFrameV5->GetHeader().sequence)
+                if (acquiredFrameV5.packet->GetHeader().sequence <=
+                    m_surfaceFrameSequenceCutoff)
+                {
+                    m_surfaceIncompatibleFrameDropCount.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
+                else if (m_pendingFrameV5 == nullptr ||
+                         acquiredFrameV5.packet->GetHeader().sequence >
+                             m_pendingFrameV5->GetHeader().sequence)
                 {
                     m_pendingFrameV5 = std::move(acquiredFrameV5.packet);
                 }
@@ -1684,6 +1708,9 @@ namespace
         }
         snapshot.frameTransport.replacements =
             m_frameReplacementCount.load(std::memory_order_relaxed);
+        snapshot.frameTransport.surfaceIncompatibleDrops =
+            m_surfaceIncompatibleFrameDropCount.load(
+                std::memory_order_relaxed);
         snapshot.frameTransport.invalidPackets =
             m_invalidFrameCount.load(std::memory_order_relaxed);
         snapshot.frameTransport.outOfOrderRejections =

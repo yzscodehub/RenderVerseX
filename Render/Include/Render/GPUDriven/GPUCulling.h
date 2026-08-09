@@ -351,10 +351,11 @@ namespace RVX
         /**
          * @brief Seal the active frame-slot inputs for one RenderGraph recording.
          *
-         * The returned state owns independent GPU buffers, copied CPU inputs,
-         * draw groups, and the pipeline references needed by graph callbacks.
-         * Later mutations of this source culler therefore cannot alter the
-         * already-recorded cull or indirect-draw commands.
+         * The returned state owns copied CPU inputs and strong references to
+         * the selected completion-safe frame-slot resources.  The renderer
+         * may mutate other slots while this recording remains immutable, but
+         * must not recycle the source slot before its prior submission token
+         * completes.
          */
         [[nodiscard]] std::shared_ptr<GPUCullingRecordedState> SealForGraph(
             const GPUCullingRecordingIdentity& identity) const;
@@ -363,7 +364,12 @@ namespace RVX
         [[nodiscard]] std::shared_ptr<GPUCullingRecordedState>
             SealForGPUSceneGraph(
                 const GPUCullingRecordingIdentity& identity,
-                const GPUSceneResidentGraphLease& lease) const;
+                const GPUSceneResidentGraphLease& lease);
+
+        /** @brief Publish realized access back to the exact source frame slot. */
+        [[nodiscard]] bool CommitFrameSlotAccessSnapshots(
+            uint32 frameSlot,
+            const GPUCullingAccessSnapshots& snapshots);
 
         /** @brief Whether the separate GPU-scene descriptor/pipeline path is available. */
         [[nodiscard]] bool IsGPUSceneExecutionReady() const;
@@ -619,10 +625,23 @@ namespace RVX
             RHIBufferRef instanceBuffer;
             RHIBufferRef gpuSceneCandidateBuffer;
             RHIBufferRef constantsBuffer;
+            RHIBufferRef instanceIndexBuffer;
+            RHIBufferRef visibilityBuffer;
+            RHIBufferRef visibleInstanceBuffer;
+            RHIBufferRef indirectBuffer;
+            RHIBufferRef drawCountBuffer;
+            RHIBufferRef statsBuffer;
             RHIDescriptorSetRef descriptorSet;
+            RHIDescriptorSetRef gpuSceneDescriptorSet;
             RHIBufferAccessSnapshot instanceAccess;
             RHIBufferAccessSnapshot gpuSceneCandidateAccess;
             RHIBufferAccessSnapshot constantsAccess;
+            GPUCullingAccessSnapshots accessSnapshots;
+            std::array<RHIBufferRef, RVX_GPU_SCENE_CULLING_TABLE_COUNT>
+                gpuSceneTableBuffers;
+            std::array<uint32, RVX_GPU_SCENE_CULLING_TABLE_COUNT>
+                gpuSceneTableCapacities{};
+            uint64 gpuSceneLeaseVersion = 0;
         };
 
         void CreateResources();
@@ -671,7 +690,8 @@ namespace RVX
         std::vector<RHIBufferRef> m_transientUploadBuffers;
         std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
 
-        // GPU buffers shared by all in-flight frame slots.
+        // Active-slot aliases. GPU ownership lives in GPUCullingFrameInputs;
+        // these refs are rebound only after RenderContext waits that slot.
         RHIBufferRef m_instanceIndexBuffer;      // Identity uint index fetched through IA firstInstance
         RHIBufferRef m_visibilityBuffer;         // Per-instance visibility flags
         RHIBufferRef m_visibleInstanceBuffer;    // Visible instance indices

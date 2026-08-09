@@ -2106,10 +2106,33 @@ namespace RVX
             return releasePassIndex;
         };
 
-        std::vector<uint8> textureLeaseBeforeResolved(
-            graph.textures.size(), 0);
-        std::vector<uint8> bufferLeaseBeforeResolved(
-            graph.buffers.size(), 0);
+        // A pooled resource can return with a non-uniform final access
+        // snapshot from its previous execution.  The first-use recipe must
+        // therefore be resolved once for every independently tracked
+        // subresource/range, not merely once for the logical RG resource.
+        std::vector<std::vector<uint8>> textureLeaseBeforeResolved(
+            graph.textures.size());
+        for (uint32 resourceIndex = 0;
+             resourceIndex < static_cast<uint32>(graph.textures.size());
+             ++resourceIndex)
+        {
+            const TextureResource& resource = graph.textures[resourceIndex];
+            if (resource.imported)
+                continue;
+            const uint32 subresourceCount =
+                std::max(1u, resource.desc.mipLevels) *
+                std::max(1u, GetTexturePhysicalLayerCount(resource.desc));
+            textureLeaseBeforeResolved[resourceIndex].resize(
+                subresourceCount, 0);
+        }
+
+        struct ResolvedBufferRange
+        {
+            uint64 begin = 0;
+            uint64 end = 0;
+        };
+        std::vector<std::vector<ResolvedBufferRange>>
+            bufferLeaseBeforeResolved(graph.buffers.size());
 
         const auto appendTextureBarrier =
             [&graph,
@@ -2166,13 +2189,77 @@ namespace RVX
                         PlannedTextureBarrier{resourceIndex, barrier});
                 }
             }
-            const bool resolveBeforeFromLease =
-                resourceIndex < graph.textures.size() &&
-                !graph.textures[resourceIndex].imported &&
-                textureLeaseBeforeResolved[resourceIndex] == 0;
-            if (resolveBeforeFromLease)
+            bool resolveBeforeFromLease = false;
+            if (resourceIndex < graph.textures.size() &&
+                !graph.textures[resourceIndex].imported)
             {
-                textureLeaseBeforeResolved[resourceIndex] = 1;
+                const TextureResource& resource = graph.textures[resourceIndex];
+                uint32 baseMip = 0;
+                uint32 mipCount = 0;
+                uint32 baseLayer = 0;
+                uint32 layerCount = 0;
+                ResolveSubresourceRange(
+                    barrier.subresourceRange,
+                    resource,
+                    baseMip,
+                    mipCount,
+                    baseLayer,
+                    layerCount);
+
+                std::vector<uint8>& resolved =
+                    textureLeaseBeforeResolved[resourceIndex];
+                uint32 resolvedCount = 0;
+                uint32 unresolvedCount = 0;
+                for (uint32 layer = baseLayer;
+                     layer < baseLayer + layerCount;
+                     ++layer)
+                {
+                    for (uint32 mip = baseMip;
+                         mip < baseMip + mipCount;
+                         ++mip)
+                    {
+                        const uint32 key =
+                            mip + layer * std::max(1u, resource.desc.mipLevels);
+                        if (key >= resolved.size())
+                        {
+                            ++unresolvedCount;
+                            continue;
+                        }
+                        if (resolved[key] != 0)
+                            ++resolvedCount;
+                        else
+                            ++unresolvedCount;
+                    }
+                }
+
+                if (resolvedCount != 0 && unresolvedCount != 0)
+                {
+                    graph.stats.compileValid = false;
+                    ++graph.stats.validationErrorCount;
+                    AddCompileError(
+                        graph,
+                        "RenderGraph compile failed: transient texture first-use barrier spans both resolved and unresolved subresources");
+                    return;
+                }
+
+                resolveBeforeFromLease = unresolvedCount != 0;
+                if (resolveBeforeFromLease)
+                {
+                    for (uint32 layer = baseLayer;
+                         layer < baseLayer + layerCount;
+                         ++layer)
+                    {
+                        for (uint32 mip = baseMip;
+                             mip < baseMip + mipCount;
+                             ++mip)
+                        {
+                            const uint32 key = mip + layer *
+                                std::max(1u, resource.desc.mipLevels);
+                            if (key < resolved.size())
+                                resolved[key] = 1;
+                        }
+                    }
+                }
             }
             graph.passes[targetPassIndex].textureBarriers.push_back(
                 PlannedTextureBarrier{
@@ -2237,13 +2324,68 @@ namespace RVX
                         PlannedBufferBarrier{resourceIndex, barrier});
                 }
             }
-            const bool resolveBeforeFromLease =
-                resourceIndex < graph.buffers.size() &&
-                !graph.buffers[resourceIndex].imported &&
-                bufferLeaseBeforeResolved[resourceIndex] == 0;
-            if (resolveBeforeFromLease)
+            bool resolveBeforeFromLease = false;
+            if (resourceIndex < graph.buffers.size() &&
+                !graph.buffers[resourceIndex].imported)
             {
-                bufferLeaseBeforeResolved[resourceIndex] = 1;
+                const BufferResource& resource = graph.buffers[resourceIndex];
+                const uint64 resolvedSize = ResolveBufferRangeSize(
+                    barrier.offset, barrier.size, resource.desc.size);
+                const uint64 rangeBegin =
+                    std::min(barrier.offset, resource.desc.size);
+                const uint64 rangeEnd = rangeBegin + resolvedSize;
+                auto& resolvedRanges =
+                    bufferLeaseBeforeResolved[resourceIndex];
+
+                uint64 coveredBytes = 0;
+                for (const ResolvedBufferRange& resolved : resolvedRanges)
+                {
+                    const uint64 overlapBegin =
+                        std::max(rangeBegin, resolved.begin);
+                    const uint64 overlapEnd =
+                        std::min(rangeEnd, resolved.end);
+                    if (overlapBegin < overlapEnd)
+                        coveredBytes += overlapEnd - overlapBegin;
+                }
+
+                if (coveredBytes != 0 && coveredBytes != resolvedSize)
+                {
+                    graph.stats.compileValid = false;
+                    ++graph.stats.validationErrorCount;
+                    AddCompileError(
+                        graph,
+                        "RenderGraph compile failed: transient buffer first-use barrier spans both resolved and unresolved byte ranges");
+                    return;
+                }
+
+                resolveBeforeFromLease = resolvedSize != 0 && coveredBytes == 0;
+                if (resolveBeforeFromLease)
+                {
+                    resolvedRanges.push_back({rangeBegin, rangeEnd});
+                    std::sort(
+                        resolvedRanges.begin(),
+                        resolvedRanges.end(),
+                        [](const ResolvedBufferRange& left,
+                           const ResolvedBufferRange& right)
+                        {
+                            return left.begin < right.begin;
+                        });
+                    std::vector<ResolvedBufferRange> merged;
+                    merged.reserve(resolvedRanges.size());
+                    for (const ResolvedBufferRange& range : resolvedRanges)
+                    {
+                        if (merged.empty() || merged.back().end < range.begin)
+                        {
+                            merged.push_back(range);
+                        }
+                        else
+                        {
+                            merged.back().end =
+                                std::max(merged.back().end, range.end);
+                        }
+                    }
+                    resolvedRanges.swap(merged);
+                }
             }
             graph.passes[targetPassIndex].bufferBarriers.push_back(
                 PlannedBufferBarrier{

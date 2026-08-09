@@ -4,6 +4,7 @@
 
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleInfo.h"
+#include "Samples/SampleLifetimeQualification.h"
 #include "RenderContracts/RenderFrameTypes.h"
 
 #include <filesystem>
@@ -27,9 +28,17 @@ namespace RVX
         RenderInstancingMode instancingMode = RenderInstancingMode::Auto;
         uint32 readyTimeoutMs = 120000;
         uint32 readyMaxFrames = 0;
+        SampleLifetimeQualificationConfig lifetimeConfig{};
+        std::filesystem::path lifetimeReportPath;
         bool renderPathExplicit = false;
         bool waitReady = false;
+        bool deterministicCameraOrbit = false;
         bool listSamples = false;
+
+        [[nodiscard]] bool HasLifetimeQualification() const noexcept
+        {
+            return !lifetimeReportPath.empty();
+        }
     };
 
     bool ParseSampleRunnerCLI(int argc,

@@ -456,6 +456,19 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief Exact external texture state produced by one graph recording.
+     *
+     * The resource registry is updated only after the owning frame obtains a
+     * terminal submission token. Until then SceneRenderer retains the prior
+     * snapshot for rollback.
+     */
+    struct RenderGraphExternalTextureAccess
+    {
+        RenderResourceHandle resource{};
+        RGTextureHandle graphTexture{};
+    };
+
     /** @brief Lifetime-owned mutable outputs for one graph recording. */
     struct RenderPassRecordResults
     {
@@ -469,6 +482,8 @@ namespace RVX
         OpaquePassDrawStats opaqueStats{};
         OpaquePassShadowStats opaqueShadowStats{};
         ObjectVelocityPassStats objectVelocityStats{};
+        std::vector<RenderGraphExternalTextureAccess>
+            externalTextureAccesses{};
     };
 
     /**
@@ -672,6 +687,7 @@ namespace RVX
         results.rayTracedShadowOutput = {};
         results.rayTracedShadowOutput.identity = context.identity;
         results.rayTracedShadowStats = {};
+        results.externalTextureAccesses.clear();
         results.executionReport = context.executionReport != nullptr
             ? *context.executionReport : RenderFrameExecutionReport{};
         if (results.executionReport.frameSequence == 0)

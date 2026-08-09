@@ -131,6 +131,43 @@ namespace RVX
         EXPECT_FLOAT_EQ(cameraActor.GetWorldPosition().z, settings.distance);
     }
 
+    TEST(ModelCameraFramingValidation,
+         DeterministicOrbitUsesTheSameControllerIntentAsMouseInput)
+    {
+        SampleOrbitCameraSettings settings;
+        settings.target = Vec3(0.0f);
+        settings.distance = 10.0f;
+        settings.minDistance = 1.0f;
+        settings.maxDistance = 20.0f;
+        settings.orbitSpeed = 0.01f;
+        settings.zoomSpeed = 2.0f;
+
+        SampleOrbitCameraController controller;
+        SceneEntity cameraActor("DeterministicOrbitCamera");
+        CameraComponent* camera =
+            cameraActor.AddComponent<CameraComponent>();
+        ASSERT_NE(camera, nullptr);
+        controller.Initialize(settings);
+
+        SampleOrbitCameraInput input;
+        input.orbitActive = true;
+        input.pointerDelta = Vec2(10.0f, 5.0f);
+        input.scrollDelta = 1.0f;
+        controller.ApplyInput(input, *camera);
+
+        EXPECT_NEAR(controller.GetSettings().yaw, -0.1f, 0.00001f);
+        EXPECT_NEAR(controller.GetSettings().pitch, 0.4f, 0.00001f);
+        EXPECT_NEAR(controller.GetSettings().distance, 8.0f, 0.00001f);
+        EXPECT_NEAR(glm::length(cameraActor.GetWorldPosition()),
+                    8.0f,
+                    0.0001f);
+
+        controller.SetAspectRatio(4.0f / 3.0f, *camera);
+        EXPECT_NEAR(controller.GetSettings().aspectRatio,
+                    4.0f / 3.0f,
+                    0.00001f);
+    }
+
     TEST(ModelCameraFramingValidation, RejectsInvalidOrNonFiniteInputs)
     {
         EXPECT_FALSE(BuildModelCameraFrame(AABB(), 1.0f, kVerticalFov).valid);

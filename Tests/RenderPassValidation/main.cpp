@@ -11056,7 +11056,10 @@ TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMateri
     pass.PublishRecordResults(context.results, context.identity);
 
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
-    EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetMaskedObjectVelocityPipeline(RHIFormat::RG16_FLOAT));
+    EXPECT_EQ(ctx.pipelineSequence[0],
+              pipelineCache.GetMaskedObjectVelocityPipeline(
+                  RHIFormat::RG16_FLOAT,
+                  DefaultLitDirectVertexInputMode::Rigid));
     EXPECT_EQ(1u, ctx.drawIndexedCount);
     EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
                             [](uint32 set) { return set == 2; }));
@@ -12202,7 +12205,8 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(pipelineCache.GetDepthOnlyPipeline(
                   DefaultLitDirectVertexInputMode::Rigid),
               ctx.pipelineSequence[0]);
-    EXPECT_EQ(pipelineCache.GetMaskedDepthOnlyPipeline(),
+    EXPECT_EQ(pipelineCache.GetMaskedDepthOnlyPipeline(
+                  DefaultLitDirectVertexInputMode::Rigid),
               ctx.pipelineSequence[1]);
     EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(),
                             ctx.descriptorSetSequence.end(),
@@ -15225,6 +15229,7 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
     ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
     EXPECT_NE(nullptr, ctx.pipelineSequence[0]);
     EXPECT_EQ(1u, ctx.drawIndexedCount);
+    ExpectCommandBefore(ctx, "SetPipeline", "SetDescriptorSet");
     EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
                             [](uint32 set) { return set == 2; }));
 }

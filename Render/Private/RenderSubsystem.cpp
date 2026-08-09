@@ -261,6 +261,101 @@ namespace
                 m_sceneRenderer->GetEnvironmentIBLStats();
             const SceneRayTracingFrameStats rayTracing =
                 m_sceneRenderer->GetRayTracingFrameStats();
+
+            RenderGraphLifetimeDiagnostics lifetime;
+            lifetime.frameSequence =
+                m_sceneRenderer->GetLastPresentedFrameSequence();
+            if (const RenderGraph* graph = m_sceneRenderer->GetRenderGraph())
+            {
+                const RenderGraph::Diagnostics graphDiagnostics =
+                    graph->GetDiagnostics();
+                lifetime.planHash = graphDiagnostics.compileStats.planHash;
+                lifetime.physicalRealizationCount =
+                    graphDiagnostics.execution.physicalRealizationCount;
+                lifetime.partialRealizationRollbackCount =
+                    graphDiagnostics.execution.partialRollbackCount;
+            }
+            if (const TransientResourcePool* pool =
+                    m_sceneRenderer->GetTransientResourcePool())
+            {
+                const TransientResourcePool::Stats poolStats =
+                    pool->GetStats();
+                lifetime.available = lifetime.planHash != 0;
+                lifetime.physicalTextureAllocationCount =
+                    poolStats.texturePoolSize;
+                lifetime.physicalBufferAllocationCount =
+                    poolStats.bufferPoolSize;
+                lifetime.totalPooledMemoryBytes =
+                    poolStats.totalPooledMemory;
+                lifetime.texturePoolMissCount = poolStats.textureMisses;
+                lifetime.bufferPoolMissCount = poolStats.bufferMisses;
+                lifetime.transientViewCount = poolStats.textureViewCount;
+                lifetime.transientViewMissCount =
+                    poolStats.textureViewMisses;
+                lifetime.transientViewCreationFailureCount =
+                    poolStats.textureViewCreationFailureCount;
+                lifetime.recordingTextureLeases =
+                    poolStats.recordingTextureLeases;
+                lifetime.recordingBufferLeases =
+                    poolStats.recordingBufferLeases;
+                lifetime.inFlightTextureLeases =
+                    poolStats.inFlightTextureLeases;
+                lifetime.inFlightBufferLeases =
+                    poolStats.inFlightBufferLeases;
+                lifetime.leaseCommitCount = poolStats.leaseCommitCount;
+                lifetime.leaseAbortCount = poolStats.leaseAbortCount;
+                lifetime.leaseDeviceLostCount =
+                    poolStats.leaseDeviceLostCount;
+                lifetime.leaseValidationFailureCount =
+                    poolStats.leaseValidationFailureCount;
+                lifetime.completionRetirementCount =
+                    poolStats.completionRetirementCount;
+            }
+            if (m_context != nullptr && m_context->GetDevice() != nullptr)
+            {
+                const RHINativeValidationDiagnostics nativeValidation =
+                    m_context->GetDevice()
+                        ->GetNativeValidationDiagnostics();
+                outDiagnostics.nativeValidation.available =
+                    nativeValidation.available;
+                outDiagnostics.nativeValidation.enabled =
+                    nativeValidation.enabled;
+                outDiagnostics.nativeValidation.readComplete =
+                    nativeValidation.readComplete;
+                outDiagnostics.nativeValidation.messageCount =
+                    nativeValidation.messageCount;
+                outDiagnostics.nativeValidation.warningCount =
+                    nativeValidation.warningCount;
+                outDiagnostics.nativeValidation.errorCount =
+                    nativeValidation.errorCount;
+                outDiagnostics.nativeValidation.corruptionCount =
+                    nativeValidation.corruptionCount;
+
+                const RHIDescriptorDiagnostics descriptors =
+                    m_context->GetDevice()->GetDescriptorDiagnostics();
+                const auto copyDescriptor = [](
+                    const RHIDescriptorAllocatorStats& source,
+                    RenderDescriptorAllocatorDiagnostics& target)
+                {
+                    target.currentPages = source.currentPages;
+                    target.peakPages = source.peakPages;
+                    target.activeDescriptors = source.activeDescriptors;
+                    target.peakActiveDescriptors =
+                        source.peakActiveDescriptors;
+                    target.allocationFailures = source.allocationFailures;
+                    target.validationFailures = source.validationFailures;
+                };
+                copyDescriptor(descriptors.resourceViews,
+                               lifetime.descriptors.resourceViews);
+                copyDescriptor(descriptors.samplers,
+                               lifetime.descriptors.samplers);
+                copyDescriptor(descriptors.renderTargets,
+                               lifetime.descriptors.renderTargets);
+                copyDescriptor(descriptors.depthStencils,
+                               lifetime.descriptors.depthStencils);
+            }
+            outDiagnostics.renderGraphLifetime = std::move(lifetime);
+
             RenderFrameFeatureDiagnostics features;
             features.available = true;
             features.frameSequence =

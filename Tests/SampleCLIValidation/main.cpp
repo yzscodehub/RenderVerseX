@@ -1,4 +1,6 @@
 #include "Samples/SampleCLI.h"
+#include "Samples/SampleLifetimeQualification.h"
+#include "Samples/SampleRunner.h"
 
 #include <gtest/gtest.h>
 
@@ -9,6 +11,36 @@
 
 namespace
 {
+    RVX::RenderDiagnosticsSnapshot MakeLifetimeSnapshot(
+        RVX::uint64 sequence,
+        RVX::uint32 textureAllocations = 4)
+    {
+        RVX::RenderDiagnosticsSnapshot diagnostics;
+        diagnostics.frameFeatures.available = true;
+        diagnostics.frameFeatures.gpuUsedMemory = 256ULL * 1024ULL * 1024ULL;
+        diagnostics.nativeValidation.available = true;
+        diagnostics.nativeValidation.enabled = true;
+        diagnostics.nativeValidation.readComplete = true;
+        auto& graph = diagnostics.renderGraphLifetime;
+        graph.available = true;
+        graph.frameSequence = sequence;
+        graph.planHash = 0x12345678ULL;
+        graph.physicalRealizationCount = 7;
+        graph.physicalTextureAllocationCount = textureAllocations;
+        graph.physicalBufferAllocationCount = 3;
+        graph.totalPooledMemoryBytes = 64ULL * 1024ULL * 1024ULL;
+        graph.transientViewCount = 12;
+        graph.inFlightTextureLeases = 2;
+        graph.inFlightBufferLeases = 1;
+        graph.leaseCommitCount = sequence * 2ULL;
+        graph.completionRetirementCount = sequence;
+        graph.descriptors.renderTargets.activeDescriptors = 2;
+        graph.descriptors.renderTargets.peakActiveDescriptors = 2;
+        graph.descriptors.depthStencils.activeDescriptors = 5;
+        graph.descriptors.depthStencils.peakActiveDescriptors = 5;
+        return diagnostics;
+    }
+
     TEST(SampleCLIValidation, ParsesCommonOptions)
     {
         const char* argv[] = {
@@ -68,6 +100,145 @@ namespace
 
         EXPECT_TRUE(options.smoke);
         EXPECT_EQ(options.frames, 8u);
+    }
+
+    TEST(SampleCLIValidation, ParsesModelViewerLifetimeQualification)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--sample", "model-viewer",
+            "--backend", "dx12",
+            "--render-path", "gpu-driven",
+            "--deterministic-orbit",
+            "--lifetime-report", "artifacts/lifetime.json",
+            "--lifetime-warmup-frames", "120",
+            "--lifetime-observation-frames", "480",
+            "--lifetime-min-duration-ms", "300000",
+            "--lifetime-resize-interval", "2400",
+            "--lifetime-resize-settle-frames", "60",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        ASSERT_TRUE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error))
+            << error;
+        EXPECT_TRUE(options.HasLifetimeQualification());
+        EXPECT_TRUE(options.waitReady);
+        EXPECT_TRUE(options.deterministicCameraOrbit);
+        EXPECT_EQ(options.common.frames, 1u);
+        EXPECT_EQ(options.renderPath, RVX::SampleRenderPath::GPUDriven);
+        EXPECT_EQ(options.lifetimeConfig.warmupFrames, 120u);
+        EXPECT_EQ(options.lifetimeConfig.observationFrames, 480u);
+        EXPECT_EQ(options.lifetimeConfig.minimumDurationMs, 300000u);
+        EXPECT_EQ(options.lifetimeConfig.resizeIntervalFrames, 2400u);
+        EXPECT_EQ(options.lifetimeConfig.resizeSettleFrames, 60u);
+    }
+
+    TEST(SampleCLIValidation, LifetimeQualificationRequiresFormalOrbitPath)
+    {
+        const char* argv[] = {
+            "RenderVerseSamples",
+            "--sample", "model-viewer",
+            "--backend", "dx12",
+            "--lifetime-report", "artifacts/lifetime.json",
+        };
+
+        RVX::SampleRunnerCLIOptions options;
+        std::string error;
+        EXPECT_FALSE(RVX::ParseSampleRunnerCLI(
+            static_cast<int>(std::size(argv)), argv, options, &error));
+        EXPECT_NE(error.find("--deterministic-orbit"), std::string::npos);
+    }
+
+    TEST(SampleCLIValidation, LifetimeQualificationAcceptsStablePlateau)
+    {
+        RVX::SampleLifetimeQualificationConfig config;
+        config.warmupFrames = 2;
+        config.observationFrames = 3;
+        RVX::SampleLifetimeQualificationMetadata metadata;
+        metadata.sampleName = "model-viewer";
+        metadata.assetId = "porsche";
+        metadata.backend = RVX::RHIBackendType::DX12;
+        metadata.renderPath = "direct";
+        metadata.deterministicOrbit = true;
+        RVX::SampleLifetimeQualification qualification(config, metadata);
+        const RVX::SampleProcessMemorySnapshot memory{
+            true,
+            512ULL * 1024ULL * 1024ULL,
+        };
+
+        for (RVX::uint64 frame = 1; frame <= 5; ++frame)
+        {
+            qualification.Observe(MakeLifetimeSnapshot(frame),
+                                  memory,
+                                  frame * 16ULL);
+        }
+
+        ASSERT_TRUE(qualification.IsComplete());
+        EXPECT_FALSE(qualification.HasFailed());
+        const auto& report = qualification.GetReport();
+        EXPECT_TRUE(report.pass);
+        EXPECT_EQ(report.warmupFramesObserved, 2u);
+        EXPECT_EQ(report.observationFramesObserved, 3u);
+        EXPECT_EQ(report.plateauCount, 1u);
+        EXPECT_TRUE(report.failures.empty());
+    }
+
+    TEST(SampleCLIValidation, LifetimeQualificationFailsOnPoolGrowth)
+    {
+        RVX::SampleLifetimeQualificationConfig config;
+        config.warmupFrames = 1;
+        config.observationFrames = 2;
+        RVX::SampleLifetimeQualification qualification(config, {});
+        const RVX::SampleProcessMemorySnapshot memory{};
+
+        qualification.Observe(MakeLifetimeSnapshot(1, 4), memory, 1);
+        qualification.Observe(MakeLifetimeSnapshot(2, 5), memory, 2);
+
+        ASSERT_TRUE(qualification.HasFailed());
+        ASSERT_FALSE(qualification.GetReport().failures.empty());
+        EXPECT_NE(qualification.GetReport().failures.front().find(
+                      "Physical texture allocation count"),
+                  std::string::npos);
+    }
+
+    TEST(SampleCLIValidation, LifetimeQualificationFailsOnNativeValidationError)
+    {
+        RVX::SampleLifetimeQualificationConfig config;
+        config.warmupFrames = 1;
+        config.observationFrames = 1;
+        RVX::SampleLifetimeQualification qualification(config, {});
+        RVX::RenderDiagnosticsSnapshot diagnostics = MakeLifetimeSnapshot(1);
+        diagnostics.nativeValidation.errorCount = 1;
+
+        qualification.Observe(diagnostics, {}, 1);
+
+        ASSERT_TRUE(qualification.HasFailed());
+        ASSERT_FALSE(qualification.GetReport().failures.empty());
+        EXPECT_NE(qualification.GetReport().failures.front().find(
+                      "Native graphics validation"),
+                  std::string::npos);
+    }
+
+    TEST(SampleCLIValidation,
+         LifetimeQualificationRejectsUnexpectedSurfaceFrameDrops)
+    {
+        RVX::SampleLifetimeQualificationConfig config;
+        config.warmupFrames = 1;
+        config.observationFrames = 2;
+        RVX::SampleLifetimeQualification qualification(config, {});
+
+        qualification.Observe(MakeLifetimeSnapshot(1), {}, 1);
+        RVX::RenderDiagnosticsSnapshot dropped = MakeLifetimeSnapshot(2);
+        dropped.frameTransport.surfaceIncompatibleDrops = 1;
+        qualification.Observe(dropped, {}, 2);
+
+        ASSERT_TRUE(qualification.HasFailed());
+        ASSERT_FALSE(qualification.GetReport().failures.empty());
+        EXPECT_NE(qualification.GetReport().failures.front().find(
+                      "Surface-incompatible frame drop count"),
+                  std::string::npos);
     }
 
     TEST(SampleCLIValidation, RejectsInvalidDimensions)

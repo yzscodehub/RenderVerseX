@@ -2497,6 +2497,16 @@ namespace
                                              1,
                                              RVX_TEST_TIMEOUT));
         ASSERT_TRUE(WaitForSurfaceGeneration(runtime, 3U));
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 1U);
+        EXPECT_EQ(
+            runtime.GetDiagnosticsSnapshot()
+                .frameTransport.surfaceIncompatibleDrops,
+            1U);
+
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(6)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(WaitForPresentedFrame(runtime, 6U));
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 2U);
         EXPECT_GE(probe->GetEventCount(RenderRuntimeTestEvent::Poll), 2U);
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
     }

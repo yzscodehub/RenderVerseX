@@ -116,6 +116,7 @@ target_sources(RVX_Render PRIVATE
     Private/Passes/OpaqueMeshPassProcessor.cpp
     Private/Passes/TransparentMeshPassProcessor.cpp
     Private/Passes/ShadowMeshPassProcessor.cpp
+    Private/Passes/MaterialTextureGraphBindings.cpp
     Private/Passes/OpaquePass.cpp
     Private/Passes/DepthPrepass.cpp
     Private/Passes/TransparentPass.cpp

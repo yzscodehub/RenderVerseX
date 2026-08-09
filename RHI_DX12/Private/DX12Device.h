@@ -142,6 +142,8 @@ namespace RVX
         // Memory Statistics
         RHIMemoryStats GetMemoryStats() const override;
         RHIDescriptorDiagnostics GetDescriptorDiagnostics() const override;
+        RHINativeValidationDiagnostics
+            GetNativeValidationDiagnostics() const override;
 
         // Debug Resource Groups
         void BeginResourceGroup(const char* name) override;

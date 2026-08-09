@@ -289,6 +289,7 @@ namespace RVX
             uint64 leaseAbortCount = 0;
             uint64 leaseDeviceLostCount = 0;
             uint64 leaseValidationFailureCount = 0;
+            uint64 completionRetirementCount = 0;
             uint32 textureViewCount = 0;
             uint32 textureViewHits = 0;
             uint32 textureViewMisses = 0;

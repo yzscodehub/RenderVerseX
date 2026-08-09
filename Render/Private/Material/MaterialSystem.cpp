@@ -653,29 +653,6 @@ RHIDescriptorSet* MaterialSystem::GetDefaultMaterialSet()
     return m_defaultMaterialSet.Get();
 }
 
-void MaterialSystem::TransitionMaterialTextures(RenderResourceHandle material,
-                                                RHICommandContext& ctx,
-                                                MaterialBindingOptions options) const
-{
-    if (!m_resourceRegistry)
-        return;
-    const RenderMaterialResourceData* materialData =
-        m_resourceRegistry->ResolveMaterial(material);
-    if (materialData == nullptr || !materialData->metadataValid)
-        return;
-    for (const MaterialUploadTextureBinding& binding :
-         materialData->textureBindings)
-    {
-        if (!options.allowNormalMap &&
-            binding.slot == MaterialUploadTextureSlot::Normal)
-        {
-            continue;
-        }
-        static_cast<void>(m_resourceRegistry->TransitionTexture(
-            binding.texture, ctx, RHIResourceState::ShaderResource));
-    }
-}
-
 std::array<uint32, 1> MaterialSystem::GetCurrentMaterialDynamicOffset() const
 {
     return {ToRHIConstantDynamicOffset(m_currentMaterialConstantOffset)};

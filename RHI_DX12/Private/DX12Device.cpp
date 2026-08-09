@@ -471,6 +471,61 @@ namespace RVX
             reportWritten && static_cast<bool>(output));
     }
 
+    RHINativeValidationDiagnostics
+        DX12Device::GetNativeValidationDiagnostics() const
+    {
+        RHINativeValidationDiagnostics diagnostics;
+        diagnostics.enabled = m_debugLayerEnabled;
+        if (!m_device)
+        {
+            diagnostics.readComplete = false;
+            return diagnostics;
+        }
+
+        ComPtr<ID3D12InfoQueue> infoQueue;
+        if (FAILED(m_device.As(&infoQueue)) || !infoQueue)
+        {
+            diagnostics.readComplete = false;
+            return diagnostics;
+        }
+
+        diagnostics.available = true;
+        diagnostics.messageCount = infoQueue->GetNumStoredMessages();
+        for (UINT64 index = 0; index < diagnostics.messageCount; ++index)
+        {
+            SIZE_T messageSize = 0;
+            if (FAILED(infoQueue->GetMessage(index, nullptr, &messageSize)) ||
+                messageSize == 0)
+            {
+                diagnostics.readComplete = false;
+                continue;
+            }
+            std::vector<uint8> messageBytes(messageSize);
+            auto* message = reinterpret_cast<D3D12_MESSAGE*>(
+                messageBytes.data());
+            if (FAILED(infoQueue->GetMessage(index, message, &messageSize)))
+            {
+                diagnostics.readComplete = false;
+                continue;
+            }
+            switch (message->Severity)
+            {
+                case D3D12_MESSAGE_SEVERITY_WARNING:
+                    ++diagnostics.warningCount;
+                    break;
+                case D3D12_MESSAGE_SEVERITY_ERROR:
+                    ++diagnostics.errorCount;
+                    break;
+                case D3D12_MESSAGE_SEVERITY_CORRUPTION:
+                    ++diagnostics.corruptionCount;
+                    break;
+                default:
+                    break;
+            }
+        }
+        return diagnostics;
+    }
+
     // =============================================================================
     // Device Lost Handling
     // =============================================================================

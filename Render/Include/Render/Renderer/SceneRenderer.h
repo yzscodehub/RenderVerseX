@@ -1553,16 +1553,25 @@ namespace RVX
         // Back buffer state tracking
         struct FrameAccessSnapshotRollback
         {
+            struct ResourceTexture
+            {
+                RenderResourceHandle resource{};
+                RHITextureAccessSnapshot access{};
+            };
+
             bool pending = false;
             bool restoreDepth = false;
             RHITextureAccessSnapshot depthAccess;
             uint32 backBufferIndex = RVX_INVALID_INDEX;
             RHITextureAccessSnapshot backBufferAccess;
+            std::vector<ResourceTexture> resourceTextures{};
         };
 
         std::vector<RHITextureAccessSnapshot> m_backBufferAccessSnapshots;
         RHITextureAccessSnapshot m_depthAccessSnapshot;
         FrameAccessSnapshotRollback m_frameAccessSnapshotRollback;
+        std::vector<RenderGraphExternalTextureAccess>
+            m_frameExternalTextureAccesses;
         RGTextureHandle m_depthGraphHandle;
         RGTextureHandle m_backBufferGraphHandle;
         uint32 m_activeBackBufferIndex = RVX_INVALID_INDEX;

@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -21,6 +22,23 @@
 #include <vector>
 
 using namespace RVX;
+
+namespace RVX
+{
+    struct RenderGraphExecutionTestAccess
+    {
+        static bool MarkAdopted(RenderGraphExecution& execution)
+        {
+            return execution.MarkAdopted();
+        }
+
+        static bool Commit(RenderGraphExecution& execution,
+                           const GPUCompletionToken& completion)
+        {
+            return execution.Commit(completion);
+        }
+    };
+} // namespace RVX
 
 namespace
 {
@@ -303,7 +321,15 @@ namespace
         {
             return RHICommandContextRef(new FakeCommandContext(type));
         }
-        uint64 SubmitCommandContext(RHICommandContext*, RHIFence*) override { return 0; }
+        uint64 SubmitCommandContext(
+            RHICommandContext*, RHIFence* signalFence) override
+        {
+            if (!m_timelineSubmissionEnabled || !signalFence)
+                return 0;
+            const uint64 value = ++m_lastTimelineSubmissionValue;
+            signalFence->Signal(value);
+            return value;
+        }
         uint64 SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence*) override { return 0; }
         uint64 SubmitQueuePlan(const RHIQueueSubmissionPlan& plan,
                                RHIFence*) override
@@ -332,6 +358,30 @@ namespace
 
         RHICapabilities& MutableCapabilities() { return m_capabilities; }
 
+        void EnableTimelineRetirement()
+        {
+            m_timelineSubmissionEnabled = true;
+            m_capabilities.backendType = RHIBackendType::DX12;
+            m_capabilities.adapterName = "RenderGraphLifetimeFake";
+            m_capabilities.driverVersion = "1";
+            m_capabilities.supportsComputePipeline = true;
+            m_capabilities.supportsDescriptorSets = true;
+            m_capabilities.supportsDynamicDescriptorOffsets = true;
+            m_capabilities.maxDescriptorSets = 4;
+            m_capabilities.supportsExplicitResourceBarriers = true;
+            m_capabilities.supportsDefaultQueueFenceSignal = true;
+            m_capabilities.supportsExplicitQueueFenceSignal = true;
+            m_capabilities.supportsAsyncCompute = true;
+            m_capabilities.dx12.resourceBindingTier = 2;
+            m_capabilities.queueTopology.completionMode =
+                RHIQueueCompletionMode::NativeTimeline;
+            m_capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy};
+            m_capabilities.queueTopology.activeDomainCount = 3;
+        }
+
         uint32 createTextureCount = 0;
         uint32 createBufferCount = 0;
         uint32 createPlacedTextureCount = 0;
@@ -351,6 +401,8 @@ namespace
 
     private:
         RHICapabilities m_capabilities;
+        bool m_timelineSubmissionEnabled = false;
+        uint64 m_lastTimelineSubmissionValue = 0;
     };
 
     class LogEnvironment final : public ::testing::Environment
@@ -1537,6 +1589,147 @@ TEST(RenderGraphValidation, DepthTextureArrayLayerWritesFullReadAndExportUseDept
     {
         EXPECT_EQ(barrier.subresourceRange.aspect, RHITextureAspect::Depth);
     }
+}
+
+TEST(RenderGraphValidation,
+     ReusedDepthArrayResolvesLeaseAccessForEveryFirstUseLayer)
+{
+    FakeDevice device;
+    device.EnableTimelineRetirement();
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+
+    TransientResourcePool pool;
+    pool.Initialize(&device, &tracker);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetTransientResourcePool(graph, &pool);
+
+    RHITextureDesc shadowDesc =
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+    shadowDesc.arraySize = 2;
+    shadowDesc.debugName = "RenderGraphValidation.ReusedDepthArray";
+
+    const auto recordFrame = [&](FakeCommandContext& context)
+    {
+        RenderGraphValidationAccess::Reset(graph);
+        const RGTextureHandle shadowArray = graph.CreateTexture(shadowDesc);
+
+        const auto makeDepthLayer = [shadowArray](uint32 layer)
+        {
+            RGTextureHandle handle = shadowArray;
+            handle.hasSubresourceRange = true;
+            handle.subresourceRange = {
+                0, 1, layer, 1, RHITextureAspect::Depth};
+            return handle;
+        };
+
+        struct DepthLayerPassData
+        {
+            RGTextureHandle layer;
+        };
+        struct DepthReadPassData
+        {
+            RGTextureHandle shadowArray;
+        };
+
+        graph.AddPass<DepthLayerPassData>(
+            "WriteReusedDepthLayer0",
+            RenderGraphPassType::Graphics,
+            [&](RenderGraphBuilder& builder, DepthLayerPassData& data)
+            {
+                data.layer = makeDepthLayer(0);
+                builder.SetDepthStencil(data.layer, true, false);
+            },
+            [](const DepthLayerPassData&, RHICommandContext&) {});
+        graph.AddPass<DepthLayerPassData>(
+            "WriteReusedDepthLayer1",
+            RenderGraphPassType::Graphics,
+            [&](RenderGraphBuilder& builder, DepthLayerPassData& data)
+            {
+                data.layer = makeDepthLayer(1);
+                builder.SetDepthStencil(data.layer, true, false);
+            },
+            [](const DepthLayerPassData&, RHICommandContext&) {});
+        graph.AddPass<DepthReadPassData>(
+            "ReadReusedDepthArray",
+            RenderGraphPassType::Graphics,
+            [&](RenderGraphBuilder& builder, DepthReadPassData& data)
+            {
+                data.shadowArray = shadowArray;
+                data.shadowArray.hasSubresourceRange = true;
+                data.shadowArray.subresourceRange = {
+                    0,
+                    RVX_ALL_MIPS,
+                    0,
+                    RVX_ALL_LAYERS,
+                    RHITextureAspect::Depth};
+                builder.Read(data.shadowArray, RHIShaderStage::Pixel);
+            },
+            [](const DepthReadPassData&, RHICommandContext&) {});
+
+        graph.SetExportAccess(
+            shadowArray,
+            MakeRHIAccessSnapshot(
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Pixel,
+                GPUQueueDomain::Graphics,
+                RHIContentValidity::Valid));
+        RenderGraphValidationAccess::Compile(graph);
+        EXPECT_TRUE(graph.GetCompileStats().compileValid);
+        RenderGraphValidationAccess::Execute(graph, context);
+        return RenderGraphValidationAccess::TakeExecution(graph);
+    };
+
+    pool.BeginFrame();
+    FakeCommandContext firstContext;
+    RenderGraphExecution firstExecution = recordFrame(firstContext);
+    ASSERT_TRUE(firstExecution);
+    GPUCompletionToken firstCompletion;
+    ASSERT_TRUE(InsertGPUCompletionPoint(
+        firstCompletion, tracker.Submit(&firstContext)));
+    ASSERT_TRUE(RenderGraphExecutionTestAccess::MarkAdopted(firstExecution));
+    ASSERT_TRUE(RenderGraphExecutionTestAccess::Commit(
+        firstExecution, firstCompletion));
+    ASSERT_TRUE(firstExecution.Retire());
+    pool.EndFrame();
+
+    pool.BeginFrame();
+    FakeCommandContext secondContext;
+    RenderGraphExecution secondExecution = recordFrame(secondContext);
+    ASSERT_TRUE(secondExecution);
+    EXPECT_EQ(1u, device.createTextureCount);
+    EXPECT_EQ(1u, pool.GetStats().textureHits);
+
+    std::array<bool, 2> sawLayer = {false, false};
+    for (const RHITextureBarrier& barrier : secondContext.textureBarriers)
+    {
+        if (barrier.accessAfter.layout !=
+                RHIResourceLayout::DepthStencilWrite ||
+            barrier.subresourceRange.mipLevelCount != 1 ||
+            barrier.subresourceRange.arrayLayerCount != 1 ||
+            barrier.subresourceRange.baseArrayLayer >= sawLayer.size())
+        {
+            continue;
+        }
+
+        const uint32 layer = barrier.subresourceRange.baseArrayLayer;
+        sawLayer[layer] = true;
+        EXPECT_EQ(RHIResourceLayout::ShaderReadOnly,
+                  barrier.accessBefore.layout)
+            << "Layer " << layer
+            << " did not resolve its first-use state from the pooled lease";
+    }
+    EXPECT_TRUE(sawLayer[0]);
+    EXPECT_TRUE(sawLayer[1]);
+
+    ASSERT_TRUE(secondExecution.AbortUnsubmitted());
+    pool.EndFrame();
+    RenderGraphValidationAccess::Reset(graph);
+    pool.Shutdown();
+    tracker.Shutdown();
 }
 
 struct MultiPassData

@@ -456,6 +456,8 @@ namespace RVX
         {
             return m_maskedDepthOnlyPipeline.Get();
         }
+        RHIPipeline* GetMaskedDepthOnlyPipeline(
+            DefaultLitDirectVertexInputMode inputMode);
         RHIPipeline* GetGPUDrivenDepthOnlyPipeline();
         /** @brief Get the GPU-scene depth-only raster pipeline. */
         RHIPipeline* GetGPUSceneDepthOnlyPipeline();
@@ -516,8 +518,14 @@ namespace RVX
          */
         RHIPipeline* GetObjectVelocityPipeline() const { return m_objectVelocityPipeline.Get(); }
         RHIPipeline* GetObjectVelocityPipeline(RHIFormat outputFormat);
+        RHIPipeline* GetObjectVelocityPipeline(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode);
         RHIPipeline* GetMaskedObjectVelocityPipeline() const { return m_maskedObjectVelocityPipeline.Get(); }
         RHIPipeline* GetMaskedObjectVelocityPipeline(RHIFormat outputFormat);
+        RHIPipeline* GetMaskedObjectVelocityPipeline(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode);
 
         /**
          * @brief Get the fullscreen alpha-composite pipeline for ray-traced reflections
@@ -970,7 +978,9 @@ namespace RVX
                                                               bool instancedMaterial = false);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateRigidDepthOnlyPipeline();
-        RHIPipelineRef GetOrCreateMaskedDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateMaskedDepthOnlyPipeline(
+            DefaultLitDirectVertexInputMode inputMode =
+                DefaultLitDirectVertexInputMode::Skinned);
         RHIPipelineRef GetOrCreateGPUDrivenDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateGPUSceneDepthOnlyPipeline();
         RHIPipelineRef GetOrCreateShadowDepthPipeline(
@@ -986,8 +996,14 @@ namespace RVX
         RHIPipelineRef GetOrCreateBloomAdditivePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateSSAOPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateCameraVelocityPipeline(RHIFormat outputFormat);
-        RHIPipelineRef GetOrCreateObjectVelocityPipeline(RHIFormat outputFormat);
-        RHIPipelineRef GetOrCreateMaskedObjectVelocityPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateObjectVelocityPipeline(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode =
+                DefaultLitDirectVertexInputMode::Skinned);
+        RHIPipelineRef GetOrCreateMaskedObjectVelocityPipeline(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode =
+                DefaultLitDirectVertexInputMode::Skinned);
         RHIPipelineRef GetOrCreateRayTracedReflectionCompositePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateRayTracedReflectionDenoisePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateColorGradingPipeline(RHIFormat outputFormat);
@@ -1019,7 +1035,8 @@ namespace RVX
                                                                      bool instancedMaterial = false) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildRigidDepthOnlyPipelineDesc() const;
-        RHIGraphicsPipelineDesc BuildMaskedDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildMaskedDepthOnlyPipelineDesc(
+            DefaultLitDirectVertexInputMode inputMode) const;
         RHIGraphicsPipelineDesc BuildGPUDrivenDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildGPUSceneDepthOnlyPipelineDesc() const;
         RHIGraphicsPipelineDesc BuildShadowDepthPipelineDesc(
@@ -1033,8 +1050,12 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildBloomAdditivePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildSSAOPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildCameraVelocityPipelineDesc(RHIFormat outputFormat) const;
-        RHIGraphicsPipelineDesc BuildObjectVelocityPipelineDesc(RHIFormat outputFormat) const;
-        RHIGraphicsPipelineDesc BuildMaskedObjectVelocityPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildObjectVelocityPipelineDesc(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode) const;
+        RHIGraphicsPipelineDesc BuildMaskedObjectVelocityPipelineDesc(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode) const;
         RHIGraphicsPipelineDesc BuildRayTracedReflectionCompositePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildRayTracedReflectionDenoisePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildColorGradingPipelineDesc(RHIFormat outputFormat) const;
@@ -1101,6 +1122,7 @@ namespace RVX
         RHIShaderRef m_depthOnlyVertexShader;
         RHIShaderRef m_rigidDepthOnlyVertexShader;
         RHIShaderRef m_maskedDepthOnlyVertexShader;
+        RHIShaderRef m_rigidMaskedDepthOnlyVertexShader;
         RHIShaderRef m_maskedDepthOnlyPixelShader;
         RHIShaderRef m_gpuDrivenDepthOnlyVertexShader;
         RHIShaderRef m_gpuSceneDepthOnlyVertexShader;
@@ -1114,8 +1136,10 @@ namespace RVX
         RHIShaderRef m_ssaoPixelShader;
         RHIShaderRef m_cameraVelocityPixelShader;
         RHIShaderRef m_objectVelocityVertexShader;
+        RHIShaderRef m_rigidObjectVelocityVertexShader;
         RHIShaderRef m_objectVelocityPixelShader;
         RHIShaderRef m_maskedObjectVelocityVertexShader;
+        RHIShaderRef m_rigidMaskedObjectVelocityVertexShader;
         RHIShaderRef m_maskedObjectVelocityPixelShader;
         RHIShaderRef m_rayTracedReflectionCompositeVertexShader;
         RHIShaderRef m_rayTracedReflectionCompositePixelShader;
@@ -1151,6 +1175,7 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_rigidDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rigidMaskedDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuDrivenDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuSceneDepthOnlyVsCompileResult;
@@ -1164,8 +1189,10 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_ssaoPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_cameraVelocityPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_objectVelocityVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rigidObjectVelocityVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_objectVelocityPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_maskedObjectVelocityVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rigidMaskedObjectVelocityVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_maskedObjectVelocityPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionCompositeVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionCompositePsCompileResult;
@@ -1217,6 +1244,7 @@ namespace RVX
         RHIPipelineRef m_depthOnlyPipeline;
         RHIPipelineRef m_rigidDepthOnlyPipeline;
         RHIPipelineRef m_maskedDepthOnlyPipeline;
+        RHIPipelineRef m_rigidMaskedDepthOnlyPipeline;
         RHIPipelineRef m_gpuDrivenDepthOnlyPipeline;
         RHIPipelineRef m_gpuSceneOpaquePipeline;
         RHIPipelineRef m_gpuSceneInstancedMaterialOpaquePipeline;
@@ -1229,7 +1257,9 @@ namespace RVX
         RHIPipelineRef m_ssaoPipeline;
         RHIPipelineRef m_cameraVelocityPipeline;
         RHIPipelineRef m_objectVelocityPipeline;
+        RHIPipelineRef m_rigidObjectVelocityPipeline;
         RHIPipelineRef m_maskedObjectVelocityPipeline;
+        RHIPipelineRef m_rigidMaskedObjectVelocityPipeline;
         RHIPipelineRef m_rayTracedReflectionCompositePipeline;
         RHIPipelineRef m_rayTracedReflectionDenoisePipeline;
         RHIPipelineRef m_colorGradingPipeline;

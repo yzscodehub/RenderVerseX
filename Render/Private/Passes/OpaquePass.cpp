@@ -4,6 +4,8 @@
  */
 
 #include "Render/Passes/OpaquePass.h"
+
+#include "Passes/MaterialTextureGraphBindings.h"
 #include "Core/Log.h"
 #include "Render/GPUDriven/GPUCulling.h"
 #include "Render/Graph/ResourceViewCache.h"
@@ -57,27 +59,6 @@ namespace
         for (Mat4& viewProjection : drawView.directionalShadowViewProjections)
         {
             viewProjection = Mat4Identity();
-        }
-    }
-
-    void TransitionGPUDrivenGroupMaterialTextures(
-        const GPUCulling& gpuCulling,
-        const RenderResourceRegistry* resourceRegistry,
-        MaterialSystem& materialSystem,
-        RHICommandContext& ctx)
-    {
-        for (const GPUCullingDrawGroup& group : gpuCulling.GetDrawGroups())
-        {
-            if (!group.material.IsValid())
-            {
-                continue;
-            }
-            const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-                resourceRegistry, group.mesh);
-            MaterialBindingOptions options;
-            options.allowNormalMap = buffers.HasNormalMapTangentBasis();
-            materialSystem.TransitionMaterialTextures(
-                group.material, ctx, options);
         }
     }
 
@@ -507,6 +488,52 @@ void OpaquePass::AddToGraph(
             data.recorder->InitializeGraphRecorder(
                 renderScene, opaqueDrawItems, maskedDrawItems, gpuCulling,
                 data.gpuInputs, gpuPlanned, directionalShadow, rayTracedShadow);
+            const auto declareDrawTextures = [&](
+                const std::vector<RenderDrawItem>* drawItems)
+            {
+                if (drawItems == nullptr)
+                {
+                    return true;
+                }
+                for (const RenderDrawItem& item : *drawItems)
+                {
+                    if (!DeclareMaterialTextureGraphReads(
+                            builder,
+                            resourceRegistry,
+                            item.material,
+                            *results))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            };
+            bool materialReadsDeclared =
+                declareDrawTextures(opaqueDrawItems) &&
+                declareDrawTextures(maskedDrawItems);
+            if (materialReadsDeclared && gpuCulling != nullptr)
+            {
+                for (const GPUCullingDrawGroup& group :
+                     gpuCulling->GetDrawGroups())
+                {
+                    if (!DeclareMaterialTextureGraphReads(
+                            builder,
+                            resourceRegistry,
+                            group.material,
+                            *results))
+                    {
+                        materialReadsDeclared = false;
+                        break;
+                    }
+                }
+            }
+            if (!materialReadsDeclared)
+            {
+                data.contextValid = false;
+                PublishOpaqueContextFailure(
+                    data.execution, results->opaqueStats);
+                return;
+            }
             data.recorder->Setup(builder, data.execution.view);
             // Setup owns the graph-declaration diagnostics for this exact
             // recording. Publish them immediately so callers observing the
@@ -2160,34 +2187,11 @@ void OpaquePass::Execute(
             return;
         }
 
-        // Only preflighted Direct packet values determine their texture
-        // transitions. These happen before attachment mutation.
-        for (const PlannedOpaqueDraw& planned : plannedDraws)
-        {
-            MaterialBindingOptions materialOptions;
-            materialOptions.allowNormalMap = planned.allowNormalMap;
-            m_materialSystem->TransitionMaterialTextures(
-                planned.packet.packet.materialKey.material,
-                ctx,
-                materialOptions);
-        }
-
         m_drawStats.planValidated = true;
         m_drawStats.plannedPacketCount =
             plannedGPUCount + plannedDirectCount;
         m_drawStats.compiledPacketCount = plannedGPUCount +
             m_drawStats.compiledPacketCount;
-
-        // The GPU lane retains its established indirect recording path. It
-        // deliberately has no Direct fallback once the plan selected it.
-        if (plannedGPU && gpuPreflightReady && m_gpuCulling)
-        {
-            // Resource preparation follows the immutable GPU packet groups,
-            // never the CPU-final draw list. Otherwise a GPU-visible boundary
-            // candidate could sample an untransitioned material texture.
-            TransitionGPUDrivenGroupMaterialTextures(
-                *m_gpuCulling, m_resourceRegistry, *m_materialSystem, ctx);
-        }
 
         RHIRenderPassDesc rpDesc;
         rpDesc.AddColorAttachment(colorTargetView,

@@ -994,6 +994,7 @@ void PipelineCache::Shutdown()
     m_depthOnlyPipeline.Reset();
     m_rigidDepthOnlyPipeline.Reset();
     m_maskedDepthOnlyPipeline.Reset();
+    m_rigidMaskedDepthOnlyPipeline.Reset();
     m_gpuDrivenDepthOnlyPipeline.Reset();
     m_gpuSceneOpaquePipeline.Reset();
     m_gpuSceneInstancedMaterialOpaquePipeline.Reset();
@@ -1005,7 +1006,9 @@ void PipelineCache::Shutdown()
     m_bloomAdditivePipeline.Reset();
     m_cameraVelocityPipeline.Reset();
     m_objectVelocityPipeline.Reset();
+    m_rigidObjectVelocityPipeline.Reset();
     m_maskedObjectVelocityPipeline.Reset();
+    m_rigidMaskedObjectVelocityPipeline.Reset();
     m_ssaoPipeline.Reset();
     m_colorGradingPipeline.Reset();
     m_chromaticAberrationPipeline.Reset();
@@ -1084,6 +1087,7 @@ void PipelineCache::Shutdown()
     m_depthOnlyVertexShader.Reset();
     m_rigidDepthOnlyVertexShader.Reset();
     m_maskedDepthOnlyVertexShader.Reset();
+    m_rigidMaskedDepthOnlyVertexShader.Reset();
     m_maskedDepthOnlyPixelShader.Reset();
     m_gpuDrivenDepthOnlyVertexShader.Reset();
     m_gpuSceneDepthOnlyVertexShader.Reset();
@@ -1097,8 +1101,10 @@ void PipelineCache::Shutdown()
     m_ssaoPixelShader.Reset();
     m_cameraVelocityPixelShader.Reset();
     m_objectVelocityVertexShader.Reset();
+    m_rigidObjectVelocityVertexShader.Reset();
     m_objectVelocityPixelShader.Reset();
     m_maskedObjectVelocityVertexShader.Reset();
+    m_rigidMaskedObjectVelocityVertexShader.Reset();
     m_maskedObjectVelocityPixelShader.Reset();
     m_rayTracedReflectionCompositeVertexShader.Reset();
     m_rayTracedReflectionCompositePixelShader.Reset();
@@ -1134,6 +1140,7 @@ void PipelineCache::Shutdown()
     m_depthOnlyVsCompileResult.reset();
     m_rigidDepthOnlyVsCompileResult.reset();
     m_maskedDepthOnlyVsCompileResult.reset();
+    m_rigidMaskedDepthOnlyVsCompileResult.reset();
     m_maskedDepthOnlyPsCompileResult.reset();
     m_gpuDrivenDepthOnlyVsCompileResult.reset();
     m_gpuSceneDepthOnlyVsCompileResult.reset();
@@ -1147,8 +1154,10 @@ void PipelineCache::Shutdown()
     m_ssaoPsCompileResult.reset();
     m_cameraVelocityPsCompileResult.reset();
     m_objectVelocityVsCompileResult.reset();
+    m_rigidObjectVelocityVsCompileResult.reset();
     m_objectVelocityPsCompileResult.reset();
     m_maskedObjectVelocityVsCompileResult.reset();
+    m_rigidMaskedObjectVelocityVsCompileResult.reset();
     m_maskedObjectVelocityPsCompileResult.reset();
     m_rayTracedReflectionCompositeVsCompileResult.reset();
     m_rayTracedReflectionCompositePsCompileResult.reset();
@@ -1178,7 +1187,9 @@ void PipelineCache::Shutdown()
     m_rayTracedShadowShaderTable.Reset();
     m_cameraVelocityPipeline.Reset();
     m_objectVelocityPipeline.Reset();
+    m_rigidObjectVelocityPipeline.Reset();
     m_maskedObjectVelocityPipeline.Reset();
+    m_rigidMaskedObjectVelocityPipeline.Reset();
     m_rayTracedReflectionPipeline.Reset();
     m_rayTracedReflectionShaderTable.Reset();
     m_rayTracedReflectionCompositePipeline.Reset();
@@ -1587,6 +1598,29 @@ bool PipelineCache::CompileShaders()
         std::make_unique<ShaderCompileResult>(
             std::move(maskedDepthVsResult.compileResult));
 
+    ShaderLoadDesc rigidMaskedDepthVsDesc = depthVsDesc;
+    rigidMaskedDepthVsDesc.entryPoint = "VSMainMaskedRigid";
+    auto rigidMaskedDepthVsResult =
+        m_shaderManager->LoadFromFile(m_device, rigidMaskedDepthVsDesc);
+    if (!rigidMaskedDepthVsResult.compileResult.success)
+    {
+        SetLastError(
+            "Failed to compile rigid masked depth-only vertex shader: " +
+            rigidMaskedDepthVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!rigidMaskedDepthVsResult.shader)
+    {
+        SetLastError(
+            "Failed to create rigid masked depth-only vertex shader");
+        return false;
+    }
+    m_rigidMaskedDepthOnlyVertexShader =
+        rigidMaskedDepthVsResult.shader;
+    m_rigidMaskedDepthOnlyVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(rigidMaskedDepthVsResult.compileResult));
+
     ShaderLoadDesc maskedDepthPsDesc = depthVsDesc;
     maskedDepthPsDesc.entryPoint = "PSMainMasked";
     maskedDepthPsDesc.stage = RHIShaderStage::Pixel;
@@ -1898,6 +1932,26 @@ bool PipelineCache::CompileShaders()
     m_objectVelocityVsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(objectVelocityVsResult.compileResult));
 
+    ShaderLoadDesc rigidObjectVelocityVsDesc = objectVelocityVsDesc;
+    rigidObjectVelocityVsDesc.entryPoint = "VSMainRigid";
+    auto rigidObjectVelocityVsResult =
+        m_shaderManager->LoadFromFile(m_device, rigidObjectVelocityVsDesc);
+    if (!rigidObjectVelocityVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile rigid ObjectVelocity vertex shader: " +
+                     rigidObjectVelocityVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!rigidObjectVelocityVsResult.shader)
+    {
+        SetLastError("Failed to create rigid ObjectVelocity vertex shader");
+        return false;
+    }
+    m_rigidObjectVelocityVertexShader = rigidObjectVelocityVsResult.shader;
+    m_rigidObjectVelocityVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(rigidObjectVelocityVsResult.compileResult));
+
     ShaderLoadDesc objectVelocityPsDesc = objectVelocityVsDesc;
     objectVelocityPsDesc.entryPoint = "PSMain";
     objectVelocityPsDesc.stage = RHIShaderStage::Pixel;
@@ -1939,6 +1993,30 @@ bool PipelineCache::CompileShaders()
     m_maskedObjectVelocityVertexShader = maskedObjectVelocityVsResult.shader;
     m_maskedObjectVelocityVsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(maskedObjectVelocityVsResult.compileResult));
+
+    ShaderLoadDesc rigidMaskedObjectVelocityVsDesc = objectVelocityVsDesc;
+    rigidMaskedObjectVelocityVsDesc.entryPoint = "VSMainMaskedRigid";
+    auto rigidMaskedObjectVelocityVsResult =
+        m_shaderManager->LoadFromFile(
+            m_device, rigidMaskedObjectVelocityVsDesc);
+    if (!rigidMaskedObjectVelocityVsResult.compileResult.success)
+    {
+        SetLastError(
+            "Failed to compile rigid masked ObjectVelocity vertex shader: " +
+            rigidMaskedObjectVelocityVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!rigidMaskedObjectVelocityVsResult.shader)
+    {
+        SetLastError(
+            "Failed to create rigid masked ObjectVelocity vertex shader");
+        return false;
+    }
+    m_rigidMaskedObjectVelocityVertexShader =
+        rigidMaskedObjectVelocityVsResult.shader;
+    m_rigidMaskedObjectVelocityVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(rigidMaskedObjectVelocityVsResult.compileResult));
 
     ShaderLoadDesc maskedObjectVelocityPsDesc = objectVelocityPsDesc;
     maskedObjectVelocityPsDesc.entryPoint = "PSMainMasked";
@@ -4456,6 +4534,21 @@ RHIPipeline* PipelineCache::GetDepthOnlyPipeline(
     return m_rigidDepthOnlyPipeline.Get();
 }
 
+RHIPipeline* PipelineCache::GetMaskedDepthOnlyPipeline(
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        return m_maskedDepthOnlyPipeline.Get();
+    }
+    if (!m_rigidMaskedDepthOnlyPipeline)
+    {
+        m_rigidMaskedDepthOnlyPipeline =
+            GetOrCreateMaskedDepthOnlyPipeline(inputMode);
+    }
+    return m_rigidMaskedDepthOnlyPipeline.Get();
+}
+
 bool PipelineCache::IsGPUSceneRasterReady() const
 {
     return m_initialized && m_gpuSceneRasterObjectSetLayout &&
@@ -4754,32 +4847,60 @@ RHIPipeline* PipelineCache::GetCameraVelocityPipeline(RHIFormat outputFormat)
 
 RHIPipeline* PipelineCache::GetObjectVelocityPipeline(RHIFormat outputFormat)
 {
-    const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
-    if (resolvedFormat == RHIFormat::RG16_FLOAT)
-    {
-        if (!m_objectVelocityPipeline)
-        {
-            m_objectVelocityPipeline = GetOrCreateObjectVelocityPipeline(resolvedFormat);
-        }
-        return m_objectVelocityPipeline.Get();
-    }
-
-    return GetOrCreateObjectVelocityPipeline(resolvedFormat).Get();
+    return GetObjectVelocityPipeline(
+        outputFormat, DefaultLitDirectVertexInputMode::Skinned);
 }
 
-RHIPipeline* PipelineCache::GetMaskedObjectVelocityPipeline(RHIFormat outputFormat)
+RHIPipeline* PipelineCache::GetObjectVelocityPipeline(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode)
 {
     const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
     if (resolvedFormat == RHIFormat::RG16_FLOAT)
     {
-        if (!m_maskedObjectVelocityPipeline)
+        RHIPipelineRef& cached =
+            inputMode == DefaultLitDirectVertexInputMode::Rigid
+                ? m_rigidObjectVelocityPipeline
+                : m_objectVelocityPipeline;
+        if (!cached)
         {
-            m_maskedObjectVelocityPipeline = GetOrCreateMaskedObjectVelocityPipeline(resolvedFormat);
+            cached = GetOrCreateObjectVelocityPipeline(
+                resolvedFormat, inputMode);
         }
-        return m_maskedObjectVelocityPipeline.Get();
+        return cached.Get();
     }
 
-    return GetOrCreateMaskedObjectVelocityPipeline(resolvedFormat).Get();
+    return GetOrCreateObjectVelocityPipeline(
+        resolvedFormat, inputMode).Get();
+}
+
+RHIPipeline* PipelineCache::GetMaskedObjectVelocityPipeline(RHIFormat outputFormat)
+{
+    return GetMaskedObjectVelocityPipeline(
+        outputFormat, DefaultLitDirectVertexInputMode::Skinned);
+}
+
+RHIPipeline* PipelineCache::GetMaskedObjectVelocityPipeline(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
+    if (resolvedFormat == RHIFormat::RG16_FLOAT)
+    {
+        RHIPipelineRef& cached =
+            inputMode == DefaultLitDirectVertexInputMode::Rigid
+                ? m_rigidMaskedObjectVelocityPipeline
+                : m_maskedObjectVelocityPipeline;
+        if (!cached)
+        {
+            cached = GetOrCreateMaskedObjectVelocityPipeline(
+                resolvedFormat, inputMode);
+        }
+        return cached.Get();
+    }
+
+    return GetOrCreateMaskedObjectVelocityPipeline(
+        resolvedFormat, inputMode).Get();
 }
 
 RHIPipeline* PipelineCache::GetRayTracedReflectionCompositePipeline(RHIFormat outputFormat)
@@ -6118,9 +6239,11 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDefaultLitPipeline(
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateMaskedDepthOnlyPipeline()
+RHIPipelineRef PipelineCache::GetOrCreateMaskedDepthOnlyPipeline(
+    DefaultLitDirectVertexInputMode inputMode)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildMaskedDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildMaskedDepthOnlyPipelineDesc(inputMode);
     if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader)
     {
         SetLastError(
@@ -6619,9 +6742,12 @@ RHIPipelineRef PipelineCache::GetOrCreateCameraVelocityPipeline(RHIFormat output
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateObjectVelocityPipeline(RHIFormat outputFormat)
+RHIPipelineRef PipelineCache::GetOrCreateObjectVelocityPipeline(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildObjectVelocityPipelineDesc(outputFormat);
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildObjectVelocityPipelineDesc(outputFormat, inputMode);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create ObjectVelocity pipeline without vertex shader");
@@ -6673,9 +6799,12 @@ RHIPipelineRef PipelineCache::GetOrCreateObjectVelocityPipeline(RHIFormat output
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateMaskedObjectVelocityPipeline(RHIFormat outputFormat)
+RHIPipelineRef PipelineCache::GetOrCreateMaskedObjectVelocityPipeline(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildMaskedObjectVelocityPipelineDesc(outputFormat);
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildMaskedObjectVelocityPipelineDesc(outputFormat, inputMode);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create masked ObjectVelocity pipeline without vertex shader");
@@ -7251,10 +7380,14 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDefaultLitPipelineDesc(
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildMaskedDepthOnlyPipelineDesc() const
+RHIGraphicsPipelineDesc PipelineCache::BuildMaskedDepthOnlyPipelineDesc(
+    DefaultLitDirectVertexInputMode inputMode) const
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
-    pipelineDesc.vertexShader = m_maskedDepthOnlyVertexShader.Get();
+    pipelineDesc.vertexShader =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? m_rigidMaskedDepthOnlyVertexShader.Get()
+            : m_maskedDepthOnlyVertexShader.Get();
     pipelineDesc.pixelShader = m_maskedDepthOnlyPixelShader.Get();
     pipelineDesc.debugName = "MaskedDepthOnlyPipeline";
     pipelineDesc.inputLayout.elements.clear();
@@ -7262,10 +7395,13 @@ RHIGraphicsPipelineDesc PipelineCache::BuildMaskedDepthOnlyPipelineDesc() const
         0, "POSITION", 0, RHIFormat::RGB32_FLOAT, 0);
     pipelineDesc.inputLayout.AddElementAtLocation(
         1, "TEXCOORD", 0, RHIFormat::RG32_FLOAT, 2);
-    pipelineDesc.inputLayout.AddElementAtLocation(
-        2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
-    pipelineDesc.inputLayout.AddElementAtLocation(
-        3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        pipelineDesc.inputLayout.AddElementAtLocation(
+            2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
+        pipelineDesc.inputLayout.AddElementAtLocation(
+            3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
+    }
     return pipelineDesc;
 }
 
@@ -7426,18 +7562,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildCameraVelocityPipelineDesc(RHIFormat
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildObjectVelocityPipelineDesc(RHIFormat outputFormat) const
+RHIGraphicsPipelineDesc PipelineCache::BuildObjectVelocityPipelineDesc(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
-    pipelineDesc.vertexShader = m_objectVelocityVertexShader.Get();
+    pipelineDesc.vertexShader =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? m_rigidObjectVelocityVertexShader.Get()
+            : m_objectVelocityVertexShader.Get();
     pipelineDesc.pixelShader = m_objectVelocityPixelShader.Get();
     pipelineDesc.pipelineLayout = m_pipelineLayout.Get();
     pipelineDesc.debugName = "ObjectVelocityPipeline";
 
     pipelineDesc.inputLayout.AddElement("POSITION", RHIFormat::RGB32_FLOAT, 0);
-    pipelineDesc.inputLayout.AddElement("BLENDINDICES", RHIFormat::RGBA32_UINT, 4);
-    pipelineDesc.inputLayout.AddElement("BLENDWEIGHT", RHIFormat::RGBA32_FLOAT, 5);
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        pipelineDesc.inputLayout.AddElement(
+            "BLENDINDICES", RHIFormat::RGBA32_UINT, 4);
+        pipelineDesc.inputLayout.AddElement(
+            "BLENDWEIGHT", RHIFormat::RGBA32_FLOAT, 5);
+    }
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();
     pipelineDesc.rasterizerState.frontFace = RHIFrontFace::Clockwise;
@@ -7455,10 +7601,16 @@ RHIGraphicsPipelineDesc PipelineCache::BuildObjectVelocityPipelineDesc(RHIFormat
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(RHIFormat outputFormat) const
+RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode) const
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildObjectVelocityPipelineDesc(outputFormat);
-    pipelineDesc.vertexShader = m_maskedObjectVelocityVertexShader.Get();
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildObjectVelocityPipelineDesc(outputFormat, inputMode);
+    pipelineDesc.vertexShader =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? m_rigidMaskedObjectVelocityVertexShader.Get()
+            : m_maskedObjectVelocityVertexShader.Get();
     pipelineDesc.pixelShader = m_maskedObjectVelocityPixelShader.Get();
     pipelineDesc.debugName = "MaskedObjectVelocityPipeline";
     pipelineDesc.inputLayout.elements.clear();
@@ -7466,10 +7618,13 @@ RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(RHI
         0, "POSITION", 0, RHIFormat::RGB32_FLOAT, 0);
     pipelineDesc.inputLayout.AddElementAtLocation(
         1, "TEXCOORD", 0, RHIFormat::RG32_FLOAT, 2);
-    pipelineDesc.inputLayout.AddElementAtLocation(
-        2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
-    pipelineDesc.inputLayout.AddElementAtLocation(
-        3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        pipelineDesc.inputLayout.AddElementAtLocation(
+            2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
+        pipelineDesc.inputLayout.AddElementAtLocation(
+            3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
+    }
     return pipelineDesc;
 }
 
@@ -7768,6 +7923,9 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_rigidDepthOnlyVsCompileResult.get());
         if (shader == m_maskedDepthOnlyVertexShader.Get())
             return ComputeShaderHash(m_maskedDepthOnlyVsCompileResult.get());
+        if (shader == m_rigidMaskedDepthOnlyVertexShader.Get())
+            return ComputeShaderHash(
+                m_rigidMaskedDepthOnlyVsCompileResult.get());
         if (shader == m_maskedDepthOnlyPixelShader.Get())
             return ComputeShaderHash(m_maskedDepthOnlyPsCompileResult.get());
         if (shader == m_gpuDrivenDepthOnlyVertexShader.Get())
@@ -7790,10 +7948,16 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_cameraVelocityPsCompileResult.get());
         if (shader == m_objectVelocityVertexShader.Get())
             return ComputeShaderHash(m_objectVelocityVsCompileResult.get());
+        if (shader == m_rigidObjectVelocityVertexShader.Get())
+            return ComputeShaderHash(
+                m_rigidObjectVelocityVsCompileResult.get());
         if (shader == m_objectVelocityPixelShader.Get())
             return ComputeShaderHash(m_objectVelocityPsCompileResult.get());
         if (shader == m_maskedObjectVelocityVertexShader.Get())
             return ComputeShaderHash(m_maskedObjectVelocityVsCompileResult.get());
+        if (shader == m_rigidMaskedObjectVelocityVertexShader.Get())
+            return ComputeShaderHash(
+                m_rigidMaskedObjectVelocityVsCompileResult.get());
         if (shader == m_maskedObjectVelocityPixelShader.Get())
             return ComputeShaderHash(m_maskedObjectVelocityPsCompileResult.get());
         if (shader == m_rayTracedReflectionCompositeVertexShader.Get())

@@ -80,6 +80,12 @@ struct MaskedVSInput
     float4 BoneWeights : BLENDWEIGHT;
 };
 
+struct MaskedRigidVSInput
+{
+    float3 Position : POSITION;
+    float2 TexCoord : TEXCOORD0;
+};
+
 struct MaskedVSOutput
 {
     float4 Position : SV_POSITION;
@@ -186,6 +192,15 @@ MaskedVSOutput VSMainMasked(MaskedVSInput input)
     float4 worldPosition = mul(
         World,
         ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights));
+    output.Position = mul(ViewProjection, worldPosition);
+    output.TexCoord = input.TexCoord;
+    return output;
+}
+
+MaskedVSOutput VSMainMaskedRigid(MaskedRigidVSInput input)
+{
+    MaskedVSOutput output;
+    const float4 worldPosition = mul(World, float4(input.Position, 1.0f));
     output.Position = mul(ViewProjection, worldPosition);
     output.TexCoord = input.TexCoord;
     return output;

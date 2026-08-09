@@ -14,6 +14,7 @@
 #include "Samples/SampleAssetCatalog.h"
 #include "Samples/SampleContext.h"
 #include "Samples/SampleEnvironmentLoader.h"
+#include "Samples/SampleLifetimeQualification.h"
 #include "Samples/SampleModelLoader.h"
 #include "Samples/SampleRegistry.h"
 #include "Samples/SampleScreenshotWriter.h"
@@ -151,7 +152,13 @@ namespace RVX
                    argument == "--render-path" ||
                    argument == "--instancing" ||
                    argument == "--ready-timeout-ms" ||
-                   argument == "--ready-max-frames";
+                   argument == "--ready-max-frames" ||
+                   argument == "--lifetime-report" ||
+                   argument == "--lifetime-warmup-frames" ||
+                   argument == "--lifetime-observation-frames" ||
+                   argument == "--lifetime-min-duration-ms" ||
+                   argument == "--lifetime-resize-interval" ||
+                   argument == "--lifetime-resize-settle-frames";
         }
 
         struct ResolvedSampleAsset
@@ -293,6 +300,8 @@ namespace RVX
                                           : info.defaultRenderPath;
             sceneOptions.smoke = options.common.smoke;
             sceneOptions.diagnostics = options.common.diagnostics;
+            sceneOptions.deterministicCameraOrbit =
+                options.deterministicCameraOrbit;
 
             if (options.renderPathExplicit &&
                 !info.supportsRenderPathSelection)
@@ -736,6 +745,11 @@ namespace RVX
                 options.waitReady = true;
                 continue;
             }
+            if (argument == "--deterministic-orbit")
+            {
+                options.deterministicCameraOrbit = true;
+                continue;
+            }
             if (RequiresRunnerValue(argument))
             {
                 if (i + 1 >= argc || !argv[i + 1])
@@ -815,6 +829,75 @@ namespace RVX
                         return false;
                     }
                 }
+                else if (argument == "--lifetime-report")
+                {
+                    options.lifetimeReportPath = value;
+                }
+                else if (argument == "--lifetime-warmup-frames")
+                {
+                    if (!ParsePositiveRunnerUInt(
+                            value,
+                            options.lifetimeConfig.warmupFrames) ||
+                        options.lifetimeConfig.warmupFrames > 1000000u)
+                    {
+                        SetError(outError,
+                                 "Invalid --lifetime-warmup-frames value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                }
+                else if (argument == "--lifetime-observation-frames")
+                {
+                    if (!ParsePositiveRunnerUInt(
+                            value,
+                            options.lifetimeConfig.observationFrames) ||
+                        options.lifetimeConfig.observationFrames > 1000000u)
+                    {
+                        SetError(outError,
+                                 "Invalid --lifetime-observation-frames value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                }
+                else if (argument == "--lifetime-min-duration-ms")
+                {
+                    if (!ParsePositiveRunnerUInt(
+                            value,
+                            options.lifetimeConfig.minimumDurationMs) ||
+                        options.lifetimeConfig.minimumDurationMs > 86400000u)
+                    {
+                        SetError(outError,
+                                 "Invalid --lifetime-min-duration-ms value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                }
+                else if (argument == "--lifetime-resize-interval")
+                {
+                    if (!ParsePositiveRunnerUInt(
+                            value,
+                            options.lifetimeConfig.resizeIntervalFrames) ||
+                        options.lifetimeConfig.resizeIntervalFrames > 1000000u)
+                    {
+                        SetError(outError,
+                                 "Invalid --lifetime-resize-interval value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                }
+                else if (argument == "--lifetime-resize-settle-frames")
+                {
+                    if (!ParsePositiveRunnerUInt(
+                            value,
+                            options.lifetimeConfig.resizeSettleFrames) ||
+                        options.lifetimeConfig.resizeSettleFrames > 10000u)
+                    {
+                        SetError(outError,
+                                 "Invalid --lifetime-resize-settle-frames value: " +
+                                     std::string(value));
+                        return false;
+                    }
+                }
                 else
                 {
                     options.assetRoot = value;
@@ -846,6 +929,26 @@ namespace RVX
             SetError(outError,
                      "--environment and --environment-file are mutually exclusive");
             return false;
+        }
+        if (options.HasLifetimeQualification())
+        {
+            options.waitReady = true;
+            if (options.common.frames == 0)
+            {
+                options.common.frames = 1;
+            }
+            if (options.sampleId != "model-viewer")
+            {
+                SetError(outError,
+                         "Lifetime qualification currently requires --sample model-viewer");
+                return false;
+            }
+            if (!options.deterministicCameraOrbit)
+            {
+                SetError(outError,
+                         "Lifetime qualification requires --deterministic-orbit");
+                return false;
+            }
         }
         if (!options.common.screenshotPath.empty() && options.common.frames == 0)
         {
@@ -897,6 +1000,13 @@ namespace RVX
             << "  --wait-ready\n"
             << "  --ready-timeout-ms <milliseconds>\n"
             << "  --ready-max-frames <count>\n"
+            << "  --deterministic-orbit\n"
+            << "  --lifetime-report <path.json>\n"
+            << "  --lifetime-warmup-frames <count>\n"
+            << "  --lifetime-observation-frames <count>\n"
+            << "  --lifetime-min-duration-ms <milliseconds>\n"
+            << "  --lifetime-resize-interval <frames>\n"
+            << "  --lifetime-resize-settle-frames <frames>\n"
             << "\nAvailable samples:\n";
         for (const SampleInfo& info : registry.List())
         {
@@ -1000,7 +1110,8 @@ namespace RVX
         windowConfig.title = applicationName.c_str();
         windowConfig.width = options.common.width;
         windowConfig.height = options.common.height;
-        windowConfig.resizable = options.common.frames == 0;
+        windowConfig.resizable = options.common.frames == 0 ||
+                                 options.HasLifetimeQualification();
         windowConfig.vsync = options.common.frames == 0;
         windowConfig.graphicsApi =
             options.common.backend == RHIBackendType::OpenGL
@@ -1031,6 +1142,14 @@ namespace RVX
         uint32 executedFrames = 0;
         std::string readinessReason;
         RenderDiagnosticsSnapshot diagnostics = render->GetDiagnosticsSnapshot();
+        std::unique_ptr<SampleLifetimeQualification> lifetimeQualification;
+        std::chrono::steady_clock::time_point lifetimeReadyStart{};
+        bool lifetimeReadyStarted = false;
+        bool lifetimeReportWritten = true;
+        bool resizePending = false;
+        bool resizeToAlternateExtent = true;
+        uint32 pendingResizeWidth = 0;
+        uint32 pendingResizeHeight = 0;
 
         World* world = engine.CreateWorld("SampleWorld");
         Scene* scene = world ? world->GetScene() : nullptr;
@@ -1087,6 +1206,23 @@ namespace RVX
 
             if (setupSucceeded)
             {
+                if (options.HasLifetimeQualification())
+                {
+                    SampleLifetimeQualificationMetadata metadata;
+                    metadata.sampleName = registeredInfo->id;
+                    metadata.assetId = sceneOptions.assetId;
+                    metadata.backend = options.common.backend;
+                    metadata.renderPath =
+                        GetSampleRenderPathName(sceneOptions.renderPath);
+                    metadata.width = options.common.width;
+                    metadata.height = options.common.height;
+                    metadata.deterministicOrbit =
+                        options.deterministicCameraOrbit;
+                    lifetimeQualification =
+                        std::make_unique<SampleLifetimeQualification>(
+                            options.lifetimeConfig,
+                            std::move(metadata));
+                }
                 RuntimeFrameDriver frameDriver(engine, *render);
                 const auto readinessDeadline =
                     std::chrono::steady_clock::now() +
@@ -1103,11 +1239,16 @@ namespace RVX
                     sample->Update(context, SampleDeltaTime);
 
                     const bool fixedCaptureFrame =
-                        !options.waitReady && options.common.frames > 0 &&
+                        !lifetimeQualification && !options.waitReady &&
+                        options.common.frames > 0 &&
                         executedFrames + 1u >= options.common.frames;
                     const bool readyCaptureFrame =
                         options.waitReady && sampleReady &&
-                        executedFrames >= options.common.frames;
+                        ((!lifetimeQualification &&
+                          executedFrames >= options.common.frames) ||
+                         (lifetimeQualification &&
+                          lifetimeQualification->IsComplete() &&
+                          !lifetimeQualification->HasFailed()));
                     const bool captureFrame =
                         !options.common.screenshotPath.empty() &&
                         (fixedCaptureFrame || readyCaptureFrame);
@@ -1189,6 +1330,77 @@ namespace RVX
                                           ? std::string{}
                                           : std::move(currentReadinessReason);
 
+                    if (sampleReady && lifetimeQualification)
+                    {
+                        if (!lifetimeReadyStarted)
+                        {
+                            lifetimeReadyStart =
+                                std::chrono::steady_clock::now();
+                            lifetimeReadyStarted = true;
+                        }
+
+                        if (resizePending &&
+                            diagnostics.surfaceWidth == pendingResizeWidth &&
+                            diagnostics.surfaceHeight == pendingResizeHeight)
+                        {
+                            sample->OnViewportResize(context,
+                                                     pendingResizeWidth,
+                                                     pendingResizeHeight);
+                            lifetimeQualification->NotifyResize();
+                            resizePending = false;
+                        }
+
+                        const uint64 elapsedMs = static_cast<uint64>(
+                            std::chrono::duration_cast<
+                                std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() -
+                                lifetimeReadyStart)
+                                .count());
+                        lifetimeQualification->Observe(
+                            diagnostics,
+                            CaptureSampleProcessMemory(),
+                            elapsedMs);
+
+                        if (lifetimeQualification->HasFailed())
+                        {
+                            const auto& failures =
+                                lifetimeQualification->GetReport().failures;
+                            error = failures.empty()
+                                        ? "Model Viewer lifetime qualification failed"
+                                        : failures.front();
+                            engine.RequestShutdown();
+                        }
+                        else if (!resizePending &&
+                                 lifetimeQualification->ShouldRequestResize())
+                        {
+                            const uint32 alternateWidth =
+                                options.common.width + 32u;
+                            const uint32 alternateHeight =
+                                options.common.height + 18u;
+                            pendingResizeWidth = resizeToAlternateExtent
+                                                     ? alternateWidth
+                                                     : options.common.width;
+                            pendingResizeHeight = resizeToAlternateExtent
+                                                      ? alternateHeight
+                                                      : options.common.height;
+                            resizeToAlternateExtent =
+                                !resizeToAlternateExtent;
+                            if (!window->RequestResize(pendingResizeWidth,
+                                                       pendingResizeHeight))
+                            {
+                                lifetimeQualification->Fail(
+                                    "Formal native window resize request failed");
+                                error =
+                                    "Formal native window resize request failed";
+                                engine.RequestShutdown();
+                            }
+                            else
+                            {
+                                resizePending = true;
+                            }
+                        }
+                    }
+
                     if (options.common.frames == 0)
                     {
                         continue;
@@ -1204,7 +1416,12 @@ namespace RVX
                             sampleReady &&
                             (options.common.screenshotPath.empty() ||
                              screenshotWritten);
-                        if (executedFrames >= options.common.frames &&
+                        const bool requestedRunComplete =
+                            lifetimeQualification
+                                ? lifetimeQualification->IsComplete() &&
+                                      !lifetimeQualification->HasFailed()
+                                : executedFrames >= options.common.frames;
+                        if (requestedRunComplete &&
                             readyAndCaptured)
                         {
                             engine.RequestShutdown();
@@ -1260,6 +1477,17 @@ namespace RVX
                              features.available && features.renderAttempted &&
                              features.rendered && features.graphBuilt &&
                              features.graphCompiled;
+            if (lifetimeQualification)
+            {
+                if (!lifetimeQualification->IsComplete())
+                {
+                    lifetimeQualification->Fail(
+                        error.empty()
+                            ? "Lifetime qualification ended before completion"
+                            : error);
+                }
+                succeeded &= lifetimeQualification->GetReport().pass;
+            }
             if (options.common.backend != RHIBackendType::Auto)
             {
                 succeeded &= diagnostics.backend == options.common.backend;
@@ -1368,6 +1596,20 @@ namespace RVX
                 WriteSampleReportJson(std::cout, report);
             }
 
+            if (lifetimeQualification)
+            {
+                std::string lifetimeReportError;
+                lifetimeReportWritten =
+                    WriteSampleLifetimeQualificationReport(
+                        lifetimeQualification->GetReport(),
+                        options.lifetimeReportPath,
+                        &lifetimeReportError);
+                if (!lifetimeReportWritten)
+                {
+                    RVX_CORE_ERROR("{}", lifetimeReportError);
+                }
+            }
+
             sample->Shutdown(context);
             sample.reset();
             engine.Shutdown();
@@ -1379,7 +1621,7 @@ namespace RVX
                                error);
             }
             Log::Shutdown();
-            return succeeded && reportWritten ? 0 : 1;
+            return succeeded && reportWritten && lifetimeReportWritten ? 0 : 1;
         }
 
         RVX_CORE_ERROR("{}", error);

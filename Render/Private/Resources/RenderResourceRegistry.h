@@ -155,10 +155,6 @@ namespace RVX
             RenderResourceHandle handle) const;
         [[nodiscard]] RHITexture* ResolveTextureObject(
             RenderResourceHandle handle) const;
-        [[nodiscard]] bool TransitionTexture(
-            RenderResourceHandle handle,
-            RHICommandContext& context,
-            RHIResourceState desiredState);
         /** @brief Commit the access realized by RenderGraph for an imported texture. */
         [[nodiscard]] bool CommitTextureAccessSnapshot(
             RenderResourceHandle handle,

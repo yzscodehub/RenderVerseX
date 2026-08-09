@@ -3475,10 +3475,11 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracingSceneBuildBef
     const auto renderStart = source.find("void SceneRenderer::Render()");
     ASSERT_NE(renderStart, std::string::npos);
     const auto prepareCall = source.find("PrepareRayTracingScene();", renderStart);
-    const auto clearCall = source.find("m_renderGraph->Clear();", renderStart);
+    const auto definitionCall = source.find(
+        "m_renderGraph = std::make_unique<RenderGraph>();", renderStart);
     ASSERT_NE(prepareCall, std::string::npos);
-    ASSERT_NE(clearCall, std::string::npos);
-    EXPECT_LT(prepareCall, clearCall);
+    ASSERT_NE(definitionCall, std::string::npos);
+    EXPECT_LT(prepareCall, definitionCall);
 
     const auto buildGraphStart = source.find("void SceneRenderer::BuildRenderGraph()");
     ASSERT_NE(buildGraphStart, std::string::npos);
@@ -3868,7 +3869,8 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneBuildPassTransitionsScratc
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("SetExportState(scratchBufferHandle, RHIResourceState::Common)"),
               std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("ImportBuffer(instanceBuffer, RHIResourceState::ShaderResource)"),
+    EXPECT_NE(sceneRendererSource.find(
+                  "ImportBuffer(RHIBufferRef(instanceBuffer), RHIResourceState::ShaderResource)"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("SetExportState(instanceHandle, RHIResourceState::ShaderResource)"),
               std::string::npos);
@@ -6844,10 +6846,15 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     EXPECT_NE(pipelineHeader.find("GetOrCreateMaskedObjectVelocityPipeline"), std::string::npos);
     EXPECT_NE(pipelineHeader.find("BuildMaskedObjectVelocityPipelineDesc"), std::string::npos);
     EXPECT_NE(pipelineHeader.find("m_maskedObjectVelocityVertexShader"), std::string::npos);
+    EXPECT_NE(pipelineHeader.find("m_rigidMaskedObjectVelocityVertexShader"), std::string::npos);
     EXPECT_NE(pipelineHeader.find("m_maskedObjectVelocityPixelShader"), std::string::npos);
     EXPECT_NE(pipelineHeader.find("m_maskedObjectVelocityPipeline"), std::string::npos);
+    EXPECT_NE(pipelineHeader.find("m_rigidMaskedObjectVelocityPipeline"), std::string::npos);
 
     EXPECT_NE(pipelineSource.find("maskedObjectVelocityVsDesc.entryPoint = \"VSMainMasked\""), std::string::npos);
+    EXPECT_NE(pipelineSource.find(
+                  "rigidMaskedObjectVelocityVsDesc.entryPoint = \"VSMainMaskedRigid\""),
+              std::string::npos);
     EXPECT_NE(pipelineSource.find("maskedObjectVelocityPsDesc.entryPoint = \"PSMainMasked\""), std::string::npos);
     EXPECT_NE(pipelineSource.find("GetMaskedObjectVelocityPipeline(RHIFormat outputFormat)"), std::string::npos);
     EXPECT_NE(pipelineSource.find("GetOrCreateMaskedObjectVelocityPipeline"), std::string::npos);
@@ -6866,7 +6873,9 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     EXPECT_NE(recordContextHeader.find("skippedMaterialBindingCount"), std::string::npos);
     EXPECT_NE(materialHeader.find("std::vector<RHITextureRef> textures"), std::string::npos);
 
-    EXPECT_NE(passSource.find("GetMaskedObjectVelocityPipeline(RHIFormat::RG16_FLOAT)"), std::string::npos);
+    EXPECT_NE(passSource.find("GetMaskedObjectVelocityPipeline("), std::string::npos);
+    EXPECT_NE(passSource.find("DefaultLitDirectVertexInputMode::Skinned"), std::string::npos);
+    EXPECT_NE(passSource.find("DefaultLitDirectVertexInputMode::Rigid"), std::string::npos);
     EXPECT_NE(passSource.find("CreateMaterialBindingSnapshot"), std::string::npos);
     EXPECT_NE(passSource.find("ObjectVelocityPassStats& stats = data.results->objectVelocityStats"),
               std::string::npos);
@@ -6888,6 +6897,10 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
 
     EXPECT_NE(shaderSource.find("struct VSMaskedInput"), std::string::npos);
     EXPECT_NE(shaderSource.find("VSMaskedOutput VSMainMasked(VSMaskedInput input)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("struct VSMaskedRigidInput"), std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "VSMaskedOutput VSMainMaskedRigid(VSMaskedRigidInput input)"),
+              std::string::npos);
     EXPECT_NE(shaderSource.find("float2 PSMainMasked(VSMaskedOutput input) : SV_TARGET"), std::string::npos);
     EXPECT_NE(shaderSource.find("Texture2D BaseColorTexture : register(t1, space2);"), std::string::npos);
     EXPECT_NE(shaderSource.find("SamplerState MaterialSampler : register(s6, space2);"), std::string::npos);

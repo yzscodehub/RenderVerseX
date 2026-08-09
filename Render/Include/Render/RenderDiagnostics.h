@@ -35,6 +35,7 @@ namespace RVX
         uint32 currentUsage = 0;
         uint32 highWaterMark = 0;
         uint64 replacements = 0;
+        uint64 surfaceIncompatibleDrops = 0;
         uint64 invalidPackets = 0;
         uint64 outOfOrderRejections = 0;
     };
@@ -88,6 +89,77 @@ namespace RVX
         uint32 entryCount = 0;
         uint64 estimatedBytes = 0;
         std::array<uint64, 3> oldestPendingCompletionValues{};
+    };
+
+    /** @brief Value-only CPU descriptor allocator telemetry. */
+    struct RenderDescriptorAllocatorDiagnostics
+    {
+        uint32 currentPages = 0;
+        uint32 peakPages = 0;
+        uint32 activeDescriptors = 0;
+        uint32 peakActiveDescriptors = 0;
+        uint64 allocationFailures = 0;
+        uint64 validationFailures = 0;
+    };
+
+    /** @brief Descriptor families relevant to sustained frame qualification. */
+    struct RenderDescriptorLifetimeDiagnostics
+    {
+        RenderDescriptorAllocatorDiagnostics resourceViews{};
+        RenderDescriptorAllocatorDiagnostics samplers{};
+        RenderDescriptorAllocatorDiagnostics renderTargets{};
+        RenderDescriptorAllocatorDiagnostics depthStencils{};
+    };
+
+    /** @brief Value-only native API validation/debug-layer telemetry. */
+    struct RenderNativeValidationDiagnostics
+    {
+        bool available = false;
+        bool enabled = false;
+        bool readComplete = true;
+        uint64 messageCount = 0;
+        uint64 warningCount = 0;
+        uint64 errorCount = 0;
+        uint64 corruptionCount = 0;
+    };
+
+    /**
+     * @brief Immutable post-submit RenderGraph lifetime snapshot.
+     *
+     * Unlike per-plan diagnostics, these values are sampled from the live
+     * transient pool and RHI device after frame submission. They are therefore
+     * suitable for detecting allocation, lease, view, and descriptor growth
+     * across a sustained run without exposing RenderGraph or RHI objects to
+     * the Update thread.
+     */
+    struct RenderGraphLifetimeDiagnostics
+    {
+        bool available = false;
+        uint64 frameSequence = 0;
+        uint64 planHash = 0;
+        uint32 physicalRealizationCount = 0;
+        uint32 partialRealizationRollbackCount = 0;
+
+        uint32 physicalTextureAllocationCount = 0;
+        uint32 physicalBufferAllocationCount = 0;
+        uint64 totalPooledMemoryBytes = 0;
+        uint32 texturePoolMissCount = 0;
+        uint32 bufferPoolMissCount = 0;
+        uint32 transientViewCount = 0;
+        uint32 transientViewMissCount = 0;
+        uint64 transientViewCreationFailureCount = 0;
+
+        uint32 recordingTextureLeases = 0;
+        uint32 recordingBufferLeases = 0;
+        uint32 inFlightTextureLeases = 0;
+        uint32 inFlightBufferLeases = 0;
+        uint64 leaseCommitCount = 0;
+        uint64 leaseAbortCount = 0;
+        uint64 leaseDeviceLostCount = 0;
+        uint64 leaseValidationFailureCount = 0;
+        uint64 completionRetirementCount = 0;
+
+        RenderDescriptorLifetimeDiagnostics descriptors{};
     };
 
     struct RenderFailureDiagnostics
@@ -431,6 +503,8 @@ namespace RVX
         RenderResourceDiagnostics resources{};
         std::array<RenderQueueTimelineDiagnostics, 3> queues{};
         RenderRetirementDiagnostics retirement{};
+        RenderGraphLifetimeDiagnostics renderGraphLifetime{};
+        RenderNativeValidationDiagnostics nativeValidation{};
         RenderFrameFeatureDiagnostics frameFeatures{};
         RenderFrameCaptureResult lastCapture{};
         RenderFailureDiagnostics lastFailure{};

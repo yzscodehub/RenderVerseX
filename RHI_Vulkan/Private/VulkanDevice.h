@@ -187,6 +187,20 @@ namespace RVX
 
         // Memory Statistics
         RHIMemoryStats GetMemoryStats() const override;
+        RHINativeValidationDiagnostics
+            GetNativeValidationDiagnostics() const override
+        {
+            const VulkanValidationMessageCounts counts =
+                GetValidationMessageCounts();
+            RHINativeValidationDiagnostics diagnostics;
+            diagnostics.available = m_validationEnabled;
+            diagnostics.enabled = m_validationEnabled;
+            diagnostics.messageCount =
+                static_cast<uint64>(counts.errors) + counts.warnings;
+            diagnostics.warningCount = counts.warnings;
+            diagnostics.errorCount = counts.errors;
+            return diagnostics;
+        }
 
         // Debug Resource Groups
         void BeginResourceGroup(const char* name) override;
