@@ -436,8 +436,9 @@ namespace RVX::Resource
     // Construction
     // =========================================================================
 
-    TextureLoader::TextureLoader(ResourceManager* manager)
+    TextureLoader::TextureLoader(ResourceManager* manager, bool prepareOnly)
         : m_manager(manager)
+        , m_prepareOnly(prepareOnly)
     {
     }
 
@@ -475,13 +476,57 @@ namespace RVX::Resource
                                       ResolveTraceContext(m_manager, {}));
     }
 
+    bool TextureLoader::Prepare(const ResourceLoadPreparationContext& context,
+                                PreparedResourceBundle& outBundle,
+                                ResourceLoadError& outError)
+    {
+        if (context.IsCancellationRequested())
+        {
+            outError = {ResourceLoadErrorCode::Cancelled, "Texture load was cancelled before decode."};
+            return false;
+        }
+
+        // Use a per-request loader with no ResourceManager. This prevents this
+        // worker from reaching cache, registry, lifecycle notifications or the
+        // render upload gateway while keeping all decode helpers reusable.
+        TextureLoader preparedLoader(nullptr, true);
+        IResource* raw = preparedLoader.LoadFromFile(context.resolvedPath, context.traceContext);
+        if (!raw)
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        preparedLoader.GetLastLoadError().empty()
+                            ? "Texture decode failed."
+                            : preparedLoader.GetLastLoadError()};
+            return false;
+        }
+        if (context.IsCancellationRequested())
+        {
+            delete raw;
+            outError = {ResourceLoadErrorCode::Cancelled, "Texture load was cancelled after decode."};
+            return false;
+        }
+
+        raw->SetId(context.rootResourceId);
+        raw->SetPath(context.requestedPath);
+        raw->SetName(std::filesystem::path(context.requestedPath).stem().string());
+        ResourceHandle<IResource> preparedResource(raw);
+        if (!outBundle.SetRoot(std::move(preparedResource)))
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "Texture loader could not construct a valid prepared bundle."};
+            return false;
+        }
+        return true;
+    }
+
     // =========================================================================
     // Extended Loading API
     // =========================================================================
 
     TextureResource* TextureLoader::LoadFromReference(const TextureReference& ref,
                                                         const std::string& modelPath,
-                                                        const Diagnostics::TraceContext& traceContext)
+                                                        const Diagnostics::TraceContext& traceContext,
+                                                        const std::string& resourceIdentityBase)
     {
         const Diagnostics::TraceContext activeTraceContext =
             ResolveTraceContext(m_manager, traceContext);
@@ -497,7 +542,11 @@ namespace RVX::Resource
         }
 
         const std::string sourceKey = ref.GetUniqueKey(modelPath);
-        const std::string cacheKey = BuildTexturePolicyCacheKey(sourceKey, ref.usage, ref.isSRGB);
+        const std::string identityKey = resourceIdentityBase.empty()
+            ? sourceKey
+            : resourceIdentityBase + "#texture_" + std::to_string(ref.imageIndex) +
+                  "_usage_" + std::to_string(static_cast<uint32>(ref.usage));
+        const std::string cacheKey = BuildTexturePolicyCacheKey(identityKey, ref.usage, ref.isSRGB);
         ResourceId textureId = GenerateTextureId(cacheKey);
 
         // Check cache first
@@ -671,7 +720,10 @@ namespace RVX::Resource
             texture->SetPath(absolutePath);
             texture->SetName(std::filesystem::path(absolutePath).stem().string());
             texture->SetData(std::move(pixels), metadata);
-            texture->NotifyLoaded();
+            if (!m_prepareOnly)
+            {
+                texture->NotifyLoaded();
+            }
 
             if (m_manager && m_manager->IsInitialized())
             {
@@ -968,7 +1020,10 @@ namespace RVX::Resource
         }
 
         texture->SetData(std::move(pixels), metadata);
-        texture->NotifyLoaded();
+        if (!m_prepareOnly)
+        {
+            texture->NotifyLoaded();
+        }
 
         // Store in cache
         if (m_manager && m_manager->IsInitialized())

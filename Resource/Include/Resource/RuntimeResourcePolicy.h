@@ -48,6 +48,7 @@ namespace RVX::Resource
         LoaderFailed,
         PathEscapesRoot,
         ResourceRootMissing,
+        AssetIdentityMismatch,
     };
 
     struct ResourcePackageArtifact

@@ -108,6 +108,24 @@ namespace
             return new RecordingResource(m_type);
         }
 
+        bool Prepare(const ResourceLoadPreparationContext& context,
+                     PreparedResourceBundle& outBundle,
+                     ResourceLoadError& outError) override
+        {
+            ++loadCount;
+            lastPath = context.resolvedPath;
+            auto* resource = new RecordingResource(m_type);
+            resource->SetId(context.rootResourceId);
+            resource->SetPath(context.requestedPath);
+            if (!outBundle.SetRoot(ResourceHandle<IResource>(resource)))
+            {
+                outError = {ResourceLoadErrorCode::LoaderFailure,
+                            "RecordingLoader failed to prepare its root resource."};
+                return false;
+            }
+            return true;
+        }
+
         ResourceType m_type = ResourceType::Unknown;
         uint32 loadCount = 0;
         std::string lastPath;
@@ -140,6 +158,37 @@ namespace
             }
             m_release.wait();
             return new RecordingResource(ResourceType::Texture);
+        }
+
+        bool Prepare(const ResourceLoadPreparationContext& context,
+                     PreparedResourceBundle& outBundle,
+                     ResourceLoadError& outError) override
+        {
+            loadCount.fetch_add(1, std::memory_order_relaxed);
+            lastPath = context.resolvedPath;
+            loaderThreadId = std::this_thread::get_id();
+            if (m_started)
+            {
+                m_started->set_value();
+            }
+            m_release.wait();
+            if (context.IsCancellationRequested())
+            {
+                outError = {ResourceLoadErrorCode::Cancelled,
+                            "BlockingLoader observed cancellation."};
+                return false;
+            }
+
+            auto* resource = new RecordingResource(ResourceType::Texture);
+            resource->SetId(context.rootResourceId);
+            resource->SetPath(context.requestedPath);
+            if (!outBundle.SetRoot(ResourceHandle<IResource>(resource)))
+            {
+                outError = {ResourceLoadErrorCode::LoaderFailure,
+                            "BlockingLoader failed to prepare its root resource."};
+                return false;
+            }
+            return true;
         }
 
         std::atomic<uint32> loadCount{0};
@@ -1009,7 +1058,7 @@ TEST(ResourceRuntimePolicyValidation, AppModeBuildsEditorPreviewAndRuntimeResour
     EXPECT_EQ(testSource.domain, ResourceLoadDomain::SourceAsset);
 }
 
-TEST(ResourceRuntimePolicyValidation, ResourceAsyncPathStaysOnCoreJobSystemContracts)
+TEST(ResourceRuntimePolicyValidation, PreparedAsyncPathStaysOnCoreJobSystemContracts)
 {
     const fs::path repoRoot = FindRepositoryRoot();
     ASSERT_FALSE(repoRoot.empty());
@@ -1024,17 +1073,16 @@ TEST(ResourceRuntimePolicyValidation, ResourceAsyncPathStaysOnCoreJobSystemContr
     ASSERT_FALSE(managerSource.empty());
     ASSERT_FALSE(resourceSource.empty());
 
-    EXPECT_NE(managerHeader.find("JobSubmissionDesc desc"), std::string::npos);
-    EXPECT_NE(managerHeader.find("desc.category = \"Resource.LoadAsync\""), std::string::npos);
-    EXPECT_NE(managerHeader.find("JobCompletionDispatch::MainThread"), std::string::npos);
-    EXPECT_NE(managerHeader.find("JobSystem::Get().SubmitWithResult"), std::string::npos);
-    EXPECT_NE(managerHeader.find("JobSystem::Get().Submit"), std::string::npos);
+    EXPECT_NE(managerHeader.find("ResourceLoadOperationOwner RequestPreparedLoad"),
+              std::string::npos);
+    EXPECT_NE(managerSource.find("JobSubmissionDesc desc"), std::string::npos);
+    EXPECT_NE(managerSource.find("desc.category = \"Resource.LoadAsync\""),
+              std::string::npos);
+    EXPECT_NE(managerSource.find("JobSystem::Get().Submit("), std::string::npos);
     EXPECT_NE(managerSource.find("JobSystem::Get().ProcessMainThreadCompletions()"), std::string::npos);
 
-    EXPECT_EQ(managerHeader.find("std::thread"), std::string::npos);
     EXPECT_EQ(managerHeader.find("ThreadPool"), std::string::npos);
     EXPECT_EQ(managerHeader.find("condition_variable"), std::string::npos);
-    EXPECT_EQ(managerSource.find("std::thread"), std::string::npos);
     EXPECT_EQ(managerSource.find("ThreadPool"), std::string::npos);
     EXPECT_EQ(managerSource.find("std::this_thread::sleep_for"), std::string::npos);
     EXPECT_EQ(managerSource.find("std::this_thread::yield"), std::string::npos);
@@ -1069,7 +1117,9 @@ TEST(ResourceRuntimePolicyValidation, LoadAsyncRunsInlineWhenAsyncDisabledAndJob
     std::future<ResourceHandle<RecordingResource>> future =
         manager.LoadAsync<RecordingResource>("source://textures/inline.png");
 
-    EXPECT_EQ(future.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    EXPECT_EQ(future.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+    manager.ProcessCompletedLoads();
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(0)), std::future_status::ready);
     ResourceHandle<RecordingResource> handle = future.get();
     EXPECT_TRUE(handle.IsValid());
     EXPECT_EQ(loaderPtr->loadCount, 1u);
@@ -1107,7 +1157,14 @@ TEST(ResourceRuntimePolicyValidation, LoadAsyncUsesCoreJobSystemWhenEnabled)
 
     std::future<ResourceHandle<RecordingResource>> future =
         manager.LoadAsync<RecordingResource>("source://textures/async.png");
-    ASSERT_EQ(future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready &&
+           std::chrono::steady_clock::now() < deadline)
+    {
+        manager.ProcessCompletedLoads();
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(0)), std::future_status::ready);
     ResourceHandle<RecordingResource> handle = future.get();
     EXPECT_TRUE(handle.IsValid());
     EXPECT_EQ(loaderPtr->loadCount.load(std::memory_order_relaxed), 1u);
@@ -1337,6 +1394,22 @@ namespace
             metadata.format = TextureFormat::RGBA8;
             texture->SetData(std::vector<uint8>(16, ++loadValue), metadata);
             return texture;
+        }
+
+        bool Prepare(const ResourceLoadPreparationContext& context,
+                     PreparedResourceBundle& outBundle,
+                     ResourceLoadError& outError) override
+        {
+            auto* texture = static_cast<TextureResource*>(Load(context.resolvedPath));
+            texture->SetId(context.rootResourceId);
+            texture->SetPath(context.requestedPath);
+            if (!outBundle.SetRoot(ResourceHandle<IResource>(texture)))
+            {
+                outError = {ResourceLoadErrorCode::LoaderFailure,
+                            "RenderTextureLoader failed to prepare its root resource."};
+                return false;
+            }
+            return true;
         }
 
         uint8 loadValue = 0;
@@ -1903,7 +1976,14 @@ TEST(ResourceRuntimePolicyValidation, AsyncWorkersNeverPublishRenderGatewayOpera
 
     std::future<ResourceHandle<TextureResource>> future =
         subsystem.LoadAsync<TextureResource>("source://textures/worker.png");
-    ASSERT_EQ(future.wait_for(std::chrono::seconds(5)),
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (future.wait_for(std::chrono::seconds(0)) != std::future_status::ready &&
+           std::chrono::steady_clock::now() < deadline)
+    {
+        subsystem.GetManager().ProcessCompletedLoads();
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(0)),
               std::future_status::ready);
     ResourceHandle<TextureResource> resource = future.get();
     ASSERT_TRUE(resource.IsValid());

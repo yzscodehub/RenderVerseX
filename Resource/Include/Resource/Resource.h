@@ -43,6 +43,8 @@
  */
 
 #include "Resource/IResource.h"
+#include "Resource/PreparedResourceBundle.h"
+#include "Resource/ResourceLoadOperation.h"
 #include "Resource/ResourceHandle.h"
 #include "Resource/ResourceCache.h"
 #include "Resource/ResourceRegistry.h"
@@ -56,12 +58,14 @@
 #include "Resource/Types/TextureResource.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/AudioResource.h"
+#include "Resource/Types/EnvironmentResource.h"
 
 // Loaders
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/Loader/ModelLoader.h"
 #include "Resource/Loader/AudioLoader.h"
 #include "Resource/Loader/HDRTextureLoader.h"
+#include "Resource/Loader/EnvironmentLoader.h"
 
 // Importers
 #include "Resource/Importer/GLTFImporter.h"

@@ -23,6 +23,8 @@ namespace RVX::Resource
                          public IMeshAssetMetadata
     {
     public:
+        static constexpr ResourceType StaticResourceType = ResourceType::Mesh;
+
         MeshResource();
         ~MeshResource() override;
 

@@ -158,7 +158,14 @@ namespace RVX::Resource
         void NotifyLoaded();
         void NotifyUnloaded();
 
+        /** @brief Commit Loaded visibility without invoking user observers. */
+        void CommitLoadedState() noexcept;
+
+        /** @brief Invoke the on-loaded observer after publication is visible. */
+        void NotifyLoadedObserver();
+
         friend class ResourceManager;
+        friend class ResourceCache;
         friend class ResourceLoader;
         friend class TextureLoader;
         friend class MeshLoader;

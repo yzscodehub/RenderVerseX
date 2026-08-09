@@ -1333,6 +1333,39 @@ rvx_add_gtest(
     TIMEOUT 120
 )
 
+# Coalesced resource load operation and subscriber lifecycle validation
+rvx_add_gtest(
+    NAME ResourceLoadOperationValidation
+    SOURCES ResourceLoadOperationValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Resource
+    LABELS "unit;resource;async"
+    TIMEOUT 30
+)
+
+# Prepared worker load and owner-thread transactional publish validation
+rvx_add_gtest(
+    NAME ResourcePreparedLoadingValidation
+    SOURCES ResourcePreparedLoadingValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Resource
+    LABELS "unit;resource;async"
+    TIMEOUT 60
+)
+
+# Prepared HDR/IBL environment bundle and immutable admission validation
+rvx_add_gtest(
+    NAME EnvironmentPreparedLoadingValidation
+    SOURCES EnvironmentPreparedLoadingValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::Resource
+    LABELS "unit;resource;environment;async"
+    TIMEOUT 120
+)
+
 # Resource view cache validation tests
 rvx_add_gtest(
     NAME ResourceViewCacheValidation

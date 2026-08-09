@@ -23,6 +23,8 @@ add_library(RVX_Resource STATIC)
 target_sources(RVX_Resource PRIVATE
     # Core resource management
     Private/IResource.cpp
+    Private/ResourceLoadOperation.cpp
+    Private/PreparedResourceBundle.cpp
     Private/ResourceCache.cpp
     Private/ResourceRegistry.cpp
     Private/DependencyGraph.cpp
@@ -48,6 +50,7 @@ target_sources(RVX_Resource PRIVATE
     Private/Loader/ModelLoader.cpp
     Private/Loader/AudioLoader.cpp
     Private/Loader/HDRTextureLoader.cpp
+    Private/Loader/EnvironmentLoader.cpp
 
     # Importers
     Private/Importer/GLTFImporter.cpp

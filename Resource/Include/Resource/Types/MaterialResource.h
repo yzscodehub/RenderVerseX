@@ -55,6 +55,8 @@ namespace RVX::Resource
                              public IMaterialAssetMetadata
     {
     public:
+        static constexpr ResourceType StaticResourceType = ResourceType::Material;
+
         MaterialResource();
         ~MaterialResource() override;
 

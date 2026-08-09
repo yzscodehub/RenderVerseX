@@ -346,6 +346,7 @@ namespace RVX::Resource
             case ResourceLoadFailureCode::LoaderFailed: return "LoaderFailed";
             case ResourceLoadFailureCode::PathEscapesRoot: return "PathEscapesRoot";
             case ResourceLoadFailureCode::ResourceRootMissing: return "ResourceRootMissing";
+            case ResourceLoadFailureCode::AssetIdentityMismatch: return "AssetIdentityMismatch";
             default: return "Invalid";
         }
     }

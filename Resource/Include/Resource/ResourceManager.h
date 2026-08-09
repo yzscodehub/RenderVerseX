@@ -9,8 +9,10 @@
 #include "Core/Diagnostics/Trace.h"
 #include "Resource/DependencyGraph.h"
 #include "Resource/IResource.h"
+#include "Resource/PreparedResourceBundle.h"
 #include "Resource/ResourceCache.h"
 #include "Resource/ResourceHandle.h"
+#include "Resource/ResourceLoadOperation.h"
 #include "Resource/ResourceRegistry.h"
 #include "Resource/RuntimeResourcePolicy.h"
 #include <atomic>
@@ -27,6 +29,56 @@ namespace RVX::Resource
 {
     // Forward declarations
     class IResourceLoader;
+
+    /** @brief Immutable loader-specific state captured at request admission. */
+    class ResourceLoadPreparationState
+    {
+    public:
+        virtual ~ResourceLoadPreparationState() = default;
+    };
+
+    using ResourceLoadPreparationStateRef =
+        std::shared_ptr<const ResourceLoadPreparationState>;
+
+    template<typename T>
+    constexpr ResourceType GetResourceTypeHint()
+    {
+        if constexpr (requires { T::StaticResourceType; })
+        {
+            return static_cast<ResourceType>(T::StaticResourceType);
+        }
+        else
+        {
+            return ResourceType::Unknown;
+        }
+    }
+
+    /**
+     * @brief Immutable worker input for a resource preparation operation.
+     *
+     * This deliberately contains no ResourceManager, ResourceCache, Scene or
+     * render-gateway reference.  A loader may read, parse and decode through
+     * it, then returns a PreparedResourceBundle for owner-thread publication.
+     */
+    struct ResourceLoadPreparationContext
+    {
+        AssetKey assetKey;
+
+        /// Stable cache identity for the complete AssetKey.  This is distinct
+        /// from resolvedPath, which exists only for worker-side IO.
+        std::string resourceIdentityPath;
+        std::string requestedPath;
+        std::string resolvedPath;
+        ResourceId rootResourceId = InvalidResourceId;
+        Diagnostics::TraceContext traceContext;
+        ResourceLoadPreparationStateRef loaderState;
+        std::function<bool()> isCancellationRequested;
+
+        [[nodiscard]] bool IsCancellationRequested() const
+        {
+            return isCancellationRequested && isCancellationRequested();
+        }
+    };
 
     /**
      * @brief Configuration for ResourceManager
@@ -166,17 +218,35 @@ namespace RVX::Resource
 
         /// Generic load (returns base IResource)
         IResource* LoadResource(const std::string& path);
+        IResource* LoadResource(const std::string& path, ResourceType requestedType);
         IResource* LoadResource(ResourceId id);
 
         // =====================================================================
         // Asynchronous Loading
         // =====================================================================
 
-        /// Load a resource asynchronously
+        /**
+         * @brief Compatibility future for a prepared asynchronous resource load.
+         *
+         * The future becomes ready only after the owner/update thread pumps
+         * ProcessCompletedLoads(). Callers on that thread must not wait on it;
+         * doing so would prevent the publish that resolves the future.
+         */
         template<typename T>
         std::future<ResourceHandle<T>> LoadAsync(const std::string& path);
 
-        /// Load with callback
+        /**
+         * @brief Begin a coalesced prepared load.
+         *
+         * The returned subscription becomes Ready only after the update/owner
+         * thread calls ProcessCompletedLoads().  Workers never publish cache,
+         * registry, Scene or render state.
+         */
+        template<typename T>
+        ResourceLoadHandle<T> RequestAsync(const std::string& path,
+                                           ResourceLoadOptions options = {});
+
+        /** @brief Owner-thread-pumped callback compatibility overload. */
         template<typename T>
         void LoadAsync(const std::string& path, std::function<void(ResourceHandle<T>)> callback);
 
@@ -196,6 +266,9 @@ namespace RVX::Resource
         /// Check if resource is loaded by path
         bool IsLoaded(const std::string& path) const;
 
+        /** @brief Query an exact import/profile variant returned by a load handle. */
+        bool IsLoaded(const AssetKey& assetKey) const;
+
         /// Check if resource is loaded by ID
         bool IsLoaded(ResourceId id) const;
 
@@ -205,6 +278,9 @@ namespace RVX::Resource
 
         /// Unload a resource by path
         void Unload(const std::string& path);
+
+        /** @brief Unload one exact AssetKey variant without affecting siblings. */
+        void Unload(const AssetKey& assetKey);
 
         /// Unload a resource by ID
         void Unload(ResourceId id);
@@ -323,7 +399,7 @@ namespace RVX::Resource
         std::unique_ptr<ResourceCache> m_cache;
         std::unique_ptr<DependencyGraph> m_dependencyGraph;
 
-        std::unordered_map<ResourceType, std::unique_ptr<IResourceLoader>> m_loaders;
+        std::unordered_map<ResourceType, std::shared_ptr<IResourceLoader>> m_loaders;
 
         std::function<void(ResourceId, IResource*)> m_reloadCallback;
 
@@ -331,7 +407,36 @@ namespace RVX::Resource
         std::vector<ResourceLifecycleEvent> m_lifecycleEvents;
         ResourceLifecycleEventCallback m_lifecycleEventCallback;
 
+        /** Protects loader registration and in-flight operation maps only. Never held during IO/parse/decode. */
         mutable std::recursive_mutex m_loadMutex;
+
+        struct PreparedLoadCompletion
+        {
+            AssetKey assetKey;
+            ResourceLoadOperationOwner operation;
+            ResourcePathResolution resolution;
+            std::string requestedPath;
+            PreparedResourceBundle bundle;
+            ResourceLoadError error;
+            bool cancelled = false;
+        };
+
+        struct LegacyAsyncWaiter
+        {
+            ResourceLoadHandle<IResource> subscription;
+            std::function<void(ResourceHandle<IResource>)> completion;
+            bool readyWithoutSubscription = false;
+        };
+
+        mutable std::mutex m_preparedCompletionMutex;
+        std::vector<PreparedLoadCompletion> m_preparedCompletions;
+        mutable std::mutex m_preparedJobMutex;
+        std::vector<JobHandle> m_preparedJobs;
+        std::unordered_map<AssetKey, ResourceLoadOperationOwner, AssetKeyHash> m_inFlightLoads;
+        mutable std::mutex m_legacyAsyncWaiterMutex;
+        std::vector<LegacyAsyncWaiter> m_legacyAsyncWaiters;
+        std::atomic<bool> m_acceptAsyncRequests{false};
+        uint64 m_ownerThreadToken = 0;
 
         bool m_jobSystemInitializedByManager = false;
         std::atomic<size_t> m_pendingAsyncJobCount{0};
@@ -349,7 +454,35 @@ namespace RVX::Resource
         // Internal loading
         IResource* LoadInternal(const std::string& path,
                                 const ResourcePathResolution& resolution,
-                                ResourceType type);
+                                ResourceType type,
+                                ResourceId managerId,
+                                std::shared_ptr<IResourceLoader> loader = {});
+        IResource* LoadPreparedSynchronously(
+            const ResourcePathResolution& resolution,
+            const std::string& requestedPath,
+            const AssetKey& assetKey,
+            std::shared_ptr<IResourceLoader> loader,
+            ResourceLoadPreparationStateRef loaderState);
+        ResourceLoadOperationOwner RequestPreparedLoad(
+            const std::string& path,
+            ResourceLoadOptions options,
+            ResourceType requestedType = ResourceType::Unknown);
+        void ExecutePreparedLoad(ResourceLoadOperationOwner operation,
+                                 std::shared_ptr<IResourceLoader> loader,
+                                 ResourceLoadPreparationContext context,
+                                 ResourcePathResolution resolution);
+        void DrainPreparedLoadCompletions(bool shutdownCancellation = false);
+        void DrainLegacyAsyncWaiters();
+        bool PublishPreparedBundle(const ResourcePathResolution& resolution,
+                                   const std::string& requestedPath,
+                                   const AssetKey& assetKey,
+                                   PreparedResourceBundle& bundle,
+                                   ResourceLoadError& outError);
+        bool ValidatePreparedBundle(const PreparedResourceBundle& bundle,
+                                    ResourceLoadError& outError) const;
+        void RemoveInFlightLoad(const AssetKey& assetKey,
+                                ResourceLoadRequestId requestId);
+        bool IsOwnerThread() const;
         void LoadDependencies(IResource* resource);
         void SetLastLoadDiagnostic(const ResourceLoadDiagnostic& diagnostic);
         bool IsHotReloadSupportedByPolicy() const;
@@ -387,6 +520,33 @@ namespace RVX::Resource
         /// Load a resource from file
         virtual IResource* Load(const std::string& path) = 0;
 
+        /**
+         * @brief Prepare resources without owner-state side effects.
+         *
+         * Built-in production loaders override this method.  Third-party
+         * legacy loaders can keep using Load() synchronously, but are rejected
+         * from the asynchronous prepared path until they supply this contract.
+         */
+        virtual bool Prepare(const ResourceLoadPreparationContext& context,
+                             PreparedResourceBundle& outBundle,
+                             ResourceLoadError& outError);
+
+        /** @brief Whether synchronous compatibility loads may use Prepare + owner publish. */
+        virtual bool SupportsPreparedLoading() const { return false; }
+
+        /**
+         * @brief Capture immutable loader configuration for one AssetKey.
+         *
+         * Stateless loaders keep the default implementation. Stateful loaders
+         * must return a snapshot and its canonical import hash so later worker
+         * execution cannot drift from the admitted cache identity.
+         */
+        virtual bool CapturePreparationState(
+            uint64 requestedImportOptionsHash,
+            ResourceLoadPreparationStateRef& outState,
+            uint64& outCanonicalImportOptionsHash,
+            ResourceLoadError& outError) const;
+
         /// Check if this loader can handle the file
         virtual bool CanLoad(const std::string& path) const;
     };
@@ -399,8 +559,8 @@ namespace RVX::Resource
     ResourceHandle<T> ResourceManager::Load(const std::string& path)
     {
         static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
-        IResource* resource = LoadResource(path);
-        return ResourceHandle<T>(static_cast<T*>(resource));
+        IResource* resource = LoadResource(path, GetResourceTypeHint<T>());
+        return ResourceHandle<T>(dynamic_cast<T*>(resource));
     }
 
     template<typename T>
@@ -408,73 +568,96 @@ namespace RVX::Resource
     {
         static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
         IResource* resource = LoadResource(id);
-        return ResourceHandle<T>(static_cast<T*>(resource));
+        return ResourceHandle<T>(dynamic_cast<T*>(resource));
     }
 
     template<typename T>
     std::future<ResourceHandle<T>> ResourceManager::LoadAsync(const std::string& path)
     {
         static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
-        m_pendingAsyncJobCount.fetch_add(1, std::memory_order_relaxed);
-        JobSubmissionDesc desc;
-        desc.category = "Resource.LoadAsync";
-        desc.priority = JobPriority::Normal;
-
-        return JobSystem::Get().SubmitWithResult([this, path]() {
-            struct PendingLoadGuard
+        auto promise = std::make_shared<std::promise<ResourceHandle<T>>>();
+        std::future<ResourceHandle<T>> result = promise->get_future();
+        ResourceLoadOperationOwner operation =
+            RequestPreparedLoad(path, {}, GetResourceTypeHint<T>());
+        ResourceLoadHandle<IResource> subscription =
+            operation ? operation.Subscribe<IResource>() : ResourceLoadHandle<IResource>{};
+        if (!subscription)
+        {
+            LegacyAsyncWaiter waiter;
+            waiter.readyWithoutSubscription = true;
+            waiter.completion = [promise](ResourceHandle<IResource>)
             {
-                std::atomic<size_t>& counter;
-                ~PendingLoadGuard()
-                {
-                    counter.fetch_sub(1, std::memory_order_relaxed);
-                }
-            } guard{m_pendingAsyncJobCount};
+                promise->set_value({});
+            };
+            std::lock_guard<std::mutex> lock(m_legacyAsyncWaiterMutex);
+            m_legacyAsyncWaiters.push_back(std::move(waiter));
+            return result;
+        }
 
-            return Load<T>(path);
-        }, desc);
+        LegacyAsyncWaiter waiter;
+        waiter.subscription = std::move(subscription);
+        waiter.completion = [promise](ResourceHandle<IResource> resource)
+        {
+            T* typed = dynamic_cast<T*>(resource.Get());
+            promise->set_value(typed ? ResourceHandle<T>(typed) : ResourceHandle<T>{});
+        };
+        {
+            std::lock_guard<std::mutex> lock(m_legacyAsyncWaiterMutex);
+            m_legacyAsyncWaiters.push_back(std::move(waiter));
+        }
+        return result;
     }
 
     template<typename T>
     void ResourceManager::LoadAsync(const std::string& path, std::function<void(ResourceHandle<T>)> callback)
     {
         static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
-        auto completedHandle = std::make_shared<ResourceHandle<T>>();
-        m_pendingAsyncJobCount.fetch_add(1, std::memory_order_relaxed);
-        m_pendingAsyncCompletionCount.fetch_add(1, std::memory_order_relaxed);
-
-        JobSubmissionDesc desc;
-        desc.category = "Resource.LoadAsync";
-        desc.priority = JobPriority::Normal;
-        desc.completionDispatch = JobCompletionDispatch::MainThread;
-        desc.continuation = [this, completedHandle, callback = std::move(callback)]() mutable {
-            struct PendingCompletionGuard
+        ResourceLoadOperationOwner operation =
+            RequestPreparedLoad(path, {}, GetResourceTypeHint<T>());
+        ResourceLoadHandle<IResource> subscription =
+            operation ? operation.Subscribe<IResource>() : ResourceLoadHandle<IResource>{};
+        if (!subscription)
+        {
+            LegacyAsyncWaiter waiter;
+            waiter.readyWithoutSubscription = true;
+            waiter.completion = [callback = std::move(callback)](ResourceHandle<IResource>) mutable
             {
-                std::atomic<size_t>& counter;
-                ~PendingCompletionGuard()
+                if (callback)
                 {
-                    counter.fetch_sub(1, std::memory_order_relaxed);
+                    callback({});
                 }
-            } guard{m_pendingAsyncCompletionCount};
+            };
+            std::lock_guard<std::mutex> lock(m_legacyAsyncWaiterMutex);
+            m_legacyAsyncWaiters.push_back(std::move(waiter));
+            return;
+        }
 
-            if (callback)
-            {
-                callback(*completedHandle);
-            }
+        LegacyAsyncWaiter waiter;
+        waiter.subscription = std::move(subscription);
+        waiter.completion = [callback = std::move(callback)](ResourceHandle<IResource> resource) mutable
+        {
+            if (!callback)
+                return;
+            T* typed = dynamic_cast<T*>(resource.Get());
+            callback(typed ? ResourceHandle<T>(typed) : ResourceHandle<T>{});
         };
+        {
+            std::lock_guard<std::mutex> lock(m_legacyAsyncWaiterMutex);
+            m_legacyAsyncWaiters.push_back(std::move(waiter));
+        }
 
-        JobSystem::Get().Submit([this, path, completedHandle]() {
-            struct PendingLoadGuard
-            {
-                std::atomic<size_t>& counter;
-                ~PendingLoadGuard()
-                {
-                    counter.fetch_sub(1, std::memory_order_relaxed);
-                }
-            } guard{m_pendingAsyncJobCount};
+    }
 
-            *completedHandle = Load<T>(path);
-        }, desc);
-
+    template<typename T>
+    ResourceLoadHandle<T> ResourceManager::RequestAsync(const std::string& path,
+                                                         ResourceLoadOptions options)
+    {
+        static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
+        ResourceLoadOperationOwner operation = RequestPreparedLoad(
+            path,
+            std::move(options),
+            GetResourceTypeHint<T>());
+        return operation ? operation.Subscribe<T>() : ResourceLoadHandle<T>{};
     }
 
 } // namespace RVX::Resource

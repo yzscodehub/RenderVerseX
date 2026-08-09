@@ -10,6 +10,7 @@
 #include <string>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 namespace RVX::Resource
 {
@@ -98,7 +99,13 @@ namespace RVX::Resource
     private:
         mutable std::mutex m_mutex;
         std::unordered_map<ResourceId, ResourceMetadata> m_entries;
-        std::unordered_map<std::string, ResourceId> m_pathToId;
+        // A source path may have multiple AssetKey/import-profile variants.
+        // The vector preserves registration order; legacy untyped path lookup
+        // resolves the most recently registered live variant.
+        std::unordered_map<std::string, std::vector<ResourceId>> m_pathToIds;
+
+        void RemovePathMappingLocked(const std::string& path, ResourceId id);
+        void AddPathMappingLocked(const std::string& path, ResourceId id);
     };
 
 } // namespace RVX::Resource

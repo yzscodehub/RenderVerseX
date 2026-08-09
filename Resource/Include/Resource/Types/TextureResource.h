@@ -59,6 +59,8 @@ namespace RVX::Resource
     class TextureResource : public IResource
     {
     public:
+        static constexpr ResourceType StaticResourceType = ResourceType::Texture;
+
         TextureResource();
         ~TextureResource() override;
 

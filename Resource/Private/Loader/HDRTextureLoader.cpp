@@ -95,6 +95,23 @@ namespace RVX::Resource
             }
         };
 
+        bool IsCancellationRequested(const HDRTextureLoader::CancellationPredicate& cancellationRequested)
+        {
+            return cancellationRequested && cancellationRequested();
+        }
+
+        void DiscardIBLData(IBLData& ibl)
+        {
+            // IBLData intentionally carries raw pointers for the legacy API.
+            // Adopt every completed texture before clearing the structure so a
+            // cancelled prepare-only bake cannot leak a partial dependency.
+            TextureHandle environment(ibl.environmentMap);
+            TextureHandle irradiance(ibl.irradianceMap);
+            TextureHandle prefiltered(ibl.prefilteredMap);
+            TextureHandle brdfLUT(ibl.brdfLUT);
+            ibl = {};
+        }
+
         Vec3 SampleCubemapNearest(const CubemapFaces& envMap, const Vec3& direction)
         {
             if (envMap.faceSize == 0)
@@ -344,8 +361,9 @@ namespace RVX::Resource
     // Construction
     // =========================================================================
 
-    HDRTextureLoader::HDRTextureLoader(ResourceManager* manager)
+    HDRTextureLoader::HDRTextureLoader(ResourceManager* manager, bool prepareOnly)
         : m_manager(manager)
+        , m_prepareOnly(prepareOnly)
     {
     }
 
@@ -379,6 +397,45 @@ namespace RVX::Resource
     {
         HDRLoadOptions options;
         return LoadWithOptions(path, options);
+    }
+
+    bool HDRTextureLoader::Prepare(const ResourceLoadPreparationContext& context,
+                                   PreparedResourceBundle& outBundle,
+                                   ResourceLoadError& outError)
+    {
+        if (context.IsCancellationRequested())
+        {
+            outError = {ResourceLoadErrorCode::Cancelled, "HDR load was cancelled before preparation."};
+            return false;
+        }
+
+        HDRTextureLoader preparedLoader(nullptr, true);
+        HDRLoadOptions options;
+        TextureResource* texture = preparedLoader.LoadWithOptions(context.resolvedPath, options);
+        if (!texture)
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "HDR loader failed to prepare an environment texture."};
+            return false;
+        }
+        if (context.IsCancellationRequested())
+        {
+            delete texture;
+            outError = {ResourceLoadErrorCode::Cancelled, "HDR load was cancelled after preparation."};
+            return false;
+        }
+
+        texture->SetId(context.rootResourceId);
+        texture->SetPath(context.requestedPath);
+        texture->SetName(std::filesystem::path(context.requestedPath).stem().string());
+        ResourceHandle<IResource> resource(texture);
+        if (!outBundle.SetRoot(std::move(resource)))
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "HDR loader could not construct a prepared bundle."};
+            return false;
+        }
+        return true;
     }
 
     // =========================================================================
@@ -489,7 +546,10 @@ namespace RVX::Resource
             const uint64 preparedBytes = static_cast<uint64>(byteData.size());
 
             texture->SetData(std::move(byteData), metadata);
-            texture->MarkLoaded();
+            if (!m_prepareOnly)
+            {
+                texture->MarkLoaded();
+            }
 
             if (m_manager && m_manager->IsInitialized())
             {
@@ -503,9 +563,15 @@ namespace RVX::Resource
     }
 
     IBLData HDRTextureLoader::LoadIBL(const std::string& path,
-                                       const HDRLoadOptions& options)
+                                       const HDRLoadOptions& options,
+                                       const CancellationPredicate& cancellationRequested)
     {
         IBLData ibl;
+
+        if (IsCancellationRequested(cancellationRequested))
+        {
+            return ibl;
+        }
 
         std::filesystem::path absPath = std::filesystem::absolute(path);
         std::string absolutePath = absPath.string();
@@ -545,6 +611,12 @@ namespace RVX::Resource
             return ibl;
         }
 
+        if (IsCancellationRequested(cancellationRequested))
+        {
+            prepareSpan.SetAttribute("result", "cancelled");
+            return ibl;
+        }
+
         if (Log::GetCoreLogger())
         {
             RVX_CORE_INFO("HDRTextureLoader: Generating IBL from {}...", absPath.filename().string());
@@ -555,6 +627,11 @@ namespace RVX::Resource
         {
             for (size_t i = 0; i < pixels.size(); ++i)
             {
+                if ((i % 4096u) == 0u && IsCancellationRequested(cancellationRequested))
+                {
+                    prepareSpan.SetAttribute("result", "cancelled");
+                    return ibl;
+                }
                 if ((i % 4) != 3)
                 {
                     pixels[i] *= options.exposure;
@@ -564,28 +641,84 @@ namespace RVX::Resource
 
         // Generate environment cubemap
         CubemapFaces envCubemap = EquirectangularToCubemap(
-            pixels.data(), width, height, options.cubemapResolution);
+            pixels.data(), width, height, options.cubemapResolution, cancellationRequested);
+        const bool cancelledAfterCubemap = IsCancellationRequested(cancellationRequested);
+        if (cancelledAfterCubemap || envCubemap.faceSize == 0)
+        {
+            prepareSpan.SetAttribute(
+                "result",
+                cancelledAfterCubemap ? "cancelled" : "failed");
+            return ibl;
+        }
         ibl.environmentMap = CreateCubemapTexture(
             envCubemap, BuildIBLEnvironmentCacheKey(absolutePath, options));
+        if (!ibl.environmentMap)
+        {
+            prepareSpan.SetAttribute("result", "failed");
+            return ibl;
+        }
 
         // Generate irradiance map
         CubemapFaces irradianceCubemap = GenerateIrradianceMap(
-            envCubemap, options.irradianceResolution, options.convolutionSamples);
+            envCubemap, options.irradianceResolution, options.convolutionSamples, cancellationRequested);
+        const bool cancelledAfterIrradiance = IsCancellationRequested(cancellationRequested);
+        if (cancelledAfterIrradiance || irradianceCubemap.faceSize == 0)
+        {
+            DiscardIBLData(ibl);
+            prepareSpan.SetAttribute(
+                "result",
+                cancelledAfterIrradiance ? "cancelled" : "failed");
+            return ibl;
+        }
         ibl.irradianceMap = CreateCubemapTexture(
             irradianceCubemap, BuildIBLIrradianceCacheKey(absolutePath, options));
+        if (!ibl.irradianceMap)
+        {
+            DiscardIBLData(ibl);
+            prepareSpan.SetAttribute("result", "failed");
+            return ibl;
+        }
 
         // Generate prefiltered map with mip chain
         std::vector<CubemapFaces> prefilteredMips = GeneratePrefilteredMap(
             envCubemap, options.prefilteredResolution, 
-            options.prefilteredMipLevels, options.convolutionSamples);
+            options.prefilteredMipLevels, options.convolutionSamples, cancellationRequested);
+        const bool cancelledAfterPrefilter = IsCancellationRequested(cancellationRequested);
+        if (cancelledAfterPrefilter || prefilteredMips.empty())
+        {
+            DiscardIBLData(ibl);
+            prepareSpan.SetAttribute(
+                "result",
+                cancelledAfterPrefilter ? "cancelled" : "failed");
+            return ibl;
+        }
         ibl.prefilteredMap = CreateCubemapTextureWithMips(
             prefilteredMips, BuildIBLPrefilteredCacheKey(absolutePath, options));
         ibl.prefilteredMipLevels = ibl.prefilteredMap
             ? ibl.prefilteredMap->GetMipLevels()
             : static_cast<uint32_t>(prefilteredMips.size());
+        if (!ibl.prefilteredMap)
+        {
+            DiscardIBLData(ibl);
+            prepareSpan.SetAttribute("result", "failed");
+            return ibl;
+        }
 
         // Generate BRDF LUT
-        ibl.brdfLUT = GenerateBRDFLUT(options.brdfLUTResolution, options.convolutionSamples);
+        ibl.brdfLUT = GenerateBRDFLUT(
+            options.brdfLUTResolution, options.convolutionSamples, cancellationRequested);
+        if (IsCancellationRequested(cancellationRequested))
+        {
+            DiscardIBLData(ibl);
+            prepareSpan.SetAttribute("result", "cancelled");
+            return ibl;
+        }
+        if (!ibl.brdfLUT)
+        {
+            DiscardIBLData(ibl);
+            prepareSpan.SetAttribute("result", "failed");
+            return ibl;
+        }
 
         if (Log::GetCoreLogger())
         {
@@ -604,11 +737,13 @@ namespace RVX::Resource
     IBLData HDRTextureLoader::LoadIBL(const std::string& path,
                                       HDRIBLQualityProfile profile,
                                       float exposure,
-                                      bool applyGamma)
+                                      bool applyGamma,
+                                      const CancellationPredicate& cancellationRequested)
     {
         return LoadIBL(
             path,
-            ResolveHDRIBLQualityProfile(profile, exposure, applyGamma));
+            ResolveHDRIBLQualityProfile(profile, exposure, applyGamma),
+            cancellationRequested);
     }
 
     // =========================================================================
@@ -617,17 +752,26 @@ namespace RVX::Resource
 
     CubemapFaces HDRTextureLoader::EquirectangularToCubemap(const float* equirectData,
                                                               uint32_t width, uint32_t height,
-                                                              uint32_t cubemapSize)
+                                                              uint32_t cubemapSize,
+                                                              const CancellationPredicate& cancellationRequested)
     {
         CubemapFaces result;
         result.faceSize = cubemapSize;
 
         for (int face = 0; face < CubemapFaces::FACE_COUNT; ++face)
         {
+            if (IsCancellationRequested(cancellationRequested))
+            {
+                return {};
+            }
             result.faces[face].resize(cubemapSize * cubemapSize * 4);
 
             for (uint32_t y = 0; y < cubemapSize; ++y)
             {
+                if (IsCancellationRequested(cancellationRequested))
+                {
+                    return {};
+                }
                 for (uint32_t x = 0; x < cubemapSize; ++x)
                 {
                     // Convert pixel coordinates to direction
@@ -704,17 +848,26 @@ namespace RVX::Resource
 
     CubemapFaces HDRTextureLoader::GenerateIrradianceMap(const CubemapFaces& envMap,
                                                            uint32_t outputSize,
-                                                           uint32_t numSamples)
+                                                           uint32_t numSamples,
+                                                           const CancellationPredicate& cancellationRequested)
     {
         CubemapFaces result;
         result.faceSize = outputSize;
 
         for (int face = 0; face < CubemapFaces::FACE_COUNT; ++face)
         {
+            if (IsCancellationRequested(cancellationRequested))
+            {
+                return {};
+            }
             result.faces[face].resize(outputSize * outputSize * 4);
 
             for (uint32_t y = 0; y < outputSize; ++y)
             {
+                if (IsCancellationRequested(cancellationRequested))
+                {
+                    return {};
+                }
                 for (uint32_t x = 0; x < outputSize; ++x)
                 {
                     float u = (static_cast<float>(x) + 0.5f) / outputSize * 2.0f - 1.0f;
@@ -734,6 +887,10 @@ namespace RVX::Resource
                     const uint32_t sampleCount = std::max(1u, numSamples);
                     for (uint32_t i = 0; i < sampleCount; ++i)
                     {
+                        if ((i % 16u) == 0u && IsCancellationRequested(cancellationRequested))
+                        {
+                            return {};
+                        }
                         const Vec2 xi = Hammersley(i, sampleCount);
                         const float radius = std::sqrt(xi.y);
                         const float phi = TWO_PI * xi.x;
@@ -763,7 +920,8 @@ namespace RVX::Resource
     std::vector<CubemapFaces> HDRTextureLoader::GeneratePrefilteredMap(const CubemapFaces& envMap,
                                                                          uint32_t outputSize,
                                                                          uint32_t numMipLevels,
-                                                                         uint32_t numSamples)
+                                                                         uint32_t numSamples,
+                                                                         const CancellationPredicate& cancellationRequested)
     {
         std::vector<CubemapFaces> mipChain;
         mipChain.reserve(numMipLevels);
@@ -771,6 +929,10 @@ namespace RVX::Resource
 
         for (uint32_t mip = 0; mip < numMipLevels; ++mip)
         {
+            if (IsCancellationRequested(cancellationRequested))
+            {
+                return {};
+            }
             const float roughness = numMipLevels > 1 ?
                 static_cast<float>(mip) / static_cast<float>(numMipLevels - 1) :
                 0.0f;
@@ -781,10 +943,18 @@ namespace RVX::Resource
 
             for (int face = 0; face < CubemapFaces::FACE_COUNT; ++face)
             {
+                if (IsCancellationRequested(cancellationRequested))
+                {
+                    return {};
+                }
                 mipFaces.faces[face].resize(mipSize * mipSize * 4);
 
                 for (uint32_t y = 0; y < mipSize; ++y)
                 {
+                    if (IsCancellationRequested(cancellationRequested))
+                    {
+                        return {};
+                    }
                     for (uint32_t x = 0; x < mipSize; ++x)
                     {
                         float u = (static_cast<float>(x) + 0.5f) / mipSize * 2.0f - 1.0f;
@@ -800,6 +970,10 @@ namespace RVX::Resource
 
                         for (uint32_t i = 0; i < sampleCount; ++i)
                         {
+                            if ((i % 16u) == 0u && IsCancellationRequested(cancellationRequested))
+                            {
+                                return {};
+                            }
                             Vec2 xi = Hammersley(i, sampleCount);
                             Vec3 H = ImportanceSampleGGX(xi, N, roughness);
                             Vec3 L = glm::normalize(2.0f * glm::dot(V, H) * H - V);
@@ -839,8 +1013,15 @@ namespace RVX::Resource
         return mipChain;
     }
 
-    TextureResource* HDRTextureLoader::GenerateBRDFLUT(uint32_t resolution, uint32_t numSamples)
+    TextureResource* HDRTextureLoader::GenerateBRDFLUT(
+        uint32_t resolution,
+        uint32_t numSamples,
+        const CancellationPredicate& cancellationRequested)
     {
+        if (IsCancellationRequested(cancellationRequested))
+        {
+            return nullptr;
+        }
         const std::string cacheKey = BuildBRDFLUTCacheKey(resolution, numSamples);
         ResourceId lutId = GenerateHDRTextureId(cacheKey);
 
@@ -858,6 +1039,10 @@ namespace RVX::Resource
 
         for (uint32_t y = 0; y < resolution; ++y)
         {
+            if (IsCancellationRequested(cancellationRequested))
+            {
+                return nullptr;
+            }
             float roughness = static_cast<float>(y + 1) / static_cast<float>(resolution);
 
             for (uint32_t x = 0; x < resolution; ++x)
@@ -876,6 +1061,10 @@ namespace RVX::Resource
 
                 for (uint32_t i = 0; i < sampleCount; ++i)
                 {
+                    if ((i % 16u) == 0u && IsCancellationRequested(cancellationRequested))
+                    {
+                        return nullptr;
+                    }
                     Vec2 xi = Hammersley(i, sampleCount);
                     Vec3 H = ImportanceSampleGGX(xi, N, roughness);
                     Vec3 L = glm::normalize(2.0f * glm::dot(V, H) * H - V);
@@ -931,7 +1120,10 @@ namespace RVX::Resource
         }
 
         texture->SetData(std::move(byteData), metadata);
-        texture->MarkLoaded();
+        if (!m_prepareOnly)
+        {
+            texture->MarkLoaded();
+        }
 
         if (m_manager && m_manager->IsInitialized())
         {
@@ -1133,7 +1325,10 @@ namespace RVX::Resource
         metadata.usage = TextureUsage::Color;
 
         texture->SetData(std::move(cubemapData), metadata);
-        texture->MarkLoaded();
+        if (!m_prepareOnly)
+        {
+            texture->MarkLoaded();
+        }
 
         if (m_manager && m_manager->IsInitialized())
         {
@@ -1204,7 +1399,10 @@ namespace RVX::Resource
         metadata.usage = TextureUsage::Color;
 
         texture->SetData(std::move(cubemapData), metadata);
-        texture->MarkLoaded();
+        if (!m_prepareOnly)
+        {
+            texture->MarkLoaded();
+        }
 
         if (m_manager && m_manager->IsInitialized())
         {

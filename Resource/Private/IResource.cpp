@@ -45,7 +45,21 @@ bool IResource::WaitForLoadFor(uint32 timeoutMs) const
 
 void IResource::NotifyLoaded()
 {
-    SetState(ResourceState::Loaded);
+    CommitLoadedState();
+    NotifyLoadedObserver();
+}
+
+void IResource::CommitLoadedState() noexcept
+{
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        m_state.store(ResourceState::Loaded, std::memory_order_release);
+    }
+    m_stateCondition.notify_all();
+}
+
+void IResource::NotifyLoadedObserver()
+{
     if (m_onLoaded)
     {
         m_onLoaded(this);

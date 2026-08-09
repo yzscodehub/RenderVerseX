@@ -28,12 +28,16 @@ namespace RVX::Resource
         uint32 brdfLUTResolution = 0;
         float32 intensity = 1.0f;
 
+        /** @brief Validate immutable dependency identity without requiring residency. */
+        [[nodiscard]] bool IsStructurallyValid() const noexcept;
         [[nodiscard]] bool IsValid() const noexcept;
     };
 
     class EnvironmentResource final : public IResource
     {
     public:
+        static constexpr ResourceType StaticResourceType = ResourceType::Environment;
+
         ResourceType GetType() const override
         {
             return ResourceType::Environment;
@@ -44,6 +48,12 @@ namespace RVX::Resource
         std::vector<ResourceId> GetRequiredDependencies() const override;
 
         [[nodiscard]] bool SetData(EnvironmentResourceData data);
+        /**
+         * @brief Bind prepared dependencies without publishing the resource.
+         *
+         * ResourceManager remains the sole owner of the later Loaded transition.
+         */
+        [[nodiscard]] bool SetPreparedData(EnvironmentResourceData data);
         [[nodiscard]] const EnvironmentResourceData& GetData() const noexcept
         {
             return m_data;

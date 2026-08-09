@@ -96,6 +96,8 @@ namespace RVX::Resource
     class ShaderResource : public IResource
     {
     public:
+        static constexpr ResourceType StaticResourceType = ResourceType::Shader;
+
         ShaderResource();
         ~ShaderResource() override;
 

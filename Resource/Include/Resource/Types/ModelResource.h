@@ -51,6 +51,8 @@ namespace RVX::Resource
     class ModelResource : public IResource
     {
     public:
+        static constexpr ResourceType StaticResourceType = ResourceType::Model;
+
         ModelResource();
         ~ModelResource() override;
 

@@ -13,8 +13,8 @@
 #include "Resource/Types/TextureResource.h"
 #include "Resource/Importer/GLTFImporter.h"
 #include "Resource/Loader/TextureLoader.h"
+#include <mutex>
 #include <string>
-#include <memory>
 
 namespace RVX::Resource
 {
@@ -40,6 +40,15 @@ namespace RVX::Resource
         ResourceType GetResourceType() const override { return ResourceType::Model; }
         std::vector<std::string> GetSupportedExtensions() const override;
         IResource* Load(const std::string& path) override;
+        bool Prepare(const ResourceLoadPreparationContext& context,
+                     PreparedResourceBundle& outBundle,
+                     ResourceLoadError& outError) override;
+        bool SupportsPreparedLoading() const override { return true; }
+        bool CapturePreparationState(
+            uint64 requestedImportOptionsHash,
+            ResourceLoadPreparationStateRef& outState,
+            uint64& outCanonicalImportOptionsHash,
+            ResourceLoadError& outError) const override;
         bool CanLoad(const std::string& path) const override;
 
         // =====================================================================
@@ -49,12 +58,10 @@ namespace RVX::Resource
         /**
          * @brief Set import options for glTF files
          */
-        void SetGLTFImportOptions(const GLTFImportOptions& options) { m_gltfOptions = options; }
+        void SetGLTFImportOptions(const GLTFImportOptions& options);
 
-        /**
-         * @brief Get the texture loader used by this model loader
-         */
-        TextureLoader* GetTextureLoader() { return m_textureLoader.get(); }
+        /** @brief Deterministic AssetKey hash for a concrete glTF import profile. */
+        static uint64 CalculateImportOptionsHash(const GLTFImportOptions& options);
 
     private:
         // ResourceId generation (ensures global uniqueness)
@@ -63,8 +70,10 @@ namespace RVX::Resource
         ResourceId GenerateMaterialId(const std::string& modelPath, int index);
 
         // Create resources from import result
-        ModelResource* CreateModelResource(const std::string& path,
+        ModelResource* CreateModelResource(const std::string& resourceIdentityPath,
+                                           const std::string& sourcePath,
                                            GLTFImportResult& importResult,
+                                           TextureLoader& textureLoader,
                                            const Diagnostics::TraceContext& traceContext);
         MeshResource* CreateMeshResource(const std::string& modelPath, int index, Mesh::Ptr mesh);
         MaterialResource* CreateMaterialResource(const std::string& modelPath, int index,
@@ -73,13 +82,14 @@ namespace RVX::Resource
                                                    const GLTFImportResult& importResult);
 
         // Load textures from import result
-        std::vector<TextureResource*> LoadTextures(const std::string& modelPath,
+        std::vector<TextureResource*> LoadTextures(const std::string& sourceModelPath,
+                                                    const std::string& resourceIdentityPath,
                                                     const std::vector<TextureReference>& textureRefs,
+                                                    TextureLoader& textureLoader,
                                                     const Diagnostics::TraceContext& traceContext);
 
-        ResourceManager* m_manager;
-        std::unique_ptr<GLTFImporter> m_gltfImporter;
-        std::unique_ptr<TextureLoader> m_textureLoader;
+        ResourceManager* m_manager = nullptr;
+        mutable std::mutex m_optionsMutex;
         GLTFImportOptions m_gltfOptions;
     };
 

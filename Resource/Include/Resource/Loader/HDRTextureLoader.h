@@ -21,6 +21,7 @@
 #include <string>
 #include <memory>
 #include <array>
+#include <functional>
 
 namespace RVX::Resource
 {
@@ -134,7 +135,11 @@ namespace RVX::Resource
     class HDRTextureLoader : public IResourceLoader
     {
     public:
-        explicit HDRTextureLoader(ResourceManager* manager);
+        /// Cooperative cancellation point used by worker-only IBL preparation.
+        /// An empty predicate preserves the legacy, non-cancellable API path.
+        using CancellationPredicate = std::function<bool()>;
+
+        explicit HDRTextureLoader(ResourceManager* manager, bool prepareOnly = false);
         ~HDRTextureLoader() override = default;
 
         // =====================================================================
@@ -144,6 +149,10 @@ namespace RVX::Resource
         ResourceType GetResourceType() const override { return ResourceType::Texture; }
         std::vector<std::string> GetSupportedExtensions() const override;
         IResource* Load(const std::string& path) override;
+        bool Prepare(const ResourceLoadPreparationContext& context,
+                     PreparedResourceBundle& outBundle,
+                     ResourceLoadError& outError) override;
+        bool SupportsPreparedLoading() const override { return true; }
         bool CanLoad(const std::string& path) const override;
 
         // =====================================================================
@@ -174,13 +183,15 @@ namespace RVX::Resource
          * @return IBL data structure with all generated textures
          */
         IBLData LoadIBL(const std::string& path,
-                        const HDRLoadOptions& options = HDRLoadOptions());
+                        const HDRLoadOptions& options = HDRLoadOptions(),
+                        const CancellationPredicate& cancellationRequested = {});
 
         /** @brief Load IBL using an engine-owned quality profile. */
         IBLData LoadIBL(const std::string& path,
                         HDRIBLQualityProfile profile,
                         float exposure = 1.0f,
-                        bool applyGamma = false);
+                        bool applyGamma = false,
+                        const CancellationPredicate& cancellationRequested = {});
 
         /**
          * @brief Convert equirectangular map to cubemap
@@ -193,7 +204,8 @@ namespace RVX::Resource
          */
         CubemapFaces EquirectangularToCubemap(const float* equirectData,
                                                uint32_t width, uint32_t height,
-                                               uint32_t cubemapSize);
+                                               uint32_t cubemapSize,
+                                               const CancellationPredicate& cancellationRequested = {});
 
         // =====================================================================
         // IBL Generation
@@ -206,7 +218,8 @@ namespace RVX::Resource
          */
         CubemapFaces GenerateIrradianceMap(const CubemapFaces& envMap,
                                             uint32_t outputSize,
-                                            uint32_t numSamples = 1024);
+                                            uint32_t numSamples = 1024,
+                                            const CancellationPredicate& cancellationRequested = {});
 
         /**
          * @brief Generate prefiltered environment map
@@ -216,7 +229,8 @@ namespace RVX::Resource
         std::vector<CubemapFaces> GeneratePrefilteredMap(const CubemapFaces& envMap,
                                                           uint32_t outputSize,
                                                           uint32_t numMipLevels,
-                                                          uint32_t numSamples = 1024);
+                                                          uint32_t numSamples = 1024,
+                                                          const CancellationPredicate& cancellationRequested = {});
 
         /**
          * @brief Generate BRDF integration LUT
@@ -224,7 +238,8 @@ namespace RVX::Resource
          * 2D lookup table for split-sum approximation.
          */
         TextureResource* GenerateBRDFLUT(uint32_t resolution = 512,
-                                          uint32_t numSamples = 1024);
+                                          uint32_t numSamples = 1024,
+                                          const CancellationPredicate& cancellationRequested = {});
 
         // =====================================================================
         // Default Textures
@@ -267,7 +282,8 @@ namespace RVX::Resource
 
         ResourceId GenerateHDRTextureId(const std::string& uniqueKey);
 
-        ResourceManager* m_manager;
+        ResourceManager* m_manager = nullptr;
+        bool m_prepareOnly = false;
         TextureResource* m_defaultEnvMap = nullptr;
         TextureResource* m_defaultBRDFLUT = nullptr;
     };

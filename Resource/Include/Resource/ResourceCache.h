@@ -11,6 +11,7 @@
 #include <list>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace RVX::Resource
 {
@@ -50,11 +51,32 @@ namespace RVX::Resource
         /// Store a resource in the cache
         void Store(IResource* resource);
 
+        /**
+         * @brief Atomically retain a dependency-first resource batch.
+         *
+         * Either every previously absent resource is inserted, or none of the
+         * batch insertions remain. Memory-budget eviction runs only after the
+         * batch has committed and therefore cannot corrupt publication rollback.
+         */
+        bool StoreBatch(const std::vector<IResource*>& resources);
+
+        /**
+         * @brief Atomically insert a prepared batch and make it Loaded before
+         *        any cache reader can observe it.
+         *
+         * User callbacks are deliberately not invoked while the cache mutex is
+         * held; ResourceManager dispatches them after the transaction commits.
+         */
+        bool StorePreparedBatch(const std::vector<IResource*>& resources);
+
         /// Retrieve a resource from the cache
         IResource* Get(ResourceId id);
 
         /// Check if resource is in cache
         bool Contains(ResourceId id) const;
+
+        /// Check that a cache entry exists and has committed Loaded visibility.
+        bool ContainsLoaded(ResourceId id) const;
 
         /// Remove a resource from the cache
         void Remove(ResourceId id);
@@ -118,7 +140,10 @@ namespace RVX::Resource
 
         void TouchLRU(ResourceId id);
         void RemoveLRU(ResourceId id);
-        void NotifyBeforeRemove(IResource* resource);
+        void NotifyBeforeRemove(IResource* resource) noexcept;
+        bool StoreBatchInternal(const std::vector<IResource*>& resources,
+                                bool commitLoadedVisibility);
+        void EvictToMemoryLimitLocked() noexcept;
     };
 
 } // namespace RVX::Resource
