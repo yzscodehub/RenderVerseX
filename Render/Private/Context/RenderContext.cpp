@@ -4,8 +4,10 @@
  */
 
 #include "Render/Context/RenderContext.h"
+#include "Core/Assert.h"
 #include "Core/Log.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
+#include "Resources/RenderSubmissionTracker.h"
 
 #include <algorithm>
 
@@ -85,9 +87,27 @@ void RenderContext::Shutdown(bool waitForIdle)
 
     RVX_CORE_DEBUG("RenderContext shutting down...");
 
+    if (m_pendingGraphExecution)
+    {
+        static_cast<void>(m_pendingGraphExecution->AbortUnsubmitted());
+        m_pendingGraphExecution.reset();
+    }
+
     if (waitForIdle)
     {
         WaitIdle();
+    }
+
+    for (std::unique_ptr<RenderGraphExecution>& execution :
+         m_inFlightGraphExecutions)
+    {
+        if (!execution)
+            continue;
+        if (waitForIdle)
+            static_cast<void>(execution->Retire());
+        else
+            static_cast<void>(execution->MarkDeviceLost());
+        execution.reset();
     }
 
     // Destroy resources in reverse order
@@ -247,6 +267,12 @@ bool RenderContext::BeginFrame()
         RVX_CORE_ERROR("RenderContext: Frame slot {} completion was lost", m_frameIndex);
         return false;
     }
+    if (m_inFlightGraphExecutions[m_frameIndex])
+    {
+        static_cast<void>(
+            m_inFlightGraphExecutions[m_frameIndex]->Retire());
+        m_inFlightGraphExecutions[m_frameIndex].reset();
+    }
     m_inFlightQueueContexts[m_frameIndex].clear();
 
     // Begin device frame
@@ -393,6 +419,37 @@ bool RenderContext::AdoptQueueSubmission(
     return true;
 }
 
+bool RenderContext::AdoptRenderGraphExecution(
+    RenderGraphExecution&& execution)
+{
+    if (!m_frameActive || m_pendingGraphExecution ||
+        execution.GetState() != RenderGraphExecutionState::Recorded)
+    {
+        return false;
+    }
+
+    auto ownedExecution =
+        std::make_unique<RenderGraphExecution>(std::move(execution));
+    if (ownedExecution->HasQueueSubmissionPlan())
+    {
+        RHIQueueSubmissionPlan plan;
+        std::vector<RHICommandContextRef> ownedContexts;
+        if (!ownedExecution->TakeQueueSubmission(plan, ownedContexts) ||
+            !AdoptQueueSubmission(
+                std::move(plan), std::move(ownedContexts)))
+        {
+            return false;
+        }
+    }
+
+    if (!ownedExecution->MarkAdopted())
+    {
+        return false;
+    }
+    m_pendingGraphExecution = std::move(ownedExecution);
+    return true;
+}
+
 GPUCompletionPoint RenderContext::EndFrame()
 {
     if (!m_frameActive)
@@ -438,6 +495,50 @@ GPUCompletionPoint RenderContext::EndFrame()
         submittedPoint.value != 0)
     {
         m_frameSynchronizer.SignalFrame(m_frameIndex, submittedPoint);
+        if (m_pendingGraphExecution)
+        {
+            GPUCompletionToken completion;
+            const bool tokenValid =
+                InsertGPUCompletionPoint(completion, submittedPoint);
+            const bool committed = tokenValid &&
+                m_pendingGraphExecution->Commit(completion);
+            if (!committed)
+            {
+                RVX_CORE_ERROR(
+                    "RenderContext: RenderGraph execution rejected terminal completion token");
+                if (m_device &&
+                    m_device->QueryRuntimeStatus() ==
+                        RHIDeviceRuntimeStatus::Ready)
+                {
+                    m_device->WaitIdle();
+                }
+                static_cast<void>(
+                    m_pendingGraphExecution->MarkDeviceLost());
+                m_pendingGraphExecution.reset();
+            }
+            else
+            {
+                RVX_ASSERT_MSG(
+                    !m_inFlightGraphExecutions[m_frameIndex],
+                    "Frame slot still owns a prior RenderGraph execution");
+                m_inFlightGraphExecutions[m_frameIndex] =
+                    std::move(m_pendingGraphExecution);
+            }
+        }
+    }
+    else if (m_pendingGraphExecution)
+    {
+        if (m_device &&
+            m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            static_cast<void>(m_pendingGraphExecution->MarkDeviceLost());
+        }
+        else
+        {
+            static_cast<void>(
+                m_pendingGraphExecution->AbortUnsubmitted());
+        }
+        m_pendingGraphExecution.reset();
     }
 
     // End device frame
@@ -470,6 +571,11 @@ void RenderContext::AbortFrame()
     m_pendingQueuePlan = {};
     m_pendingQueueContexts.clear();
     m_pendingGraphicsGateway.Reset();
+    if (m_pendingGraphExecution)
+    {
+        static_cast<void>(m_pendingGraphExecution->AbortUnsubmitted());
+        m_pendingGraphExecution.reset();
+    }
     if (m_device)
     {
         m_device->EndFrame();

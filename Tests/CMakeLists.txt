@@ -753,6 +753,7 @@ rvx_add_gtest(
         ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraph.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphCompiler.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphExecutor.cpp
+        ${CMAKE_SOURCE_DIR}/Render/Private/Graph/RenderGraphExecution.cpp
         ${CMAKE_SOURCE_DIR}/Render/Private/Graph/TransientResourcePool.cpp
     LIBS
         RVX::Core

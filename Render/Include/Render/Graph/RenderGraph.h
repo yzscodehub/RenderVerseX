@@ -9,6 +9,7 @@
  */
 
 #include "RHI/RHI.h"
+#include "Render/Graph/RenderGraphExecution.h"
 #include <functional>
 #include <memory>
 #include <string>
@@ -254,6 +255,11 @@ namespace RVX
         /** @brief Record one independent command context per planned queue batch. */
         bool RecordQueueSubmission(RecordedQueueSubmission& submission);
 
+        /** @brief Transfer this recorded physical realization into one completion-owned execution. */
+        [[nodiscard]] RenderGraphExecution TakeExecution();
+        [[nodiscard]] RenderGraphExecution TakeExecution(
+            RecordedQueueSubmission&& submission);
+
         /**
          * @brief Rebuild this recorded graph with Graphics-only access domains.
          * @note This is the only legal fallback after a MultiQueue plan cannot
@@ -316,6 +322,7 @@ namespace RVX
             bool parallelRecordingUsed = false;
             uint32 lastParallelRecordingLevelCount = 0;
             uint32 lastParallelRecordingBatchCount = 0;
+            uint32 partialRealizationRollbackCount = 0;
             bool memoryAliasingEnabled = false;
             bool memoryAliasingUnsupportedRequested = false;
             bool explicitAliasingBarriersSupported = false;

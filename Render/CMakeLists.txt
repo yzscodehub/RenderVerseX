@@ -135,6 +135,7 @@ target_sources(RVX_Render PRIVATE
     Private/Graph/RenderGraph.cpp
     Private/Graph/RenderGraphCompiler.cpp
     Private/Graph/RenderGraphExecutor.cpp
+    Private/Graph/RenderGraphExecution.cpp
     Private/Graph/TransientResourcePool.cpp
     Private/Graph/ResourceViewCache.cpp
     # Material

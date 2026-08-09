@@ -1610,10 +1610,6 @@ void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
             m_activeRenderPassIdentity, completion);
     }
     RetireOwnerSnapshots(completion);
-    if (m_transientResourcePool)
-    {
-        m_transientResourcePool->NotifySubmission(completion);
-    }
     if (m_resourceViewCache)
     {
         m_resourceViewCache->NotifySubmission(completion);
@@ -1666,10 +1662,6 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
         }
     }
     const GPUCompletionToken emptyCompletion;
-    if (m_transientResourcePool)
-    {
-        m_transientResourcePool->NotifySubmission(emptyCompletion);
-    }
     if (m_resourceViewCache)
     {
         m_resourceViewCache->NotifySubmission(emptyCompletion);
@@ -3689,13 +3681,15 @@ void SceneRenderer::Render()
             RenderGraph::RecordedQueueSubmission submission;
             if (m_renderGraph->RecordQueueSubmission(submission))
             {
-                if (!m_renderContext->AdoptQueueSubmission(
-                        std::move(submission.plan),
-                        std::move(submission.ownedContexts)))
+                RenderGraphExecution execution =
+                    m_renderGraph->TakeExecution(std::move(submission));
+                if (!execution ||
+                    !m_renderContext->AdoptRenderGraphExecution(
+                        std::move(execution)))
                 {
                     graphCompileValid = false;
                     executionSkippedReason =
-                        "RenderContext rejected the validated queue submission plan";
+                        "RenderContext rejected the completion-owned graph execution";
                 }
             }
             else
@@ -3708,6 +3702,16 @@ void SceneRenderer::Render()
         else
         {
             m_renderGraph->Execute(*ctx);
+            RenderGraphExecution execution =
+                m_renderGraph->TakeExecution();
+            if (!execution ||
+                !m_renderContext->AdoptRenderGraphExecution(
+                    std::move(execution)))
+            {
+                graphCompileValid = false;
+                executionSkippedReason =
+                    "RenderContext rejected the Graphics graph execution";
+            }
         }
         graphExecuted = !m_gpuSceneCullingCommandRecordingFailed &&
             graphCompileValid &&

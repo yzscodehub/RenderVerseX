@@ -34,6 +34,7 @@ namespace RVX
             resource.initialAccessSnapshot = std::move(lease.accessSnapshot);
             resource.initialState = ProjectRHIResourceState(
                 resource.initialAccessSnapshot.uniformAccess);
+            resource.pooledLease.emplace(std::move(lease));
             return true;
         }
 
@@ -58,7 +59,52 @@ namespace RVX
             resource.initialAccessSnapshot = std::move(lease.accessSnapshot);
             resource.initialState = ProjectRHIResourceState(
                 resource.initialAccessSnapshot.uniformAccess);
+            resource.pooledLease.emplace(std::move(lease));
             return true;
+        }
+
+        void RollbackRealizedResources(RenderGraphImpl& graph)
+        {
+            bool releasedAny = false;
+            for (TextureResource& texture : graph.textures)
+            {
+                if (texture.pooledLease)
+                {
+                    static_cast<void>(
+                        texture.pooledLease->AbortUnsubmitted());
+                    texture.pooledLease.reset();
+                    releasedAny = true;
+                }
+                releasedAny |= static_cast<bool>(texture.texture);
+                texture.texture.Reset();
+                texture.pooledRaw = nullptr;
+                texture.realizedRaw = nullptr;
+                texture.pooled = false;
+            }
+            for (BufferResource& buffer : graph.buffers)
+            {
+                if (buffer.pooledLease)
+                {
+                    static_cast<void>(
+                        buffer.pooledLease->AbortUnsubmitted());
+                    buffer.pooledLease.reset();
+                    releasedAny = true;
+                }
+                releasedAny |= static_cast<bool>(buffer.buffer);
+                buffer.buffer.Reset();
+                buffer.pooledRaw = nullptr;
+                buffer.realizedRaw = nullptr;
+                buffer.pooled = false;
+            }
+            for (TransientHeap& heap : graph.transientHeaps)
+            {
+                releasedAny |= static_cast<bool>(heap.heap);
+                heap.heap.Reset();
+            }
+            graph.resourcesRealized = false;
+            graph.executionRealized = false;
+            if (releasedAny)
+                ++graph.stats.partialRealizationRollbackCount;
         }
 
         RHITextureAspect GetDefaultTextureAspect(const RHITextureDesc& desc)
@@ -865,6 +911,7 @@ namespace RVX
         {
             RVX_CORE_ERROR(
                 "RenderGraph physical resource realization failed closed");
+            RollbackRealizedResources(graph);
         }
         else
         {
@@ -942,45 +989,62 @@ namespace RVX
         }
         if (graph.stats.executionQueueMismatchCount != 0)
         {
+            RollbackRealizedResources(graph);
             return;
         }
 
         ValidatePlannedAccessSources(graph);
 
-        if (!graph.executionOrder.empty())
+        try
         {
-            uint32 executionSerial = 0;
-            for (uint32 passIndex : graph.executionOrder)
+            if (!graph.executionOrder.empty())
             {
-                auto& pass = graph.passes[passIndex];
-                if (pass.culled)
-                    continue;
+                uint32 executionSerial = 0;
+                for (uint32 passIndex : graph.executionOrder)
+                {
+                    auto& pass = graph.passes[passIndex];
+                    if (pass.culled)
+                        continue;
 
-                ExecutePassOnContext(
-                    pass,
-                    ctx,
-                    RenderGraph::DiagnosticExecutionQueue::Graphics,
-                    executionSerial++,
-                    graph);
+                    ExecutePassOnContext(
+                        pass,
+                        ctx,
+                        RenderGraph::DiagnosticExecutionQueue::Graphics,
+                        executionSerial++,
+                        graph);
+                }
             }
+            else
+            {
+                uint32 executionSerial = 0;
+                for (auto& pass : graph.passes)
+                {
+                    if (pass.culled)
+                        continue;
+                    ExecutePassOnContext(
+                        pass,
+                        ctx,
+                        RenderGraph::DiagnosticExecutionQueue::Graphics,
+                        executionSerial++,
+                        graph);
+                }
+            }
+            EmitExportBarriers(graph, ctx);
         }
-        else
+        catch (const std::exception& error)
         {
-            uint32 executionSerial = 0;
-            for (auto& pass : graph.passes)
-            {
-                if (pass.culled)
-                    continue;
-                ExecutePassOnContext(
-                    pass,
-                    ctx,
-                    RenderGraph::DiagnosticExecutionQueue::Graphics,
-                    executionSerial++,
-                    graph);
-            }
+            RVX_CORE_ERROR(
+                "RenderGraph command recording failed: {}", error.what());
+            RollbackRealizedResources(graph);
+            return;
         }
-
-        EmitExportBarriers(graph, ctx);
+        catch (...)
+        {
+            RVX_CORE_ERROR(
+                "RenderGraph command recording failed with an unknown exception");
+            RollbackRealizedResources(graph);
+            return;
+        }
         AccumulateExecutionDiagnostics(graph);
         graph.executionRealized = true;
     }
@@ -1145,66 +1209,85 @@ namespace RVX
         };
 
         JobSystem& jobs = JobSystem::Get();
-        uint32 levelBegin = 0;
-        while (levelBegin < planned.queueBatches.size())
+        try
         {
-            const uint32 dependencyLevel =
-                planned.queueBatches[levelBegin].dependencyLevel;
-            uint32 levelEnd = levelBegin + 1U;
-            while (levelEnd < planned.queueBatches.size() &&
-                   planned.queueBatches[levelEnd].dependencyLevel ==
-                       dependencyLevel)
+            uint32 levelBegin = 0;
+            while (levelBegin < planned.queueBatches.size())
             {
-                ++levelEnd;
-            }
-
-            const bool recordInParallel = graph.parallelRecordingEnabled &&
-                                          jobs.IsInitialized() &&
-                                          jobs.GetWorkerCount() > 1U &&
-                                          levelEnd - levelBegin > 1U;
-            if (recordInParallel)
-            {
-                std::vector<std::future<void>> recordings;
-                recordings.reserve(levelEnd - levelBegin);
-                for (uint32 batchIndex = levelBegin;
-                     batchIndex < levelEnd;
-                     ++batchIndex)
+                const uint32 dependencyLevel =
+                    planned.queueBatches[levelBegin].dependencyLevel;
+                uint32 levelEnd = levelBegin + 1U;
+                while (levelEnd < planned.queueBatches.size() &&
+                       planned.queueBatches[levelEnd].dependencyLevel ==
+                           dependencyLevel)
                 {
-                    recordings.push_back(jobs.SubmitWithResult(
-                        [&, batchIndex]() { recordBatch(batchIndex); }));
+                    ++levelEnd;
                 }
 
-                std::exception_ptr firstFailure;
-                for (std::future<void>& recording : recordings)
+                const bool recordInParallel = graph.parallelRecordingEnabled &&
+                                              jobs.IsInitialized() &&
+                                              jobs.GetWorkerCount() > 1U &&
+                                              levelEnd - levelBegin > 1U;
+                if (recordInParallel)
                 {
-                    try
+                    std::vector<std::future<void>> recordings;
+                    recordings.reserve(levelEnd - levelBegin);
+                    for (uint32 batchIndex = levelBegin;
+                         batchIndex < levelEnd;
+                         ++batchIndex)
                     {
-                        recording.get();
+                        recordings.push_back(jobs.SubmitWithResult(
+                            [&, batchIndex]() { recordBatch(batchIndex); }));
                     }
-                    catch (...)
-                    {
-                        if (!firstFailure)
-                            firstFailure = std::current_exception();
-                    }
-                }
-                if (firstFailure)
-                    std::rethrow_exception(firstFailure);
 
-                graph.stats.parallelRecordingUsed = true;
-                ++graph.stats.lastParallelRecordingLevelCount;
-                graph.stats.lastParallelRecordingBatchCount +=
-                    levelEnd - levelBegin;
-            }
-            else
-            {
-                for (uint32 batchIndex = levelBegin;
-                     batchIndex < levelEnd;
-                     ++batchIndex)
-                {
-                    recordBatch(batchIndex);
+                    std::exception_ptr firstFailure;
+                    for (std::future<void>& recording : recordings)
+                    {
+                        try
+                        {
+                            recording.get();
+                        }
+                        catch (...)
+                        {
+                            if (!firstFailure)
+                                firstFailure = std::current_exception();
+                        }
+                    }
+                    if (firstFailure)
+                        std::rethrow_exception(firstFailure);
+
+                    graph.stats.parallelRecordingUsed = true;
+                    ++graph.stats.lastParallelRecordingLevelCount;
+                    graph.stats.lastParallelRecordingBatchCount +=
+                        levelEnd - levelBegin;
                 }
+                else
+                {
+                    for (uint32 batchIndex = levelBegin;
+                         batchIndex < levelEnd;
+                         ++batchIndex)
+                    {
+                        recordBatch(batchIndex);
+                    }
+                }
+                levelBegin = levelEnd;
             }
-            levelBegin = levelEnd;
+        }
+        catch (const std::exception& error)
+        {
+            RVX_CORE_ERROR(
+                "RenderGraph queue recording failed: {}", error.what());
+            RollbackRealizedResources(graph);
+            submission = {};
+            return false;
+        }
+        catch (...)
+        {
+            RVX_CORE_ERROR(
+                "RenderGraph queue recording failed with an unknown exception");
+            RollbackRealizedResources(graph);
+            submission = {};
+            return false;
         }
 
         graph.stats.asyncComputeScheduledPasses = 0;

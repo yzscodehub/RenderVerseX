@@ -7,6 +7,7 @@
 
 #include "RHI/RHI.h"
 #include "Render/Context/FrameSynchronizer.h"
+#include "Render/Graph/RenderGraphExecution.h"
 #include <memory>
 #include <array>
 
@@ -153,6 +154,9 @@ namespace RVX
             RHIQueueSubmissionPlan plan,
             std::vector<RHICommandContextRef> ownedContexts);
 
+        /** @brief Atomically adopt graph commands and their completion-owned resources. */
+        bool AdoptRenderGraphExecution(RenderGraphExecution&& execution);
+
         /** @brief End recording without submitting or enabling presentation. */
         void AbortFrame();
 
@@ -233,6 +237,9 @@ namespace RVX
         RHICommandContextRef m_pendingGraphicsGateway;
         bool m_queueSubmissionPending = false;
         bool m_graphicsContextRecording = false;
+        std::unique_ptr<RenderGraphExecution> m_pendingGraphExecution;
+        std::array<std::unique_ptr<RenderGraphExecution>, RVX_MAX_FRAME_COUNT>
+            m_inFlightGraphExecutions;
         
         // Frame synchronization
         FrameSynchronizer m_frameSynchronizer;

@@ -2008,6 +2008,86 @@ namespace RVX
         return RecordRenderGraphQueueSubmission(*m_impl, submission);
     }
 
+    RenderGraphExecution RenderGraph::TakeExecution()
+    {
+        RenderGraphExecution execution;
+        if (!m_impl->executionRealized || !m_impl->resourcesRealized ||
+            m_impl->executionOwnershipTransferred)
+        {
+            return execution;
+        }
+
+        execution.Prepare();
+        for (uint32 index = 0; index < m_impl->textures.size(); ++index)
+        {
+            TextureResource& texture = m_impl->textures[index];
+            if (texture.imported)
+                continue;
+            if (texture.pooledLease)
+            {
+                execution.AddTextureLease(
+                    std::move(*texture.pooledLease),
+                    GetRealizedAccess(RGTextureHandle{
+                        index,
+                        false,
+                        RHISubresourceRange::All(),
+                        m_impl->graphIdentity,
+                        m_impl->recordingGeneration}));
+                texture.pooledLease.reset();
+            }
+            if (texture.texture)
+            {
+                texture.realizedRaw = texture.texture.Get();
+                execution.RetainTexture(std::move(texture.texture));
+            }
+        }
+        for (uint32 index = 0; index < m_impl->buffers.size(); ++index)
+        {
+            BufferResource& buffer = m_impl->buffers[index];
+            if (buffer.imported)
+                continue;
+            if (buffer.pooledLease)
+            {
+                execution.AddBufferLease(
+                    std::move(*buffer.pooledLease),
+                    GetRealizedAccess(RGBufferHandle{
+                        index,
+                        false,
+                        0,
+                        RVX_WHOLE_SIZE,
+                        m_impl->graphIdentity,
+                        m_impl->recordingGeneration}));
+                buffer.pooledLease.reset();
+            }
+            if (buffer.buffer)
+            {
+                buffer.realizedRaw = buffer.buffer.Get();
+                execution.RetainBuffer(std::move(buffer.buffer));
+            }
+        }
+        for (TransientHeap& heap : m_impl->transientHeaps)
+        {
+            if (heap.heap)
+                execution.RetainHeap(std::move(heap.heap));
+        }
+        if (!execution.MarkRecorded())
+            return {};
+        m_impl->executionOwnershipTransferred = true;
+        return execution;
+    }
+
+    RenderGraphExecution RenderGraph::TakeExecution(
+        RecordedQueueSubmission&& submission)
+    {
+        RenderGraphExecution execution = TakeExecution();
+        if (!execution)
+            return execution;
+        execution.SetQueueSubmission(
+            std::move(submission.plan),
+            std::move(submission.ownedContexts));
+        return execution;
+    }
+
     bool RenderGraph::RecompileGraphicsOnly()
     {
         const auto textureSnapshotIsGraphicsOwned = [](
@@ -2665,7 +2745,9 @@ namespace RVX
         ss << "    \"lastParallelRecordingLevelCount\": "
            << stats.lastParallelRecordingLevelCount << ",\n";
         ss << "    \"lastParallelRecordingBatchCount\": "
-           << stats.lastParallelRecordingBatchCount << "\n";
+           << stats.lastParallelRecordingBatchCount << ",\n";
+        ss << "    \"partialRealizationRollbackCount\": "
+           << stats.partialRealizationRollbackCount << "\n";
         ss << "  },\n";
 
         ss << "  \"memory\": {\n";
@@ -2983,7 +3065,8 @@ namespace RVX
     {
         for (auto& texture : m_impl->textures)
         {
-            if (!texture.imported && texture.pooled && texture.pooledRaw)
+            if (!texture.imported && texture.pooled && texture.pooledRaw &&
+                texture.pooledLease)
             {
                 if (m_impl->transientResourcePool)
                 {
@@ -2996,13 +3079,16 @@ namespace RVX
                             m_impl->graphIdentity,
                             m_impl->recordingGeneration}));
                 }
-                texture.pooledRaw = nullptr;
-                texture.pooled = false;
+                texture.pooledLease.reset();
             }
+            texture.pooledRaw = nullptr;
+            texture.realizedRaw = nullptr;
+            texture.pooled = false;
         }
         for (auto& buffer : m_impl->buffers)
         {
-            if (!buffer.imported && buffer.pooled && buffer.pooledRaw)
+            if (!buffer.imported && buffer.pooled && buffer.pooledRaw &&
+                buffer.pooledLease)
             {
                 if (m_impl->transientResourcePool)
                 {
@@ -3016,9 +3102,11 @@ namespace RVX
                             m_impl->graphIdentity,
                             m_impl->recordingGeneration}));
                 }
-                buffer.pooledRaw = nullptr;
-                buffer.pooled = false;
+                buffer.pooledLease.reset();
             }
+            buffer.pooledRaw = nullptr;
+            buffer.realizedRaw = nullptr;
+            buffer.pooled = false;
         }
 
         m_impl->passes.clear();
@@ -3039,6 +3127,7 @@ namespace RVX
         m_impl->compatibilityStateProjectionCount = 0;
         m_impl->executionRealized = false;
         m_impl->resourcesRealized = false;
+        m_impl->executionOwnershipTransferred = false;
         m_impl->memoryAliasingRequested = false;
         m_impl->enableMemoryAliasing = false;
         m_impl->recordingGeneration =

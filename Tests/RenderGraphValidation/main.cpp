@@ -1,6 +1,7 @@
 #include "Core/Core.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/TransientResourcePool.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -10,7 +11,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -203,6 +206,11 @@ namespace
 
         RHITextureRef CreateTexture(const RHITextureDesc& desc) override
         {
+            ++textureCreateAttemptCount;
+            if (createTextureCount >= failTextureCreationAfter)
+            {
+                return {};
+            }
             ++createTextureCount;
             return RHITextureRef(new FakeTexture(desc));
         }
@@ -293,6 +301,9 @@ namespace
         uint32 createBufferCount = 0;
         uint32 createPlacedTextureCount = 0;
         uint32 createPlacedBufferCount = 0;
+        uint32 textureCreateAttemptCount = 0;
+        uint32 failTextureCreationAfter =
+            std::numeric_limits<uint32>::max();
         uint32 textureMemoryRequirementQueryCount = 0;
         uint32 bufferMemoryRequirementQueryCount = 0;
         mutable uint32 capabilityQueryCount = 0;
@@ -622,6 +633,315 @@ TEST(RenderGraphValidation, TransientTexturePoolSeparatesOptimizedClearIdentity)
     EXPECT_NE(second.texture, first.texture);
     EXPECT_EQ(device.createTextureCount, 2u);
     pool.ReleaseTexture(second.texture, second.accessSnapshot);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientLeaseIsMoveOnlyGenerationSafeAndAbortable)
+{
+    static_assert(!std::is_copy_constructible_v<TransientTextureLease>);
+    static_assert(!std::is_copy_assignable_v<TransientTextureLease>);
+    static_assert(!std::is_copy_constructible_v<TransientBufferLease>);
+    static_assert(!std::is_copy_assignable_v<TransientBufferLease>);
+
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    const RHITextureDesc desc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA8_UNORM);
+    TransientTextureLease first = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(first);
+    const uint64 firstSlot = first.GetSlotId();
+    const uint32 firstGeneration = first.GetGeneration();
+    RHITexture* firstTexture = first.texture;
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 1u);
+
+    TransientTextureLease moved = std::move(first);
+    EXPECT_FALSE(first);
+    ASSERT_TRUE(moved);
+    EXPECT_TRUE(moved.AbortUnsubmitted());
+    EXPECT_FALSE(moved.AbortUnsubmitted());
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    EXPECT_EQ(pool.GetStats().leaseAbortCount, 1u);
+
+    TransientTextureLease reused = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(reused);
+    EXPECT_TRUE(reused.reused);
+    EXPECT_EQ(reused.texture, firstTexture);
+    EXPECT_EQ(reused.GetSlotId(), firstSlot);
+    EXPECT_NE(reused.GetGeneration(), firstGeneration);
+    EXPECT_TRUE(reused.AbortUnsubmitted());
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientBufferLeaseIsGenerationSafeAndAbortable)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RHIBufferDesc desc;
+    desc.size = 4096;
+    desc.usage = RHIBufferUsage::Structured |
+                 RHIBufferUsage::UnorderedAccess;
+    TransientBufferLease first = pool.AcquireBufferLease(desc);
+    ASSERT_TRUE(first);
+    const uint64 firstSlot = first.GetSlotId();
+    const uint32 firstGeneration = first.GetGeneration();
+    RHIBuffer* firstBuffer = first.buffer;
+    EXPECT_TRUE(first.AbortUnsubmitted());
+    EXPECT_FALSE(first.AbortUnsubmitted());
+
+    TransientBufferLease reused = pool.AcquireBufferLease(desc);
+    ASSERT_TRUE(reused);
+    EXPECT_TRUE(reused.reused);
+    EXPECT_EQ(reused.buffer, firstBuffer);
+    EXPECT_EQ(reused.GetSlotId(), firstSlot);
+    EXPECT_NE(reused.GetGeneration(), firstGeneration);
+    EXPECT_TRUE(reused.AbortUnsubmitted());
+    EXPECT_EQ(pool.GetStats().recordingBufferLeases, 0u);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, DeviceLostLeaseNeverReturnsToFreePool)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    const RHITextureDesc desc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA8_UNORM);
+    TransientTextureLease lost = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(lost);
+    RHITexture* lostTexture = lost.texture;
+    EXPECT_TRUE(lost.MarkDeviceLost());
+    EXPECT_EQ(pool.GetStats().leaseDeviceLostCount, 1u);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+
+    TransientTextureLease replacement = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(replacement);
+    EXPECT_FALSE(replacement.reused);
+    EXPECT_NE(replacement.texture, lostTexture);
+    EXPECT_EQ(device.createTextureCount, 2u);
+    EXPECT_TRUE(replacement.AbortUnsubmitted());
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientLeaseRequiresExactCompletionBeforeReuse)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    const RHITextureDesc desc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA8_UNORM);
+    TransientTextureLease first = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(first);
+
+    const GPUCompletionToken emptyCompletion;
+    EXPECT_FALSE(first.CanCommit(emptyCompletion));
+    EXPECT_FALSE(first.Commit(emptyCompletion, first.accessSnapshot));
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 1u);
+
+    GPUCompletionToken completion;
+    ASSERT_TRUE(InsertGPUCompletionPoint(
+        completion, {GPUQueueDomain::Graphics, 7u}));
+    ASSERT_TRUE(first.CanCommit(completion));
+    const RHITextureAccessSnapshot finalAccess =
+        MakeRHITextureAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Pixel,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid);
+    EXPECT_TRUE(first.Commit(completion, finalAccess));
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    EXPECT_EQ(pool.GetStats().inFlightTextureLeases, 1u);
+    EXPECT_EQ(pool.GetStats().leaseCommitCount, 1u);
+
+    // No tracker can prove token 7 complete, so the in-flight slot is not
+    // reusable and a distinct physical texture must be allocated.
+    TransientTextureLease second = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(second);
+    EXPECT_FALSE(second.reused);
+    EXPECT_EQ(device.createTextureCount, 2u);
+    EXPECT_TRUE(second.AbortUnsubmitted());
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, RenderGraphExecutionAbortReturnsEveryLease)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    graph.SetTransientResourcePool(&pool);
+    const RGTextureHandle texture = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    struct PassData
+    {
+        RGTextureHandle output;
+    };
+    graph.AddPass<PassData>(
+        "AbortExecution",
+        RenderGraphPassType::Graphics,
+        [texture](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.output = builder.Write(texture);
+        },
+        [](const PassData&, RHICommandContext&) {});
+    graph.SetExportState(texture, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    FakeCommandContext context;
+    graph.Execute(context);
+    RHITexture* physicalTexture = graph.GetTexture(texture);
+    ASSERT_NE(physicalTexture, nullptr);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 1u);
+
+    RenderGraphExecution execution = graph.TakeExecution();
+    ASSERT_TRUE(execution);
+    EXPECT_EQ(execution.GetState(), RenderGraphExecutionState::Recorded);
+    EXPECT_TRUE(execution.AbortUnsubmitted());
+    EXPECT_EQ(execution.GetState(),
+              RenderGraphExecutionState::AbortUnsubmitted);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+
+    TransientTextureLease reused = pool.AcquireTextureLease(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(reused);
+    EXPECT_TRUE(reused.reused);
+    EXPECT_EQ(reused.texture, physicalTexture);
+    EXPECT_EQ(reused.accessSnapshot.uniformAccess.layout,
+              RHIResourceLayout::Undefined);
+    EXPECT_TRUE(reused.AbortUnsubmitted());
+
+    graph.Clear();
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, PartialPhysicalRealizationRollsBackAllLeases)
+{
+    FakeDevice device;
+    device.failTextureCreationAfter = 1u;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    graph.SetTransientResourcePool(&pool);
+    const RGTextureHandle first = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    const RGTextureHandle second = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            128, 128, RHIFormat::RGBA8_UNORM));
+    struct PassData
+    {
+        RGTextureHandle first;
+        RGTextureHandle second;
+    };
+    graph.AddPass<PassData>(
+        "FailSecondRealization",
+        RenderGraphPassType::Graphics,
+        [first, second](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.first = builder.Write(first);
+            data.second = builder.Write(second);
+        },
+        [](const PassData&, RHICommandContext&) {});
+    graph.SetExportState(first, RHIResourceState::ShaderResource);
+    graph.SetExportState(second, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    FakeCommandContext context;
+    graph.Execute(context);
+
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    EXPECT_EQ(pool.GetStats().texturesInUse, 0u);
+    EXPECT_EQ(graph.GetCompileStats().partialRealizationRollbackCount, 1u);
+    EXPECT_FALSE(graph.TakeExecution());
+    graph.Clear();
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, PassRecordingFailureRollsBackEveryRealizedLease)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    graph.SetTransientResourcePool(&pool);
+    const RGTextureHandle texture = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 4096;
+    bufferDesc.usage = RHIBufferUsage::Structured |
+                       RHIBufferUsage::UnorderedAccess;
+    const RGBufferHandle buffer = graph.CreateBuffer(bufferDesc);
+
+    struct PassData
+    {
+        RGTextureHandle texture;
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<PassData>(
+        "ThrowDuringRecording",
+        RenderGraphPassType::Graphics,
+        [texture, buffer](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.texture = builder.Write(texture);
+            data.buffer = builder.Write(buffer);
+        },
+        [](const PassData&, RHICommandContext&)
+        {
+            throw std::runtime_error("injected recording failure");
+        });
+    graph.SetExportState(texture, RHIResourceState::ShaderResource);
+    graph.SetExportState(buffer, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    FakeCommandContext context;
+    graph.Execute(context);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    EXPECT_EQ(pool.GetStats().recordingBufferLeases, 0u);
+    EXPECT_EQ(pool.GetStats().leaseAbortCount, 2u);
+    EXPECT_EQ(graph.GetCompileStats().partialRealizationRollbackCount, 1u);
+    EXPECT_FALSE(graph.TakeExecution());
+
+    TransientTextureLease reusedTexture = pool.AcquireTextureLease(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(reusedTexture);
+    EXPECT_TRUE(reusedTexture.reused);
+    EXPECT_TRUE(reusedTexture.AbortUnsubmitted());
+    TransientBufferLease reusedBuffer = pool.AcquireBufferLease(bufferDesc);
+    ASSERT_TRUE(reusedBuffer);
+    EXPECT_TRUE(reusedBuffer.reused);
+    EXPECT_TRUE(reusedBuffer.AbortUnsubmitted());
+
+    graph.Clear();
     pool.EndFrame();
     pool.Shutdown();
 }

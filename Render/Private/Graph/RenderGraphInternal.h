@@ -65,6 +65,8 @@ namespace RVX
         RHITextureRef texture;           // Owned texture (for transient/created textures)
         RHITexture* importedRaw = nullptr; // Non-owning pointer for imported textures
         RHITexture* pooledRaw = nullptr; // Non-owning pointer for pooled transient textures
+        RHITexture* realizedRaw = nullptr;
+        std::optional<TransientTextureLease> pooledLease;
         RHIResourceState initialState = RHIResourceState::Undefined;
         RHIResourceState currentState = RHIResourceState::Undefined;
         RHITextureAccessSnapshot initialAccessSnapshot;
@@ -88,7 +90,9 @@ namespace RVX
             {
                 return importedRaw;
             }
-            return pooled ? pooledRaw : texture.Get();
+            if (pooled)
+                return pooledRaw;
+            return texture ? texture.Get() : realizedRaw;
         }
     };
 
@@ -98,6 +102,8 @@ namespace RVX
         RHIBufferRef buffer;               // Owned buffer (for transient/created buffers)
         RHIBuffer* importedRaw = nullptr;  // Non-owning pointer for imported buffers
         RHIBuffer* pooledRaw = nullptr;    // Non-owning pointer for pooled transient buffers
+        RHIBuffer* realizedRaw = nullptr;
+        std::optional<TransientBufferLease> pooledLease;
         RHIResourceState initialState = RHIResourceState::Undefined;
         RHIResourceState currentState = RHIResourceState::Undefined;
         RHIBufferAccessSnapshot initialAccessSnapshot;
@@ -127,7 +133,9 @@ namespace RVX
             {
                 return importedRaw;
             }
-            return pooled ? pooledRaw : buffer.Get();
+            if (pooled)
+                return pooledRaw;
+            return buffer ? buffer.Get() : realizedRaw;
         }
     };
 
@@ -253,6 +261,7 @@ namespace RVX
         uint32 compatibilityStateProjectionCount = 0;
         bool executionRealized = false;
         bool resourcesRealized = false;
+        bool executionOwnershipTransferred = false;
     };
 
     void CompileRenderGraph(RenderGraphImpl& graph);
