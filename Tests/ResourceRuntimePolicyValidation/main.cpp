@@ -2065,7 +2065,14 @@ TEST(ResourceRuntimePolicyValidation, ResourceSubsystemReplacesAfterUnloadAndSea
     gateway.PublishTerminal(firstResolved.handle,
                             RenderResourcePublicState::Released);
     subsystem.DrainTerminalRenderRequests();
+    const uint32 releasesBeforeSeal = gateway.releaseAttempts;
     subsystem.BeginRenderShutdown();
+    EXPECT_EQ(gateway.releaseAttempts, releasesBeforeSeal);
+    EXPECT_EQ(subsystem.ResolveRenderResource(
+                  AssetId{replacement.GetId()},
+                  RenderResourceKind::Texture)
+                  .code,
+              RenderResourceResolveCode::Resolved);
     const uint32 reservesBeforeSeal = gateway.reserveAttempts;
     ResourceHandle<TextureResource> sealed =
         subsystem.Load<TextureResource>("source://textures/sealed.png");

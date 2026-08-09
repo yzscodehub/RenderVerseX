@@ -170,18 +170,6 @@ namespace
                 m_localTerminalRequests.push_back(std::move(pending.request));
         }
         m_pendingUploads.clear();
-
-        std::vector<AssetId> assets;
-        assets.reserve(m_trackedResources.size());
-        for (const auto& [assetId, tracked] : m_trackedResources)
-        {
-            (void)tracked;
-            assets.push_back(assetId);
-        }
-        for (AssetId assetId : assets)
-        {
-            ReleaseAsset(assetId);
-        }
     }
 
     void ResourceSubsystem::DrainTerminalRenderRequests()
@@ -223,6 +211,16 @@ namespace
             }
             request = m_retainedRequests.erase(request);
             ++m_renderStats.terminalRequestsReclaimed;
+        }
+
+        // BeginRenderShutdown deliberately preserves current mappings while
+        // the dedicated renderer drains accepted frames. Once Render has
+        // stopped, its registry owns no live GPU resources and these lookup
+        // mappings can be discarded without enqueueing releases ahead of the
+        // frames that still reference them.
+        if (m_renderShuttingDown)
+        {
+            m_trackedResources.clear();
         }
     }
 

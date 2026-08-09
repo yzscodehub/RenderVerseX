@@ -160,10 +160,7 @@ void Engine::Shutdown()
 
     RVX_CORE_INFO("=== RenderVerseX Engine Shutting Down ===");
 
-    if (m_renderComposition != nullptr)
-    {
-        m_lastRenderShutdownResult = m_renderComposition->Shutdown();
-    }
+    ShutdownRenderRuntime();
 
     // Render has acknowledged exit while Window and Worlds remain alive.
     ShutdownWorlds();
@@ -180,6 +177,15 @@ void Engine::Shutdown()
     m_initialized = false;
 
     RVX_CORE_INFO("=== RenderVerseX Engine Shutdown Complete ===");
+}
+
+void Engine::ShutdownRenderRuntime()
+{
+    if (!m_initialized || m_renderComposition == nullptr)
+    {
+        return;
+    }
+    m_lastRenderShutdownResult = m_renderComposition->Shutdown();
 }
 
 // =============================================================================

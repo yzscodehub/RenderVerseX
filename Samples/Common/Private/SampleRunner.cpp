@@ -1225,6 +1225,13 @@ namespace RVX
                 }
             }
 
+            // Stop and drain the dedicated renderer while Sample-owned model
+            // resources and the World are still alive. Sample::Shutdown may
+            // release the last CPU-side handles, so it must run only after the
+            // render runtime has consumed all accepted frames.
+            engine.ShutdownRenderRuntime();
+            diagnostics = render->GetDiagnosticsSnapshot();
+
             const RenderFrameFeatureDiagnostics& features =
                 diagnostics.frameFeatures;
             const SampleRenderDiagnostics sampleRenderDiagnostics =
@@ -1376,6 +1383,7 @@ namespace RVX
         }
 
         RVX_CORE_ERROR("{}", error);
+        engine.ShutdownRenderRuntime();
         sample.reset();
         engine.Shutdown();
         Log::Shutdown();

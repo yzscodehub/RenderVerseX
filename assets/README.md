@@ -45,7 +45,7 @@ camera framing, and the complete CPUReady -> GPUUploadPending -> RenderReady
 path. The source model remains in the ignored developer asset library because
 of its size; its adjacent `license.txt` records the CC-BY-4.0 attribution.
 
-Run the Product Model Viewer against it without an absolute runtime path:
+Run the Product Model Viewer interactively without an absolute runtime path:
 
 ```powershell
 $sample = ".\build\win_x64_debug\Samples\RenderVerseSamples\Debug\RenderVerseSamples.exe"
@@ -53,11 +53,26 @@ $sample = ".\build\win_x64_debug\Samples\RenderVerseSamples\Debug\RenderVerseSam
   --asset free-1975-porsche-911-930-turbo `
   --catalog ".\assets\catalog.json" `
   --asset-root ".\assets" `
-  --backend dx12 --frames 1 --wait-ready `
+  --backend dx12 --quality low `
+  --width 1280 --height 720 `
+  --diagnostics --validation
+```
+
+For a finite automated readiness validation, add the bounded frame contract:
+
+```powershell
+& $sample --sample model-viewer `
+  --asset free-1975-porsche-911-930-turbo `
+  --catalog ".\assets\catalog.json" `
+  --asset-root ".\assets" `
+  --backend dx12 --smoke --frames 1 --wait-ready `
   --ready-timeout-ms 180000 --ready-max-frames 1024 `
   --quality low --width 1280 --height 720 `
   --diagnostics --validation
 ```
+
+`--wait-ready` intentionally requires a finite `--frames` value; omit both
+options for the interactive viewer.
 
 Use `--backend vulkan` for the equivalent Vulkan path. With
 `RVX_ENABLE_EXTERNAL_ASSET_TESTS=ON`, CTest registers screenshot, image-content,

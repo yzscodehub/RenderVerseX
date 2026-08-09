@@ -485,10 +485,13 @@ TEST(EngineRenderCompositionValidation,
             << "Engine must not invoke legacy render work: " << forbidden;
     }
 
-    const size_t renderShutdown = source.find("m_renderComposition->Shutdown()");
+    const size_t renderShutdown = source.find("ShutdownRenderRuntime();");
+    const size_t compositionShutdown =
+        source.find("m_renderComposition->Shutdown()");
     const size_t worldShutdown = source.find("ShutdownWorlds();");
     const size_t subsystemShutdown = source.find("ShutdownSubsystems();");
     ASSERT_NE(renderShutdown, std::string::npos);
+    ASSERT_NE(compositionShutdown, std::string::npos);
     ASSERT_NE(worldShutdown, std::string::npos);
     ASSERT_NE(subsystemShutdown, std::string::npos);
     EXPECT_LT(renderShutdown, worldShutdown);
@@ -553,6 +556,24 @@ TEST(EngineRenderCompositionValidation,
     EXPECT_EQ(
         renderHeader.find("MakeDependencies<WindowSubsystem"),
         std::string::npos);
+}
+
+TEST(EngineRenderCompositionValidation,
+     SampleRunnerStopsRenderBeforeReleasingSampleOwnedResources)
+{
+    const std::filesystem::path sourceRoot{RVX_SOURCE_DIR};
+    const std::string source = ReadSource(
+        sourceRoot / "Samples" / "Common" / "Private" /
+        "SampleRunner.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t renderShutdown =
+        source.find("engine.ShutdownRenderRuntime();");
+    const size_t sampleShutdown =
+        source.find("sample->Shutdown(context);");
+    ASSERT_NE(renderShutdown, std::string::npos);
+    ASSERT_NE(sampleShutdown, std::string::npos);
+    EXPECT_LT(renderShutdown, sampleShutdown);
 }
 
 TEST(EngineRenderCompositionValidation,

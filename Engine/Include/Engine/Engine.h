@@ -191,6 +191,14 @@ namespace RVX
         /// Shutdown the engine
         void Shutdown();
 
+        /**
+         * @brief Stop and drain rendering while Worlds and resources stay alive.
+         *
+         * Host layers use this boundary before releasing external scene or
+         * resource owners. Shutdown() calls it automatically and idempotently.
+         */
+        void ShutdownRenderRuntime();
+
         /// Request engine shutdown (sets shutdown flag)
         void RequestShutdown() { m_shouldShutdown = true; }
 

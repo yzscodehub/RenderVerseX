@@ -87,7 +87,10 @@ namespace RVX::Resource
         [[nodiscard]] bool PublishRenderResource(
             ResourceHandle<IResource> resource);
 
-        /** @brief Seal new upload production and release all current mappings. */
+        /**
+         * @brief Seal new upload production while preserving mappings needed
+         * by already accepted render frames until the terminal drain.
+         */
         void BeginRenderShutdown();
 
         /** @brief Release retained request payloads after observing terminal state. */
