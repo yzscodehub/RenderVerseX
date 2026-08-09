@@ -300,7 +300,8 @@ namespace RVX
     // Vulkan Texture View
     // =============================================================================
     VulkanTextureView::VulkanTextureView(VulkanDevice* device, RHITexture* texture, const RHITextureViewDesc& desc)
-        : m_device(device)
+        : RHITextureView(RHITextureRef(texture))
+        , m_device(device)
         , m_texture(static_cast<VulkanTexture*>(texture))
         , m_format(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format)
         , m_subresourceRange(desc.subresourceRange)

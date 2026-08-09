@@ -77,18 +77,16 @@ namespace
     {
     public:
         FakeTextureView(RHITexture* texture, const RHITextureViewDesc& desc)
-            : m_texture(texture)
+            : RHITextureView(RHITextureRef(texture))
             , m_format(desc.format == RHIFormat::Unknown && texture ? texture->GetFormat() : desc.format)
             , m_range(desc.subresourceRange)
         {
         }
 
-        RHITexture* GetTexture() const override { return m_texture; }
         RHIFormat GetFormat() const override { return m_format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_range; }
 
     private:
-        RHITexture* m_texture = nullptr;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_range;
     };

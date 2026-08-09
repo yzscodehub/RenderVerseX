@@ -648,7 +648,8 @@ namespace RVX
     // DX11 Texture View Implementation
     // =============================================================================
     DX11TextureView::DX11TextureView(DX11Device* device, RHITexture* texture, const RHITextureViewDesc& desc)
-        : m_device(device)
+        : RHITextureView(RHITextureRef(texture))
+        , m_device(device)
         , m_texture(texture)
         , m_format(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format)
         , m_subresourceRange(desc.subresourceRange)

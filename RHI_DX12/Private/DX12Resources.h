@@ -124,7 +124,6 @@ namespace RVX
         ~DX12TextureView() override;
 
         // RHITextureView interface
-        RHITexture* GetTexture() const override { return m_texture; }
         RHIFormat GetFormat() const override { return m_format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_subresourceRange; }
 
@@ -136,7 +135,6 @@ namespace RVX
 
     private:
         DX12Device* m_device = nullptr;
-        RHITextureRef m_textureRef;
         RHITexture* m_texture = nullptr;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_subresourceRange;

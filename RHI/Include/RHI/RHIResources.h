@@ -3,6 +3,8 @@
 #include "Core/RefCounted.h"
 #include "RHI/RHIDefinitions.h"
 
+#include <string>
+
 namespace RVX
 {
     // =============================================================================
@@ -44,18 +46,47 @@ namespace RVX
     using RHIShaderTableRef         = Ref<RHIShaderTable>;
 
     // =============================================================================
+    // Resource Instance Identity
+    // =============================================================================
+    /**
+     * @brief Process-unique identity for one concrete RHI resource instance.
+     *
+     * Native handles and C++ addresses may be recycled after destruction.  This
+     * identity is assigned once by RHIResource and is therefore safe to use in
+     * caches whose lifetime can overlap native allocator reuse.
+     */
+    struct RHIResourceInstanceId
+    {
+        uint64 value = 0;
+
+        constexpr bool IsValid() const { return value != 0; }
+        constexpr explicit operator bool() const { return IsValid(); }
+
+        friend constexpr bool operator==(RHIResourceInstanceId,
+                                         RHIResourceInstanceId) = default;
+    };
+
+    // =============================================================================
     // RHI Resource Base Class
     // =============================================================================
     class RHIResource : public RefCounted
     {
     public:
+        RHIResource();
         virtual ~RHIResource() = default;
 
         void SetDebugName(const char* name) { m_debugName = name ? name : ""; }
         const std::string& GetDebugName() const { return m_debugName; }
+        RHIResourceInstanceId GetResourceInstanceId() const
+        {
+            return m_resourceInstanceId;
+        }
 
     protected:
         std::string m_debugName;
+
+    private:
+        RHIResourceInstanceId m_resourceInstanceId;
     };
 
     // =============================================================================

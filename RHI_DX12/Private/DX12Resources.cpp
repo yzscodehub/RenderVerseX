@@ -737,8 +737,8 @@ namespace RVX
     // DX12 Texture View Implementation
     // =============================================================================
     DX12TextureView::DX12TextureView(DX12Device* device, RHITexture* texture, const RHITextureViewDesc& desc)
-        : m_device(device)
-        , m_textureRef(texture)
+        : RHITextureView(RHITextureRef(texture))
+        , m_device(device)
         , m_texture(texture)
         , m_format(desc.format == RHIFormat::Unknown ? texture->GetFormat() : desc.format)
         , m_subresourceRange(desc.subresourceRange)

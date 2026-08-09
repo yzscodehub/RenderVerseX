@@ -267,14 +267,15 @@ namespace
     {
     public:
         EditorViewportFakeTextureView(RHITexture* texture, RHITextureViewDesc desc, uint64 nativeUIHandle = 0)
-            : m_texture(texture), m_desc(desc), m_nativeUIHandle(nativeUIHandle)
+            : RHITextureView(RHITextureRef(texture))
+            , m_desc(desc)
+            , m_nativeUIHandle(nativeUIHandle)
         {}
 
-        RHITexture* GetTexture() const override { return m_texture; }
         RHIFormat GetFormat() const override
         {
-            return m_desc.format == RHIFormat::Unknown && m_texture
-                       ? m_texture->GetFormat()
+            return m_desc.format == RHIFormat::Unknown && GetTexture()
+                       ? GetTexture()->GetFormat()
                        : m_desc.format;
         }
         const RHISubresourceRange& GetSubresourceRange() const override
@@ -287,7 +288,6 @@ namespace
         }
 
     private:
-        RHITexture* m_texture = nullptr;
         RHITextureViewDesc m_desc;
         uint64 m_nativeUIHandle = 0;
     };

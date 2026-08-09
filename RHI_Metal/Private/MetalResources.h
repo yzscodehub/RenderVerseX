@@ -85,14 +85,12 @@ namespace RVX
         MetalTextureView(MetalTexture* texture, const RHITextureViewDesc& desc);
         ~MetalTextureView() override;
 
-        RHITexture* GetTexture() const override { return m_sourceTexture; }
         RHIFormat GetFormat() const override { return m_format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_subresourceRange; }
 
         id<MTLTexture> GetMTLTexture() const { return m_textureView; }
 
     private:
-        MetalTexture* m_sourceTexture = nullptr;
         id<MTLTexture> m_textureView = nil;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_subresourceRange;

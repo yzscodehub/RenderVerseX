@@ -2,11 +2,10 @@
 
 /**
  * @file ResourceViewCache.h
- * @brief Automatic resource view creation and caching for RenderGraph
+ * @brief Completion-safe views for imported and persistent resources
  * 
- * ResourceViewCache manages the creation and lifecycle of RHITextureView objects.
- * Views are cached by their description hash and automatically cleaned up when
- * no longer needed.
+ * Transient RenderGraph views live with their transient pool entries. This cache
+ * is only for imported/persistent resources and strongly owns every cached view.
  */
 
 #include "RHI/RHI.h"
@@ -21,8 +20,9 @@ namespace RVX
     /**
      * @brief Cache for GPU resource views
      * 
-     * Provides automatic view creation and caching to avoid redundant view creation
-     * each frame. Views are indexed by a combination of resource pointer and view description.
+     * Provides automatic view creation and caching to avoid redundant persistent
+     * view creation. Views are indexed by the resource instance identity and the
+     * complete view description; a recycled C++ address can never alias an old key.
      */
     class ResourceViewCache
     {

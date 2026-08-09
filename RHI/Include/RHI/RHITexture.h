@@ -1,8 +1,10 @@
 #pragma once
 
+#include "Core/Assert.h"
 #include "RHI/RHIResources.h"
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace RVX
 {
@@ -330,9 +332,19 @@ namespace RVX
     class RHITextureView : public RHIResource
     {
     public:
+        explicit RHITextureView(RHITextureRef texture)
+            : m_sourceTexture(std::move(texture))
+        {
+            RVX_ASSERT_MSG(m_sourceTexture,
+                           "RHI texture views require a live source texture");
+        }
         virtual ~RHITextureView() = default;
 
-        virtual RHITexture* GetTexture() const = 0;
+        virtual RHITexture* GetTexture() const final
+        {
+            return m_sourceTexture.Get();
+        }
+        const RHITextureRef& GetTextureRef() const { return m_sourceTexture; }
         virtual RHIFormat GetFormat() const = 0;
         virtual const RHISubresourceRange& GetSubresourceRange() const = 0;
 
@@ -344,6 +356,12 @@ namespace RVX
          * OpenGL ImGui renderer.
          */
         virtual uint64 GetNativeShaderResourceHandleForUI() const { return 0; }
+
+    private:
+        // Declared in the base so every backend obeys the same source lifetime
+        // contract.  The derived native view is destroyed before this member,
+        // which guarantees (for example) VkImageView-before-VkImage ordering.
+        RHITextureRef m_sourceTexture;
     };
 
 } // namespace RVX

@@ -17,7 +17,7 @@ namespace RVX
     public:
         struct TextureViewKey
         {
-            RHITexture* texture = nullptr;
+            RHIResourceInstanceId resourceInstanceId;
             RHIFormat format = RHIFormat::Unknown;
             RHITextureDimension dimension = RHITextureDimension::Texture2D;
             RHISubresourceRange subresourceRange;
@@ -25,7 +25,8 @@ namespace RVX
 
             bool operator==(const TextureViewKey& other) const
             {
-                return texture == other.texture && format == other.format &&
+                return resourceInstanceId == other.resourceInstanceId &&
+                       format == other.format &&
                        dimension == other.dimension && type == other.type &&
                        subresourceRange.baseMipLevel ==
                            other.subresourceRange.baseMipLevel &&
@@ -44,7 +45,7 @@ namespace RVX
         {
             size_t operator()(const TextureViewKey& key) const
             {
-                size_t hash = std::hash<RHITexture*>{}(key.texture);
+                size_t hash = std::hash<uint64>{}(key.resourceInstanceId.value);
                 const auto hashCombine = [&hash](size_t value)
                 {
                     hash ^= value + 0x9e3779b97f4a7c15ULL +
@@ -66,7 +67,6 @@ namespace RVX
         struct CachedTextureView
         {
             RHITextureViewRef view;
-            RHITexture* texture = nullptr;
             GPUCompletionToken lastUse;
             bool usedSinceSubmission = false;
         };
@@ -75,7 +75,7 @@ namespace RVX
                                       const RHITextureViewDesc& desc)
         {
             TextureViewKey key;
-            key.texture = texture;
+            key.resourceInstanceId = texture->GetResourceInstanceId();
             key.format = desc.format;
             key.dimension = desc.dimension;
             key.subresourceRange = desc.subresourceRange;
@@ -208,7 +208,6 @@ namespace RVX
 
         Impl::CachedTextureView cached;
         cached.view = std::move(view);
-        cached.texture = texture;
         cached.usedSinceSubmission = true;
         RHITextureView* result = cached.view.Get();
         m_impl->textureViews.emplace(key, std::move(cached));
@@ -299,10 +298,12 @@ namespace RVX
         }
 
         bool invalidated = false;
+        const RHIResourceInstanceId resourceInstanceId =
+            texture->GetResourceInstanceId();
         for (auto it = m_impl->textureViews.begin();
              it != m_impl->textureViews.end();)
         {
-            if (it->second.texture == texture)
+            if (it->first.resourceInstanceId == resourceInstanceId)
             {
                 m_impl->Retire(it->second);
                 it = m_impl->textureViews.erase(it);

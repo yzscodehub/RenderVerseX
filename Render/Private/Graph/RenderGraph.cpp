@@ -8,7 +8,6 @@
 #include <atomic>
 #include <fstream>
 #include <sstream>
-#include <unordered_set>
 
 namespace RVX
 {
@@ -2341,7 +2340,6 @@ namespace RVX
         }
 
         execution.Prepare();
-        std::unordered_set<RHITexture*> retainedTextureSources;
         for (uint32 index = 0; index < m_impl->textures.size(); ++index)
         {
             TextureResource& texture = m_impl->textures[index];
@@ -2362,7 +2360,6 @@ namespace RVX
             if (texture.texture)
             {
                 texture.realizedRaw = texture.texture.Get();
-                retainedTextureSources.insert(texture.texture.Get());
                 execution.RetainTexture(std::move(texture.texture));
             }
         }
@@ -2399,16 +2396,6 @@ namespace RVX
         {
             if (view.realizedView)
             {
-                // Keep the source alive independently of the recording graph.
-                // Commit 4 moves this guarantee into the RHITextureView base
-                // contract; this execution-side ownership keeps the explicit
-                // graph-view cutover independently safe until then.
-                if (RHITexture* source = view.realizedView->GetTexture();
-                    source != nullptr &&
-                    retainedTextureSources.insert(source).second)
-                {
-                    execution.RetainTexture(RHITextureRef(source));
-                }
                 execution.RetainResource(
                     Ref<RefCounted>(std::move(view.realizedView)));
             }

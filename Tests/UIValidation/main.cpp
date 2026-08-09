@@ -160,18 +160,16 @@ namespace
     {
     public:
         FakeTextureView(RHITexture* texture, const RHITextureViewDesc& desc)
-            : m_texture(texture)
+            : RHITextureView(RHITextureRef(texture))
             , m_format(desc.format == RHIFormat::Unknown && texture ? texture->GetFormat() : desc.format)
             , m_range(desc.subresourceRange)
         {
         }
 
-        RHITexture* GetTexture() const override { return m_texture; }
         RHIFormat GetFormat() const override { return m_format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_range; }
 
     private:
-        RHITexture* m_texture = nullptr;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_range;
     };
@@ -469,10 +467,15 @@ namespace
 
     RHITextureViewRef CreateView(RHITextureViewType type)
     {
+        const auto texture = MakeRef<FakeTexture>(
+            RHITextureDesc::Texture2D(
+                1, 1, RHIFormat::RGBA8_UNORM,
+                RHITextureUsage::ShaderResource |
+                    RHITextureUsage::RenderTarget));
         RHITextureViewDesc viewDesc;
         viewDesc.type = type;
         viewDesc.format = RHIFormat::RGBA8_UNORM;
-        return MakeRef<FakeTextureView>(nullptr, viewDesc);
+        return MakeRef<FakeTextureView>(texture.Get(), viewDesc);
     }
 
     std::filesystem::path FindSystemFontPath()

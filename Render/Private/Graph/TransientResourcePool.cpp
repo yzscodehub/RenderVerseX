@@ -85,6 +85,7 @@ namespace RVX
     public:
         struct TextureViewKey
         {
+            RHIResourceInstanceId resourceInstanceId;
             RHIFormat format = RHIFormat::Unknown;
             RHITextureDimension dimension = RHITextureDimension::Texture2D;
             RHISubresourceRange subresourceRange;
@@ -92,7 +93,8 @@ namespace RVX
 
             bool operator==(const TextureViewKey& other) const
             {
-                return format == other.format &&
+                return resourceInstanceId == other.resourceInstanceId &&
+                       format == other.format &&
                        dimension == other.dimension && type == other.type &&
                        subresourceRange.baseMipLevel ==
                            other.subresourceRange.baseMipLevel &&
@@ -111,13 +113,15 @@ namespace RVX
         {
             size_t operator()(const TextureViewKey& key) const
             {
-                size_t hash = std::hash<uint32>{}(
-                    static_cast<uint32>(key.format));
+                size_t hash = std::hash<uint64>{}(
+                    key.resourceInstanceId.value);
                 const auto combine = [&hash](size_t value)
                 {
                     hash ^= value + 0x9e3779b97f4a7c15ULL +
                             (hash << 6) + (hash >> 2);
                 };
+                combine(std::hash<uint32>{}(
+                    static_cast<uint32>(key.format)));
                 combine(std::hash<uint32>{}(
                     static_cast<uint32>(key.dimension)));
                 combine(std::hash<uint32>{}(
@@ -420,6 +424,8 @@ namespace RVX
             if (desc.format == RHIFormat::Unknown)
                 desc.format = pooled->texture->GetFormat();
             TextureViewKey key;
+            key.resourceInstanceId =
+                pooled->texture->GetResourceInstanceId();
             key.format = desc.format;
             key.dimension = desc.dimension;
             key.subresourceRange = desc.subresourceRange;

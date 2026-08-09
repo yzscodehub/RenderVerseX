@@ -166,7 +166,7 @@ namespace RVX::Tests
             FakeTextureView(RHITexture* texture,
                             RHITextureViewDesc desc,
                             std::shared_ptr<ResourceProbeState> state)
-                : m_texture(texture)
+                : RHITextureView(RHITextureRef(texture))
                 , m_desc(std::move(desc))
                 , m_state(std::move(state))
             {
@@ -178,7 +178,6 @@ namespace RVX::Tests
                 m_state->destructionThread = std::this_thread::get_id();
             }
 
-            RHITexture* GetTexture() const override { return m_texture; }
             RHIFormat GetFormat() const override { return m_desc.format; }
             const RHISubresourceRange& GetSubresourceRange() const override
             {
@@ -186,7 +185,6 @@ namespace RVX::Tests
             }
 
         private:
-            RHITexture* m_texture = nullptr;
             RHITextureViewDesc m_desc;
             std::shared_ptr<ResourceProbeState> m_state;
         };

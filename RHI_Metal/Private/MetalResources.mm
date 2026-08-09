@@ -318,7 +318,7 @@ namespace RVX
     // MetalTextureView
     // =============================================================================
     MetalTextureView::MetalTextureView(MetalTexture* texture, const RHITextureViewDesc& desc)
-        : m_sourceTexture(texture)
+        : RHITextureView(RHITextureRef(texture))
         , m_format(desc.format != RHIFormat::Unknown ? desc.format : texture->GetFormat())
         , m_subresourceRange(desc.subresourceRange)
     {

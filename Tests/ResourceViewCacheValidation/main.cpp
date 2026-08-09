@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+#include <new>
 #include <vector>
 
 #include "Render/Graph/ResourceViewCache.h"
@@ -31,9 +33,19 @@ namespace
     class FakeTexture final : public RHITexture
     {
     public:
-        explicit FakeTexture(const RHITextureDesc& desc)
+        explicit FakeTexture(const RHITextureDesc& desc,
+                             bool* destroyed = nullptr)
             : m_desc(desc)
+            , m_destroyed(destroyed)
         {
+        }
+
+        ~FakeTexture() override
+        {
+            if (m_destroyed)
+            {
+                *m_destroyed = true;
+            }
         }
 
         uint32 GetWidth() const override { return m_desc.width; }
@@ -48,24 +60,23 @@ namespace
 
     private:
         RHITextureDesc m_desc;
+        bool* m_destroyed = nullptr;
     };
 
     class FakeTextureView final : public RHITextureView
     {
     public:
         FakeTextureView(RHITexture* texture, const RHITextureViewDesc& desc)
-            : m_texture(texture)
+            : RHITextureView(RHITextureRef(texture))
             , m_format(desc.format == RHIFormat::Unknown && texture ? texture->GetFormat() : desc.format)
             , m_range(desc.subresourceRange)
         {
         }
 
-        RHITexture* GetTexture() const override { return m_texture; }
         RHIFormat GetFormat() const override { return m_format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_range; }
 
     private:
-        RHITexture* m_texture = nullptr;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_range;
     };
@@ -126,8 +137,8 @@ namespace
         cache.Initialize(&device);
         const RHITextureDesc textureDesc = RHITextureDesc::Texture2D(
             4, 4, RHIFormat::RGBA8_UNORM);
-        FakeTexture textureA(textureDesc);
-        FakeTexture textureB(textureDesc);
+        auto textureA = MakeRef<FakeTexture>(textureDesc);
+        auto textureB = MakeRef<FakeTexture>(textureDesc);
 
         RHITextureViewDesc descA;
         descA.format = RHIFormat::RGBA8_UNORM;
@@ -146,14 +157,14 @@ namespace
         RHITextureViewDesc descRenderTarget = descA;
         descRenderTarget.type = RHITextureViewType::RenderTarget;
 
-        RHITextureView* viewA = cache.GetTextureView(&textureA, descA);
+        RHITextureView* viewA = cache.GetTextureView(textureA.Get(), descA);
         ASSERT_NE(viewA, nullptr);
-        EXPECT_EQ(cache.GetTextureView(&textureA, descA), viewA);
-        EXPECT_EQ(cache.GetTextureView(&textureA, descRenamed), viewA);
-        EXPECT_NE(cache.GetTextureView(&textureB, descA), viewA);
-        EXPECT_NE(cache.GetTextureView(&textureA, descMip), viewA);
-        EXPECT_NE(cache.GetTextureView(&textureA, descLayer), viewA);
-        EXPECT_NE(cache.GetTextureView(&textureA, descRenderTarget), viewA);
+        EXPECT_EQ(cache.GetTextureView(textureA.Get(), descA), viewA);
+        EXPECT_EQ(cache.GetTextureView(textureA.Get(), descRenamed), viewA);
+        EXPECT_NE(cache.GetTextureView(textureB.Get(), descA), viewA);
+        EXPECT_NE(cache.GetTextureView(textureA.Get(), descMip), viewA);
+        EXPECT_NE(cache.GetTextureView(textureA.Get(), descLayer), viewA);
+        EXPECT_NE(cache.GetTextureView(textureA.Get(), descRenderTarget), viewA);
         EXPECT_EQ(device.createdTextureViewCount, 5u);
         EXPECT_EQ(cache.GetStats().textureViewCount, 5u);
 
@@ -167,7 +178,7 @@ namespace
         cache.Initialize(&device);
 
         RHITextureDesc textureDesc = RHITextureDesc::DepthStencil(4, 4, RHIFormat::D32_FLOAT);
-        FakeTexture texture(textureDesc);
+        auto texture = MakeRef<FakeTexture>(textureDesc);
 
         RHITextureViewDesc srvDesc;
         srvDesc.format = RHIFormat::D32_FLOAT;
@@ -179,10 +190,10 @@ namespace
         RHITextureViewDesc dsvDesc = srvDesc;
         dsvDesc.type = RHITextureViewType::DepthStencil;
 
-        RHITextureView* srv = cache.GetTextureView(&texture, srvDesc);
-        RHITextureView* dsv = cache.GetTextureView(&texture, dsvDesc);
-        RHITextureView* srvHit = cache.GetTextureView(&texture, srvDesc);
-        RHITextureView* dsvHit = cache.GetTextureView(&texture, dsvDesc);
+        RHITextureView* srv = cache.GetTextureView(texture.Get(), srvDesc);
+        RHITextureView* dsv = cache.GetTextureView(texture.Get(), dsvDesc);
+        RHITextureView* srvHit = cache.GetTextureView(texture.Get(), srvDesc);
+        RHITextureView* dsvHit = cache.GetTextureView(texture.Get(), dsvDesc);
 
         ASSERT_NE(nullptr, srv);
         ASSERT_NE(nullptr, dsv);
@@ -202,12 +213,12 @@ namespace
         cache.Initialize(&device);
 
         RHITextureDesc textureDesc = RHITextureDesc::DepthStencil(4, 4, RHIFormat::D32_FLOAT);
-        FakeTexture texture(textureDesc);
+        auto texture = MakeRef<FakeTexture>(textureDesc);
 
-        RHITextureView* dsv = cache.GetDefaultDSV(&texture);
-        RHITextureView* srv = cache.GetDefaultSRV(&texture);
-        RHITextureView* dsvHit = cache.GetDefaultDSV(&texture);
-        RHITextureView* srvHit = cache.GetDefaultSRV(&texture);
+        RHITextureView* dsv = cache.GetDefaultDSV(texture.Get());
+        RHITextureView* srv = cache.GetDefaultSRV(texture.Get());
+        RHITextureView* dsvHit = cache.GetDefaultDSV(texture.Get());
+        RHITextureView* srvHit = cache.GetDefaultSRV(texture.Get());
 
         ASSERT_NE(nullptr, dsv);
         ASSERT_NE(nullptr, srv);
@@ -231,16 +242,16 @@ namespace
         cache.Initialize(&device);
 
         RHITextureDesc textureDesc = RHITextureDesc::Texture2D(4, 4, RHIFormat::RGBA8_UNORM);
-        FakeTexture textureA(textureDesc);
-        FakeTexture textureB(textureDesc);
+        auto textureA = MakeRef<FakeTexture>(textureDesc);
+        auto textureB = MakeRef<FakeTexture>(textureDesc);
 
         RHITextureViewDesc viewDesc;
         viewDesc.format = RHIFormat::RGBA8_UNORM;
         viewDesc.dimension = RHITextureDimension::Texture2D;
         viewDesc.subresourceRange = RHISubresourceRange::All();
 
-        RHITextureView* viewA = cache.GetTextureView(&textureA, viewDesc);
-        RHITextureView* viewAHit = cache.GetTextureView(&textureA, viewDesc);
+        RHITextureView* viewA = cache.GetTextureView(textureA.Get(), viewDesc);
+        RHITextureView* viewAHit = cache.GetTextureView(textureA.Get(), viewDesc);
 
         ASSERT_NE(nullptr, viewA);
         EXPECT_EQ(viewA, viewAHit);
@@ -248,15 +259,15 @@ namespace
         EXPECT_EQ(1u, cache.GetStats().textureViewCount);
 
         const uint64 initialGeneration = cache.GetGeneration();
-        cache.InvalidateTexture(&textureB);
+        cache.InvalidateTexture(textureB.Get());
         EXPECT_EQ(initialGeneration, cache.GetGeneration());
         EXPECT_EQ(1u, cache.GetStats().textureViewCount);
 
-        cache.InvalidateTexture(&textureA);
+        cache.InvalidateTexture(textureA.Get());
         EXPECT_EQ(initialGeneration + 1, cache.GetGeneration());
         EXPECT_EQ(0u, cache.GetStats().textureViewCount);
 
-        RHITextureView* recreatedView = cache.GetTextureView(&textureA, viewDesc);
+        RHITextureView* recreatedView = cache.GetTextureView(textureA.Get(), viewDesc);
         ASSERT_NE(nullptr, recreatedView);
         EXPECT_EQ(2u, device.createdTextureViewCount);
 
@@ -275,14 +286,14 @@ namespace
         cache.Initialize(&device);
 
         RHITextureDesc textureDesc = RHITextureDesc::Texture2D(4, 4, RHIFormat::RGBA8_UNORM);
-        FakeTexture texture(textureDesc);
+        auto texture = MakeRef<FakeTexture>(textureDesc);
 
         RHITextureViewDesc viewDesc;
         viewDesc.format = RHIFormat::RGBA8_UNORM;
         viewDesc.dimension = RHITextureDimension::Texture2D;
         viewDesc.subresourceRange = RHISubresourceRange::All();
 
-        RHITextureView* view = cache.GetTextureView(&texture, viewDesc);
+        RHITextureView* view = cache.GetTextureView(texture.Get(), viewDesc);
         ASSERT_NE(nullptr, view);
         EXPECT_EQ(1u, device.createdTextureViewCount);
         EXPECT_EQ(1u, cache.GetStats().textureViewCount);
@@ -295,13 +306,56 @@ namespace
 
         EXPECT_EQ(initialGeneration, cache.GetGeneration());
         EXPECT_EQ(1u, cache.GetStats().textureViewCount);
-        EXPECT_EQ(view, cache.GetTextureView(&texture, viewDesc));
+        EXPECT_EQ(view, cache.GetTextureView(texture.Get(), viewDesc));
         EXPECT_EQ(1u, device.createdTextureViewCount);
 
-        cache.InvalidateTexture(&texture);
+        cache.InvalidateTexture(texture.Get());
         EXPECT_EQ(initialGeneration + 1, cache.GetGeneration());
         EXPECT_EQ(0u, cache.GetStats().textureViewCount);
 
         cache.Shutdown();
+    }
+
+    TEST(ResourceViewCacheValidation, TextureViewBaseStronglyOwnsSourceTexture)
+    {
+        const RHITextureDesc textureDesc = RHITextureDesc::Texture2D(
+            4, 4, RHIFormat::RGBA8_UNORM);
+        bool textureDestroyed = false;
+        auto texture = MakeRef<FakeTexture>(textureDesc, &textureDestroyed);
+        RHITexture* const textureAddress = texture.Get();
+
+        RHITextureViewDesc viewDesc;
+        viewDesc.format = textureDesc.format;
+        auto view = MakeRef<FakeTextureView>(texture.Get(), viewDesc);
+
+        EXPECT_EQ(view->GetTexture(), textureAddress);
+        texture.Reset();
+        EXPECT_FALSE(textureDestroyed);
+        EXPECT_EQ(view->GetTexture(), textureAddress);
+
+        view.Reset();
+        EXPECT_TRUE(textureDestroyed);
+    }
+
+    TEST(ResourceViewCacheValidation,
+         ReconstructedResourceAtSameAddressGetsNewInstanceIdentity)
+    {
+        const RHITextureDesc textureDesc = RHITextureDesc::Texture2D(
+            4, 4, RHIFormat::RGBA8_UNORM);
+        alignas(FakeTexture) std::byte storage[sizeof(FakeTexture)];
+
+        auto* first = new (storage) FakeTexture(textureDesc);
+        const RHIResourceInstanceId firstId = first->GetResourceInstanceId();
+        first->~FakeTexture();
+
+        auto* second = new (storage) FakeTexture(textureDesc);
+        const RHIResourceInstanceId secondId = second->GetResourceInstanceId();
+
+        EXPECT_EQ(static_cast<void*>(first), static_cast<void*>(second));
+        EXPECT_TRUE(firstId.IsValid());
+        EXPECT_TRUE(secondId.IsValid());
+        EXPECT_NE(firstId.value, secondId.value);
+
+        second->~FakeTexture();
     }
 } // namespace

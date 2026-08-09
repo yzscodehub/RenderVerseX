@@ -129,7 +129,6 @@ namespace RVX
         VulkanTextureView(VulkanDevice* device, RHITexture* texture, const RHITextureViewDesc& desc);
         ~VulkanTextureView() override;
 
-        RHITexture* GetTexture() const override { return m_texture; }
         RHIFormat GetFormat() const override { return m_format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_subresourceRange; }
 

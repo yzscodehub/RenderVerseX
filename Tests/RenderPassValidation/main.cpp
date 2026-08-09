@@ -506,18 +506,16 @@ namespace
     {
     public:
         FakeTextureView(RHITexture* texture, const RHITextureViewDesc& desc)
-            : m_texture(texture)
+            : RHITextureView(RHITextureRef(texture))
             , m_format(desc.format == RHIFormat::Unknown && texture ? texture->GetFormat() : desc.format)
             , m_range(desc.subresourceRange)
         {
         }
 
-        RHITexture* GetTexture() const override { return m_texture; }
         RHIFormat GetFormat() const override { return m_format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_range; }
 
     private:
-        RHITexture* m_texture = nullptr;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_range;
     };
@@ -14755,8 +14753,8 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(executionA.Retire());
     EXPECT_EQ(1u, colorViewProbe->GetRefCount());
     EXPECT_EQ(1u, depthViewProbe->GetRefCount());
-    EXPECT_EQ(1u, colorTextureProbe->GetRefCount());
-    EXPECT_EQ(1u, depthTextureProbe->GetRefCount());
+    EXPECT_EQ(2u, colorTextureProbe->GetRefCount());
+    EXPECT_EQ(2u, depthTextureProbe->GetRefCount());
     tracker.Shutdown();
 
     // A typed execution cannot fall back to compatibility views when its
@@ -18597,12 +18595,14 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_GT(depthViewProbeA->GetRefCount(), 1u);
     EXPECT_EQ(1u, depthViewProbeB->GetRefCount());
     EXPECT_GT(depthTextureProbeA->GetRefCount(), 1u);
-    EXPECT_EQ(1u, depthTextureProbeB->GetRefCount());
+    // The surviving view probe owns its source texture through the public RHI
+    // view contract, in addition to this explicit texture probe.
+    EXPECT_EQ(2u, depthTextureProbeB->GetRefCount());
     graphicsFence->Complete(completionA.points[0].value);
     EXPECT_EQ(GPUCompletionStatus::Completed, tracker.Query(completionA));
     ASSERT_TRUE(executionA.Retire());
     EXPECT_EQ(1u, depthViewProbeA->GetRefCount());
-    EXPECT_EQ(1u, depthTextureProbeA->GetRefCount());
+    EXPECT_EQ(2u, depthTextureProbeA->GetRefCount());
     tracker.Shutdown();
 
     // Clear advances the generation. The stale context must neither declare a
@@ -18875,7 +18875,10 @@ TEST_F(RenderPassValidationFixture,
         ASSERT_TRUE(cascadeViewProbe);
         EXPECT_EQ(2u, cascadeViewProbe->GetRefCount());
     }
-    EXPECT_EQ(2u, shadowTextureProbe->GetRefCount());
+    // Texture probe + execution texture ownership + one source reference per
+    // cascade view.
+    EXPECT_EQ(2u + config.numCascades,
+              shadowTextureProbe->GetRefCount());
 
     RenderGraph staleGraph;
     staleGraph.SetDevice(&device);
@@ -18937,7 +18940,10 @@ TEST_F(RenderPassValidationFixture,
     {
         EXPECT_EQ(1u, cascadeViewProbe->GetRefCount());
     }
-    EXPECT_EQ(1u, shadowTextureProbe->GetRefCount());
+    // Aborting releases execution ownership, while every surviving cascade
+    // view probe continues to own the source texture.
+    EXPECT_EQ(1u + config.numCascades,
+              shadowTextureProbe->GetRefCount());
 }
 
 #undef RVX_REQUIRE_RENDER_RUNTIME_PIPELINE

@@ -12,6 +12,7 @@ target_sources(RVX_RHI PRIVATE
     Private/RHIConformance.cpp
     Private/RHIShader.cpp
     Private/RHIPipelineValidation.cpp
+    Private/RHIResources.cpp
     Private/DescriptorCache.cpp
 )
 
