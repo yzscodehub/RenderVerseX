@@ -8,6 +8,7 @@ target_sources(RVX_ResourceSceneAdapters PRIVATE
     Private/ComponentFactoryDefaults.cpp
     Private/ModelResourceSceneInstantiation.cpp
     Private/SceneAssetInstantiation.cpp
+    Private/SceneAssetLoadCoordinator.cpp
 )
 
 target_include_directories(RVX_ResourceSceneAdapters PUBLIC

@@ -7,6 +7,7 @@
 
 #include "Core/Types.h"
 #include "Resource/ResourceHandle.h"
+#include "Resource/ResourceLoadOperation.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Scene/Actor.h"
 
@@ -23,13 +24,54 @@ namespace RVX
         class ResourceSubsystem;
     }
 
-    enum class SceneAssetReadiness : uint8
+    enum class SceneAssetLifecycle : uint8
     {
         Loading = 0,
+        Active,
+        Failed,
+        Cancelled
+    };
+
+    enum class SceneAssetResidency : uint8
+    {
+        None = 0,
         CPUReady,
-        GPUUploadPending,
-        RenderReady,
-        Failed
+        MinimumResident,
+        Streaming,
+        FullyResident
+    };
+
+    /** @brief Orthogonal CPU/Scene lifetime and GPU residency state. */
+    struct SceneAssetStatus
+    {
+        SceneAssetLifecycle lifecycle = SceneAssetLifecycle::Loading;
+        SceneAssetResidency residency = SceneAssetResidency::None;
+        float32 progress = 0.0f;
+        uint64 revision = 0;
+        Resource::ResourceLoadError error;
+        std::string diagnostic;
+
+        [[nodiscard]] bool IsActive() const noexcept
+        {
+            return lifecycle == SceneAssetLifecycle::Active;
+        }
+
+        [[nodiscard]] bool IsFailed() const noexcept
+        {
+            return lifecycle == SceneAssetLifecycle::Failed;
+        }
+
+        [[nodiscard]] bool IsMinimumResident() const noexcept
+        {
+            return IsActive() &&
+                   residency >= SceneAssetResidency::MinimumResident;
+        }
+
+        [[nodiscard]] bool IsFullyResident() const noexcept
+        {
+            return IsActive() &&
+                   residency == SceneAssetResidency::FullyResident;
+        }
     };
 
     struct SceneAssetInstantiationOptions
@@ -42,17 +84,16 @@ namespace RVX
     {
         Actor::Handle rootActor = Actor::InvalidHandle;
         std::vector<Actor::Handle> actors;
-        SceneAssetReadiness readiness = SceneAssetReadiness::Loading;
-        std::string diagnostic;
+        SceneAssetStatus status;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
             return rootActor.IsValid() &&
-                   readiness != SceneAssetReadiness::Failed;
+                   status.lifecycle == SceneAssetLifecycle::Active;
         }
         [[nodiscard]] bool IsRenderReady() const noexcept
         {
-            return readiness == SceneAssetReadiness::RenderReady;
+            return status.IsFullyResident();
         }
     };
 
@@ -64,11 +105,17 @@ namespace RVX
             const Resource::ModelResource& model,
             const SceneAssetInstantiationOptions& options = {});
 
-        [[nodiscard]] static SceneAssetReadiness UpdateReadiness(
+        [[nodiscard]] static SceneAssetStatus UpdateResidency(
             Scene& scene,
             const Resource::ModelResource& model,
             Resource::ResourceSubsystem& resources,
             SceneAssetInstance& instance);
+
+        /** @brief Atomically toggle every renderable owned by an instance. */
+        [[nodiscard]] static bool SetRenderablesEnabled(
+            Scene& scene,
+            const SceneAssetInstance& instance,
+            bool enabled);
 
         [[nodiscard]] static bool Destroy(Scene& scene,
                                           SceneAssetInstance& instance);

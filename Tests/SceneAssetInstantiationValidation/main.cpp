@@ -54,7 +54,8 @@ TEST(SceneAssetInstantiationValidation, InstantiatesAndDestroysHierarchyTransact
     RVX::SceneAssetInstance instance =
         RVX::SceneAssetInstantiator::InstantiateModel(scene, model);
     ASSERT_TRUE(instance.IsValid());
-    EXPECT_EQ(instance.readiness, RVX::SceneAssetReadiness::CPUReady);
+    EXPECT_EQ(instance.status.lifecycle, RVX::SceneAssetLifecycle::Active);
+    EXPECT_EQ(instance.status.residency, RVX::SceneAssetResidency::CPUReady);
     ASSERT_EQ(instance.actors.size(), 2U);
     EXPECT_NE(scene.ResolveActor(instance.rootActor), nullptr);
 
@@ -74,7 +75,7 @@ TEST(SceneAssetInstantiationValidation, RejectsModelWithoutRootWithoutMutation)
 
     const RVX::SceneAssetInstance instance =
         RVX::SceneAssetInstantiator::InstantiateModel(scene, model);
-    EXPECT_EQ(instance.readiness, RVX::SceneAssetReadiness::Failed);
+    EXPECT_EQ(instance.status.lifecycle, RVX::SceneAssetLifecycle::Failed);
     EXPECT_EQ(scene.GetActorCount(), 0U);
     scene.Shutdown();
 }
@@ -95,10 +96,10 @@ TEST(SceneAssetInstantiationValidation, CancelRollsBackHierarchyAndRuntimeBindin
     const auto actors = instance.actors;
 
     EXPECT_TRUE(RVX::SceneAssetInstantiator::Cancel(scene, instance));
-    EXPECT_EQ(instance.readiness, RVX::SceneAssetReadiness::Failed);
+    EXPECT_EQ(instance.status.lifecycle, RVX::SceneAssetLifecycle::Cancelled);
     EXPECT_FALSE(instance.rootActor.IsValid());
     EXPECT_TRUE(instance.actors.empty());
-    EXPECT_NE(instance.diagnostic.find("cancelled"), std::string::npos);
+    EXPECT_NE(instance.status.diagnostic.find("cancelled"), std::string::npos);
     for (RVX::Actor::Handle actor : actors)
         EXPECT_EQ(scene.ResolveActor(actor), nullptr);
     EXPECT_EQ(scene.GetActorCount(), 0U);
@@ -124,12 +125,12 @@ TEST(SceneAssetInstantiationValidation, FailedCpuDependencyRollsBackHierarchy)
     ASSERT_EQ(scene.GetActorCount(), 1U);
 
     RVX::Resource::ResourceSubsystem resources;
-    EXPECT_EQ(RVX::SceneAssetInstantiator::UpdateReadiness(
-                  scene, model, resources, instance),
-              RVX::SceneAssetReadiness::Failed);
+    EXPECT_EQ(RVX::SceneAssetInstantiator::UpdateResidency(
+                  scene, model, resources, instance).lifecycle,
+              RVX::SceneAssetLifecycle::Failed);
     EXPECT_FALSE(instance.rootActor.IsValid());
     EXPECT_TRUE(instance.actors.empty());
-    EXPECT_NE(instance.diagnostic.find("failed"), std::string::npos);
+    EXPECT_NE(instance.status.diagnostic.find("failed"), std::string::npos);
     EXPECT_EQ(scene.GetActorCount(), 0U);
     scene.Shutdown();
 }

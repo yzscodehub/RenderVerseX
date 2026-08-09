@@ -72,14 +72,6 @@ namespace RVX
     bool RenderPipelineShowcaseSample::Setup(SampleContext& context,
                                              std::string& outError)
     {
-        if (!context.models.Load(context.options.modelPath,
-                                 context.scene,
-                                 m_model,
-                                 outError))
-        {
-            return false;
-        }
-
         const float32 aspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(context.options.height);
@@ -150,14 +142,26 @@ namespace RVX
         context.renderSettings.postProcess.bloomThreshold = 0.65f;
         context.renderSettings.postProcess.bloomIntensity = 0.35f;
         context.renderSettings.postProcess.bloomRadius = 0.60f;
-        return true;
+        return context.models.Request(context.options.modelPath,
+                                      m_model,
+                                      outError);
     }
 
     void RenderPipelineShowcaseSample::Update(SampleContext& context,
                                               float deltaTime)
     {
-        static_cast<void>(context);
         static_cast<void>(deltaTime);
+        const SceneAssetStatus status =
+            context.models.UpdateReadiness(m_model);
+        if (status.IsFailed() ||
+            status.lifecycle == SceneAssetLifecycle::Cancelled)
+        {
+            m_modelFailure = !status.diagnostic.empty()
+                                 ? status.diagnostic
+                                 : !status.error.message.empty()
+                                       ? status.error.message
+                                       : "Render-pipeline asset activation was cancelled";
+        }
     }
 
     void RenderPipelineShowcaseSample::OnInput(SampleContext& context)
@@ -191,10 +195,16 @@ namespace RVX
         }
     }
 
-    bool RenderPipelineShowcaseSample::IsReady(
-        const SampleRenderDiagnostics& diagnostics,
-        std::string& outPendingReason) const
+    SampleReadiness RenderPipelineShowcaseSample::GetReadiness(
+        const SampleRenderDiagnostics& diagnostics) const
     {
+        if (!m_modelFailure.empty())
+            return SampleReadiness::Failed(m_modelFailure);
+        if (!m_model.IsFullyResident())
+        {
+            return SampleReadiness::Pending(
+                "Render-pipeline showcase is waiting for the model to become fully resident");
+        }
         const bool ready = diagnostics.visibleObjectCount > 0 &&
                            diagnostics.graphCompiled &&
                            diagnostics.renderGraphTotalPasses >= 8 &&
@@ -205,24 +215,27 @@ namespace RVX
                            diagnostics.postProcessGraphPassCount >= 2;
         if (!ready)
         {
-            outPendingReason =
+            return SampleReadiness::Pending(
                 "Waiting for the engine-owned render pipeline: " +
-                DescribePipelineState(diagnostics);
+                DescribePipelineState(diagnostics));
         }
-        return ready;
+        return SampleReadiness::Ready();
     }
 
     bool RenderPipelineShowcaseSample::ValidateResult(
         const SampleRenderDiagnostics& diagnostics,
         std::string& outError) const
     {
-        return IsReady(diagnostics, outError);
+        const SampleReadiness readiness = GetReadiness(diagnostics);
+        outError = readiness.reason;
+        return readiness.IsReady();
     }
 
     void RenderPipelineShowcaseSample::Shutdown(SampleContext& context)
     {
         static_cast<void>(context);
         m_model = {};
+        m_modelFailure.clear();
         m_skyboxCreated = false;
         m_lightCreated = false;
     }

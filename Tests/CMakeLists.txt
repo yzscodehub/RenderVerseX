@@ -1322,6 +1322,19 @@ rvx_add_gtest(
     TIMEOUT 30
 )
 
+rvx_add_gtest(
+    NAME SceneAssetLoadCoordinatorValidation
+    SOURCES SceneAssetLoadCoordinatorValidation/main.cpp
+    LIBS
+        RVX::Core
+        RVX::RenderContracts
+        RVX::Resource
+        RVX::ResourceSceneAdapters
+        RVX::Scene
+    LABELS "unit;architecture;resource;scene"
+    TIMEOUT 30
+)
+
 # Resource runtime policy validation tests
 rvx_add_gtest(
     NAME ResourceRuntimePolicyValidation

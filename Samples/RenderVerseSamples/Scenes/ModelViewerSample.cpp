@@ -5,7 +5,6 @@
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
 #include "Scene/Components/CameraComponent.h"
-#include "Scene/Components/StaticMeshComponent.h"
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
 #include "Scene/Components/LightComponent.h"
@@ -23,25 +22,16 @@ namespace RVX
     {
         constexpr float32 ModelViewerVerticalFov = 0.78539816339f;
 
-        uint32 SetModelRenderablesEnabled(Scene& scene,
-                                          const LoadedSampleModel& model,
-                                          bool enabled)
+        void ConfigureProceduralSky(SkyboxComponent& skybox)
         {
-            uint32 changed = 0;
-            for (Actor::Handle actor : model.instance.actors)
-            {
-                for (StaticMeshComponent* primitive :
-                     scene.GetComponentsForActorImplementing<
-                         StaticMeshComponent>(actor))
-                {
-                    if (primitive && primitive->IsEnabled() != enabled)
-                    {
-                        primitive->SetEnabled(enabled);
-                        ++changed;
-                    }
-                }
-            }
-            return changed;
+            skybox.SetSkyboxType(SkyboxType::Procedural);
+            skybox.SetSunDirection(normalize(Vec3(0.35f, 0.65f, 0.45f)));
+            skybox.SetSunColor(Vec3(1.0f, 0.94f, 0.84f));
+            skybox.SetZenithColor(Vec3(0.10f, 0.24f, 0.52f));
+            skybox.SetHorizonColor(Vec3(0.55f, 0.67f, 0.80f));
+            skybox.SetGroundColor(Vec3(0.07f, 0.08f, 0.10f));
+            skybox.SetScatteringIntensity(0.65f);
+            skybox.SetContributesToLighting(false);
         }
 
         const SampleInfo ModelViewerInfo{
@@ -65,68 +55,14 @@ namespace RVX
     bool ModelViewerSample::Setup(SampleContext& context,
                                   std::string& outError)
     {
-        if (!context.models.Load(context.options.modelPath,
-                                 context.scene,
-                                 m_model,
-                                 outError))
-        {
-            return false;
-        }
-
         m_renderPath = context.options.renderPath;
-
-        SceneEntity* modelRoot = m_model.ResolveRoot(context.scene);
-        if (!modelRoot)
-        {
-            outError = "Loaded model root handle is stale";
-            return false;
-        }
-        m_bounds = modelRoot->GetWorldBounds();
-        const float32 aspect =
+        const float32 initialAspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(std::max(context.options.height, 1u));
-        m_cameraFrame = BuildModelCameraFrame(
-            m_bounds,
-            aspect,
-            ModelViewerVerticalFov);
-        if (!m_cameraFrame.valid)
-        {
-            outError = "Loaded model has no finite renderable bounds for camera framing";
-            return false;
-        }
-
-        SampleOrbitCameraSettings orbitSettings;
-        orbitSettings.mode = OrbitCameraMode::ExteriorInspect;
-        orbitSettings.bounds = m_bounds;
-        orbitSettings.pivot = m_cameraFrame.target;
-        orbitSettings.distance = m_cameraFrame.distance;
-        orbitSettings.pitch = 0.35877067f;
-        orbitSettings.maxDistance =
-            std::max(m_cameraFrame.distance * 20.0f, 0.001f);
-        orbitSettings.zoomExponent = 0.08f;
-        orbitSettings.verticalFovRadians = ModelViewerVerticalFov;
-        orbitSettings.aspectRatio = aspect;
-        m_orbitCamera.Initialize(orbitSettings, context.input);
-        if (!m_orbitCamera.IsInitialized())
-        {
-            outError = "Model Viewer could not initialize its orbit camera";
-            return false;
-        }
-        m_orbitCamera.Apply(context.camera);
-        const OrbitCameraRigPose orbitPose = m_orbitCamera.GetPose();
-        m_cameraFrame.target = orbitPose.pivot;
-        m_cameraFrame.distance = orbitPose.distance;
-        m_cameraFrame.nearPlane = orbitPose.nearPlane;
-        m_cameraFrame.farPlane = orbitPose.farPlane;
-        m_cameraFrame.valid = orbitPose.valid;
-
-        // Keep partially uploaded models out of extraction. A real asset can
-        // span several bounded upload iterations; publishing its primitives
-        // early would turn ordinary GPUUploadPending state into invalid draw
-        // packets and could let readiness pass after only one mesh appears.
-        static_cast<void>(
-            SetModelRenderablesEnabled(context.scene, m_model, false));
-        m_renderablesEnabled = false;
+        context.camera.SetPerspective(
+            ModelViewerVerticalFov, initialAspect, 0.05f, 1000.0f);
+        context.camera.SetPosition(Vec3(0.0f, 0.0f, 3.0f));
+        context.camera.LookAt(Vec3(0.0f));
 
         ActorSpawnParams skyParams;
         skyParams.name = "ModelViewerSky";
@@ -138,6 +74,12 @@ namespace RVX
             outError = "Failed to create the model-viewer skybox";
             return false;
         }
+        // A selected texture environment must never delay the first Present.
+        // The coordinator snapshots this procedural state and atomically binds
+        // IBL only after all of its GPU dependencies are resident.
+        ConfigureProceduralSky(*skybox);
+        m_skyboxCreated = true;
+
         m_textureEnvironment = !context.options.environmentPath.empty();
         if (m_textureEnvironment)
         {
@@ -145,30 +87,15 @@ namespace RVX
             environmentOptions.quality = context.options.quality;
             environmentOptions.smoke = context.options.smoke;
             environmentOptions.exposure = 1.0f;
-            if (!context.environments.Load(context.options.environmentPath,
-                                           environmentOptions,
-                                           m_environment,
-                                           outError) ||
-                !context.environments.BindToSkybox(*skybox,
-                                                   m_environment,
-                                                   environmentOptions.exposure,
-                                                   outError))
+            if (!context.environments.Request(context.options.environmentPath,
+                                              environmentOptions,
+                                              *skybox,
+                                              m_environment,
+                                              outError))
             {
                 return false;
             }
         }
-        else
-        {
-            skybox->SetSkyboxType(SkyboxType::Procedural);
-            skybox->SetSunDirection(normalize(Vec3(0.35f, 0.65f, 0.45f)));
-            skybox->SetSunColor(Vec3(1.0f, 0.94f, 0.84f));
-            skybox->SetZenithColor(Vec3(0.10f, 0.24f, 0.52f));
-            skybox->SetHorizonColor(Vec3(0.55f, 0.67f, 0.80f));
-            skybox->SetGroundColor(Vec3(0.07f, 0.08f, 0.10f));
-            skybox->SetScatteringIntensity(0.65f);
-            skybox->SetContributesToLighting(false);
-        }
-        m_skyboxCreated = true;
 
         ActorSpawnParams lightParams;
         lightParams.name = "ModelViewerSun";
@@ -217,23 +144,89 @@ namespace RVX
                 outError = "Model Viewer received an invalid render path";
                 return false;
         }
+        return context.models.Request(context.options.modelPath,
+                                      m_model,
+                                      outError);
+    }
+
+    bool ModelViewerSample::ActivateModel(SampleContext& context)
+    {
+        m_modelActivationAttempted = true;
+        SceneEntity* modelRoot = m_model.ResolveRoot(context.scene);
+        if (!modelRoot)
+        {
+            m_modelActivationError = "Loaded model root handle is stale";
+            return false;
+        }
+        m_bounds = modelRoot->GetWorldBounds();
+        const float32 aspect =
+            static_cast<float32>(context.options.width) /
+            static_cast<float32>(std::max(context.options.height, 1u));
+        m_cameraFrame = BuildModelCameraFrame(
+            m_bounds,
+            aspect,
+            ModelViewerVerticalFov);
+        if (!m_cameraFrame.valid)
+        {
+            m_modelActivationError =
+                "Loaded model has no finite renderable bounds for camera framing";
+            return false;
+        }
+
+        SampleOrbitCameraSettings orbitSettings;
+        orbitSettings.mode = OrbitCameraMode::ExteriorInspect;
+        orbitSettings.bounds = m_bounds;
+        orbitSettings.pivot = m_cameraFrame.target;
+        orbitSettings.distance = m_cameraFrame.distance;
+        orbitSettings.pitch = 0.35877067f;
+        orbitSettings.maxDistance =
+            std::max(m_cameraFrame.distance * 20.0f, 0.001f);
+        orbitSettings.zoomExponent = 0.08f;
+        orbitSettings.verticalFovRadians = ModelViewerVerticalFov;
+        orbitSettings.aspectRatio = aspect;
+        m_orbitCamera.Initialize(orbitSettings, context.input);
+        if (!m_orbitCamera.IsInitialized())
+        {
+            m_modelActivationError =
+                "Model Viewer could not initialize its orbit camera";
+            return false;
+        }
+        m_orbitCamera.Apply(context.camera);
+        const OrbitCameraRigPose orbitPose = m_orbitCamera.GetPose();
+        m_cameraFrame.target = orbitPose.pivot;
+        m_cameraFrame.distance = orbitPose.distance;
+        m_cameraFrame.nearPlane = orbitPose.nearPlane;
+        m_cameraFrame.farPlane = orbitPose.farPlane;
+        m_cameraFrame.valid = orbitPose.valid;
+        m_modelActivated = true;
         return true;
     }
 
     void ModelViewerSample::Update(SampleContext& context, float deltaTime)
     {
         static_cast<void>(deltaTime);
-        const SceneAssetReadiness readiness =
-            context.models.UpdateReadiness(context.scene, m_model);
-        if (readiness == SceneAssetReadiness::RenderReady &&
-            !m_renderablesEnabled)
+        static_cast<void>(context.models.UpdateReadiness(m_model));
+        if (m_textureEnvironment)
         {
             static_cast<void>(
-                SetModelRenderablesEnabled(context.scene, m_model, true));
+                context.environments.UpdateReadiness(m_environment));
+        }
+
+        if (!m_modelActivationAttempted && m_model.IsCPUReady())
+        {
+            if (!ActivateModel(context))
+                static_cast<void>(context.models.Cancel(m_model));
+        }
+        if (m_model.status.IsFullyResident() &&
+            m_model.instance.IsRenderReady())
+        {
+            // Renderable activation is owned by SceneAssetLoadCoordinator so
+            // model instances, resource lifetime and extraction all use one
+            // transaction boundary. The sample records its observable state.
             m_renderablesEnabled = true;
         }
         if (m_renderablesEnabled &&
-            context.options.deterministicCameraOrbit)
+            m_modelActivated && context.options.deterministicCameraOrbit)
         {
             SampleOrbitCameraInput input;
             input.orbitActive = true;
@@ -258,7 +251,7 @@ namespace RVX
 
     void ModelViewerSample::OnInput(SampleContext& context)
     {
-        if (context.input)
+        if (m_modelActivated && m_orbitCamera.IsInitialized() && context.input)
         {
             m_orbitCamera.Update(*context.input, context.camera);
         }
@@ -275,6 +268,11 @@ namespace RVX
         m_orbitCamera.SetAspectRatio(
             static_cast<float>(width) / static_cast<float>(height),
             context.camera);
+        if (!m_orbitCamera.IsInitialized())
+        {
+            context.camera.SetAspectRatio(
+                static_cast<float>(width) / static_cast<float>(height));
+        }
     }
 
     void ModelViewerSample::AppendReport(
@@ -375,30 +373,57 @@ namespace RVX
         }
     }
 
-    bool ModelViewerSample::IsReady(
-        const SampleRenderDiagnostics& diagnostics,
-        std::string& outPendingReason) const
+    SampleReadiness ModelViewerSample::GetReadiness(
+        const SampleRenderDiagnostics& diagnostics) const
     {
-        if (!m_model.instance.IsRenderReady() || !m_renderablesEnabled)
+        if (!m_modelActivationError.empty())
         {
-            outPendingReason =
-                m_model.instance.readiness == SceneAssetReadiness::Failed &&
-                        !m_model.instance.diagnostic.empty()
-                    ? m_model.instance.diagnostic
-                    : "Model Viewer is waiting for all model GPU resources";
-            return false;
+            return SampleReadiness::Failed(m_modelActivationError);
+        }
+        if (m_model.status.IsFailed() ||
+            m_model.status.lifecycle == SceneAssetLifecycle::Cancelled)
+        {
+            return SampleReadiness::Failed(
+                m_model.status.diagnostic.empty()
+                    ? "Model Viewer model request failed or was cancelled"
+                    : m_model.status.diagnostic);
+        }
+        if (m_textureEnvironment &&
+            (m_environment.status.IsFailed() ||
+             m_environment.status.lifecycle == SceneAssetLifecycle::Cancelled))
+        {
+            return SampleReadiness::Failed(
+                m_environment.status.diagnostic.empty()
+                    ? "Model Viewer environment request failed or was cancelled"
+                    : m_environment.status.diagnostic);
+        }
+        if (!m_modelActivated)
+        {
+            return SampleReadiness::Pending(
+                "Model Viewer is waiting for CPU-ready model activation");
+        }
+        if (!m_model.status.IsFullyResident() ||
+            !m_model.instance.IsRenderReady() || !m_renderablesEnabled)
+        {
+            return SampleReadiness::Pending(
+                "Model Viewer is waiting for all model GPU resources");
+        }
+        if (m_textureEnvironment &&
+            (!m_environment.status.IsFullyResident() ||
+             !m_environment.IsValid()))
+        {
+            return SampleReadiness::Pending(
+                "Model Viewer is waiting for the selected texture IBL");
         }
         if (diagnostics.visibleObjectCount == 0)
         {
-            outPendingReason =
-                "Model Viewer is waiting for at least one visible model object";
-            return false;
+            return SampleReadiness::Pending(
+                "Model Viewer is waiting for at least one visible model object");
         }
         if (m_textureEnvironment && !diagnostics.textureIBLEnabled)
         {
-            outPendingReason =
-                "Model Viewer is waiting for the selected texture IBL";
-            return false;
+            return SampleReadiness::Pending(
+                "Model Viewer is waiting for the selected texture IBL");
         }
         if (m_renderPath == SampleRenderPath::GPUDriven)
         {
@@ -415,9 +440,8 @@ namespace RVX
                 diagnostics.gpuDrivenOpaqueIndirectBatchCount > 0;
             if (!gpuReady)
             {
-                outPendingReason =
-                    "Model Viewer is waiting for forced GPU-driven indirect execution";
-                return false;
+                return SampleReadiness::Pending(
+                    "Model Viewer is waiting for forced GPU-driven indirect execution");
             }
         }
         else if (m_renderPath == SampleRenderPath::Direct)
@@ -437,19 +461,20 @@ namespace RVX
                 diagnostics.opaqueExecutedDrawCount > 0;
             if (!directReady)
             {
-                outPendingReason =
-                    "Model Viewer is waiting for forced Direct execution";
-                return false;
+                return SampleReadiness::Pending(
+                    "Model Viewer is waiting for forced Direct execution");
             }
         }
-        return true;
+        return SampleReadiness::Ready();
     }
 
     bool ModelViewerSample::ValidateResult(
         const SampleRenderDiagnostics& diagnostics,
         std::string& outError) const
     {
-        return IsReady(diagnostics, outError);
+        const SampleReadiness readiness = GetReadiness(diagnostics);
+        outError = readiness.reason;
+        return readiness.IsReady();
     }
 
     void ModelViewerSample::Shutdown(SampleContext& context)
@@ -462,6 +487,9 @@ namespace RVX
         m_renderPath = SampleRenderPath::Auto;
         m_automationFrameCount = 0;
         m_automationZoomEventCount = 0;
+        m_modelActivationError.clear();
+        m_modelActivationAttempted = false;
+        m_modelActivated = false;
         m_renderablesEnabled = false;
         m_textureEnvironment = false;
         m_skyboxCreated = false;

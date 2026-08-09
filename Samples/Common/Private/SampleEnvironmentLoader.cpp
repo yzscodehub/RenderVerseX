@@ -5,14 +5,11 @@
 
 #include "Samples/SampleEnvironmentLoader.h"
 
-#include "Resource/Loader/HDRTextureLoader.h"
-#include "Resource/ResourceSubsystem.h"
 #include "Scene/Components/SkyboxComponent.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <system_error>
 #include <utility>
 
 namespace RVX
@@ -53,24 +50,31 @@ namespace RVX
 
     bool LoadedSampleEnvironment::IsValid() const noexcept
     {
-        return resource.IsLoaded() && environment.IsLoaded() && irradiance.IsLoaded() &&
+        return status.IsFullyResident() && resource.IsLoaded() &&
+               environment.IsLoaded() && irradiance.IsLoaded() &&
                prefiltered.IsLoaded() && brdfLUT.IsLoaded() &&
                environmentResolution > 0 && irradianceResolution > 0 &&
                prefilteredResolution > 0 && prefilteredMipLevels > 0 &&
                brdfLUTResolution > 0;
     }
 
+    bool LoadedSampleEnvironment::IsCPUReady() const noexcept
+    {
+        return status.IsActive() &&
+               status.residency >= SceneAssetResidency::CPUReady &&
+               resource.IsLoaded();
+    }
+
     SampleEnvironmentLoader::SampleEnvironmentLoader(
-        Resource::ResourceManager& resources,
-        Resource::ResourceSubsystem& resourceSubsystem) noexcept
-        : m_resources(resources),
-          m_resourceSubsystem(resourceSubsystem)
+        SceneAssetLoadCoordinator& coordinator) noexcept
+        : m_coordinator(coordinator)
     {
     }
 
-    bool SampleEnvironmentLoader::Load(
+    bool SampleEnvironmentLoader::Request(
         const std::filesystem::path& path,
         const SampleEnvironmentLoadOptions& options,
+        SkyboxComponent& targetSkybox,
         LoadedSampleEnvironment& output,
         std::string& outError) const
     {
@@ -92,105 +96,60 @@ namespace RVX
             return false;
         }
 
-        std::error_code error;
-        const std::filesystem::path absolute =
-            std::filesystem::weakly_canonical(path, error);
-        if (error || !std::filesystem::is_regular_file(absolute, error) || error)
-        {
-            outError = "Environment file does not exist: " + path.string();
+        SceneEnvironmentLoadDesc desc;
+        desc.path = path.string();
+        desc.environmentOptions.quality = ResolveQualityProfile(options);
+        desc.environmentOptions.exposure = options.exposure;
+        desc.environmentOptions.applyGamma = false;
+        desc.targetSkybox = targetSkybox.GetComponentHandle();
+        output.loadHandle = m_coordinator.RequestEnvironment(
+            std::move(desc),
+            outError);
+        if (!output.loadHandle.IsValid())
             return false;
-        }
-
-        Resource::HDRTextureLoader loader(&m_resources);
-        const Resource::IBLData ibl = loader.LoadIBL(
-            absolute.string(),
-            ResolveQualityProfile(options),
-            options.exposure,
-            false);
-        if (!ibl.IsValid())
-        {
-            outError = "Failed to generate environment IBL from: " +
-                       absolute.string();
-            return false;
-        }
-
-        LoadedSampleEnvironment candidate;
-        candidate.sourcePath = absolute;
-        candidate.environment = Resource::TextureHandle(ibl.environmentMap);
-        candidate.irradiance = Resource::TextureHandle(ibl.irradianceMap);
-        candidate.prefiltered = Resource::TextureHandle(ibl.prefilteredMap);
-        candidate.brdfLUT = Resource::TextureHandle(ibl.brdfLUT);
-        candidate.environmentResolution = candidate.environment->GetWidth();
-        candidate.irradianceResolution = candidate.irradiance->GetWidth();
-        candidate.prefilteredResolution = candidate.prefiltered->GetWidth();
-        candidate.prefilteredMipLevels = ibl.prefilteredMipLevels;
-        candidate.brdfLUTResolution = candidate.brdfLUT->GetWidth();
-        Resource::EnvironmentResourceData environmentData;
-        environmentData.sourcePath = absolute;
-        environmentData.environment = candidate.environment;
-        environmentData.irradiance = candidate.irradiance;
-        environmentData.prefiltered = candidate.prefiltered;
-        environmentData.brdfLUT = candidate.brdfLUT;
-        environmentData.environmentResolution = candidate.environmentResolution;
-        environmentData.irradianceResolution = candidate.irradianceResolution;
-        environmentData.prefilteredResolution = candidate.prefilteredResolution;
-        environmentData.prefilteredMipLevels = candidate.prefilteredMipLevels;
-        environmentData.brdfLUTResolution = candidate.brdfLUTResolution;
-        environmentData.intensity = options.exposure;
-        auto* environmentResource = new Resource::EnvironmentResource();
-        environmentResource->SetId(Resource::GenerateResourceId(
-            absolute.string() + "#environment"));
-        environmentResource->SetPath(absolute.string());
-        environmentResource->SetName(absolute.filename().string());
-        candidate.resource = Resource::EnvironmentHandle(environmentResource);
-        if (!environmentResource->SetData(std::move(environmentData)) ||
-            !candidate.IsValid())
-        {
-            outError = "Environment IBL generation returned incomplete resources: " +
-                       absolute.string();
-            return false;
-        }
-
-        const auto publish = [this](const Resource::TextureHandle& texture)
-        {
-            return m_resourceSubsystem.PublishRenderResource(
-                Resource::ResourceHandle<Resource::IResource>(texture));
-        };
-        if (!publish(candidate.environment) || !publish(candidate.irradiance) ||
-            !publish(candidate.prefiltered) || !publish(candidate.brdfLUT))
-        {
-            outError = "Environment IBL resource publication was rejected: " +
-                       absolute.string();
-            return false;
-        }
-
-        output = std::move(candidate);
+        output.sourcePath = path;
         return true;
     }
 
-    bool SampleEnvironmentLoader::BindToSkybox(
-        SkyboxComponent& skybox,
-        const LoadedSampleEnvironment& environment,
-        float32 exposure,
-        std::string& outError) const
+    SceneAssetStatus SampleEnvironmentLoader::UpdateReadiness(
+        LoadedSampleEnvironment& environment) const
     {
-        if (!environment.IsValid())
+        const SceneAssetStatus* status =
+            m_coordinator.GetStatus(environment.loadHandle);
+        if (!status)
         {
-            outError = "Cannot bind an incomplete environment IBL";
-            return false;
+            environment.status.lifecycle = SceneAssetLifecycle::Failed;
+            environment.status.error = {
+                Resource::ResourceLoadErrorCode::InvalidRequest,
+                "Environment load handle is stale"};
+            environment.status.diagnostic = environment.status.error.message;
+            return environment.status;
         }
-        if (!(exposure > 0.0f))
+        environment.status = *status;
+        environment.resource =
+            m_coordinator.GetEnvironment(environment.loadHandle);
+        if (environment.resource.IsLoaded())
         {
-            outError = "Environment exposure must be positive";
-            return false;
+            const Resource::EnvironmentResourceData& data =
+                environment.resource->GetData();
+            environment.environment = data.environment;
+            environment.irradiance = data.irradiance;
+            environment.prefiltered = data.prefiltered;
+            environment.brdfLUT = data.brdfLUT;
+            environment.environmentResolution = data.environmentResolution;
+            environment.irradianceResolution = data.irradianceResolution;
+            environment.prefilteredResolution = data.prefilteredResolution;
+            environment.prefilteredMipLevels = data.prefilteredMipLevels;
+            environment.brdfLUTResolution = data.brdfLUTResolution;
         }
+        return environment.status;
+    }
 
-        skybox.SetCubemap(environment.environment);
-        skybox.SetIrradianceMap(environment.irradiance);
-        skybox.SetPrefilteredMap(environment.prefiltered);
-        skybox.SetBRDFLUT(environment.brdfLUT);
-        skybox.SetExposure(exposure);
-        skybox.SetContributesToLighting(true);
-        return true;
+    bool SampleEnvironmentLoader::Cancel(
+        LoadedSampleEnvironment& environment) const
+    {
+        const bool cancelled = m_coordinator.Cancel(environment.loadHandle);
+        environment = {};
+        return cancelled;
     }
 } // namespace RVX

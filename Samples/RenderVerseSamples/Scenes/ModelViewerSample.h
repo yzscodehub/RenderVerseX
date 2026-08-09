@@ -22,13 +22,15 @@ namespace RVX
                               uint32 width,
                               uint32 height) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
-        bool IsReady(const SampleRenderDiagnostics& diagnostics,
-                     std::string& outPendingReason) const override;
+        SampleReadiness GetReadiness(
+            const SampleRenderDiagnostics& diagnostics) const override;
         bool ValidateResult(const SampleRenderDiagnostics& diagnostics,
                             std::string& outError) const override;
         void Shutdown(SampleContext& context) override;
 
     private:
+        bool ActivateModel(SampleContext& context);
+
         LoadedSampleModel m_model;
         LoadedSampleEnvironment m_environment;
         AABB m_bounds;
@@ -37,6 +39,9 @@ namespace RVX
         SampleRenderPath m_renderPath = SampleRenderPath::Auto;
         uint32 m_automationFrameCount = 0;
         uint32 m_automationZoomEventCount = 0;
+        std::string m_modelActivationError;
+        bool m_modelActivationAttempted = false;
+        bool m_modelActivated = false;
         bool m_renderablesEnabled = false;
         bool m_textureEnvironment = false;
         bool m_skyboxCreated = false;

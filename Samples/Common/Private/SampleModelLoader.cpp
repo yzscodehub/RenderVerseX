@@ -2,12 +2,8 @@
 
 #include "Samples/SampleModelLoader.h"
 
-#include "Resource/ResourceManager.h"
-#include "Resource/ResourceSubsystem.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneRuntime.h"
-
-#include <system_error>
 
 namespace RVX
 {
@@ -18,16 +14,15 @@ namespace RVX
     }
 
     SampleModelLoader::SampleModelLoader(
-        Resource::ResourceManager& resources,
-        Resource::ResourceSubsystem& resourceSubsystem) noexcept
-        : m_resources(resources), m_resourceSubsystem(resourceSubsystem)
+        SceneAssetLoadCoordinator& coordinator) noexcept
+        : m_coordinator(coordinator)
     {
     }
 
-    bool SampleModelLoader::Load(const std::filesystem::path& path,
-                                 Scene& scene,
-                                 LoadedSampleModel& outModel,
-                                 std::string& outError) const
+    bool SampleModelLoader::Request(const std::filesystem::path& path,
+                                    LoadedSampleModel& outModel,
+                                    std::string& outError,
+                                    bool activateWhenResident) const
     {
         outModel = {};
         if (path.empty())
@@ -36,33 +31,24 @@ namespace RVX
             return false;
         }
 
-        std::error_code error;
-        const std::filesystem::path normalized =
-            std::filesystem::weakly_canonical(path, error);
-        if (error || !std::filesystem::is_regular_file(normalized, error) || error)
-        {
-            outError = "Model file does not exist: " + path.string();
+        SceneModelLoadDesc desc;
+        desc.path = path.string();
+        desc.activateWhenResident = activateWhenResident;
+        outModel.loadHandle = m_coordinator.RequestModel(
+            std::move(desc),
+            outError);
+        if (!outModel.loadHandle.IsValid())
             return false;
-        }
-
-        auto resource =
-            m_resources.Load<Resource::ModelResource>(normalized.string());
-        if (!resource.IsValid() || !resource.IsLoaded())
-        {
-            outError = "ResourceManager failed to load model: " +
-                       normalized.string();
-            return false;
-        }
-
-        return Instantiate(resource, normalized, scene, outModel, outError);
+        outModel.sourcePath = path;
+        return true;
     }
 
     bool SampleModelLoader::Instantiate(
         const Resource::ResourceHandle<Resource::ModelResource>& resource,
         const std::filesystem::path& sourcePath,
-        Scene& scene,
         LoadedSampleModel& outModel,
-        std::string& outError) const
+        std::string& outError,
+        bool activateWhenResident) const
     {
         outModel = {};
         if (!resource.IsValid() || !resource.IsLoaded())
@@ -71,38 +57,49 @@ namespace RVX
             return false;
         }
 
-        SceneAssetInstance instance =
-            SceneAssetInstantiator::InstantiateModel(scene, *resource);
-        SceneEntity* root = dynamic_cast<SceneEntity*>(
-            scene.ResolveActor(instance.rootActor));
-        if (!instance.IsValid() || !root)
+        outModel.loadHandle = m_coordinator.InstantiateModel(
+            resource,
+            {},
+            activateWhenResident,
+            outError);
+        if (!outModel.loadHandle.IsValid())
         {
-            outError = "ModelResource failed to instantiate scene actors: " +
-                       sourcePath.string();
             return false;
         }
-
-        outModel.resource = resource;
-        outModel.instance = std::move(instance);
         outModel.sourcePath = sourcePath;
+        static_cast<void>(UpdateReadiness(outModel));
         return true;
     }
 
-    SceneAssetReadiness SampleModelLoader::UpdateReadiness(
-        Scene& scene,
+    SceneAssetStatus SampleModelLoader::UpdateReadiness(
         LoadedSampleModel& model) const
     {
-        if (!model.resource.IsValid() || !model.resource.IsLoaded())
+        const SceneAssetStatus* status =
+            m_coordinator.GetStatus(model.loadHandle);
+        if (!status)
         {
-            model.instance.readiness = SceneAssetReadiness::Failed;
-            model.instance.diagnostic =
-                "Model resource became unavailable while awaiting GPU readiness";
-            return model.instance.readiness;
+            model.status.lifecycle = SceneAssetLifecycle::Failed;
+            model.status.residency = SceneAssetResidency::None;
+            model.status.error = {
+                Resource::ResourceLoadErrorCode::InvalidRequest,
+                "Model load handle is stale"};
+            model.status.diagnostic = model.status.error.message;
+            return model.status;
         }
-        return SceneAssetInstantiator::UpdateReadiness(
-            scene,
-            *model.resource,
-            m_resourceSubsystem,
-            model.instance);
+        model.status = *status;
+        model.resource = m_coordinator.GetModel(model.loadHandle);
+        if (const SceneAssetInstance* instance =
+                m_coordinator.GetModelInstance(model.loadHandle))
+        {
+            model.instance = *instance;
+        }
+        return model.status;
+    }
+
+    bool SampleModelLoader::Cancel(LoadedSampleModel& model) const
+    {
+        const bool cancelled = m_coordinator.Cancel(model.loadHandle);
+        model = {};
+        return cancelled;
     }
 } // namespace RVX

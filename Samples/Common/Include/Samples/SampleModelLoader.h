@@ -7,7 +7,7 @@
 
 #include "Resource/ResourceHandle.h"
 #include "Resource/Types/ModelResource.h"
-#include "ResourceSceneAdapters/SceneAssetInstantiation.h"
+#include "ResourceSceneAdapters/SceneAssetLoadCoordinator.h"
 
 #include <filesystem>
 #include <string>
@@ -27,9 +27,20 @@ namespace RVX
     {
         Resource::ResourceHandle<Resource::ModelResource> resource;
         SceneAssetInstance instance;
+        SceneAssetLoadHandle loadHandle = InvalidSceneAssetLoadHandle;
+        SceneAssetStatus status;
         std::filesystem::path sourcePath;
 
         [[nodiscard]] SceneEntity* ResolveRoot(Scene& scene) const;
+        [[nodiscard]] bool IsCPUReady() const noexcept
+        {
+            return status.IsActive() &&
+                   status.residency >= SceneAssetResidency::CPUReady;
+        }
+        [[nodiscard]] bool IsFullyResident() const noexcept
+        {
+            return status.IsFullyResident();
+        }
     };
 
     /**
@@ -39,28 +50,27 @@ namespace RVX
     class SampleModelLoader final
     {
     public:
-        SampleModelLoader(Resource::ResourceManager& resources,
-                          Resource::ResourceSubsystem& resourceSubsystem)
-            noexcept;
+        explicit SampleModelLoader(
+            SceneAssetLoadCoordinator& coordinator) noexcept;
 
-        bool Load(const std::filesystem::path& path,
-                  Scene& scene,
-                  LoadedSampleModel& outModel,
-                  std::string& outError) const;
+        bool Request(const std::filesystem::path& path,
+                     LoadedSampleModel& outModel,
+                     std::string& outError,
+                     bool activateWhenResident = true) const;
 
         bool Instantiate(
             const Resource::ResourceHandle<Resource::ModelResource>& resource,
             const std::filesystem::path& sourcePath,
-            Scene& scene,
             LoadedSampleModel& outModel,
-            std::string& outError) const;
+            std::string& outError,
+            bool activateWhenResident = true) const;
 
-        [[nodiscard]] SceneAssetReadiness UpdateReadiness(
-            Scene& scene,
+        [[nodiscard]] SceneAssetStatus UpdateReadiness(
             LoadedSampleModel& model) const;
 
+        [[nodiscard]] bool Cancel(LoadedSampleModel& model) const;
+
     private:
-        Resource::ResourceManager& m_resources;
-        Resource::ResourceSubsystem& m_resourceSubsystem;
+        SceneAssetLoadCoordinator& m_coordinator;
     };
 } // namespace RVX

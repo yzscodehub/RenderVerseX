@@ -27,14 +27,18 @@ namespace RVX
         bool Setup(SampleContext& context, std::string& outError) override;
         void Update(SampleContext& context, float deltaTime) override;
         void OnInput(SampleContext& context) override;
+        void OnViewportResize(SampleContext& context,
+                              uint32 width,
+                              uint32 height) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
-        bool IsReady(const SampleRenderDiagnostics& diagnostics,
-                     std::string& outPendingReason) const override;
+        SampleReadiness GetReadiness(
+            const SampleRenderDiagnostics& diagnostics) const override;
         bool ValidateResult(const SampleRenderDiagnostics& diagnostics,
                             std::string& outError) const override;
         void Shutdown(SampleContext& context) override;
 
     private:
+        bool ActivateModel(SampleContext& context);
         bool InspectMaterials(PBRReferenceWorkflow referenceWorkflow,
                               std::string& outError);
         bool ApplyFactorMaterialOverrides(Scene& scene,
@@ -55,9 +59,12 @@ namespace RVX
         uint32 m_metallicRoughnessTextureWidth = 0;
         uint32 m_metallicRoughnessTextureHeight = 0;
         bool m_metallicRoughnessTextureLoaded = false;
+        std::string m_modelActivationError;
         PBRReferenceWorkflow m_referenceWorkflow =
             PBRReferenceWorkflow::None;
         bool m_referenceCubeValidated = false;
+        bool m_modelActivationAttempted = false;
+        bool m_modelActivated = false;
         bool m_skyboxCreated = false;
         bool m_lightCreated = false;
     };

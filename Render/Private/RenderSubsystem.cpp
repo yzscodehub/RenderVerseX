@@ -189,8 +189,24 @@ namespace
 
         void ProcessUpload(ResourceUploadRequestRef request) override
         {
-            static_cast<void>(
-                m_uploadProcessor.ProcessUpload(std::move(request)));
+            if (!request)
+                return;
+            const uint64 sequence = request->GetSequence();
+            const uint64 sourceRevision = request->GetSourceRevision();
+            const uint64 bytes = request->GetDerivedPayloadBytes();
+            const RenderResourceKind kind = request->GetKind();
+            const RenderUploadProcessCode result =
+                m_uploadProcessor.ProcessUpload(std::move(request));
+            if (result == RenderUploadProcessCode::Accepted)
+            {
+                Diagnostics::RecordTraceInstant(
+                    m_startupTraceContext,
+                    "UploadSubmitted",
+                    {{"requestSequence", sequence},
+                     {"sourceRevision", sourceRevision},
+                     {"bytes", bytes},
+                     {"kind", static_cast<uint64>(kind)}});
+            }
         }
 
         RenderRuntimeResult ConsumeFrameV5(

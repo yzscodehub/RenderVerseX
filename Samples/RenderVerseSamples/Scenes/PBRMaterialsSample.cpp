@@ -20,6 +20,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace RVX
@@ -86,6 +87,18 @@ namespace RVX
             "pbr-reference-environment",
             SampleEnvironmentPolicy::Required,
         };
+
+        void ConfigureProceduralSky(SkyboxComponent& skybox)
+        {
+            skybox.SetSkyboxType(SkyboxType::Procedural);
+            skybox.SetSunDirection(normalize(Vec3(0.35f, 0.65f, 0.45f)));
+            skybox.SetSunColor(Vec3(1.0f, 0.94f, 0.84f));
+            skybox.SetZenithColor(Vec3(0.10f, 0.24f, 0.52f));
+            skybox.SetHorizonColor(Vec3(0.55f, 0.67f, 0.80f));
+            skybox.SetGroundColor(Vec3(0.07f, 0.08f, 0.10f));
+            skybox.SetScatteringIntensity(0.65f);
+            skybox.SetContributesToLighting(false);
+        }
     } // namespace
 
     const SampleInfo& PBRMaterialsSample::GetInfo() const noexcept
@@ -381,14 +394,13 @@ namespace RVX
     bool PBRMaterialsSample::Setup(SampleContext& context,
                                    std::string& outError)
     {
-        if (!context.models.Load(context.options.modelPath,
-                                 context.scene,
-                                 m_model,
-                                 outError))
-        {
-            return false;
-        }
-
+        const float32 initialAspect =
+            static_cast<float32>(context.options.width) /
+            static_cast<float32>(std::max(context.options.height, 1u));
+        context.camera.SetPerspective(
+            PBRMaterialsVerticalFov, initialAspect, 0.05f, 1000.0f);
+        context.camera.SetPosition(Vec3(0.0f, 0.0f, 3.0f));
+        context.camera.LookAt(Vec3(0.0f));
         if (context.options.assetId == "pbr-material-grid")
         {
             m_referenceWorkflow = PBRReferenceWorkflow::Factor;
@@ -401,83 +413,6 @@ namespace RVX
         {
             m_referenceWorkflow = PBRReferenceWorkflow::None;
         }
-        if (m_referenceWorkflow == PBRReferenceWorkflow::None)
-        {
-            if (!InspectMaterials(PBRReferenceWorkflow::None, outError))
-            {
-                return false;
-            }
-            if (m_factorMaterialCount == PBRFactorMaterialCount &&
-                m_textureMaterialCount == 0)
-            {
-                m_referenceWorkflow = PBRReferenceWorkflow::Factor;
-            }
-            else if (m_textureMaterialCount == PBRTextureMaterialCount &&
-                     m_factorMaterialCount == 0)
-            {
-                m_referenceWorkflow = PBRReferenceWorkflow::Texture;
-            }
-        }
-        if (m_referenceWorkflow != PBRReferenceWorkflow::None &&
-            !InspectMaterials(m_referenceWorkflow, outError))
-        {
-            return false;
-        }
-        if (m_referenceWorkflow == PBRReferenceWorkflow::Factor &&
-            !ApplyFactorMaterialOverrides(context.scene, outError))
-        {
-            return false;
-        }
-
-        SceneEntity* modelRoot = m_model.ResolveRoot(context.scene);
-        if (!modelRoot)
-        {
-            outError = "PBR material model root handle is stale";
-            return false;
-        }
-        m_bounds = modelRoot->GetWorldBounds();
-        const float32 aspect =
-            static_cast<float32>(context.options.width) /
-            static_cast<float32>(std::max(context.options.height, 1u));
-        m_cameraFrame = BuildModelCameraFrame(
-            m_bounds,
-            aspect,
-            PBRMaterialsVerticalFov,
-            1.08f);
-        if (!m_cameraFrame.valid)
-        {
-            outError = "PBR material model has no finite renderable bounds";
-            return false;
-        }
-
-        SampleOrbitCameraSettings orbitSettings;
-        orbitSettings.mode = OrbitCameraMode::FreeOrbit;
-        orbitSettings.bounds = m_bounds;
-        orbitSettings.pivot = m_cameraFrame.target;
-        orbitSettings.distance = m_cameraFrame.distance;
-        orbitSettings.yaw = PBRMaterialsInitialYaw;
-        orbitSettings.pitch = PBRMaterialsInitialPitch;
-        orbitSettings.minDistance =
-            std::max(m_cameraFrame.distance * 0.25f, 0.001f);
-        orbitSettings.maxDistance =
-            std::max(m_cameraFrame.distance * 5.0f,
-                     orbitSettings.minDistance * 2.0f);
-        orbitSettings.zoomExponent = 0.08f;
-        orbitSettings.verticalFovRadians = PBRMaterialsVerticalFov;
-        orbitSettings.aspectRatio = aspect;
-        m_orbitCamera.Initialize(orbitSettings, context.input);
-        if (!m_orbitCamera.IsInitialized())
-        {
-            outError = "PBR material camera rig initialization failed";
-            return false;
-        }
-        m_orbitCamera.Apply(context.camera);
-        const OrbitCameraRigPose orbitPose = m_orbitCamera.GetPose();
-        m_cameraFrame.target = orbitPose.pivot;
-        m_cameraFrame.distance = orbitPose.distance;
-        m_cameraFrame.nearPlane = orbitPose.nearPlane;
-        m_cameraFrame.farPlane = orbitPose.farPlane;
-        m_cameraFrame.valid = orbitPose.valid;
 
         ActorSpawnParams skyParams;
         skyParams.name = "PBRMaterialsSky";
@@ -489,22 +424,21 @@ namespace RVX
             outError = "Failed to create the PBR material background";
             return false;
         }
+        ConfigureProceduralSky(*skybox);
+        m_skyboxCreated = true;
+
         SampleEnvironmentLoadOptions environmentOptions;
         environmentOptions.quality = context.options.quality;
         environmentOptions.smoke = context.options.smoke;
         environmentOptions.exposure = 1.0f;
-        if (!context.environments.Load(context.options.environmentPath,
-                                       environmentOptions,
-                                       m_environment,
-                                       outError) ||
-            !context.environments.BindToSkybox(*skybox,
-                                              m_environment,
-                                              environmentOptions.exposure,
-                                              outError))
+        if (!context.environments.Request(context.options.environmentPath,
+                                          environmentOptions,
+                                          *skybox,
+                                          m_environment,
+                                          outError))
         {
             return false;
         }
-        m_skyboxCreated = true;
 
         ActorSpawnParams lightParams;
         lightParams.name = "PBRMaterialsKeyLight";
@@ -530,21 +464,132 @@ namespace RVX
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
+        return context.models.Request(context.options.modelPath,
+                                      m_model,
+                                      outError);
+    }
+
+    bool PBRMaterialsSample::ActivateModel(SampleContext& context)
+    {
+        m_modelActivationAttempted = true;
+        std::string activationError;
+        if (m_referenceWorkflow == PBRReferenceWorkflow::None)
+        {
+            if (!InspectMaterials(PBRReferenceWorkflow::None, activationError))
+            {
+                m_modelActivationError = std::move(activationError);
+                return false;
+            }
+            if (m_factorMaterialCount == PBRFactorMaterialCount &&
+                m_textureMaterialCount == 0)
+            {
+                m_referenceWorkflow = PBRReferenceWorkflow::Factor;
+            }
+            else if (m_textureMaterialCount == PBRTextureMaterialCount &&
+                     m_factorMaterialCount == 0)
+            {
+                m_referenceWorkflow = PBRReferenceWorkflow::Texture;
+            }
+        }
+        if (m_referenceWorkflow != PBRReferenceWorkflow::None &&
+            !InspectMaterials(m_referenceWorkflow, activationError))
+        {
+            m_modelActivationError = std::move(activationError);
+            return false;
+        }
+        if (m_referenceWorkflow == PBRReferenceWorkflow::Factor &&
+            !ApplyFactorMaterialOverrides(context.scene, activationError))
+        {
+            m_modelActivationError = std::move(activationError);
+            return false;
+        }
+
+        SceneEntity* modelRoot = m_model.ResolveRoot(context.scene);
+        if (!modelRoot)
+        {
+            m_modelActivationError = "PBR material model root handle is stale";
+            return false;
+        }
+        m_bounds = modelRoot->GetWorldBounds();
+        const float32 aspect =
+            static_cast<float32>(context.options.width) /
+            static_cast<float32>(std::max(context.options.height, 1u));
+        m_cameraFrame = BuildModelCameraFrame(
+            m_bounds,
+            aspect,
+            PBRMaterialsVerticalFov,
+            1.08f);
+        if (!m_cameraFrame.valid)
+        {
+            m_modelActivationError =
+                "PBR material model has no finite renderable bounds";
+            return false;
+        }
+
+        SampleOrbitCameraSettings orbitSettings;
+        orbitSettings.mode = OrbitCameraMode::FreeOrbit;
+        orbitSettings.bounds = m_bounds;
+        orbitSettings.pivot = m_cameraFrame.target;
+        orbitSettings.distance = m_cameraFrame.distance;
+        orbitSettings.yaw = PBRMaterialsInitialYaw;
+        orbitSettings.pitch = PBRMaterialsInitialPitch;
+        orbitSettings.minDistance =
+            std::max(m_cameraFrame.distance * 0.25f, 0.001f);
+        orbitSettings.maxDistance =
+            std::max(m_cameraFrame.distance * 5.0f,
+                     orbitSettings.minDistance * 2.0f);
+        orbitSettings.zoomExponent = 0.08f;
+        orbitSettings.verticalFovRadians = PBRMaterialsVerticalFov;
+        orbitSettings.aspectRatio = aspect;
+        m_orbitCamera.Initialize(orbitSettings, context.input);
+        if (!m_orbitCamera.IsInitialized())
+        {
+            m_modelActivationError =
+                "PBR material camera rig initialization failed";
+            return false;
+        }
+        m_orbitCamera.Apply(context.camera);
+        const OrbitCameraRigPose orbitPose = m_orbitCamera.GetPose();
+        m_cameraFrame.target = orbitPose.pivot;
+        m_cameraFrame.distance = orbitPose.distance;
+        m_cameraFrame.nearPlane = orbitPose.nearPlane;
+        m_cameraFrame.farPlane = orbitPose.farPlane;
+        m_cameraFrame.valid = orbitPose.valid;
+        m_modelActivated = true;
         return true;
     }
 
     void PBRMaterialsSample::Update(SampleContext& context, float deltaTime)
     {
-        static_cast<void>(context);
         static_cast<void>(deltaTime);
+        static_cast<void>(context.models.UpdateReadiness(m_model));
+        static_cast<void>(context.environments.UpdateReadiness(m_environment));
+        if (!m_modelActivationAttempted && m_model.IsCPUReady())
+        {
+            if (!ActivateModel(context))
+                static_cast<void>(context.models.Cancel(m_model));
+        }
     }
 
     void PBRMaterialsSample::OnInput(SampleContext& context)
     {
-        if (context.input)
+        if (m_modelActivated && m_orbitCamera.IsInitialized() && context.input)
         {
             m_orbitCamera.Update(*context.input, context.camera);
         }
+    }
+
+    void PBRMaterialsSample::OnViewportResize(SampleContext& context,
+                                              uint32 width,
+                                              uint32 height)
+    {
+        if (width == 0 || height == 0)
+            return;
+        const float32 aspect =
+            static_cast<float32>(width) / static_cast<float32>(height);
+        m_orbitCamera.SetAspectRatio(aspect, context.camera);
+        if (!m_orbitCamera.IsInitialized())
+            context.camera.SetAspectRatio(aspect);
     }
 
     void PBRMaterialsSample::AppendReport(
@@ -656,24 +701,59 @@ namespace RVX
         }
     }
 
-    bool PBRMaterialsSample::IsReady(
-        const SampleRenderDiagnostics& diagnostics,
-        std::string& outPendingReason) const
+    SampleReadiness PBRMaterialsSample::GetReadiness(
+        const SampleRenderDiagnostics& diagnostics) const
     {
+        if (!m_modelActivationError.empty())
+        {
+            return SampleReadiness::Failed(m_modelActivationError);
+        }
+        if (m_model.status.IsFailed() ||
+            m_model.status.lifecycle == SceneAssetLifecycle::Cancelled)
+        {
+            return SampleReadiness::Failed(
+                m_model.status.diagnostic.empty()
+                    ? "PBR Materials model request failed or was cancelled"
+                    : m_model.status.diagnostic);
+        }
+        if (m_environment.status.IsFailed() ||
+            m_environment.status.lifecycle == SceneAssetLifecycle::Cancelled)
+        {
+            return SampleReadiness::Failed(
+                m_environment.status.diagnostic.empty()
+                    ? "PBR Materials environment request failed or was cancelled"
+                    : m_environment.status.diagnostic);
+        }
+        if (!m_modelActivated)
+        {
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for CPU-ready model activation");
+        }
+        if (!m_model.status.IsFullyResident() ||
+            !m_model.instance.IsRenderReady())
+        {
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for all model GPU resources");
+        }
+        if (!m_environment.status.IsFullyResident() ||
+            !m_environment.IsValid())
+        {
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for realized texture IBL");
+        }
         if (!diagnostics.textureIBLEnabled)
         {
-            outPendingReason = "PBR Materials is waiting for realized texture IBL";
-            return false;
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for realized texture IBL");
         }
         if (!diagnostics.opaqueExecutionCompleted)
         {
-            outPendingReason =
-                "PBR Materials is waiting for a completed opaque pass";
-            return false;
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for a completed opaque pass");
         }
         if (m_referenceWorkflow == PBRReferenceWorkflow::None)
         {
-            return true;
+            return SampleReadiness::Ready();
         }
         // Draw count is a submission statistic, not scene identity. Direct
         // instancing may execute every object packet with one indexed draw, so
@@ -687,47 +767,44 @@ namespace RVX
         if (diagnostics.opaqueExecutedDrawCountAvailable &&
             executedPacketCount < m_expectedDrawPacketCount)
         {
-            outPendingReason =
-                "PBR Materials is waiting for all reference cube draw packets to be submitted";
-            return false;
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for all reference cube draw packets to be submitted");
         }
         if (!diagnostics.opaqueMaterialBindingsAvailable)
         {
-            outPendingReason =
-                "PBR Materials is waiting for opaque material binding diagnostics";
-            return false;
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for opaque material binding diagnostics");
         }
         if (diagnostics.opaqueMaterialBindingCount <
             m_expectedDrawPacketCount)
         {
-            outPendingReason =
-                "PBR Materials is waiting for all reference material bindings";
-            return false;
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for all reference material bindings");
         }
         if (diagnostics.opaqueMaterialFallbackBindingCount != 0 ||
             diagnostics.opaqueMaterialFallbackTextureFlags != 0)
         {
-            outPendingReason =
-                "PBR Materials is waiting for source material resources without fallback";
-            return false;
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for source material resources without fallback");
         }
         constexpr uint32 MetallicRoughnessTextureFlag = 1u << 2u;
         if (m_referenceWorkflow == PBRReferenceWorkflow::Texture &&
             (diagnostics.opaqueMaterialTextureFlags &
              MetallicRoughnessTextureFlag) == 0)
         {
-            outPendingReason =
-                "PBR Materials is waiting for the metallic-roughness texture binding";
-            return false;
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for the metallic-roughness texture binding");
         }
-        return true;
+        return SampleReadiness::Ready();
     }
 
     bool PBRMaterialsSample::ValidateResult(
         const SampleRenderDiagnostics& diagnostics,
         std::string& outError) const
     {
-        return IsReady(diagnostics, outError);
+        const SampleReadiness readiness = GetReadiness(diagnostics);
+        outError = readiness.reason;
+        return readiness.IsReady();
     }
 
     void PBRMaterialsSample::Shutdown(SampleContext& context)
@@ -747,8 +824,11 @@ namespace RVX
         m_metallicRoughnessTextureWidth = 0;
         m_metallicRoughnessTextureHeight = 0;
         m_metallicRoughnessTextureLoaded = false;
+        m_modelActivationError.clear();
         m_referenceWorkflow = PBRReferenceWorkflow::None;
         m_referenceCubeValidated = false;
+        m_modelActivationAttempted = false;
+        m_modelActivated = false;
         m_skyboxCreated = false;
         m_lightCreated = false;
     }

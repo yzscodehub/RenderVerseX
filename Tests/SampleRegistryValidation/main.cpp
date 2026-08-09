@@ -1,6 +1,7 @@
 #include "Samples/SampleContext.h"
 #include "Samples/SampleRegistry.h"
 #include "Samples/SampleRunner.h"
+#include "Samples/Sample.h"
 
 #include <gtest/gtest.h>
 
@@ -267,5 +268,30 @@ namespace
             static_cast<int>(std::size(argv)), argv, options, &error))
             << error;
         EXPECT_TRUE(options.listSamples);
+    }
+
+    TEST(SampleRegistryValidation, ReadinessIsTriStateAndCaptureImplicitlyWaits)
+    {
+        const RVX::SampleReadiness pending =
+            RVX::SampleReadiness::Pending("loading");
+        const RVX::SampleReadiness ready = RVX::SampleReadiness::Ready();
+        const RVX::SampleReadiness failed =
+            RVX::SampleReadiness::Failed("decode failed");
+        EXPECT_FALSE(pending.IsReady());
+        EXPECT_FALSE(pending.IsFailed());
+        EXPECT_TRUE(ready.IsReady());
+        EXPECT_TRUE(failed.IsFailed());
+        EXPECT_EQ(failed.reason, "decode failed");
+
+        RVX::SampleRunnerCLIOptions options;
+        EXPECT_FALSE(options.RequiresReadinessWait());
+        options.common.screenshotPath = "capture.ppm";
+        EXPECT_TRUE(options.RequiresReadinessWait());
+        options.common.screenshotPath.clear();
+        options.waitReady = true;
+        EXPECT_TRUE(options.RequiresReadinessWait());
+        options.waitReady = false;
+        options.lifetimeReportPath = "lifetime.json";
+        EXPECT_TRUE(options.RequiresReadinessWait());
     }
 } // namespace

@@ -32,6 +32,7 @@ namespace RVX::Resource
      */
     struct EnvironmentPreparationState final : ResourceLoadPreparationState
     {
+        EnvironmentLoadOptions sourceOptions;
         HDRLoadOptions hdrOptions;
         uint64 importOptionsHash = 0;
 
@@ -81,8 +82,21 @@ namespace RVX::Resource
         /** @brief Compute the stable import hash for a complete options value. */
         [[nodiscard]] static uint64 ComputeImportOptionsHash(const EnvironmentLoadOptions& options);
 
+        /** @brief Build a validated immutable state for one request. */
+        [[nodiscard]] static ResourceLoadPreparationStateRef
+        CreatePreparationState(const EnvironmentLoadOptions& options,
+                               uint64& outCanonicalImportOptionsHash,
+                               ResourceLoadError& outError);
+
         bool CapturePreparationState(
             uint64 requestedImportOptionsHash,
+            ResourceLoadPreparationStateRef& outState,
+            uint64& outCanonicalImportOptionsHash,
+            ResourceLoadError& outError) const override;
+
+        bool ValidatePreparationState(
+            uint64 requestedImportOptionsHash,
+            ResourceLoadPreparationStateRef suppliedState,
             ResourceLoadPreparationStateRef& outState,
             uint64& outCanonicalImportOptionsHash,
             ResourceLoadError& outError) const override;

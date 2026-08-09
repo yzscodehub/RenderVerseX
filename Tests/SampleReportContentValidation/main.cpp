@@ -382,6 +382,21 @@ namespace
         return true;
     }
 
+    bool RequireContainsEither(const std::string& json,
+                               const std::string& first,
+                               const std::string& second,
+                               const char* label)
+    {
+        if (json.find(first) != std::string::npos ||
+            json.find(second) != std::string::npos)
+        {
+            return true;
+        }
+        std::cerr << "Report missing " << label << ": " << first
+                  << " or " << second << "\n";
+        return false;
+    }
+
     std::string FindAssetObject(const std::string& json,
                                 const std::string& role,
                                 const std::string& id)
@@ -710,10 +725,11 @@ int main(int argc, char* argv[])
             json, "gpuDrivenOpaqueIndirectBatchCount", 1);
         passed &= RequireUIntAtLeast(
             json, "gpuDrivenOpaqueIndirectDrawUpperBound", 1);
-        passed &= RequireContains(
+        passed &= RequireContainsEither(
             json,
             "\"renderPolicyExecutedTier\": \"IndirectGrouped\"",
-            "executed indirect-grouped policy tier");
+            "\"renderPolicyExecutedTier\": \"GPUResidentScene\"",
+            "executed GPU-driven policy tier");
     }
     if (options.requireDirectExecution)
     {

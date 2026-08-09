@@ -40,6 +40,13 @@ namespace RVX
         {
             return !lifetimeReportPath.empty();
         }
+
+        /** @brief Captures and qualification runs may only finish on Ready. */
+        [[nodiscard]] bool RequiresReadinessWait() const noexcept
+        {
+            return waitReady || !common.screenshotPath.empty() ||
+                   HasLifetimeQualification();
+        }
     };
 
     bool ParseSampleRunnerCLI(int argc,

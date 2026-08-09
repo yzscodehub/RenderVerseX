@@ -35,14 +35,6 @@ namespace RVX
     bool ModelRenderingSample::Setup(SampleContext& context,
                                      std::string& outError)
     {
-        if (!context.models.Load(context.options.modelPath,
-                                 context.scene,
-                                 m_model,
-                                 outError))
-        {
-            return false;
-        }
-
         const float32 aspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(std::max(context.options.height, 1u));
@@ -99,13 +91,25 @@ namespace RVX
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
-        return true;
+        return context.models.Request(context.options.modelPath,
+                                      m_model,
+                                      outError);
     }
 
     void ModelRenderingSample::Update(SampleContext& context, float deltaTime)
     {
-        static_cast<void>(context);
         static_cast<void>(deltaTime);
+        const SceneAssetStatus status =
+            context.models.UpdateReadiness(m_model);
+        if (status.IsFailed() ||
+            status.lifecycle == SceneAssetLifecycle::Cancelled)
+        {
+            m_modelFailure = !status.diagnostic.empty()
+                                 ? status.diagnostic
+                                 : !status.error.message.empty()
+                                       ? status.error.message
+                                       : "Model rendering asset activation was cancelled";
+        }
     }
 
     void ModelRenderingSample::OnInput(SampleContext& context)
@@ -142,10 +146,38 @@ namespace RVX
         }
     }
 
+    SampleReadiness ModelRenderingSample::GetReadiness(
+        const SampleRenderDiagnostics& diagnostics) const
+    {
+        if (!m_modelFailure.empty())
+            return SampleReadiness::Failed(m_modelFailure);
+        if (!m_model.IsFullyResident())
+        {
+            return SampleReadiness::Pending(
+                "Model-rendering sample is waiting for the model to become fully resident");
+        }
+        if (diagnostics.visibleObjectCount == 0)
+        {
+            return SampleReadiness::Pending(
+                "Model-rendering sample is waiting for visible geometry");
+        }
+        return SampleReadiness::Ready();
+    }
+
+    bool ModelRenderingSample::ValidateResult(
+        const SampleRenderDiagnostics& diagnostics,
+        std::string& outError) const
+    {
+        const SampleReadiness readiness = GetReadiness(diagnostics);
+        outError = readiness.reason;
+        return readiness.IsReady();
+    }
+
     void ModelRenderingSample::Shutdown(SampleContext& context)
     {
         static_cast<void>(context);
         m_model = {};
+        m_modelFailure.clear();
         m_skyboxCreated = false;
         m_lightCreated = false;
     }

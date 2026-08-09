@@ -50,14 +50,6 @@ namespace RVX
     bool LightingShadowShowcaseSample::Setup(SampleContext& context,
                                              std::string& outError)
     {
-        if (!context.models.Load(context.options.modelPath,
-                                 context.scene,
-                                 m_model,
-                                 outError))
-        {
-            return false;
-        }
-
         const float32 aspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(context.options.height);
@@ -129,14 +121,26 @@ namespace RVX
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
-        return true;
+        return context.models.Request(context.options.modelPath,
+                                      m_model,
+                                      outError);
     }
 
     void LightingShadowShowcaseSample::Update(SampleContext& context,
                                               float deltaTime)
     {
-        static_cast<void>(context);
         static_cast<void>(deltaTime);
+        const SceneAssetStatus status =
+            context.models.UpdateReadiness(m_model);
+        if (status.IsFailed() ||
+            status.lifecycle == SceneAssetLifecycle::Cancelled)
+        {
+            m_modelFailure = !status.diagnostic.empty()
+                                 ? status.diagnostic
+                                 : !status.error.message.empty()
+                                       ? status.error.message
+                                       : "Lighting-shadow asset activation was cancelled";
+        }
     }
 
     void LightingShadowShowcaseSample::OnInput(SampleContext& context)
@@ -172,47 +176,53 @@ namespace RVX
         }
     }
 
-    bool LightingShadowShowcaseSample::IsReady(
-        const SampleRenderDiagnostics& diagnostics,
-        std::string& outPendingReason) const
+    SampleReadiness LightingShadowShowcaseSample::GetReadiness(
+        const SampleRenderDiagnostics& diagnostics) const
     {
+        if (!m_modelFailure.empty())
+            return SampleReadiness::Failed(m_modelFailure);
+        if (!m_model.IsFullyResident())
+        {
+            return SampleReadiness::Pending(
+                "Lighting-shadow showcase is waiting for the model to become fully resident");
+        }
         if (diagnostics.visibleObjectCount == 0)
         {
-            outPendingReason =
-                "Lighting-shadow showcase is waiting for visible geometry";
-            return false;
+            return SampleReadiness::Pending(
+                "Lighting-shadow showcase is waiting for visible geometry");
         }
         if (diagnostics.renderSceneLightCount == 0)
         {
-            outPendingReason =
-                "Lighting-shadow showcase is waiting for its directional light";
-            return false;
+            return SampleReadiness::Pending(
+                "Lighting-shadow showcase is waiting for its directional light");
         }
         if (!diagnostics.directionalShadowSamplingEnabled)
         {
-            outPendingReason =
+            std::string reason =
                 "Lighting-shadow showcase is waiting for engine shadow sampling";
             if (!diagnostics.directionalShadowReason.empty())
             {
-                outPendingReason += ": " +
-                                    diagnostics.directionalShadowReason;
+                reason += ": " + diagnostics.directionalShadowReason;
             }
-            return false;
+            return SampleReadiness::Pending(std::move(reason));
         }
-        return true;
+        return SampleReadiness::Ready();
     }
 
     bool LightingShadowShowcaseSample::ValidateResult(
         const SampleRenderDiagnostics& diagnostics,
         std::string& outError) const
     {
-        return IsReady(diagnostics, outError);
+        const SampleReadiness readiness = GetReadiness(diagnostics);
+        outError = readiness.reason;
+        return readiness.IsReady();
     }
 
     void LightingShadowShowcaseSample::Shutdown(SampleContext& context)
     {
         static_cast<void>(context);
         m_model = {};
+        m_modelFailure.clear();
         m_shadowAtlasResolution = 0;
         m_shadowCascadeCount = 0;
         m_skyboxCreated = false;

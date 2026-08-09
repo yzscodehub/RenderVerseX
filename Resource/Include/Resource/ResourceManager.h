@@ -246,6 +246,20 @@ namespace RVX::Resource
         ResourceLoadHandle<T> RequestAsync(const std::string& path,
                                            ResourceLoadOptions options = {});
 
+        /**
+         * @brief Begin a prepared load with an immutable caller-supplied loader state.
+         *
+         * Stateful loaders validate the supplied state and its canonical import
+         * hash during admission. The state is then captured by the worker
+         * context, so later loader configuration changes cannot alter the
+         * admitted AssetKey meaning.
+         */
+        template<typename T>
+        ResourceLoadHandle<T> RequestAsync(
+            const std::string& path,
+            ResourceLoadOptions options,
+            ResourceLoadPreparationStateRef preparationState);
+
         /** @brief Owner-thread-pumped callback compatibility overload. */
         template<typename T>
         void LoadAsync(const std::string& path, std::function<void(ResourceHandle<T>)> callback);
@@ -466,7 +480,8 @@ namespace RVX::Resource
         ResourceLoadOperationOwner RequestPreparedLoad(
             const std::string& path,
             ResourceLoadOptions options,
-            ResourceType requestedType = ResourceType::Unknown);
+            ResourceType requestedType = ResourceType::Unknown,
+            ResourceLoadPreparationStateRef preparationState = {});
         void ExecutePreparedLoad(ResourceLoadOperationOwner operation,
                                  std::shared_ptr<IResourceLoader> loader,
                                  ResourceLoadPreparationContext context,
@@ -543,6 +558,20 @@ namespace RVX::Resource
          */
         virtual bool CapturePreparationState(
             uint64 requestedImportOptionsHash,
+            ResourceLoadPreparationStateRef& outState,
+            uint64& outCanonicalImportOptionsHash,
+            ResourceLoadError& outError) const;
+
+        /**
+         * @brief Validate immutable state supplied by a request caller.
+         *
+         * Stateless and legacy loaders reject non-null explicit state by
+         * default. Stateful loaders must verify both the concrete state type
+         * and requested hash before returning the canonical worker snapshot.
+         */
+        virtual bool ValidatePreparationState(
+            uint64 requestedImportOptionsHash,
+            ResourceLoadPreparationStateRef suppliedState,
             ResourceLoadPreparationStateRef& outState,
             uint64& outCanonicalImportOptionsHash,
             ResourceLoadError& outError) const;
@@ -657,6 +686,21 @@ namespace RVX::Resource
             path,
             std::move(options),
             GetResourceTypeHint<T>());
+        return operation ? operation.Subscribe<T>() : ResourceLoadHandle<T>{};
+    }
+
+    template<typename T>
+    ResourceLoadHandle<T> ResourceManager::RequestAsync(
+        const std::string& path,
+        ResourceLoadOptions options,
+        ResourceLoadPreparationStateRef preparationState)
+    {
+        static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
+        ResourceLoadOperationOwner operation = RequestPreparedLoad(
+            path,
+            std::move(options),
+            GetResourceTypeHint<T>(),
+            std::move(preparationState));
         return operation ? operation.Subscribe<T>() : ResourceLoadHandle<T>{};
     }
 

@@ -4,17 +4,19 @@
 
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
+#include "ResourceSceneAdapters/SceneAssetInstantiation.h"
 #include "Scene/Components/CameraComponent.h"
-#include "Samples/SampleCLI.h"
-#include "Samples/SampleContext.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/SkyboxComponent.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneRuntime.h"
+#include "Samples/SampleCLI.h"
+#include "Samples/SampleContext.h"
 
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <utility>
 
 namespace RVX
 {
@@ -44,15 +46,11 @@ namespace RVX
             std::ostringstream stream;
             stream << "requestedMode=" << diagnostics.gpuDrivenRequestedMode
                    << ", policyReason=" << diagnostics.gpuDrivenPolicyReason
-                   << ", qualification="
-                   << diagnostics.gpuDrivenQualification
+                   << ", qualification=" << diagnostics.gpuDrivenQualification
                    << ", enabled=" << diagnostics.gpuDrivenEnabled
-                   << ", graphPassAdded="
-                   << diagnostics.gpuDrivenGraphPassAdded
-                   << ", graphPassRecorded="
-                   << diagnostics.gpuDrivenGraphPassRecorded
-                   << ", executionRecorded="
-                   << diagnostics.gpuDrivenExecutionRecorded
+                   << ", graphPassAdded=" << diagnostics.gpuDrivenGraphPassAdded
+                   << ", graphPassRecorded=" << diagnostics.gpuDrivenGraphPassRecorded
+                   << ", executionRecorded=" << diagnostics.gpuDrivenExecutionRecorded
                    << ", inputDrawItems="
                    << diagnostics.gpuDrivenGraphInputDrawItemCount
                    << ", indirectRequested="
@@ -85,123 +83,53 @@ namespace RVX
     bool GPUDrivenShowcaseSample::Setup(SampleContext& context,
                                         std::string& outError)
     {
-        LoadedSampleModel sourceModel;
-        if (!context.models.Load(context.options.modelPath,
-                                 context.scene,
-                                 sourceModel,
-                                 outError))
-        {
-            return false;
-        }
-
-        m_renderPath = context.options.renderPath;
-        SceneEntity* sourceRoot = sourceModel.ResolveRoot(context.scene);
-        if (!sourceRoot)
-        {
-            outError = "GPU-driven showcase model root handle is stale";
-            return false;
-        }
-        const AABB sourceBounds = sourceRoot->GetWorldBounds();
-        if (!sourceBounds.IsValid())
-        {
-            outError = "GPU-driven showcase model has invalid bounds";
-            return false;
-        }
-        const Vec3 sourceSize = sourceBounds.GetSize();
-        const float32 maximumDimension =
-            std::max({sourceSize.x, sourceSize.y, sourceSize.z});
-        if (!std::isfinite(maximumDimension) || maximumDimension <= 0.00001f)
-        {
-            outError = "GPU-driven showcase model has degenerate bounds";
-            return false;
-        }
-
-        const auto sharedResource = sourceModel.resource;
-        const std::filesystem::path sharedSourcePath = sourceModel.sourcePath;
-        const Vec3 sourceCenter = sourceBounds.GetCenter();
-        const float32 spacing = maximumDimension * GPUDrivenGridSpacingScale;
-        const float32 centerIndex =
-            static_cast<float32>(GPUDrivenGridExtent - 1u) * 0.5f;
         m_models.clear();
-        m_models.reserve(GPUDrivenGridInstanceCount);
         m_bounds.Reset();
-        for (uint32 row = 0; row < GPUDrivenGridExtent; ++row)
-        {
-            for (uint32 column = 0; column < GPUDrivenGridExtent; ++column)
-            {
-                LoadedSampleModel instance;
-                if (row == 0 && column == 0)
-                {
-                    instance = std::move(sourceModel);
-                }
-                else
-                {
-                    if (!context.models.Instantiate(
-                            sharedResource,
-                            sharedSourcePath,
-                            context.scene,
-                            instance,
-                            outError))
-                    {
-                        return false;
-                    }
-                }
-                if (instance.resource.Get() != sharedResource.Get())
-                {
-                    outError =
-                        "GPU-driven showcase did not preserve one shared model resource";
-                    return false;
-                }
+        m_cameraFrame = {};
+        m_sceneInstanceCount = 0;
+        m_failureReason.clear();
+        m_instancesPlaced = false;
+        m_renderablesActivated = false;
+        m_skyboxCreated = false;
+        m_lightCreated = false;
+        m_renderPath = context.options.renderPath;
 
-                const Vec3 gridCenter(
-                    (static_cast<float32>(column) - centerIndex) * spacing,
-                    (centerIndex - static_cast<float32>(row)) * spacing,
-                    0.0f);
-                SceneEntity* instanceRoot =
-                    instance.ResolveRoot(context.scene);
-                if (!instanceRoot)
-                {
-                    outError =
-                        "GPU-driven showcase instance root handle is stale";
-                    return false;
-                }
-                instanceRoot->SetPosition(gridCenter - sourceCenter);
-                const AABB placedBounds = instanceRoot->GetWorldBounds();
-                if (!placedBounds.IsValid())
-                {
-                    outError =
-                        "GPU-driven showcase shared model instance has invalid bounds";
-                    return false;
-                }
-                m_bounds.Expand(placedBounds);
-                m_models.push_back(std::move(instance));
-            }
+        switch (m_renderPath)
+        {
+            case SampleRenderPath::Auto:
+                context.renderSettings.gpuCulling.mode =
+                    RenderGPUDrivenMode::Auto;
+                break;
+            case SampleRenderPath::Direct:
+                context.renderSettings.gpuCulling.mode =
+                    RenderGPUDrivenMode::ForceDisabled;
+                break;
+            case SampleRenderPath::GPUDriven:
+                context.renderSettings.gpuCulling.mode =
+                    RenderGPUDrivenMode::ForceEnabled;
+                break;
+            default:
+                outError = "GPU-driven showcase received an invalid render path";
+                return false;
         }
-        m_sceneInstanceCount = static_cast<uint32>(m_models.size());
+        context.renderSettings.gpuCulling.enableDistanceCulling = true;
+        context.renderSettings.gpuCulling.enableOcclusionCulling = false;
+        context.renderSettings.shadows.enabled = false;
+        context.renderSettings.postProcess.enabled = true;
+        context.renderSettings.postProcess.enableTAA = false;
+        context.renderSettings.postProcess.enableBloom = false;
+        context.renderSettings.postProcess.enableSSAO = false;
+        context.renderSettings.postProcess.enableSSR = false;
+
         const float32 aspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(std::max(context.options.height, 1u));
-        m_cameraFrame = BuildModelCameraFrame(
-            m_bounds,
-            aspect,
-            GPUDrivenVerticalFov,
-            1.15f);
-        if (!m_cameraFrame.valid)
-        {
-            outError = "GPU-driven showcase model has no finite renderable bounds";
-            return false;
-        }
-
         context.camera.SetPerspective(GPUDrivenVerticalFov,
                                       aspect,
-                                      m_cameraFrame.nearPlane,
-                                      m_cameraFrame.farPlane);
-        context.camera.SetPosition(
-            m_cameraFrame.target +
-            Vec3(0.0f,
-                 m_cameraFrame.distance * 0.35f,
-                 m_cameraFrame.distance * 0.94f));
-        context.camera.LookAt(m_cameraFrame.target);
+                                      0.05f,
+                                      10000.0f);
+        context.camera.SetPosition(Vec3(0.0f, 2.0f, 6.0f));
+        context.camera.LookAt(Vec3(0.0f));
 
         ActorSpawnParams skyParams;
         skyParams.name = "GPUDrivenShowcaseSky";
@@ -241,45 +169,259 @@ namespace RVX
         light->SetCastsShadow(false);
         m_lightCreated = true;
 
-        switch (m_renderPath)
+        LoadedSampleModel sourceModel;
+        if (!context.models.Request(context.options.modelPath,
+                                    sourceModel,
+                                    outError,
+                                    false))
         {
-            case SampleRenderPath::Auto:
-                context.renderSettings.gpuCulling.mode =
-                    RenderGPUDrivenMode::Auto;
-                break;
-            case SampleRenderPath::Direct:
-                context.renderSettings.gpuCulling.mode =
-                    RenderGPUDrivenMode::ForceDisabled;
-                break;
-            case SampleRenderPath::GPUDriven:
-                context.renderSettings.gpuCulling.mode =
-                    RenderGPUDrivenMode::ForceEnabled;
-                break;
-            default:
-                outError = "GPU-driven showcase received an invalid render path";
-                return false;
+            outError = "GPU-driven showcase failed to queue its model: " +
+                       outError;
+            return false;
         }
-        context.renderSettings.gpuCulling.enableDistanceCulling = true;
-        context.renderSettings.gpuCulling.enableOcclusionCulling = false;
-        context.renderSettings.shadows.enabled = false;
-        context.renderSettings.postProcess.enabled = true;
-        context.renderSettings.postProcess.enableTAA = false;
-        context.renderSettings.postProcess.enableBloom = false;
-        context.renderSettings.postProcess.enableSSAO = false;
-        context.renderSettings.postProcess.enableSSR = false;
+        m_models.push_back(std::move(sourceModel));
         return true;
     }
 
     void GPUDrivenShowcaseSample::Update(SampleContext& context,
                                          float deltaTime)
     {
-        static_cast<void>(context);
         static_cast<void>(deltaTime);
+        if (!m_failureReason.empty())
+            return;
+
+        for (LoadedSampleModel& model : m_models)
+        {
+            const SceneAssetStatus status =
+                context.models.UpdateReadiness(model);
+            if (status.IsFailed() ||
+                status.lifecycle == SceneAssetLifecycle::Cancelled)
+            {
+                FailAndCancel(
+                    context,
+                    status.diagnostic.empty()
+                        ? "GPU-driven showcase model request failed"
+                        : status.diagnostic);
+                return;
+            }
+        }
+
+        if (m_instancesPlaced)
+        {
+            bool everyModelFullyResident =
+                m_models.size() == GPUDrivenGridInstanceCount;
+            for (const LoadedSampleModel& model : m_models)
+                everyModelFullyResident &= model.IsFullyResident();
+            if (everyModelFullyResident && !m_renderablesActivated)
+            {
+                for (const LoadedSampleModel& model : m_models)
+                {
+                    if (!SceneAssetInstantiator::SetRenderablesEnabled(
+                            context.scene,
+                            model.instance,
+                            true))
+                    {
+                        FailAndCancel(
+                            context,
+                            "GPU-driven showcase could not activate a placed model instance");
+                        return;
+                    }
+                }
+                m_renderablesActivated = true;
+            }
+            return;
+        }
+
+        DisableUnplacedInstances(context);
+        if (m_models.empty() || !m_models.front().IsCPUReady())
+            return;
+
+        std::string error;
+        if (!PlaceInstances(context, error))
+        {
+            FailAndCancel(
+                context,
+                error.empty()
+                    ? "GPU-driven showcase failed to place shared model instances"
+                    : std::move(error));
+        }
     }
 
     void GPUDrivenShowcaseSample::OnInput(SampleContext& context)
     {
         static_cast<void>(context);
+    }
+
+    bool GPUDrivenShowcaseSample::PlaceInstances(SampleContext& context,
+                                                  std::string& outError)
+    {
+        outError.clear();
+        if (m_models.size() != 1 || !m_models.front().resource.IsLoaded())
+        {
+            outError = "GPU-driven showcase source model is not CPU-ready";
+            return false;
+        }
+
+        LoadedSampleModel& sourceModel = m_models.front();
+        SceneEntity* sourceRoot = sourceModel.ResolveRoot(context.scene);
+        if (!sourceRoot)
+        {
+            outError = "GPU-driven showcase model root handle is stale";
+            return false;
+        }
+        const AABB sourceBounds = sourceRoot->GetWorldBounds();
+        if (!sourceBounds.IsValid())
+        {
+            outError = "GPU-driven showcase model has invalid bounds";
+            return false;
+        }
+        const Vec3 sourceSize = sourceBounds.GetSize();
+        const float32 maximumDimension =
+            std::max({sourceSize.x, sourceSize.y, sourceSize.z});
+        if (!std::isfinite(maximumDimension) || maximumDimension <= 0.00001f)
+        {
+            outError = "GPU-driven showcase model has degenerate bounds";
+            return false;
+        }
+
+        const auto sharedResource = sourceModel.resource;
+        const std::filesystem::path sharedSourcePath = sourceModel.sourcePath;
+        std::vector<LoadedSampleModel> stagedModels;
+        stagedModels.reserve(GPUDrivenGridInstanceCount - 1u);
+        for (uint32 index = 1; index < GPUDrivenGridInstanceCount; ++index)
+        {
+            LoadedSampleModel instance;
+            if (!context.models.Instantiate(sharedResource,
+                                            sharedSourcePath,
+                                            instance,
+                                            outError,
+                                            false))
+            {
+                for (LoadedSampleModel& staged : stagedModels)
+                    static_cast<void>(context.models.Cancel(staged));
+                return false;
+            }
+            if (instance.resource.Get() != sharedResource.Get() ||
+                !instance.ResolveRoot(context.scene))
+            {
+                static_cast<void>(context.models.Cancel(instance));
+                for (LoadedSampleModel& staged : stagedModels)
+                    static_cast<void>(context.models.Cancel(staged));
+                outError =
+                    "GPU-driven showcase did not preserve one shared model resource";
+                return false;
+            }
+            stagedModels.push_back(std::move(instance));
+        }
+
+        std::vector<SceneEntity*> roots;
+        roots.reserve(GPUDrivenGridInstanceCount);
+        roots.push_back(sourceRoot);
+        for (LoadedSampleModel& staged : stagedModels)
+        {
+            SceneEntity* root = staged.ResolveRoot(context.scene);
+            if (!root)
+            {
+                for (LoadedSampleModel& model : stagedModels)
+                    static_cast<void>(context.models.Cancel(model));
+                outError = "GPU-driven showcase instance root handle is stale";
+                return false;
+            }
+            roots.push_back(root);
+        }
+
+        const float32 spacing = maximumDimension * GPUDrivenGridSpacingScale;
+        const float32 centerIndex =
+            static_cast<float32>(GPUDrivenGridExtent - 1u) * 0.5f;
+        AABB placedBounds;
+        placedBounds.Reset();
+        for (uint32 index = 0; index < GPUDrivenGridInstanceCount; ++index)
+        {
+            const uint32 row = index / GPUDrivenGridExtent;
+            const uint32 column = index % GPUDrivenGridExtent;
+            const Vec3 gridCenter(
+                (static_cast<float32>(column) - centerIndex) * spacing,
+                (centerIndex - static_cast<float32>(row)) * spacing,
+                0.0f);
+            roots[index]->SetPosition(gridCenter - sourceBounds.GetCenter());
+            const AABB instanceBounds = roots[index]->GetWorldBounds();
+            if (!instanceBounds.IsValid())
+            {
+                for (LoadedSampleModel& model : stagedModels)
+                    static_cast<void>(context.models.Cancel(model));
+                outError =
+                    "GPU-driven showcase shared model instance has invalid bounds";
+                return false;
+            }
+            placedBounds.Expand(instanceBounds);
+        }
+
+        const float32 aspect =
+            static_cast<float32>(context.options.width) /
+            static_cast<float32>(std::max(context.options.height, 1u));
+        const ModelCameraFrame cameraFrame = BuildModelCameraFrame(
+            placedBounds,
+            aspect,
+            GPUDrivenVerticalFov,
+            1.15f);
+        if (!cameraFrame.valid)
+        {
+            for (LoadedSampleModel& model : stagedModels)
+                static_cast<void>(context.models.Cancel(model));
+            outError = "GPU-driven showcase model has no finite renderable bounds";
+            return false;
+        }
+
+        m_models.reserve(GPUDrivenGridInstanceCount);
+        for (LoadedSampleModel& staged : stagedModels)
+            m_models.push_back(std::move(staged));
+        m_bounds = placedBounds;
+        m_cameraFrame = cameraFrame;
+        m_sceneInstanceCount = static_cast<uint32>(m_models.size());
+        context.camera.SetPerspective(GPUDrivenVerticalFov,
+                                      aspect,
+                                      m_cameraFrame.nearPlane,
+                                      m_cameraFrame.farPlane);
+        context.camera.SetPosition(
+            m_cameraFrame.target +
+            Vec3(0.0f,
+                 m_cameraFrame.distance * 0.35f,
+                 m_cameraFrame.distance * 0.94f));
+        context.camera.LookAt(m_cameraFrame.target);
+        context.camera.MarkCut();
+        m_instancesPlaced = true;
+        DisableUnplacedInstances(context);
+        return true;
+    }
+
+    void GPUDrivenShowcaseSample::DisableUnplacedInstances(
+        SampleContext& context) const
+    {
+        for (const LoadedSampleModel& model : m_models)
+        {
+            if (model.instance.rootActor.IsValid())
+            {
+                static_cast<void>(SceneAssetInstantiator::SetRenderablesEnabled(
+                    context.scene,
+                    model.instance,
+                    false));
+            }
+        }
+    }
+
+    void GPUDrivenShowcaseSample::FailAndCancel(SampleContext& context,
+                                                 std::string reason)
+    {
+        if (m_failureReason.empty())
+            m_failureReason = std::move(reason);
+        for (LoadedSampleModel& model : m_models)
+        {
+            if (model.loadHandle.IsValid())
+                static_cast<void>(context.models.Cancel(model));
+        }
+        m_sceneInstanceCount = 0;
+        m_instancesPlaced = false;
+        m_renderablesActivated = false;
     }
 
     void GPUDrivenShowcaseSample::AppendReport(
@@ -305,29 +447,17 @@ namespace RVX
         reporter.ResourceDiagnostic(
             "render path=" + std::string(GetSampleRenderPathName(m_renderPath)));
         if (m_renderPath == SampleRenderPath::GPUDriven)
-        {
             reporter.Enable("GPUDrivenPathRequested");
-        }
         else if (m_renderPath == SampleRenderPath::Direct)
-        {
             reporter.Enable("DirectPathRequested");
-        }
         else
-        {
             reporter.Enable("AutomaticRenderPathRequested");
-        }
         if (m_cameraFrame.valid)
-        {
             reporter.Enable("BoundsCameraFraming");
-        }
         if (m_skyboxCreated)
-        {
             reporter.Enable("ProceduralSkyScene");
-        }
         if (m_lightCreated)
-        {
             reporter.Enable("DirectionalLightScene");
-        }
     }
 
     bool GPUDrivenShowcaseSample::IsGPUDrivenReady(
@@ -394,24 +524,44 @@ namespace RVX
         return ready;
     }
 
-    bool GPUDrivenShowcaseSample::IsReady(
-        const SampleRenderDiagnostics& diagnostics,
-        std::string& outPendingReason) const
+    SampleReadiness GPUDrivenShowcaseSample::GetReadiness(
+        const SampleRenderDiagnostics& diagnostics) const
     {
+        if (!m_failureReason.empty())
+            return SampleReadiness::Failed(m_failureReason);
+        if (!m_instancesPlaced ||
+            m_models.size() != GPUDrivenGridInstanceCount)
+        {
+            return SampleReadiness::Pending(
+                "Waiting for all shared model instances to become CPU-ready and be placed");
+        }
+        for (const LoadedSampleModel& model : m_models)
+        {
+            if (!model.IsFullyResident())
+            {
+                return SampleReadiness::Pending(
+                    "Waiting for every shared model instance to become fully resident");
+            }
+        }
         if (m_sceneInstanceCount == 0 ||
             diagnostics.visibleObjectCount < m_sceneInstanceCount)
         {
-            outPendingReason =
-                "GPU-driven showcase is waiting for every shared model instance to become visible";
-            return false;
+            return SampleReadiness::Pending(
+                "GPU-driven showcase is waiting for every shared model instance to become visible");
         }
+
+        std::string pendingReason;
         if (m_renderPath == SampleRenderPath::GPUDriven)
         {
-            return IsGPUDrivenReady(diagnostics, outPendingReason);
+            return IsGPUDrivenReady(diagnostics, pendingReason)
+                       ? SampleReadiness::Ready()
+                       : SampleReadiness::Pending(std::move(pendingReason));
         }
         if (m_renderPath == SampleRenderPath::Direct)
         {
-            return IsDirectReady(diagnostics, outPendingReason);
+            return IsDirectReady(diagnostics, pendingReason)
+                       ? SampleReadiness::Ready()
+                       : SampleReadiness::Pending(std::move(pendingReason));
         }
 
         if (diagnostics.gpuDrivenEnabled)
@@ -429,13 +579,11 @@ namespace RVX
                 diagnostics.gpuDrivenOpaqueIndirectDrawUpperBound > 0 &&
                 diagnostics.gpuDrivenOpaqueIndirectDrawUpperBound <
                     diagnostics.gpuDrivenGraphInputDrawItemCount;
-            if (!ready)
-            {
-                outPendingReason =
-                    "Waiting for Auto GPU-driven execution: " +
-                    DescribeGPUDrivenState(diagnostics);
-            }
-            return ready;
+            return ready
+                       ? SampleReadiness::Ready()
+                       : SampleReadiness::Pending(
+                             "Waiting for Auto GPU-driven execution: " +
+                             DescribeGPUDrivenState(diagnostics));
         }
         if (diagnostics.gpuDrivenPolicyReason == "BackendNotQualified")
         {
@@ -450,35 +598,41 @@ namespace RVX
                     diagnostics.opaqueInstancingSubmittedInstanceCount &&
                 diagnostics.opaqueInstancingFallbackBatchCount == 0 &&
                 !diagnostics.gpuDrivenOpaqueIndirectSubmitted;
-            if (!ready)
-            {
-                outPendingReason =
-                    "Waiting for honest Auto direct fallback: " +
-                    DescribeGPUDrivenState(diagnostics);
-            }
-            return ready;
+            return ready
+                       ? SampleReadiness::Ready()
+                       : SampleReadiness::Pending(
+                             "Waiting for honest Auto direct fallback: " +
+                             DescribeGPUDrivenState(diagnostics));
         }
-
-        outPendingReason = "Waiting for Auto render-path resolution: " +
-                           DescribeGPUDrivenState(diagnostics);
-        return false;
+        return SampleReadiness::Pending(
+            "Waiting for Auto render-path resolution: " +
+            DescribeGPUDrivenState(diagnostics));
     }
 
     bool GPUDrivenShowcaseSample::ValidateResult(
         const SampleRenderDiagnostics& diagnostics,
         std::string& outError) const
     {
-        return IsReady(diagnostics, outError);
+        const SampleReadiness readiness = GetReadiness(diagnostics);
+        outError = readiness.reason;
+        return readiness.IsReady();
     }
 
     void GPUDrivenShowcaseSample::Shutdown(SampleContext& context)
     {
-        static_cast<void>(context);
+        for (LoadedSampleModel& model : m_models)
+        {
+            if (model.loadHandle.IsValid())
+                static_cast<void>(context.models.Cancel(model));
+        }
         m_models.clear();
         m_bounds.Reset();
         m_cameraFrame = {};
         m_sceneInstanceCount = 0;
         m_renderPath = SampleRenderPath::GPUDriven;
+        m_failureReason.clear();
+        m_instancesPlaced = false;
+        m_renderablesActivated = false;
         m_skyboxCreated = false;
         m_lightCreated = false;
     }

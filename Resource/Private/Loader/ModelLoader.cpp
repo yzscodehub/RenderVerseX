@@ -193,6 +193,12 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
         return false;
     }
     importSpan.SetAttribute("result", "prepared");
+    importSpan.End();
+
+    Diagnostics::TraceSpan prepareSpan = Diagnostics::BeginTraceSpan(
+        context.traceContext,
+        "CPUPrepare",
+        {{"path", context.resolvedPath}});
 
     // There is intentionally no ResourceManager on this per-request decoder.
     // This is what prevents a worker from accessing cache, registry, lifecycle
@@ -205,6 +211,7 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
                                                context.traceContext);
     if (!model)
     {
+        prepareSpan.SetAttribute("result", "failed");
         outError = {ResourceLoadErrorCode::LoaderFailure,
                     "Model loader could not prepare the model resource."};
         return false;
@@ -253,10 +260,14 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
     }
     if (!outBundle.SetRoot(std::move(preparedModel)))
     {
+        prepareSpan.SetAttribute("result", "failed");
         outError = {ResourceLoadErrorCode::LoaderFailure,
                     "Model loader could not publish a model root into its prepared bundle."};
         return false;
     }
+    prepareSpan.SetAttribute("meshCount", model->GetMeshCount());
+    prepareSpan.SetAttribute("materialCount", model->GetMaterialCount());
+    prepareSpan.SetAttribute("result", "prepared");
     return true;
 }
 

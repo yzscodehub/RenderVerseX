@@ -26,13 +26,16 @@ namespace RVX
         void Update(SampleContext& context, float deltaTime) override;
         void OnInput(SampleContext& context) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
-        bool IsReady(const SampleRenderDiagnostics& diagnostics,
-                     std::string& outPendingReason) const override;
+        SampleReadiness GetReadiness(
+            const SampleRenderDiagnostics& diagnostics) const override;
         bool ValidateResult(const SampleRenderDiagnostics& diagnostics,
                             std::string& outError) const override;
         void Shutdown(SampleContext& context) override;
 
     private:
+        bool PlaceInstances(SampleContext& context, std::string& outError);
+        void DisableUnplacedInstances(SampleContext& context) const;
+        void FailAndCancel(SampleContext& context, std::string reason);
         bool IsGPUDrivenReady(const SampleRenderDiagnostics& diagnostics,
                               std::string& outPendingReason) const;
         bool IsDirectReady(const SampleRenderDiagnostics& diagnostics,
@@ -43,6 +46,9 @@ namespace RVX
         ModelCameraFrame m_cameraFrame;
         uint32 m_sceneInstanceCount = 0;
         SampleRenderPath m_renderPath = SampleRenderPath::GPUDriven;
+        std::string m_failureReason;
+        bool m_instancesPlaced = false;
+        bool m_renderablesActivated = false;
         bool m_skyboxCreated = false;
         bool m_lightCreated = false;
     };

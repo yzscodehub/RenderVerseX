@@ -127,6 +127,34 @@ namespace RVX::Resource
             return ResourceManager::Get().LoadAsync<T>(path);
         }
 
+        /** @brief Begin a coalesced load without blocking the update thread. */
+        template<typename T>
+        ResourceLoadHandle<T> RequestAsync(
+            const std::string& path,
+            ResourceLoadOptions options = {})
+        {
+            if (!m_initialized || !RequireUpdateThread("RequestAsync"))
+                return {};
+            return ResourceManager::Get().RequestAsync<T>(
+                path,
+                std::move(options));
+        }
+
+        /** @brief Begin a load with caller-supplied immutable loader state. */
+        template<typename T>
+        ResourceLoadHandle<T> RequestAsync(
+            const std::string& path,
+            ResourceLoadOptions options,
+            ResourceLoadPreparationStateRef preparationState)
+        {
+            if (!m_initialized || !RequireUpdateThread("RequestAsync"))
+                return {};
+            return ResourceManager::Get().RequestAsync<T>(
+                path,
+                std::move(options),
+                std::move(preparationState));
+        }
+
         template<typename T>
         void LoadAsync(const std::string& path,
                        std::function<void(ResourceHandle<T>)> callback)

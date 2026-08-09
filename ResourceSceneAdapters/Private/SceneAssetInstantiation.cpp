@@ -37,17 +37,22 @@ namespace
                status.state == RenderResourcePublicState::Failed;
     }
 
-    SceneAssetReadiness FailAndRollback(Scene& scene,
-                                        SceneAssetInstance& instance,
-                                        std::string diagnostic)
+    SceneAssetStatus FailAndRollback(Scene& scene,
+                                     SceneAssetInstance& instance,
+                                     std::string diagnostic)
     {
         if (Actor* root = scene.ResolveActor(instance.rootActor))
             static_cast<void>(scene.DestroyActor(root));
         instance.rootActor = Actor::InvalidHandle;
         instance.actors.clear();
-        instance.readiness = SceneAssetReadiness::Failed;
-        instance.diagnostic = std::move(diagnostic);
-        return instance.readiness;
+        instance.status.lifecycle = SceneAssetLifecycle::Failed;
+        instance.status.residency = SceneAssetResidency::None;
+        instance.status.error = {
+            Resource::ResourceLoadErrorCode::PublishFailure,
+            diagnostic};
+        instance.status.diagnostic = std::move(diagnostic);
+        ++instance.status.revision;
+        return instance.status;
     }
 } // namespace
 
@@ -60,8 +65,11 @@ SceneAssetInstance SceneAssetInstantiator::InstantiateModel(
     if (!scene.IsInitialized() || !scene.IsUpdateThread() ||
         model.GetRootNode() == nullptr)
     {
-        result.readiness = SceneAssetReadiness::Failed;
-        result.diagnostic = "Scene/model is not ready for instantiation";
+        result.status.lifecycle = SceneAssetLifecycle::Failed;
+        result.status.error = {
+            Resource::ResourceLoadErrorCode::InvalidRequest,
+            "Scene/model is not ready for instantiation"};
+        result.status.diagnostic = result.status.error.message;
         return result;
     }
 
@@ -69,8 +77,11 @@ SceneAssetInstance SceneAssetInstantiator::InstantiateModel(
     auto* root = dynamic_cast<SceneEntity*>(actor);
     if (!root)
     {
-        result.readiness = SceneAssetReadiness::Failed;
-        result.diagnostic = "Model root could not be instantiated";
+        result.status.lifecycle = SceneAssetLifecycle::Failed;
+        result.status.error = {
+            Resource::ResourceLoadErrorCode::PublishFailure,
+            "Model root could not be instantiated"};
+        result.status.diagnostic = result.status.error.message;
         return result;
     }
 
@@ -80,9 +91,11 @@ SceneAssetInstance SceneAssetInstantiator::InstantiateModel(
     {
         static_cast<void>(scene.DestroyActor(root));
         result = {};
-        result.readiness = SceneAssetReadiness::Failed;
-        result.diagnostic =
-            "Model hierarchy instantiation was incomplete and was rolled back";
+        result.status.lifecycle = SceneAssetLifecycle::Failed;
+        result.status.error = {
+            Resource::ResourceLoadErrorCode::PublishFailure,
+            "Model hierarchy instantiation was incomplete and was rolled back"};
+        result.status.diagnostic = result.status.error.message;
         return result;
     }
 
@@ -110,11 +123,14 @@ SceneAssetInstance SceneAssetInstantiator::InstantiateModel(
         }
     }
 
-    result.readiness = SceneAssetReadiness::CPUReady;
+    result.status.lifecycle = SceneAssetLifecycle::Active;
+    result.status.residency = SceneAssetResidency::CPUReady;
+    result.status.progress = 1.0f;
+    result.status.revision = 1;
     return result;
 }
 
-SceneAssetReadiness SceneAssetInstantiator::UpdateReadiness(
+SceneAssetStatus SceneAssetInstantiator::UpdateResidency(
     Scene& scene,
     const Resource::ModelResource& model,
     Resource::ResourceSubsystem& resources,
@@ -162,9 +178,10 @@ SceneAssetReadiness SceneAssetInstantiator::UpdateReadiness(
                     scene, instance,
                     "A required model mesh failed before GPU upload");
             }
-            instance.readiness = SceneAssetReadiness::Loading;
-            instance.diagnostic.clear();
-            return instance.readiness;
+            instance.status.lifecycle = SceneAssetLifecycle::Active;
+            instance.status.residency = SceneAssetResidency::CPUReady;
+            instance.status.diagnostic.clear();
+            return instance.status;
         }
         if (inspect(AssetId{mesh.GetId()}, RenderResourceKind::Mesh) ==
             RequiredResourceReadiness::Failed)
@@ -184,9 +201,10 @@ SceneAssetReadiness SceneAssetInstantiator::UpdateReadiness(
                     scene, instance,
                     "A required model material failed before GPU upload");
             }
-            instance.readiness = SceneAssetReadiness::Loading;
-            instance.diagnostic.clear();
-            return instance.readiness;
+            instance.status.lifecycle = SceneAssetLifecycle::Active;
+            instance.status.residency = SceneAssetResidency::CPUReady;
+            instance.status.diagnostic.clear();
+            return instance.status;
         }
         if (inspect(AssetId{material.GetId()}, RenderResourceKind::Material) ==
             RequiredResourceReadiness::Failed)
@@ -197,11 +215,44 @@ SceneAssetReadiness SceneAssetInstantiator::UpdateReadiness(
         }
     }
 
-    instance.readiness = uploadPending
-                             ? SceneAssetReadiness::GPUUploadPending
-                             : SceneAssetReadiness::RenderReady;
-    instance.diagnostic.clear();
-    return instance.readiness;
+    const SceneAssetResidency nextResidency =
+        uploadPending ? SceneAssetResidency::CPUReady
+                      : SceneAssetResidency::FullyResident;
+    if (instance.status.lifecycle != SceneAssetLifecycle::Active ||
+        instance.status.residency != nextResidency)
+    {
+        ++instance.status.revision;
+    }
+    instance.status.lifecycle = SceneAssetLifecycle::Active;
+    instance.status.residency = nextResidency;
+    instance.status.progress = uploadPending ? 0.75f : 1.0f;
+    instance.status.error = {};
+    instance.status.diagnostic.clear();
+    return instance.status;
+}
+
+bool SceneAssetInstantiator::SetRenderablesEnabled(
+    Scene& scene,
+    const SceneAssetInstance& instance,
+    bool enabled)
+{
+    if (!scene.IsInitialized() || !scene.IsUpdateThread())
+        return false;
+
+    bool foundRenderable = false;
+    for (Actor::Handle actorHandle : instance.actors)
+    {
+        for (StaticMeshComponent* primitive :
+             scene.GetComponentsForActorImplementing<StaticMeshComponent>(
+                 actorHandle))
+        {
+            if (!primitive)
+                continue;
+            primitive->SetEnabled(enabled);
+            foundRenderable = true;
+        }
+    }
+    return foundRenderable;
 }
 
 bool SceneAssetInstantiator::Destroy(Scene& scene,
@@ -211,8 +262,12 @@ bool SceneAssetInstantiator::Destroy(Scene& scene,
     if (!root)
     {
         instance = {};
-        instance.readiness = SceneAssetReadiness::Failed;
-        instance.diagnostic = "Scene asset instance was already absent";
+        instance.status.lifecycle = SceneAssetLifecycle::Failed;
+        instance.status.residency = SceneAssetResidency::None;
+        instance.status.diagnostic = "Scene asset instance was already absent";
+        instance.status.error = {
+            Resource::ResourceLoadErrorCode::PublishFailure,
+            instance.status.diagnostic};
         return false;
     }
 
@@ -230,6 +285,10 @@ bool SceneAssetInstantiator::Cancel(Scene& scene,
         scene.ResolveActor(instance.rootActor) != nullptr;
     static_cast<void>(FailAndRollback(
         scene, instance, "Scene asset instantiation was cancelled"));
+    instance.status.lifecycle = SceneAssetLifecycle::Cancelled;
+    instance.status.error = {
+        Resource::ResourceLoadErrorCode::Cancelled,
+        "Scene asset instantiation was cancelled"};
     return existed;
 }
 

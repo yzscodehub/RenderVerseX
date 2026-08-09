@@ -9,6 +9,7 @@
 #include "Resource/Types/TextureResource.h"
 #include "Resource/Types/EnvironmentResource.h"
 #include "Resource/ResourceHandle.h"
+#include "ResourceSceneAdapters/SceneAssetLoadCoordinator.h"
 
 #include <filesystem>
 #include <string>
@@ -39,6 +40,8 @@ namespace RVX
         Resource::TextureHandle irradiance;
         Resource::TextureHandle prefiltered;
         Resource::TextureHandle brdfLUT;
+        SceneAssetLoadHandle loadHandle = InvalidSceneAssetLoadHandle;
+        SceneAssetStatus status;
         uint32 environmentResolution = 0;
         uint32 irradianceResolution = 0;
         uint32 prefilteredResolution = 0;
@@ -46,6 +49,7 @@ namespace RVX
         uint32 brdfLUTResolution = 0;
 
         [[nodiscard]] bool IsValid() const noexcept;
+        [[nodiscard]] bool IsCPUReady() const noexcept;
     };
 
     /**
@@ -57,22 +61,22 @@ namespace RVX
     class SampleEnvironmentLoader final
     {
     public:
-        SampleEnvironmentLoader(Resource::ResourceManager& resources,
-                                Resource::ResourceSubsystem& resourceSubsystem)
-            noexcept;
+        explicit SampleEnvironmentLoader(
+            SceneAssetLoadCoordinator& coordinator) noexcept;
 
-        bool Load(const std::filesystem::path& path,
-                  const SampleEnvironmentLoadOptions& options,
-                  LoadedSampleEnvironment& output,
-                  std::string& outError) const;
+        bool Request(const std::filesystem::path& path,
+                     const SampleEnvironmentLoadOptions& options,
+                     SkyboxComponent& targetSkybox,
+                     LoadedSampleEnvironment& output,
+                     std::string& outError) const;
 
-        bool BindToSkybox(SkyboxComponent& skybox,
-                          const LoadedSampleEnvironment& environment,
-                          float32 exposure,
-                          std::string& outError) const;
+        [[nodiscard]] SceneAssetStatus UpdateReadiness(
+            LoadedSampleEnvironment& environment) const;
+
+        [[nodiscard]] bool Cancel(
+            LoadedSampleEnvironment& environment) const;
 
     private:
-        Resource::ResourceManager& m_resources;
-        Resource::ResourceSubsystem& m_resourceSubsystem;
+        SceneAssetLoadCoordinator& m_coordinator;
     };
 } // namespace RVX

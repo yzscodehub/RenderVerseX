@@ -175,6 +175,51 @@ TEST(EnvironmentPreparedLoadingValidation, CapturedAdmissionStateIsDeterministic
     EXPECT_FLOAT_EQ(first.hdrOptions.exposure, 1.25f);
 }
 
+TEST(EnvironmentPreparedLoadingValidation,
+     ExplicitPerRequestStateDoesNotMutateOrObserveGlobalLoaderOptions)
+{
+    EnvironmentLoadOptions requestOptions;
+    requestOptions.quality = HDRIBLQualityProfile::Validation;
+    requestOptions.exposure = 1.25f;
+
+    uint64 canonicalHash = 0;
+    ResourceLoadError error;
+    ResourceLoadPreparationStateRef state =
+        EnvironmentLoader::CreatePreparationState(
+            requestOptions,
+            canonicalHash,
+            error);
+    ASSERT_TRUE(state) << error.message;
+    ASSERT_NE(canonicalHash, 0U);
+
+    EnvironmentLoadOptions unrelatedGlobalOptions;
+    unrelatedGlobalOptions.quality = HDRIBLQualityProfile::High;
+    unrelatedGlobalOptions.exposure = 4.0f;
+    EnvironmentLoader loader(unrelatedGlobalOptions);
+
+    ResourceLoadPreparationStateRef validated;
+    uint64 validatedHash = 0;
+    EXPECT_TRUE(loader.ValidatePreparationState(canonicalHash,
+                                                state,
+                                                validated,
+                                                validatedHash,
+                                                error));
+    EXPECT_EQ(validated.get(), state.get());
+    EXPECT_EQ(validatedHash, canonicalHash);
+    const auto typed =
+        std::dynamic_pointer_cast<const EnvironmentPreparationState>(validated);
+    ASSERT_TRUE(typed);
+    EXPECT_FLOAT_EQ(typed->hdrOptions.exposure, requestOptions.exposure);
+    EXPECT_EQ(typed->sourceOptions.quality, requestOptions.quality);
+
+    EXPECT_FALSE(loader.ValidatePreparationState(canonicalHash + 1u,
+                                                 state,
+                                                 validated,
+                                                 validatedHash,
+                                                 error));
+    EXPECT_EQ(error.code, ResourceLoadErrorCode::InvalidRequest);
+}
+
 TEST(EnvironmentPreparedLoadingValidation, PrepareBuildsUnpublishedDependencyFirstEnvironmentBundle)
 {
     const ScopedTempFile fixture(MakeUniqueHDRPath("Bundle"));
@@ -365,4 +410,51 @@ TEST(EnvironmentPreparedLoadingValidation, ResourceManagerRoutesTypedEnvironment
               ResourceManager::Get().GetCache().Get(dependencyIds[2]));
     EXPECT_EQ(reloaded->GetData().brdfLUT.Get(),
               ResourceManager::Get().GetCache().Get(dependencyIds[3]));
+}
+
+TEST(EnvironmentPreparedLoadingValidation,
+     ResourceManagerUsesExplicitEnvironmentStateWithoutGlobalMutation)
+{
+    const ScopedTempFile fixture(MakeUniqueHDRPath("ExplicitState"));
+    ASSERT_TRUE(WriteHDRFixture(fixture.Get()));
+    EnvironmentManagerGuard guard;
+
+    auto* loader = dynamic_cast<EnvironmentLoader*>(
+        ResourceManager::Get().GetLoader(ResourceType::Environment));
+    ASSERT_NE(loader, nullptr);
+    const EnvironmentLoadOptions original = loader->GetOptions();
+
+    EnvironmentLoadOptions requestOptions;
+    requestOptions.quality = HDRIBLQualityProfile::Validation;
+    requestOptions.exposure = 1.75f;
+    uint64 canonicalHash = 0;
+    ResourceLoadError error;
+    ResourceLoadPreparationStateRef state =
+        EnvironmentLoader::CreatePreparationState(
+            requestOptions,
+            canonicalHash,
+            error);
+    ASSERT_TRUE(state) << error.message;
+
+    ResourceLoadOptions options;
+    options.importOptionsHash = canonicalHash;
+    auto request = ResourceManager::Get().RequestAsync<EnvironmentResource>(
+        fixture.Get().string(),
+        options,
+        state);
+    ASSERT_TRUE(request);
+    EXPECT_FLOAT_EQ(loader->GetOptions().exposure, original.exposure);
+
+    for (uint32 attempt = 0; attempt < 500 && !request.TryGet(); ++attempt)
+    {
+        ResourceManager::Get().ProcessCompletedLoads();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const EnvironmentHandle environment = request.TryGet();
+    ASSERT_TRUE(environment);
+    EXPECT_FLOAT_EQ(environment->GetData().intensity,
+                    requestOptions.exposure);
+    EXPECT_EQ(request.GetSnapshot().assetKey.importOptionsHash,
+              canonicalHash);
+    EXPECT_FLOAT_EQ(loader->GetOptions().exposure, original.exposure);
 }

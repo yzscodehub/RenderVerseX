@@ -9,6 +9,7 @@
 #include "Render/RenderSubsystem.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/ResourceSubsystem.h"
+#include "ResourceSceneAdapters/SceneAssetLoadCoordinator.h"
 #include "Runtime/Input/InputSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
 #include "Samples/RuntimeFrameDriver.h"
@@ -1171,6 +1172,7 @@ namespace RVX
             return 1;
         }
         resolveAssetsSpan.SetAttribute("result", "resolved");
+        resolveAssetsSpan.End();
 
         Log::Initialize();
         RVX_CORE_INFO("Starting sample '{}' with requested backend '{}'",
@@ -1216,6 +1218,8 @@ namespace RVX
         auto* resourceSubsystem =
             engine.AddSubsystem<Resource::ResourceSubsystem>();
         Resource::ResourceManagerConfig resourceConfig;
+        resourceConfig.asyncThreadCount =
+            std::max(resourceConfig.asyncThreadCount, 1);
         resourceConfig.startupTraceContext = startupTraceContext;
         if (!resourceSubsystem->Configure(resourceConfig))
         {
@@ -1231,6 +1235,15 @@ namespace RVX
             Log::Shutdown();
             return 1;
         }
+        if (!JobSystem::Get().IsInitialized() ||
+            JobSystem::Get().GetWorkerCount() == 0)
+        {
+            RVX_CORE_ERROR(
+                "Product Sample host requires at least one asynchronous resource worker");
+            engine.Shutdown();
+            Log::Shutdown();
+            return 1;
+        }
 
         if (window->GetWindow())
         {
@@ -1240,6 +1253,8 @@ namespace RVX
         bool setupSucceeded = false;
         bool screenshotWritten = false;
         bool sampleReady = false;
+        SampleReadiness sampleReadiness =
+            SampleReadiness::Pending("Sample setup has not completed");
         uint32 executedFrames = 0;
         std::string readinessReason;
         RenderDiagnosticsSnapshot diagnostics = render->GetDiagnosticsSnapshot();
@@ -1249,8 +1264,10 @@ namespace RVX
         bool lifetimeReportWritten = true;
         bool resizePending = false;
         bool resizeToAlternateExtent = true;
+        bool firstModelFramePresentedRecorded = false;
         uint32 pendingResizeWidth = 0;
         uint32 pendingResizeHeight = 0;
+        const bool effectiveReadyWait = options.RequiresReadinessWait();
 
         World* world = engine.CreateWorld("SampleWorld");
         Scene* scene = world ? world->GetScene() : nullptr;
@@ -1274,9 +1291,9 @@ namespace RVX
             RenderFrameSettings renderSettings = engine.GetRenderFrameSettings();
             Resource::ResourceManager& resources =
                 Resource::ResourceManager::Get();
-            SampleModelLoader models(resources, *resourceSubsystem);
-            SampleEnvironmentLoader environments(resources,
-                                                 *resourceSubsystem);
+            SceneAssetLoadCoordinator sceneAssets(*scene, *resourceSubsystem);
+            SampleModelLoader models(sceneAssets);
+            SampleEnvironmentLoader environments(sceneAssets);
             SampleContext context{
                 *world,
                 *scene,
@@ -1347,15 +1364,16 @@ namespace RVX
                         break;
                     }
 
+                    static_cast<void>(sceneAssets.Update());
                     sample->OnInput(context);
                     sample->Update(context, SampleDeltaTime);
 
                     const bool fixedCaptureFrame =
-                        !lifetimeQualification && !options.waitReady &&
+                        !lifetimeQualification && !effectiveReadyWait &&
                         options.common.frames > 0 &&
                         executedFrames + 1u >= options.common.frames;
                     const bool readyCaptureFrame =
-                        options.waitReady && sampleReady &&
+                        effectiveReadyWait && sampleReady &&
                         ((!lifetimeQualification &&
                           executedFrames >= options.common.frames) ||
                          (lifetimeQualification &&
@@ -1434,13 +1452,30 @@ namespace RVX
                     const SampleRenderDiagnostics frameReadinessDiagnostics =
                         MakeSampleRenderDiagnostics(
                             diagnostics.frameFeatures);
-                    std::string currentReadinessReason;
-                    sampleReady = sample->IsReady(
-                        frameReadinessDiagnostics,
-                        currentReadinessReason);
+                    sampleReadiness = sample->GetReadiness(
+                        frameReadinessDiagnostics);
+                    sampleReady = sampleReadiness.IsReady();
                     readinessReason = sampleReady
                                           ? std::string{}
-                                          : std::move(currentReadinessReason);
+                                          : sampleReadiness.reason;
+                    if (sampleReadiness.IsFailed())
+                    {
+                        error = readinessReason.empty()
+                                    ? "Sample asynchronous asset activation failed"
+                                    : readinessReason;
+                        engine.RequestShutdown();
+                    }
+                    if (sampleReady &&
+                        !firstModelFramePresentedRecorded &&
+                        diagnostics.lastPresentedFrameSequence > 0)
+                    {
+                        Diagnostics::RecordTraceInstant(
+                            startupTraceContext,
+                            "FirstModelFramePresented",
+                            {{"frameSequence",
+                              diagnostics.lastPresentedFrameSequence}});
+                        firstModelFramePresentedRecorded = true;
+                    }
 
                     if (sampleReady && lifetimeQualification)
                     {
@@ -1517,12 +1552,12 @@ namespace RVX
                     {
                         continue;
                     }
-                    if (!options.waitReady &&
+                    if (!effectiveReadyWait &&
                         executedFrames >= options.common.frames)
                     {
                         engine.RequestShutdown();
                     }
-                    else if (options.waitReady)
+                    else if (effectiveReadyWait)
                     {
                         const bool readyAndCaptured =
                             sampleReady &&
@@ -1565,16 +1600,26 @@ namespace RVX
                 diagnostics.frameFeatures;
             const SampleRenderDiagnostics sampleRenderDiagnostics =
                 MakeSampleRenderDiagnostics(features);
-            std::string finalReadinessReason;
-            sampleReady = setupSucceeded &&
-                          sample->IsReady(sampleRenderDiagnostics,
-                                          finalReadinessReason);
+            sampleReadiness = setupSucceeded
+                                  ? sample->GetReadiness(
+                                        sampleRenderDiagnostics)
+                                  : SampleReadiness::Failed(
+                                        error.empty()
+                                            ? "Sample setup failed"
+                                            : error);
+            sampleReady = setupSucceeded && sampleReadiness.IsReady();
             readinessReason = sampleReady
                                   ? std::string{}
-                                  : std::move(finalReadinessReason);
+                                  : sampleReadiness.reason;
+            if (sampleReadiness.IsFailed() && error.empty())
+            {
+                error = readinessReason.empty()
+                            ? "Sample asynchronous asset activation failed"
+                            : readinessReason;
+            }
             std::string validationError;
             const bool sampleResultValid =
-                setupSucceeded &&
+                setupSucceeded && sampleReady &&
                 sample->ValidateResult(sampleRenderDiagnostics,
                                        validationError);
             if (!sampleResultValid && error.empty())
@@ -1650,31 +1695,31 @@ namespace RVX
             report.assetAttribution = resolvedAssets.model.entry.attribution;
             report.assetRedistributable =
                 resolvedAssets.model.entry.redistributable;
-            report.assetLoaded = setupSucceeded;
-            report.readiness.waitRequested = options.waitReady;
+            report.assetLoaded = sampleReady;
+            report.readiness.waitRequested = effectiveReadyWait;
             report.readiness.ready = sampleReady;
             report.readiness.minimumFrames = options.common.frames;
-            report.readiness.maximumFrames = options.waitReady
+            report.readiness.maximumFrames = effectiveReadyWait
                                                  ? options.readyMaxFrames
                                                  : options.common.frames;
-            report.readiness.timeoutMs = options.waitReady
+            report.readiness.timeoutMs = effectiveReadyWait
                                              ? options.readyTimeoutMs
                                              : 0;
             report.readiness.reason = readinessReason;
             report.assets.push_back(
-                MakeReportAsset("model", resolvedAssets.model, setupSucceeded));
+                MakeReportAsset("model", resolvedAssets.model, sampleReady));
             for (const ResolvedSampleAsset& additional :
                  resolvedAssets.additionalModels)
             {
                 report.assets.push_back(MakeReportAsset(
-                    "gallery-model", additional, setupSucceeded));
+                    "gallery-model", additional, sampleReady));
             }
             if (resolvedAssets.environment.selected)
             {
                 report.assets.push_back(MakeReportAsset(
                     "environment",
                     resolvedAssets.environment,
-                    setupSucceeded));
+                    sampleReady));
             }
             report.renderDiagnostics = sampleRenderDiagnostics;
             report.pass = succeeded;
@@ -1726,6 +1771,7 @@ namespace RVX
             }
 
             sample->Shutdown(context);
+            sceneAssets.CancelAll();
             sample.reset();
             engine.Shutdown();
 

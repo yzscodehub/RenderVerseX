@@ -1188,7 +1188,8 @@ void ResourceManager::ProcessCompletedLoads()
 ResourceLoadOperationOwner ResourceManager::RequestPreparedLoad(
     const std::string& path,
     ResourceLoadOptions options,
-    ResourceType requestedType)
+    ResourceType requestedType,
+    ResourceLoadPreparationStateRef preparationState)
 {
     if (!m_acceptAsyncRequests.load(std::memory_order_acquire))
     {
@@ -1246,10 +1247,19 @@ ResourceLoadOperationOwner ResourceManager::RequestPreparedLoad(
         ResourceLoadError captureError;
         try
         {
-            if (!loader->CapturePreparationState(options.importOptionsHash,
-                                                 loaderState,
-                                                 canonicalImportOptionsHash,
-                                                 captureError))
+            const bool captured = preparationState
+                                      ? loader->ValidatePreparationState(
+                                            options.importOptionsHash,
+                                            std::move(preparationState),
+                                            loaderState,
+                                            canonicalImportOptionsHash,
+                                            captureError)
+                                      : loader->CapturePreparationState(
+                                            options.importOptionsHash,
+                                            loaderState,
+                                            canonicalImportOptionsHash,
+                                            captureError);
+            if (!captured)
             {
                 RVX_RESOURCE_WARN("ResourceManager rejected async import profile for '{}': {}",
                                   path,
@@ -1366,6 +1376,28 @@ ResourceLoadOperationOwner ResourceManager::RequestPreparedLoad(
         m_preparedJobs.push_back(std::move(job));
     }
     return operation;
+}
+
+bool IResourceLoader::ValidatePreparationState(
+    uint64 requestedImportOptionsHash,
+    ResourceLoadPreparationStateRef suppliedState,
+    ResourceLoadPreparationStateRef& outState,
+    uint64& outCanonicalImportOptionsHash,
+    ResourceLoadError& outError) const
+{
+    outState.reset();
+    outCanonicalImportOptionsHash = requestedImportOptionsHash;
+    if (suppliedState)
+    {
+        outError = {
+            ResourceLoadErrorCode::InvalidRequest,
+            "This resource loader does not accept caller-supplied preparation state."};
+        return false;
+    }
+    return CapturePreparationState(requestedImportOptionsHash,
+                                   outState,
+                                   outCanonicalImportOptionsHash,
+                                   outError);
 }
 
 void ResourceManager::ExecutePreparedLoad(ResourceLoadOperationOwner operation,
@@ -1586,6 +1618,11 @@ bool ResourceManager::PublishPreparedBundle(const ResourcePathResolution& resolu
                                             PreparedResourceBundle& bundle,
                                             ResourceLoadError& outError)
 {
+    Diagnostics::TraceSpan publishSpan = Diagnostics::BeginTraceSpan(
+        m_config.startupTraceContext,
+        "CPUPublish",
+        {{"requestedPath", requestedPath},
+         {"resourceType", GetResourceTypeName(assetKey.resourceType)}});
     // Publication is short, owner-thread work, but it must be serialized with
     // cache/in-flight admission so concurrent RequestAsync callers cannot miss
     // both the operation and its newly published cache object.
@@ -2017,7 +2054,7 @@ bool ResourceManager::PublishPreparedBundle(const ResourcePathResolution& resolu
         RegisterHotReloadResource(root.Get(), resolution);
         Diagnostics::RecordTraceInstant(
             m_config.startupTraceContext,
-            "CPUPublish",
+            "CPUPublishCommitted",
             {{"requestedPath", requestedPath}, {"resourceId", root.GetId()}});
     }
     catch (const std::exception& error)
@@ -2031,6 +2068,8 @@ bool ResourceManager::PublishPreparedBundle(const ResourcePathResolution& resolu
         RVX_RESOURCE_ERROR("Committed resource {} post-publish observer failed with an unknown exception",
                            root.GetId());
     }
+    publishSpan.SetAttribute("resourceId", root.GetId());
+    publishSpan.SetAttribute("result", "published");
     return true;
 }
 

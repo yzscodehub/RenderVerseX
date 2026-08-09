@@ -40,11 +40,27 @@ namespace
 
 bool EnvironmentPreparationState::IsValid() const
 {
-    return importOptionsHash != 0 && hdrOptions.generateCubemap && hdrOptions.generateIBL &&
+    const HDRLoadOptions expected = ResolveHDRIBLQualityProfile(
+        sourceOptions.quality,
+        sourceOptions.exposure,
+        sourceOptions.applyGamma);
+    return importOptionsHash ==
+               EnvironmentLoader::ComputeImportOptionsHash(sourceOptions) &&
+           importOptionsHash != 0 && hdrOptions.generateCubemap && hdrOptions.generateIBL &&
            hdrOptions.cubemapResolution != 0 && hdrOptions.irradianceResolution != 0 &&
            hdrOptions.prefilteredResolution != 0 && hdrOptions.prefilteredMipLevels != 0 &&
            hdrOptions.brdfLUTResolution != 0 && hdrOptions.convolutionSamples != 0 &&
-           std::isfinite(hdrOptions.exposure) && hdrOptions.exposure > 0.0f;
+           std::isfinite(hdrOptions.exposure) && hdrOptions.exposure > 0.0f &&
+           hdrOptions.generateCubemap == expected.generateCubemap &&
+           hdrOptions.cubemapResolution == expected.cubemapResolution &&
+           hdrOptions.generateIBL == expected.generateIBL &&
+           hdrOptions.irradianceResolution == expected.irradianceResolution &&
+           hdrOptions.prefilteredResolution == expected.prefilteredResolution &&
+           hdrOptions.prefilteredMipLevels == expected.prefilteredMipLevels &&
+           hdrOptions.brdfLUTResolution == expected.brdfLUTResolution &&
+           hdrOptions.convolutionSamples == expected.convolutionSamples &&
+           hdrOptions.applyGamma == expected.applyGamma &&
+           hdrOptions.exposure == expected.exposure;
 }
 
 EnvironmentLoader::EnvironmentLoader(EnvironmentLoadOptions options)
@@ -273,6 +289,7 @@ EnvironmentPreparationState EnvironmentLoader::CapturePreparationState() const
         return state;
     }
 
+    state.sourceOptions = options;
     state.hdrOptions = ResolveHDRIBLQualityProfile(options.quality,
                                                     options.exposure,
                                                     options.applyGamma);
@@ -297,6 +314,36 @@ uint64 EnvironmentLoader::ComputeImportOptionsHash(const EnvironmentLoadOptions&
     HashInteger(hash, std::bit_cast<uint32>(options.exposure));
     HashInteger(hash, options.applyGamma ? uint8{1} : uint8{0});
     return hash == 0 ? 1 : hash;
+}
+
+ResourceLoadPreparationStateRef EnvironmentLoader::CreatePreparationState(
+    const EnvironmentLoadOptions& options,
+    uint64& outCanonicalImportOptionsHash,
+    ResourceLoadError& outError)
+{
+    outCanonicalImportOptionsHash = 0;
+    outError = {};
+    if (!ValidateOptions(options))
+    {
+        outError = InvalidOptionsError();
+        return {};
+    }
+
+    auto state = std::make_shared<EnvironmentPreparationState>();
+    state->sourceOptions = options;
+    state->hdrOptions = ResolveHDRIBLQualityProfile(
+        options.quality,
+        options.exposure,
+        options.applyGamma);
+    state->importOptionsHash = ComputeImportOptionsHash(options);
+    if (!state->IsValid())
+    {
+        outError = InvalidOptionsError();
+        return {};
+    }
+
+    outCanonicalImportOptionsHash = state->importOptionsHash;
+    return state;
 }
 
 bool EnvironmentLoader::CapturePreparationState(
@@ -325,6 +372,38 @@ bool EnvironmentLoader::CapturePreparationState(
 
     outState = std::make_shared<EnvironmentPreparationState>(captured);
     outCanonicalImportOptionsHash = captured.importOptionsHash;
+    outError = {};
+    return true;
+}
+
+bool EnvironmentLoader::ValidatePreparationState(
+    uint64 requestedImportOptionsHash,
+    ResourceLoadPreparationStateRef suppliedState,
+    ResourceLoadPreparationStateRef& outState,
+    uint64& outCanonicalImportOptionsHash,
+    ResourceLoadError& outError) const
+{
+    outState.reset();
+    outCanonicalImportOptionsHash = 0;
+    const auto environmentState =
+        std::dynamic_pointer_cast<const EnvironmentPreparationState>(
+            std::move(suppliedState));
+    if (!environmentState || !environmentState->IsValid())
+    {
+        outError = {ResourceLoadErrorCode::InvalidRequest,
+                    "Environment request supplied an invalid immutable preparation state."};
+        return false;
+    }
+    if (requestedImportOptionsHash != 0 &&
+        requestedImportOptionsHash != environmentState->importOptionsHash)
+    {
+        outError = {ResourceLoadErrorCode::InvalidRequest,
+                    "Environment request importOptionsHash does not match its immutable state."};
+        return false;
+    }
+
+    outState = environmentState;
+    outCanonicalImportOptionsHash = environmentState->importOptionsHash;
     outError = {};
     return true;
 }

@@ -4,16 +4,18 @@
 
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
+#include "ResourceSceneAdapters/SceneAssetInstantiation.h"
 #include "Scene/Components/CameraComponent.h"
-#include "Samples/SampleCLI.h"
-#include "Samples/SampleContext.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/SkyboxComponent.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneRuntime.h"
+#include "Samples/SampleCLI.h"
+#include "Samples/SampleContext.h"
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace RVX
 {
@@ -45,130 +47,34 @@ namespace RVX
     bool AssetGalleryShowcaseSample::Setup(SampleContext& context,
                                            std::string& outError)
     {
+        m_models.clear();
+        m_assetIds.clear();
+        m_galleryBounds.Reset();
+        m_cameraFrame = {};
+        m_orbitCamera.Reset();
+        m_expectedVisibleObjects = 0;
+        m_failureReason.clear();
+        m_modelsPlaced = false;
+        m_renderablesActivated = false;
+        m_staticCatalogGallery = false;
+        m_skyboxCreated = false;
+        m_lightCreated = false;
+
         if (context.options.modelAssets.empty())
         {
             outError = "Asset Gallery requires at least one host-resolved model";
             return false;
         }
 
-        m_models.reserve(context.options.modelAssets.size());
-        m_assetIds.reserve(context.options.modelAssets.size());
-        m_galleryBounds.Reset();
-        const float32 centerIndex =
-            static_cast<float32>(context.options.modelAssets.size() - 1u) *
-            0.5f;
-
-        for (size_t index = 0;
-             index < context.options.modelAssets.size();
-             ++index)
-        {
-            const SampleSceneModelAsset& asset =
-                context.options.modelAssets[index];
-            LoadedSampleModel model;
-            if (!context.models.Load(asset.path,
-                                     context.scene,
-                                     model,
-                                     outError))
-            {
-                outError = "Asset Gallery failed to load '" + asset.id +
-                           "': " + outError;
-                return false;
-            }
-
-            SceneEntity* modelRoot = model.ResolveRoot(context.scene);
-            if (!modelRoot)
-            {
-                outError = "Asset Gallery model root handle is stale: " +
-                           asset.id;
-                return false;
-            }
-            const AABB originalBounds = modelRoot->GetWorldBounds();
-            if (!originalBounds.IsValid())
-            {
-                outError = "Asset Gallery model has invalid bounds: " +
-                           asset.id;
-                return false;
-            }
-            const Vec3 size = originalBounds.GetSize();
-            const float32 maximumDimension =
-                std::max({size.x, size.y, size.z});
-            if (!std::isfinite(maximumDimension) ||
-                maximumDimension <= 0.00001f)
-            {
-                outError = "Asset Gallery model has degenerate bounds: " +
-                           asset.id;
-                return false;
-            }
-
-            const float32 scale = GalleryItemExtent / maximumDimension;
-            const float32 itemX =
-                (static_cast<float32>(index) - centerIndex) *
-                GalleryItemSpacing;
-            const Vec3 center = originalBounds.GetCenter();
-            modelRoot->SetScale(Vec3(scale));
-            modelRoot->SetPosition(Vec3(
-                itemX - center.x * scale,
-                -originalBounds.GetMin().y * scale,
-                -center.z * scale));
-
-            const AABB placedBounds = modelRoot->GetWorldBounds();
-            if (!placedBounds.IsValid())
-            {
-                outError = "Asset Gallery could not place model: " +
-                           asset.id;
-                return false;
-            }
-            m_galleryBounds.Expand(placedBounds);
-            m_assetIds.push_back(asset.id.empty() ? asset.path.filename().string()
-                                                  : asset.id);
-            m_models.push_back(std::move(model));
-        }
-
-        m_expectedVisibleObjects =
-            static_cast<uint32>(m_models.size());
-        m_staticCatalogGallery = m_models.size() > 1;
-
         const float32 aspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(std::max(context.options.height, 1u));
-        m_cameraFrame = BuildModelCameraFrame(
-            m_galleryBounds,
-            aspect,
-            AssetGalleryVerticalFov,
-            1.18f);
-        if (!m_cameraFrame.valid)
-        {
-            outError = "Asset Gallery could not frame the placed models";
-            return false;
-        }
-
-        SampleOrbitCameraSettings orbitSettings;
-        orbitSettings.mode = OrbitCameraMode::FreeOrbit;
-        orbitSettings.bounds = m_galleryBounds;
-        orbitSettings.pivot = m_cameraFrame.target;
-        orbitSettings.distance = m_cameraFrame.distance;
-        orbitSettings.pitch = 0.22f;
-        orbitSettings.minDistance =
-            std::max(m_cameraFrame.distance * 0.25f, 0.001f);
-        orbitSettings.maxDistance =
-            std::max(m_cameraFrame.distance * 5.0f,
-                     orbitSettings.minDistance * 2.0f);
-        orbitSettings.zoomExponent = 0.08f;
-        orbitSettings.verticalFovRadians = AssetGalleryVerticalFov;
-        orbitSettings.aspectRatio = aspect;
-        m_orbitCamera.Initialize(orbitSettings, context.input);
-        if (!m_orbitCamera.IsInitialized())
-        {
-            outError = "Asset Gallery camera rig initialization failed";
-            return false;
-        }
-        m_orbitCamera.Apply(context.camera);
-        const OrbitCameraRigPose orbitPose = m_orbitCamera.GetPose();
-        m_cameraFrame.target = orbitPose.pivot;
-        m_cameraFrame.distance = orbitPose.distance;
-        m_cameraFrame.nearPlane = orbitPose.nearPlane;
-        m_cameraFrame.farPlane = orbitPose.farPlane;
-        m_cameraFrame.valid = orbitPose.valid;
+        context.camera.SetPerspective(AssetGalleryVerticalFov,
+                                      aspect,
+                                      0.05f,
+                                      10000.0f);
+        context.camera.SetPosition(Vec3(0.0f, 2.0f, 6.0f));
+        context.camera.LookAt(Vec3(0.0f));
 
         ActorSpawnParams skyParams;
         skyParams.name = "AssetGallerySky";
@@ -214,22 +120,267 @@ namespace RVX
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
+
+        m_models.reserve(context.options.modelAssets.size());
+        m_assetIds.reserve(context.options.modelAssets.size());
+        for (const SampleSceneModelAsset& asset : context.options.modelAssets)
+        {
+            LoadedSampleModel model;
+            if (!context.models.Request(asset.path,
+                                        model,
+                                        outError,
+                                        false))
+            {
+                for (LoadedSampleModel& requested : m_models)
+                    static_cast<void>(context.models.Cancel(requested));
+                outError = "Asset Gallery failed to queue '" + asset.id +
+                           "': " + outError;
+                return false;
+            }
+            m_assetIds.push_back(asset.id.empty() ? asset.path.filename().string()
+                                                  : asset.id);
+            m_models.push_back(std::move(model));
+        }
         return true;
     }
 
     void AssetGalleryShowcaseSample::Update(SampleContext& context,
                                             float deltaTime)
     {
-        static_cast<void>(context);
         static_cast<void>(deltaTime);
+        if (!m_failureReason.empty())
+            return;
+
+        bool everyModelCPUReady = !m_models.empty();
+        for (LoadedSampleModel& model : m_models)
+        {
+            const SceneAssetStatus status =
+                context.models.UpdateReadiness(model);
+            if (status.IsFailed() ||
+                status.lifecycle == SceneAssetLifecycle::Cancelled)
+            {
+                FailAndCancel(
+                    context,
+                    status.diagnostic.empty()
+                        ? "Asset Gallery model request failed"
+                        : status.diagnostic);
+                return;
+            }
+            everyModelCPUReady &= model.IsCPUReady();
+        }
+
+        if (m_modelsPlaced)
+        {
+            bool everyModelFullyResident = !m_models.empty();
+            for (const LoadedSampleModel& model : m_models)
+                everyModelFullyResident &= model.IsFullyResident();
+            if (everyModelFullyResident && !m_renderablesActivated)
+            {
+                for (const LoadedSampleModel& model : m_models)
+                {
+                    if (!SceneAssetInstantiator::SetRenderablesEnabled(
+                            context.scene,
+                            model.instance,
+                            true))
+                    {
+                        FailAndCancel(
+                            context,
+                            "Asset Gallery could not activate a placed catalog model");
+                        return;
+                    }
+                }
+                m_renderablesActivated = true;
+            }
+            return;
+        }
+
+        DisableUnplacedModels(context);
+        if (!everyModelCPUReady)
+            return;
+
+        std::string error;
+        if (!PlaceModels(context, error))
+        {
+            FailAndCancel(
+                context,
+                error.empty() ? "Asset Gallery failed to place catalog models"
+                              : std::move(error));
+        }
     }
 
     void AssetGalleryShowcaseSample::OnInput(SampleContext& context)
     {
-        if (context.input)
-        {
+        if (m_modelsPlaced && context.input)
             m_orbitCamera.Update(*context.input, context.camera);
+    }
+
+    bool AssetGalleryShowcaseSample::PlaceModels(SampleContext& context,
+                                                  std::string& outError)
+    {
+        outError.clear();
+        if (m_models.empty() || m_models.size() != m_assetIds.size())
+        {
+            outError = "Asset Gallery model request order is invalid";
+            return false;
         }
+
+        struct Placement
+        {
+            SceneEntity* root = nullptr;
+            float32 scale = 1.0f;
+            Vec3 position{0.0f};
+        };
+        std::vector<Placement> placements;
+        placements.reserve(m_models.size());
+        const float32 centerIndex =
+            static_cast<float32>(m_models.size() - 1u) * 0.5f;
+
+        for (size_t index = 0; index < m_models.size(); ++index)
+        {
+            LoadedSampleModel& model = m_models[index];
+            if (!model.resource.IsLoaded())
+            {
+                outError = "Asset Gallery model resource is not CPU-ready: " +
+                           m_assetIds[index];
+                return false;
+            }
+            SceneEntity* root = model.ResolveRoot(context.scene);
+            if (!root)
+            {
+                outError = "Asset Gallery model root handle is stale: " +
+                           m_assetIds[index];
+                return false;
+            }
+            const AABB originalBounds = root->GetWorldBounds();
+            if (!originalBounds.IsValid())
+            {
+                outError = "Asset Gallery model has invalid bounds: " +
+                           m_assetIds[index];
+                return false;
+            }
+            const Vec3 size = originalBounds.GetSize();
+            const float32 maximumDimension =
+                std::max({size.x, size.y, size.z});
+            if (!std::isfinite(maximumDimension) ||
+                maximumDimension <= 0.00001f)
+            {
+                outError = "Asset Gallery model has degenerate bounds: " +
+                           m_assetIds[index];
+                return false;
+            }
+
+            const float32 scale = GalleryItemExtent / maximumDimension;
+            const float32 itemX =
+                (static_cast<float32>(index) - centerIndex) *
+                GalleryItemSpacing;
+            const Vec3 center = originalBounds.GetCenter();
+            placements.push_back({
+                root,
+                scale,
+                Vec3(itemX - center.x * scale,
+                     -originalBounds.GetMin().y * scale,
+                     -center.z * scale)});
+        }
+
+        AABB galleryBounds;
+        galleryBounds.Reset();
+        for (const Placement& placement : placements)
+        {
+            placement.root->SetScale(Vec3(placement.scale));
+            placement.root->SetPosition(placement.position);
+            const AABB placedBounds = placement.root->GetWorldBounds();
+            if (!placedBounds.IsValid())
+            {
+                outError = "Asset Gallery could not place a catalog model";
+                return false;
+            }
+            galleryBounds.Expand(placedBounds);
+        }
+
+        const float32 aspect =
+            static_cast<float32>(context.options.width) /
+            static_cast<float32>(std::max(context.options.height, 1u));
+        const ModelCameraFrame cameraFrame = BuildModelCameraFrame(
+            galleryBounds,
+            aspect,
+            AssetGalleryVerticalFov,
+            1.18f);
+        if (!cameraFrame.valid)
+        {
+            outError = "Asset Gallery could not frame the placed models";
+            return false;
+        }
+
+        SampleOrbitCameraSettings orbitSettings;
+        orbitSettings.mode = OrbitCameraMode::FreeOrbit;
+        orbitSettings.bounds = galleryBounds;
+        orbitSettings.pivot = cameraFrame.target;
+        orbitSettings.distance = cameraFrame.distance;
+        orbitSettings.pitch = 0.22f;
+        orbitSettings.minDistance =
+            std::max(cameraFrame.distance * 0.25f, 0.001f);
+        orbitSettings.maxDistance =
+            std::max(cameraFrame.distance * 5.0f,
+                     orbitSettings.minDistance * 2.0f);
+        orbitSettings.zoomExponent = 0.08f;
+        orbitSettings.verticalFovRadians = AssetGalleryVerticalFov;
+        orbitSettings.aspectRatio = aspect;
+        m_orbitCamera.Initialize(orbitSettings, context.input);
+        if (!m_orbitCamera.IsInitialized())
+        {
+            outError = "Asset Gallery camera rig initialization failed";
+            return false;
+        }
+        m_orbitCamera.Apply(context.camera);
+        const OrbitCameraRigPose orbitPose = m_orbitCamera.GetPose();
+        if (!orbitPose.valid)
+        {
+            outError = "Asset Gallery camera rig produced an invalid pose";
+            return false;
+        }
+
+        m_galleryBounds = galleryBounds;
+        m_cameraFrame = cameraFrame;
+        m_cameraFrame.target = orbitPose.pivot;
+        m_cameraFrame.distance = orbitPose.distance;
+        m_cameraFrame.nearPlane = orbitPose.nearPlane;
+        m_cameraFrame.farPlane = orbitPose.farPlane;
+        m_cameraFrame.valid = true;
+        m_expectedVisibleObjects = static_cast<uint32>(m_models.size());
+        m_staticCatalogGallery = m_models.size() > 1;
+        m_modelsPlaced = true;
+        DisableUnplacedModels(context);
+        return true;
+    }
+
+    void AssetGalleryShowcaseSample::DisableUnplacedModels(
+        SampleContext& context) const
+    {
+        for (const LoadedSampleModel& model : m_models)
+        {
+            if (model.instance.rootActor.IsValid())
+            {
+                static_cast<void>(SceneAssetInstantiator::SetRenderablesEnabled(
+                    context.scene,
+                    model.instance,
+                    false));
+            }
+        }
+    }
+
+    void AssetGalleryShowcaseSample::FailAndCancel(SampleContext& context,
+                                                    std::string reason)
+    {
+        if (m_failureReason.empty())
+            m_failureReason = std::move(reason);
+        for (LoadedSampleModel& model : m_models)
+        {
+            if (model.loadHandle.IsValid())
+                static_cast<void>(context.models.Cancel(model));
+        }
+        m_expectedVisibleObjects = 0;
+        m_modelsPlaced = false;
+        m_renderablesActivated = false;
     }
 
     void AssetGalleryShowcaseSample::AppendReport(
@@ -251,13 +402,9 @@ namespace RVX
             }
         }
         if (m_staticCatalogGallery)
-        {
             reporter.Enable("CatalogStaticGallery");
-        }
         else
-        {
             reporter.Enable("CatalogAssetFocus");
-        }
         reporter.Unsupported("RuntimeAssetSwitching");
         reporter.Fallback(
             "Asset Gallery uses per-run deterministic selection until scene destruction and resource unloading are qualified");
@@ -267,46 +414,64 @@ namespace RVX
             reporter.Enable("OrbitCamera");
         }
         if (m_skyboxCreated)
-        {
             reporter.Enable("ProceduralSkyScene");
-        }
         if (m_lightCreated)
-        {
             reporter.Enable("DirectionalLightScene");
-        }
     }
 
-    bool AssetGalleryShowcaseSample::IsReady(
-        const SampleRenderDiagnostics& diagnostics,
-        std::string& outPendingReason) const
+    SampleReadiness AssetGalleryShowcaseSample::GetReadiness(
+        const SampleRenderDiagnostics& diagnostics) const
     {
+        if (!m_failureReason.empty())
+            return SampleReadiness::Failed(m_failureReason);
+        if (!m_modelsPlaced || m_expectedVisibleObjects == 0)
+        {
+            return SampleReadiness::Pending(
+                "Waiting for all catalog models to become CPU-ready and be placed");
+        }
+        for (const LoadedSampleModel& model : m_models)
+        {
+            if (!model.IsFullyResident())
+            {
+                return SampleReadiness::Pending(
+                    "Waiting for all catalog models to become fully resident");
+            }
+        }
         if (diagnostics.visibleObjectCount < m_expectedVisibleObjects)
         {
-            outPendingReason =
+            return SampleReadiness::Pending(
                 "Asset Gallery is waiting for all resolved models: visible=" +
                 std::to_string(diagnostics.visibleObjectCount) +
-                ", expected=" +
-                std::to_string(m_expectedVisibleObjects);
-            return false;
+                ", expected=" + std::to_string(m_expectedVisibleObjects));
         }
-        return true;
+        return SampleReadiness::Ready();
     }
 
     bool AssetGalleryShowcaseSample::ValidateResult(
         const SampleRenderDiagnostics& diagnostics,
         std::string& outError) const
     {
-        return IsReady(diagnostics, outError);
+        const SampleReadiness readiness = GetReadiness(diagnostics);
+        outError = readiness.reason;
+        return readiness.IsReady();
     }
 
     void AssetGalleryShowcaseSample::Shutdown(SampleContext& context)
     {
-        static_cast<void>(context);
+        for (LoadedSampleModel& model : m_models)
+        {
+            if (model.loadHandle.IsValid())
+                static_cast<void>(context.models.Cancel(model));
+        }
         m_models.clear();
         m_assetIds.clear();
         m_galleryBounds.Reset();
         m_cameraFrame = {};
+        m_orbitCamera.Reset();
         m_expectedVisibleObjects = 0;
+        m_failureReason.clear();
+        m_modelsPlaced = false;
+        m_renderablesActivated = false;
         m_staticCatalogGallery = false;
         m_skyboxCreated = false;
         m_lightCreated = false;

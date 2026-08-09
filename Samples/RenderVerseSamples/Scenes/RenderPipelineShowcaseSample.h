@@ -16,14 +16,15 @@ namespace RVX
         void Update(SampleContext& context, float deltaTime) override;
         void OnInput(SampleContext& context) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
-        bool IsReady(const SampleRenderDiagnostics& diagnostics,
-                     std::string& outPendingReason) const override;
+        SampleReadiness GetReadiness(
+            const SampleRenderDiagnostics& diagnostics) const override;
         bool ValidateResult(const SampleRenderDiagnostics& diagnostics,
                             std::string& outError) const override;
         void Shutdown(SampleContext& context) override;
 
     private:
         LoadedSampleModel m_model;
+        std::string m_modelFailure;
         bool m_skyboxCreated = false;
         bool m_lightCreated = false;
     };
