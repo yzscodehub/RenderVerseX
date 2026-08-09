@@ -21,6 +21,40 @@ namespace RVX
     class RenderSubmissionResourceBatch;
     class TransientResourcePool;
 
+    /** @brief Logical graph access without a physical queue ownership domain. */
+    struct RGAccessDesc
+    {
+        RHIExecutionScope executionScope = RHIExecutionScope::None;
+        RHIMemoryAccess memoryAccess = RHIMemoryAccess::None;
+        RHIResourceLayout layout = RHIResourceLayout::Undefined;
+        RHIShaderStage shaderStages = RHIShaderStage::None;
+        RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve;
+
+        bool operator==(const RGAccessDesc&) const = default;
+    };
+
+    /** @brief Create a logical access declaration from the compatibility state vocabulary. */
+    RGAccessDesc MakeRGAccessDesc(
+        RHIResourceState state,
+        RHIShaderStage shaderStages = RHIShaderStage::All,
+        RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+
+    enum class RGQueuePolicy : uint8
+    {
+        GraphicsOnly = 0,
+        PreferMultiQueue,
+    };
+
+    /** @brief Value-only inputs consumed by the allocation-free compiler. */
+    struct RenderGraphCompileOptions
+    {
+        RGQueuePolicy queuePolicy = RGQueuePolicy::GraphicsOnly;
+        RHICapabilities capabilities;
+        bool hasCapabilitySnapshot = false;
+        bool enableMemoryAliasing = false;
+        bool enableParallelRecording = false;
+    };
+
     // =============================================================================
     // Render Graph Handle Types
     // =============================================================================
@@ -77,11 +111,13 @@ namespace RVX
                              RHIResourceState state,
                              RHIShaderStage stages = RHIShaderStage::AllGraphics);
         RGTextureHandle Read(RGTextureHandle texture, const RHIAccessSnapshot& access);
+        RGTextureHandle Read(RGTextureHandle texture, const RGAccessDesc& access);
         RGBufferHandle Read(RGBufferHandle buffer, RHIShaderStage stages = RHIShaderStage::AllGraphics);
         RGBufferHandle Read(RGBufferHandle buffer,
                             RHIResourceState state,
                             RHIShaderStage stages = RHIShaderStage::AllGraphics);
         RGBufferHandle Read(RGBufferHandle buffer, const RHIAccessSnapshot& access);
+        RGBufferHandle Read(RGBufferHandle buffer, const RGAccessDesc& access);
 
         // Write resources
         RGTextureHandle Write(RGTextureHandle texture,
@@ -90,18 +126,22 @@ namespace RVX
         RGTextureHandle Write(RGTextureHandle texture,
                               const RHIAccessSnapshot& access,
                               RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+        RGTextureHandle Write(RGTextureHandle texture, const RGAccessDesc& access);
         RGBufferHandle Write(RGBufferHandle buffer,
                              RHIResourceState state = RHIResourceState::UnorderedAccess,
                              RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
         RGBufferHandle Write(RGBufferHandle buffer,
                              const RHIAccessSnapshot& access,
                              RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+        RGBufferHandle Write(RGBufferHandle buffer, const RGAccessDesc& access);
 
         // Read-write resources
         RGTextureHandle ReadWrite(RGTextureHandle texture);
         RGTextureHandle ReadWrite(RGTextureHandle texture, const RHIAccessSnapshot& access);
+        RGTextureHandle ReadWrite(RGTextureHandle texture, const RGAccessDesc& access);
         RGBufferHandle ReadWrite(RGBufferHandle buffer);
         RGBufferHandle ReadWrite(RGBufferHandle buffer, const RHIAccessSnapshot& access);
+        RGBufferHandle ReadWrite(RGBufferHandle buffer, const RGAccessDesc& access);
 
         // Subresource-level access
         RGTextureHandle ReadMip(RGTextureHandle texture, uint32 mipLevel);
@@ -200,6 +240,7 @@ namespace RVX
 
         // Compile the graph
         void Compile();
+        void Compile(const RenderGraphCompileOptions& options);
 
         // Execute the graph (graphics only)
         void Execute(RHICommandContext& ctx);
@@ -255,6 +296,8 @@ namespace RVX
         {
             // Compile validity / capability honesty
             bool compileValid = true;
+            /** @brief Deterministic hash of the final allocation-free plan. */
+            uint64 planHash = 0;
             bool executionOrderFallbackUsed = false;
             bool asyncComputeSupported = false;
             bool asyncFallbackUsed = false;

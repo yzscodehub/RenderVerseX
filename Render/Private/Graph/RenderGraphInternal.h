@@ -136,6 +136,7 @@ namespace RVX
         ResourceType type = ResourceType::Texture;
         uint32 index = RVX_INVALID_INDEX;
         RHIResourceState desiredState = RHIResourceState::Common;
+        RGAccessDesc logicalAccess;
         RHIAccessSnapshot desiredAccess;
         RGAccessType access = RGAccessType::Read;
         RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve;
@@ -160,6 +161,22 @@ namespace RVX
         uint32 afterResourceIndex = RVX_INVALID_INDEX;   // Resource that will use this memory now
     };
 
+    /** @brief Allocation-free texture barrier recipe produced by the compiler. */
+    struct PlannedTextureBarrier
+    {
+        uint32 resourceIndex = RVX_INVALID_INDEX;
+        RHITextureBarrier barrier;
+        bool resolveBeforeFromLease = false;
+    };
+
+    /** @brief Allocation-free buffer barrier recipe produced by the compiler. */
+    struct PlannedBufferBarrier
+    {
+        uint32 resourceIndex = RVX_INVALID_INDEX;
+        RHIBufferBarrier barrier;
+        bool resolveBeforeFromLease = false;
+    };
+
     struct Pass
     {
         std::string name;
@@ -176,10 +193,10 @@ namespace RVX
         RenderGraph::DiagnosticExecutionQueue lastExecutionQueue = RenderGraph::DiagnosticExecutionQueue::Unknown;
         uint32 lastExecutionSerial = RVX_INVALID_INDEX;
         uint64 lastCpuDurationNanoseconds = 0;
-        std::vector<RHITextureBarrier> textureBarriers;
-        std::vector<RHIBufferBarrier> bufferBarriers;
-        std::vector<RHITextureBarrier> postTextureBarriers;
-        std::vector<RHIBufferBarrier> postBufferBarriers;
+        std::vector<PlannedTextureBarrier> textureBarriers;
+        std::vector<PlannedBufferBarrier> bufferBarriers;
+        std::vector<PlannedTextureBarrier> postTextureBarriers;
+        std::vector<PlannedBufferBarrier> postBufferBarriers;
         std::vector<AliasingBarrier> aliasingBarriers;  // For memory aliasing
         std::function<void(RHICommandContext&)> execute;
     };
@@ -189,8 +206,8 @@ namespace RVX
         RenderGraph::DiagnosticExecutionQueue queue =
             RenderGraph::DiagnosticExecutionQueue::Unknown;
         std::vector<uint32> targetPassIndices;
-        std::vector<RHITextureBarrier> textureBarriers;
-        std::vector<RHIBufferBarrier> bufferBarriers;
+        std::vector<PlannedTextureBarrier> textureBarriers;
+        std::vector<PlannedBufferBarrier> bufferBarriers;
         bool targetsTerminal = false;
     };
 
@@ -208,6 +225,8 @@ namespace RVX
 
         IRHIDevice* device = nullptr;
         TransientResourcePool* transientResourcePool = nullptr;
+        RHICapabilities capabilitySnapshot;
+        bool hasCapabilitySnapshot = false;
         std::vector<TextureResource> textures;
         std::vector<BufferResource> buffers;
         std::vector<Pass> passes;
@@ -233,9 +252,11 @@ namespace RVX
         uint32 aliasedBufferCount = 0;
         uint32 compatibilityStateProjectionCount = 0;
         bool executionRealized = false;
+        bool resourcesRealized = false;
     };
 
     void CompileRenderGraph(RenderGraphImpl& graph);
+    bool RealizeRenderGraphResources(RenderGraphImpl& graph);
     std::vector<RenderGraph::PassDiagnostic> BuildRenderGraphPassDiagnostics(const RenderGraphImpl& graph);
     RenderGraph::SubmissionPlan BuildRenderGraphSubmissionPlan(
         const std::vector<RenderGraph::PassDiagnostic>& passes,

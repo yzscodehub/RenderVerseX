@@ -13,6 +13,54 @@ namespace RVX
 {
     namespace
     {
+        bool AcquireTransientTexture(RenderGraphImpl& graph,
+                                     TextureResource& resource)
+        {
+            if (!graph.transientResourcePool ||
+                !graph.transientResourcePool->IsInitialized())
+            {
+                return false;
+            }
+
+            TransientTextureLease lease =
+                graph.transientResourcePool->AcquireTextureLease(resource.desc);
+            if (!lease)
+            {
+                return false;
+            }
+
+            resource.pooledRaw = lease.texture;
+            resource.pooled = true;
+            resource.initialAccessSnapshot = std::move(lease.accessSnapshot);
+            resource.initialState = ProjectRHIResourceState(
+                resource.initialAccessSnapshot.uniformAccess);
+            return true;
+        }
+
+        bool AcquireTransientBuffer(RenderGraphImpl& graph,
+                                    BufferResource& resource)
+        {
+            if (!graph.transientResourcePool ||
+                !graph.transientResourcePool->IsInitialized())
+            {
+                return false;
+            }
+
+            TransientBufferLease lease =
+                graph.transientResourcePool->AcquireBufferLease(resource.desc);
+            if (!lease)
+            {
+                return false;
+            }
+
+            resource.pooledRaw = lease.buffer;
+            resource.pooled = true;
+            resource.initialAccessSnapshot = std::move(lease.accessSnapshot);
+            resource.initialState = ProjectRHIResourceState(
+                resource.initialAccessSnapshot.uniformAccess);
+            return true;
+        }
+
         RHITextureAspect GetDefaultTextureAspect(const RHITextureDesc& desc)
         {
             return IsDepthFormat(desc.format) ? RHITextureAspect::Depth : RHITextureAspect::Color;
@@ -108,6 +156,119 @@ namespace RVX
             }
         }
 
+        RHIAccessSnapshot ResolveTextureLeaseAccess(
+            const TextureResource& resource,
+            const RHISubresourceRange& range)
+        {
+            const RHITextureAccessSnapshot& snapshot =
+                resource.initialAccessSnapshot;
+            for (const RHITextureSubresourceAccessSnapshot& overrideAccess :
+                 snapshot.subresourceOverrides)
+            {
+                const RHISubresourceRange& candidate = overrideAccess.range;
+                const uint32 candidateMipCount = ResolveTextureMipLevelCount(
+                    resource.desc, candidate);
+                const uint32 candidateLayerCount =
+                    ResolveTextureArrayLayerCount(resource.desc, candidate);
+                const uint32 requestedMipCount = ResolveTextureMipLevelCount(
+                    resource.desc, range);
+                const uint32 requestedLayerCount =
+                    ResolveTextureArrayLayerCount(resource.desc, range);
+                if (range.baseMipLevel >= candidate.baseMipLevel &&
+                    range.baseMipLevel + requestedMipCount <=
+                        candidate.baseMipLevel + candidateMipCount &&
+                    range.baseArrayLayer >= candidate.baseArrayLayer &&
+                    range.baseArrayLayer + requestedLayerCount <=
+                        candidate.baseArrayLayer + candidateLayerCount)
+                {
+                    return overrideAccess.access;
+                }
+            }
+            return snapshot.uniformAccess;
+        }
+
+        RHIAccessSnapshot ResolveBufferLeaseAccess(
+            const BufferResource& resource,
+            uint64 offset,
+            uint64 size)
+        {
+            const RHIBufferAccessSnapshot& snapshot =
+                resource.initialAccessSnapshot;
+            const uint64 resolvedSize = size == RVX_WHOLE_SIZE
+                ? resource.desc.size - std::min(offset, resource.desc.size)
+                : size;
+            for (const RHIBufferRangeAccessSnapshot& overrideAccess :
+                 snapshot.rangeOverrides)
+            {
+                const uint64 candidateSize =
+                    overrideAccess.size == RVX_WHOLE_SIZE
+                        ? resource.desc.size - std::min(
+                              overrideAccess.offset, resource.desc.size)
+                        : overrideAccess.size;
+                if (offset >= overrideAccess.offset &&
+                    offset + resolvedSize <=
+                        overrideAccess.offset + candidateSize)
+                {
+                    return overrideAccess.access;
+                }
+            }
+            return snapshot.uniformAccess;
+        }
+
+        bool MaterializeBarrier(const RenderGraphImpl& graph,
+                                const PlannedTextureBarrier& planned,
+                                RHITextureBarrier& barrier)
+        {
+            if (planned.resourceIndex >= graph.textures.size())
+                return false;
+            const TextureResource& resource =
+                graph.textures[planned.resourceIndex];
+            RHITexture* texture = resource.GetTexture();
+            if (!texture)
+                return false;
+            barrier = planned.barrier;
+            barrier.texture = texture;
+            if (planned.resolveBeforeFromLease)
+            {
+                const RHIAccessSnapshot before = ResolveTextureLeaseAccess(
+                    resource, barrier.subresourceRange);
+                barrier = MakeRHITextureBarrier(
+                    texture,
+                    before,
+                    barrier.accessAfter,
+                    barrier.subresourceRange,
+                    barrier.discardIntent);
+            }
+            return barrier.dependencyKind != RHIDependencyKind::None;
+        }
+
+        bool MaterializeBarrier(const RenderGraphImpl& graph,
+                                const PlannedBufferBarrier& planned,
+                                RHIBufferBarrier& barrier)
+        {
+            if (planned.resourceIndex >= graph.buffers.size())
+                return false;
+            const BufferResource& resource = graph.buffers[planned.resourceIndex];
+            RHIBuffer* buffer = resource.GetBuffer();
+            if (!buffer)
+                return false;
+            barrier = planned.barrier;
+            barrier.buffer = buffer;
+            if (planned.resolveBeforeFromLease)
+            {
+                const RHIAccessSnapshot before = ResolveBufferLeaseAccess(
+                    resource, barrier.offset, barrier.size);
+                barrier = MakeRHIBufferBarrier(
+                    buffer,
+                    before,
+                    barrier.accessAfter,
+                    barrier.offset,
+                    barrier.size,
+                    barrier.discardIntent);
+            }
+            return barrier.dependencyKind != RHIDependencyKind::None;
+        }
+
         void ExecutePassOnContext(Pass& pass,
                                   RHICommandContext& ctx,
                                   RenderGraph::DiagnosticExecutionQueue queue,
@@ -128,11 +289,11 @@ namespace RVX
                     if (type == ResourceType::Texture)
                     {
                         return index < graph.textures.size()
-                            ? graph.textures[index].texture.Get()
+                            ? graph.textures[index].GetTexture()
                             : nullptr;
                     }
                     return index < graph.buffers.size()
-                        ? graph.buffers[index].buffer.Get()
+                        ? graph.buffers[index].GetBuffer()
                         : nullptr;
                 };
                 for (const AliasingBarrier& barrier : pass.aliasingBarriers)
@@ -153,7 +314,23 @@ namespace RVX
             }
             if (!pass.bufferBarriers.empty() || !pass.textureBarriers.empty())
             {
-                ctx.Barriers(pass.bufferBarriers, pass.textureBarriers);
+                std::vector<RHIBufferBarrier> bufferBarriers;
+                std::vector<RHITextureBarrier> textureBarriers;
+                bufferBarriers.reserve(pass.bufferBarriers.size());
+                textureBarriers.reserve(pass.textureBarriers.size());
+                for (const PlannedBufferBarrier& planned : pass.bufferBarriers)
+                {
+                    RHIBufferBarrier barrier;
+                    if (MaterializeBarrier(graph, planned, barrier))
+                        bufferBarriers.push_back(std::move(barrier));
+                }
+                for (const PlannedTextureBarrier& planned : pass.textureBarriers)
+                {
+                    RHITextureBarrier barrier;
+                    if (MaterializeBarrier(graph, planned, barrier))
+                        textureBarriers.push_back(std::move(barrier));
+                }
+                ctx.Barriers(bufferBarriers, textureBarriers);
             }
             if (pass.execute)
             {
@@ -162,8 +339,25 @@ namespace RVX
             if (!pass.postBufferBarriers.empty() ||
                 !pass.postTextureBarriers.empty())
             {
-                ctx.Barriers(pass.postBufferBarriers,
-                             pass.postTextureBarriers);
+                std::vector<RHIBufferBarrier> bufferBarriers;
+                std::vector<RHITextureBarrier> textureBarriers;
+                bufferBarriers.reserve(pass.postBufferBarriers.size());
+                textureBarriers.reserve(pass.postTextureBarriers.size());
+                for (const PlannedBufferBarrier& planned :
+                     pass.postBufferBarriers)
+                {
+                    RHIBufferBarrier barrier;
+                    if (MaterializeBarrier(graph, planned, barrier))
+                        bufferBarriers.push_back(std::move(barrier));
+                }
+                for (const PlannedTextureBarrier& planned :
+                     pass.postTextureBarriers)
+                {
+                    RHITextureBarrier barrier;
+                    if (MaterializeBarrier(graph, planned, barrier))
+                        textureBarriers.push_back(std::move(barrier));
+                }
+                ctx.Barriers(bufferBarriers, textureBarriers);
             }
             ctx.EndEvent();
 
@@ -359,8 +553,25 @@ namespace RVX
                 (!release->bufferBarriers.empty() ||
                  !release->textureBarriers.empty()))
             {
-                ctx.Barriers(release->bufferBarriers,
-                             release->textureBarriers);
+                std::vector<RHIBufferBarrier> bufferBarriers;
+                std::vector<RHITextureBarrier> textureBarriers;
+                bufferBarriers.reserve(release->bufferBarriers.size());
+                textureBarriers.reserve(release->textureBarriers.size());
+                for (const PlannedBufferBarrier& planned :
+                     release->bufferBarriers)
+                {
+                    RHIBufferBarrier barrier;
+                    if (MaterializeBarrier(graph, planned, barrier))
+                        bufferBarriers.push_back(std::move(barrier));
+                }
+                for (const PlannedTextureBarrier& planned :
+                     release->textureBarriers)
+                {
+                    RHITextureBarrier barrier;
+                    if (MaterializeBarrier(graph, planned, barrier))
+                        textureBarriers.push_back(std::move(barrier));
+                }
+                ctx.Barriers(bufferBarriers, textureBarriers);
             }
         }
 
@@ -487,6 +698,219 @@ namespace RVX
         }
     } // namespace
 
+    // =============================================================================
+    // Create Transient Resources (with optional memory aliasing)
+    // =============================================================================
+    bool RealizeRenderGraphResources(RenderGraphImpl& graph)
+    {
+        if (graph.resourcesRealized)
+            return true;
+        if (!graph.device)
+        {
+            const bool hasTransientTexture = std::any_of(
+                graph.textures.begin(),
+                graph.textures.end(),
+                [](const TextureResource& texture)
+                {
+                    return !texture.imported;
+                });
+            const bool hasTransientBuffer = std::any_of(
+                graph.buffers.begin(),
+                graph.buffers.end(),
+                [](const BufferResource& buffer)
+                {
+                    return !buffer.imported;
+                });
+            graph.resourcesRealized =
+                !hasTransientTexture && !hasTransientBuffer;
+            return graph.resourcesRealized;
+        }
+
+        // If memory aliasing is enabled and heaps have been computed, use placed resources
+        if (graph.enableMemoryAliasing && !graph.transientHeaps.empty())
+        {
+            // Create RHI Heaps
+            for (auto& th : graph.transientHeaps)
+            {
+                if (!th.heap && th.size > 0)
+                {
+                    RHIHeapDesc heapDesc;
+                    heapDesc.size = th.size;
+                    heapDesc.type = RHIHeapType::Default;
+                    heapDesc.flags = RHIHeapFlags::AllowAll;
+                    heapDesc.debugName = "TransientHeap";
+
+                    th.heap = graph.device->CreateHeap(heapDesc);
+                    if (!th.heap)
+                    {
+                        RVX_CORE_WARN("RenderGraph: Failed to create transient heap, falling back to independent resources");
+                    }
+                }
+            }
+
+            // Create Placed Textures
+            for (auto& texture : graph.textures)
+            {
+                if (texture.imported || texture.texture || texture.pooledRaw)
+                    continue;
+
+                if (texture.alias.heapIndex < graph.transientHeaps.size() &&
+                    graph.transientHeaps[texture.alias.heapIndex].heap)
+                {
+                    auto* heap = graph.transientHeaps[texture.alias.heapIndex].heap.Get();
+                    texture.texture = graph.device->CreatePlacedTexture(
+                        heap,
+                        texture.alias.heapOffset,
+                        texture.desc);
+                }
+
+                // Fallback to independent resource if placed creation fails
+                if (!texture.texture)
+                {
+                    texture.texture = graph.device->CreateTexture(texture.desc);
+                }
+
+                texture.initialState = RHIResourceState::Undefined;
+                texture.initialAccessSnapshot = MakeRHITextureAccessSnapshot(
+                    RHIResourceState::Undefined,
+                    RHIShaderStage::None,
+                    GPUQueueDomain::Graphics,
+                    RHIContentValidity::Invalid);
+            }
+
+            // Create Placed Buffers
+            for (auto& buffer : graph.buffers)
+            {
+                if (buffer.imported || buffer.buffer || buffer.pooledRaw)
+                    continue;
+
+                if (buffer.alias.heapIndex < graph.transientHeaps.size() &&
+                    graph.transientHeaps[buffer.alias.heapIndex].heap)
+                {
+                    auto* heap = graph.transientHeaps[buffer.alias.heapIndex].heap.Get();
+                    buffer.buffer = graph.device->CreatePlacedBuffer(
+                        heap,
+                        buffer.alias.heapOffset,
+                        buffer.desc);
+                }
+
+                // Fallback to independent resource if placed creation fails
+                if (!buffer.buffer)
+                {
+                    buffer.buffer = graph.device->CreateBuffer(buffer.desc);
+                }
+
+                buffer.initialState = RHIResourceState::Undefined;
+                buffer.initialAccessSnapshot = MakeRHIBufferAccessSnapshot(
+                    RHIResourceState::Undefined,
+                    RHIShaderStage::None,
+                    GPUQueueDomain::Graphics,
+                    RHIContentValidity::Invalid);
+            }
+        }
+        else
+        {
+            // No aliasing: create independent resources
+            for (auto& texture : graph.textures)
+            {
+                if (!texture.imported && !texture.texture && !texture.pooledRaw)
+                {
+                    if (!AcquireTransientTexture(graph, texture))
+                    {
+                        texture.texture = graph.device->CreateTexture(texture.desc);
+                        texture.initialAccessSnapshot = MakeRHITextureAccessSnapshot(
+                            RHIResourceState::Undefined,
+                            RHIShaderStage::None,
+                            GPUQueueDomain::Graphics,
+                            RHIContentValidity::Invalid);
+                        texture.initialState = RHIResourceState::Undefined;
+                    }
+                }
+            }
+
+            for (auto& buffer : graph.buffers)
+            {
+                if (!buffer.imported && !buffer.buffer && !buffer.pooledRaw)
+                {
+                    if (!AcquireTransientBuffer(graph, buffer))
+                    {
+                        buffer.buffer = graph.device->CreateBuffer(buffer.desc);
+                        buffer.initialAccessSnapshot = MakeRHIBufferAccessSnapshot(
+                            RHIResourceState::Undefined,
+                            RHIShaderStage::None,
+                            GPUQueueDomain::Graphics,
+                            RHIContentValidity::Invalid);
+                        buffer.initialState = RHIResourceState::Undefined;
+                    }
+                }
+            }
+        }
+
+        const bool texturesReady = std::all_of(
+            graph.textures.begin(),
+            graph.textures.end(),
+            [](const TextureResource& texture)
+            {
+                return texture.GetTexture() != nullptr;
+            });
+        const bool buffersReady = std::all_of(
+            graph.buffers.begin(),
+            graph.buffers.end(),
+            [](const BufferResource& buffer)
+            {
+                return buffer.GetBuffer() != nullptr;
+            });
+        graph.resourcesRealized = texturesReady && buffersReady;
+        if (!graph.resourcesRealized)
+        {
+            RVX_CORE_ERROR(
+                "RenderGraph physical resource realization failed closed");
+        }
+        else
+        {
+            // The compiler records a symbolic lease-before edge. Once the
+            // physical lease is known, bind the diagnostic/source snapshot
+            // without changing the already compiled desired accesses.
+            std::vector<uint8> firstTextureUse(graph.textures.size(), 1);
+            std::vector<uint8> firstBufferUse(graph.buffers.size(), 1);
+            const auto bindPass = [&](Pass& pass)
+            {
+                if (pass.culled)
+                    return;
+                for (ResourceUsage& usage : pass.usages)
+                {
+                    if (usage.type == ResourceType::Texture &&
+                        usage.index < graph.textures.size() &&
+                        !graph.textures[usage.index].imported &&
+                        firstTextureUse[usage.index] != 0)
+                    {
+                        usage.plannedBeforeAccess = graph.textures[usage.index]
+                            .initialAccessSnapshot.uniformAccess;
+                        usage.hasPlannedBeforeAccess = true;
+                        firstTextureUse[usage.index] = 0;
+                    }
+                    else if (usage.type == ResourceType::Buffer &&
+                             usage.index < graph.buffers.size() &&
+                             !graph.buffers[usage.index].imported &&
+                             firstBufferUse[usage.index] != 0)
+                    {
+                        usage.plannedBeforeAccess = graph.buffers[usage.index]
+                            .initialAccessSnapshot.uniformAccess;
+                        usage.hasPlannedBeforeAccess = true;
+                        firstBufferUse[usage.index] = 0;
+                    }
+                }
+            };
+            for (uint32 passIndex : graph.executionOrder)
+            {
+                if (passIndex < graph.passes.size())
+                    bindPass(graph.passes[passIndex]);
+            }
+        }
+        return graph.resourcesRealized;
+    }
+
+
     void ExecuteRenderGraph(RenderGraphImpl& graph, RHICommandContext& ctx)
     {
         ResetExecutionDiagnostics(graph);
@@ -494,6 +918,13 @@ namespace RVX
         if (!graph.stats.compileValid)
         {
             RVX_CORE_ERROR("RenderGraph execution skipped because the graph did not compile successfully");
+            return;
+        }
+
+        if (!RealizeRenderGraphResources(graph))
+        {
+            RVX_CORE_ERROR(
+                "RenderGraph execution skipped because physical resource realization failed");
             return;
         }
 
@@ -648,6 +1079,15 @@ namespace RVX
             RVX_CORE_ERROR(
                 "RenderGraph produced an invalid RHI queue plan: {}",
                 validation.message);
+            submission = {};
+            return false;
+        }
+
+        // All queue contexts and the final DAG are valid before the first
+        // physical resource lease is acquired. Resource realization is a
+        // one-shot execution concern, never a compiler side effect.
+        if (!RealizeRenderGraphResources(graph))
+        {
             submission = {};
             return false;
         }
@@ -840,6 +1280,13 @@ namespace RVX
 
         graph.stats.asyncFallbackUsed = false;
         graph.stats.asyncFallbackReason = RenderGraph::AsyncComputeFallbackReason::None;
+        if (!RealizeRenderGraphResources(graph))
+        {
+            graph.stats.asyncFallbackUsed = true;
+            graph.stats.asyncFallbackReason =
+                RenderGraph::AsyncComputeFallbackReason::GraphNotCompiled;
+            return;
+        }
         ValidatePlannedAccessSources(graph);
 
         const uint64 fenceBaseValue = (frameIndex + 1u) << 32u;

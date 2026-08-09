@@ -3670,21 +3670,6 @@ void SceneRenderer::Render()
     // Compile the render graph (computes barriers, memory aliasing, pass culling)
     m_renderGraph->Compile();
     bool graphCompileValid = m_renderGraph->GetCompileStats().compileValid;
-    if (graphCompileValid &&
-        m_renderGraph->GetQueueExecutionMode() ==
-            RenderGraph::QueueExecutionMode::MultiQueue)
-    {
-        const RenderGraph::SubmissionPlan planned =
-            m_renderGraph->GetSubmissionPlan();
-        if (planned.computeBatchCount == 0 &&
-            planned.copyBatchCount == 0)
-        {
-            // A graph that maps entirely to Graphics gains no concurrency from
-            // queue-plan recording. Keep the established single-context path
-            // and avoid manufacturing extra command-list boundaries.
-            graphCompileValid = m_renderGraph->RecompileGraphicsOnly();
-        }
-    }
 
     if (RenderSubmissionTracker* tracker =
             RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext))
@@ -3715,16 +3700,9 @@ void SceneRenderer::Render()
             }
             else
             {
-                graphCompileValid = m_renderGraph->RecompileGraphicsOnly();
-                if (graphCompileValid)
-                {
-                    m_renderGraph->Execute(*ctx);
-                }
-                else
-                {
-                    executionSkippedReason =
-                        "MultiQueue recording failed and GraphicsOnly rebuild was invalid";
-                }
+                graphCompileValid = false;
+                executionSkippedReason =
+                    "MultiQueue recording failed before submission adoption";
             }
         }
         else

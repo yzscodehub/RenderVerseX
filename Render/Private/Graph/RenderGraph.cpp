@@ -81,7 +81,7 @@ namespace RVX
         }
 
         GPUQueueDomain GetPhysicalDomain(
-            IRHIDevice* device,
+            const RHICapabilities* capabilities,
             RenderGraphPassType passType,
             RenderGraph::QueueExecutionMode executionMode)
         {
@@ -91,31 +91,30 @@ namespace RVX
                 return domain;
             }
 
-            if (device)
+            if (capabilities)
             {
-                const RHICapabilities& capabilities = device->GetCapabilities();
                 const bool supportsLegacyTwoQueueRecording =
-                    capabilities.supportsAsyncCompute &&
-                    capabilities.supportsExplicitQueueFenceSignal &&
-                    capabilities.supportsQueueFenceWait;
-                if (!capabilities.supportsQueueSubmissionPlan &&
+                    capabilities->supportsAsyncCompute &&
+                    capabilities->supportsExplicitQueueFenceSignal &&
+                    capabilities->supportsQueueFenceWait;
+                if (!capabilities->supportsQueueSubmissionPlan &&
                     !supportsLegacyTwoQueueRecording)
                 {
                     return GPUQueueDomain::Graphics;
                 }
                 if (passType == RenderGraphPassType::Compute &&
-                    capabilities.supportsAsyncCompute)
+                    capabilities->supportsAsyncCompute)
                 {
                     TryGetGPUQueueDomain(
-                        capabilities.queueTopology,
+                        capabilities->queueTopology,
                         RHICommandQueueType::Compute,
                         domain);
                 }
                 else if (passType == RenderGraphPassType::Copy &&
-                         capabilities.supportsQueueSubmissionPlan)
+                         capabilities->supportsQueueSubmissionPlan)
                 {
                     TryGetGPUQueueDomain(
-                        capabilities.queueTopology,
+                        capabilities->queueTopology,
                         RHICommandQueueType::Copy,
                         domain);
                 }
@@ -148,6 +147,33 @@ namespace RVX
                 case RenderGraphPassType::Graphics:
                 default: return RHIShaderStage::AllGraphics;
             }
+        }
+
+        RGAccessDesc ToLogicalAccess(
+            const RHIAccessSnapshot& access,
+            RHIShaderStage shaderStages,
+            RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve)
+        {
+            RGAccessDesc logical;
+            logical.executionScope = access.executionScope;
+            logical.memoryAccess = access.memoryAccess;
+            logical.layout = access.layout;
+            logical.shaderStages = shaderStages;
+            logical.discardIntent = discardIntent;
+            return logical;
+        }
+
+        RHIAccessSnapshot ToPhysicalAccess(
+            const RGAccessDesc& access,
+            GPUQueueDomain domain)
+        {
+            RHIAccessSnapshot physical;
+            physical.executionScope = access.executionScope;
+            physical.memoryAccess = access.memoryAccess;
+            physical.layout = access.layout;
+            physical.domain = domain;
+            physical.contentValidity = RHIContentValidity::Valid;
+            return physical;
         }
 
         RenderGraph::DiagnosticResourceType ToDiagnosticResourceType(ResourceType type)
@@ -608,6 +634,34 @@ namespace RVX
 
             if (!plan.queueBatches.empty())
             {
+                const bool graphicsOnly = std::all_of(
+                    plan.queueBatches.begin(),
+                    plan.queueBatches.end(),
+                    [](const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+                    {
+                        return batch.queue ==
+                            RenderGraph::DiagnosticExecutionQueue::Graphics;
+                    });
+                if (graphicsOnly)
+                {
+                    plan.terminalGraphicsBatchIndex =
+                        static_cast<uint32>(plan.queueBatches.size() - 1u);
+                    plan.queueBatchCount =
+                        static_cast<uint32>(plan.queueBatches.size());
+                    plan.dependencyLevelCount = maxPlannedDependencyLevel + 1u;
+                    plan.queueSyncCount =
+                        static_cast<uint32>(plan.queueSyncs.size());
+                    for (const RenderGraph::PlannedQueueSyncDiagnostic& sync :
+                         plan.queueSyncs)
+                    {
+                        if (sync.reason == RenderGraph::DiagnosticSyncReason::CrossQueueDependency)
+                        {
+                            ++plan.crossQueueSyncCount;
+                        }
+                    }
+                    return plan;
+                }
+
                 std::vector<uint8> hasDependent(plan.queueBatches.size(), 0);
                 for (const RenderGraph::PlannedQueueBatchDiagnostic& batch :
                      plan.queueBatches)
@@ -902,6 +956,17 @@ namespace RVX
         }
     } // namespace
 
+    RGAccessDesc MakeRGAccessDesc(
+        RHIResourceState state,
+        RHIShaderStage shaderStages,
+        RHIDiscardIntent discardIntent)
+    {
+        return ToLogicalAccess(
+            MakeRHIAccessSnapshot(state, shaderStages),
+            shaderStages,
+            discardIntent);
+    }
+
     class RenderGraph::Impl : public RenderGraphImpl
     {
     public:
@@ -961,7 +1026,7 @@ namespace RVX
         std::vector<TextureResource>* textures = nullptr;
         std::vector<BufferResource>* buffers = nullptr;
         Pass* pass = nullptr;
-        IRHIDevice* device = nullptr;
+        const RHICapabilities* capabilities = nullptr;
         RenderGraph::QueueExecutionMode queueExecutionMode =
             RenderGraph::QueueExecutionMode::GraphicsOnly;
         uint32* compatibilityStateProjectionCount = nullptr;
@@ -1005,9 +1070,13 @@ namespace RVX
     void RenderGraph::SetDevice(IRHIDevice* device)
     {
         m_impl->device = device;
+        m_impl->hasCapabilitySnapshot = device != nullptr;
+        m_impl->capabilitySnapshot = device
+            ? device->GetCapabilities()
+            : RHICapabilities{};
         m_impl->enableMemoryAliasing =
             m_impl->memoryAliasingRequested && device &&
-            device->GetCapabilities().supportsExplicitAliasingBarriers;
+            m_impl->capabilitySnapshot.supportsExplicitAliasingBarriers;
     }
 
     void RenderGraph::SetTransientResourcePool(TransientResourcePool* pool)
@@ -1340,7 +1409,12 @@ namespace RVX
         pass.name = name ? name : "RenderPass";
         pass.type = type;
         pass.plannedExecutionQueue = GetPlannedExecutionQueue(
-            GetPhysicalDomain(m_impl->device, type, m_impl->queueExecutionMode));
+            GetPhysicalDomain(
+                m_impl->hasCapabilitySnapshot
+                    ? &m_impl->capabilitySnapshot
+                    : nullptr,
+                type,
+                m_impl->queueExecutionMode));
         pass.execute = std::move(execute);
 
         RenderGraphBuilder builder;
@@ -1348,7 +1422,9 @@ namespace RVX
         builderImpl.textures = &m_impl->textures;
         builderImpl.buffers = &m_impl->buffers;
         builderImpl.pass = &pass;
-        builderImpl.device = m_impl->device;
+        builderImpl.capabilities = m_impl->hasCapabilitySnapshot
+            ? &m_impl->capabilitySnapshot
+            : nullptr;
         builderImpl.queueExecutionMode = m_impl->queueExecutionMode;
         builderImpl.compatibilityStateProjectionCount = &m_impl->compatibilityStateProjectionCount;
         builderImpl.graphIdentity = m_impl->graphIdentity;
@@ -1360,7 +1436,11 @@ namespace RVX
         }
 
         const GPUQueueDomain physicalDomain = GetPhysicalDomain(
-            m_impl->device, type, m_impl->queueExecutionMode);
+            m_impl->hasCapabilitySnapshot
+                ? &m_impl->capabilitySnapshot
+                : nullptr,
+            type,
+            m_impl->queueExecutionMode);
         for (ResourceUsage& usage : pass.usages)
         {
             usage.desiredAccess.domain = physicalDomain;
@@ -1394,9 +1474,10 @@ namespace RVX
             state,
             stages,
             GetPhysicalDomain(
-                m_impl->device,
+                m_impl->capabilities,
                 m_impl->pass->type,
                 m_impl->queueExecutionMode));
+        usage.logicalAccess = MakeRGAccessDesc(state, stages);
         usage.access = RGAccessType::Read;
         usage.stages = stages;  // Use the stages parameter for fine-grained barrier optimization
         usage.hasSubresourceRange = texture.hasSubresourceRange;
@@ -1425,6 +1506,8 @@ namespace RVX
         usage.index = texture.index;
         usage.desiredState = ProjectRHIResourceState(access);
         usage.desiredAccess = access;
+        usage.logicalAccess = ToLogicalAccess(
+            access, GetDefaultShaderStages(m_impl->pass->type));
         usage.access = RGAccessType::Read;
         usage.stages = GetDefaultShaderStages(m_impl->pass->type);
         usage.hasSubresourceRange = texture.hasSubresourceRange;
@@ -1459,9 +1542,10 @@ namespace RVX
             state,
             stages,
             GetPhysicalDomain(
-                m_impl->device,
+                m_impl->capabilities,
                 m_impl->pass->type,
                 m_impl->queueExecutionMode));
+        usage.logicalAccess = MakeRGAccessDesc(state, stages);
         usage.access = RGAccessType::Read;
         usage.stages = stages;  // Use the stages parameter for fine-grained barrier optimization
         usage.hasRange = buffer.hasRange;
@@ -1493,6 +1577,8 @@ namespace RVX
         usage.index = buffer.index;
         usage.desiredState = ProjectRHIResourceState(access);
         usage.desiredAccess = access;
+        usage.logicalAccess = ToLogicalAccess(
+            access, GetDefaultShaderStages(m_impl->pass->type));
         usage.access = RGAccessType::Read;
         usage.stages = GetDefaultShaderStages(m_impl->pass->type);
         usage.hasRange = buffer.hasRange;
@@ -1527,9 +1613,11 @@ namespace RVX
             state,
             usage.stages,
             GetPhysicalDomain(
-                m_impl->device,
+                m_impl->capabilities,
                 m_impl->pass->type,
                 m_impl->queueExecutionMode));
+        usage.logicalAccess = MakeRGAccessDesc(
+            state, usage.stages, discardIntent);
         usage.access = RGAccessType::Write;
         usage.discardIntent = discardIntent;
         usage.hasSubresourceRange = texture.hasSubresourceRange;
@@ -1559,6 +1647,10 @@ namespace RVX
         usage.index = texture.index;
         usage.desiredState = ProjectRHIResourceState(access);
         usage.desiredAccess = access;
+        usage.logicalAccess = ToLogicalAccess(
+            access,
+            GetDefaultShaderStages(m_impl->pass->type),
+            discardIntent);
         usage.access = RGAccessType::Write;
         usage.discardIntent = discardIntent;
         usage.stages = GetDefaultShaderStages(m_impl->pass->type);
@@ -1591,9 +1683,11 @@ namespace RVX
             state,
             usage.stages,
             GetPhysicalDomain(
-                m_impl->device,
+                m_impl->capabilities,
                 m_impl->pass->type,
                 m_impl->queueExecutionMode));
+        usage.logicalAccess = MakeRGAccessDesc(
+            state, usage.stages, discardIntent);
         usage.access = RGAccessType::Write;
         usage.discardIntent = discardIntent;
         usage.hasRange = buffer.hasRange;
@@ -1626,6 +1720,10 @@ namespace RVX
         usage.index = buffer.index;
         usage.desiredState = ProjectRHIResourceState(access);
         usage.desiredAccess = access;
+        usage.logicalAccess = ToLogicalAccess(
+            access,
+            GetDefaultShaderStages(m_impl->pass->type),
+            discardIntent);
         usage.access = RGAccessType::Write;
         usage.discardIntent = discardIntent;
         usage.stages = GetDefaultShaderStages(m_impl->pass->type);
@@ -1647,7 +1745,7 @@ namespace RVX
             : RHIShaderStage::AllGraphics;
         const GPUQueueDomain domain = m_impl && m_impl->pass
             ? GetPhysicalDomain(
-                m_impl->device,
+                m_impl->capabilities,
                 m_impl->pass->type,
                 m_impl->queueExecutionMode)
             : GPUQueueDomain::Graphics;
@@ -1671,6 +1769,8 @@ namespace RVX
         usage.index = texture.index;
         usage.desiredState = ProjectRHIResourceState(access);
         usage.desiredAccess = access;
+        usage.logicalAccess = ToLogicalAccess(
+            access, GetDefaultShaderStages(m_impl->pass->type));
         usage.access = RGAccessType::ReadWrite;
         usage.stages = GetDefaultShaderStages(m_impl->pass->type);
         usage.hasSubresourceRange = texture.hasSubresourceRange;
@@ -1688,7 +1788,7 @@ namespace RVX
             : RHIShaderStage::AllGraphics;
         const GPUQueueDomain domain = m_impl && m_impl->pass
             ? GetPhysicalDomain(
-                m_impl->device,
+                m_impl->capabilities,
                 m_impl->pass->type,
                 m_impl->queueExecutionMode)
             : GPUQueueDomain::Graphics;
@@ -1712,6 +1812,8 @@ namespace RVX
         usage.index = buffer.index;
         usage.desiredState = ProjectRHIResourceState(access);
         usage.desiredAccess = access;
+        usage.logicalAccess = ToLogicalAccess(
+            access, GetDefaultShaderStages(m_impl->pass->type));
         usage.access = RGAccessType::ReadWrite;
         usage.stages = GetDefaultShaderStages(m_impl->pass->type);
         usage.hasRange = buffer.hasRange;
@@ -1722,6 +1824,108 @@ namespace RVX
         }
         m_impl->pass->usages.push_back(usage);
         return buffer;
+    }
+
+    RGTextureHandle RenderGraphBuilder::Read(
+        RGTextureHandle texture,
+        const RGAccessDesc& access)
+    {
+        const RGTextureHandle result = Read(
+            texture, ToPhysicalAccess(access, GPUQueueDomain::Graphics));
+        if (result.IsValid() && m_impl && m_impl->pass &&
+            !m_impl->pass->usages.empty())
+        {
+            ResourceUsage& usage = m_impl->pass->usages.back();
+            usage.logicalAccess = access;
+            usage.stages = access.shaderStages;
+        }
+        return result;
+    }
+
+    RGBufferHandle RenderGraphBuilder::Read(
+        RGBufferHandle buffer,
+        const RGAccessDesc& access)
+    {
+        const RGBufferHandle result = Read(
+            buffer, ToPhysicalAccess(access, GPUQueueDomain::Graphics));
+        if (result.IsValid() && m_impl && m_impl->pass &&
+            !m_impl->pass->usages.empty())
+        {
+            ResourceUsage& usage = m_impl->pass->usages.back();
+            usage.logicalAccess = access;
+            usage.stages = access.shaderStages;
+        }
+        return result;
+    }
+
+    RGTextureHandle RenderGraphBuilder::Write(
+        RGTextureHandle texture,
+        const RGAccessDesc& access)
+    {
+        const RGTextureHandle result = Write(
+            texture,
+            ToPhysicalAccess(access, GPUQueueDomain::Graphics),
+            access.discardIntent);
+        if (result.IsValid() && m_impl && m_impl->pass &&
+            !m_impl->pass->usages.empty())
+        {
+            ResourceUsage& usage = m_impl->pass->usages.back();
+            usage.logicalAccess = access;
+            usage.stages = access.shaderStages;
+        }
+        return result;
+    }
+
+    RGBufferHandle RenderGraphBuilder::Write(
+        RGBufferHandle buffer,
+        const RGAccessDesc& access)
+    {
+        const RGBufferHandle result = Write(
+            buffer,
+            ToPhysicalAccess(access, GPUQueueDomain::Graphics),
+            access.discardIntent);
+        if (result.IsValid() && m_impl && m_impl->pass &&
+            !m_impl->pass->usages.empty())
+        {
+            ResourceUsage& usage = m_impl->pass->usages.back();
+            usage.logicalAccess = access;
+            usage.stages = access.shaderStages;
+        }
+        return result;
+    }
+
+    RGTextureHandle RenderGraphBuilder::ReadWrite(
+        RGTextureHandle texture,
+        const RGAccessDesc& access)
+    {
+        const RGTextureHandle result = ReadWrite(
+            texture, ToPhysicalAccess(access, GPUQueueDomain::Graphics));
+        if (result.IsValid() && m_impl && m_impl->pass &&
+            !m_impl->pass->usages.empty())
+        {
+            ResourceUsage& usage = m_impl->pass->usages.back();
+            usage.logicalAccess = access;
+            usage.discardIntent = access.discardIntent;
+            usage.stages = access.shaderStages;
+        }
+        return result;
+    }
+
+    RGBufferHandle RenderGraphBuilder::ReadWrite(
+        RGBufferHandle buffer,
+        const RGAccessDesc& access)
+    {
+        const RGBufferHandle result = ReadWrite(
+            buffer, ToPhysicalAccess(access, GPUQueueDomain::Graphics));
+        if (result.IsValid() && m_impl && m_impl->pass &&
+            !m_impl->pass->usages.empty())
+        {
+            ResourceUsage& usage = m_impl->pass->usages.back();
+            usage.logicalAccess = access;
+            usage.discardIntent = access.discardIntent;
+            usage.stages = access.shaderStages;
+        }
+        return result;
     }
 
     RGTextureHandle RenderGraphBuilder::ReadMip(RGTextureHandle texture, uint32 mipLevel)
@@ -1748,7 +1952,49 @@ namespace RVX
 
     void RenderGraph::Compile()
     {
+        for (Pass& pass : m_impl->passes)
+        {
+            const GPUQueueDomain physicalDomain = GetPhysicalDomain(
+                m_impl->hasCapabilitySnapshot
+                    ? &m_impl->capabilitySnapshot
+                    : nullptr,
+                pass.type,
+                m_impl->queueExecutionMode);
+            pass.plannedExecutionQueue =
+                GetPlannedExecutionQueue(physicalDomain);
+            for (ResourceUsage& usage : pass.usages)
+            {
+                usage.desiredAccess.executionScope =
+                    usage.logicalAccess.executionScope;
+                usage.desiredAccess.memoryAccess =
+                    usage.logicalAccess.memoryAccess;
+                usage.desiredAccess.layout = usage.logicalAccess.layout;
+                usage.desiredAccess.domain = physicalDomain;
+                usage.desiredState =
+                    ProjectRHIResourceState(usage.desiredAccess);
+                usage.discardIntent = usage.logicalAccess.discardIntent;
+                usage.stages = usage.logicalAccess.shaderStages;
+            }
+        }
         CompileRenderGraph(*m_impl);
+    }
+
+    void RenderGraph::Compile(const RenderGraphCompileOptions& options)
+    {
+        m_impl->queueExecutionMode =
+            options.queuePolicy == RGQueuePolicy::PreferMultiQueue
+                ? QueueExecutionMode::MultiQueue
+                : QueueExecutionMode::GraphicsOnly;
+        m_impl->capabilitySnapshot = options.capabilities;
+        m_impl->hasCapabilitySnapshot = options.hasCapabilitySnapshot;
+        m_impl->memoryAliasingRequested = options.enableMemoryAliasing;
+        m_impl->enableMemoryAliasing =
+            options.enableMemoryAliasing &&
+            options.hasCapabilitySnapshot &&
+            options.capabilities.supportsExplicitAliasingBarriers;
+        m_impl->parallelRecordingEnabled =
+            options.enableParallelRecording;
+        Compile();
     }
 
     void RenderGraph::Execute(RHICommandContext& ctx)
@@ -2145,6 +2391,7 @@ namespace RVX
            << diagnostics.compileStats.accessSnapshotMismatchCount
            << ", compatibility projections="
            << diagnostics.compileStats.compatibilityStateProjectionCount << "\n";
+        ss << "Plan hash: " << diagnostics.compileStats.planHash << "\n";
         ss << "Queue contract: mode="
            << (m_impl->queueExecutionMode == QueueExecutionMode::MultiQueue
                    ? "MultiQueue"
@@ -2386,6 +2633,7 @@ namespace RVX
         ss << "  \"relativePath\": \"\",\n";
         ss << "  \"compileStats\": {\n";
         ss << "    \"compileValid\": " << JsonBool(stats.compileValid) << ",\n";
+        ss << "    \"planHash\": " << stats.planHash << ",\n";
         ss << "    \"executionOrderFallbackUsed\": " << JsonBool(stats.executionOrderFallbackUsed) << ",\n";
         ss << "    \"totalPasses\": " << stats.totalPasses << ",\n";
         ss << "    \"culledPasses\": " << stats.culledPasses << ",\n";
@@ -2790,6 +3038,7 @@ namespace RVX
         m_impl->aliasedBufferCount = 0;
         m_impl->compatibilityStateProjectionCount = 0;
         m_impl->executionRealized = false;
+        m_impl->resourcesRealized = false;
         m_impl->memoryAliasingRequested = false;
         m_impl->enableMemoryAliasing = false;
         m_impl->recordingGeneration =
