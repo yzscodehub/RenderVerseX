@@ -279,7 +279,7 @@ void DepthPrepass::AddToGraph(
                                                    const ViewData& view,
                                                    const RenderPassRecordIdentity& identity)
     {
-        return view.renderGraph == &graph && view.depthTarget.IsValid() &&
+        return view.depthTarget.IsValid() &&
                HasCurrentGraphProvenance(view.depthTarget, identity) &&
                graph.GetTextureDesc(view.depthTarget) != nullptr;
     };
@@ -298,7 +298,6 @@ void DepthPrepass::AddToGraph(
             context.identity.frameSequence &&
         context.frameSnapshot->executionPlan.viewOrdinal ==
             context.identity.viewOrdinal &&
-        context.frameSnapshot->view.renderGraph == &graph &&
         context.frameSnapshot->view.renderFrameExecutionPlan ==
             &context.frameSnapshot->executionPlan &&
         context.frameSnapshot->view.meshPassPreparation ==
@@ -420,7 +419,8 @@ void DepthPrepass::AddToGraph(
                 data.gpuInputs, gpuPlanned);
             data.recorder->Setup(builder, data.execution.view);
         },
-        [results](const GraphPassData& data, RHICommandContext& ctx)
+        [results](const GraphPassData& data,
+                  RenderGraphPassContext& context)
         {
             if (!data.contextValid || !data.recorder || !results)
             {
@@ -430,7 +430,7 @@ void DepthPrepass::AddToGraph(
                 }
                 return;
             }
-            data.recorder->Execute(ctx, data.execution.view);
+            data.recorder->Execute(context, data.execution.view);
             results->depthStats = data.recorder->GetDrawStats();
         });
 }
@@ -447,6 +447,7 @@ bool DepthPrepass::IsSupported() const
 void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
     m_depthTargetHandle = {};
+    m_depthTargetViewHandle = {};
     m_directInstanceHandle = {};
     m_directInstanceIndexHandle = {};
     m_directInstancePlan = {};
@@ -459,8 +460,25 @@ void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     // Declare depth buffer write (no color output)
     if (view.depthTarget.IsValid())
     {
-        builder.SetDepthStencil(view.depthTarget, true, false);
         m_depthTargetHandle = view.depthTarget;
+        if (const RHITextureDesc* desc =
+                builder.GetTextureDesc(m_depthTargetHandle))
+        {
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = desc->format;
+            viewDesc.dimension = desc->dimension;
+            viewDesc.subresourceRange = RHISubresourceRange::All();
+            viewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+            viewDesc.type = RHITextureViewType::DepthStencil;
+            viewDesc.debugName = "DepthPrepassDSV";
+            m_depthTargetViewHandle = builder.CreateTextureView(
+                m_depthTargetHandle, viewDesc);
+            m_depthTargetViewHandle = builder.Write(
+                m_depthTargetViewHandle,
+                MakeRGAccessDesc(
+                    RHIResourceState::DepthWrite,
+                    RHIShaderStage::None));
+        }
     }
 
     if (m_gpuDrivenDepthIndirectEnabled && m_gpuCulling)
@@ -516,7 +534,7 @@ bool DepthPrepass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
     if (m_renderScene == nullptr || view.instanceBatchPlans == nullptr ||
         !view.instanceBatchPlans->depthValid ||
         view.renderFrameExecutionPlan == nullptr ||
-        view.meshPassPreparation == nullptr || view.renderGraph == nullptr ||
+        view.meshPassPreparation == nullptr ||
         m_pipelineCache == nullptr)
     {
         return false;
@@ -545,22 +563,16 @@ bool DepthPrepass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
         !CreateRasterInstanceStream(*device,
                                     instances,
                                     "DepthDirectInstancing",
-                                    m_directInstanceStream) ||
-        !RetainRenderSubmissionResource(
-            view.submissionResourceBatch,
-            Ref<RefCounted>(m_directInstanceStream.instances)) ||
-        !RetainRenderSubmissionResource(
-            view.submissionResourceBatch,
-            Ref<RefCounted>(m_directInstanceStream.instanceIndices)))
+                                    m_directInstanceStream))
     {
         m_directInstanceStream = {};
         return false;
     }
-    m_directInstanceHandle = view.renderGraph->ImportBuffer(
-        m_directInstanceStream.instances.Get(),
+    m_directInstanceHandle = builder.ImportBuffer(
+        m_directInstanceStream.instances,
         RHIResourceState::ShaderResource);
-    m_directInstanceIndexHandle = view.renderGraph->ImportBuffer(
-        m_directInstanceStream.instanceIndices.Get(),
+    m_directInstanceIndexHandle = builder.ImportBuffer(
+        m_directInstanceStream.instanceIndices,
         RHIResourceState::VertexBuffer);
     builder.Read(m_directInstanceHandle, RHIShaderStage::Vertex);
     builder.Read(m_directInstanceIndexHandle,
@@ -744,6 +756,7 @@ bool DepthPrepass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
 }
 
 bool DepthPrepass::BuildPlannedDirectBatch(
+    RenderGraphPassContext& context,
     const ViewData& view,
     std::vector<PlannedDepthDraw>& outPlannedDraws)
 {
@@ -914,7 +927,7 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             MaterialBindingOptions options;
             options.allowNormalMap = false;
             materialBinding = m_materialSystem->PrepareMaterialBinding(
-                packet.materialKey.material, view.viewCache, options);
+                packet.materialKey.material, nullptr, options);
             if (!materialBinding.IsDrawable())
             {
                 m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
@@ -922,11 +935,9 @@ bool DepthPrepass::BuildPlannedDirectBatch(
                 outPlannedDraws.clear();
                 return false;
             }
-            if (!RetainRenderSubmissionResource(
-                    view.submissionResourceBatch,
+            if (!context.RetainSubmissionResource(
                     Ref<RefCounted>(materialBinding.constantBuffer)) ||
-                !RetainRenderSubmissionResource(
-                    view.submissionResourceBatch,
+                !context.RetainSubmissionResource(
                     Ref<RefCounted>(materialBinding.descriptorSetRef)))
             {
                 m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
@@ -963,15 +974,12 @@ bool DepthPrepass::BuildPlannedDirectBatch(
                 ResolveSkinningMatrices(planned.object, planned.buffers),
                 nullptr,
                 planned.objectBinding) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(planned.objectBinding.constantBuffer)) ||
             (planned.objectBinding.instanceBuffer &&
-             !RetainRenderSubmissionResource(
-                 view.submissionResourceBatch,
+             !context.RetainSubmissionResource(
                  Ref<RefCounted>(planned.objectBinding.instanceBuffer))) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(planned.objectBinding.descriptorSet)))
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
@@ -981,11 +989,12 @@ bool DepthPrepass::BuildPlannedDirectBatch(
         outPlannedDraws.push_back(std::move(planned));
     }
 
-    ApplyDirectInstancePlan(view, outPlannedDraws);
+    ApplyDirectInstancePlan(context, view, outPlannedDraws);
     return true;
 }
 
 void DepthPrepass::ApplyDirectInstancePlan(
+    RenderGraphPassContext& context,
     const ViewData& view,
     std::vector<PlannedDepthDraw>& plannedDraws)
 {
@@ -1050,14 +1059,11 @@ void DepthPrepass::ApplyDirectInstancePlan(
                 {},
                 m_directInstanceStream.instances.Get(),
                 binding) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(binding.constantBuffer)) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(binding.instanceBuffer)) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(binding.descriptorSet)))
         {
             m_drawStats.instancingFallbackBatchCount +=
@@ -1170,6 +1176,15 @@ bool DepthPrepass::TryDrawPlannedDirect(
 
 void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
+    (void)ctx;
+    (void)view;
+    // Typed AddToGraph owns graph resource realization and execution.
+}
+
+void DepthPrepass::Execute(RenderGraphPassContext& context,
+                           const ViewData& view)
+{
+    RHICommandContext& ctx = context.Commands();
     m_drawStats = {};
     uint64 gpuLaneSubmissionCpuNanoseconds = 0;
     uint64 directLaneSubmissionCpuNanoseconds = 0;
@@ -1183,23 +1198,8 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
         }
     };
 
-    RHITextureViewRef depthTargetViewOwner;
-    RHITextureView* depthTargetView = nullptr;
-    const bool depthHandleBelongsToCurrentGraph =
-        view.renderGraph != nullptr &&
-        m_depthTargetHandle.IsValid() &&
-        m_depthTargetHandle.graphIdentity == view.renderGraph->GetGraphIdentity() &&
-        m_depthTargetHandle.recordingGeneration ==
-            view.renderGraph->GetRecordingGeneration();
-    if (depthHandleBelongsToCurrentGraph && view.viewCache)
-    {
-        if (RHITexture* depthTarget = view.renderGraph->GetTexture(m_depthTargetHandle))
-        {
-            depthTargetViewOwner = RHITextureViewRef(
-                view.viewCache->GetDefaultDSV(depthTarget));
-            depthTargetView = depthTargetViewOwner.Get();
-        }
-    }
+    RHITextureView* depthTargetView =
+        context.GetTextureView(m_depthTargetViewHandle);
 
     if (!m_pipelineCache || !m_renderScene || !depthTargetView)
     {
@@ -1207,12 +1207,7 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    if (depthTargetView->GetTexture() == nullptr ||
-        !RetainRenderSubmissionResource(
-            view.submissionResourceBatch, Ref<RefCounted>(depthTargetView)) ||
-        !RetainRenderSubmissionResource(
-            view.submissionResourceBatch,
-            Ref<RefCounted>(depthTargetView->GetTexture())))
+    if (depthTargetView->GetTexture() == nullptr)
     {
         RVX_RENDER_WARN("DepthPrepass: submission ownership rejected graph-owned depth attachment");
         reportGPUSceneRecordingFailure();
@@ -1337,7 +1332,7 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
             (!plannedGPU && depthPlan->partition.inputPacketCount == 0);
         std::vector<PlannedDepthDraw> plannedDraws;
         if (validateDirectPlan &&
-            !BuildPlannedDirectBatch(view, plannedDraws))
+            !BuildPlannedDirectBatch(context, view, plannedDraws))
         {
             updatePlanReport(RenderExecutionStatus::Failed,
                              m_drawStats.failureReason,
@@ -1402,8 +1397,7 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
             }
             if (gpuPreflightReady &&
                 (gpuPipeline == nullptr || !gpuFrameDescriptorSet ||
-                !RetainRenderSubmissionResource(
-                    view.submissionResourceBatch,
+                !context.RetainSubmissionResource(
                     Ref<RefCounted>(gpuFrameDescriptorSet))))
             {
                 gpuPreflightReady = false;
@@ -1419,15 +1413,12 @@ void DepthPrepass::Execute(RHICommandContext& ctx, const ViewData& view)
                      {},
                      m_gpuCulling->GetInstanceBuffer(),
                      tier1ObjectBinding) ||
-                 !RetainRenderSubmissionResource(
-                     view.submissionResourceBatch,
+                 !context.RetainSubmissionResource(
                      Ref<RefCounted>(tier1ObjectBinding.constantBuffer)) ||
                  (tier1ObjectBinding.instanceBuffer &&
-                  !RetainRenderSubmissionResource(
-                      view.submissionResourceBatch,
+                  !context.RetainSubmissionResource(
                       Ref<RefCounted>(tier1ObjectBinding.instanceBuffer))) ||
-                 !RetainRenderSubmissionResource(
-                     view.submissionResourceBatch,
+                 !context.RetainSubmissionResource(
                      Ref<RefCounted>(tier1ObjectBinding.descriptorSet))))
             {
                 gpuPreflightReady = false;

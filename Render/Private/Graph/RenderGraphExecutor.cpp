@@ -1,4 +1,5 @@
 #include "RenderGraphInternal.h"
+#include "Core/Assert.h"
 #include "Core/Job/JobSystem.h"
 #include "Core/Log.h"
 
@@ -66,6 +67,13 @@ namespace RVX
         void RollbackRealizedResources(RenderGraphImpl& graph)
         {
             bool releasedAny = false;
+            for (TextureViewResource& view : graph.textureViews)
+            {
+                releasedAny |= static_cast<bool>(view.realizedView);
+                view.realizedView.Reset();
+            }
+            releasedAny |= !graph.executionResources.empty();
+            graph.executionResources.clear();
             for (TextureResource& texture : graph.textures)
             {
                 if (texture.pooledLease)
@@ -380,7 +388,10 @@ namespace RVX
             }
             if (pass.execute)
             {
-                pass.execute(ctx);
+                RVX_ASSERT_MSG(graph.owner != nullptr,
+                               "RenderGraph execution has no owning graph");
+                RenderGraphPassContext passContext(*graph.owner, ctx);
+                pass.execute(passContext);
             }
             if (!pass.postBufferBarriers.empty() ||
                 !pass.postTextureBarriers.empty())
@@ -767,8 +778,8 @@ namespace RVX
                 {
                     return !buffer.imported;
                 });
-            graph.resourcesRealized =
-                !hasTransientTexture && !hasTransientBuffer;
+            graph.resourcesRealized = !hasTransientTexture &&
+                !hasTransientBuffer && graph.textureViews.empty();
             return graph.resourcesRealized;
         }
 
@@ -892,6 +903,44 @@ namespace RVX
             }
         }
 
+        bool viewsReady = true;
+        for (TextureViewResource& view : graph.textureViews)
+        {
+            if (view.realizedView)
+                continue;
+            if (!view.texture.IsValid() || graph.owner == nullptr ||
+                view.texture.graphIdentity != graph.owner->GetGraphIdentity() ||
+                view.texture.recordingGeneration !=
+                    graph.owner->GetRecordingGeneration() ||
+                view.texture.index >= graph.textures.size())
+            {
+                viewsReady = false;
+                break;
+            }
+
+            RHITexture* texture =
+                graph.textures[view.texture.index].GetTexture();
+            if (!texture)
+            {
+                viewsReady = false;
+                break;
+            }
+            RHITextureViewDesc desc = view.desc;
+            if (desc.format == RHIFormat::Unknown)
+                desc.format = texture->GetFormat();
+            if (!view.debugName.empty())
+                desc.debugName = view.debugName.c_str();
+            TextureResource& source = graph.textures[view.texture.index];
+            view.realizedView = source.pooledLease
+                ? source.pooledLease->GetOrCreateView(desc)
+                : graph.device->CreateTextureView(texture, desc);
+            if (!view.realizedView)
+            {
+                viewsReady = false;
+                break;
+            }
+        }
+
         const bool texturesReady = std::all_of(
             graph.textures.begin(),
             graph.textures.end(),
@@ -906,7 +955,7 @@ namespace RVX
             {
                 return buffer.GetBuffer() != nullptr;
             });
-        graph.resourcesRealized = texturesReady && buffersReady;
+        graph.resourcesRealized = texturesReady && buffersReady && viewsReady;
         if (!graph.resourcesRealized)
         {
             RVX_CORE_ERROR(

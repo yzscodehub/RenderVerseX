@@ -6,11 +6,9 @@
 #include "Render/Passes/SkyboxPass.h"
 
 #include "Core/Log.h"
-#include "Render/Graph/ResourceViewCache.h"
 #include "Render/PipelineCache.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resources/RenderResourceRegistry.h"
-#include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <algorithm>
@@ -71,21 +69,20 @@ namespace
         RenderPassRecordIdentity identity{};
         std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot;
         const RenderResourceRegistry* resourceRegistry = nullptr;
-        ResourceViewCache* viewCache = nullptr;
         IRHIDevice* device = nullptr;
         RHIPipelineRef pipeline;
         RHIPipelineLayoutRef pipelineLayout;
         RHIDescriptorSetLayoutRef setLayout;
         RHIBufferRef constantBuffer;
-        RHIDescriptorSetRef descriptorSet;
         RHITextureRef cubemapTexture;
-        RHITextureViewRef cubemapView;
         RHISamplerRef sampler;
         RHITextureRef fallbackCubemap;
-        RHITextureViewRef fallbackCubemapView;
         RGTextureHandle skyTextureHandle{};
         RGTextureHandle colorHandle{};
         RGTextureHandle depthHandle{};
+        RGTextureViewHandle skyTextureViewHandle{};
+        RGTextureViewHandle colorViewHandle{};
+        RGTextureViewHandle depthViewHandle{};
         bool depthAvailable = false;
         bool usingCubemap = false;
         bool reverseZ = false;
@@ -94,44 +91,39 @@ namespace
         bool contextValid = false;
     };
 
-    [[nodiscard]] bool RetainResource(RenderSubmissionResourceBatch* batch,
+    [[nodiscard]] bool RetainResource(RenderGraphBuilder& builder,
                                       RefCounted* resource)
     {
         return resource == nullptr ||
-               RetainRenderSubmissionResource(batch, Ref<RefCounted>(resource));
+               builder.RetainSubmissionResource(Ref<RefCounted>(resource));
     }
 
-    [[nodiscard]] bool RetainRecordingResources(const GraphPassData& data)
+    [[nodiscard]] bool RetainRecordingResources(
+        RenderGraphBuilder& builder,
+        const GraphPassData& data)
     {
-        RenderSubmissionResourceBatch* batch =
-            data.execution.view.submissionResourceBatch;
-        if (batch == nullptr)
-        {
-            return true;
-        }
-
-        return RetainResource(batch, data.constantBuffer.Get()) &&
-               RetainResource(batch, data.descriptorSet.Get()) &&
-               RetainResource(batch, data.sampler.Get()) &&
-               RetainResource(batch, data.cubemapView.Get()) &&
-               RetainResource(batch, data.cubemapTexture.Get()) &&
-               RetainResource(batch, data.pipeline.Get()) &&
-               RetainResource(batch, data.pipelineLayout.Get()) &&
-               RetainResource(batch, data.setLayout.Get());
+        return RetainResource(builder, data.constantBuffer.Get()) &&
+               RetainResource(builder, data.sampler.Get()) &&
+               RetainResource(builder, data.cubemapTexture.Get()) &&
+               RetainResource(builder, data.pipeline.Get()) &&
+               RetainResource(builder, data.pipelineLayout.Get()) &&
+               RetainResource(builder, data.setLayout.Get());
     }
 
-    [[nodiscard]] bool ResolveSkyTexture(GraphPassData& data)
+    [[nodiscard]] bool ResolveSkyTexture(GraphPassData& data,
+                                         RenderGraphBuilder& builder)
     {
         data.cubemapTexture = data.fallbackCubemap;
-        data.cubemapView = data.fallbackCubemapView;
         data.usingCubemap = false;
+        data.skyTextureHandle = builder.ImportTexture(
+            data.cubemapTexture, RHIResourceState::ShaderResource);
 
         if (!data.frameSnapshot ||
             data.frameSnapshot->sky.mode != RenderSkyMode::Cubemap ||
             !data.frameSnapshot->sky.skyTexture.IsValid() ||
             data.resourceRegistry == nullptr)
         {
-            return data.cubemapTexture && data.cubemapView;
+            return data.cubemapTexture && data.skyTextureHandle.IsValid();
         }
 
         RHITexture* texture = data.resourceRegistry->ResolveTextureObject(
@@ -141,42 +133,20 @@ namespace
             // A packet can legitimately name a texture that is not ready for
             // this exact registry generation. Preserve the established solid
             // tint/intensity fallback instead of borrowing pass setter state.
-            return data.cubemapTexture && data.cubemapView;
+            return data.cubemapTexture && data.skyTextureHandle.IsValid();
         }
 
         const RGTextureHandle skyTextureHandle =
             data.execution.view.environmentSkyTexture;
-        if (!skyTextureHandle.IsValid() || data.identity.graph == nullptr ||
-            data.identity.graph->GetTexture(skyTextureHandle) != texture)
+        if (!skyTextureHandle.IsValid() || data.identity.graph == nullptr)
         {
             // The descriptor and RenderGraph access must identify the same
             // frame-owned texture. Fall back when that ownership is absent.
-            return data.cubemapTexture && data.cubemapView;
+            return data.cubemapTexture && data.skyTextureHandle.IsValid();
         }
 
-        RHITextureRef textureOwner(texture);
-        RHITextureViewRef viewOwner;
-        if (data.viewCache != nullptr)
-        {
-            viewOwner = RHITextureViewRef(data.viewCache->GetDefaultSRV(texture));
-        }
-        if (!viewOwner && data.device != nullptr)
-        {
-            RHITextureViewDesc viewDesc;
-            viewDesc.format = texture->GetFormat();
-            viewDesc.dimension = RHITextureDimension::TextureCube;
-            viewDesc.subresourceRange = RHISubresourceRange::All();
-            viewDesc.type = RHITextureViewType::ShaderResource;
-            viewDesc.debugName = "SkyboxCubemapSRV";
-            viewOwner = data.device->CreateTextureView(texture, viewDesc);
-        }
-        if (!viewOwner)
-        {
-            return data.cubemapTexture && data.cubemapView;
-        }
-
-        data.cubemapTexture = std::move(textureOwner);
-        data.cubemapView = std::move(viewOwner);
+        data.cubemapTexture = RHITextureRef(texture);
+        data.skyTextureHandle = skyTextureHandle;
         data.usingCubemap = true;
         return true;
     }
@@ -291,8 +261,8 @@ namespace
                                         RenderGraphBuilder& builder)
     {
         if (!data.contextValid || !data.frameSnapshot || !data.requestedEnabled ||
-            !data.supported || !data.device || !data.viewCache ||
-            !data.fallbackCubemap || !data.fallbackCubemapView || !data.sampler)
+            !data.supported || !data.device ||
+            !data.fallbackCubemap || !data.sampler)
         {
             return false;
         }
@@ -308,13 +278,13 @@ namespace
             return false;
         }
         const RHITextureDesc* colorDesc =
-            data.identity.graph->GetTextureDesc(view.colorTarget);
+            builder.GetTextureDesc(view.colorTarget);
         if (colorDesc == nullptr)
         {
             return false;
         }
         if (view.depthTarget.IsValid() &&
-            data.identity.graph->GetTextureDesc(view.depthTarget) == nullptr)
+            builder.GetTextureDesc(view.depthTarget) == nullptr)
         {
             return false;
         }
@@ -325,24 +295,7 @@ namespace
             return false;
         }
 
-        if (!ResolveSkyTexture(data) || !CreateRecordConstants(data))
-        {
-            return false;
-        }
-
-        RHIDescriptorSetDesc descriptorDesc;
-        descriptorDesc.layout = data.setLayout.Get();
-        descriptorDesc.debugName = "SkyboxRecordDescriptorSet";
-        descriptorDesc.BindBuffer(0,
-                                  data.constantBuffer.Get(),
-                                  0,
-                                  AlignSkyboxConstantBufferSize(
-                                      sizeof(SkyboxGPUConstants)));
-        descriptorDesc.BindTexture(1, data.cubemapView.Get());
-        descriptorDesc.BindSampler(2, data.sampler.Get());
-        data.descriptorSet = data.device->CreateDescriptorSet(descriptorDesc);
-        if (!data.descriptorSet ||
-            !data.descriptorSet->IsReadyForBinding(data.setLayout.Get()))
+        if (!ResolveSkyTexture(data, builder) || !CreateRecordConstants(data))
         {
             return false;
         }
@@ -350,55 +303,90 @@ namespace
         // Graph declarations cannot be rolled back. Establish the entire
         // submission lifetime first; a sealed/rejected production batch is a
         // genuine no-op rather than a graph-visible attachment access.
-        if (!RetainRecordingResources(data))
+        if (!RetainRecordingResources(builder, data))
         {
             return false;
         }
 
-        if (data.usingCubemap)
+        if (const RHITextureDesc* skyDesc =
+                builder.GetTextureDesc(data.skyTextureHandle))
         {
-            data.skyTextureHandle = builder.Read(
-                view.environmentSkyTexture,
-                RHIShaderStage::Pixel);
-            if (!data.skyTextureHandle.IsValid())
-            {
-                return false;
-            }
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = skyDesc->format;
+            viewDesc.dimension = RHITextureDimension::TextureCube;
+            viewDesc.subresourceRange = RHISubresourceRange::All();
+            viewDesc.type = RHITextureViewType::ShaderResource;
+            viewDesc.debugName = "SkyboxCubemapSRV";
+            data.skyTextureViewHandle = builder.CreateTextureView(
+                data.skyTextureHandle, viewDesc);
+            data.skyTextureViewHandle = builder.Read(
+                data.skyTextureViewHandle,
+                MakeRGAccessDesc(
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Pixel));
         }
+        if (!data.skyTextureViewHandle.IsValid())
+            return false;
 
-        data.colorHandle = builder.ReadWrite(
-            view.colorTarget,
-            MakeRHIAccessSnapshot(RHIResourceState::RenderTarget,
-                                   RHIShaderStage::Pixel));
-        if (!data.colorHandle.IsValid())
+        data.colorHandle = view.colorTarget;
+        RHITextureViewDesc colorViewDesc;
+        colorViewDesc.format = colorDesc->format;
+        colorViewDesc.dimension = colorDesc->dimension;
+        colorViewDesc.subresourceRange = RHISubresourceRange::All();
+        colorViewDesc.type = RHITextureViewType::RenderTarget;
+        colorViewDesc.debugName = "SkyboxColorRTV";
+        data.colorViewHandle = builder.CreateTextureView(
+            data.colorHandle, colorViewDesc);
+        data.colorViewHandle = builder.ReadWrite(
+            data.colorViewHandle,
+            MakeRGAccessDesc(
+                RHIResourceState::RenderTarget,
+                RHIShaderStage::Pixel));
+        if (!data.colorViewHandle.IsValid())
         {
             return false;
         }
         if (data.depthAvailable)
         {
-            data.depthHandle = builder.Read(
-                view.depthTarget,
-                RHIResourceState::DepthRead,
-                RHIShaderStage::Vertex | RHIShaderStage::Pixel);
-            if (!data.depthHandle.IsValid())
+            data.depthHandle = view.depthTarget;
+            const RHITextureDesc* depthDesc =
+                builder.GetTextureDesc(data.depthHandle);
+            if (!depthDesc)
             {
                 data.colorHandle = {};
                 return false;
             }
+            RHITextureViewDesc depthViewDesc;
+            depthViewDesc.format = depthDesc->format;
+            depthViewDesc.dimension = depthDesc->dimension;
+            depthViewDesc.subresourceRange = RHISubresourceRange::All();
+            depthViewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+            depthViewDesc.type = RHITextureViewType::DepthStencil;
+            depthViewDesc.debugName = "SkyboxDepthDSV";
+            data.depthViewHandle = builder.CreateTextureView(
+                data.depthHandle, depthViewDesc);
+            data.depthViewHandle = builder.Read(
+                data.depthViewHandle,
+                MakeRGAccessDesc(
+                    RHIResourceState::DepthRead,
+                    RHIShaderStage::Vertex | RHIShaderStage::Pixel));
+            if (!data.depthViewHandle.IsValid())
+                return false;
         }
         return true;
     }
 
-    void ExecuteRecording(const GraphPassData& data, RHICommandContext& ctx)
+    void ExecuteRecording(const GraphPassData& data,
+                          RenderGraphPassContext& context)
     {
+        RHICommandContext& ctx = context.Commands();
         if (!data.contextValid || !data.frameSnapshot || !data.identity.IsValid() ||
             data.identity.graph == nullptr ||
             !data.identity.Matches(*data.identity.graph) ||
             !data.colorHandle.IsValid() || !data.pipeline ||
             !data.pipelineLayout || !data.setLayout || !data.constantBuffer ||
-            !data.descriptorSet || !data.cubemapTexture || !data.cubemapView ||
+            !data.cubemapTexture || !data.skyTextureViewHandle.IsValid() ||
             !data.sampler ||
-            !data.descriptorSet->IsReadyForBinding(data.setLayout.Get()) ||
             data.colorHandle.graphIdentity != data.identity.graphIdentity ||
             data.colorHandle.recordingGeneration !=
                 data.identity.graphRecordingGeneration ||
@@ -416,43 +404,52 @@ namespace
             return;
         }
 
-        RenderGraph* graph = data.identity.graph;
-        RHITexture* colorTexture = graph->GetTexture(data.colorHandle);
+        RHITexture* colorTexture = context.GetTexture(data.colorHandle);
         RHITexture* depthTexture = data.depthAvailable
-            ? graph->GetTexture(data.depthHandle) : nullptr;
+            ? context.GetTexture(data.depthHandle) : nullptr;
         if (colorTexture == nullptr || (data.depthAvailable && depthTexture == nullptr))
         {
             return;
         }
 
-        RHITextureViewRef colorViewOwner(data.viewCache->GetDefaultRTV(colorTexture));
-        RHITextureViewRef depthViewOwner(data.depthAvailable
-            ? data.viewCache->GetDefaultDSV(depthTexture) : nullptr);
-        if (!colorViewOwner || (data.depthAvailable && !depthViewOwner))
+        RHITextureView* colorView =
+            context.GetTextureView(data.colorViewHandle);
+        RHITextureView* depthView = data.depthAvailable
+            ? context.GetTextureView(data.depthViewHandle) : nullptr;
+        RHITextureView* skyView =
+            context.GetTextureView(data.skyTextureViewHandle);
+        if (!colorView || !skyView || (data.depthAvailable && !depthView))
         {
             return;
         }
 
-        if (RenderSubmissionResourceBatch* batch =
-                data.execution.view.submissionResourceBatch)
+        RHIDescriptorSetDesc descriptorDesc;
+        descriptorDesc.layout = data.setLayout.Get();
+        descriptorDesc.debugName = "SkyboxRecordDescriptorSet";
+        descriptorDesc.BindBuffer(0,
+                                  data.constantBuffer.Get(),
+                                  0,
+                                  AlignSkyboxConstantBufferSize(
+                                      sizeof(SkyboxGPUConstants)));
+        descriptorDesc.BindTexture(1, skyView);
+        descriptorDesc.BindSampler(2, data.sampler.Get());
+        RHIDescriptorSetRef descriptorSet =
+            data.device->CreateDescriptorSet(descriptorDesc);
+        if (!descriptorSet ||
+            !descriptorSet->IsReadyForBinding(data.setLayout.Get()) ||
+            !context.RetainSubmissionResource(
+                Ref<RefCounted>(descriptorSet)))
         {
-            if (!RetainResource(batch, colorViewOwner.Get()) ||
-                !RetainResource(batch, colorViewOwner->GetTexture()) ||
-                (depthViewOwner &&
-                 (!RetainResource(batch, depthViewOwner.Get()) ||
-                  !RetainResource(batch, depthViewOwner->GetTexture()))))
-            {
-                return;
-            }
+            return;
         }
 
         RHIRenderPassDesc renderPassDesc;
         renderPassDesc.AddColorAttachment(
-            colorViewOwner.Get(), RHILoadOp::Load, RHIStoreOp::Store);
-        if (depthViewOwner)
+            colorView, RHILoadOp::Load, RHIStoreOp::Store);
+        if (depthView)
         {
             renderPassDesc.SetDepthStencil(
-                depthViewOwner.Get(), RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
+                depthView, RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
             renderPassDesc.depthStencilAttachment.readOnly = true;
         }
         renderPassDesc.SetRenderArea(
@@ -460,7 +457,7 @@ namespace
 
         ctx.BeginRenderPass(renderPassDesc);
         ctx.SetPipeline(data.pipeline.Get());
-        ctx.SetDescriptorSet(0, data.descriptorSet.Get());
+        ctx.SetDescriptorSet(0, descriptorSet.Get());
         ctx.SetViewport(data.execution.view.GetRHIViewport());
         ctx.SetScissor(data.execution.view.GetRHIScissor());
         ctx.Draw(3, 1, 0, 0);
@@ -478,7 +475,6 @@ void SkyboxPass::SetResources(PipelineCache* pipelineCache)
     if (device != m_resourceDevice)
     {
         m_fallbackCubemap.Reset();
-        m_fallbackCubemapView.Reset();
         m_sampler.Reset();
         m_resourceDevice = device;
     }
@@ -572,7 +568,7 @@ void SkyboxPass::AddToGraph(RenderGraph& graph,
         context.MatchesTargetGraph(graph) && context.IsFrameIdentityValid() &&
         execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&
         execution.frameSnapshot != nullptr && execution.results != nullptr &&
-        execution.view.renderGraph == &graph && colorValid && depthValid;
+        colorValid && depthValid;
     const bool resultOwnershipValid = execution.identity.Matches(graph) &&
         execution.results != nullptr &&
         execution.results->identity == execution.identity &&
@@ -583,10 +579,8 @@ void SkyboxPass::AddToGraph(RenderGraph& graph,
     const bool supported = m_drawReady;
     PipelineCache* const pipelineCache = m_pipelineCache;
     const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
-    ResourceViewCache* const viewCache = execution.view.viewCache;
     IRHIDevice* const device = pipelineCache ? pipelineCache->GetDevice() : nullptr;
     const RHITextureRef fallbackCubemap = m_fallbackCubemap;
-    const RHITextureViewRef fallbackCubemapView = m_fallbackCubemapView;
     const RHISamplerRef sampler = m_sampler;
     const std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot =
         resultOwnershipValid ? execution.frameSnapshot : nullptr;
@@ -600,10 +594,8 @@ void SkyboxPass::AddToGraph(RenderGraph& graph,
          supported,
          pipelineCache,
          resourceRegistry,
-         viewCache,
          device,
          fallbackCubemap,
-         fallbackCubemapView,
          sampler,
          frameSnapshot](RenderGraphBuilder& builder, GraphPassData& data)
         {
@@ -613,10 +605,8 @@ void SkyboxPass::AddToGraph(RenderGraph& graph,
             data.requestedEnabled = requestedEnabled;
             data.supported = supported;
             data.resourceRegistry = resourceRegistry;
-            data.viewCache = viewCache;
             data.device = device;
             data.fallbackCubemap = fallbackCubemap;
-            data.fallbackCubemapView = fallbackCubemapView;
             data.sampler = sampler;
             data.frameSnapshot = frameSnapshot;
             data.reverseZ = pipelineCache != nullptr &&
@@ -625,7 +615,7 @@ void SkyboxPass::AddToGraph(RenderGraph& graph,
             if (pipelineCache != nullptr && data.contextValid && data.frameSnapshot &&
                 data.execution.view.colorTarget.IsValid())
             {
-                const RHITextureDesc* colorDesc = data.identity.graph->GetTextureDesc(
+                const RHITextureDesc* colorDesc = builder.GetTextureDesc(
                     data.execution.view.colorTarget);
                 const bool hasDepth = data.execution.view.depthTarget.IsValid();
                 if (colorDesc != nullptr)
@@ -644,18 +634,16 @@ void SkyboxPass::AddToGraph(RenderGraph& graph,
                 data.colorHandle = {};
                 data.depthHandle = {};
                 data.depthAvailable = false;
-                data.descriptorSet.Reset();
                 data.constantBuffer.Reset();
-                data.cubemapView.Reset();
                 data.cubemapTexture.Reset();
                 data.pipeline.Reset();
                 data.pipelineLayout.Reset();
                 data.setLayout.Reset();
             }
         },
-        [](const GraphPassData& data, RHICommandContext& ctx)
+        [](const GraphPassData& data, RenderGraphPassContext& context)
         {
-            ExecuteRecording(data, ctx);
+            ExecuteRecording(data, context);
         });
 }
 
@@ -693,23 +681,6 @@ bool SkyboxPass::EnsureRuntimeResources()
             !PrepareVulkanSampledTexture(device, m_fallbackCubemap.Get()))
         {
             m_unsupportedReason = "Skybox fallback cubemap creation failed";
-            return false;
-        }
-    }
-
-    if (!m_fallbackCubemapView)
-    {
-        RHITextureViewDesc fallbackViewDesc;
-        fallbackViewDesc.format = m_fallbackCubemap->GetFormat();
-        fallbackViewDesc.dimension = RHITextureDimension::TextureCube;
-        fallbackViewDesc.subresourceRange = RHISubresourceRange::All();
-        fallbackViewDesc.type = RHITextureViewType::ShaderResource;
-        fallbackViewDesc.debugName = "SkyboxFallbackCubemapSRV";
-        m_fallbackCubemapView = device->CreateTextureView(
-            m_fallbackCubemap.Get(), fallbackViewDesc);
-        if (!m_fallbackCubemapView)
-        {
-            m_unsupportedReason = "Skybox fallback cubemap view creation failed";
             return false;
         }
     }

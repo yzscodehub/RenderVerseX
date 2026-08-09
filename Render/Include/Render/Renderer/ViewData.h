@@ -17,8 +17,6 @@
 namespace RVX
 {
     class Camera;
-    class ResourceViewCache;
-    class RenderSubmissionResourceBatch;
     struct RenderFrameExecutionPlan;
     struct RenderFrameExecutionReport;
     struct RenderVisibilityResult;
@@ -199,21 +197,6 @@ namespace RVX
         /// Legacy non-IBL ambient floor; set to zero when texture IBL is ready
         float ambientFloorIntensity = 0.08f;
 
-        // =====================================================================
-        // RenderGraph Reference
-        // =====================================================================
-
-        /// Pointer to the render graph (set during BuildRenderGraph)
-        /// Allows passes to access actual RHI resources from handles during execution
-        RenderGraph* renderGraph = nullptr;
-
-        /// Pointer to the resource view cache (set during BuildRenderGraph)
-        /// Allows passes to get cached texture/buffer views
-        ResourceViewCache* viewCache = nullptr;
-
-        /// Current recording batch for ephemeral GPU objects; null means no-submit standalone use.
-        RenderSubmissionResourceBatch* submissionResourceBatch = nullptr;
-
         /// Borrowed frame-owned execution contract published by SceneRenderer.
         /// Passes must not retain these pointers beyond the current frame.
         const RenderFrameExecutionPlan* renderFrameExecutionPlan = nullptr;
@@ -286,25 +269,6 @@ namespace RVX
             };
         }
 
-        /**
-         * @brief Check whether a render-graph texture can be sampled through the view cache.
-         */
-        bool HasTextureShaderResourceView(RGTextureHandle handle) const;
-
-        /**
-         * @brief Resolve the default render-target view for a render-graph texture.
-         */
-        RHITextureView* GetTextureRenderTargetView(RGTextureHandle handle) const;
-
-        /**
-         * @brief Resolve the default shader-resource view for a render-graph texture.
-         */
-        RHITextureView* GetTextureShaderResourceView(RGTextureHandle handle) const;
-
-        /**
-         * @brief Resolve the default depth-stencil view for a render-graph texture.
-         */
-        RHITextureView* GetTextureDepthStencilView(RGTextureHandle handle) const;
     };
 
 } // namespace RVX

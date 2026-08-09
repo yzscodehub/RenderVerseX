@@ -44,6 +44,8 @@ namespace RVX
         m_denoisePass = nullptr;
         m_reflectionReadHandle = {};
         m_colorTargetHandle = {};
+        m_reflectionViewHandle = {};
+        m_colorTargetViewHandle = {};
         m_constantBuffer.Reset();
         m_sampler.Reset();
         m_stats = {};
@@ -119,11 +121,13 @@ namespace RVX
         m_stats.height = view.viewportHeight;
         m_reflectionReadHandle = {};
         m_colorTargetHandle = {};
+        m_reflectionViewHandle = {};
+        m_colorTargetViewHandle = {};
+        m_outputFormat = RHIFormat::Unknown;
 
         if (!m_stats.supported ||
             !m_stats.sourcePassEnabled ||
-            !view.colorTarget.IsValid() ||
-            !view.renderGraph)
+            !view.colorTarget.IsValid())
         {
             return;
         }
@@ -156,18 +160,61 @@ namespace RVX
         if (!m_stats.reflectionHandleAvailable)
             return;
 
-        m_reflectionReadHandle = builder.Read(reflectionHandle, RHIShaderStage::Pixel);
-        builder.Read(view.colorTarget, RHIShaderStage::Pixel);
-        m_colorTargetHandle = builder.Write(view.colorTarget, RHIResourceState::RenderTarget);
-        m_stats.outputDeclared = true;
+        m_reflectionReadHandle = reflectionHandle;
+        if (const RHITextureDesc* reflectionDesc =
+                builder.GetTextureDesc(m_reflectionReadHandle))
+        {
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = reflectionDesc->format;
+            viewDesc.dimension = reflectionDesc->dimension;
+            viewDesc.subresourceRange = RHISubresourceRange::All();
+            viewDesc.type = RHITextureViewType::ShaderResource;
+            viewDesc.debugName = "RayTracedReflectionCompositeSRV";
+            m_reflectionViewHandle = builder.CreateTextureView(
+                m_reflectionReadHandle, viewDesc);
+            m_reflectionViewHandle = builder.Read(
+                m_reflectionViewHandle,
+                MakeRGAccessDesc(
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Pixel));
+        }
+        m_colorTargetHandle = view.colorTarget;
+        if (const RHITextureDesc* colorDesc =
+                builder.GetTextureDesc(m_colorTargetHandle))
+        {
+            m_outputFormat = colorDesc->format;
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = colorDesc->format;
+            viewDesc.dimension = colorDesc->dimension;
+            viewDesc.subresourceRange = RHISubresourceRange::All();
+            viewDesc.type = RHITextureViewType::RenderTarget;
+            viewDesc.debugName = "RayTracedReflectionCompositeRTV";
+            m_colorTargetViewHandle = builder.CreateTextureView(
+                m_colorTargetHandle, viewDesc);
+            m_colorTargetViewHandle = builder.ReadWrite(
+                m_colorTargetViewHandle,
+                MakeRGAccessDesc(
+                    RHIResourceState::RenderTarget,
+                    RHIShaderStage::Pixel));
+        }
+        m_stats.outputDeclared = m_reflectionViewHandle.IsValid() &&
+            m_colorTargetViewHandle.IsValid();
     }
 
     void RayTracedReflectionCompositePass::Execute(RHICommandContext& ctx, const ViewData& view)
     {
+        (void)ctx;
+        (void)view;
+        // Typed AddToGraph owns graph resource realization and execution.
+    }
+
+    void RayTracedReflectionCompositePass::Execute(
+        RenderGraphPassContext& context,
+        const ViewData& view)
+    {
+        RHICommandContext& ctx = context.Commands();
         if (!m_stats.outputDeclared ||
-            !view.renderGraph ||
             !m_pipelineCache ||
-            !m_viewCache ||
             !m_reflectionReadHandle.IsValid() ||
             !m_colorTargetHandle.IsValid())
         {
@@ -175,16 +222,19 @@ namespace RVX
             return;
         }
 
-        RHITexture* reflectionTexture = view.renderGraph->GetTexture(m_reflectionReadHandle);
-        RHITexture* colorTarget = view.renderGraph->GetTexture(m_colorTargetHandle);
+        RHITexture* reflectionTexture =
+            context.GetTexture(m_reflectionReadHandle);
+        RHITexture* colorTarget = context.GetTexture(m_colorTargetHandle);
         if (!reflectionTexture || !colorTarget)
         {
             m_stats.compositeRecorded = false;
             return;
         }
 
-        RHITextureView* reflectionView = m_viewCache->GetDefaultSRV(reflectionTexture);
-        RHITextureView* colorTargetView = m_viewCache->GetDefaultRTV(colorTarget);
+        RHITextureView* reflectionView =
+            context.GetTextureView(m_reflectionViewHandle);
+        RHITextureView* colorTargetView =
+            context.GetTextureView(m_colorTargetViewHandle);
         if (!reflectionView || !colorTargetView)
         {
             RVX_CORE_WARN("RayTracedReflectionCompositePass: failed to resolve reflection SRV or color RTV");
@@ -192,13 +242,9 @@ namespace RVX
             return;
         }
 
-        RHIFormat outputFormat = RHIFormat::Unknown;
-        if (const RHITextureDesc* outputDesc = view.renderGraph->GetTextureDesc(m_colorTargetHandle))
-        {
-            outputFormat = outputDesc->format;
-        }
-
-        RHIPipeline* pipeline = m_pipelineCache->GetRayTracedReflectionCompositePipeline(outputFormat);
+        RHIPipeline* pipeline =
+            m_pipelineCache->GetRayTracedReflectionCompositePipeline(
+                m_outputFormat);
         RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
         IRHIDevice* device = m_pipelineCache->GetDevice();
         if (!pipeline || !setLayout || !device)
@@ -235,8 +281,11 @@ namespace RVX
             return;
         }
 
-        if (!RetainRenderSubmissionResource(
-                view.submissionResourceBatch, descriptorSet))
+        if (!context.RetainSubmissionResource(descriptorSet) ||
+            !context.RetainSubmissionResource(
+                Ref<RefCounted>(m_constantBuffer)) ||
+            !context.RetainSubmissionResource(
+                Ref<RefCounted>(m_sampler)))
         {
             RVX_CORE_WARN("RayTracedReflectionCompositePass: submission ownership rejected descriptor set");
             m_stats.compositeRecorded = false;

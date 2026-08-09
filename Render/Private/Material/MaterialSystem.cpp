@@ -84,7 +84,8 @@ MaterialSystem::~MaterialSystem()
 
 bool MaterialSystem::Initialize(IRHIDevice* device,
                                 RHIDescriptorSetLayout* materialSetLayout,
-                                RenderResourceRegistry* resourceRegistry)
+                                RenderResourceRegistry* resourceRegistry,
+                                ResourceViewCache* resourceViewCache)
 {
     if (m_initialized)
     {
@@ -100,6 +101,7 @@ bool MaterialSystem::Initialize(IRHIDevice* device,
 
     m_device = device;
     m_resourceRegistry = resourceRegistry;
+    m_resourceViewCache = resourceViewCache;
     m_materialSetLayout = materialSetLayout;
 
     if (!CreateConstantBuffer())
@@ -164,6 +166,7 @@ void MaterialSystem::Shutdown()
         m_materialConstantUploadArena.reset();
     }
     m_materialSetLayout = nullptr;
+    m_resourceViewCache = nullptr;
     m_resourceRegistry = nullptr;
     m_device = nullptr;
     m_initialized = false;
@@ -329,6 +332,9 @@ bool MaterialSystem::CreateMaterialParameterTableSnapshot(
         return false;
     }
 
+    ResourceViewCache* const resolvedViewCache = viewCache
+        ? viewCache : m_resourceViewCache;
+
     struct UniqueRequest
     {
         RenderResourceHandle material;
@@ -371,7 +377,7 @@ bool MaterialSystem::CreateMaterialParameterTableSnapshot(
         MaterialBindingOptions options;
         options.allowNormalMap = request.allowNormalMap;
         const ResolvedMaterialTextures textures = ResolveMaterialTextures(
-            request.material, viewCache, options);
+            request.material, resolvedViewCache, options);
         if (textures.usedFallback)
         {
             return false;
@@ -432,8 +438,10 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(
     {
         source = materialData->sourceData;
     }
+    ResourceViewCache* const resolvedViewCache = viewCache
+        ? viewCache : m_resourceViewCache;
     const ResolvedMaterialTextures textures =
-        ResolveMaterialTextures(material, viewCache, options);
+        ResolveMaterialTextures(material, resolvedViewCache, options);
     const std::string materialName = material.IsValid()
         ? "render-material[" + std::to_string(material.slot) + ":" +
               std::to_string(material.generation) + "]"
@@ -462,8 +470,10 @@ bool MaterialSystem::CreateMaterialBindingSnapshot(
     {
         source = materialData->sourceData;
     }
+    ResourceViewCache* const resolvedViewCache = viewCache
+        ? viewCache : m_resourceViewCache;
     const ResolvedMaterialTextures textures =
-        ResolveMaterialTextures(material, viewCache, options);
+        ResolveMaterialTextures(material, resolvedViewCache, options);
     if (!textures.baseColor || !textures.normal || !textures.metallicRoughness ||
         !textures.occlusion || !textures.emissive ||
         !textures.baseColorSampler || !textures.normalSampler ||

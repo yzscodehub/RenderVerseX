@@ -15,7 +15,6 @@
 #include "Render/Renderer/ViewData.h"
 #include "Render/Resources/RenderResourceTypes.h"
 #include "Resources/RenderResourceResolver.h"
-#include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <array>
@@ -54,7 +53,6 @@ namespace RVX
             std::shared_ptr<RenderPassRecordResults> results;
             const RenderResourceRegistry* resourceRegistry = nullptr;
             PipelineCache* pipelineCache = nullptr;
-            ResourceViewCache* viewCache = nullptr;
             MaterialSystem* materialSystem = nullptr;
             FrameLightResources lightResources{};
             RHIPipelineRef pipeline;
@@ -62,72 +60,69 @@ namespace RVX
             std::vector<DrawRecord> draws;
             RGTextureHandle colorHandle{};
             RGTextureHandle depthHandle{};
+            RGTextureViewHandle colorViewHandle{};
+            RGTextureViewHandle depthViewHandle{};
             RHIFormat colorFormat = RHIFormat::Unknown;
             bool depthAvailable = false;
             bool requestedEnabled = false;
             bool contextValid = false;
         };
 
-        [[nodiscard]] bool RetainResource(RenderSubmissionResourceBatch* batch,
+        [[nodiscard]] bool RetainResource(RenderGraphBuilder& builder,
                                           RefCounted* resource)
         {
             return !resource ||
-                   RetainRenderSubmissionResource(batch, Ref<RefCounted>(resource));
+                   builder.RetainSubmissionResource(Ref<RefCounted>(resource));
         }
 
-        [[nodiscard]] bool RetainDrawResources(GraphPassData& data)
+        [[nodiscard]] bool RetainDrawResources(
+            RenderGraphBuilder& builder,
+            GraphPassData& data)
         {
-            RenderSubmissionResourceBatch* batch =
-                data.execution.view.submissionResourceBatch;
-            if (batch == nullptr)
-            {
-                return true;
-            }
-
             for (const Ref<RefCounted>& resource : data.bindings.retainedResources)
             {
-                if (!RetainRenderSubmissionResource(batch, resource))
+                if (!builder.RetainSubmissionResource(resource))
                 {
                     return false;
                 }
             }
-            if (!RetainResource(batch, data.pipeline.Get()))
+            if (!RetainResource(builder, data.pipeline.Get()))
             {
                 return false;
             }
 
             for (const DrawRecord& draw : data.draws)
             {
-                if (!RetainResource(batch, draw.buffers.positionBuffer) ||
-                    !RetainResource(batch, draw.buffers.normalBuffer) ||
-                    !RetainResource(batch, draw.buffers.uvBuffer) ||
-                    !RetainResource(batch, draw.buffers.tangentBuffer) ||
-                    !RetainResource(batch, draw.buffers.boneIndicesBuffer) ||
-                    !RetainResource(batch, draw.buffers.boneWeightsBuffer) ||
-                    !RetainResource(batch, draw.buffers.indexBuffer) ||
-                    !RetainResource(batch, draw.material.constantBuffer.Get()) ||
-                    !RetainResource(batch, draw.material.descriptorSet.Get()) ||
-                    !RetainResource(batch, draw.material.layout.Get()))
+                if (!RetainResource(builder, draw.buffers.positionBuffer) ||
+                    !RetainResource(builder, draw.buffers.normalBuffer) ||
+                    !RetainResource(builder, draw.buffers.uvBuffer) ||
+                    !RetainResource(builder, draw.buffers.tangentBuffer) ||
+                    !RetainResource(builder, draw.buffers.boneIndicesBuffer) ||
+                    !RetainResource(builder, draw.buffers.boneWeightsBuffer) ||
+                    !RetainResource(builder, draw.buffers.indexBuffer) ||
+                    !RetainResource(builder, draw.material.constantBuffer.Get()) ||
+                    !RetainResource(builder, draw.material.descriptorSet.Get()) ||
+                    !RetainResource(builder, draw.material.layout.Get()))
                 {
                     return false;
                 }
                 for (const RHISamplerRef& sampler : draw.material.samplers)
                 {
-                    if (!RetainResource(batch, sampler.Get()))
+                    if (!RetainResource(builder, sampler.Get()))
                     {
                         return false;
                     }
                 }
                 for (const RHITextureViewRef& view : draw.material.textureViews)
                 {
-                    if (!RetainResource(batch, view.Get()))
+                    if (!RetainResource(builder, view.Get()))
                     {
                         return false;
                     }
                 }
                 for (const RHITextureRef& texture : draw.material.textures)
                 {
-                    if (!RetainResource(batch, texture.Get()))
+                    if (!RetainResource(builder, texture.Get()))
                     {
                         return false;
                     }
@@ -159,7 +154,7 @@ namespace RVX
             MaterialBindingOptions materialOptions;
             materialOptions.allowNormalMap = buffers.HasNormalMapTangentBasis();
             if (!data.materialSystem->CreateMaterialBindingSnapshot(
-                    item.material, data.viewCache, materialOptions, record.material) ||
+                    item.material, nullptr, materialOptions, record.material) ||
                 !record.material.IsDrawable())
             {
                 return false;
@@ -193,7 +188,7 @@ namespace RVX
                                             RenderGraphBuilder& builder)
         {
             if (!data.contextValid || !data.results || !data.frameSnapshot ||
-                !data.requestedEnabled || !data.pipelineCache || !data.viewCache ||
+                !data.requestedEnabled || !data.pipelineCache ||
                 !data.materialSystem || !data.resourceRegistry)
             {
                 return false;
@@ -206,7 +201,7 @@ namespace RVX
                 return false;
             }
             const RHITextureDesc* colorDesc =
-                data.identity.graph->GetTextureDesc(view.colorTarget);
+                builder.GetTextureDesc(view.colorTarget);
             if (colorDesc == nullptr)
             {
                 return false;
@@ -244,7 +239,7 @@ namespace RVX
             // RenderGraph access declarations are irreversible. Establish all
             // submission ownership first, so a sealed/rejected batch produces
             // a genuine no-op instead of a graph-visible write without work.
-            if (!RetainDrawResources(data))
+            if (!RetainDrawResources(builder, data))
             {
                 return false;
             }
@@ -271,34 +266,60 @@ namespace RVX
                 }
             }
 
-            data.colorHandle = builder.ReadWrite(
-                view.colorTarget,
-                MakeRHIAccessSnapshot(RHIResourceState::RenderTarget,
-                                       RHIShaderStage::Pixel));
-            if (!data.colorHandle.IsValid())
+            data.colorHandle = view.colorTarget;
+            RHITextureViewDesc colorViewDesc;
+            colorViewDesc.format = colorDesc->format;
+            colorViewDesc.dimension = colorDesc->dimension;
+            colorViewDesc.subresourceRange = RHISubresourceRange::All();
+            colorViewDesc.type = RHITextureViewType::RenderTarget;
+            colorViewDesc.debugName = "TransparentColorRTV";
+            data.colorViewHandle = builder.CreateTextureView(
+                data.colorHandle, colorViewDesc);
+            data.colorViewHandle = builder.ReadWrite(
+                data.colorViewHandle,
+                MakeRGAccessDesc(
+                    RHIResourceState::RenderTarget,
+                    RHIShaderStage::Pixel));
+            if (!data.colorViewHandle.IsValid())
             {
                 data.draws.clear();
                 return false;
             }
             if (data.depthAvailable)
             {
-                data.depthHandle = builder.Read(
-                    view.depthTarget,
-                    RHIResourceState::DepthRead,
-                    RHIShaderStage::Vertex | RHIShaderStage::Pixel);
-                if (!data.depthHandle.IsValid())
+                data.depthHandle = view.depthTarget;
+                const RHITextureDesc* depthDesc =
+                    builder.GetTextureDesc(data.depthHandle);
+                if (!depthDesc)
                 {
                     data.draws.clear();
                     data.colorHandle = {};
                     return false;
                 }
+                RHITextureViewDesc depthViewDesc;
+                depthViewDesc.format = depthDesc->format;
+                depthViewDesc.dimension = depthDesc->dimension;
+                depthViewDesc.subresourceRange = RHISubresourceRange::All();
+                depthViewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+                depthViewDesc.type = RHITextureViewType::DepthStencil;
+                depthViewDesc.debugName = "TransparentDepthDSV";
+                data.depthViewHandle = builder.CreateTextureView(
+                    data.depthHandle, depthViewDesc);
+                data.depthViewHandle = builder.Read(
+                    data.depthViewHandle,
+                    MakeRGAccessDesc(
+                        RHIResourceState::DepthRead,
+                        RHIShaderStage::Vertex | RHIShaderStage::Pixel));
+                if (!data.depthViewHandle.IsValid())
+                    return false;
             }
             return true;
         }
 
         void ExecuteRecording(const GraphPassData& data,
-                              RHICommandContext& ctx)
+                              RenderGraphPassContext& context)
         {
+            RHICommandContext& ctx = context.Commands();
             if (!data.contextValid || !data.results ||
                 data.results->identity != data.identity || data.draws.empty() ||
                 !data.pipeline || !data.bindings.IsValid() ||
@@ -317,48 +338,30 @@ namespace RVX
                 return;
             }
 
-            RenderGraph* graph = data.identity.graph;
-            RHITexture* colorTexture = graph->GetTexture(data.colorHandle);
+            RHITexture* colorTexture = context.GetTexture(data.colorHandle);
             RHITexture* depthTexture = data.depthAvailable
-                ? graph->GetTexture(data.depthHandle) : nullptr;
+                ? context.GetTexture(data.depthHandle) : nullptr;
             if (!colorTexture || (data.depthAvailable && !depthTexture))
             {
                 return;
             }
-            RHITextureViewRef colorViewOwner(
-                data.viewCache->GetDefaultRTV(colorTexture));
-            RHITextureViewRef depthViewOwner(data.depthAvailable
-                ? data.viewCache->GetDefaultDSV(depthTexture) : nullptr);
-            if (!colorViewOwner || (data.depthAvailable && !depthViewOwner))
+            RHITextureView* colorView =
+                context.GetTextureView(data.colorViewHandle);
+            RHITextureView* depthView = data.depthAvailable
+                ? context.GetTextureView(data.depthViewHandle) : nullptr;
+            if (!colorView || (data.depthAvailable && !depthView))
             {
                 RVX_CORE_WARN("TransparentPass: failed to resolve graph-owned attachment views");
                 return;
             }
 
-            if (RenderSubmissionResourceBatch* batch =
-                    data.execution.view.submissionResourceBatch)
-            {
-                if (!RetainRenderSubmissionResource(
-                        batch, Ref<RefCounted>(colorViewOwner.Get())) ||
-                    !RetainRenderSubmissionResource(
-                        batch, Ref<RefCounted>(colorViewOwner->GetTexture())) ||
-                    (depthViewOwner &&
-                     (!RetainRenderSubmissionResource(
-                          batch, Ref<RefCounted>(depthViewOwner.Get())) ||
-                      !RetainRenderSubmissionResource(
-                          batch, Ref<RefCounted>(depthViewOwner->GetTexture())))))
-                {
-                    return;
-                }
-            }
-
             RHIRenderPassDesc renderPassDesc;
             renderPassDesc.AddColorAttachment(
-                colorViewOwner.Get(), RHILoadOp::Load, RHIStoreOp::Store);
-            if (depthViewOwner)
+                colorView, RHILoadOp::Load, RHIStoreOp::Store);
+            if (depthView)
             {
                 renderPassDesc.SetDepthStencil(
-                    depthViewOwner.Get(), RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
+                    depthView, RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
                 renderPassDesc.depthStencilAttachment.readOnly = true;
             }
             renderPassDesc.SetRenderArea(
@@ -484,7 +487,7 @@ namespace RVX
             context.MatchesTargetGraph(graph) && context.IsFrameIdentityValid() &&
             execution.MatchesTargetGraph(graph) && execution.IsFrameIdentityValid() &&
             execution.frameSnapshot != nullptr && execution.results != nullptr &&
-            execution.view.renderGraph == &graph && colorValid && depthValid;
+            colorValid && depthValid;
         const bool resultOwnershipValid = execution.identity.Matches(graph) &&
             execution.results != nullptr &&
             execution.results->identity == execution.identity &&
@@ -511,7 +514,6 @@ namespace RVX
         PipelineCache* const pipelineCache = m_pipelineCache;
         MaterialSystem* const materialSystem = m_materialSystem;
         const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
-        ResourceViewCache* const viewCache = execution.view.viewCache;
         const std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot =
             resultOwnershipValid ? execution.frameSnapshot : nullptr;
         const std::shared_ptr<RenderPassRecordResults> results = execution.results;
@@ -525,7 +527,6 @@ namespace RVX
              pipelineCache,
              materialSystem,
              resourceRegistry,
-             viewCache,
              lightResources,
              frameSnapshot,
              results,
@@ -538,7 +539,6 @@ namespace RVX
                 data.pipelineCache = pipelineCache;
                 data.materialSystem = materialSystem;
                 data.resourceRegistry = resourceRegistry;
-                data.viewCache = viewCache;
                 data.lightResources = lightResources;
                 data.frameSnapshot = frameSnapshot;
                 data.results = resultOwnershipValid ? results : nullptr;
@@ -552,9 +552,10 @@ namespace RVX
                     data.depthAvailable = false;
                 }
             },
-            [](const GraphPassData& data, RHICommandContext& ctx)
+            [](const GraphPassData& data,
+               RenderGraphPassContext& context)
             {
-                ExecuteRecording(data, ctx);
+                ExecuteRecording(data, context);
             });
     }
 

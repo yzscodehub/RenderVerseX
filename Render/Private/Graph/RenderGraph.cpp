@@ -1,4 +1,5 @@
 #include "RenderGraphInternal.h"
+#include "Core/Assert.h"
 #include "Core/Diagnostics/JsonWriter.h"
 #include "Core/Log.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
@@ -7,6 +8,7 @@
 #include <atomic>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 namespace RVX
 {
@@ -1023,8 +1025,11 @@ namespace RVX
     class RenderGraphBuilder::Impl
     {
     public:
+        RenderGraph* graph = nullptr;
         std::vector<TextureResource>* textures = nullptr;
         std::vector<BufferResource>* buffers = nullptr;
+        std::vector<TextureViewResource>* textureViews = nullptr;
+        std::vector<Ref<RefCounted>>* executionResources = nullptr;
         Pass* pass = nullptr;
         const RHICapabilities* capabilities = nullptr;
         RenderGraph::QueueExecutionMode queueExecutionMode =
@@ -1049,6 +1054,14 @@ namespace RVX
                                               recordingGeneration);
         }
 
+        bool Owns(RGTextureViewHandle view) const
+        {
+            return HasCurrentHandleProvenance(view.graphIdentity,
+                                              view.recordingGeneration,
+                                              graphIdentity,
+                                              recordingGeneration);
+        }
+
         void RecordInvalidUsage(ResourceType type, RGAccessType access) const
         {
             if (pass == nullptr)
@@ -1064,7 +1077,49 @@ namespace RVX
         }
     };
 
-    RenderGraph::RenderGraph() : m_impl(std::make_unique<Impl>()) {}
+    RenderGraphPassContext::RenderGraphPassContext(
+        RenderGraph& graph,
+        RHICommandContext& commands)
+        : m_graph(&graph)
+        , m_commands(&commands)
+    {
+    }
+
+    RHICommandContext& RenderGraphPassContext::Commands() const
+    {
+        RVX_ASSERT_MSG(m_commands != nullptr,
+                       "RenderGraph pass context has no command recorder");
+        return *m_commands;
+    }
+
+    RHITexture* RenderGraphPassContext::GetTexture(
+        RGTextureHandle handle) const
+    {
+        return m_graph ? m_graph->GetTexture(handle) : nullptr;
+    }
+
+    RHIBuffer* RenderGraphPassContext::GetBuffer(RGBufferHandle handle) const
+    {
+        return m_graph ? m_graph->GetBuffer(handle) : nullptr;
+    }
+
+    RHITextureView* RenderGraphPassContext::GetTextureView(
+        RGTextureViewHandle handle) const
+    {
+        return m_graph ? m_graph->ResolveTextureView(handle) : nullptr;
+    }
+
+    bool RenderGraphPassContext::RetainSubmissionResource(
+        Ref<RefCounted> resource) const
+    {
+        return m_graph &&
+               m_graph->RetainExecutionResource(std::move(resource));
+    }
+
+    RenderGraph::RenderGraph() : m_impl(std::make_unique<Impl>())
+    {
+        m_impl->owner = this;
+    }
     RenderGraph::~RenderGraph() = default;
 
     void RenderGraph::SetDevice(IRHIDevice* device)
@@ -1162,6 +1217,33 @@ namespace RVX
             false,
             0,
             RVX_WHOLE_SIZE,
+            m_impl->graphIdentity,
+            m_impl->recordingGeneration};
+    }
+
+    RGTextureViewHandle RenderGraph::CreateTextureView(
+        RGTextureHandle texture,
+        const RHITextureViewDesc& desc)
+    {
+        if (!texture.IsValid() ||
+            !HasCurrentHandleProvenance(texture.graphIdentity,
+                                        texture.recordingGeneration,
+                                        m_impl->graphIdentity,
+                                        m_impl->recordingGeneration) ||
+            texture.index >= m_impl->textures.size())
+        {
+            return {};
+        }
+
+        TextureViewResource resource;
+        resource.texture = texture;
+        resource.desc = desc;
+        if (desc.debugName)
+            resource.debugName = desc.debugName;
+        resource.desc.debugName = nullptr;
+        m_impl->textureViews.push_back(std::move(resource));
+        return RGTextureViewHandle{
+            static_cast<uint32>(m_impl->textureViews.size() - 1u),
             m_impl->graphIdentity,
             m_impl->recordingGeneration};
     }
@@ -1399,11 +1481,34 @@ namespace RVX
         return &m_impl->buffers[handle.index].desc;
     }
 
+    RHITextureView* RenderGraph::ResolveTextureView(
+        RGTextureViewHandle handle) const
+    {
+        if (!handle.IsValid() ||
+            !HasCurrentHandleProvenance(handle.graphIdentity,
+                                        handle.recordingGeneration,
+                                        m_impl->graphIdentity,
+                                        m_impl->recordingGeneration) ||
+            handle.index >= m_impl->textureViews.size())
+        {
+            return nullptr;
+        }
+        return m_impl->textureViews[handle.index].realizedView.Get();
+    }
+
+    bool RenderGraph::RetainExecutionResource(Ref<RefCounted> resource)
+    {
+        if (!resource || m_impl->executionOwnershipTransferred)
+            return false;
+        m_impl->executionResources.push_back(std::move(resource));
+        return true;
+    }
+
     void RenderGraph::AddPassInternal(
         const char* name,
         RenderGraphPassType type,
         std::function<void(RenderGraphBuilder&)> setup,
-        std::function<void(RHICommandContext&)> execute)
+        std::function<void(RenderGraphPassContext&)> execute)
     {
         Pass pass;
         pass.name = name ? name : "RenderPass";
@@ -1419,8 +1524,11 @@ namespace RVX
 
         RenderGraphBuilder builder;
         RenderGraphBuilder::Impl builderImpl;
+        builderImpl.graph = this;
         builderImpl.textures = &m_impl->textures;
         builderImpl.buffers = &m_impl->buffers;
+        builderImpl.textureViews = &m_impl->textureViews;
+        builderImpl.executionResources = &m_impl->executionResources;
         builderImpl.pass = &pass;
         builderImpl.capabilities = m_impl->hasCapabilitySnapshot
             ? &m_impl->capabilitySnapshot
@@ -1447,6 +1555,134 @@ namespace RVX
         }
 
         m_impl->passes.push_back(std::move(pass));
+    }
+
+    RGTextureHandle RenderGraphBuilder::CreateTexture(
+        const RHITextureDesc& desc)
+    {
+        return m_impl && m_impl->graph
+            ? m_impl->graph->CreateTexture(desc)
+            : RGTextureHandle{};
+    }
+
+    RGBufferHandle RenderGraphBuilder::CreateBuffer(
+        const RHIBufferDesc& desc)
+    {
+        return m_impl && m_impl->graph
+            ? m_impl->graph->CreateBuffer(desc)
+            : RGBufferHandle{};
+    }
+
+    RGTextureHandle RenderGraphBuilder::ImportTexture(
+        RHITextureRef texture,
+        RHIResourceState initialState)
+    {
+        if (!m_impl || !m_impl->graph || !texture)
+            return {};
+        const RGTextureHandle handle =
+            m_impl->graph->ImportTexture(texture.Get(), initialState);
+        if (handle.IsValid() && m_impl->executionResources)
+        {
+            m_impl->executionResources->push_back(
+                Ref<RefCounted>(std::move(texture)));
+        }
+        return handle;
+    }
+
+    RGTextureHandle RenderGraphBuilder::ImportTexture(
+        RHITextureRef texture,
+        const RHITextureAccessSnapshot& initialAccess)
+    {
+        if (!m_impl || !m_impl->graph || !texture)
+            return {};
+        const RGTextureHandle handle =
+            m_impl->graph->ImportTexture(texture.Get(), initialAccess);
+        if (handle.IsValid() && m_impl->executionResources)
+        {
+            m_impl->executionResources->push_back(
+                Ref<RefCounted>(std::move(texture)));
+        }
+        return handle;
+    }
+
+    RGBufferHandle RenderGraphBuilder::ImportBuffer(
+        RHIBufferRef buffer,
+        RHIResourceState initialState)
+    {
+        if (!m_impl || !m_impl->graph || !buffer)
+            return {};
+        const RGBufferHandle handle =
+            m_impl->graph->ImportBuffer(buffer.Get(), initialState);
+        if (handle.IsValid() && m_impl->executionResources)
+        {
+            m_impl->executionResources->push_back(
+                Ref<RefCounted>(std::move(buffer)));
+        }
+        return handle;
+    }
+
+    RGBufferHandle RenderGraphBuilder::ImportBuffer(
+        RHIBufferRef buffer,
+        const RHIBufferAccessSnapshot& initialAccess)
+    {
+        if (!m_impl || !m_impl->graph || !buffer)
+            return {};
+        const RGBufferHandle handle =
+            m_impl->graph->ImportBuffer(buffer.Get(), initialAccess);
+        if (handle.IsValid() && m_impl->executionResources)
+        {
+            m_impl->executionResources->push_back(
+                Ref<RefCounted>(std::move(buffer)));
+        }
+        return handle;
+    }
+
+    const RHITextureDesc* RenderGraphBuilder::GetTextureDesc(
+        RGTextureHandle texture) const
+    {
+        return m_impl && m_impl->graph
+            ? m_impl->graph->GetTextureDesc(texture)
+            : nullptr;
+    }
+
+    const RHIBufferDesc* RenderGraphBuilder::GetBufferDesc(
+        RGBufferHandle buffer) const
+    {
+        return m_impl && m_impl->graph
+            ? m_impl->graph->GetBufferDesc(buffer)
+            : nullptr;
+    }
+
+    void RenderGraphBuilder::SetExportState(
+        RGTextureHandle texture,
+        RHIResourceState finalState)
+    {
+        if (m_impl && m_impl->graph)
+            m_impl->graph->SetExportState(texture, finalState);
+    }
+
+    void RenderGraphBuilder::SetExportState(
+        RGBufferHandle buffer,
+        RHIResourceState finalState)
+    {
+        if (m_impl && m_impl->graph)
+            m_impl->graph->SetExportState(buffer, finalState);
+    }
+
+    void RenderGraphBuilder::SetExportAccess(
+        RGTextureHandle texture,
+        const RHIAccessSnapshot& finalAccess)
+    {
+        if (m_impl && m_impl->graph)
+            m_impl->graph->SetExportAccess(texture, finalAccess);
+    }
+
+    void RenderGraphBuilder::SetExportAccess(
+        RGBufferHandle buffer,
+        const RHIAccessSnapshot& finalAccess)
+    {
+        if (m_impl && m_impl->graph)
+            m_impl->graph->SetExportAccess(buffer, finalAccess);
     }
 
     RGTextureHandle RenderGraphBuilder::Read(RGTextureHandle texture, RHIShaderStage stages)
@@ -1894,6 +2130,52 @@ namespace RVX
         return result;
     }
 
+    RGTextureViewHandle RenderGraphBuilder::Read(
+        RGTextureViewHandle view,
+        const RGAccessDesc& access)
+    {
+        if (!m_impl || !m_impl->textureViews || !m_impl->Owns(view) ||
+            view.index >= m_impl->textureViews->size())
+        {
+            if (m_impl)
+                m_impl->RecordInvalidUsage(
+                    ResourceType::Texture, RGAccessType::Read);
+            return {};
+        }
+
+        const TextureViewResource& declaredView =
+            (*m_impl->textureViews)[view.index];
+        RGTextureHandle texture = declaredView.texture;
+        texture.hasSubresourceRange = true;
+        texture.subresourceRange = declaredView.desc.subresourceRange;
+        if (!Read(texture, access).IsValid())
+            return {};
+        return view;
+    }
+
+    RGTextureViewHandle RenderGraphBuilder::Write(
+        RGTextureViewHandle view,
+        const RGAccessDesc& access)
+    {
+        if (!m_impl || !m_impl->textureViews || !m_impl->Owns(view) ||
+            view.index >= m_impl->textureViews->size())
+        {
+            if (m_impl)
+                m_impl->RecordInvalidUsage(
+                    ResourceType::Texture, RGAccessType::Write);
+            return {};
+        }
+
+        const TextureViewResource& declaredView =
+            (*m_impl->textureViews)[view.index];
+        RGTextureHandle texture = declaredView.texture;
+        texture.hasSubresourceRange = true;
+        texture.subresourceRange = declaredView.desc.subresourceRange;
+        if (!Write(texture, access).IsValid())
+            return {};
+        return view;
+    }
+
     RGTextureHandle RenderGraphBuilder::ReadWrite(
         RGTextureHandle texture,
         const RGAccessDesc& access)
@@ -1909,6 +2191,29 @@ namespace RVX
             usage.stages = access.shaderStages;
         }
         return result;
+    }
+
+    RGTextureViewHandle RenderGraphBuilder::ReadWrite(
+        RGTextureViewHandle view,
+        const RGAccessDesc& access)
+    {
+        if (!m_impl || !m_impl->textureViews || !m_impl->Owns(view) ||
+            view.index >= m_impl->textureViews->size())
+        {
+            if (m_impl)
+                m_impl->RecordInvalidUsage(
+                    ResourceType::Texture, RGAccessType::ReadWrite);
+            return {};
+        }
+
+        const TextureViewResource& declaredView =
+            (*m_impl->textureViews)[view.index];
+        RGTextureHandle texture = declaredView.texture;
+        texture.hasSubresourceRange = true;
+        texture.subresourceRange = declaredView.desc.subresourceRange;
+        if (!ReadWrite(texture, access).IsValid())
+            return {};
+        return view;
     }
 
     RGBufferHandle RenderGraphBuilder::ReadWrite(
@@ -1948,6 +2253,24 @@ namespace RVX
     {
         (void)stencilWrite;
         Write(texture, depthWrite ? RHIResourceState::DepthWrite : RHIResourceState::DepthRead);
+    }
+
+    RGTextureViewHandle RenderGraphBuilder::CreateTextureView(
+        RGTextureHandle texture,
+        const RHITextureViewDesc& desc)
+    {
+        if (!m_impl || !m_impl->graph || !m_impl->Owns(texture))
+            return {};
+        return m_impl->graph->CreateTextureView(texture, desc);
+    }
+
+    bool RenderGraphBuilder::RetainSubmissionResource(
+        Ref<RefCounted> resource)
+    {
+        if (!m_impl || !m_impl->executionResources || !resource)
+            return false;
+        m_impl->executionResources->push_back(std::move(resource));
+        return true;
     }
 
     void RenderGraph::Compile()
@@ -2018,6 +2341,7 @@ namespace RVX
         }
 
         execution.Prepare();
+        std::unordered_set<RHITexture*> retainedTextureSources;
         for (uint32 index = 0; index < m_impl->textures.size(); ++index)
         {
             TextureResource& texture = m_impl->textures[index];
@@ -2038,6 +2362,7 @@ namespace RVX
             if (texture.texture)
             {
                 texture.realizedRaw = texture.texture.Get();
+                retainedTextureSources.insert(texture.texture.Get());
                 execution.RetainTexture(std::move(texture.texture));
             }
         }
@@ -2070,6 +2395,30 @@ namespace RVX
             if (heap.heap)
                 execution.RetainHeap(std::move(heap.heap));
         }
+        for (TextureViewResource& view : m_impl->textureViews)
+        {
+            if (view.realizedView)
+            {
+                // Keep the source alive independently of the recording graph.
+                // Commit 4 moves this guarantee into the RHITextureView base
+                // contract; this execution-side ownership keeps the explicit
+                // graph-view cutover independently safe until then.
+                if (RHITexture* source = view.realizedView->GetTexture();
+                    source != nullptr &&
+                    retainedTextureSources.insert(source).second)
+                {
+                    execution.RetainTexture(RHITextureRef(source));
+                }
+                execution.RetainResource(
+                    Ref<RefCounted>(std::move(view.realizedView)));
+            }
+        }
+        for (Ref<RefCounted>& resource : m_impl->executionResources)
+        {
+            if (resource)
+                execution.RetainResource(std::move(resource));
+        }
+        m_impl->executionResources.clear();
         if (!execution.MarkRecorded())
             return {};
         m_impl->executionOwnershipTransferred = true;
@@ -3063,6 +3412,10 @@ namespace RVX
 
     void RenderGraph::Clear()
     {
+        // Views/descriptors must release before the physical textures they
+        // reference when an unsubmitted graph is discarded.
+        m_impl->textureViews.clear();
+        m_impl->executionResources.clear();
         for (auto& texture : m_impl->textures)
         {
             if (!texture.imported && texture.pooled && texture.pooledRaw &&

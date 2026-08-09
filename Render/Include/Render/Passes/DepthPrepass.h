@@ -106,6 +106,7 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void Execute(RenderGraphPassContext& context, const ViewData& view);
         void InitializeGraphRecorder(
             const RenderScene* scene,
             const std::vector<RenderDrawItem>* opaqueDrawItems,
@@ -129,11 +130,13 @@ namespace RVX
             RHICommandContext& ctx,
             std::span<const PlannedDepthDraw> plannedDraws);
         bool BuildPlannedDirectBatch(
+            RenderGraphPassContext& context,
             const ViewData& view,
             std::vector<PlannedDepthDraw>& outPlannedDraws);
         bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
                                          const ViewData& view);
         void ApplyDirectInstancePlan(
+            RenderGraphPassContext& context,
             const ViewData& view,
             std::vector<PlannedDepthDraw>& plannedDraws);
 
@@ -147,6 +150,7 @@ namespace RVX
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
         RGTextureHandle m_depthTargetHandle;
+        RGTextureViewHandle m_depthTargetViewHandle;
         RGBufferHandle m_gpuDrivenInstanceHandle;
         RGBufferHandle m_gpuSceneCandidateHandle;
         RGBufferHandle m_gpuScenePrimitiveHandle;

@@ -34,6 +34,7 @@ namespace RVX
             textures.clear();
             buffers.clear();
             heaps.clear();
+            resources.clear();
             queuePlan = {};
             ownedContexts.clear();
         }
@@ -44,6 +45,7 @@ namespace RVX
         std::vector<RHITextureRef> textures;
         std::vector<RHIBufferRef> buffers;
         std::vector<RHIHeapRef> heaps;
+        std::vector<Ref<RefCounted>> resources;
         RHIQueueSubmissionPlan queuePlan;
         std::vector<RHICommandContextRef> ownedContexts;
     };
@@ -250,6 +252,12 @@ namespace RVX
     {
         if (heap)
             m_impl->heaps.push_back(std::move(heap));
+    }
+
+    void RenderGraphExecution::RetainResource(Ref<RefCounted> resource)
+    {
+        if (resource)
+            m_impl->resources.push_back(std::move(resource));
     }
 
     void RenderGraphExecution::SetQueueSubmission(

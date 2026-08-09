@@ -11,6 +11,7 @@ namespace RVX
 {
     class RenderGraph;
     class RenderContext;
+    struct RenderGraphExecutionTestAccess;
     class TransientTextureLease;
     class TransientBufferLease;
     struct GPUCompletionToken;
@@ -55,6 +56,7 @@ namespace RVX
     private:
         friend class RenderGraph;
         friend class RenderContext;
+        friend struct RenderGraphExecutionTestAccess;
 
         void Prepare();
         [[nodiscard]] bool MarkRecorded();
@@ -69,6 +71,7 @@ namespace RVX
         void RetainTexture(RHITextureRef texture);
         void RetainBuffer(RHIBufferRef buffer);
         void RetainHeap(RHIHeapRef heap);
+        void RetainResource(Ref<RefCounted> resource);
         void SetQueueSubmission(
             RHIQueueSubmissionPlan plan,
             std::vector<RHICommandContextRef> ownedContexts);

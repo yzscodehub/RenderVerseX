@@ -143,21 +143,22 @@ namespace RVX
         void InitializeGraphRecorder(const RenderScene* scene);
         void CalculateCascades(const ViewData& view,
                                const PrimaryDirectionalLightRecordInput& primaryLight);
-        bool ResolveCascadeViews(const ViewData& view);
         void Setup(RenderGraphBuilder& builder,
                    const ViewData& view,
                    const PrimaryDirectionalLightRecordInput& primaryLight);
-        void Execute(RHICommandContext& ctx,
+        void Execute(RenderGraphPassContext& context,
                      const ViewData& view,
                      const PrimaryDirectionalLightRecordInput& primaryLight);
-        void RenderCascade(RHICommandContext& ctx,
+        void RenderCascade(RenderGraphPassContext& context,
                            const ViewData& view,
                            uint32_t cascadeIndex,
                            const PrimaryDirectionalLightRecordInput& primaryLight);
-        bool BuildPlannedShadowDraws(const ViewData& view);
+        bool BuildPlannedShadowDraws(RenderGraphBuilder& builder,
+                                     const ViewData& view);
         bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
                                          const ViewData& view);
-        void ApplyDirectInstancePlan(const ViewData& view);
+        void ApplyDirectInstancePlan(RenderGraphBuilder& builder,
+                                     const ViewData& view);
 
         bool m_enabled = false;
         mutable std::string m_unsupportedReason = "ShadowPass has not been configured";
@@ -172,7 +173,7 @@ namespace RVX
         // Shadow map resources
         RGTextureHandle m_shadowMapTextureHandle;
         std::vector<RGTextureHandle> m_cascadeTextureHandles;
-        std::vector<RHITextureViewRef> m_cascadeViews;
+        std::vector<RGTextureViewHandle> m_cascadeViewHandles;
         std::vector<PlannedShadowDraw> m_plannedShadowDraws;
         RGBufferHandle m_directInstanceHandle;
         RGBufferHandle m_directInstanceIndexHandle;

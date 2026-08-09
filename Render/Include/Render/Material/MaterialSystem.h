@@ -135,7 +135,8 @@ namespace RVX
 
         bool Initialize(IRHIDevice* device,
                         RHIDescriptorSetLayout* materialSetLayout,
-                        RenderResourceRegistry* resourceRegistry);
+                        RenderResourceRegistry* resourceRegistry,
+                        ResourceViewCache* resourceViewCache = nullptr);
         void Shutdown();
         bool IsInitialized() const { return m_initialized; }
 
@@ -312,6 +313,7 @@ namespace RVX
 
         IRHIDevice* m_device = nullptr;
         RenderResourceRegistry* m_resourceRegistry = nullptr;
+        ResourceViewCache* m_resourceViewCache = nullptr;
         RHIDescriptorSetLayout* m_materialSetLayout = nullptr;
         bool m_initialized = false;
 

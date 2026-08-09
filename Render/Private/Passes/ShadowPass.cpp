@@ -10,7 +10,6 @@
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
 #include "Resources/RenderResourceResolver.h"
-#include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <algorithm>
@@ -261,7 +260,6 @@ void ShadowPass::AddToGraph(
             context.identity.frameSequence &&
         context.frameSnapshot->executionPlan.viewOrdinal ==
             context.identity.viewOrdinal &&
-        context.frameSnapshot->view.renderGraph == &graph &&
         context.frameSnapshot->view.renderFrameExecutionPlan ==
             &context.frameSnapshot->executionPlan &&
         context.frameSnapshot->view.meshPassPreparation ==
@@ -273,7 +271,6 @@ void ShadowPass::AddToGraph(
     const bool sourceContextValid = !context.legacyAdapter &&
         context.MatchesTargetGraph(graph) && context.IsFrameIdentityValid() &&
         sourcePlanValid && suppliedResultsValid && suppliedSnapshotValid &&
-        context.view.renderGraph == &graph &&
         context.view.renderFrameExecutionPlan == context.executionPlan &&
         context.view.meshPassPreparation == context.meshPassPreparation &&
         context.view.renderVisibility == context.visibility &&
@@ -354,13 +351,15 @@ void ShadowPass::AddToGraph(
                 MakeDirectionalShadowRecordOutput(
                     data.execution.identity, *data.recorder);
         },
-        [results, primaryLight](const GraphPassData& data, RHICommandContext& ctx)
+        [results, primaryLight](const GraphPassData& data,
+                                RenderGraphPassContext& context)
         {
             if (!data.contextValid || !data.recorder || !results)
             {
                 return;
             }
-            data.recorder->Execute(ctx, data.execution.view, primaryLight);
+            data.recorder->Execute(
+                context, data.execution.view, primaryLight);
             results->shadowStats = data.recorder->GetStats();
         });
 }
@@ -506,7 +505,7 @@ void ShadowPass::Setup(
     m_stats = {};
     m_shadowMapTextureHandle = {};
     m_cascadeTextureHandles.clear();
-    m_cascadeViews.clear();
+    m_cascadeViewHandles.clear();
     m_plannedShadowDraws.clear();
     m_directInstanceHandle = {};
     m_directInstanceIndexHandle = {};
@@ -515,12 +514,6 @@ void ShadowPass::Setup(
     m_directInstancingPreflightFailed = false;
     m_shadowDrawPreflightValid = false;
     m_cascades.resize(std::max(1u, m_config.numCascades));
-
-    if (!view.renderGraph)
-    {
-        m_unsupportedReason = "RenderGraph is not available during ShadowPass setup";
-        return;
-    }
 
     CalculateCascades(view, primaryLight);
     m_stats.configuredCascadeCount = static_cast<uint32_t>(m_cascades.size());
@@ -534,16 +527,32 @@ void ShadowPass::Setup(
                                     static_cast<uint32>(m_cascades.size()));
     shadowDesc.debugName = "DirectionalShadowCascadeArray";
 
-    m_shadowMapTextureHandle = view.renderGraph->CreateTexture(shadowDesc);
-    view.renderGraph->SetExportState(m_shadowMapTextureHandle, RHIResourceState::ShaderResource);
+    m_shadowMapTextureHandle = builder.CreateTexture(shadowDesc);
+    builder.SetExportState(
+        m_shadowMapTextureHandle, RHIResourceState::ShaderResource);
 
     for (uint32_t i = 0; i < static_cast<uint32_t>(m_cascades.size()); ++i)
     {
         RGTextureHandle shadowLayer = m_shadowMapTextureHandle;
         shadowLayer.hasSubresourceRange = true;
         shadowLayer.subresourceRange = RHISubresourceRange{0, 1, i, 1, RHITextureAspect::Depth};
-        builder.SetDepthStencil(shadowLayer, true, false);
         m_cascadeTextureHandles.push_back(shadowLayer);
+
+        RHITextureViewDesc viewDesc;
+        viewDesc.format = depthFormat;
+        viewDesc.dimension = shadowDesc.dimension;
+        viewDesc.subresourceRange = shadowLayer.subresourceRange;
+        viewDesc.type = RHITextureViewType::DepthStencil;
+        viewDesc.debugName = "ShadowCascadeLayerDSV";
+        RGTextureViewHandle cascadeView =
+            builder.CreateTextureView(m_shadowMapTextureHandle, viewDesc);
+        cascadeView = builder.Write(
+            cascadeView,
+            MakeRGAccessDesc(
+                RHIResourceState::DepthWrite,
+                RHIShaderStage::None,
+                RHIDiscardIntent::Discard));
+        m_cascadeViewHandles.push_back(cascadeView);
     }
 
     m_stats.declaredCascadeResourceCount = static_cast<uint32_t>(m_cascadeTextureHandles.size());
@@ -556,18 +565,19 @@ void ShadowPass::Setup(
     // All caster constant pages and set-1 descriptors are fixed while the
     // graph is built. Execute() therefore has no allocation path after an
     // attachment is bound.
-    m_shadowDrawPreflightValid = BuildPlannedShadowDraws(view);
+    m_shadowDrawPreflightValid = BuildPlannedShadowDraws(builder, view);
     if (!m_shadowDrawPreflightValid)
     {
         RVX_RENDER_ERROR("ShadowPass: caster/page preflight failed; no shadow attachment will be recorded");
         m_shadowMapTextureHandle = {};
         m_cascadeTextureHandles.clear();
-        m_cascadeViews.clear();
+        m_cascadeViewHandles.clear();
         m_stats.declaredCascadeResourceCount = 0;
     }
 }
 
-bool ShadowPass::BuildPlannedShadowDraws(const ViewData& view)
+bool ShadowPass::BuildPlannedShadowDraws(RenderGraphBuilder& builder,
+                                         const ViewData& view)
 {
     m_plannedShadowDraws.clear();
     const ShadowDepthBiasState biasState = MakeShadowDepthBiasState(m_config);
@@ -688,15 +698,12 @@ bool ShadowPass::BuildPlannedShadowDraws(const ViewData& view)
                 ResolveSkinningMatrices(object, planned.buffers),
                 nullptr,
                 planned.objectBinding) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !builder.RetainSubmissionResource(
                 Ref<RefCounted>(planned.objectBinding.constantBuffer)) ||
             (planned.objectBinding.instanceBuffer &&
-             !RetainRenderSubmissionResource(
-                 view.submissionResourceBatch,
+             !builder.RetainSubmissionResource(
                  Ref<RefCounted>(planned.objectBinding.instanceBuffer))) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !builder.RetainSubmissionResource(
                 Ref<RefCounted>(planned.objectBinding.descriptorSet)))
         {
             RVX_RENDER_ERROR("ShadowPass: direct shadow object constants or retained bindings failed preflight");
@@ -704,7 +711,7 @@ bool ShadowPass::BuildPlannedShadowDraws(const ViewData& view)
         }
         m_plannedShadowDraws.emplace_back(std::move(planned));
     }
-    ApplyDirectInstancePlan(view);
+    ApplyDirectInstancePlan(builder, view);
     return true;
 }
 
@@ -718,7 +725,7 @@ bool ShadowPass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
     if (m_renderScene == nullptr || view.instanceBatchPlans == nullptr ||
         !view.instanceBatchPlans->shadowValid ||
         view.renderFrameExecutionPlan == nullptr ||
-        view.meshPassPreparation == nullptr || view.renderGraph == nullptr ||
+        view.meshPassPreparation == nullptr ||
         m_pipelineCache == nullptr)
     {
         return false;
@@ -748,21 +755,19 @@ bool ShadowPass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
                                     instances,
                                     "ShadowDirectInstancing",
                                     m_directInstanceStream) ||
-        !RetainRenderSubmissionResource(
-            view.submissionResourceBatch,
+        !builder.RetainSubmissionResource(
             Ref<RefCounted>(m_directInstanceStream.instances)) ||
-        !RetainRenderSubmissionResource(
-            view.submissionResourceBatch,
+        !builder.RetainSubmissionResource(
             Ref<RefCounted>(m_directInstanceStream.instanceIndices)))
     {
         m_directInstanceStream = {};
         return false;
     }
-    m_directInstanceHandle = view.renderGraph->ImportBuffer(
-        m_directInstanceStream.instances.Get(),
+    m_directInstanceHandle = builder.ImportBuffer(
+        m_directInstanceStream.instances,
         RHIResourceState::ShaderResource);
-    m_directInstanceIndexHandle = view.renderGraph->ImportBuffer(
-        m_directInstanceStream.instanceIndices.Get(),
+    m_directInstanceIndexHandle = builder.ImportBuffer(
+        m_directInstanceStream.instanceIndices,
         RHIResourceState::VertexBuffer);
     builder.Read(m_directInstanceHandle, RHIShaderStage::Vertex);
     builder.Read(m_directInstanceIndexHandle,
@@ -771,7 +776,8 @@ bool ShadowPass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
     return true;
 }
 
-void ShadowPass::ApplyDirectInstancePlan(const ViewData& view)
+void ShadowPass::ApplyDirectInstancePlan(RenderGraphBuilder& builder,
+                                         const ViewData& view)
 {
     if (view.instancingMode == RenderInstancingMode::Disabled ||
         m_directInstancePlan.instancedBatchCount == 0)
@@ -837,14 +843,11 @@ void ShadowPass::ApplyDirectInstancePlan(const ViewData& view)
                 {},
                 m_directInstanceStream.instances.Get(),
                 binding) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !builder.RetainSubmissionResource(
                 Ref<RefCounted>(binding.constantBuffer)) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !builder.RetainSubmissionResource(
                 Ref<RefCounted>(binding.instanceBuffer)) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !builder.RetainSubmissionResource(
                 Ref<RefCounted>(binding.descriptorSet)))
         {
             m_stats.instancingFallbackBatchCount +=
@@ -898,7 +901,7 @@ void ShadowPass::ApplyDirectInstancePlan(const ViewData& view)
 }
 
 void ShadowPass::Execute(
-    RHICommandContext& ctx,
+    RenderGraphPassContext& context,
     const ViewData& view,
     const PrimaryDirectionalLightRecordInput& primaryLight)
 {
@@ -922,80 +925,44 @@ void ShadowPass::Execute(
         return;
     }
 
-    if (!ResolveCascadeViews(view))
+    m_stats.resolvedCascadeViewCount = 0;
+    for (RGTextureViewHandle cascadeView : m_cascadeViewHandles)
     {
-        RVX_CORE_WARN("ShadowPass: cascade resources were not resolved; skipping shadow rendering");
-        return;
-    }
-
-    for (const RHITextureViewRef& cascadeView : m_cascadeViews)
-    {
-        RHITextureView* const viewHandle = cascadeView.Get();
-        if (viewHandle == nullptr || viewHandle->GetTexture() == nullptr ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch, Ref<RefCounted>(viewHandle)) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
-                Ref<RefCounted>(viewHandle->GetTexture())))
+        RHITextureView* const viewHandle =
+            context.GetTextureView(cascadeView);
+        if (viewHandle == nullptr || viewHandle->GetTexture() == nullptr)
         {
-            RVX_CORE_WARN("ShadowPass: submission ownership rejected cascade attachment");
+            RVX_CORE_WARN(
+                "ShadowPass: explicit cascade view was not realized");
             return;
         }
+        ++m_stats.resolvedCascadeViewCount;
     }
 
     // Render each cascade
     for (uint32_t i = 0; i < static_cast<uint32_t>(m_cascades.size()); ++i)
     {
-        RenderCascade(ctx, view, i, primaryLight);
+        RenderCascade(context, view, i, primaryLight);
     }
 
     m_pipelineCache->UpdateViewConstants(view);
 }
 
-bool ShadowPass::ResolveCascadeViews(const ViewData& view)
-{
-    m_cascadeViews.assign(m_cascadeTextureHandles.size(), RHITextureViewRef{});
-    m_stats.resolvedCascadeViewCount = 0;
-
-    if (!view.renderGraph || !view.viewCache)
-    {
-        return false;
-    }
-
-    for (uint32_t i = 0; i < static_cast<uint32_t>(m_cascadeTextureHandles.size()); ++i)
-    {
-        RHITexture* texture = view.renderGraph->GetTexture(m_cascadeTextureHandles[i]);
-        if (!texture)
-            continue;
-
-        RHITextureViewDesc viewDesc;
-        viewDesc.format = texture->GetFormat();
-        viewDesc.dimension = texture->GetDimension();
-        viewDesc.subresourceRange = RHISubresourceRange{0, 1, i, 1, RHITextureAspect::Depth};
-        viewDesc.type = RHITextureViewType::DepthStencil;
-        viewDesc.debugName = "ShadowCascadeLayerDSV";
-
-        RHITextureView* viewHandle = view.viewCache->GetTextureView(texture, viewDesc);
-        if (!viewHandle)
-            continue;
-
-        m_cascadeViews[i] = RHITextureViewRef(viewHandle);
-        ++m_stats.resolvedCascadeViewCount;
-    }
-
-    return m_stats.resolvedCascadeViewCount == m_cascadeTextureHandles.size();
-}
-
 void ShadowPass::RenderCascade(
-    RHICommandContext& ctx,
+    RenderGraphPassContext& context,
     const ViewData& view,
     uint32_t cascadeIndex,
     const PrimaryDirectionalLightRecordInput& primaryLight)
 {
-    if (cascadeIndex >= m_cascadeViews.size() || !m_cascadeViews[cascadeIndex])
+    if (cascadeIndex >= m_cascadeViewHandles.size())
     {
         return;  // Cascade view not created
     }
+    RHITextureView* const cascadeView =
+        context.GetTextureView(m_cascadeViewHandles[cascadeIndex]);
+    if (!cascadeView)
+        return;
+    RHICommandContext& ctx = context.Commands();
 
     ViewData shadowView = view;
     shadowView.viewProjectionMatrix = m_cascades[cascadeIndex].viewProjection;
@@ -1004,7 +971,7 @@ void ShadowPass::RenderCascade(
 
     // Begin shadow render pass for this cascade
     RHIRenderPassDesc rpDesc;
-    rpDesc.SetDepthStencil(m_cascadeViews[cascadeIndex].Get(),
+    rpDesc.SetDepthStencil(cascadeView,
                            RHILoadOp::Clear, RHIStoreOp::Store, m_pipelineCache->GetDepthClearValue(), 0);
 
     ctx.BeginRenderPass(rpDesc);

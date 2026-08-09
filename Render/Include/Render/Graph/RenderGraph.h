@@ -20,6 +20,7 @@ namespace RVX
     inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 6;
 
     class RenderSubmissionResourceBatch;
+    class RenderGraph;
     class TransientResourcePool;
 
     /** @brief Logical graph access without a physical queue ownership domain. */
@@ -89,6 +90,16 @@ namespace RVX
         RGBufferHandle Range(uint64 offset, uint64 size) const;
     };
 
+    /** @brief Generation-scoped handle for an explicitly declared texture view. */
+    struct RGTextureViewHandle
+    {
+        uint32 index = RVX_INVALID_INDEX;
+        uint64 graphIdentity = 0;
+        uint64 recordingGeneration = 0;
+
+        bool IsValid() const { return index != RVX_INVALID_INDEX; }
+    };
+
     // =============================================================================
     // Render Graph Pass Type
     // =============================================================================
@@ -100,12 +111,64 @@ namespace RVX
         Copy,
     };
 
+    /** @brief Execution-only access to physical resources owned by one graph execution. */
+    class RenderGraphPassContext
+    {
+    public:
+        /** @brief Internal executor constructor; callers receive this in pass callbacks. */
+        RenderGraphPassContext(
+            RenderGraph& graph,
+            RHICommandContext& commands);
+        RHICommandContext& Commands() const;
+        RHITexture* GetTexture(RGTextureHandle handle) const;
+        RHIBuffer* GetBuffer(RGBufferHandle handle) const;
+        RHITextureView* GetTextureView(RGTextureViewHandle handle) const;
+        [[nodiscard]] bool RetainSubmissionResource(
+            Ref<RefCounted> resource) const;
+
+    private:
+        RenderGraph* m_graph = nullptr;
+        RHICommandContext* m_commands = nullptr;
+    };
+
     // =============================================================================
     // Render Graph Builder
     // =============================================================================
     class RenderGraphBuilder
     {
     public:
+        RGTextureHandle CreateTexture(const RHITextureDesc& desc);
+        RGBufferHandle CreateBuffer(const RHIBufferDesc& desc);
+        /** @brief Import a strongly-owned texture binding for this execution. */
+        RGTextureHandle ImportTexture(
+            RHITextureRef texture,
+            RHIResourceState initialState);
+        RGTextureHandle ImportTexture(
+            RHITextureRef texture,
+            const RHITextureAccessSnapshot& initialAccess);
+        /** @brief Import a strongly-owned buffer binding for this execution. */
+        RGBufferHandle ImportBuffer(
+            RHIBufferRef buffer,
+            RHIResourceState initialState);
+        RGBufferHandle ImportBuffer(
+            RHIBufferRef buffer,
+            const RHIBufferAccessSnapshot& initialAccess);
+        const RHITextureDesc* GetTextureDesc(
+            RGTextureHandle texture) const;
+        const RHIBufferDesc* GetBufferDesc(RGBufferHandle buffer) const;
+        void SetExportState(
+            RGTextureHandle texture,
+            RHIResourceState finalState);
+        void SetExportState(
+            RGBufferHandle buffer,
+            RHIResourceState finalState);
+        void SetExportAccess(
+            RGTextureHandle texture,
+            const RHIAccessSnapshot& finalAccess);
+        void SetExportAccess(
+            RGBufferHandle buffer,
+            const RHIAccessSnapshot& finalAccess);
+
         // Read resources
         RGTextureHandle Read(RGTextureHandle texture, RHIShaderStage stages = RHIShaderStage::AllGraphics);
         RGTextureHandle Read(RGTextureHandle texture,
@@ -119,6 +182,9 @@ namespace RVX
                             RHIShaderStage stages = RHIShaderStage::AllGraphics);
         RGBufferHandle Read(RGBufferHandle buffer, const RHIAccessSnapshot& access);
         RGBufferHandle Read(RGBufferHandle buffer, const RGAccessDesc& access);
+        RGTextureViewHandle Read(
+            RGTextureViewHandle view,
+            const RGAccessDesc& access);
 
         // Write resources
         RGTextureHandle Write(RGTextureHandle texture,
@@ -135,6 +201,9 @@ namespace RVX
                              const RHIAccessSnapshot& access,
                              RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
         RGBufferHandle Write(RGBufferHandle buffer, const RGAccessDesc& access);
+        RGTextureViewHandle Write(
+            RGTextureViewHandle view,
+            const RGAccessDesc& access);
 
         // Read-write resources
         RGTextureHandle ReadWrite(RGTextureHandle texture);
@@ -143,6 +212,9 @@ namespace RVX
         RGBufferHandle ReadWrite(RGBufferHandle buffer);
         RGBufferHandle ReadWrite(RGBufferHandle buffer, const RHIAccessSnapshot& access);
         RGBufferHandle ReadWrite(RGBufferHandle buffer, const RGAccessDesc& access);
+        RGTextureViewHandle ReadWrite(
+            RGTextureViewHandle view,
+            const RGAccessDesc& access);
 
         // Subresource-level access
         RGTextureHandle ReadMip(RGTextureHandle texture, uint32 mipLevel);
@@ -150,6 +222,15 @@ namespace RVX
 
         // Depth-stencil
         void SetDepthStencil(RGTextureHandle texture, bool depthWrite = true, bool stencilWrite = false);
+
+        /** @brief Declare a texture view without realizing an RHI descriptor. */
+        RGTextureViewHandle CreateTextureView(
+            RGTextureHandle texture,
+            const RHITextureViewDesc& desc);
+
+        /** @brief Retain a setup-created resource until this graph execution completes. */
+        [[nodiscard]] bool RetainSubmissionResource(
+            Ref<RefCounted> resource);
 
     private:
         class Impl;
@@ -207,6 +288,11 @@ namespace RVX
         RGTextureHandle CreateTexture(const RHITextureDesc& desc);
         RGBufferHandle CreateBuffer(const RHIBufferDesc& desc);
 
+        /** @brief Declare a graph-owned texture view. No RHI object is created here. */
+        RGTextureViewHandle CreateTextureView(
+            RGTextureHandle texture,
+            const RHITextureViewDesc& desc);
+
         // Import external resources
         RGTextureHandle ImportTexture(RHITexture* texture, RHIResourceState initialState);
         RGBufferHandle ImportBuffer(RHIBuffer* buffer, RHIResourceState initialState);
@@ -238,6 +324,13 @@ namespace RVX
             RenderGraphPassType type,
             std::function<void(RenderGraphBuilder&, Data&)> setup,
             std::function<void(const Data&, RHICommandContext&)> execute);
+
+        template<typename Data>
+        void AddPass(
+            const char* name,
+            RenderGraphPassType type,
+            std::function<void(RenderGraphBuilder&, Data&)> setup,
+            std::function<void(const Data&, RenderGraphPassContext&)> execute);
 
         // Compile the graph
         void Compile();
@@ -588,11 +681,14 @@ namespace RVX
         void Clear();
 
     private:
+        friend class RenderGraphPassContext;
         void AddPassInternal(
             const char* name,
             RenderGraphPassType type,
             std::function<void(RenderGraphBuilder&)> setup,
-            std::function<void(RHICommandContext&)> execute);
+            std::function<void(RenderGraphPassContext&)> execute);
+        RHITextureView* ResolveTextureView(RGTextureViewHandle handle) const;
+        [[nodiscard]] bool RetainExecutionResource(Ref<RefCounted> resource);
 
         class Impl;
         std::unique_ptr<Impl> m_impl;
@@ -613,9 +709,30 @@ namespace RVX
             {
                 setup(builder, *data);
             },
-            [data, execute](RHICommandContext& ctx)
+            [data, execute](RenderGraphPassContext& context)
             {
-                execute(*data, ctx);
+                execute(*data, context.Commands());
+            });
+    }
+
+    template<typename Data>
+    void RenderGraph::AddPass(
+        const char* name,
+        RenderGraphPassType type,
+        std::function<void(RenderGraphBuilder&, Data&)> setup,
+        std::function<void(const Data&, RenderGraphPassContext&)> execute)
+    {
+        auto data = std::make_shared<Data>();
+        AddPassInternal(
+            name,
+            type,
+            [data, setup](RenderGraphBuilder& builder)
+            {
+                setup(builder, *data);
+            },
+            [data, execute](RenderGraphPassContext& context)
+            {
+                execute(*data, context);
             });
     }
 

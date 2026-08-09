@@ -139,6 +139,14 @@ namespace RVX
         }
     };
 
+    struct TextureViewResource
+    {
+        RGTextureHandle texture;
+        RHITextureViewDesc desc;
+        std::string debugName;
+        RHITextureViewRef realizedView;
+    };
+
     struct ResourceUsage
     {
         ResourceType type = ResourceType::Texture;
@@ -206,7 +214,7 @@ namespace RVX
         std::vector<PlannedTextureBarrier> postTextureBarriers;
         std::vector<PlannedBufferBarrier> postBufferBarriers;
         std::vector<AliasingBarrier> aliasingBarriers;  // For memory aliasing
-        std::function<void(RHICommandContext&)> execute;
+        std::function<void(RenderGraphPassContext&)> execute;
     };
 
     struct InitialQueueReleaseBatch
@@ -231,12 +239,15 @@ namespace RVX
             uint32 targetPassIndex = RVX_INVALID_INDEX;
         };
 
+        RenderGraph* owner = nullptr;
         IRHIDevice* device = nullptr;
         TransientResourcePool* transientResourcePool = nullptr;
         RHICapabilities capabilitySnapshot;
         bool hasCapabilitySnapshot = false;
         std::vector<TextureResource> textures;
         std::vector<BufferResource> buffers;
+        std::vector<TextureViewResource> textureViews;
+        std::vector<Ref<RefCounted>> executionResources;
         std::vector<Pass> passes;
         std::vector<uint32> executionOrder;
         std::vector<std::vector<uint32>> passDependencies;

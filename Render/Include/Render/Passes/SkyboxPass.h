@@ -86,7 +86,6 @@ namespace RVX
         PipelineCache* m_pipelineCache = nullptr;
         IRHIDevice* m_resourceDevice = nullptr;
         RHITextureRef m_fallbackCubemap;
-        RHITextureViewRef m_fallbackCubemapView;
         RHISamplerRef m_sampler;
     };
 

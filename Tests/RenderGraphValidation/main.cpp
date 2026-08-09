@@ -49,6 +49,31 @@ namespace
         RHITextureDesc m_desc;
     };
 
+    class FakeTextureView final : public RHITextureView
+    {
+    public:
+        FakeTextureView(RHITexture* texture, const RHITextureViewDesc& desc)
+            : m_texture(texture)
+            , m_format(desc.format == RHIFormat::Unknown
+                           ? texture->GetFormat()
+                           : desc.format)
+            , m_range(desc.subresourceRange)
+        {
+        }
+
+        RHITexture* GetTexture() const override { return m_texture; }
+        RHIFormat GetFormat() const override { return m_format; }
+        const RHISubresourceRange& GetSubresourceRange() const override
+        {
+            return m_range;
+        }
+
+    private:
+        RHITexture* m_texture = nullptr;
+        RHIFormat m_format = RHIFormat::Unknown;
+        RHISubresourceRange m_range;
+    };
+
     class FakeBuffer final : public RHIBuffer
     {
     public:
@@ -215,7 +240,16 @@ namespace
             return RHITextureRef(new FakeTexture(desc));
         }
 
-        RHITextureViewRef CreateTextureView(RHITexture*, const RHITextureViewDesc& = {}) override { return {}; }
+        RHITextureViewRef CreateTextureView(
+            RHITexture* texture,
+            const RHITextureViewDesc& desc = {}) override
+        {
+            ++textureViewCreateAttemptCount;
+            if (!texture || createTextureViewCount >= failTextureViewCreationAfter)
+                return {};
+            ++createTextureViewCount;
+            return RHITextureViewRef(new FakeTextureView(texture, desc));
+        }
         RHISamplerRef CreateSampler(const RHISamplerDesc&) override { return {}; }
         RHIShaderRef CreateShader(const RHIShaderDesc&) override { return {}; }
         RHIHeapRef CreateHeap(const RHIHeapDesc& desc) override
@@ -301,8 +335,12 @@ namespace
         uint32 createBufferCount = 0;
         uint32 createPlacedTextureCount = 0;
         uint32 createPlacedBufferCount = 0;
+        uint32 createTextureViewCount = 0;
+        uint32 textureViewCreateAttemptCount = 0;
         uint32 textureCreateAttemptCount = 0;
         uint32 failTextureCreationAfter =
+            std::numeric_limits<uint32>::max();
+        uint32 failTextureViewCreationAfter =
             std::numeric_limits<uint32>::max();
         uint32 textureMemoryRequirementQueryCount = 0;
         uint32 bufferMemoryRequirementQueryCount = 0;
@@ -377,6 +415,202 @@ TEST(RenderGraphValidation, TextureResourceCreation)
 
     // Handle should be valid
     EXPECT_TRUE(texture.IsValid());
+}
+
+TEST(RenderGraphValidation, ExplicitTextureViewIsDeclaredThenRealizedOnce)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    graph.SetTransientResourcePool(&pool);
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+        128, 128, RHIFormat::D32_FLOAT);
+    depthDesc.arraySize = 4;
+    const RGTextureHandle depth = graph.CreateTexture(depthDesc);
+
+    struct PassData
+    {
+        RGTextureViewHandle cascadeView;
+        RGTextureHandle depth;
+    };
+    bool executed = false;
+    graph.AddPass<PassData>(
+        "ExplicitCascadeView",
+        RenderGraphPassType::Graphics,
+        [depth](RenderGraphBuilder& builder, PassData& data)
+        {
+            RHITextureViewDesc desc;
+            desc.format = RHIFormat::D32_FLOAT;
+            desc.dimension = RHITextureDimension::Texture2D;
+            desc.subresourceRange = {
+                0, 1, 2, 1, RHITextureAspect::Depth};
+            desc.type = RHITextureViewType::DepthStencil;
+            desc.debugName = "ExplicitCascadeLayer2";
+            data.cascadeView = builder.CreateTextureView(depth, desc);
+            data.cascadeView = builder.Write(
+                data.cascadeView,
+                MakeRGAccessDesc(
+                    RHIResourceState::DepthWrite,
+                    RHIShaderStage::None,
+                    RHIDiscardIntent::Discard));
+            data.depth = depth;
+        },
+        [&executed](const PassData& data, RenderGraphPassContext& context)
+        {
+            RHITextureView* view =
+                context.GetTextureView(data.cascadeView);
+            ASSERT_NE(view, nullptr);
+            EXPECT_EQ(view->GetTexture(), context.GetTexture(data.depth));
+            EXPECT_EQ(view->GetSubresourceRange().baseArrayLayer, 2u);
+            EXPECT_EQ(view->GetSubresourceRange().arrayLayerCount, 1u);
+            executed = true;
+        });
+    graph.SetExportState(depth, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(device.createTextureCount, 0u);
+    EXPECT_EQ(device.createTextureViewCount, 0u);
+
+    FakeCommandContext commandContext;
+    graph.Execute(commandContext);
+    EXPECT_TRUE(executed);
+    EXPECT_EQ(device.createTextureCount, 1u);
+    EXPECT_EQ(device.createTextureViewCount, 1u);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 1u);
+
+    RenderGraphExecution execution = graph.TakeExecution();
+    ASSERT_TRUE(execution);
+    EXPECT_TRUE(execution.AbortUnsubmitted());
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    graph.Clear();
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TextureViewRealizationFailureRollsBackTextureLease)
+{
+    FakeDevice device;
+    device.failTextureViewCreationAfter = 0u;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    graph.SetTransientResourcePool(&pool);
+    const RGTextureHandle color = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    struct PassData
+    {
+        RGTextureViewHandle target;
+    };
+    graph.AddPass<PassData>(
+        "FailViewRealization",
+        RenderGraphPassType::Graphics,
+        [color](RenderGraphBuilder& builder, PassData& data)
+        {
+            RHITextureViewDesc desc;
+            desc.format = RHIFormat::RGBA8_UNORM;
+            desc.dimension = RHITextureDimension::Texture2D;
+            desc.subresourceRange = RHISubresourceRange::All();
+            desc.type = RHITextureViewType::RenderTarget;
+            data.target = builder.CreateTextureView(color, desc);
+            data.target = builder.Write(
+                data.target,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget));
+        },
+        [](const PassData&, RenderGraphPassContext&) {});
+    graph.SetExportState(color, RHIResourceState::ShaderResource);
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    FakeCommandContext commandContext;
+    graph.Execute(commandContext);
+    EXPECT_EQ(device.textureViewCreateAttemptCount, 1u);
+    EXPECT_EQ(device.createTextureViewCount, 0u);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    EXPECT_EQ(pool.GetStats().leaseAbortCount, 1u);
+    EXPECT_EQ(graph.GetCompileStats().partialRealizationRollbackCount, 1u);
+    EXPECT_FALSE(graph.TakeExecution());
+
+    graph.Clear();
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientTextureViewsFollowPhysicalPoolSlotReuse)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    graph.SetTransientResourcePool(&pool);
+
+    const auto recordFrame = [&]()
+    {
+        graph.Clear();
+        const RGTextureHandle color = graph.CreateTexture(
+            RHITextureDesc::RenderTarget(
+                64, 64, RHIFormat::RGBA8_UNORM));
+        struct PassData
+        {
+            RGTextureViewHandle target;
+        };
+        graph.AddPass<PassData>(
+            "PooledExplicitView",
+            RenderGraphPassType::Graphics,
+            [color](RenderGraphBuilder& builder, PassData& data)
+            {
+                RHITextureViewDesc desc;
+                desc.format = RHIFormat::RGBA8_UNORM;
+                desc.dimension = RHITextureDimension::Texture2D;
+                desc.subresourceRange = RHISubresourceRange::All();
+                desc.type = RHITextureViewType::RenderTarget;
+                data.target = builder.Write(
+                    builder.CreateTextureView(color, desc),
+                    MakeRGAccessDesc(RHIResourceState::RenderTarget));
+            },
+            [](const PassData& data, RenderGraphPassContext& context)
+            {
+                ASSERT_NE(context.GetTextureView(data.target), nullptr);
+            });
+        graph.SetExportState(color, RHIResourceState::ShaderResource);
+        graph.Compile();
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        FakeCommandContext commandContext;
+        graph.Execute(commandContext);
+        RenderGraphExecution execution = graph.TakeExecution();
+        ASSERT_TRUE(execution);
+        ASSERT_TRUE(execution.AbortUnsubmitted());
+    };
+
+    pool.BeginFrame();
+    recordFrame();
+    pool.EndFrame();
+    EXPECT_EQ(device.createTextureCount, 1u);
+    EXPECT_EQ(device.createTextureViewCount, 1u);
+    EXPECT_EQ(pool.GetStats().textureViewMisses, 1u);
+    EXPECT_EQ(pool.GetStats().textureViewHits, 0u);
+    EXPECT_EQ(pool.GetStats().textureViewCount, 1u);
+
+    pool.BeginFrame();
+    recordFrame();
+    pool.EndFrame();
+    EXPECT_EQ(device.createTextureCount, 1u);
+    EXPECT_EQ(device.createTextureViewCount, 1u);
+    EXPECT_EQ(pool.GetStats().textureViewMisses, 0u);
+    EXPECT_EQ(pool.GetStats().textureViewHits, 1u);
+    EXPECT_EQ(pool.GetStats().textureViewCount, 1u);
+
+    graph.Clear();
+    pool.Shutdown();
 }
 
 TEST(RenderGraphValidation, CompileIsIdempotentAndAllocationFree)

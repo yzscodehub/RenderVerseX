@@ -231,6 +231,9 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
     {
         RGTextureHandle input;
         RGTextureHandle output;
+        RGTextureViewHandle inputView;
+        RGTextureViewHandle outputView;
+        RHIFormat outputFormat = RHIFormat::Unknown;
         float threshold;
         float intensity;
         float radius;
@@ -247,19 +250,45 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             RenderGraphBuilder& builder,
             BloomData& data)
         {
-            data.input = builder.Read(input, RHIShaderStage::Pixel);
-            if (additive)
+            data.input = input;
+            data.output = output;
+            const RHITextureDesc* inputDesc = builder.GetTextureDesc(input);
+            const RHITextureDesc* outputDesc = builder.GetTextureDesc(output);
+            if (inputDesc)
             {
-                data.output = builder.ReadWrite(
-                    output,
-                    MakeRHIAccessSnapshot(RHIResourceState::RenderTarget,
-                                           RHIShaderStage::Pixel));
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = inputDesc->format;
+                viewDesc.dimension = inputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::ShaderResource;
+                viewDesc.debugName = "BloomInputSRV";
+                data.inputView = builder.Read(
+                    builder.CreateTextureView(input, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::ShaderResource,
+                        RHIShaderStage::Pixel));
             }
-            else
+            if (outputDesc)
             {
-                data.output = builder.Write(
-                    output,
-                    RHIResourceState::RenderTarget);
+                data.outputFormat = outputDesc->format;
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = outputDesc->format;
+                viewDesc.dimension = outputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::RenderTarget;
+                viewDesc.debugName = additive
+                    ? "BloomAdditiveOutputRTV" : "BloomOutputRTV";
+                RGTextureViewHandle outputView =
+                    builder.CreateTextureView(output, viewDesc);
+                const RGAccessDesc outputAccess = MakeRGAccessDesc(
+                    RHIResourceState::RenderTarget,
+                    RHIShaderStage::Pixel,
+                    outputLoadOp == RHILoadOp::Load
+                        ? RHIDiscardIntent::Preserve
+                        : RHIDiscardIntent::Discard);
+                data.outputView = additive
+                    ? builder.ReadWrite(outputView, outputAccess)
+                    : builder.Write(outputView, outputAccess);
             }
             data.threshold = threshold;
             data.intensity = intensity;
@@ -269,23 +298,17 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             data.additive = additive;
             data.outputLoadOp = outputLoadOp;
         },
-        [this, &graph](const BloomData& data, RHICommandContext& ctx)
+        [this](const BloomData& data, RenderGraphPassContext& context)
         {
-            if (!m_pipelineCache || !m_viewCache)
+            if (!m_pipelineCache)
             {
                 RVX_CORE_WARN("Bloom: missing resources during execution");
                 return;
             }
 
-            RHIFormat outputFormat = RHIFormat::Unknown;
-            if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(data.output))
-            {
-                outputFormat = outputDesc->format;
-            }
-
             RHIPipeline* pipeline = data.additive ?
-                m_pipelineCache->GetBloomAdditivePipeline(outputFormat) :
-                m_pipelineCache->GetBloomPipeline(outputFormat);
+                m_pipelineCache->GetBloomAdditivePipeline(data.outputFormat) :
+                m_pipelineCache->GetBloomPipeline(data.outputFormat);
             RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
             IRHIDevice* device = m_pipelineCache->GetDevice();
             if (!pipeline || !setLayout || !device)
@@ -294,16 +317,16 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
                 return;
             }
 
-            RHITexture* inputTexture = graph.GetTexture(data.input);
-            RHITexture* outputTexture = graph.GetTexture(data.output);
+            RHITexture* inputTexture = context.GetTexture(data.input);
+            RHITexture* outputTexture = context.GetTexture(data.output);
             if (!inputTexture || !outputTexture)
             {
                 RVX_CORE_WARN("Bloom: input or output texture is unavailable");
                 return;
             }
 
-            RHITextureView* inputView = m_viewCache->GetDefaultSRV(inputTexture);
-            RHITextureView* outputView = m_viewCache->GetDefaultRTV(outputTexture);
+            RHITextureView* inputView = context.GetTextureView(data.inputView);
+            RHITextureView* outputView = context.GetTextureView(data.outputView);
             if (!inputView || !outputView)
             {
                 RVX_CORE_WARN("Bloom: failed to resolve input SRV or output RTV");
@@ -329,9 +352,8 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             {
                 return;
             }
-            if (!RetainSubmissionResource(
-                    passConstants,
-                    AlignPostProcessConstantBufferSize(sizeof(BloomGPUConstants))))
+            if (!context.RetainSubmissionResource(
+                    Ref<RefCounted>(passConstants)))
             {
                 RVX_CORE_WARN("Bloom: submission ownership rejected pass constants");
                 return;
@@ -354,7 +376,8 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
                 RVX_CORE_WARN("Bloom: failed to create descriptor set");
                 return;
             }
-            if (!RetainSubmissionResource(descriptorSet))
+            if (!context.RetainSubmissionResource(
+                    Ref<RefCounted>(descriptorSet)))
             {
                 RVX_CORE_WARN("Bloom: submission ownership rejected descriptor set");
                 return;
@@ -364,6 +387,7 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             renderPassDesc.AddColorAttachment(outputView, data.outputLoadOp, RHIStoreOp::Store);
             renderPassDesc.SetRenderArea(0, 0, outputTexture->GetWidth(), outputTexture->GetHeight());
 
+            RHICommandContext& ctx = context.Commands();
             ctx.BeginRenderPass(renderPassDesc);
             ctx.SetPipeline(pipeline);
             ctx.SetDescriptorSet(0, descriptorSet.Get());

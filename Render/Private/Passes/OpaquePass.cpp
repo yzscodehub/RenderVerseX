@@ -353,8 +353,7 @@ void OpaquePass::AddToGraph(
                                                 const ViewData& view,
                                                 const RenderPassRecordIdentity& identity)
     {
-        const bool colorValid = view.renderGraph == &graph &&
-            view.colorTarget.IsValid() &&
+        const bool colorValid = view.colorTarget.IsValid() &&
             HasCurrentGraphProvenance(view.colorTarget, identity) &&
             graph.GetTextureDesc(view.colorTarget) != nullptr;
         const bool depthValid = !view.depthTarget.IsValid() ||
@@ -382,7 +381,6 @@ void OpaquePass::AddToGraph(
             context.identity.frameSequence &&
         context.frameSnapshot->executionPlan.viewOrdinal ==
             context.identity.viewOrdinal &&
-        context.frameSnapshot->view.renderGraph == &graph &&
         context.frameSnapshot->view.renderFrameExecutionPlan ==
             &context.frameSnapshot->executionPlan &&
         context.frameSnapshot->view.meshPassPreparation ==
@@ -516,7 +514,8 @@ void OpaquePass::AddToGraph(
             // whether shadow inputs were requested and declared.
             results->opaqueShadowStats = data.recorder->GetShadowStats();
         },
-        [results](const GraphPassData& data, RHICommandContext& ctx)
+        [results](const GraphPassData& data,
+                  RenderGraphPassContext& context)
         {
             if (!data.contextValid || !data.recorder)
             {
@@ -531,7 +530,7 @@ void OpaquePass::AddToGraph(
             {
                 return;
             }
-            data.recorder->Execute(ctx, data.execution.view);
+            data.recorder->Execute(context, data.execution.view);
             results->opaqueStats = data.recorder->GetDrawStats();
             results->opaqueShadowStats = data.recorder->GetShadowStats();
         });
@@ -541,6 +540,11 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
 {
     m_directionalShadowReadHandle = {};
     m_rayTracedShadowMaskReadHandle = {};
+    m_colorTargetViewHandle = {};
+    m_depthTargetViewHandle = {};
+    m_directionalShadowViewHandle = {};
+    m_rayTracedShadowMaskViewHandle = {};
+    m_colorTargetFormat = RHIFormat::Unknown;
     m_shadowStats = {};
     m_directInstancePlan = {};
     m_directInstanceStream = {};
@@ -585,14 +589,49 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     // Declare that we write to the color target
     if (view.colorTarget.IsValid())
     {
-        m_colorTargetHandle = builder.Write(view.colorTarget, RHIResourceState::RenderTarget);
+        m_colorTargetHandle = view.colorTarget;
+        if (const RHITextureDesc* desc =
+                builder.GetTextureDesc(m_colorTargetHandle))
+        {
+            m_colorTargetFormat = desc->format;
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = desc->format;
+            viewDesc.dimension = desc->dimension;
+            viewDesc.subresourceRange = RHISubresourceRange::All();
+            viewDesc.type = RHITextureViewType::RenderTarget;
+            viewDesc.debugName = "OpaqueColorRTV";
+            m_colorTargetViewHandle = builder.CreateTextureView(
+                m_colorTargetHandle, viewDesc);
+            m_colorTargetViewHandle = builder.Write(
+                m_colorTargetViewHandle,
+                MakeRGAccessDesc(
+                    RHIResourceState::RenderTarget,
+                    RHIShaderStage::None));
+        }
     }
 
     // Declare that we write to the depth target
     if (view.depthTarget.IsValid())
     {
-        builder.SetDepthStencil(view.depthTarget, true, false);
         m_depthTargetHandle = view.depthTarget;
+        if (const RHITextureDesc* desc =
+                builder.GetTextureDesc(m_depthTargetHandle))
+        {
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = desc->format;
+            viewDesc.dimension = desc->dimension;
+            viewDesc.subresourceRange = RHISubresourceRange::All();
+            viewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+            viewDesc.type = RHITextureViewType::DepthStencil;
+            viewDesc.debugName = "OpaqueDepthDSV";
+            m_depthTargetViewHandle = builder.CreateTextureView(
+                m_depthTargetHandle, viewDesc);
+            m_depthTargetViewHandle = builder.Write(
+                m_depthTargetViewHandle,
+                MakeRGAccessDesc(
+                    RHIResourceState::DepthWrite,
+                    RHIShaderStage::None));
+        }
     }
 
     if (m_directionalShadowInputs.enabled)
@@ -602,9 +641,27 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         {
             shadowMap.hasSubresourceRange = true;
             shadowMap.subresourceRange = RHISubresourceRange{0, RVX_ALL_MIPS, 0, RVX_ALL_LAYERS, RHITextureAspect::Depth};
-            m_directionalShadowReadHandle = builder.Read(shadowMap, RHIShaderStage::Pixel);
+            m_directionalShadowReadHandle = shadowMap;
+            if (const RHITextureDesc* desc =
+                    builder.GetTextureDesc(shadowMap))
+            {
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = desc->format;
+                viewDesc.dimension = desc->dimension;
+                viewDesc.subresourceRange = shadowMap.subresourceRange;
+                viewDesc.type = RHITextureViewType::ShaderResource;
+                viewDesc.debugName = "DirectionalShadowSRV";
+                m_directionalShadowViewHandle =
+                    builder.CreateTextureView(shadowMap, viewDesc);
+                m_directionalShadowViewHandle = builder.Read(
+                    m_directionalShadowViewHandle,
+                    MakeRGAccessDesc(
+                        RHIResourceState::ShaderResource,
+                        RHIShaderStage::Pixel));
+            }
             m_shadowStats.requested = true;
-            m_shadowStats.renderGraphReadDeclared = true;
+            m_shadowStats.renderGraphReadDeclared =
+                m_directionalShadowViewHandle.IsValid();
         }
     }
 
@@ -613,9 +670,27 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
         RGTextureHandle shadowMask = m_rayTracedShadowInputs.shadowMask;
         if (shadowMask.IsValid())
         {
-            m_rayTracedShadowMaskReadHandle = builder.Read(shadowMask, RHIShaderStage::Pixel);
+            m_rayTracedShadowMaskReadHandle = shadowMask;
+            if (const RHITextureDesc* desc =
+                    builder.GetTextureDesc(shadowMask))
+            {
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = desc->format;
+                viewDesc.dimension = desc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::ShaderResource;
+                viewDesc.debugName = "RayTracedShadowMaskSRV";
+                m_rayTracedShadowMaskViewHandle =
+                    builder.CreateTextureView(shadowMask, viewDesc);
+                m_rayTracedShadowMaskViewHandle = builder.Read(
+                    m_rayTracedShadowMaskViewHandle,
+                    MakeRGAccessDesc(
+                        RHIResourceState::ShaderResource,
+                        RHIShaderStage::Pixel));
+            }
             m_shadowStats.rayTracedRequested = true;
-            m_shadowStats.rayTracedRenderGraphReadDeclared = true;
+            m_shadowStats.rayTracedRenderGraphReadDeclared =
+                m_rayTracedShadowMaskViewHandle.IsValid();
         }
     }
 
@@ -712,9 +787,8 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
             MaterialParameterTableSnapshot table;
             if (requests.empty() || m_materialSystem == nullptr ||
                 !m_materialSystem->CreateMaterialParameterTableSnapshot(
-                    requests, view.viewCache, table) ||
-                !RetainRenderSubmissionResource(
-                    view.submissionResourceBatch,
+                    requests, nullptr, table) ||
+                !builder.RetainSubmissionResource(
                     Ref<RefCounted>(table.buffer)))
             {
                 m_gpuMaterialTablePreflightFailed = true;
@@ -722,8 +796,8 @@ void OpaquePass::Setup(RenderGraphBuilder& builder, const ViewData& view)
             else
             {
                 m_gpuMaterialParameterTable = std::move(table.buffer);
-                m_gpuMaterialParameterHandle = view.renderGraph->ImportBuffer(
-                    m_gpuMaterialParameterTable.Get(),
+                m_gpuMaterialParameterHandle = builder.ImportBuffer(
+                    m_gpuMaterialParameterTable,
                     RHIResourceState::ShaderResource);
                 if (!m_gpuMaterialParameterHandle.IsValid())
                 {
@@ -757,8 +831,7 @@ bool OpaquePass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
         !view.instanceBatchPlans->opaqueValid ||
         view.renderFrameExecutionPlan == nullptr ||
         view.meshPassPreparation == nullptr ||
-        view.renderVisibility == nullptr ||
-        view.renderGraph == nullptr || m_pipelineCache == nullptr)
+        view.renderVisibility == nullptr || m_pipelineCache == nullptr)
     {
         return false;
     }
@@ -811,9 +884,8 @@ bool OpaquePass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
         MaterialParameterTableSnapshot table;
         if (m_materialSystem == nullptr ||
             !m_materialSystem->CreateMaterialParameterTableSnapshot(
-                materialRequests, view.viewCache, table) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+                materialRequests, nullptr, table) ||
+            !builder.RetainSubmissionResource(
                 Ref<RefCounted>(table.buffer)))
         {
             return false;
@@ -836,22 +908,20 @@ bool OpaquePass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
                                     instances,
                                     "OpaqueDirectInstancing",
                                     m_directInstanceStream) ||
-        !RetainRenderSubmissionResource(
-            view.submissionResourceBatch,
+        !builder.RetainSubmissionResource(
             Ref<RefCounted>(m_directInstanceStream.instances)) ||
-        !RetainRenderSubmissionResource(
-            view.submissionResourceBatch,
+        !builder.RetainSubmissionResource(
             Ref<RefCounted>(m_directInstanceStream.instanceIndices)))
     {
         m_directInstanceStream = {};
         return false;
     }
 
-    m_directInstanceHandle = view.renderGraph->ImportBuffer(
-        m_directInstanceStream.instances.Get(),
+    m_directInstanceHandle = builder.ImportBuffer(
+        m_directInstanceStream.instances,
         RHIResourceState::ShaderResource);
-    m_directInstanceIndexHandle = view.renderGraph->ImportBuffer(
-        m_directInstanceStream.instanceIndices.Get(),
+    m_directInstanceIndexHandle = builder.ImportBuffer(
+        m_directInstanceStream.instanceIndices,
         RHIResourceState::VertexBuffer);
     if (!m_directInstanceHandle.IsValid() ||
         !m_directInstanceIndexHandle.IsValid())
@@ -865,8 +935,8 @@ bool OpaquePass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
                  RHIShaderStage::Vertex);
     if (m_directMaterialParameterTable)
     {
-        m_directMaterialParameterHandle = view.renderGraph->ImportBuffer(
-            m_directMaterialParameterTable.Get(),
+        m_directMaterialParameterHandle = builder.ImportBuffer(
+            m_directMaterialParameterTable,
             RHIResourceState::ShaderResource);
         if (!m_directMaterialParameterHandle.IsValid())
         {
@@ -1116,6 +1186,7 @@ bool OpaquePass::TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
 }
 
 bool OpaquePass::BuildPlannedDirectBatch(
+    RenderGraphPassContext& context,
     const ViewData& view,
     RHIFormat colorTargetFormat,
     RHIDescriptorSet* frameSet,
@@ -1319,7 +1390,7 @@ bool OpaquePass::BuildPlannedDirectBatch(
             m_directMaterialParameterTable.Get();
         MaterialBindingResult materialBinding =
             m_materialSystem->PrepareMaterialBinding(
-                packet.materialKey.material, view.viewCache, materialOptions);
+                packet.materialKey.material, nullptr, materialOptions);
         if (!materialBinding.IsDrawable() ||
             (missingMaterial && !materialBinding.usedFallback))
         {
@@ -1331,11 +1402,9 @@ bool OpaquePass::BuildPlannedDirectBatch(
             outPlannedDraws.clear();
             return false;
         }
-        if (!RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+        if (!context.RetainSubmissionResource(
                 Ref<RefCounted>(materialBinding.constantBuffer)) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(materialBinding.descriptorSetRef)))
         {
             RVX_RENDER_ERROR(
@@ -1385,15 +1454,12 @@ bool OpaquePass::BuildPlannedDirectBatch(
                 ResolveSkinningMatrices(planned.object, planned.buffers),
                 nullptr,
                 planned.objectBinding) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(planned.objectBinding.constantBuffer)) ||
             (planned.objectBinding.instanceBuffer &&
-             !RetainRenderSubmissionResource(
-                 view.submissionResourceBatch,
+             !context.RetainSubmissionResource(
                  Ref<RefCounted>(planned.objectBinding.instanceBuffer))) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(planned.objectBinding.descriptorSet)))
         {
             RVX_RENDER_ERROR(
@@ -1405,11 +1471,13 @@ bool OpaquePass::BuildPlannedDirectBatch(
         outPlannedDraws.push_back(std::move(planned));
     }
 
-    ApplyDirectInstancePlan(view, colorTargetFormat, outPlannedDraws);
+    ApplyDirectInstancePlan(
+        context, view, colorTargetFormat, outPlannedDraws);
     return true;
 }
 
 void OpaquePass::ApplyDirectInstancePlan(
+    RenderGraphPassContext& context,
     const ViewData& view,
     RHIFormat colorTargetFormat,
     std::vector<PlannedOpaqueDraw>& plannedDraws)
@@ -1484,14 +1552,11 @@ void OpaquePass::ApplyDirectInstancePlan(
                 {},
                 m_directInstanceStream.instances.Get(),
                 objectBinding) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(objectBinding.constantBuffer)) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(objectBinding.instanceBuffer)) ||
-            !RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
+            !context.RetainSubmissionResource(
                 Ref<RefCounted>(objectBinding.descriptorSet)))
         {
             m_drawStats.instancingFallbackBatchCount +=
@@ -1604,6 +1669,16 @@ bool OpaquePass::TryDrawPlannedDirect(
 
 void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
 {
+    (void)ctx;
+    (void)view;
+    // Typed AddToGraph owns graph resource realization and execution.
+}
+
+void OpaquePass::Execute(
+    RenderGraphPassContext& context,
+    const ViewData& view)
+{
+    RHICommandContext& ctx = context.Commands();
     m_drawStats = {};
     m_drawStats.instancingMode = view.instancingMode;
     m_drawStats.instancingPlanAvailable =
@@ -1750,46 +1825,12 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    RHITextureViewRef colorTargetViewOwner;
-    RHITextureView* colorTargetView = nullptr;
-    RHIFormat colorTargetFormat = RHIFormat::Unknown;
-    const bool colorHandleBelongsToCurrentGraph =
-        view.renderGraph != nullptr &&
-        m_colorTargetHandle.IsValid() &&
-        m_colorTargetHandle.graphIdentity == view.renderGraph->GetGraphIdentity() &&
-        m_colorTargetHandle.recordingGeneration ==
-            view.renderGraph->GetRecordingGeneration();
-    if (colorHandleBelongsToCurrentGraph && view.viewCache)
-    {
-        if (const RHITextureDesc* colorTargetDesc = view.renderGraph->GetTextureDesc(m_colorTargetHandle))
-        {
-            colorTargetFormat = colorTargetDesc->format;
-        }
-        if (RHITexture* colorTarget = view.renderGraph->GetTexture(m_colorTargetHandle))
-        {
-            colorTargetViewOwner = RHITextureViewRef(
-                view.viewCache->GetDefaultRTV(colorTarget));
-            colorTargetView = colorTargetViewOwner.Get();
-        }
-    }
-
-    RHITextureViewRef depthTargetViewOwner;
-    RHITextureView* depthTargetView = nullptr;
-    const bool depthHandleBelongsToCurrentGraph =
-        view.renderGraph != nullptr &&
-        m_depthTargetHandle.IsValid() &&
-        m_depthTargetHandle.graphIdentity == view.renderGraph->GetGraphIdentity() &&
-        m_depthTargetHandle.recordingGeneration ==
-            view.renderGraph->GetRecordingGeneration();
-    if (depthHandleBelongsToCurrentGraph && view.viewCache)
-    {
-        if (RHITexture* depthTarget = view.renderGraph->GetTexture(m_depthTargetHandle))
-        {
-            depthTargetViewOwner = RHITextureViewRef(
-                view.viewCache->GetDefaultDSV(depthTarget));
-            depthTargetView = depthTargetViewOwner.Get();
-        }
-    }
+    RHITextureView* colorTargetView =
+        context.GetTextureView(m_colorTargetViewHandle);
+    const RHIFormat colorTargetFormat = m_colorTargetFormat;
+    RHITextureView* depthTargetView = m_depthTargetViewHandle.IsValid()
+        ? context.GetTextureView(m_depthTargetViewHandle)
+        : nullptr;
 
     if (!colorTargetView)
     {
@@ -1807,58 +1848,17 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
         return;
     }
 
-    {
-        const bool retainedColorAttachment =
-            colorTargetView->GetTexture() != nullptr &&
-            RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
-                Ref<RefCounted>(colorTargetView)) &&
-            RetainRenderSubmissionResource(
-                view.submissionResourceBatch,
-                Ref<RefCounted>(colorTargetView->GetTexture()));
-        const bool retainedDepthAttachment = depthTargetView == nullptr ||
-            (depthTargetView->GetTexture() != nullptr &&
-             RetainRenderSubmissionResource(
-                 view.submissionResourceBatch,
-                 Ref<RefCounted>(depthTargetView)) &&
-             RetainRenderSubmissionResource(
-                 view.submissionResourceBatch,
-                 Ref<RefCounted>(depthTargetView->GetTexture())));
-        if (!retainedColorAttachment || !retainedDepthAttachment)
-        {
-            RVX_CORE_WARN("OpaquePass: submission ownership rejected graph-owned attachments");
-            reportPlannedFailure(opaquePlan != nullptr &&
-                                 opaquePlan->partition.gpuDrivenPacketCount != 0);
-            return;
-        }
-    }
-
     ViewData drawView = view;
     drawView.rayTracedShadowEnabled = 0;
     drawView.rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
     DirectionalShadowFrameResources shadowResources;
     if (m_directionalShadowInputs.enabled &&
         m_directionalShadowReadHandle.IsValid() &&
-        view.renderGraph && view.viewCache &&
+        m_directionalShadowViewHandle.IsValid() &&
         !m_directionalShadowInputs.cascadeViewProjections.empty())
     {
-        RHITexture* shadowTexture = view.renderGraph->GetTexture(m_directionalShadowReadHandle);
-        RHITextureViewDesc shadowViewDesc;
-        if (shadowTexture)
-        {
-            shadowViewDesc.format = shadowTexture->GetFormat();
-            shadowViewDesc.dimension = shadowTexture->GetDimension();
-            shadowViewDesc.subresourceRange = RHISubresourceRange::All();
-            shadowViewDesc.type = RHITextureViewType::ShaderResource;
-            if (IsDepthFormat(shadowViewDesc.format))
-            {
-                shadowViewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
-            }
-            shadowViewDesc.debugName = "DirectionalShadowSRV";
-        }
-
-        RHITextureView* shadowView = shadowTexture ? view.viewCache->GetTextureView(shadowTexture, shadowViewDesc)
-                                                   : nullptr;
+        RHITextureView* shadowView =
+            context.GetTextureView(m_directionalShadowViewHandle);
         const uint32 cascadeCount = std::min(
             static_cast<uint32>(m_directionalShadowInputs.cascadeViewProjections.size()),
                                              RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
@@ -1934,7 +1934,7 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     m_shadowStats.frameShadowReady = shadowBinding.shadowSamplingEnabled;
 
     RayTracedShadowFrameResources rayTracedShadowResources;
-    RHITextureViewRef rayTracedShadowMaskView;
+    RHITextureView* rayTracedShadowMaskView = nullptr;
     const bool rayTracedExecutionStateMatches =
         m_rayTracedShadowInputs.executionState != nullptr &&
         m_rayTracedShadowInputs.executionState->identity == m_rayTracedShadowInputs.identity;
@@ -1946,23 +1946,12 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     m_shadowStats.rayTracedExecutionReady = rayTracedExecutionReady;
     m_shadowStats.rayTracedExecutionFailed = rayTracedExecutionFailed;
     if (rayTracedExecutionReady && m_rayTracedShadowMaskReadHandle.IsValid() &&
-        view.renderGraph && view.viewCache)
+        m_rayTracedShadowMaskViewHandle.IsValid())
     {
-        RHITexture* shadowMask = view.renderGraph->GetTexture(m_rayTracedShadowMaskReadHandle);
-        if (shadowMask)
-        {
-            RHITextureViewDesc viewDesc;
-            viewDesc.format = shadowMask->GetFormat();
-            viewDesc.dimension = shadowMask->GetDimension();
-            viewDesc.subresourceRange = RHISubresourceRange::All();
-            viewDesc.type = RHITextureViewType::ShaderResource;
-            viewDesc.debugName = "RayTracedShadowMaskSRV";
-
-            rayTracedShadowMaskView = RHITextureViewRef(
-                view.viewCache->GetTextureView(shadowMask, viewDesc));
-            rayTracedShadowResources.shadowMaskView = rayTracedShadowMaskView.Get();
-            rayTracedShadowResources.enabled = rayTracedShadowResources.shadowMaskView != nullptr;
-        }
+        rayTracedShadowMaskView = context.GetTextureView(
+            m_rayTracedShadowMaskViewHandle);
+        rayTracedShadowResources.shadowMaskView = rayTracedShadowMaskView;
+        rayTracedShadowResources.enabled = rayTracedShadowMaskView != nullptr;
     }
     if (rayTracedExecutionFailed)
     {
@@ -1987,13 +1976,10 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
     m_pipelineCache->UpdateViewConstants(drawView);
     const RHIDescriptorSetRef frameDescriptorSet =
         m_pipelineCache->GetFrameDescriptorSetSnapshot();
-    const bool retainedFrameDescriptorSet = RetainRenderSubmissionResource(
-        view.submissionResourceBatch, Ref<RefCounted>(frameDescriptorSet));
-    const bool retainedRayTracedShadowMask =
-        !rayTracedShadowBinding.shadowMaskSamplingEnabled ||
-        RetainRenderSubmissionResource(
-            view.submissionResourceBatch, Ref<RefCounted>(rayTracedShadowMaskView));
-    if (!retainedFrameDescriptorSet || !retainedRayTracedShadowMask)
+    const bool retainedFrameDescriptorSet =
+        context.RetainSubmissionResource(
+            Ref<RefCounted>(frameDescriptorSet));
+    if (!retainedFrameDescriptorSet)
     {
         RVX_RENDER_WARN("OpaquePass: submission ownership rejected frame bindings");
         drawView.rayTracedShadowEnabled = 0;
@@ -2031,7 +2017,8 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
             (!plannedGPU && opaquePlan->partition.inputPacketCount == 0);
         std::vector<PlannedOpaqueDraw> plannedDraws;
         if (validateDirectPlan &&
-            !BuildPlannedDirectBatch(view,
+            !BuildPlannedDirectBatch(context,
+                                     view,
                                      colorTargetFormat,
                                      frameDescriptorSet.Get(),
                                      plannedDraws))
@@ -2077,15 +2064,12 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                         {},
                         m_gpuCulling->GetInstanceBuffer(),
                         tier1ObjectBinding) ||
-                    !RetainRenderSubmissionResource(
-                        view.submissionResourceBatch,
+                    !context.RetainSubmissionResource(
                         Ref<RefCounted>(tier1ObjectBinding.constantBuffer)) ||
                     (tier1ObjectBinding.instanceBuffer &&
-                     !RetainRenderSubmissionResource(
-                         view.submissionResourceBatch,
+                     !context.RetainSubmissionResource(
                          Ref<RefCounted>(tier1ObjectBinding.instanceBuffer))) ||
-                    !RetainRenderSubmissionResource(
-                        view.submissionResourceBatch,
+                    !context.RetainSubmissionResource(
                         Ref<RefCounted>(tier1ObjectBinding.descriptorSet)))
                 {
                     gpuPreflightReady = false;
@@ -2137,12 +2121,12 @@ void OpaquePass::Execute(RHICommandContext& ctx, const ViewData& view)
                     options.materialParameterTable =
                         m_gpuMaterialParameterTable.Get();
                     MaterialBindingResult binding = m_materialSystem->PrepareMaterialBinding(
-                        group.material, view.viewCache, options);
+                        group.material, nullptr, options);
                     if (!buffers.IsValid() || pipeline == nullptr || !binding.IsDrawable() ||
-                        !RetainRenderSubmissionResource(
-                            view.submissionResourceBatch, Ref<RefCounted>(binding.constantBuffer)) ||
-                        !RetainRenderSubmissionResource(
-                            view.submissionResourceBatch, Ref<RefCounted>(binding.descriptorSetRef)))
+                        !context.RetainSubmissionResource(
+                            Ref<RefCounted>(binding.constantBuffer)) ||
+                        !context.RetainSubmissionResource(
+                            Ref<RefCounted>(binding.descriptorSetRef)))
                     {
                         gpuPreflightReady = false;
                         break;

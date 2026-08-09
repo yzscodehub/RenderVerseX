@@ -97,6 +97,19 @@ namespace RVX
         virtual void Execute(RHICommandContext& ctx, const ViewData& view) = 0;
 
         /**
+         * @brief Execute with graph-scoped resource and ownership access.
+         *
+         * Migrated passes override this entry. The command-only overload is a
+         * short source adapter for passes that have not declared explicit
+         * graph views yet.
+         */
+        virtual void Execute(RenderGraphPassContext& context,
+                             const ViewData& view)
+        {
+            Execute(context.Commands(), view);
+        }
+
+        /**
          * @brief Get pass priority for sorting
          * @return Priority value (lower = earlier execution)
          * 
@@ -218,11 +231,11 @@ namespace RVX
                     }
                     this->Setup(builder, data.execution.view);
                 },
-                [](const PassData& data, RHICommandContext& ctx)
+                [](const PassData& data, RenderGraphPassContext& context)
                 {
                     if (data.contextValid)
                     {
-                        data.pass->Execute(ctx, data.execution.view);
+                        data.pass->Execute(context, data.execution.view);
                     }
                 });
         }

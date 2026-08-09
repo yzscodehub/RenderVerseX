@@ -124,6 +124,8 @@ namespace RVX
         void OnRemove() override;
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void Execute(RenderGraphPassContext& context,
+                     const ViewData& view) override;
         void RetireOwnerSnapshots(const GPUCompletionToken& completion,
                                   RenderRetirementQueue& retirement);
 
@@ -169,6 +171,15 @@ namespace RVX
         RGTextureHandle m_historyDepthWriteHandle;
         RGTextureHandle m_historyNormalReadHandle;
         RGTextureHandle m_historyNormalWriteHandle;
+        RGTextureViewHandle m_reflectionViewHandle;
+        RGTextureViewHandle m_sceneColorViewHandle;
+        RGTextureViewHandle m_depthViewHandle;
+        RGTextureViewHandle m_velocityViewHandle;
+        RGTextureViewHandle m_historyViewHandle;
+        RGTextureViewHandle m_historyDepthReadViewHandle;
+        RGTextureViewHandle m_historyDepthWriteViewHandle;
+        RGTextureViewHandle m_historyNormalReadViewHandle;
+        RGTextureViewHandle m_historyNormalWriteViewHandle;
         RHITextureRef m_reflectionTexture;
         RHITextureRef m_fallbackVelocityTexture;
         RHIQueryPoolRef m_timingQueryPool;

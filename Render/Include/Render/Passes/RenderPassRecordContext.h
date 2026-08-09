@@ -254,7 +254,15 @@ namespace RVX
     {
         return HasCurrentGraphProvenance(view.colorTarget, identity) &&
                HasCurrentGraphProvenance(view.depthTarget, identity) &&
-               HasCurrentGraphProvenance(view.velocityTarget, identity);
+               HasCurrentGraphProvenance(view.velocityTarget, identity) &&
+               HasCurrentGraphProvenance(
+                   view.environmentSkyTexture, identity) &&
+               HasCurrentGraphProvenance(
+                   view.environmentIrradianceTexture, identity) &&
+               HasCurrentGraphProvenance(
+                   view.environmentPrefilteredTexture, identity) &&
+               HasCurrentGraphProvenance(
+                   view.environmentBRDFLUTTexture, identity);
     }
 
     /** @brief Typed GPU-culling inputs consumed by one graphics pass. */
@@ -498,18 +506,12 @@ namespace RVX
             const RenderGraph& targetGraph) const noexcept
         {
             return identity.Matches(targetGraph) &&
-                   (view.renderGraph == nullptr ||
-                    view.renderGraph == &targetGraph) &&
                    HasCurrentViewDataGraphResources(view, identity);
         }
 
         [[nodiscard]] bool IsFrameIdentityValid() const noexcept
         {
             if (!identity.IsValid() || !MatchesTargetGraph(*identity.graph))
-            {
-                return false;
-            }
-            if (view.renderGraph != nullptr && view.renderGraph != identity.graph)
             {
                 return false;
             }
@@ -566,7 +568,6 @@ namespace RVX
         [[nodiscard]] bool IsFrameIdentityValid() const noexcept
         {
             if (!identity.IsValid() || !identity.Matches(*identity.graph) ||
-                view.renderGraph != identity.graph ||
                 !HasCurrentViewDataGraphResources(view, identity))
             {
                 return false;
@@ -602,7 +603,6 @@ namespace RVX
                    frameSnapshot != nullptr && results != nullptr &&
                    frameSnapshot->identity == identity &&
                    results->identity == identity &&
-                   view.renderGraph == &targetGraph &&
                    HasCurrentViewDataGraphResources(view, identity);
         }
     };
@@ -678,7 +678,6 @@ namespace RVX
         {
             results.executionReport.frameSequence = context.identity.frameSequence;
         }
-        snapshot->view.renderGraph = context.identity.graph;
         snapshot->view.renderFrameExecutionPlan = &snapshot->executionPlan;
         snapshot->view.meshPassPreparation = &snapshot->meshPassPreparation;
         snapshot->view.instanceBatchPlans = &snapshot->instanceBatchPlans;

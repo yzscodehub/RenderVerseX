@@ -82,6 +82,9 @@ void FilmGrainPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGText
     {
         RGTextureHandle input;
         RGTextureHandle output;
+        RGTextureViewHandle inputView;
+        RGTextureViewHandle outputView;
+        RHIFormat outputFormat = RHIFormat::Unknown;
         FilmGrainConfig config;
         float frameTime;
     };
@@ -91,26 +94,52 @@ void FilmGrainPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGText
         RenderGraphPassType::Graphics,
         [this, input, output](RenderGraphBuilder& builder, FilmGrainData& data)
         {
-            data.input = builder.Read(input);
-            data.output = builder.Write(output, RHIResourceState::RenderTarget);
+            data.input = input;
+            data.output = output;
+            const RHITextureDesc* inputDesc = builder.GetTextureDesc(input);
+            const RHITextureDesc* outputDesc = builder.GetTextureDesc(output);
+            if (inputDesc)
+            {
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = inputDesc->format;
+                viewDesc.dimension = inputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::ShaderResource;
+                viewDesc.debugName = "FilmGrainInputSRV";
+                data.inputView = builder.Read(
+                    builder.CreateTextureView(input, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::ShaderResource,
+                        RHIShaderStage::Pixel));
+            }
+            if (outputDesc)
+            {
+                data.outputFormat = outputDesc->format;
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = outputDesc->format;
+                viewDesc.dimension = outputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::RenderTarget;
+                viewDesc.debugName = "FilmGrainOutputRTV";
+                data.outputView = builder.Write(
+                    builder.CreateTextureView(output, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::RenderTarget,
+                        RHIShaderStage::Pixel,
+                        RHIDiscardIntent::Discard));
+            }
             data.config = m_config;
             data.frameTime = m_frameTime;
         },
-        [this, &graph](const FilmGrainData& data, RHICommandContext& ctx)
+        [this](const FilmGrainData& data, RenderGraphPassContext& context)
         {
-            if (!m_pipelineCache || !m_viewCache)
+            if (!m_pipelineCache)
             {
                 RVX_CORE_WARN("FilmGrain: missing resources during execution");
                 return;
             }
 
-            RHIFormat outputFormat = RHIFormat::Unknown;
-            if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(data.output))
-            {
-                outputFormat = outputDesc->format;
-            }
-
-            RHIPipeline* pipeline = m_pipelineCache->GetFilmGrainPipeline(outputFormat);
+            RHIPipeline* pipeline = m_pipelineCache->GetFilmGrainPipeline(data.outputFormat);
             RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
             IRHIDevice* device = m_pipelineCache->GetDevice();
             if (!pipeline || !setLayout || !device)
@@ -119,16 +148,16 @@ void FilmGrainPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGText
                 return;
             }
 
-            RHITexture* inputTexture = graph.GetTexture(data.input);
-            RHITexture* outputTexture = graph.GetTexture(data.output);
+            RHITexture* inputTexture = context.GetTexture(data.input);
+            RHITexture* outputTexture = context.GetTexture(data.output);
             if (!inputTexture || !outputTexture)
             {
                 RVX_CORE_WARN("FilmGrain: input or output texture is unavailable");
                 return;
             }
 
-            RHITextureView* inputView = m_viewCache->GetDefaultSRV(inputTexture);
-            RHITextureView* outputView = m_viewCache->GetDefaultRTV(outputTexture);
+            RHITextureView* inputView = context.GetTextureView(data.inputView);
+            RHITextureView* outputView = context.GetTextureView(data.outputView);
             if (!inputView || !outputView)
             {
                 RVX_CORE_WARN("FilmGrain: failed to resolve input SRV or output RTV");
@@ -158,7 +187,8 @@ void FilmGrainPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGText
                 RVX_CORE_WARN("FilmGrain: failed to create descriptor set");
                 return;
             }
-            if (!RetainSubmissionResource(descriptorSet))
+            if (!context.RetainSubmissionResource(
+                    Ref<RefCounted>(descriptorSet)))
             {
                 RVX_CORE_WARN("FilmGrain: submission ownership rejected descriptor set");
                 return;
@@ -168,6 +198,7 @@ void FilmGrainPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGText
             renderPassDesc.AddColorAttachment(outputView, RHILoadOp::DontCare, RHIStoreOp::Store);
             renderPassDesc.SetRenderArea(0, 0, outputTexture->GetWidth(), outputTexture->GetHeight());
 
+            RHICommandContext& ctx = context.Commands();
             ctx.BeginRenderPass(renderPassDesc);
             ctx.SetPipeline(pipeline);
             ctx.SetDescriptorSet(0, descriptorSet.Get());

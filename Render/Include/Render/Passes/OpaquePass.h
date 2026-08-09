@@ -101,6 +101,7 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void Execute(RenderGraphPassContext& context, const ViewData& view);
         void InitializeGraphRecorder(
             const RenderScene* scene,
             const std::vector<RenderDrawItem>* opaqueDrawItems,
@@ -115,6 +116,11 @@ namespace RVX
         RGTextureHandle m_depthTargetHandle;
         RGTextureHandle m_directionalShadowReadHandle;
         RGTextureHandle m_rayTracedShadowMaskReadHandle;
+        RGTextureViewHandle m_colorTargetViewHandle;
+        RGTextureViewHandle m_depthTargetViewHandle;
+        RGTextureViewHandle m_directionalShadowViewHandle;
+        RGTextureViewHandle m_rayTracedShadowMaskViewHandle;
+        RHIFormat m_colorTargetFormat = RHIFormat::Unknown;
         RGBufferHandle m_gpuDrivenInstanceHandle;
         RGBufferHandle m_gpuSceneCandidateHandle;
         RGBufferHandle m_gpuScenePrimitiveHandle;
@@ -167,6 +173,7 @@ namespace RVX
             RHICommandContext& ctx,
             std::span<const PlannedOpaqueDraw> plannedDraws);
         bool BuildPlannedDirectBatch(
+            RenderGraphPassContext& context,
             const ViewData& view,
             RHIFormat colorTargetFormat,
             RHIDescriptorSet* frameSet,
@@ -174,6 +181,7 @@ namespace RVX
         bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
                                          const ViewData& view);
         void ApplyDirectInstancePlan(
+            RenderGraphPassContext& context,
             const ViewData& view,
             RHIFormat colorTargetFormat,
             std::vector<PlannedOpaqueDraw>& plannedDraws);

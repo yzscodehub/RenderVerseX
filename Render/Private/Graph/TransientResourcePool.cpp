@@ -72,12 +72,70 @@ namespace RVX
         virtual bool LoseBuffer(uint64 poolIdentity,
                                 uint64 slotId,
                                 uint32 generation) = 0;
+        virtual RHITextureViewRef GetOrCreateTextureView(
+            uint64 poolIdentity,
+            uint64 slotId,
+            uint32 generation,
+            const RHITextureViewDesc& desc) = 0;
     };
 
     class TransientResourcePool::Impl final
         : public TransientResourceLeaseControl
     {
     public:
+        struct TextureViewKey
+        {
+            RHIFormat format = RHIFormat::Unknown;
+            RHITextureDimension dimension = RHITextureDimension::Texture2D;
+            RHISubresourceRange subresourceRange;
+            RHITextureViewType type = RHITextureViewType::ShaderResource;
+
+            bool operator==(const TextureViewKey& other) const
+            {
+                return format == other.format &&
+                       dimension == other.dimension && type == other.type &&
+                       subresourceRange.baseMipLevel ==
+                           other.subresourceRange.baseMipLevel &&
+                       subresourceRange.mipLevelCount ==
+                           other.subresourceRange.mipLevelCount &&
+                       subresourceRange.baseArrayLayer ==
+                           other.subresourceRange.baseArrayLayer &&
+                       subresourceRange.arrayLayerCount ==
+                           other.subresourceRange.arrayLayerCount &&
+                       subresourceRange.aspect ==
+                           other.subresourceRange.aspect;
+            }
+        };
+
+        struct TextureViewKeyHash
+        {
+            size_t operator()(const TextureViewKey& key) const
+            {
+                size_t hash = std::hash<uint32>{}(
+                    static_cast<uint32>(key.format));
+                const auto combine = [&hash](size_t value)
+                {
+                    hash ^= value + 0x9e3779b97f4a7c15ULL +
+                            (hash << 6) + (hash >> 2);
+                };
+                combine(std::hash<uint32>{}(
+                    static_cast<uint32>(key.dimension)));
+                combine(std::hash<uint32>{}(
+                    static_cast<uint32>(key.type)));
+                combine(std::hash<uint32>{}(
+                    key.subresourceRange.baseMipLevel));
+                combine(std::hash<uint32>{}(
+                    key.subresourceRange.mipLevelCount));
+                combine(std::hash<uint32>{}(
+                    key.subresourceRange.baseArrayLayer));
+                combine(std::hash<uint32>{}(
+                    key.subresourceRange.arrayLayerCount));
+                combine(std::hash<uint32>{}(static_cast<uint32>(
+                    key.subresourceRange.aspect)));
+                return hash;
+            }
+        };
+
         struct PooledTexture
         {
             RHITextureRef texture;
@@ -91,6 +149,9 @@ namespace RVX
             uint32 generation = 0;
             TransientResourceLeaseState state =
                 TransientResourceLeaseState::Free;
+            std::unordered_map<TextureViewKey,
+                               RHITextureViewRef,
+                               TextureViewKeyHash> views;
         };
 
         struct PooledBuffer
@@ -339,6 +400,54 @@ namespace RVX
             return true;
         }
 
+        RHITextureViewRef GetOrCreateTextureView(
+            uint64 candidatePoolIdentity,
+            uint64 slotId,
+            uint32 generation,
+            const RHITextureViewDesc& sourceDesc) override
+        {
+            PooledTexture* pooled = FindTexture(slotId);
+            if (!ValidateIdentity(candidatePoolIdentity) || !pooled ||
+                pooled->generation != generation ||
+                pooled->state != TransientResourceLeaseState::Recording ||
+                !pooled->texture || !device)
+            {
+                ++stats.leaseValidationFailureCount;
+                return {};
+            }
+
+            RHITextureViewDesc desc = sourceDesc;
+            if (desc.format == RHIFormat::Unknown)
+                desc.format = pooled->texture->GetFormat();
+            TextureViewKey key;
+            key.format = desc.format;
+            key.dimension = desc.dimension;
+            key.subresourceRange = desc.subresourceRange;
+            key.type = desc.type;
+
+            const auto existing = pooled->views.find(key);
+            if (existing != pooled->views.end())
+            {
+                ++stats.textureViewHits;
+                return existing->second;
+            }
+
+            RHITextureViewRef view =
+                device->CreateTextureView(pooled->texture.Get(), desc);
+            if (!view)
+            {
+                ++stats.textureViewCreationFailureCount;
+                return {};
+            }
+            const auto [inserted, success] =
+                pooled->views.emplace(std::move(key), std::move(view));
+            RVX_ASSERT_MSG(success,
+                           "Transient texture view cache insertion failed");
+            ++stats.textureViewMisses;
+            ++stats.textureViewCount;
+            return inserted->second;
+        }
+
         [[nodiscard]] bool CanReuse(const GPUCompletionToken& token)
         {
             if (token.count == 0)
@@ -379,6 +488,20 @@ namespace RVX
             RenderRetirementEntry entry{token, std::move(object), estimatedBytes};
             RVX_ASSERT_MSG(retirementQueue->Enqueue(std::move(entry)),
                            "Transient pool retirement transfer failed");
+        }
+
+        void RetireTexture(PooledTexture& pooled,
+                           const GPUCompletionToken& token)
+        {
+            // Retire views before the source texture. Commit 4 additionally
+            // makes source ownership an invariant of RHITextureView itself.
+            for (auto& [key, view] : pooled.views)
+            {
+                static_cast<void>(key);
+                Retire(view, token, 0);
+            }
+            pooled.views.clear();
+            Retire(pooled.texture, token, pooled.memorySize);
         }
 
         IRHIDevice* device = nullptr;
@@ -494,6 +617,15 @@ namespace RVX
         }
         Reset();
         return true;
+    }
+
+    RHITextureViewRef TransientTextureLease::GetOrCreateView(
+        const RHITextureViewDesc& desc) const
+    {
+        if (m_resolved || !m_control || !texture)
+            return {};
+        return m_control->GetOrCreateTextureView(
+            m_poolIdentity, m_slotId, m_generation, desc);
     }
 
     void TransientTextureLease::AutoAbort() noexcept
@@ -689,7 +821,7 @@ namespace RVX
                 pooled.state == TransientResourceLeaseState::InFlight
                     ? pooled.availableAfter
                     : GPUCompletionToken{};
-            m_impl->Retire(pooled.texture, completion, pooled.memorySize);
+            m_impl->RetireTexture(pooled, completion);
         }
         for (auto& [hash, pooled] : m_impl->bufferPool)
         {
@@ -739,10 +871,12 @@ namespace RVX
             static_cast<uint32>(m_impl->bufferPool.size());
 
         uint64 totalMemory = 0;
+        uint32 textureViewCount = 0;
         for (const auto& [hash, pooled] : m_impl->texturePool)
         {
             static_cast<void>(hash);
             totalMemory += pooled.memorySize;
+            textureViewCount += static_cast<uint32>(pooled.views.size());
         }
         for (const auto& [hash, pooled] : m_impl->bufferPool)
         {
@@ -750,6 +884,7 @@ namespace RVX
             totalMemory += pooled.memorySize;
         }
         m_impl->stats.totalPooledMemory = totalMemory;
+        m_impl->stats.textureViewCount = textureViewCount;
     }
 
     RHITexture* TransientResourcePool::AcquireTexture(
@@ -1098,9 +1233,7 @@ namespace RVX
                 m_impl->currentFrame - pooled.lastUsedFrame >= frameThreshold)
             {
                 freedMemory += pooled.memorySize;
-                m_impl->Retire(pooled.texture,
-                               pooled.availableAfter,
-                               pooled.memorySize);
+                m_impl->RetireTexture(pooled, pooled.availableAfter);
                 if (pooled.state == TransientResourceLeaseState::InFlight &&
                     m_impl->stats.inFlightTextureLeases > 0)
                 {
@@ -1161,6 +1294,8 @@ namespace RVX
         m_impl->stats.textureMisses = 0;
         m_impl->stats.bufferHits = 0;
         m_impl->stats.bufferMisses = 0;
+        m_impl->stats.textureViewHits = 0;
+        m_impl->stats.textureViewMisses = 0;
     }
 
     uint64 TransientResourcePool::HashTextureDesc(const RHITextureDesc& desc)

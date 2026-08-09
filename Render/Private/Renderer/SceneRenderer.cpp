@@ -807,7 +807,8 @@ void SceneRenderer::Initialize(
         if (!m_materialSystem->Initialize(
                 m_renderContext->GetDevice(),
                 m_pipelineCache->GetMaterialSetLayout(),
-                m_renderResourceRegistry))
+                m_renderResourceRegistry,
+                m_resourceViewCache.get()))
         {
             RVX_CORE_ERROR("SceneRenderer: MaterialSystem failed to initialize");
         }
@@ -848,7 +849,6 @@ void SceneRenderer::Shutdown()
                        "Pending submission ownership requires retirement queue");
         m_submissionBatch->ReleaseUnsubmitted(*m_retirementQueue);
         m_submissionBatch.reset();
-        m_viewData.submissionResourceBatch = nullptr;
     }
 
     ClearPasses();
@@ -1537,7 +1537,6 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     RVX_ASSERT_MSG(!m_submissionBatch,
                    "Previous frame submission ownership was not resolved");
     m_submissionBatch = std::make_unique<RenderSubmissionResourceBatch>();
-    m_viewData.submissionResourceBatch = m_submissionBatch.get();
     result.frameSequence = m_renderScene.GetAcceptedHeader().sequence;
     result.referencedResources = m_renderScene.GetReferencedResources();
     Render();
@@ -1620,7 +1619,6 @@ void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
                        "Submission ownership requires retirement queue");
         m_submissionBatch->SealAndTransfer(completion, *m_retirementQueue);
         m_submissionBatch.reset();
-        m_viewData.submissionResourceBatch = nullptr;
     }
     // RenderSubsystem calls this only after EndFrame produced the exact
     // graphics completion point. The provisional RenderGraph access state now
@@ -1672,7 +1670,6 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
                        "Unsubmitted ownership requires retirement queue");
         m_submissionBatch->ReleaseUnsubmitted(*m_retirementQueue);
         m_submissionBatch.reset();
-        m_viewData.submissionResourceBatch = nullptr;
     }
 }
 
@@ -5276,8 +5273,6 @@ void SceneRenderer::CommitGPUDrivenAccessSnapshots()
 void SceneRenderer::BuildRenderGraph()
 {
     // Store RenderGraph and ViewCache pointers in ViewData so passes can access resources
-    m_viewData.renderGraph = m_renderGraph.get();
-    m_viewData.viewCache = m_resourceViewCache.get();
     m_viewData.velocityTarget = {};
     m_viewData.environmentSkyTexture = {};
     m_viewData.environmentIrradianceTexture = {};
@@ -5801,8 +5796,6 @@ void SceneRenderer::BuildRenderGraph()
         frameInputs.currentViewProjectionValid = true;
         frameInputs.previousViewProjectionValid = m_viewData.previousViewProjectionValid != 0;
         frameInputs.resetTemporalHistory = m_viewData.resetTemporalHistory;
-        frameInputs.submissionResourceBatch =
-            m_viewData.submissionResourceBatch;
         m_postProcessStack->Execute(*m_renderGraph, frameInputs, backBufferTarget);
         m_postProcessStats.stackStats = m_postProcessStack->GetLastExecuteStats();
     }

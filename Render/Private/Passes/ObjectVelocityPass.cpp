@@ -8,7 +8,6 @@
 #include "Render/Renderer/ViewData.h"
 #include "Render/Resources/RenderResourceTypes.h"
 #include "Resources/RenderResourceResolver.h"
-#include "Resources/RenderSubmissionResourceBatch.h"
 #include "RHI/RHIRenderPass.h"
 
 #include <array>
@@ -48,7 +47,6 @@ namespace RVX
             std::shared_ptr<RenderPassRecordResults> results;
             const RenderResourceRegistry* resourceRegistry = nullptr;
             PipelineCache* pipelineCache = nullptr;
-            ResourceViewCache* viewCache = nullptr;
             MaterialSystem* materialSystem = nullptr;
             RHIPipelineRef opaquePipeline;
             RHIPipelineRef maskedPipeline;
@@ -56,6 +54,8 @@ namespace RVX
             std::vector<DrawRecord> draws;
             RGTextureHandle velocityHandle{};
             RGTextureHandle depthHandle{};
+            RGTextureViewHandle velocityViewHandle{};
+            RGTextureViewHandle depthViewHandle{};
             bool requestedEnabled = false;
             bool supported = false;
             bool contextValid = false;
@@ -130,63 +130,59 @@ namespace RVX
             }
         }
 
-        bool RetainResource(RenderSubmissionResourceBatch* batch,
+        bool RetainResource(RenderGraphBuilder& builder,
                             RefCounted* resource)
         {
             return !resource ||
-                   RetainRenderSubmissionResource(batch, Ref<RefCounted>(resource));
+                   builder.RetainSubmissionResource(
+                       Ref<RefCounted>(resource));
         }
 
-        bool RetainDrawResources(GraphPassData& data)
+        bool RetainDrawResources(GraphPassData& data,
+                                 RenderGraphBuilder& builder)
         {
-            RenderSubmissionResourceBatch* batch =
-                data.execution.view.submissionResourceBatch;
-            if (batch == nullptr)
-            {
-                return true;
-            }
             for (const Ref<RefCounted>& resource : data.bindings.retainedResources)
             {
-                if (!RetainRenderSubmissionResource(batch, resource))
+                if (!builder.RetainSubmissionResource(resource))
                 {
                     return false;
                 }
             }
-            if (!RetainResource(batch, data.opaquePipeline.Get()) ||
-                !RetainResource(batch, data.maskedPipeline.Get()))
+            if (!RetainResource(builder, data.opaquePipeline.Get()) ||
+                !RetainResource(builder, data.maskedPipeline.Get()))
             {
                 return false;
             }
             for (const DrawRecord& draw : data.draws)
             {
-                if (!RetainResource(batch, draw.buffers.positionBuffer) ||
-                    !RetainResource(batch, draw.buffers.indexBuffer) ||
-                    !RetainResource(batch, draw.buffers.uvBuffer) ||
-                    !RetainResource(batch, draw.buffers.boneIndicesBuffer) ||
-                    !RetainResource(batch, draw.buffers.boneWeightsBuffer) ||
-                    !RetainResource(batch, draw.material.constantBuffer.Get()) ||
-                    !RetainResource(batch, draw.material.descriptorSet.Get()) ||
-                    !RetainResource(batch, draw.material.layout.Get()))
+                if (!RetainResource(builder, draw.buffers.positionBuffer) ||
+                    !RetainResource(builder, draw.buffers.indexBuffer) ||
+                    !RetainResource(builder, draw.buffers.uvBuffer) ||
+                    !RetainResource(builder, draw.buffers.boneIndicesBuffer) ||
+                    !RetainResource(builder, draw.buffers.boneWeightsBuffer) ||
+                    !RetainResource(builder, draw.material.constantBuffer.Get()) ||
+                    !RetainResource(builder, draw.material.descriptorSet.Get()) ||
+                    !RetainResource(builder, draw.material.layout.Get()))
                 {
                     return false;
                 }
                 for (const RHISamplerRef& sampler : draw.material.samplers)
                 {
-                    if (!RetainResource(batch, sampler.Get()))
+                    if (!RetainResource(builder, sampler.Get()))
                     {
                         return false;
                     }
                 }
                 for (const RHITextureViewRef& view : draw.material.textureViews)
                 {
-                    if (!RetainResource(batch, view.Get()))
+                    if (!RetainResource(builder, view.Get()))
                     {
                         return false;
                     }
                 }
                 for (const RHITextureRef& texture : draw.material.textures)
                 {
-                    if (!RetainResource(batch, texture.Get()))
+                    if (!RetainResource(builder, texture.Get()))
                     {
                         return false;
                     }
@@ -237,7 +233,7 @@ namespace RVX
                 materialOptions.allowNormalMap = false;
                 if (!data.materialSystem->CreateMaterialBindingSnapshot(
                         item.material,
-                        data.viewCache,
+                        nullptr,
                         materialOptions,
                         record.material) ||
                     !record.material.IsDrawable())
@@ -280,7 +276,7 @@ namespace RVX
             }
             const ViewData& view = data.execution.view;
             ObjectVelocityPassStats& stats = data.results->objectVelocityStats;
-            if (!view.renderGraph || !view.velocityTarget.IsValid() ||
+            if (!view.velocityTarget.IsValid() ||
                 !view.depthTarget.IsValid() || !stats.previousViewProjectionAvailable ||
                 !stats.drawItemsAvailable || view.viewportWidth == 0 ||
                 view.viewportHeight == 0)
@@ -322,20 +318,50 @@ namespace RVX
             // submission lifetime before publishing ReadWrite/Read access so a
             // sealed/rejected batch fails as a true no-op rather than leaving
             // a graph-visible velocity/depth usage with no executable draw.
-            if (!RetainDrawResources(data))
+            if (!RetainDrawResources(data, builder))
             {
                 return false;
             }
 
-            data.velocityHandle = builder.ReadWrite(
-                view.velocityTarget,
-                MakeRHIAccessSnapshot(RHIResourceState::RenderTarget,
-                                       RHIShaderStage::Pixel));
-            data.depthHandle = builder.Read(
-                view.depthTarget,
-                RHIResourceState::DepthRead,
-                RHIShaderStage::Vertex | RHIShaderStage::Pixel);
-            if (!data.velocityHandle.IsValid() || !data.depthHandle.IsValid())
+            data.velocityHandle = view.velocityTarget;
+            data.depthHandle = view.depthTarget;
+            const RHITextureDesc* velocityDesc =
+                builder.GetTextureDesc(data.velocityHandle);
+            const RHITextureDesc* depthDesc =
+                builder.GetTextureDesc(data.depthHandle);
+            if (velocityDesc)
+            {
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = velocityDesc->format;
+                viewDesc.dimension = velocityDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::RenderTarget;
+                viewDesc.debugName = "ObjectVelocityRTV";
+                data.velocityViewHandle = builder.ReadWrite(
+                    builder.CreateTextureView(
+                        data.velocityHandle, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::RenderTarget,
+                        RHIShaderStage::Pixel));
+            }
+            if (depthDesc)
+            {
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = depthDesc->format;
+                viewDesc.dimension = depthDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                if (IsDepthFormat(viewDesc.format))
+                    viewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+                viewDesc.type = RHITextureViewType::DepthStencil;
+                viewDesc.debugName = "ObjectVelocityDepthDSV";
+                data.depthViewHandle = builder.Read(
+                    builder.CreateTextureView(data.depthHandle, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::DepthRead,
+                        RHIShaderStage::Vertex | RHIShaderStage::Pixel));
+            }
+            if (!data.velocityViewHandle.IsValid() ||
+                !data.depthViewHandle.IsValid())
             {
                 data.draws.clear();
                 return false;
@@ -345,7 +371,7 @@ namespace RVX
         }
 
         void ExecuteRecording(const GraphPassData& data,
-                              RHICommandContext& ctx)
+                              RenderGraphPassContext& context)
         {
             if (!data.results || data.results->identity != data.identity)
             {
@@ -357,52 +383,41 @@ namespace RVX
                 !data.identity.IsValid() || data.identity.graph == nullptr ||
                 !data.identity.Matches(*data.identity.graph) ||
                 !data.velocityHandle.IsValid() || !data.depthHandle.IsValid() ||
+                !data.velocityViewHandle.IsValid() ||
+                !data.depthViewHandle.IsValid() ||
                 data.velocityHandle.graphIdentity != data.identity.graphIdentity ||
                 data.velocityHandle.recordingGeneration != data.identity.graphRecordingGeneration ||
                 data.depthHandle.graphIdentity != data.identity.graphIdentity ||
-                data.depthHandle.recordingGeneration != data.identity.graphRecordingGeneration)
+                data.depthHandle.recordingGeneration != data.identity.graphRecordingGeneration ||
+                data.velocityViewHandle.graphIdentity != data.identity.graphIdentity ||
+                data.velocityViewHandle.recordingGeneration !=
+                    data.identity.graphRecordingGeneration ||
+                data.depthViewHandle.graphIdentity != data.identity.graphIdentity ||
+                data.depthViewHandle.recordingGeneration !=
+                    data.identity.graphRecordingGeneration)
             {
                 data.results->objectVelocityStats = stats;
                 return;
             }
 
-            RenderGraph* graph = data.identity.graph;
-            RHITexture* velocityTexture = graph->GetTexture(data.velocityHandle);
-            RHITexture* depthTexture = graph->GetTexture(data.depthHandle);
-            if (!velocityTexture || !depthTexture || !data.viewCache ||
-                !data.bindings.IsValid())
+            RHITexture* velocityTexture =
+                context.GetTexture(data.velocityHandle);
+            RHITexture* depthTexture = context.GetTexture(data.depthHandle);
+            if (!velocityTexture || !depthTexture || !data.bindings.IsValid())
             {
                 data.results->objectVelocityStats = stats;
                 return;
             }
-            RHITextureViewRef velocityViewOwner(
-                data.viewCache->GetDefaultRTV(velocityTexture));
-            RHITextureViewRef depthViewOwner(
-                data.viewCache->GetDefaultDSV(depthTexture));
-            if (!velocityViewOwner || !depthViewOwner)
+            RHITextureView* velocityView =
+                context.GetTextureView(data.velocityViewHandle);
+            RHITextureView* depthView =
+                context.GetTextureView(data.depthViewHandle);
+            if (!velocityView || !depthView)
             {
                 RVX_CORE_WARN("ObjectVelocityPass: failed to resolve velocity RTV or depth DSV");
                 data.results->objectVelocityStats = stats;
                 return;
             }
-            if (RenderSubmissionResourceBatch* batch =
-                    data.execution.view.submissionResourceBatch)
-            {
-                if (!RetainRenderSubmissionResource(
-                        batch, Ref<RefCounted>(velocityViewOwner.Get())) ||
-                    !RetainRenderSubmissionResource(
-                        batch, Ref<RefCounted>(velocityViewOwner->GetTexture())) ||
-                    !RetainRenderSubmissionResource(
-                        batch, Ref<RefCounted>(depthViewOwner.Get())) ||
-                    !RetainRenderSubmissionResource(
-                        batch, Ref<RefCounted>(depthViewOwner->GetTexture())))
-                {
-                    data.results->objectVelocityStats = stats;
-                    return;
-                }
-            }
-            RHITextureView* velocityView = velocityViewOwner.Get();
-            RHITextureView* depthView = depthViewOwner.Get();
 
             uint32 drawableCount = 0;
             for (const DrawRecord& draw : data.draws)
@@ -425,6 +440,7 @@ namespace RVX
             renderPassDesc.SetDepthStencil(depthView, RHILoadOp::Load, RHIStoreOp::Store, 1.0f, 0);
             renderPassDesc.depthStencilAttachment.readOnly = true;
             renderPassDesc.SetRenderArea(0, 0, velocityTexture->GetWidth(), velocityTexture->GetHeight());
+            RHICommandContext& ctx = context.Commands();
             ctx.BeginRenderPass(renderPassDesc);
 
             RHIViewport viewport;
@@ -629,7 +645,6 @@ namespace RVX
             execution.MatchesTargetGraph(graph) &&
             execution.IsFrameIdentityValid() &&
             execution.frameSnapshot != nullptr && execution.results != nullptr &&
-            execution.view.renderGraph == &graph &&
             execution.view.velocityTarget.IsValid() &&
             execution.view.depthTarget.IsValid() &&
             HasCurrentGraphProvenance(execution.view.velocityTarget, execution.identity) &&
@@ -647,7 +662,6 @@ namespace RVX
         const bool requestedEnabled = m_enabled;
         const bool supported = IsSupported();
         PipelineCache* const pipelineCache = m_pipelineCache;
-        ResourceViewCache* const viewCache = m_viewCache;
         MaterialSystem* const materialSystem = m_materialSystem;
         const RenderResourceRegistry* const resourceRegistry = m_resourceRegistry;
         const std::shared_ptr<const RenderPassFrameSnapshot> frameSnapshot =
@@ -662,7 +676,6 @@ namespace RVX
              requestedEnabled,
              supported,
              pipelineCache,
-             viewCache,
              materialSystem,
              resourceRegistry,
              frameSnapshot,
@@ -675,14 +688,13 @@ namespace RVX
                 data.requestedEnabled = requestedEnabled;
                 data.supported = supported;
                 data.pipelineCache = pipelineCache;
-                data.viewCache = viewCache;
                 data.materialSystem = materialSystem;
                 data.resourceRegistry = resourceRegistry;
                 data.frameSnapshot = frameSnapshot;
                 data.results = resultOwnershipValid ? results : nullptr;
                 ResetStatsForIdentity(data);
-                if (!data.pipelineCache || !data.viewCache ||
-                    !data.materialSystem || !data.resourceRegistry)
+                if (!data.pipelineCache || !data.materialSystem ||
+                    !data.resourceRegistry)
                 {
                     data.contextValid = false;
                     return;
@@ -692,6 +704,8 @@ namespace RVX
                     data.draws.clear();
                     data.velocityHandle = {};
                     data.depthHandle = {};
+                    data.velocityViewHandle = {};
+                    data.depthViewHandle = {};
                     if (data.results && data.results->identity == data.identity)
                     {
                         data.results->objectVelocityStats.outputDeclared = false;
@@ -699,9 +713,9 @@ namespace RVX
                     }
                 }
             },
-            [](const GraphPassData& data, RHICommandContext& ctx)
+            [](const GraphPassData& data, RenderGraphPassContext& context)
             {
-                ExecuteRecording(data, ctx);
+                ExecuteRecording(data, context);
             });
     }
 

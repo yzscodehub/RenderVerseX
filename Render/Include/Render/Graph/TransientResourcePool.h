@@ -53,6 +53,9 @@ namespace RVX
             const GPUCompletionToken& completion) const;
         [[nodiscard]] bool AbortUnsubmitted();
         [[nodiscard]] bool MarkDeviceLost();
+        /** @brief Resolve a view cached by the physical pool slot. */
+        [[nodiscard]] RHITextureViewRef GetOrCreateView(
+            const RHITextureViewDesc& desc) const;
         [[nodiscard]] uint64 GetSlotId() const noexcept { return m_slotId; }
         [[nodiscard]] uint32 GetGeneration() const noexcept
         {
@@ -286,6 +289,10 @@ namespace RVX
             uint64 leaseAbortCount = 0;
             uint64 leaseDeviceLostCount = 0;
             uint64 leaseValidationFailureCount = 0;
+            uint32 textureViewCount = 0;
+            uint32 textureViewHits = 0;
+            uint32 textureViewMisses = 0;
+            uint64 textureViewCreationFailureCount = 0;
         };
 
         /**

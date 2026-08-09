@@ -6,20 +6,11 @@
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Core/Log.h"
 #include "RHI/RHICommandContext.h"
-#include "Resources/RenderSubmissionResourceBatch.h"
 #include <algorithm>
 #include <utility>
 
 namespace RVX
 {
-
-bool IPostProcessPass::RetainSubmissionResource(
-    const Ref<RefCounted>& object,
-    uint64 estimatedBytes) const
-{
-    return RetainRenderSubmissionResource(
-        m_submissionResourceBatch, object, estimatedBytes);
-}
 
 namespace
 {
@@ -190,17 +181,17 @@ namespace
                 data.input = builder.Read(input, RHIResourceState::CopySource);
                 data.output = builder.Write(output, RHIResourceState::CopyDest);
             },
-            [&graph](const FallbackCopyData& data, RHICommandContext& ctx)
+            [](const FallbackCopyData& data, RenderGraphPassContext& context)
             {
-                RHITexture* inputTexture = graph.GetTexture(data.input);
-                RHITexture* outputTexture = graph.GetTexture(data.output);
+                RHITexture* inputTexture = context.GetTexture(data.input);
+                RHITexture* outputTexture = context.GetTexture(data.output);
                 if (!inputTexture || !outputTexture)
                 {
                     RVX_CORE_WARN("PostProcessStack: fallback copy skipped because textures are unavailable");
                     return;
                 }
 
-                ctx.CopyTexture(inputTexture, outputTexture);
+                context.Commands().CopyTexture(inputTexture, outputTexture);
             });
 
         stats.fallbackCopyApplied = true;
@@ -614,8 +605,6 @@ void PostProcessStack::Execute(RenderGraph& graph,
 
         PostProcessFrameInputs passInputs = frameInputs;
         passInputs.sceneColor = currentInput;
-        enabledEffects[i]->SetSubmissionResourceBatch(
-            frameInputs.submissionResourceBatch);
         enabledEffects[i]->AddToGraph(graph, passInputs, currentOutput);
         m_lastExecuteStats.graphPassCount++;
         currentInput = currentOutput;

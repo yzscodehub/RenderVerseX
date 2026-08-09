@@ -41,6 +41,8 @@ namespace RVX
         void OnRemove() override;
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void Execute(RenderGraphPassContext& context,
+                     const ViewData& view) override;
 
         void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
         void SetEnabled(bool enabled) { m_enabled = enabled; }
@@ -59,6 +61,8 @@ namespace RVX
 
         RGTextureHandle m_depthReadHandle;
         RGTextureHandle m_velocityWriteHandle;
+        RGTextureViewHandle m_depthViewHandle;
+        RGTextureViewHandle m_velocityViewHandle;
         RHIBufferRef m_constantBuffer;
         RHISamplerRef m_sampler;
         CameraVelocityPassStats m_stats;

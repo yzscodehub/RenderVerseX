@@ -145,6 +145,9 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
     {
         RGTextureHandle input;
         RGTextureHandle output;
+        RGTextureViewHandle inputView;
+        RGTextureViewHandle outputView;
+        RHIFormat outputFormat = RHIFormat::Unknown;
         ToneMappingOperator op;
         ToneMappingOutputColorSpace outputColorSpace;
         float exposure;
@@ -157,29 +160,57 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
         RenderGraphPassType::Graphics,
         [this, input, output](RenderGraphBuilder& builder, ToneMappingData& data)
         {
-            data.input = builder.Read(input, RHIShaderStage::Pixel);
-            data.output = builder.Write(output, RHIResourceState::RenderTarget);
+            data.input = input;
+            data.output = output;
+            const RHITextureDesc* inputDesc = builder.GetTextureDesc(input);
+            const RHITextureDesc* outputDesc = builder.GetTextureDesc(output);
+            if (inputDesc)
+            {
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = inputDesc->format;
+                viewDesc.dimension = inputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                if (IsDepthFormat(viewDesc.format))
+                    viewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+                viewDesc.type = RHITextureViewType::ShaderResource;
+                viewDesc.debugName = "ToneMappingInputSRV";
+                data.inputView = builder.Read(
+                    builder.CreateTextureView(input, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::ShaderResource,
+                        RHIShaderStage::Pixel));
+            }
+            if (outputDesc)
+            {
+                data.outputFormat = outputDesc->format;
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = outputDesc->format;
+                viewDesc.dimension = outputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::RenderTarget;
+                viewDesc.debugName = "ToneMappingOutputRTV";
+                data.outputView = builder.Write(
+                    builder.CreateTextureView(output, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::RenderTarget,
+                        RHIShaderStage::Pixel,
+                        RHIDiscardIntent::Discard));
+            }
             data.op = m_operator;
             data.outputColorSpace = m_outputColorSpace;
             data.exposure = m_exposure;
             data.gamma = m_gamma;
             data.whitePoint = m_whitePoint;
         },
-        [this, &graph](const ToneMappingData& data, RHICommandContext& ctx)
+        [this](const ToneMappingData& data, RenderGraphPassContext& context)
         {
-            if (!m_pipelineCache || !m_viewCache)
+            if (!m_pipelineCache)
             {
                 RVX_CORE_WARN("ToneMapping: missing resources during execution");
                 return;
             }
 
-            RHIFormat outputFormat = RHIFormat::Unknown;
-            if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(data.output))
-            {
-                outputFormat = outputDesc->format;
-            }
-
-            RHIPipeline* pipeline = m_pipelineCache->GetToneMappingPipeline(outputFormat);
+            RHIPipeline* pipeline = m_pipelineCache->GetToneMappingPipeline(data.outputFormat);
             RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
             IRHIDevice* device = m_pipelineCache->GetDevice();
             if (!pipeline || !setLayout || !device)
@@ -188,16 +219,16 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
                 return;
             }
 
-            RHITexture* inputTexture = graph.GetTexture(data.input);
-            RHITexture* outputTexture = graph.GetTexture(data.output);
+            RHITexture* inputTexture = context.GetTexture(data.input);
+            RHITexture* outputTexture = context.GetTexture(data.output);
             if (!inputTexture || !outputTexture)
             {
                 RVX_CORE_WARN("ToneMapping: input or output texture is unavailable");
                 return;
             }
 
-            RHITextureView* inputView = m_viewCache->GetDefaultSRV(inputTexture);
-            RHITextureView* outputView = m_viewCache->GetDefaultRTV(outputTexture);
+            RHITextureView* inputView = context.GetTextureView(data.inputView);
+            RHITextureView* outputView = context.GetTextureView(data.outputView);
             if (!inputView || !outputView)
             {
                 RVX_CORE_WARN("ToneMapping: failed to resolve input SRV or output RTV");
@@ -233,7 +264,8 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
                 RVX_CORE_WARN("ToneMapping: failed to create descriptor set");
                 return;
             }
-            if (!RetainSubmissionResource(descriptorSet))
+            if (!context.RetainSubmissionResource(
+                    Ref<RefCounted>(descriptorSet)))
             {
                 RVX_CORE_WARN("ToneMapping: submission ownership rejected descriptor set");
                 return;
@@ -243,6 +275,7 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
             renderPassDesc.AddColorAttachment(outputView, RHILoadOp::DontCare, RHIStoreOp::Store);
             renderPassDesc.SetRenderArea(0, 0, outputTexture->GetWidth(), outputTexture->GetHeight());
 
+            RHICommandContext& ctx = context.Commands();
             ctx.BeginRenderPass(renderPassDesc);
             ctx.SetPipeline(pipeline);
             ctx.SetDescriptorSet(0, descriptorSet.Get());

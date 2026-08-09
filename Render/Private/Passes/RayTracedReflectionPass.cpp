@@ -185,6 +185,15 @@ namespace RVX
         m_historyDepthWriteHandle = {};
         m_historyNormalReadHandle = {};
         m_historyNormalWriteHandle = {};
+        m_reflectionViewHandle = {};
+        m_sceneColorViewHandle = {};
+        m_depthViewHandle = {};
+        m_velocityViewHandle = {};
+        m_historyViewHandle = {};
+        m_historyDepthReadViewHandle = {};
+        m_historyDepthWriteViewHandle = {};
+        m_historyNormalReadViewHandle = {};
+        m_historyNormalWriteViewHandle = {};
         m_reflectionTexture.Reset();
         m_fallbackVelocityTexture.Reset();
         m_timingQueryPool.Reset();
@@ -436,6 +445,15 @@ namespace RVX
         m_historyDepthWriteHandle = {};
         m_historyNormalReadHandle = {};
         m_historyNormalWriteHandle = {};
+        m_reflectionViewHandle = {};
+        m_sceneColorViewHandle = {};
+        m_depthViewHandle = {};
+        m_velocityViewHandle = {};
+        m_historyViewHandle = {};
+        m_historyDepthReadViewHandle = {};
+        m_historyDepthWriteViewHandle = {};
+        m_historyNormalReadViewHandle = {};
+        m_historyNormalWriteViewHandle = {};
         m_temporalAccumulatedThisFrame = false;
         m_pendingHistoryViewValid = false;
 
@@ -443,8 +461,7 @@ namespace RVX
             !m_stats.sceneColorAvailable ||
             !m_stats.depthAvailable ||
             view.viewportWidth == 0 ||
-            view.viewportHeight == 0 ||
-            !view.renderGraph)
+            view.viewportHeight == 0)
         {
             return;
         }
@@ -455,61 +472,145 @@ namespace RVX
         m_currentHistoryWriteIndex = m_historyWriteIndex;
         m_currentHistoryReadIndex = 1u - m_currentHistoryWriteIndex;
 
-        m_sceneColorReadHandle = builder.Read(view.colorTarget, RHIShaderStage::AllRayTracing);
+        const auto createReadView = [&builder](
+                                        RGTextureHandle texture,
+                                        const char* debugName)
+        {
+            const RHITextureDesc* desc = builder.GetTextureDesc(texture);
+            if (!desc)
+                return RGTextureViewHandle{};
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = desc->format;
+            viewDesc.dimension = desc->dimension;
+            viewDesc.subresourceRange = texture.hasSubresourceRange
+                ? texture.subresourceRange : RHISubresourceRange::All();
+            viewDesc.type = RHITextureViewType::ShaderResource;
+            viewDesc.debugName = debugName;
+            RGTextureViewHandle handle = builder.CreateTextureView(
+                texture, viewDesc);
+            return builder.Read(
+                handle,
+                MakeRGAccessDesc(
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::AllRayTracing));
+        };
+        const auto createWriteView = [&builder](
+                                         RGTextureHandle texture,
+                                         const char* debugName)
+        {
+            const RHITextureDesc* desc = builder.GetTextureDesc(texture);
+            if (!desc)
+                return RGTextureViewHandle{};
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = desc->format;
+            viewDesc.dimension = desc->dimension;
+            viewDesc.subresourceRange = RHISubresourceRange::All();
+            viewDesc.type = RHITextureViewType::UnorderedAccess;
+            viewDesc.debugName = debugName;
+            RGTextureViewHandle handle = builder.CreateTextureView(
+                texture, viewDesc);
+            return builder.Write(
+                handle,
+                MakeRGAccessDesc(
+                    RHIResourceState::UnorderedAccess,
+                    RHIShaderStage::AllRayTracing));
+        };
+
+        m_sceneColorReadHandle = view.colorTarget;
+        m_sceneColorViewHandle = createReadView(
+            m_sceneColorReadHandle, "RayTracedReflectionSceneColorSRV");
 
         RGTextureHandle depthHandle = view.depthTarget;
         depthHandle.hasSubresourceRange = true;
-        depthHandle.subresourceRange = RHISubresourceRange{0, RVX_ALL_MIPS, 0, RVX_ALL_LAYERS, RHITextureAspect::Depth};
-        m_depthReadHandle = builder.Read(depthHandle, RHIShaderStage::AllRayTracing);
+        depthHandle.subresourceRange = RHISubresourceRange{
+            0, RVX_ALL_MIPS, 0, RVX_ALL_LAYERS, RHITextureAspect::Depth};
+        m_depthReadHandle = depthHandle;
+        m_depthViewHandle = createReadView(
+            m_depthReadHandle, "RayTracedReflectionDepthSRV");
+
         if (view.velocityTarget.IsValid())
         {
-            m_velocityReadHandle = builder.Read(view.velocityTarget, RHIShaderStage::AllRayTracing);
+            m_velocityReadHandle = view.velocityTarget;
         }
+        else
+        {
+            if (!EnsureFallbackVelocityTexture())
+                return;
+            m_velocityReadHandle = builder.ImportTexture(
+                m_fallbackVelocityTexture,
+                RHIResourceState::ShaderResource);
+        }
+        m_velocityViewHandle = createReadView(
+            m_velocityReadHandle, "RayTracedReflectionVelocitySRV");
 
-        m_historyReadHandle = view.renderGraph->ImportTexture(
-            m_historyTextures[m_currentHistoryReadIndex].Get(),
+        m_historyReadHandle = builder.ImportTexture(
+            m_historyTextures[m_currentHistoryReadIndex],
             m_historyTextureStates[m_currentHistoryReadIndex]);
-        m_historyReadHandle = builder.Read(m_historyReadHandle, RHIShaderStage::AllRayTracing);
+        m_historyViewHandle = createReadView(
+            m_historyReadHandle, "RayTracedReflectionPreviousSRV");
 
-        m_historyDepthReadHandle = view.renderGraph->ImportTexture(
-            m_historyDepthTextures[m_currentHistoryReadIndex].Get(),
+        m_historyDepthReadHandle = builder.ImportTexture(
+            m_historyDepthTextures[m_currentHistoryReadIndex],
             m_historyDepthTextureStates[m_currentHistoryReadIndex]);
-        m_historyDepthReadHandle = builder.Read(m_historyDepthReadHandle, RHIShaderStage::AllRayTracing);
+        m_historyDepthReadViewHandle = createReadView(
+            m_historyDepthReadHandle, "RayTracedReflectionPreviousDepthSRV");
 
-        m_historyNormalReadHandle = view.renderGraph->ImportTexture(
-            m_historyNormalTextures[m_currentHistoryReadIndex].Get(),
+        m_historyNormalReadHandle = builder.ImportTexture(
+            m_historyNormalTextures[m_currentHistoryReadIndex],
             m_historyNormalTextureStates[m_currentHistoryReadIndex]);
-        m_historyNormalReadHandle = builder.Read(m_historyNormalReadHandle, RHIShaderStage::AllRayTracing);
+        m_historyNormalReadViewHandle = createReadView(
+            m_historyNormalReadHandle, "RayTracedReflectionPreviousNormalSRV");
 
         m_reflectionTexture = m_historyTextures[m_currentHistoryWriteIndex];
-        m_reflectionHandle = view.renderGraph->ImportTexture(
-            m_historyTextures[m_currentHistoryWriteIndex].Get(),
+        m_reflectionHandle = builder.ImportTexture(
+            m_historyTextures[m_currentHistoryWriteIndex],
             m_historyTextureStates[m_currentHistoryWriteIndex]);
-        builder.Write(m_reflectionHandle, RHIResourceState::UnorderedAccess);
-        view.renderGraph->SetExportState(m_reflectionHandle, RHIResourceState::ShaderResource);
+        m_reflectionViewHandle = createWriteView(
+            m_reflectionHandle, "RayTracedReflectionOutputUAV");
+        builder.SetExportState(
+            m_reflectionHandle, RHIResourceState::ShaderResource);
 
-        m_historyDepthWriteHandle = view.renderGraph->ImportTexture(
-            m_historyDepthTextures[m_currentHistoryWriteIndex].Get(),
+        m_historyDepthWriteHandle = builder.ImportTexture(
+            m_historyDepthTextures[m_currentHistoryWriteIndex],
             m_historyDepthTextureStates[m_currentHistoryWriteIndex]);
-        builder.Write(m_historyDepthWriteHandle, RHIResourceState::UnorderedAccess);
-        view.renderGraph->SetExportState(m_historyDepthWriteHandle, RHIResourceState::ShaderResource);
+        m_historyDepthWriteViewHandle = createWriteView(
+            m_historyDepthWriteHandle, "RayTracedReflectionOutputDepthUAV");
+        builder.SetExportState(
+            m_historyDepthWriteHandle, RHIResourceState::ShaderResource);
 
-        m_historyNormalWriteHandle = view.renderGraph->ImportTexture(
-            m_historyNormalTextures[m_currentHistoryWriteIndex].Get(),
+        m_historyNormalWriteHandle = builder.ImportTexture(
+            m_historyNormalTextures[m_currentHistoryWriteIndex],
             m_historyNormalTextureStates[m_currentHistoryWriteIndex]);
-        builder.Write(m_historyNormalWriteHandle, RHIResourceState::UnorderedAccess);
-        view.renderGraph->SetExportState(m_historyNormalWriteHandle, RHIResourceState::ShaderResource);
+        m_historyNormalWriteViewHandle = createWriteView(
+            m_historyNormalWriteHandle, "RayTracedReflectionOutputNormalUAV");
+        builder.SetExportState(
+            m_historyNormalWriteHandle, RHIResourceState::ShaderResource);
 
-        m_stats.outputDeclared = true;
+        m_stats.outputDeclared = m_sceneColorViewHandle.IsValid() &&
+            m_depthViewHandle.IsValid() && m_velocityViewHandle.IsValid() &&
+            m_historyViewHandle.IsValid() &&
+            m_historyDepthReadViewHandle.IsValid() &&
+            m_historyDepthWriteViewHandle.IsValid() &&
+            m_historyNormalReadViewHandle.IsValid() &&
+            m_historyNormalWriteViewHandle.IsValid() &&
+            m_reflectionViewHandle.IsValid();
     }
 
     void RayTracedReflectionPass::Execute(RHICommandContext& ctx, const ViewData& view)
     {
+        (void)ctx;
+        (void)view;
+        // Typed AddToGraph owns graph resource realization and execution.
+    }
+
+    void RayTracedReflectionPass::Execute(
+        RenderGraphPassContext& context,
+        const ViewData& view)
+    {
+        RHICommandContext& ctx = context.Commands();
         if (!m_stats.outputDeclared ||
             !m_pipelineCache ||
             !m_sceneManager ||
-            !view.renderGraph ||
-            !m_viewCache ||
             !m_sceneColorReadHandle.IsValid() ||
             !m_depthReadHandle.IsValid() ||
             !m_historyReadHandle.IsValid() ||
@@ -536,15 +637,19 @@ namespace RVX
         RHIAccelerationStructure* tlas = m_sceneManager->GetTopLevelAS();
         RHIBuffer* materialMetadataBuffer = m_sceneManager->GetInstanceMaterialMetadataBuffer();
         RHIBuffer* geometryMetadataBuffer = m_sceneManager->GetInstanceAlphaMetadataBuffer();
-        RHITexture* sceneColor = view.renderGraph->GetTexture(m_sceneColorReadHandle);
-        RHITexture* sceneDepth = view.renderGraph->GetTexture(m_depthReadHandle);
-        RHITexture* sceneVelocity = m_velocityReadHandle.IsValid() ? view.renderGraph->GetTexture(m_velocityReadHandle) : nullptr;
-        RHITexture* previousReflection = view.renderGraph->GetTexture(m_historyReadHandle);
-        RHITexture* previousDepthHistory = view.renderGraph->GetTexture(m_historyDepthReadHandle);
-        RHITexture* currentDepthHistory = view.renderGraph->GetTexture(m_historyDepthWriteHandle);
-        RHITexture* previousNormalHistory = view.renderGraph->GetTexture(m_historyNormalReadHandle);
-        RHITexture* currentNormalHistory = view.renderGraph->GetTexture(m_historyNormalWriteHandle);
-        RHITexture* reflectionOutput = view.renderGraph->GetTexture(m_reflectionHandle);
+        RHITexture* sceneColor = context.GetTexture(m_sceneColorReadHandle);
+        RHITexture* sceneDepth = context.GetTexture(m_depthReadHandle);
+        RHITexture* sceneVelocity = context.GetTexture(m_velocityReadHandle);
+        RHITexture* previousReflection = context.GetTexture(m_historyReadHandle);
+        RHITexture* previousDepthHistory =
+            context.GetTexture(m_historyDepthReadHandle);
+        RHITexture* currentDepthHistory =
+            context.GetTexture(m_historyDepthWriteHandle);
+        RHITexture* previousNormalHistory =
+            context.GetTexture(m_historyNormalReadHandle);
+        RHITexture* currentNormalHistory =
+            context.GetTexture(m_historyNormalWriteHandle);
+        RHITexture* reflectionOutput = context.GetTexture(m_reflectionHandle);
         if (!tlas || !materialMetadataBuffer || !geometryMetadataBuffer || !sceneColor || !sceneDepth ||
             !previousReflection || !previousDepthHistory || !currentDepthHistory || !previousNormalHistory ||
             !currentNormalHistory || !reflectionOutput)
@@ -553,25 +658,24 @@ namespace RVX
             return;
         }
 
-        if (!sceneVelocity)
-        {
-            if (!EnsureFallbackVelocityTexture())
-            {
-                m_stats.dispatchRecorded = false;
-                return;
-            }
-            sceneVelocity = m_fallbackVelocityTexture.Get();
-        }
-
-        RHITextureView* reflectionUAV = m_viewCache->GetDefaultUAV(reflectionOutput);
-        RHITextureView* sceneColorSRV = m_viewCache->GetDefaultSRV(sceneColor);
-        RHITextureView* sceneDepthSRV = m_viewCache->GetDefaultSRV(sceneDepth);
-        RHITextureView* sceneVelocitySRV = m_viewCache->GetDefaultSRV(sceneVelocity);
-        RHITextureView* previousReflectionSRV = m_viewCache->GetDefaultSRV(previousReflection);
-        RHITextureView* previousDepthHistorySRV = m_viewCache->GetDefaultSRV(previousDepthHistory);
-        RHITextureView* currentDepthHistoryUAV = m_viewCache->GetDefaultUAV(currentDepthHistory);
-        RHITextureView* previousNormalHistorySRV = m_viewCache->GetDefaultSRV(previousNormalHistory);
-        RHITextureView* currentNormalHistoryUAV = m_viewCache->GetDefaultUAV(currentNormalHistory);
+        RHITextureView* reflectionUAV =
+            context.GetTextureView(m_reflectionViewHandle);
+        RHITextureView* sceneColorSRV =
+            context.GetTextureView(m_sceneColorViewHandle);
+        RHITextureView* sceneDepthSRV =
+            context.GetTextureView(m_depthViewHandle);
+        RHITextureView* sceneVelocitySRV =
+            context.GetTextureView(m_velocityViewHandle);
+        RHITextureView* previousReflectionSRV =
+            context.GetTextureView(m_historyViewHandle);
+        RHITextureView* previousDepthHistorySRV =
+            context.GetTextureView(m_historyDepthReadViewHandle);
+        RHITextureView* currentDepthHistoryUAV =
+            context.GetTextureView(m_historyDepthWriteViewHandle);
+        RHITextureView* previousNormalHistorySRV =
+            context.GetTextureView(m_historyNormalReadViewHandle);
+        RHITextureView* currentNormalHistoryUAV =
+            context.GetTextureView(m_historyNormalWriteViewHandle);
         if (!reflectionUAV || !sceneColorSRV || !sceneDepthSRV || !sceneVelocitySRV || !previousReflectionSRV ||
             !previousDepthHistorySRV || !currentDepthHistoryUAV || !previousNormalHistorySRV ||
             !currentNormalHistoryUAV)
@@ -709,8 +813,9 @@ namespace RVX
 
         m_stats.descriptorSetAvailable = true;
 
-        if (!RetainRenderSubmissionResource(
-                view.submissionResourceBatch, descriptorSet))
+        if (!context.RetainSubmissionResource(descriptorSet) ||
+            !context.RetainSubmissionResource(
+                Ref<RefCounted>(m_constantBuffer)))
         {
             RVX_CORE_WARN("RayTracedReflectionPass: submission ownership rejected descriptor set");
             m_stats.dispatchRecorded = false;

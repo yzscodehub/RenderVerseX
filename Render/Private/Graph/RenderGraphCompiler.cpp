@@ -107,6 +107,17 @@ namespace RVX
                 HashPlanValue(hash, buffer.alias.heapOffset);
             }
 
+            HashPlanValue(hash,
+                          static_cast<uint64>(graph.textureViews.size()));
+            for (const TextureViewResource& view : graph.textureViews)
+            {
+                HashPlanValue(hash, view.texture.index);
+                HashPlanValue(hash, view.desc.format);
+                HashPlanValue(hash, view.desc.dimension);
+                HashPlanValue(hash, view.desc.type);
+                HashPlanRange(hash, view.desc.subresourceRange);
+            }
+
             HashPlanValue(hash, static_cast<uint64>(graph.passes.size()));
             for (const Pass& pass : graph.passes)
             {

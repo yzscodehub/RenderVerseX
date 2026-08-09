@@ -536,6 +536,10 @@ void SSAOPass::AddToGraph(RenderGraph& graph,
         RGTextureHandle input;
         RGTextureHandle depth;
         RGTextureHandle output;
+        RGTextureViewHandle inputView;
+        RGTextureViewHandle depthView;
+        RGTextureViewHandle outputView;
+        RHIFormat outputFormat = RHIFormat::Unknown;
         SSAOConfig config;
         bool normalFallbackUsed = false;
         bool temporalFallbackUsed = false;
@@ -546,28 +550,62 @@ void SSAOPass::AddToGraph(RenderGraph& graph,
         RenderGraphPassType::Graphics,
         [this, frameInputs, output](RenderGraphBuilder& builder, SSAOPassData& data)
         {
-            data.input = builder.Read(frameInputs.sceneColor);
-            data.depth = builder.Read(frameInputs.depth);
-            data.output = builder.Write(output, RHIResourceState::RenderTarget);
+            data.input = frameInputs.sceneColor;
+            data.depth = frameInputs.depth;
+            data.output = output;
+            auto declareSRV = [&builder](
+                                  RGTextureHandle texture,
+                                  const char* debugName)
+            {
+                const RHITextureDesc* desc = builder.GetTextureDesc(texture);
+                if (!desc)
+                    return RGTextureViewHandle{};
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = desc->format;
+                viewDesc.dimension = desc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                if (IsDepthFormat(viewDesc.format))
+                    viewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+                viewDesc.type = RHITextureViewType::ShaderResource;
+                viewDesc.debugName = debugName;
+                return builder.Read(
+                    builder.CreateTextureView(texture, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::ShaderResource,
+                        RHIShaderStage::Pixel));
+            };
+            data.inputView = declareSRV(data.input, "SSAOInputSRV");
+            data.depthView = declareSRV(data.depth, "SSAODepthSRV");
+            if (const RHITextureDesc* outputDesc =
+                    builder.GetTextureDesc(output))
+            {
+                data.outputFormat = outputDesc->format;
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = outputDesc->format;
+                viewDesc.dimension = outputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::RenderTarget;
+                viewDesc.debugName = "SSAOOutputRTV";
+                data.outputView = builder.Write(
+                    builder.CreateTextureView(output, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::RenderTarget,
+                        RHIShaderStage::Pixel,
+                        RHIDiscardIntent::Discard));
+            }
             data.config = m_config;
             data.normalFallbackUsed = m_lastGraphStats.normalFallbackUsed;
             data.temporalFallbackUsed = m_lastGraphStats.temporalFallbackUsed;
         },
-        [this, &graph](const SSAOPassData& data, RHICommandContext& ctx)
+        [this](const SSAOPassData& data, RenderGraphPassContext& context)
         {
-            if (!m_pipelineCache || !m_viewCache)
+            if (!m_pipelineCache)
             {
                 RVX_CORE_WARN("SSAO: missing resources during execution");
                 return;
             }
 
-            RHIFormat outputFormat = RHIFormat::Unknown;
-            if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(data.output))
-            {
-                outputFormat = outputDesc->format;
-            }
-
-            RHIPipeline* pipeline = m_pipelineCache->GetSSAOPipeline(outputFormat);
+            RHIPipeline* pipeline = m_pipelineCache->GetSSAOPipeline(data.outputFormat);
             RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
             IRHIDevice* device = m_pipelineCache->GetDevice();
             if (!pipeline || !setLayout || !device)
@@ -576,18 +614,18 @@ void SSAOPass::AddToGraph(RenderGraph& graph,
                 return;
             }
 
-            RHITexture* inputTexture = graph.GetTexture(data.input);
-            RHITexture* depthTexture = graph.GetTexture(data.depth);
-            RHITexture* outputTexture = graph.GetTexture(data.output);
+            RHITexture* inputTexture = context.GetTexture(data.input);
+            RHITexture* depthTexture = context.GetTexture(data.depth);
+            RHITexture* outputTexture = context.GetTexture(data.output);
             if (!inputTexture || !depthTexture || !outputTexture)
             {
                 RVX_CORE_WARN("SSAO: input, depth, or output texture is unavailable");
                 return;
             }
 
-            RHITextureView* inputView = m_viewCache->GetDefaultSRV(inputTexture);
-            RHITextureView* depthView = m_viewCache->GetDefaultSRV(depthTexture);
-            RHITextureView* outputView = m_viewCache->GetDefaultRTV(outputTexture);
+            RHITextureView* inputView = context.GetTextureView(data.inputView);
+            RHITextureView* depthView = context.GetTextureView(data.depthView);
+            RHITextureView* outputView = context.GetTextureView(data.outputView);
             if (!inputView || !depthView || !outputView)
             {
                 RVX_CORE_WARN("SSAO: failed to resolve input SRV, depth SRV, or output RTV");
@@ -621,7 +659,8 @@ void SSAOPass::AddToGraph(RenderGraph& graph,
                 RVX_CORE_WARN("SSAO: failed to create descriptor set");
                 return;
             }
-            if (!RetainSubmissionResource(descriptorSet))
+            if (!context.RetainSubmissionResource(
+                    Ref<RefCounted>(descriptorSet)))
             {
                 RVX_CORE_WARN("SSAO: submission ownership rejected descriptor set");
                 return;
@@ -631,6 +670,7 @@ void SSAOPass::AddToGraph(RenderGraph& graph,
             renderPassDesc.AddColorAttachment(outputView, RHILoadOp::DontCare, RHIStoreOp::Store);
             renderPassDesc.SetRenderArea(0, 0, outputTexture->GetWidth(), outputTexture->GetHeight());
 
+            RHICommandContext& ctx = context.Commands();
             ctx.BeginRenderPass(renderPassDesc);
             ctx.SetPipeline(pipeline);
             ctx.SetDescriptorSet(0, descriptorSet.Get());

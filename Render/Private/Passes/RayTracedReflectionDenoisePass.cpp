@@ -47,6 +47,10 @@ namespace RVX
         m_depthReadHandle = {};
         m_normalGuideReadHandle = {};
         m_denoisedReflectionHandle = {};
+        m_reflectionViewHandle = {};
+        m_depthViewHandle = {};
+        m_normalGuideViewHandle = {};
+        m_outputViewHandle = {};
         m_constantBuffer.Reset();
         m_stats = {};
         m_enabled = false;
@@ -131,13 +135,17 @@ namespace RVX
         m_depthReadHandle = {};
         m_normalGuideReadHandle = {};
         m_denoisedReflectionHandle = {};
+        m_reflectionViewHandle = {};
+        m_depthViewHandle = {};
+        m_normalGuideViewHandle = {};
+        m_outputViewHandle = {};
+        m_outputFormat = RHIFormat::Unknown;
 
         if (!m_stats.supported ||
             !m_stats.sourcePassEnabled ||
             !m_stats.depthAvailable ||
             view.viewportWidth == 0 ||
-            view.viewportHeight == 0 ||
-            !view.renderGraph)
+            view.viewportHeight == 0)
         {
             return;
         }
@@ -154,7 +162,8 @@ namespace RVX
 
         RHITextureDesc outputDesc =
             RHITextureDesc::RenderTarget(view.viewportWidth, view.viewportHeight, RHIFormat::RGBA16_FLOAT);
-        if (const RHITextureDesc* reflectionDesc = view.renderGraph->GetTextureDesc(reflectionHandle))
+        if (const RHITextureDesc* reflectionDesc =
+                builder.GetTextureDesc(reflectionHandle))
         {
             outputDesc = *reflectionDesc;
             outputDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
@@ -169,20 +178,73 @@ namespace RVX
         depthHandle.hasSubresourceRange = true;
         depthHandle.subresourceRange = RHISubresourceRange{0, RVX_ALL_MIPS, 0, RVX_ALL_LAYERS, RHITextureAspect::Depth};
 
-        m_reflectionReadHandle = builder.Read(reflectionHandle, RHIShaderStage::Pixel);
-        m_depthReadHandle = builder.Read(depthHandle, RHIShaderStage::Pixel);
-        m_normalGuideReadHandle = builder.Read(normalGuideHandle, RHIShaderStage::Pixel);
-        m_denoisedReflectionHandle = view.renderGraph->CreateTexture(outputDesc);
-        m_denoisedReflectionHandle = builder.Write(m_denoisedReflectionHandle, RHIResourceState::RenderTarget);
-        m_stats.outputDeclared = true;
+        const auto createReadView = [&builder](
+                                        RGTextureHandle texture,
+                                        const char* debugName)
+        {
+            const RHITextureDesc* desc = builder.GetTextureDesc(texture);
+            if (!desc)
+                return RGTextureViewHandle{};
+            RHITextureViewDesc viewDesc;
+            viewDesc.format = desc->format;
+            viewDesc.dimension = desc->dimension;
+            viewDesc.subresourceRange = texture.hasSubresourceRange
+                ? texture.subresourceRange : RHISubresourceRange::All();
+            viewDesc.type = RHITextureViewType::ShaderResource;
+            viewDesc.debugName = debugName;
+            RGTextureViewHandle viewHandle = builder.CreateTextureView(
+                texture, viewDesc);
+            return builder.Read(
+                viewHandle,
+                MakeRGAccessDesc(
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::Pixel));
+        };
+        m_reflectionReadHandle = reflectionHandle;
+        m_reflectionViewHandle = createReadView(
+            m_reflectionReadHandle, "RayTracedReflectionDenoiseInputSRV");
+        m_depthReadHandle = depthHandle;
+        m_depthViewHandle = createReadView(
+            m_depthReadHandle, "RayTracedReflectionDenoiseDepthSRV");
+        m_normalGuideReadHandle = normalGuideHandle;
+        m_normalGuideViewHandle = createReadView(
+            m_normalGuideReadHandle, "RayTracedReflectionDenoiseNormalSRV");
+        m_denoisedReflectionHandle = builder.CreateTexture(outputDesc);
+        m_outputFormat = outputDesc.format;
+        RHITextureViewDesc outputViewDesc;
+        outputViewDesc.format = outputDesc.format;
+        outputViewDesc.dimension = outputDesc.dimension;
+        outputViewDesc.subresourceRange = RHISubresourceRange::All();
+        outputViewDesc.type = RHITextureViewType::RenderTarget;
+        outputViewDesc.debugName = "RayTracedReflectionDenoiseRTV";
+        m_outputViewHandle = builder.CreateTextureView(
+            m_denoisedReflectionHandle, outputViewDesc);
+        m_outputViewHandle = builder.Write(
+            m_outputViewHandle,
+            MakeRGAccessDesc(
+                RHIResourceState::RenderTarget,
+                RHIShaderStage::Pixel,
+                RHIDiscardIntent::Discard));
+        m_stats.outputDeclared = m_reflectionViewHandle.IsValid() &&
+            m_depthViewHandle.IsValid() &&
+            m_normalGuideViewHandle.IsValid() &&
+            m_outputViewHandle.IsValid();
     }
 
     void RayTracedReflectionDenoisePass::Execute(RHICommandContext& ctx, const ViewData& view)
     {
+        (void)ctx;
+        (void)view;
+        // Typed AddToGraph owns graph resource realization and execution.
+    }
+
+    void RayTracedReflectionDenoisePass::Execute(
+        RenderGraphPassContext& context,
+        const ViewData& view)
+    {
+        RHICommandContext& ctx = context.Commands();
         if (!m_stats.outputDeclared ||
-            !view.renderGraph ||
             !m_pipelineCache ||
-            !m_viewCache ||
             !m_reflectionReadHandle.IsValid() ||
             !m_depthReadHandle.IsValid() ||
             !m_normalGuideReadHandle.IsValid() ||
@@ -192,20 +254,22 @@ namespace RVX
             return;
         }
 
-        RHITexture* reflectionTexture = view.renderGraph->GetTexture(m_reflectionReadHandle);
-        RHITexture* depthTexture = view.renderGraph->GetTexture(m_depthReadHandle);
-        RHITexture* normalGuideTexture = view.renderGraph->GetTexture(m_normalGuideReadHandle);
-        RHITexture* outputTexture = view.renderGraph->GetTexture(m_denoisedReflectionHandle);
+        RHITexture* reflectionTexture = context.GetTexture(m_reflectionReadHandle);
+        RHITexture* depthTexture = context.GetTexture(m_depthReadHandle);
+        RHITexture* normalGuideTexture = context.GetTexture(m_normalGuideReadHandle);
+        RHITexture* outputTexture = context.GetTexture(m_denoisedReflectionHandle);
         if (!reflectionTexture || !depthTexture || !normalGuideTexture || !outputTexture)
         {
             m_stats.denoiseRecorded = false;
             return;
         }
 
-        RHITextureView* reflectionView = m_viewCache->GetDefaultSRV(reflectionTexture);
-        RHITextureView* depthView = m_viewCache->GetDefaultSRV(depthTexture);
-        RHITextureView* normalGuideView = m_viewCache->GetDefaultSRV(normalGuideTexture);
-        RHITextureView* outputView = m_viewCache->GetDefaultRTV(outputTexture);
+        RHITextureView* reflectionView =
+            context.GetTextureView(m_reflectionViewHandle);
+        RHITextureView* depthView = context.GetTextureView(m_depthViewHandle);
+        RHITextureView* normalGuideView =
+            context.GetTextureView(m_normalGuideViewHandle);
+        RHITextureView* outputView = context.GetTextureView(m_outputViewHandle);
         if (!reflectionView || !depthView || !normalGuideView || !outputView)
         {
             RVX_CORE_WARN(
@@ -214,13 +278,9 @@ namespace RVX
             return;
         }
 
-        RHIFormat outputFormat = RHIFormat::Unknown;
-        if (const RHITextureDesc* outputDesc = view.renderGraph->GetTextureDesc(m_denoisedReflectionHandle))
-        {
-            outputFormat = outputDesc->format;
-        }
-
-        RHIPipeline* pipeline = m_pipelineCache->GetRayTracedReflectionDenoisePipeline(outputFormat);
+        RHIPipeline* pipeline =
+            m_pipelineCache->GetRayTracedReflectionDenoisePipeline(
+                m_outputFormat);
         RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetRayTracedReflectionDenoiseSetLayout();
         IRHIDevice* device = m_pipelineCache->GetDevice();
         if (!pipeline || !setLayout || !device)
@@ -257,8 +317,9 @@ namespace RVX
             return;
         }
 
-        if (!RetainRenderSubmissionResource(
-                view.submissionResourceBatch, descriptorSet))
+        if (!context.RetainSubmissionResource(descriptorSet) ||
+            !context.RetainSubmissionResource(
+                Ref<RefCounted>(m_constantBuffer)))
         {
             RVX_CORE_WARN("RayTracedReflectionDenoisePass: submission ownership rejected descriptor set");
             m_stats.denoiseRecorded = false;
