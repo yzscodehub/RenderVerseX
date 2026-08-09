@@ -82,7 +82,10 @@ namespace RVX::Diagnostics
             {
                 return static_cast<int64>(value);
             }
-            return static_cast<uint64>(value);
+            else
+            {
+                return static_cast<uint64>(value);
+            }
         }
     };
 

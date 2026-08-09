@@ -511,10 +511,10 @@ namespace
                     "UploadQueued",
                     {{"assetId", pending.assetId.value},
                      {"requestSequence", acceptedRequest->GetSequence()},
-                     {"sourceRevision", acceptedRequest->GetSourceRevision()},
+                     {"sourceRevision",
+                      acceptedRequest->GetProvenance().sourceRevision},
                      {"bytes", acceptedRequest->GetDeclaredPayloadBytes()},
-                     {"kind", static_cast<uint64>(acceptedRequest->GetKind())},
-                     {"operation", static_cast<uint64>(acceptedRequest->GetOperation())}});
+                     {"kind", static_cast<uint64>(acceptedRequest->GetKind())}});
                 m_retainedRequests.emplace(
                     pending.handle,
                     RetainedRequest{pending.assetId,
