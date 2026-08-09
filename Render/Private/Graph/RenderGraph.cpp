@@ -2,7 +2,6 @@
 #include "Core/Assert.h"
 #include "Core/Diagnostics/JsonWriter.h"
 #include "Core/Log.h"
-#include "Resources/RenderSubmissionResourceBatch.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -40,6 +39,19 @@ namespace RVX
                 recordingGeneration != 0 &&
                 graphIdentity == expectedGraphIdentity &&
                 recordingGeneration == expectedRecordingGeneration;
+        }
+
+        bool CanMutateDefinition(
+            const RenderGraphImpl& graph,
+            const char* operation)
+        {
+            if (graph.runtimeState == RenderGraphRuntimeState::Recording)
+                return true;
+
+            RVX_CORE_ERROR(
+                "RenderGraph definition is immutable after compilation; rejected {}",
+                operation ? operation : "mutation");
+            return false;
         }
 
         using Diagnostics::JsonBool;
@@ -94,12 +106,7 @@ namespace RVX
 
             if (capabilities)
             {
-                const bool supportsLegacyTwoQueueRecording =
-                    capabilities->supportsAsyncCompute &&
-                    capabilities->supportsExplicitQueueFenceSignal &&
-                    capabilities->supportsQueueFenceWait;
-                if (!capabilities->supportsQueueSubmissionPlan &&
-                    !supportsLegacyTwoQueueRecording)
+                if (!capabilities->supportsQueueSubmissionPlan)
                 {
                     return GPUQueueDomain::Graphics;
                 }
@@ -1094,12 +1101,12 @@ namespace RVX
     RHITexture* RenderGraphPassContext::GetTexture(
         RGTextureHandle handle) const
     {
-        return m_graph ? m_graph->GetTexture(handle) : nullptr;
+        return m_graph ? m_graph->ResolveTexture(handle) : nullptr;
     }
 
     RHIBuffer* RenderGraphPassContext::GetBuffer(RGBufferHandle handle) const
     {
-        return m_graph ? m_graph->GetBuffer(handle) : nullptr;
+        return m_graph ? m_graph->ResolveBuffer(handle) : nullptr;
     }
 
     RHITextureView* RenderGraphPassContext::GetTextureView(
@@ -1121,7 +1128,7 @@ namespace RVX
     }
     RenderGraph::~RenderGraph() = default;
 
-    void RenderGraph::SetDevice(IRHIDevice* device)
+    void RenderGraph::ConfigureDeviceForValidation(IRHIDevice* device)
     {
         m_impl->device = device;
         m_impl->hasCapabilitySnapshot = device != nullptr;
@@ -1133,14 +1140,17 @@ namespace RVX
             m_impl->capabilitySnapshot.supportsExplicitAliasingBarriers;
     }
 
-    void RenderGraph::SetTransientResourcePool(TransientResourcePool* pool)
+    void RenderGraph::ConfigurePoolForValidation(
+        TransientResourcePool* pool)
     {
         m_impl->transientResourcePool = pool;
     }
 
-    bool RenderGraph::SetQueueExecutionMode(QueueExecutionMode mode)
+    bool RenderGraph::SetQueueExecutionModeForValidation(
+        QueueExecutionMode mode)
     {
-        if (!m_impl->passes.empty())
+        if (!CanMutateDefinition(*m_impl, "queue policy change") ||
+            !m_impl->passes.empty())
         {
             RVX_CORE_ERROR(
                 "RenderGraph queue execution mode cannot change after passes are recorded");
@@ -1155,8 +1165,11 @@ namespace RVX
         return m_impl->queueExecutionMode;
     }
 
-    void RenderGraph::SetParallelRecordingEnabled(bool enabled) noexcept
+    void RenderGraph::SetParallelRecordingEnabledForValidation(
+        bool enabled) noexcept
     {
+        if (!CanMutateDefinition(*m_impl, "parallel recording policy change"))
+            return;
         m_impl->parallelRecordingEnabled = enabled;
     }
 
@@ -1177,6 +1190,9 @@ namespace RVX
 
     RGTextureHandle RenderGraph::CreateTexture(const RHITextureDesc& desc)
     {
+        if (!CanMutateDefinition(*m_impl, "texture creation"))
+            return {};
+
         TextureResource resource;
         resource.desc = desc;
         resource.initialState = RHIResourceState::Undefined;
@@ -1199,6 +1215,9 @@ namespace RVX
 
     RGBufferHandle RenderGraph::CreateBuffer(const RHIBufferDesc& desc)
     {
+        if (!CanMutateDefinition(*m_impl, "buffer creation"))
+            return {};
+
         BufferResource resource;
         resource.desc = desc;
         resource.initialState = RHIResourceState::Undefined;
@@ -1224,6 +1243,9 @@ namespace RVX
         RGTextureHandle texture,
         const RHITextureViewDesc& desc)
     {
+        if (!CanMutateDefinition(*m_impl, "texture view creation"))
+            return {};
+
         if (!texture.IsValid() ||
             !HasCurrentHandleProvenance(texture.graphIdentity,
                                         texture.recordingGeneration,
@@ -1247,32 +1269,40 @@ namespace RVX
             m_impl->recordingGeneration};
     }
 
-    RGTextureHandle RenderGraph::ImportTexture(RHITexture* texture, RHIResourceState initialState)
+    RGTextureHandle RenderGraph::ImportTexture(
+        RHITextureRef texture,
+        RHIResourceState initialState)
     {
+        if (!CanMutateDefinition(*m_impl, "texture import"))
+            return {};
         ++m_impl->compatibilityStateProjectionCount;
-        return ImportTexture(texture, MakeRHITextureAccessSnapshot(initialState));
+        return ImportTexture(
+            std::move(texture),
+            MakeRHITextureAccessSnapshot(initialState));
     }
 
     RGTextureHandle RenderGraph::ImportTexture(
-        RHITexture* texture,
+        RHITextureRef texture,
         const RHITextureAccessSnapshot& initialAccess)
     {
+        if (!CanMutateDefinition(*m_impl, "texture import"))
+            return {};
+
         TextureResource resource;
-        // For imported textures, store a raw pointer without taking ownership
-        // The external owner (e.g., swap chain) is responsible for the texture's lifetime
-        // We use importedRaw to store non-owning pointer for imported resources
-        resource.importedRaw = texture;
-        if (texture)
+        RHITexture* textureRaw = texture.Get();
+        resource.strongBinding = std::move(texture);
+        resource.binding = RGPhysicalBinding::Imported;
+        if (textureRaw)
         {
-            resource.desc.width = texture->GetWidth();
-            resource.desc.height = texture->GetHeight();
-            resource.desc.depth = texture->GetDepth();
-            resource.desc.mipLevels = texture->GetMipLevels();
-            resource.desc.arraySize = texture->GetArraySize();
-            resource.desc.format = texture->GetFormat();
-            resource.desc.usage = texture->GetUsage();
-            resource.desc.dimension = texture->GetDimension();
-            resource.desc.sampleCount = texture->GetSampleCount();
+            resource.desc.width = textureRaw->GetWidth();
+            resource.desc.height = textureRaw->GetHeight();
+            resource.desc.depth = textureRaw->GetDepth();
+            resource.desc.mipLevels = textureRaw->GetMipLevels();
+            resource.desc.arraySize = textureRaw->GetArraySize();
+            resource.desc.format = textureRaw->GetFormat();
+            resource.desc.usage = textureRaw->GetUsage();
+            resource.desc.dimension = textureRaw->GetDimension();
+            resource.desc.sampleCount = textureRaw->GetSampleCount();
         }
         resource.initialAccessSnapshot = initialAccess;
         resource.currentAccessSnapshot = initialAccess;
@@ -1288,25 +1318,35 @@ namespace RVX
             m_impl->recordingGeneration};
     }
 
-    RGBufferHandle RenderGraph::ImportBuffer(RHIBuffer* buffer, RHIResourceState initialState)
+    RGBufferHandle RenderGraph::ImportBuffer(
+        RHIBufferRef buffer,
+        RHIResourceState initialState)
     {
+        if (!CanMutateDefinition(*m_impl, "buffer import"))
+            return {};
         ++m_impl->compatibilityStateProjectionCount;
-        return ImportBuffer(buffer, MakeRHIBufferAccessSnapshot(initialState));
+        return ImportBuffer(
+            std::move(buffer),
+            MakeRHIBufferAccessSnapshot(initialState));
     }
 
     RGBufferHandle RenderGraph::ImportBuffer(
-        RHIBuffer* buffer,
+        RHIBufferRef buffer,
         const RHIBufferAccessSnapshot& initialAccess)
     {
+        if (!CanMutateDefinition(*m_impl, "buffer import"))
+            return {};
+
         BufferResource resource;
-        // For imported buffers, store a raw pointer without taking ownership
-        resource.importedRaw = buffer;
-        if (buffer)
+        RHIBuffer* bufferRaw = buffer.Get();
+        resource.strongBinding = std::move(buffer);
+        resource.binding = RGPhysicalBinding::Imported;
+        if (bufferRaw)
         {
-            resource.desc.size = buffer->GetSize();
-            resource.desc.usage = buffer->GetUsage();
-            resource.desc.memoryType = buffer->GetMemoryType();
-            resource.desc.stride = buffer->GetStride();
+            resource.desc.size = bufferRaw->GetSize();
+            resource.desc.usage = bufferRaw->GetUsage();
+            resource.desc.memoryType = bufferRaw->GetMemoryType();
+            resource.desc.stride = bufferRaw->GetStride();
         }
         resource.initialAccessSnapshot = initialAccess;
         resource.currentAccessSnapshot = initialAccess;
@@ -1323,14 +1363,88 @@ namespace RVX
             m_impl->recordingGeneration};
     }
 
+    RGTextureHandle RenderGraph::ImportTextureBorrowedForValidation(
+        RHITexture* texture,
+        const RHITextureAccessSnapshot& initialAccess)
+    {
+        if (!CanMutateDefinition(*m_impl, "borrowed texture import"))
+            return {};
+
+        TextureResource resource;
+        resource.borrowedValidationBinding = texture;
+        resource.binding = RGPhysicalBinding::BorrowedValidation;
+        if (texture)
+        {
+            resource.desc.width = texture->GetWidth();
+            resource.desc.height = texture->GetHeight();
+            resource.desc.depth = texture->GetDepth();
+            resource.desc.mipLevels = texture->GetMipLevels();
+            resource.desc.arraySize = texture->GetArraySize();
+            resource.desc.format = texture->GetFormat();
+            resource.desc.usage = texture->GetUsage();
+            resource.desc.dimension = texture->GetDimension();
+            resource.desc.sampleCount = texture->GetSampleCount();
+        }
+        resource.initialAccessSnapshot = initialAccess;
+        resource.currentAccessSnapshot = initialAccess;
+        resource.initialState =
+            ProjectRHIResourceState(initialAccess.uniformAccess);
+        resource.currentState = resource.initialState;
+        resource.imported = true;
+        m_impl->AppendTextureResource(std::move(resource));
+        return RGTextureHandle{
+            static_cast<uint32>(m_impl->textures.size() - 1),
+            false,
+            RHISubresourceRange::All(),
+            m_impl->graphIdentity,
+            m_impl->recordingGeneration};
+    }
+
+    RGBufferHandle RenderGraph::ImportBufferBorrowedForValidation(
+        RHIBuffer* buffer,
+        const RHIBufferAccessSnapshot& initialAccess)
+    {
+        if (!CanMutateDefinition(*m_impl, "borrowed buffer import"))
+            return {};
+
+        BufferResource resource;
+        resource.borrowedValidationBinding = buffer;
+        resource.binding = RGPhysicalBinding::BorrowedValidation;
+        if (buffer)
+        {
+            resource.desc.size = buffer->GetSize();
+            resource.desc.usage = buffer->GetUsage();
+            resource.desc.memoryType = buffer->GetMemoryType();
+            resource.desc.stride = buffer->GetStride();
+        }
+        resource.initialAccessSnapshot = initialAccess;
+        resource.currentAccessSnapshot = initialAccess;
+        resource.initialState =
+            ProjectRHIResourceState(initialAccess.uniformAccess);
+        resource.currentState = resource.initialState;
+        resource.imported = true;
+        m_impl->AppendBufferResource(std::move(resource));
+        return RGBufferHandle{
+            static_cast<uint32>(m_impl->buffers.size() - 1),
+            false,
+            0,
+            RVX_WHOLE_SIZE,
+            m_impl->graphIdentity,
+            m_impl->recordingGeneration};
+    }
+
     void RenderGraph::SetExportState(RGTextureHandle texture, RHIResourceState finalState)
     {
+        if (!CanMutateDefinition(*m_impl, "texture export declaration"))
+            return;
         ++m_impl->compatibilityStateProjectionCount;
         SetExportAccess(texture, MakeRHIAccessSnapshot(finalState));
     }
 
     void RenderGraph::SetExportState(RGBufferHandle buffer, RHIResourceState finalState)
     {
+        if (!CanMutateDefinition(*m_impl, "buffer export declaration"))
+            return;
         ++m_impl->compatibilityStateProjectionCount;
         SetExportAccess(buffer, MakeRHIAccessSnapshot(finalState));
     }
@@ -1339,6 +1453,8 @@ namespace RVX
         RGTextureHandle texture,
         const RHIAccessSnapshot& finalAccess)
     {
+        if (!CanMutateDefinition(*m_impl, "texture export declaration"))
+            return;
         if (!texture.IsValid() ||
             !HasCurrentHandleProvenance(texture.graphIdentity,
                                         texture.recordingGeneration,
@@ -1355,6 +1471,8 @@ namespace RVX
         RGBufferHandle buffer,
         const RHIAccessSnapshot& finalAccess)
     {
+        if (!CanMutateDefinition(*m_impl, "buffer export declaration"))
+            return;
         if (!buffer.IsValid() ||
             !HasCurrentHandleProvenance(buffer.graphIdentity,
                                         buffer.recordingGeneration,
@@ -1378,7 +1496,8 @@ namespace RVX
             return {};
 
         const auto& resource = m_impl->textures[texture.index];
-        if (!m_impl->executionRealized)
+        if (m_impl->runtimeState != RenderGraphRuntimeState::Recorded &&
+            m_impl->runtimeState != RenderGraphRuntimeState::Transferred)
             return resource.initialAccessSnapshot;
         RHITextureAccessSnapshot result = resource.currentAccessSnapshot;
         result.subresourceOverrides.clear();
@@ -1421,7 +1540,8 @@ namespace RVX
             return {};
 
         const auto& resource = m_impl->buffers[buffer.index];
-        if (!m_impl->executionRealized)
+        if (m_impl->runtimeState != RenderGraphRuntimeState::Recorded &&
+            m_impl->runtimeState != RenderGraphRuntimeState::Transferred)
             return resource.initialAccessSnapshot;
         RHIBufferAccessSnapshot result = resource.currentAccessSnapshot;
         result.rangeOverrides.clear();
@@ -1432,7 +1552,7 @@ namespace RVX
         return result;
     }
 
-    RHITexture* RenderGraph::GetTexture(RGTextureHandle handle) const
+    RHITexture* RenderGraph::ResolveTexture(RGTextureHandle handle) const
     {
         if (!handle.IsValid() ||
             !HasCurrentHandleProvenance(handle.graphIdentity,
@@ -1444,7 +1564,7 @@ namespace RVX
         return m_impl->textures[handle.index].GetTexture();
     }
 
-    RHIBuffer* RenderGraph::GetBuffer(RGBufferHandle handle) const
+    RHIBuffer* RenderGraph::ResolveBuffer(RGBufferHandle handle) const
     {
         if (!handle.IsValid() ||
             !HasCurrentHandleProvenance(handle.graphIdentity,
@@ -1499,7 +1619,8 @@ namespace RVX
 
     bool RenderGraph::RetainExecutionResource(Ref<RefCounted> resource)
     {
-        if (!resource || m_impl->executionOwnershipTransferred)
+        if (!resource ||
+            m_impl->runtimeState == RenderGraphRuntimeState::Transferred)
             return false;
         m_impl->executionResources.push_back(std::move(resource));
         return true;
@@ -1511,6 +1632,9 @@ namespace RVX
         std::function<void(RenderGraphBuilder&)> setup,
         std::function<void(RenderGraphPassContext&)> execute)
     {
+        if (!CanMutateDefinition(*m_impl, "pass creation"))
+            return;
+
         Pass pass;
         pass.name = name ? name : "RenderPass";
         pass.type = type;
@@ -1581,12 +1705,7 @@ namespace RVX
         if (!m_impl || !m_impl->graph || !texture)
             return {};
         const RGTextureHandle handle =
-            m_impl->graph->ImportTexture(texture.Get(), initialState);
-        if (handle.IsValid() && m_impl->executionResources)
-        {
-            m_impl->executionResources->push_back(
-                Ref<RefCounted>(std::move(texture)));
-        }
+            m_impl->graph->ImportTexture(std::move(texture), initialState);
         return handle;
     }
 
@@ -1597,12 +1716,7 @@ namespace RVX
         if (!m_impl || !m_impl->graph || !texture)
             return {};
         const RGTextureHandle handle =
-            m_impl->graph->ImportTexture(texture.Get(), initialAccess);
-        if (handle.IsValid() && m_impl->executionResources)
-        {
-            m_impl->executionResources->push_back(
-                Ref<RefCounted>(std::move(texture)));
-        }
+            m_impl->graph->ImportTexture(std::move(texture), initialAccess);
         return handle;
     }
 
@@ -1613,12 +1727,7 @@ namespace RVX
         if (!m_impl || !m_impl->graph || !buffer)
             return {};
         const RGBufferHandle handle =
-            m_impl->graph->ImportBuffer(buffer.Get(), initialState);
-        if (handle.IsValid() && m_impl->executionResources)
-        {
-            m_impl->executionResources->push_back(
-                Ref<RefCounted>(std::move(buffer)));
-        }
+            m_impl->graph->ImportBuffer(std::move(buffer), initialState);
         return handle;
     }
 
@@ -1629,12 +1738,7 @@ namespace RVX
         if (!m_impl || !m_impl->graph || !buffer)
             return {};
         const RGBufferHandle handle =
-            m_impl->graph->ImportBuffer(buffer.Get(), initialAccess);
-        if (handle.IsValid() && m_impl->executionResources)
-        {
-            m_impl->executionResources->push_back(
-                Ref<RefCounted>(std::move(buffer)));
-        }
+            m_impl->graph->ImportBuffer(std::move(buffer), initialAccess);
         return handle;
     }
 
@@ -2274,7 +2378,7 @@ namespace RVX
         return true;
     }
 
-    void RenderGraph::Compile()
+    void RenderGraph::CompilePlanInternal()
     {
         for (Pass& pass : m_impl->passes)
         {
@@ -2303,7 +2407,8 @@ namespace RVX
         CompileRenderGraph(*m_impl);
     }
 
-    void RenderGraph::Compile(const RenderGraphCompileOptions& options)
+    void RenderGraph::CompilePlanInternal(
+        const RenderGraphCompileOptions& options)
     {
         m_impl->queueExecutionMode =
             options.queuePolicy == RGQueuePolicy::PreferMultiQueue
@@ -2318,25 +2423,135 @@ namespace RVX
             options.capabilities.supportsExplicitAliasingBarriers;
         m_impl->parallelRecordingEnabled =
             options.enableParallelRecording;
-        Compile();
+        CompilePlanInternal();
     }
 
-    void RenderGraph::Execute(RHICommandContext& ctx)
+    bool RenderGraph::FinalizeInternal(
+        const RenderGraphCompileOptions& options)
+    {
+        CompilePlanInternal(options);
+        m_impl->stats.requestedQueuePolicy = options.queuePolicy;
+        m_impl->stats.finalQueuePolicy =
+            m_impl->queueExecutionMode == QueueExecutionMode::MultiQueue
+                ? RGQueuePolicy::PreferMultiQueue
+                : RGQueuePolicy::GraphicsOnly;
+        m_impl->stats.queueFallbackReason.clear();
+        if (options.queuePolicy == RGQueuePolicy::PreferMultiQueue &&
+            m_impl->stats.finalQueuePolicy == RGQueuePolicy::GraphicsOnly)
+        {
+            if (!options.hasCapabilitySnapshot)
+            {
+                m_impl->stats.queueFallbackReason =
+                    "Missing RHI capability snapshot";
+            }
+            else if (!options.capabilities.supportsQueueSubmissionPlan)
+            {
+                m_impl->stats.queueFallbackReason =
+                    "RHI queue submission plans are unsupported";
+            }
+            else
+            {
+                m_impl->stats.queueFallbackReason =
+                    "Queue solver found no physical non-Graphics work";
+            }
+        }
+        return m_impl->stats.compileValid;
+    }
+
+    RenderGraphExecution RenderGraph::PrepareExecutionInternal(
+        const RenderGraphExecutionEnvironment& environment)
+    {
+        RenderGraphExecution execution;
+        const auto captureExecutionTelemetry = [&]()
+        {
+            if (environment.transientResourcePool)
+            {
+                m_impl->executionPoolStats =
+                    environment.transientResourcePool->GetStats();
+            }
+            if (environment.device)
+            {
+                m_impl->executionDescriptorDiagnostics =
+                    environment.device->GetDescriptorDiagnostics();
+            }
+        };
+        if (!m_impl->stats.compileValid || !environment.device ||
+            m_impl->runtimeState == RenderGraphRuntimeState::Transferred)
+        {
+            captureExecutionTelemetry();
+            return execution;
+        }
+
+        const RHICapabilities& runtimeCapabilities =
+            environment.device->GetCapabilities();
+        const RHIQueueTopology& runtimeTopology =
+            runtimeCapabilities.queueTopology;
+        const RHIQueueTopology& compiledTopology =
+            m_impl->capabilitySnapshot.queueTopology;
+        if (m_impl->hasCapabilitySnapshot &&
+            (runtimeCapabilities.supportsQueueSubmissionPlan !=
+                 m_impl->capabilitySnapshot.supportsQueueSubmissionPlan ||
+             runtimeTopology.completionMode !=
+                 compiledTopology.completionMode ||
+             runtimeTopology.logicalQueueDomains !=
+                 compiledTopology.logicalQueueDomains ||
+             runtimeTopology.activeDomainCount !=
+                 compiledTopology.activeDomainCount))
+        {
+            RVX_CORE_ERROR(
+                "RenderGraph execution rejected a device capability snapshot mismatch");
+            captureExecutionTelemetry();
+            return execution;
+        }
+
+        m_impl->device = environment.device;
+        m_impl->transientResourcePool = environment.transientResourcePool;
+        if (m_impl->queueExecutionMode == QueueExecutionMode::MultiQueue)
+        {
+            RecordedQueueSubmission submission;
+            if (!RecordQueueSubmissionInternal(submission))
+            {
+                captureExecutionTelemetry();
+                m_impl->device = nullptr;
+                m_impl->transientResourcePool = nullptr;
+                return execution;
+            }
+            execution = TakeExecutionInternal(std::move(submission));
+        }
+        else
+        {
+            if (!environment.graphicsContext)
+            {
+                captureExecutionTelemetry();
+                m_impl->device = nullptr;
+                m_impl->transientResourcePool = nullptr;
+                return execution;
+            }
+            RecordGraphicsPlanInternal(*environment.graphicsContext);
+            execution = TakeExecutionInternal();
+        }
+        captureExecutionTelemetry();
+        m_impl->device = nullptr;
+        m_impl->transientResourcePool = nullptr;
+        return execution;
+    }
+
+    void RenderGraph::RecordGraphicsPlanInternal(
+        RHICommandContext& ctx)
     {
         ExecuteRenderGraph(*m_impl, ctx);
     }
 
-    bool RenderGraph::RecordQueueSubmission(
+    bool RenderGraph::RecordQueueSubmissionInternal(
         RecordedQueueSubmission& submission)
     {
         return RecordRenderGraphQueueSubmission(*m_impl, submission);
     }
 
-    RenderGraphExecution RenderGraph::TakeExecution()
+    RenderGraphExecution RenderGraph::TakeExecutionInternal()
     {
         RenderGraphExecution execution;
-        if (!m_impl->executionRealized || !m_impl->resourcesRealized ||
-            m_impl->executionOwnershipTransferred)
+        if (m_impl->runtimeState != RenderGraphRuntimeState::Recorded)
         {
             return execution;
         }
@@ -2345,8 +2560,6 @@ namespace RVX
         for (uint32 index = 0; index < m_impl->textures.size(); ++index)
         {
             TextureResource& texture = m_impl->textures[index];
-            if (texture.imported)
-                continue;
             if (texture.pooledLease)
             {
                 execution.AddTextureLease(
@@ -2359,17 +2572,15 @@ namespace RVX
                         m_impl->recordingGeneration}));
                 texture.pooledLease.reset();
             }
-            if (texture.texture)
+            if (texture.strongBinding)
             {
-                texture.realizedRaw = texture.texture.Get();
-                execution.RetainTexture(std::move(texture.texture));
+                execution.RetainTexture(std::move(texture.strongBinding));
             }
+            texture.binding = RGPhysicalBinding::Unrealized;
         }
         for (uint32 index = 0; index < m_impl->buffers.size(); ++index)
         {
             BufferResource& buffer = m_impl->buffers[index];
-            if (buffer.imported)
-                continue;
             if (buffer.pooledLease)
             {
                 execution.AddBufferLease(
@@ -2383,11 +2594,11 @@ namespace RVX
                         m_impl->recordingGeneration}));
                 buffer.pooledLease.reset();
             }
-            if (buffer.buffer)
+            if (buffer.strongBinding)
             {
-                buffer.realizedRaw = buffer.buffer.Get();
-                execution.RetainBuffer(std::move(buffer.buffer));
+                execution.RetainBuffer(std::move(buffer.strongBinding));
             }
+            buffer.binding = RGPhysicalBinding::Unrealized;
         }
         for (TransientHeap& heap : m_impl->transientHeaps)
         {
@@ -2410,124 +2621,20 @@ namespace RVX
         m_impl->executionResources.clear();
         if (!execution.MarkRecorded())
             return {};
-        m_impl->executionOwnershipTransferred = true;
+        m_impl->runtimeState = RenderGraphRuntimeState::Transferred;
         return execution;
     }
 
-    RenderGraphExecution RenderGraph::TakeExecution(
+    RenderGraphExecution RenderGraph::TakeExecutionInternal(
         RecordedQueueSubmission&& submission)
     {
-        RenderGraphExecution execution = TakeExecution();
+        RenderGraphExecution execution = TakeExecutionInternal();
         if (!execution)
             return execution;
         execution.SetQueueSubmission(
             std::move(submission.plan),
             std::move(submission.ownedContexts));
         return execution;
-    }
-
-    bool RenderGraph::RecompileGraphicsOnly()
-    {
-        const auto textureSnapshotIsGraphicsOwned = [](
-            const RHITextureAccessSnapshot& snapshot)
-        {
-            return snapshot.uniformAccess.domain ==
-                       GPUQueueDomain::Graphics &&
-                   std::all_of(
-                       snapshot.subresourceOverrides.begin(),
-                       snapshot.subresourceOverrides.end(),
-                       [](const RHITextureSubresourceAccessSnapshot& entry)
-                       {
-                           return entry.access.domain ==
-                               GPUQueueDomain::Graphics;
-                       });
-        };
-        const auto bufferSnapshotIsGraphicsOwned = [](
-            const RHIBufferAccessSnapshot& snapshot)
-        {
-            return snapshot.uniformAccess.domain ==
-                       GPUQueueDomain::Graphics &&
-                   std::all_of(
-                       snapshot.rangeOverrides.begin(),
-                       snapshot.rangeOverrides.end(),
-                       [](const RHIBufferRangeAccessSnapshot& entry)
-                       {
-                           return entry.access.domain ==
-                               GPUQueueDomain::Graphics;
-                       });
-        };
-
-        // A one-context rebuild cannot acquire externally owned resources:
-        // Vulkan requires the release half on the source queue. Reject before
-        // mutating the graph so callers never execute MultiQueue ownership
-        // barriers on a Graphics context under the guise of a fallback.
-        for (const TextureResource& texture : m_impl->textures)
-        {
-            if (texture.imported &&
-                !textureSnapshotIsGraphicsOwned(
-                    texture.initialAccessSnapshot))
-            {
-                RVX_CORE_ERROR(
-                    "RenderGraph GraphicsOnly rebuild rejected a texture whose initial owner is not Graphics");
-                return false;
-            }
-        }
-        for (const BufferResource& buffer : m_impl->buffers)
-        {
-            if (buffer.imported &&
-                !bufferSnapshotIsGraphicsOwned(
-                    buffer.initialAccessSnapshot))
-            {
-                RVX_CORE_ERROR(
-                    "RenderGraph GraphicsOnly rebuild rejected a buffer whose initial owner is not Graphics");
-                return false;
-            }
-        }
-
-        m_impl->queueExecutionMode = QueueExecutionMode::GraphicsOnly;
-        for (Pass& pass : m_impl->passes)
-        {
-            pass.plannedExecutionQueue =
-                DiagnosticExecutionQueue::Graphics;
-            for (ResourceUsage& usage : pass.usages)
-            {
-                usage.desiredAccess.domain = GPUQueueDomain::Graphics;
-            }
-        }
-        for (TextureResource& texture : m_impl->textures)
-        {
-            if (texture.exportAccess)
-            {
-                texture.exportAccess->domain = GPUQueueDomain::Graphics;
-            }
-        }
-        for (BufferResource& buffer : m_impl->buffers)
-        {
-            if (buffer.exportAccess)
-            {
-                buffer.exportAccess->domain = GPUQueueDomain::Graphics;
-            }
-        }
-        CompileRenderGraph(*m_impl);
-        if (m_impl->stats.compileValid &&
-            !m_impl->initialQueueReleaseBatches.empty())
-        {
-            m_impl->stats.compileValid = false;
-            ++m_impl->stats.validationErrorCount;
-            m_impl->compileDiagnostics.push_back(
-                "GraphicsOnly rebuild produced a non-Graphics initial release batch");
-            RVX_CORE_ERROR(
-                "RenderGraph GraphicsOnly rebuild produced a non-Graphics initial release batch");
-        }
-        return m_impl->stats.compileValid;
-    }
-
-    void RenderGraph::ExecuteAsync(RHICommandContext& graphicsCtx,
-                                   RHICommandContext* computeCtx,
-                                   RHIFence* computeFence,
-                                   uint64 frameIndex)
-    {
-        ExecuteRenderGraphAsync(*m_impl, graphicsCtx, computeCtx, computeFence, frameIndex);
     }
 
     const RenderGraph::CompileStats& RenderGraph::GetCompileStats() const
@@ -2549,6 +2656,32 @@ namespace RVX
     {
         Diagnostics diagnostics;
         diagnostics.compileStats = m_impl->stats;
+        diagnostics.execution.physicalRealizationCount =
+            m_impl->stats.physicalRealizationCount;
+        diagnostics.execution.partialRollbackCount =
+            m_impl->stats.partialRealizationRollbackCount;
+        diagnostics.execution.recordingTextureLeases =
+            m_impl->executionPoolStats.recordingTextureLeases;
+        diagnostics.execution.recordingBufferLeases =
+            m_impl->executionPoolStats.recordingBufferLeases;
+        diagnostics.execution.inFlightTextureLeases =
+            m_impl->executionPoolStats.inFlightTextureLeases;
+        diagnostics.execution.inFlightBufferLeases =
+            m_impl->executionPoolStats.inFlightBufferLeases;
+        diagnostics.execution.leaseCommitCount =
+            m_impl->executionPoolStats.leaseCommitCount;
+        diagnostics.execution.leaseAbortCount =
+            m_impl->executionPoolStats.leaseAbortCount;
+        diagnostics.execution.leaseDeviceLostCount =
+            m_impl->executionPoolStats.leaseDeviceLostCount;
+        diagnostics.execution.leaseValidationFailureCount =
+            m_impl->executionPoolStats.leaseValidationFailureCount;
+        diagnostics.execution.transientViewCount =
+            m_impl->executionPoolStats.textureViewCount;
+        diagnostics.execution.transientViewCreationFailures =
+            m_impl->executionPoolStats.textureViewCreationFailureCount;
+        diagnostics.execution.descriptors =
+            m_impl->executionDescriptorDiagnostics;
         diagnostics.executionOrder = m_impl->executionOrder;
 
         diagnostics.passes = BuildRenderGraphPassDiagnostics(*m_impl);
@@ -2701,7 +2834,7 @@ namespace RVX
             resource.index = textureIndex;
             resource.name = texture.desc.debugName ? texture.desc.debugName : ("Texture" + std::to_string(textureIndex));
             resource.imported = texture.imported;
-            resource.pooled = texture.pooled;
+            resource.pooled = texture.IsPooled();
             resource.used = texture.lifetime.isUsed;
             resource.firstUsePass = texture.lifetime.isUsed ? texture.lifetime.firstUsePass : RVX_INVALID_INDEX;
             resource.lastUsePass = texture.lifetime.isUsed ? texture.lifetime.lastUsePass : RVX_INVALID_INDEX;
@@ -2750,7 +2883,7 @@ namespace RVX
             resource.index = bufferIndex;
             resource.name = buffer.desc.debugName ? buffer.desc.debugName : ("Buffer" + std::to_string(bufferIndex));
             resource.imported = buffer.imported;
-            resource.pooled = buffer.pooled;
+            resource.pooled = buffer.IsPooled();
             resource.used = buffer.lifetime.isUsed;
             resource.firstUsePass = buffer.lifetime.isUsed ? buffer.lifetime.firstUsePass : RVX_INVALID_INDEX;
             resource.lastUsePass = buffer.lifetime.isUsed ? buffer.lifetime.lastUsePass : RVX_INVALID_INDEX;
@@ -2810,10 +2943,20 @@ namespace RVX
            << ", compatibility projections="
            << diagnostics.compileStats.compatibilityStateProjectionCount << "\n";
         ss << "Plan hash: " << diagnostics.compileStats.planHash << "\n";
-        ss << "Queue contract: mode="
-           << (m_impl->queueExecutionMode == QueueExecutionMode::MultiQueue
+        ss << "Queue contract: requested="
+           << (diagnostics.compileStats.requestedQueuePolicy ==
+                       RGQueuePolicy::PreferMultiQueue
+                   ? "PreferMultiQueue"
+                   : "GraphicsOnly")
+           << ", final="
+           << (diagnostics.compileStats.finalQueuePolicy ==
+                       RGQueuePolicy::PreferMultiQueue
                    ? "MultiQueue"
                    : "GraphicsOnly")
+           << ", fallbackReason="
+           << (diagnostics.compileStats.queueFallbackReason.empty()
+                   ? "None"
+                   : diagnostics.compileStats.queueFallbackReason)
            << ", execution mismatches="
            << diagnostics.compileStats.executionQueueMismatchCount << "\n";
         ss << "Last execution: passes=" << diagnostics.compileStats.lastExecutedPassCount
@@ -2824,6 +2967,16 @@ namespace RVX
            << diagnostics.compileStats.lastParallelRecordingLevelCount
            << ", parallelBatches="
            << diagnostics.compileStats.lastParallelRecordingBatchCount << "\n";
+        ss << "Execution ownership: realizations="
+           << diagnostics.execution.physicalRealizationCount
+           << ", partialRollbacks="
+           << diagnostics.execution.partialRollbackCount
+           << ", recordingLeases="
+           << (diagnostics.execution.recordingTextureLeases +
+               diagnostics.execution.recordingBufferLeases)
+           << ", inFlightLeases="
+           << (diagnostics.execution.inFlightTextureLeases +
+               diagnostics.execution.inFlightBufferLeases) << "\n";
         ss << "Estimated transient memory: " << diagnostics.estimatedTransientMemoryBytes << " bytes\n";
         ss << "Estimated used transient memory: " << diagnostics.estimatedUsedTransientMemoryBytes << " bytes\n";
         ss << "Estimated imported memory: " << diagnostics.estimatedImportedMemoryBytes << " bytes\n";
@@ -3049,7 +3202,7 @@ namespace RVX
         ss << "  \"contentType\": \"application/json\",\n";
         ss << "  \"contentHash\": \"\",\n";
         ss << "  \"relativePath\": \"\",\n";
-        ss << "  \"compileStats\": {\n";
+        ss << "  \"compile\": {\n";
         ss << "    \"compileValid\": " << JsonBool(stats.compileValid) << ",\n";
         ss << "    \"planHash\": " << stats.planHash << ",\n";
         ss << "    \"executionOrderFallbackUsed\": " << JsonBool(stats.executionOrderFallbackUsed) << ",\n";
@@ -3084,8 +3237,81 @@ namespace RVX
            << stats.lastParallelRecordingLevelCount << ",\n";
         ss << "    \"lastParallelRecordingBatchCount\": "
            << stats.lastParallelRecordingBatchCount << ",\n";
-        ss << "    \"partialRealizationRollbackCount\": "
-           << stats.partialRealizationRollbackCount << "\n";
+        ss << "    \"requestedQueuePolicy\": "
+           << JsonString(stats.requestedQueuePolicy ==
+                             RGQueuePolicy::PreferMultiQueue
+                         ? "PreferMultiQueue"
+                         : "GraphicsOnly") << ",\n";
+        ss << "    \"finalQueuePolicy\": "
+           << JsonString(stats.finalQueuePolicy ==
+                             RGQueuePolicy::PreferMultiQueue
+                         ? "MultiQueue"
+                         : "GraphicsOnly") << ",\n";
+        ss << "    \"queueFallbackReason\": "
+           << JsonString(stats.queueFallbackReason) << "\n";
+        ss << "  },\n";
+
+        const ExecutionDiagnostics& execution = diagnostics.execution;
+        ss << "  \"execution\": {\n";
+        ss << "    \"physicalRealizationCount\": "
+           << execution.physicalRealizationCount << ",\n";
+        ss << "    \"partialRollbackCount\": "
+           << execution.partialRollbackCount << ",\n";
+        ss << "    \"recordingTextureLeases\": "
+           << execution.recordingTextureLeases << ",\n";
+        ss << "    \"recordingBufferLeases\": "
+           << execution.recordingBufferLeases << ",\n";
+        ss << "    \"inFlightTextureLeases\": "
+           << execution.inFlightTextureLeases << ",\n";
+        ss << "    \"inFlightBufferLeases\": "
+           << execution.inFlightBufferLeases << ",\n";
+        ss << "    \"leaseCommitCount\": "
+           << execution.leaseCommitCount << ",\n";
+        ss << "    \"leaseAbortCount\": "
+           << execution.leaseAbortCount << ",\n";
+        ss << "    \"leaseDeviceLostCount\": "
+           << execution.leaseDeviceLostCount << ",\n";
+        ss << "    \"leaseValidationFailureCount\": "
+           << execution.leaseValidationFailureCount << ",\n";
+        ss << "    \"transientViewCount\": "
+           << execution.transientViewCount << ",\n";
+        ss << "    \"transientViewCreationFailures\": "
+           << execution.transientViewCreationFailures << ",\n";
+
+        const auto writeDescriptorAllocator =
+            [&ss](const char* name,
+                  const RHIDescriptorAllocatorStats& descriptor,
+                  bool trailingComma)
+        {
+            ss << "    \"" << name << "\": {"
+               << "\"currentPages\": " << descriptor.currentPages << ", "
+               << "\"peakPages\": " << descriptor.peakPages << ", "
+               << "\"activeDescriptors\": "
+               << descriptor.activeDescriptors << ", "
+               << "\"peakActiveDescriptors\": "
+               << descriptor.peakActiveDescriptors << ", "
+               << "\"allocationFailures\": "
+               << descriptor.allocationFailures << ", "
+               << "\"validationFailures\": "
+               << descriptor.validationFailures << "}"
+               << (trailingComma ? ",\n" : "\n");
+        };
+        writeDescriptorAllocator(
+            "resourceViewDescriptors",
+            execution.descriptors.resourceViews,
+            true);
+        writeDescriptorAllocator(
+            "samplerDescriptors",
+            execution.descriptors.samplers,
+            true);
+        writeDescriptorAllocator(
+            "renderTargetDescriptors",
+            execution.descriptors.renderTargets,
+            true);
+        writeDescriptorAllocator(
+            "depthStencilDescriptors",
+            execution.descriptors.depthStencils,
+            false);
         ss << "  },\n";
 
         ss << "  \"memory\": {\n";
@@ -3350,8 +3576,10 @@ namespace RVX
         return file.good();
     }
 
-    void RenderGraph::SetMemoryAliasingEnabled(bool enabled)
+    void RenderGraph::SetMemoryAliasingEnabledForValidation(bool enabled)
     {
+        if (!CanMutateDefinition(*m_impl, "memory aliasing policy change"))
+            return;
         m_impl->memoryAliasingRequested = enabled;
         m_impl->enableMemoryAliasing =
             enabled && m_impl->device &&
@@ -3367,39 +3595,7 @@ namespace RVX
         return m_impl->enableMemoryAliasing;
     }
 
-    bool RenderGraph::RetainSubmissionResources(
-        RenderSubmissionResourceBatch& batch) const
-    {
-        for (const TextureResource& texture : m_impl->textures)
-        {
-            if (!texture.imported && texture.texture &&
-                !batch.Retain(Ref<RefCounted>(texture.texture),
-                              EstimateTextureMemorySize(texture.desc)))
-            {
-                return false;
-            }
-        }
-        for (const BufferResource& buffer : m_impl->buffers)
-        {
-            if (!buffer.imported && buffer.buffer &&
-                !batch.Retain(Ref<RefCounted>(buffer.buffer),
-                              buffer.desc.size))
-            {
-                return false;
-            }
-        }
-        for (const TransientHeap& heap : m_impl->transientHeaps)
-        {
-            if (heap.heap &&
-                !batch.Retain(Ref<RefCounted>(heap.heap), heap.size))
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    void RenderGraph::Clear()
+    void RenderGraph::ResetDefinitionForValidation()
     {
         // Views/descriptors must release before the physical textures they
         // reference when an unsubmitted graph is discarded.
@@ -3407,48 +3603,21 @@ namespace RVX
         m_impl->executionResources.clear();
         for (auto& texture : m_impl->textures)
         {
-            if (!texture.imported && texture.pooled && texture.pooledRaw &&
-                texture.pooledLease)
-            {
-                if (m_impl->transientResourcePool)
-                {
-                    m_impl->transientResourcePool->ReleaseTexture(
-                        texture.pooledRaw,
-                        GetRealizedAccess(RGTextureHandle{
-                            static_cast<uint32>(&texture - m_impl->textures.data()),
-                            false,
-                            RHISubresourceRange::All(),
-                            m_impl->graphIdentity,
-                            m_impl->recordingGeneration}));
-                }
-                texture.pooledLease.reset();
-            }
-            texture.pooledRaw = nullptr;
-            texture.realizedRaw = nullptr;
-            texture.pooled = false;
+            if (texture.pooledLease)
+                static_cast<void>(texture.pooledLease->AbortUnsubmitted());
+            texture.pooledLease.reset();
+            texture.strongBinding.Reset();
+            texture.borrowedValidationBinding = nullptr;
+            texture.binding = RGPhysicalBinding::Unrealized;
         }
         for (auto& buffer : m_impl->buffers)
         {
-            if (!buffer.imported && buffer.pooled && buffer.pooledRaw &&
-                buffer.pooledLease)
-            {
-                if (m_impl->transientResourcePool)
-                {
-                    m_impl->transientResourcePool->ReleaseBuffer(
-                        buffer.pooledRaw,
-                        GetRealizedAccess(RGBufferHandle{
-                            static_cast<uint32>(&buffer - m_impl->buffers.data()),
-                            false,
-                            0,
-                            RVX_WHOLE_SIZE,
-                            m_impl->graphIdentity,
-                            m_impl->recordingGeneration}));
-                }
-                buffer.pooledLease.reset();
-            }
-            buffer.pooledRaw = nullptr;
-            buffer.realizedRaw = nullptr;
-            buffer.pooled = false;
+            if (buffer.pooledLease)
+                static_cast<void>(buffer.pooledLease->AbortUnsubmitted());
+            buffer.pooledLease.reset();
+            buffer.strongBinding.Reset();
+            buffer.borrowedValidationBinding = nullptr;
+            buffer.binding = RGPhysicalBinding::Unrealized;
         }
 
         m_impl->passes.clear();
@@ -3469,9 +3638,7 @@ namespace RVX
         m_impl->aliasedTextureCount = 0;
         m_impl->aliasedBufferCount = 0;
         m_impl->compatibilityStateProjectionCount = 0;
-        m_impl->executionRealized = false;
-        m_impl->resourcesRealized = false;
-        m_impl->executionOwnershipTransferred = false;
+        m_impl->runtimeState = RenderGraphRuntimeState::Recording;
         m_impl->memoryAliasingRequested = false;
         m_impl->enableMemoryAliasing = false;
         m_impl->recordingGeneration =

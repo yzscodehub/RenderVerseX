@@ -1,4 +1,5 @@
 #include "Common/GpuTestUtils.h"
+#include "Common/RenderGraphValidationAccess.h"
 #include "Core/Core.h"
 #include "DX12CommandContext.h"
 #include "DX12DescriptorHeap.h"
@@ -410,10 +411,10 @@ namespace
                               GPUCompletionToken& outToken)
     {
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         RenderSubmissionResourceBatch batch;
         uploader.BuildRenderGraph(graph, &batch);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         if (!graph.GetCompileStats().compileValid)
         {
             return false;
@@ -426,7 +427,7 @@ namespace
             return false;
         }
         context->Begin();
-        graph.Execute(*context);
+        RenderGraphValidationAccess::Execute(graph, *context);
         uploader.CommitRealizedAccess(graph);
         context->End();
 
@@ -450,7 +451,7 @@ namespace
         GPUCompletionToken& outToken)
     {
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         RenderSubmissionResourceBatch batch;
         std::optional<GPUSceneResidentGraphLease> lease =
             uploader.AcquireCurrentGraphLease(graph, &batch, requiredVersion);
@@ -483,7 +484,7 @@ namespace
         // mirroring the Depth/Opaque multi-reader contract.
         addReader("GPUSceneLeaseRead.Depth");
         addReader("GPUSceneLeaseRead.Opaque");
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         if (!graph.GetCompileStats().compileValid)
         {
             uploader.ReleaseUnsubmittedFrame();
@@ -500,7 +501,7 @@ namespace
             return std::nullopt;
         }
         context->Begin();
-        graph.Execute(*context);
+        RenderGraphValidationAccess::Execute(graph, *context);
         uploader.CommitRealizedAccess(graph);
         context->End();
 
@@ -1351,6 +1352,14 @@ TEST(DX12Validation, TexturesAllocateDescriptorsOnlyForExplicitViews)
     EXPECT_EQ(cpuBefore.activeDescriptors + 2u, heaps.GetCpuCbvSrvUavStats().activeDescriptors);
     EXPECT_EQ(rtvBefore.activeDescriptors + 1u, heaps.GetRTVStats().activeDescriptors);
     EXPECT_EQ(dsvBefore.activeDescriptors + 1u, heaps.GetDSVStats().activeDescriptors);
+    const RHIDescriptorDiagnostics publicDiagnostics =
+        device->GetDescriptorDiagnostics();
+    EXPECT_EQ(cpuBefore.activeDescriptors + 2u,
+              publicDiagnostics.resourceViews.activeDescriptors);
+    EXPECT_EQ(rtvBefore.activeDescriptors + 1u,
+              publicDiagnostics.renderTargets.activeDescriptors);
+    EXPECT_EQ(dsvBefore.activeDescriptors + 1u,
+              publicDiagnostics.depthStencils.activeDescriptors);
 
     srv.Reset();
     rtv.Reset();
@@ -2164,7 +2173,7 @@ TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
 
     // First prove that a graph rejected before recording releases an exact lease.
     RenderGraph rejectedGraph;
-    rejectedGraph.SetDevice(device.get());
+    RenderGraphValidationAccess::SetDevice(rejectedGraph, device.get());
     ASSERT_TRUE(uploader.AcquireCurrentGraphLease(
         rejectedGraph, nullptr, versionOne).has_value());
     uploader.ReleaseUnsubmittedFrame();
@@ -2211,7 +2220,7 @@ TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
     EXPECT_GE(uploader.PollSafeReclaimVersion(), versionOne);
 
     RenderGraph versionTwoGraph;
-    versionTwoGraph.SetDevice(device.get());
+    RenderGraphValidationAccess::SetDevice(versionTwoGraph, device.get());
     const std::optional<GPUSceneResidentGraphLease> versionTwoLease =
         uploader.AcquireCurrentGraphLease(versionTwoGraph, nullptr, versionTwo);
     ASSERT_TRUE(versionTwoLease.has_value());
@@ -2262,7 +2271,7 @@ TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
     ASSERT_NE(invalidUploader, nullptr);
     ASSERT_NE(invalidDatabase, nullptr);
     RenderGraph invalidGraph;
-    invalidGraph.SetDevice(device.get());
+    RenderGraphValidationAccess::SetDevice(invalidGraph, device.get());
     ASSERT_TRUE(invalidUploader->AcquireCurrentGraphLease(
         invalidGraph, nullptr, invalidDatabase->GetCommittedVersion()).has_value());
     GPUCompletionToken invalidToken;
@@ -2272,7 +2281,7 @@ TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
     EXPECT_EQ(invalidUploader->GetDiagnostics().failureReason,
               GPUSceneUploadFailureReason::InvalidCompletionToken);
     RenderGraph afterInvalid;
-    afterInvalid.SetDevice(device.get());
+    RenderGraphValidationAccess::SetDevice(afterInvalid, device.get());
     EXPECT_FALSE(invalidUploader->AcquireCurrentGraphLease(
         afterInvalid, nullptr, invalidDatabase->GetCommittedVersion()).has_value());
 
@@ -2280,7 +2289,7 @@ TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
     ASSERT_NE(omittedUploader, nullptr);
     ASSERT_NE(omittedDatabase, nullptr);
     RenderGraph omittedGraph;
-    omittedGraph.SetDevice(device.get());
+    RenderGraphValidationAccess::SetDevice(omittedGraph, device.get());
     ASSERT_TRUE(omittedUploader->AcquireCurrentGraphLease(
         omittedGraph, nullptr, omittedDatabase->GetCommittedVersion()).has_value());
     RHICommandContextRef omittedContext = device->CreateCommandContext(
@@ -2297,7 +2306,7 @@ TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
     EXPECT_EQ(omittedUploader->GetDiagnostics().failureReason,
               GPUSceneUploadFailureReason::InvalidCompletionToken);
     RenderGraph afterOmitted;
-    afterOmitted.SetDevice(device.get());
+    RenderGraphValidationAccess::SetDevice(afterOmitted, device.get());
     EXPECT_FALSE(omittedUploader->AcquireCurrentGraphLease(
         afterOmitted, nullptr, omittedDatabase->GetCommittedVersion()).has_value());
 
@@ -2329,7 +2338,7 @@ TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
     lostUploader.Observe(lostDatabase.GetCommittedMirror(),
                          lostDatabase.GetLastChangeSet());
     RenderGraph lostGraph;
-    lostGraph.SetDevice(device.get());
+    RenderGraphValidationAccess::SetDevice(lostGraph, device.get());
     lostUploader.BuildRenderGraph(lostGraph, nullptr);
     EXPECT_EQ(lostUploader.GetDiagnostics().failureReason,
               GPUSceneUploadFailureReason::DeviceLost);

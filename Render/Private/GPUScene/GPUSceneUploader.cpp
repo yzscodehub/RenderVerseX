@@ -930,9 +930,9 @@ void GPUSceneUploader::BuildRenderGraph(
         for (Impl::TableUploadPlan& plan : pending.tables)
         {
             Impl::TableState& table = set.tables[plan.tableIndex];
-            plan.targetHandle = graph.ImportBuffer(table.buffer.Get(), table.access);
+            plan.targetHandle = graph.ImportBuffer(table.buffer, table.access);
             stagingHandles.push_back(graph.ImportBuffer(
-                plan.staging.Get(),
+                plan.staging,
                 MakeRHIBufferAccessSnapshot(
                     RHIResourceState::CopySource,
                     RHIShaderStage::None,
@@ -1116,7 +1116,7 @@ GPUSceneUploader::AcquireCurrentGraphLease(
              ++tableIndex)
         {
             lease.handles[tableIndex] = graph.ImportBuffer(
-                lease.buffers[tableIndex].Get(), set.tables[tableIndex].access);
+                lease.buffers[tableIndex], set.tables[tableIndex].access);
         }
     }
     catch (const std::bad_alloc&)

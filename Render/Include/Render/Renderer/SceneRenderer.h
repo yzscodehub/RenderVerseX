@@ -171,8 +171,8 @@ namespace RVX
 
     struct SceneRendererExternalTargetDesc
     {
-        RHITexture* colorTarget = nullptr;
-        RHITexture* depthTarget = nullptr;
+        RHITextureRef colorTarget;
+        RHITextureRef depthTarget;
         RHIResourceState colorInitialState = RHIResourceState::ShaderResource;
         RHIResourceState colorFinalState = RHIResourceState::ShaderResource;
         RHIResourceState depthInitialState = RHIResourceState::DepthWrite;
@@ -1022,10 +1022,6 @@ namespace RVX
         void SetRenderGraphForTesting(std::unique_ptr<RenderGraph> renderGraph)
         {
             m_renderGraph = std::move(renderGraph);
-            if (m_renderGraph && m_transientResourcePool)
-            {
-                m_renderGraph->SetTransientResourcePool(m_transientResourcePool.get());
-            }
         }
 
         /// Build the render graph for focused validation without executing a full frame.

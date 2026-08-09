@@ -40,6 +40,26 @@ namespace RVX
         uint64 budgetBytes = 0;          // GPU memory budget
         uint64 currentUsageBytes = 0;    // Current usage
     };
+
+    /** @brief Backend-neutral CPU descriptor allocator telemetry. */
+    struct RHIDescriptorAllocatorStats
+    {
+        uint32 currentPages = 0;
+        uint32 peakPages = 0;
+        uint32 activeDescriptors = 0;
+        uint32 peakActiveDescriptors = 0;
+        uint64 allocationFailures = 0;
+        uint64 validationFailures = 0;
+    };
+
+    /** @brief CPU-only descriptor pools used by explicit resource views. */
+    struct RHIDescriptorDiagnostics
+    {
+        RHIDescriptorAllocatorStats resourceViews;
+        RHIDescriptorAllocatorStats samplers;
+        RHIDescriptorAllocatorStats renderTargets;
+        RHIDescriptorAllocatorStats depthStencils;
+    };
     // =============================================================================
     // Device Description
     // =============================================================================
@@ -237,6 +257,12 @@ namespace RVX
          * @return Memory statistics structure
          */
         virtual RHIMemoryStats GetMemoryStats() const = 0;
+
+        /** @brief Optional descriptor telemetry; empty on backends without CPU heaps. */
+        virtual RHIDescriptorDiagnostics GetDescriptorDiagnostics() const
+        {
+            return {};
+        }
 
         // =========================================================================
         // Debug Resource Groups

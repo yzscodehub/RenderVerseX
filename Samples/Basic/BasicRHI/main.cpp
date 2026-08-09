@@ -1,10 +1,10 @@
 /**
  * @file BasicRHI Sample
- * @brief Basic RHI rendering demo using RHI and RenderGraph
+ * @brief Basic rendering demo using the low-level RHI contract
  *
  * This sample demonstrates:
  * - Direct RHI device and swapchain creation
- * - RenderGraph usage for automatic barrier management
+ * - Explicit resource barriers at the RHI boundary
  * - Camera controls with mouse/keyboard input
  */
 
@@ -12,7 +12,6 @@
 #include "Core/MathTypes.h"
 #include "RHI/RHI.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
-#include "Render/Graph/RenderGraph.h"
 #include "Samples/SampleCLI.h"
 #include "ShaderCompiler/ShaderManager.h"
 #include "ShaderCompiler/ShaderLayout.h"
@@ -142,7 +141,7 @@ std::string GetExecutableDir()
 int main(int argc, char *argv[])
 {
     RVX::Log::Initialize();
-    RVX_CORE_INFO("BasicRHI Sample - RHI + RenderGraph Demo");
+    RVX_CORE_INFO("BasicRHI Sample - explicit RHI demo");
 
     RVX::SampleCLIOptions options;
     options.backend = RVX::SelectBestBackend();
@@ -189,7 +188,7 @@ int main(int argc, char *argv[])
         report.diagnostics = options.diagnostics;
         report.enabledFeatures = {
             "RHI",
-            "RenderGraph",
+            "ExplicitResourceBarriers",
             "BasicTriangle",
             "BasicQuad",
             "BasicCube",
@@ -465,12 +464,6 @@ int main(int argc, char *argv[])
     }
 
     // =========================================================================
-    // RenderGraph
-    // =========================================================================
-    RVX::RenderGraph renderGraph;
-    renderGraph.SetDevice(device.get());
-
-    // =========================================================================
     // Main Loop
     // =========================================================================
     RVX_CORE_INFO("BasicRHI initialized - entering main loop");
@@ -552,7 +545,7 @@ int main(int argc, char *argv[])
         constantBuffer->Upload(&transformData, 1);
 
         // =====================================================================
-        // Render Frame using RenderGraph
+        // Render Frame using the explicit low-level RHI contract
         // =====================================================================
         device->BeginFrame();
 
@@ -562,63 +555,48 @@ int main(int argc, char *argv[])
         auto &ctx = *cmdContexts[frameIndex];
         ctx.Begin();
 
-        // Build RenderGraph
-        renderGraph.Clear();
-
         auto *backBuffer = swapChain->GetCurrentBackBuffer();
         auto *backBufferView = swapChain->GetCurrentBackBufferView();
 
-        auto backBufferHandle = renderGraph.ImportTexture(backBuffer, backBufferStates[backBufferIndex]);
-        renderGraph.SetExportState(backBufferHandle, RVX::RHIResourceState::Present);
+        ctx.TextureBarrier(
+            backBuffer,
+            backBufferStates[backBufferIndex],
+            RVX::RHIResourceState::RenderTarget);
 
-        struct BasicPassData
-        {
-            RVX::RGTextureHandle renderTarget;
-        };
+        RVX::RHIRenderPassDesc renderPass;
+        renderPass.AddColorAttachment(
+            backBufferView,
+            RVX::RHILoadOp::Clear,
+            RVX::RHIStoreOp::Store,
+            {0.1f, 0.1f, 0.2f, 1.0f});
+        ctx.BeginRenderPass(renderPass);
 
-        // Capture necessary pointers for the lambda
-        auto *pPipeline = pipeline.Get();
-        auto *pDescSet = descriptorSet.Get();
-        auto *pVB = vertexBuffer.Get();
-        auto *pSwapChain = swapChain.Get();
-        auto *pBackBufferView = backBufferView;
-        const RVX::uint32 vertexCount = drawVertexCount;
+        RVX::RHIViewport viewport = {
+            0,
+            0,
+            static_cast<float>(swapChain->GetWidth()),
+            static_cast<float>(swapChain->GetHeight()),
+            0.0f,
+            1.0f};
+        ctx.SetViewport(viewport);
 
-        renderGraph.AddPass<BasicPassData>(
-            "BasicRHITrianglePass",
-            RVX::RenderGraphPassType::Graphics,
-            [&](RVX::RenderGraphBuilder &builder, BasicPassData &data)
-            {
-                data.renderTarget = builder.Write(backBufferHandle, RVX::RHIResourceState::RenderTarget);
-            },
-            [=](const BasicPassData &, RVX::RHICommandContext &cmdCtx)
-            {
-                RVX::RHIRenderPassDesc renderPass;
-                renderPass.AddColorAttachment(pBackBufferView,
-                                              RVX::RHILoadOp::Clear, RVX::RHIStoreOp::Store,
-                                              {0.1f, 0.1f, 0.2f, 1.0f});
+        RVX::RHIRect scissor = {
+            0,
+            0,
+            swapChain->GetWidth(),
+            swapChain->GetHeight()};
+        ctx.SetScissor(scissor);
 
-                cmdCtx.BeginRenderPass(renderPass);
+        ctx.SetPipeline(pipeline.Get());
+        ctx.SetDescriptorSet(0, descriptorSet.Get());
+        ctx.SetVertexBuffer(0, vertexBuffer.Get());
+        ctx.Draw(drawVertexCount, 1, 0, 0);
 
-                RVX::RHIViewport viewport = {0, 0,
-                                             static_cast<float>(pSwapChain->GetWidth()),
-                                             static_cast<float>(pSwapChain->GetHeight()),
-                                             0.0f, 1.0f};
-                cmdCtx.SetViewport(viewport);
-
-                RVX::RHIRect scissor = {0, 0, pSwapChain->GetWidth(), pSwapChain->GetHeight()};
-                cmdCtx.SetScissor(scissor);
-
-                cmdCtx.SetPipeline(pPipeline);
-                cmdCtx.SetDescriptorSet(0, pDescSet);
-                cmdCtx.SetVertexBuffer(0, pVB);
-                cmdCtx.Draw(vertexCount, 1, 0, 0);
-
-                cmdCtx.EndRenderPass();
-            });
-
-        renderGraph.Compile();
-        renderGraph.Execute(ctx);
+        ctx.EndRenderPass();
+        ctx.TextureBarrier(
+            backBuffer,
+            RVX::RHIResourceState::RenderTarget,
+            RVX::RHIResourceState::Present);
 
         backBufferStates[backBufferIndex] = RVX::RHIResourceState::Present;
 
@@ -651,7 +629,6 @@ int main(int argc, char *argv[])
              static_cast<RVX::uint32>(newHeight) != swapChain->GetHeight()))
         {
             device->WaitIdle();
-            renderGraph.Clear();
             swapChain->Resize(static_cast<RVX::uint32>(newWidth), static_cast<RVX::uint32>(newHeight));
             backBufferStates.assign(swapChain->GetBufferCount(), RVX::RHIResourceState::Undefined);
             RVX_CORE_INFO("Resized to {}x{}", newWidth, newHeight);

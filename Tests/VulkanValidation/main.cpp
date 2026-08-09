@@ -1,4 +1,5 @@
 #include "Common/GpuTestUtils.h"
+#include "Common/RenderGraphValidationAccess.h"
 #include "Core/Core.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/Graph/RenderGraph.h"
@@ -1236,10 +1237,10 @@ TEST(VulkanValidation,
     device->WaitForFence(establishFence.Get(), establishValue);
 
     RenderGraph graph;
-    graph.SetDevice(device.get());
-    ASSERT_TRUE(graph.SetQueueExecutionMode(
+    RenderGraphValidationAccess::SetDevice(graph, device.get());
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
         RenderGraph::QueueExecutionMode::MultiQueue));
-    const RGBufferHandle resource = graph.ImportBuffer(
+    const RGBufferHandle resource = RenderGraphValidationAccess::ImportBuffer(graph,
         buffer.Get(), RHIBufferAccessSnapshot{computeRead, {}});
     struct Data
     {
@@ -1262,11 +1263,13 @@ TEST(VulkanValidation,
             RHIShaderStage::AllGraphics,
             GPUQueueDomain::Graphics,
             RHIContentValidity::Valid));
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
 
     RenderGraph::RecordedQueueSubmission recorded;
-    ASSERT_TRUE(graph.RecordQueueSubmission(recorded));
+    ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(
+        graph,
+        recorded));
     ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
     RHIFenceRef terminalFence = device->CreateFence(0);
     ASSERT_NE(terminalFence.Get(), nullptr);

@@ -1,4 +1,5 @@
 #include "GPUScene/GPUSceneUploader.h"
+#include "../Common/RenderGraphValidationAccess.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
@@ -316,11 +317,11 @@ namespace
                            FakeCommandContext& context)
     {
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         uploader.BuildRenderGraph(graph, nullptr);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
-        graph.Execute(context);
+        RenderGraphValidationAccess::Execute(graph, context);
         uploader.CommitRealizedAccess(graph);
     }
 
@@ -336,7 +337,7 @@ namespace
         uint64 requiredVersion)
     {
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         const std::optional<GPUSceneResidentGraphLease> lease =
             uploader.AcquireCurrentGraphLease(
                 graph, nullptr, requiredVersion);
@@ -368,12 +369,12 @@ namespace
         // no second AcquireCurrentGraphLease call is permitted for this graph.
         addLeaseReadPass("GPUSceneLeaseReadA");
         addLeaseReadPass("GPUSceneLeaseReadB");
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         if (!graph.GetCompileStats().compileValid)
         {
             return false;
         }
-        graph.Execute(context);
+        RenderGraphValidationAccess::Execute(graph, context);
         uploader.CommitRealizedAccess(graph);
         return true;
     }
@@ -551,9 +552,9 @@ namespace
         device.Fence(0)->Complete(point.value);
 
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         uploader.BuildRenderGraph(graph, nullptr);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         EXPECT_TRUE(graph.GetCompileStats().compileValid);
         EXPECT_EQ(graph.GetCompileStats().totalPasses, 0U);
         EXPECT_EQ(uploader.GetDiagnostics().frameUploadBytes, 0U);
@@ -579,9 +580,9 @@ namespace
         uploader.NotifySubmission(token);
 
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         uploader.BuildRenderGraph(graph, nullptr);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         EXPECT_EQ(graph.GetCompileStats().totalPasses, 0U);
         EXPECT_EQ(uploader.GetDiagnostics().frameUploadBytes, 0U);
         EXPECT_EQ(uploader.GetDiagnostics().frameUploadRangeCount, 0U);
@@ -660,7 +661,7 @@ namespace
         EXPECT_FALSE(wrongVersion.IsReady());
 
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         EXPECT_FALSE(uploader.AcquireCurrentGraphLease(
             graph, nullptr, version + 1u).has_value());
         EXPECT_TRUE(uploader.AcquireCurrentGraphLease(
@@ -712,7 +713,7 @@ namespace
         CompleteToken(device, uploadToken);
 
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         RenderSubmissionResourceBatch batch;
         const std::optional<GPUSceneResidentGraphLease> lease =
             uploader.AcquireCurrentGraphLease(
@@ -775,7 +776,7 @@ namespace
         candidateDesc.debugName = "GPUSceneLeaseRasterCandidate";
         const RHIBufferRef candidateBuffer = device.CreateBuffer(candidateDesc);
         ASSERT_NE(candidateBuffer, nullptr);
-        const RGBufferHandle candidateHandle = graph.ImportBuffer(
+        const RGBufferHandle candidateHandle = RenderGraphValidationAccess::ImportBuffer(graph,
             candidateBuffer.Get(),
             MakeRHIBufferAccessSnapshot(RHIResourceState::ShaderResource,
                                         RHIShaderStage::Vertex));
@@ -800,10 +801,10 @@ namespace
                                           RHIShaderStage::Vertex));
             },
             [](const RasterLeaseReadPassData&, RHICommandContext&) {});
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
         EXPECT_EQ(3u, graph.GetCompileStats().totalPasses);
-        graph.Execute(context);
+        RenderGraphValidationAccess::Execute(graph, context);
         uploader.CommitRealizedAccess(graph);
         EXPECT_FALSE(uploader.CancelCurrentGraphLease());
         for (uint32 tableIndex = 0;
@@ -831,7 +832,7 @@ namespace
         uploader.ReleaseUnsubmittedFrame();
         EXPECT_TRUE(uploader.GetDiagnostics().rollbackPending);
         RenderGraph retryGraph;
-        retryGraph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(retryGraph, &device);
         EXPECT_TRUE(uploader.AcquireCurrentGraphLease(
             retryGraph, nullptr, database.GetCommittedVersion()).has_value());
         uploader.ReleaseUnsubmittedFrame();
@@ -862,14 +863,14 @@ namespace
         CompleteToken(device, uploadToken);
 
         RenderGraph unusedGraph;
-        unusedGraph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(unusedGraph, &device);
         ASSERT_TRUE(uploader.AcquireCurrentGraphLease(
             unusedGraph, nullptr, database.GetCommittedVersion()).has_value());
         EXPECT_TRUE(uploader.CancelCurrentGraphLease());
         EXPECT_FALSE(uploader.CancelCurrentGraphLease());
 
         RenderGraph retryGraph;
-        retryGraph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(retryGraph, &device);
         EXPECT_TRUE(uploader.AcquireCurrentGraphLease(
             retryGraph, nullptr, database.GetCommittedVersion()).has_value());
         uploader.ReleaseUnsubmittedFrame();
@@ -889,15 +890,15 @@ namespace
         uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
 
         RenderGraph pendingGraph;
-        pendingGraph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(pendingGraph, &device);
         uploader.BuildRenderGraph(pendingGraph, nullptr);
         EXPECT_FALSE(uploader.AcquireCurrentGraphLease(
             pendingGraph, nullptr, database.GetCommittedVersion()).has_value());
 
         FakeCommandContext context;
-        pendingGraph.Compile();
+        RenderGraphValidationAccess::Compile(pendingGraph);
         ASSERT_TRUE(pendingGraph.GetCompileStats().compileValid);
-        pendingGraph.Execute(context);
+        RenderGraphValidationAccess::Execute(pendingGraph, context);
         uploader.CommitRealizedAccess(pendingGraph);
         const GPUCompletionPoint uploadPoint = tracker.Submit(&context);
         GPUCompletionToken uploadToken;
@@ -905,7 +906,7 @@ namespace
         uploader.NotifySubmission(uploadToken);
 
         RenderGraph residentGraph;
-        residentGraph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(residentGraph, &device);
         ASSERT_TRUE(uploader.AcquireCurrentGraphLease(
             residentGraph, nullptr, database.GetCommittedVersion()).has_value());
         uploader.ReleaseUnsubmittedFrame();
@@ -915,7 +916,7 @@ namespace
         ASSERT_TRUE(database.Commit(update).Succeeded());
         uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
         RenderGraph mismatchGraph;
-        mismatchGraph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(mismatchGraph, &device);
         EXPECT_FALSE(uploader.AcquireCurrentGraphLease(
             mismatchGraph, nullptr, database.GetCommittedVersion()).has_value());
         uploader.BuildRenderGraph(mismatchGraph, nullptr);
@@ -962,7 +963,7 @@ namespace
         ASSERT_TRUE(database.Commit(update).Succeeded());
         uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         uploader.BuildRenderGraph(graph, nullptr);
         // The submitted exact lease is still pending, so updating V2 must not
         // overwrite V1's set in place.
@@ -996,7 +997,7 @@ namespace
         // A graph rejected before execution releases its one outstanding exact
         // lease and restores V1's readable state for a later accepted frame.
         RenderGraph rejectedGraph;
-        rejectedGraph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(rejectedGraph, &device);
         ASSERT_TRUE(uploader.AcquireCurrentGraphLease(
             rejectedGraph, nullptr, versionOne).has_value());
         uploader.ReleaseUnsubmittedFrame();
@@ -1016,7 +1017,7 @@ namespace
         ASSERT_TRUE(database.Commit(update).Succeeded());
         uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
         RenderGraph versionTwoGraph;
-        versionTwoGraph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(versionTwoGraph, &device);
         uploader.BuildRenderGraph(versionTwoGraph, nullptr);
         // V1 is still in flight, so V2 cannot overwrite the exact multi-reader
         // set. The uploader allocates a distinct six-table resident set.
@@ -1058,7 +1059,7 @@ namespace
         EXPECT_EQ(uploader.GetDiagnostics().failureReason,
                   GPUSceneUploadFailureReason::InvalidCompletionToken);
         RenderGraph afterInvalid;
-        afterInvalid.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(afterInvalid, &device);
         EXPECT_FALSE(uploader.AcquireCurrentGraphLease(
             afterInvalid, nullptr, database.GetCommittedVersion()).has_value());
 
@@ -1079,7 +1080,7 @@ namespace
         CompleteToken(device, omittedUploadToken);
 
         RenderGraph omittedGraph;
-        omittedGraph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(omittedGraph, &device);
         ASSERT_TRUE(omittedCommitUploader.AcquireCurrentGraphLease(
             omittedGraph, nullptr,
             omittedCommitDatabase.GetCommittedVersion()).has_value());
@@ -1093,7 +1094,7 @@ namespace
         EXPECT_EQ(omittedCommitUploader.GetDiagnostics().failureReason,
                   GPUSceneUploadFailureReason::InvalidCompletionToken);
         RenderGraph afterOmittedCommit;
-        afterOmittedCommit.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(afterOmittedCommit, &device);
         EXPECT_FALSE(omittedCommitUploader.AcquireCurrentGraphLease(
             afterOmittedCommit, nullptr,
             omittedCommitDatabase.GetCommittedVersion()).has_value());
@@ -1124,7 +1125,7 @@ namespace
 
         device.SetDeviceLost(true);
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         uploader.BuildRenderGraph(graph, nullptr);
         EXPECT_TRUE(uploader.GetDiagnostics().deviceLost);
         EXPECT_EQ(uploader.GetDiagnostics().failureReason,
@@ -1278,7 +1279,7 @@ namespace
         ASSERT_TRUE(database.Commit(update).Succeeded());
         uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         uploader.BuildRenderGraph(graph, nullptr);
         EXPECT_GE(device.DefaultBufferCount(), before + 6U);
         uploader.ReleaseUnsubmittedFrame();
@@ -1320,7 +1321,7 @@ namespace
                                failedDatabase.GetLastChangeSet());
         device.FailCreateAfter(0);
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         failedUploader.BuildRenderGraph(graph, nullptr);
         EXPECT_EQ(failedUploader.GetDiagnostics().failureReason,
                   GPUSceneUploadFailureReason::BufferCreationFailed);
@@ -1334,7 +1335,7 @@ namespace
                                 failedDatabase.GetLastChangeSet());
         stagingDevice.FailCreateAfter(6); // six persistent tables, then staging
         RenderGraph stagingGraph;
-        stagingGraph.SetDevice(&stagingDevice);
+        RenderGraphValidationAccess::SetDevice(stagingGraph, &stagingDevice);
         stagingUploader.BuildRenderGraph(stagingGraph, nullptr);
         EXPECT_EQ(stagingUploader.GetDiagnostics().failureReason,
                   GPUSceneUploadFailureReason::StagingCreationFailed);
@@ -1468,7 +1469,7 @@ namespace
         uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
         device.SetDeviceLost(true);
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         uploader.BuildRenderGraph(graph, nullptr);
         EXPECT_TRUE(uploader.GetDiagnostics().deviceLost ||
                     uploader.GetDiagnostics().failureReason ==
@@ -1517,9 +1518,9 @@ namespace
         ASSERT_GE(uploader.PollSafeReclaimVersion(), database.GetCommittedVersion());
 
         RenderGraph warmGraph;
-        warmGraph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(warmGraph, &device);
         uploader.BuildRenderGraph(warmGraph, nullptr);
-        warmGraph.Compile();
+        RenderGraphValidationAccess::Compile(warmGraph);
         ASSERT_TRUE(warmGraph.GetCompileStats().compileValid);
         const GPUSceneUploadDiagnostics warm = uploader.GetDiagnostics();
         EXPECT_EQ(warm.frameUploadBytes, 0U);

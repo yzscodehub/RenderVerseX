@@ -168,9 +168,9 @@ namespace
             : m_destructionProbe(destructionProbe)
         {
             m_header.sequence = sequence;
-            m_features.BeginBuild(sequence);
-            m_features.MarkComplete();
+            m_header.requiredSceneRevision = sequence;
             m_diagnostics.complete = true;
+            m_diagnostics.code = RenderExtractionCode::Complete;
         }
 
         ~TestFramePacket()
@@ -186,26 +186,9 @@ namespace
         TestFramePacket(const TestFramePacket&) = delete;
         TestFramePacket& operator=(const TestFramePacket&) = delete;
 
-        [[nodiscard]] const RenderFrameHeader& GetHeader() const noexcept
+        [[nodiscard]] const RenderFrameHeaderV5& GetHeader() const noexcept
         {
             return m_header;
-        }
-
-        [[nodiscard]] const std::vector<RenderPrimitiveSnapshot>&
-            GetPrimitives() const noexcept
-        {
-            return m_primitives;
-        }
-
-        [[nodiscard]] const std::vector<RenderLightSnapshot>&
-            GetLights() const noexcept
-        {
-            return m_lights;
-        }
-
-        [[nodiscard]] const RenderFeatureSnapshot& GetFeatures() const noexcept
-        {
-            return m_features;
         }
 
         [[nodiscard]] const RenderExtractionDiagnostics&
@@ -220,17 +203,32 @@ namespace
         }
 
     private:
-        RenderFrameHeader m_header{};
-        std::vector<RenderPrimitiveSnapshot> m_primitives{};
-        std::vector<RenderLightSnapshot> m_lights{};
-        RenderFeatureSnapshot m_features{};
+        RenderFrameHeaderV5 m_header{};
         RenderExtractionDiagnostics m_diagnostics{};
         DestructionProbe* m_destructionProbe = nullptr;
     };
 
+    struct CompleteTestFramePacketValidator final
+    {
+        [[nodiscard]] bool operator()(
+            const TestFramePacket& packet) const noexcept
+        {
+            const RenderFrameHeaderV5& header = packet.GetHeader();
+            const RenderExtractionDiagnostics& diagnostics =
+                packet.GetExtractionDiagnostics();
+            return header.schemaId == RVX_RENDER_FRAME_PACKET_V5_SCHEMA_ID &&
+                   header.schemaVersion ==
+                       RVX_RENDER_FRAME_PACKET_V5_SCHEMA_VERSION &&
+                   header.sequence != 0 &&
+                   header.requiredSceneRevision != 0 &&
+                   diagnostics.complete &&
+                   diagnostics.code == RenderExtractionCode::Complete;
+        }
+    };
+
     using TestFrameMailbox = BasicRenderFrameMailbox<
         TestFramePacket,
-        CompleteRenderFramePacketValidator<TestFramePacket>>;
+        CompleteTestFramePacketValidator>;
 
     std::unique_ptr<const TestFramePacket> MakeTestFrame(
         uint64 sequence,

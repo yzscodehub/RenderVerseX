@@ -1736,6 +1736,32 @@ namespace RVX
         return stats;
     }
 
+    RHIDescriptorDiagnostics DX12Device::GetDescriptorDiagnostics() const
+    {
+        const auto convert = [](const DX12DescriptorAllocatorStats& source)
+        {
+            RHIDescriptorAllocatorStats result;
+            result.currentPages = source.currentPages;
+            result.peakPages = source.peakPages;
+            result.activeDescriptors = source.activeDescriptors;
+            result.peakActiveDescriptors = source.peakActiveDescriptors;
+            result.allocationFailures = source.allocationFailures;
+            result.validationFailures = source.validationFailures;
+            return result;
+        };
+
+        RHIDescriptorDiagnostics diagnostics;
+        diagnostics.resourceViews = convert(
+            m_descriptorHeapManager.GetCpuCbvSrvUavStats());
+        diagnostics.samplers = convert(
+            m_descriptorHeapManager.GetCpuSamplerStats());
+        diagnostics.renderTargets = convert(
+            m_descriptorHeapManager.GetRTVStats());
+        diagnostics.depthStencils = convert(
+            m_descriptorHeapManager.GetDSVStats());
+        return diagnostics;
+    }
+
     // =============================================================================
     // Debug Resource Groups
     // =============================================================================

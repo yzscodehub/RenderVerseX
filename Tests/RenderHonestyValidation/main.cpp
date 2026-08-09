@@ -1,4 +1,5 @@
 #include "Common/DeterministicShaderCompiler.h"
+#include "Common/RenderGraphValidationAccess.h"
 #include "Core/Log.h"
 #include "Core/Serialization/Serialization.h"
 #include "Render/Debug/GPUProfiler.h"
@@ -3280,7 +3281,7 @@ TEST_F(RenderHonestyValidationFixture, RenderGraphCompileDiagnosticsExposeInvali
 {
     NullDevice device;
     RVX::RenderGraph graph;
-    graph.SetDevice(&device);
+    RVX::RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RVX::RHITextureDesc outputDesc = RVX::RHITextureDesc::RenderTarget(16, 16, RVX::RHIFormat::RGBA8_UNORM);
     outputDesc.debugName = "DiagnosticOutput";
@@ -3305,7 +3306,7 @@ TEST_F(RenderHonestyValidationFixture, RenderGraphCompileDiagnosticsExposeInvali
         },
         [](const PassData&, RVX::RHICommandContext&) {});
 
-    graph.Compile();
+    RVX::RenderGraphValidationAccess::Compile(graph);
 
     const RVX::RenderGraph::CompileStats& stats = graph.GetCompileStats();
     EXPECT_FALSE(stats.compileValid);
@@ -3329,7 +3330,7 @@ TEST_F(RenderHonestyValidationFixture, RenderGraphCompileDiagnosticsExposeReadBe
 {
     NullDevice device;
     RVX::RenderGraph graph;
-    graph.SetDevice(&device);
+    RVX::RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RVX::RHITextureDesc inputDesc = RVX::RHITextureDesc::RenderTarget(16, 16, RVX::RHIFormat::RGBA8_UNORM);
     inputDesc.debugName = "UninitializedInput";
@@ -3358,7 +3359,7 @@ TEST_F(RenderHonestyValidationFixture, RenderGraphCompileDiagnosticsExposeReadBe
         },
         [](const PassData&, RVX::RHICommandContext&) {});
 
-    graph.Compile();
+    RVX::RenderGraphValidationAccess::Compile(graph);
 
     const RVX::RenderGraph::CompileStats& stats = graph.GetCompileStats();
     EXPECT_FALSE(stats.compileValid);

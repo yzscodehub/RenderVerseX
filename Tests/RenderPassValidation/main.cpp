@@ -25,6 +25,7 @@
 #undef private
 
 #include "Common/DeterministicShaderCompiler.h"
+#include "Common/RenderGraphValidationAccess.h"
 #include "Common/RenderRuntimeTestHarness.h"
 #include "Render/Debug/DebugRenderer.h"
 #include "Render/Decal/DecalRenderer.h"
@@ -176,7 +177,9 @@ namespace RVX
         static void InstallGraph(SceneRenderer& renderer, IRHIDevice& device)
         {
             renderer.m_renderGraph = std::make_unique<RenderGraph>();
-            renderer.m_renderGraph->SetDevice(&device);
+            RenderGraphValidationAccess::SetDevice(
+                *renderer.m_renderGraph,
+                &device);
         }
 
         static void InstallGPUSceneResources(
@@ -297,7 +300,7 @@ namespace RVX
             {
                 return 0;
             }
-            renderer.m_renderGraph->Compile();
+            RenderGraphValidationAccess::Compile(*renderer.m_renderGraph);
             return renderer.m_renderGraph->GetCompileStats().totalPasses;
         }
 
@@ -319,7 +322,9 @@ namespace RVX
         {
             if (renderer.m_renderGraph != nullptr)
             {
-                renderer.m_renderGraph->Execute(context);
+                RenderGraphValidationAccess::Execute(
+                    *renderer.m_renderGraph,
+                    context);
             }
         }
 
@@ -2140,13 +2145,13 @@ namespace
         const GPUCullingAccessSnapshots& access =
             inputs.recordedState->GetAccessSnapshots();
         inputs.identity = identity;
-        inputs.instances = graph.ImportBuffer(
+        inputs.instances = RenderGraphValidationAccess::ImportBuffer(graph,
             recorded.GetInstanceBuffer(), access.instances);
-        inputs.instanceIndices = graph.ImportBuffer(
+        inputs.instanceIndices = RenderGraphValidationAccess::ImportBuffer(graph,
             recorded.GetInstanceIndexBuffer(), access.instanceIndices);
-        inputs.indirectDraws = graph.ImportBuffer(
+        inputs.indirectDraws = RenderGraphValidationAccess::ImportBuffer(graph,
             recorded.GetIndirectBuffer(), access.indirectDraws);
-        inputs.drawCount = graph.ImportBuffer(
+        inputs.drawCount = RenderGraphValidationAccess::ImportBuffer(graph,
             recorded.GetDrawCountBuffer(), access.drawCount);
         return inputs;
     }
@@ -2210,11 +2215,11 @@ namespace
         }
 
         inputs.instances = {};
-        inputs.gpuSceneCandidates = graph.ImportBuffer(
+        inputs.gpuSceneCandidates = RenderGraphValidationAccess::ImportBuffer(graph,
             resources.GetCandidates(), RHIResourceState::ShaderResource);
-        inputs.gpuScenePrimitives = graph.ImportBuffer(
+        inputs.gpuScenePrimitives = RenderGraphValidationAccess::ImportBuffer(graph,
             resources.GetPrimitives(), RHIResourceState::ShaderResource);
-        inputs.gpuSceneTransforms = graph.ImportBuffer(
+        inputs.gpuSceneTransforms = RenderGraphValidationAccess::ImportBuffer(graph,
             resources.GetTransforms(), RHIResourceState::ShaderResource);
         inputs.gpuSceneRasterBinding =
             std::make_shared<GPUSceneRasterBindingSnapshot>(std::move(binding));
@@ -2233,9 +2238,9 @@ namespace
         RecordingCommandContext& commandContext)
     {
         pass.AddToGraph(graph, context);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         EXPECT_TRUE(graph.GetCompileStats().compileValid);
-        graph.Execute(commandContext);
+        RenderGraphValidationAccess::Execute(graph, commandContext);
         pass.PublishRecordResults(context.results, context.identity);
     }
 
@@ -2415,12 +2420,12 @@ namespace
     {
         SCOPED_TRACE(caseName);
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         RHITextureRef depthTexture = device.CreateTexture(RHITextureDesc::DepthStencil(
             32, 32, PipelineCache::GetDefaultDepthStencilFormat()));
         ASSERT_TRUE(depthTexture);
         ViewData frameView;
-        frameView.depthTarget = graph.ImportTexture(
+        frameView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
             depthTexture.Get(), RHIResourceState::DepthRead);
         frameView.viewportWidth = 32;
         frameView.viewportHeight = 32;
@@ -2460,11 +2465,11 @@ namespace
         EXPECT_EQ(device.createdBufferDescs.size(), buffersBefore);
         EXPECT_EQ(device.createdDescriptorSetDescs.size(), descriptorSetsBefore);
 
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
         EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
         RecordingCommandContext commands;
-        graph.Execute(commands);
+        RenderGraphValidationAccess::Execute(graph, commands);
         EXPECT_EQ(commands.dispatchRaysCount, 0u);
         EXPECT_EQ(device.createdTextureDescs.size(), texturesBefore);
         EXPECT_EQ(device.createdBufferDescs.size(), buffersBefore);
@@ -2555,10 +2560,10 @@ namespace
             RenderSubmissionResourceBatch* batch = nullptr)
         {
             RenderGraph graph;
-            graph.SetDevice(&device);
+            RenderGraphValidationAccess::SetDevice(graph, &device);
             if (depthAttachment != nullptr && depthAttachment->GetTexture() != nullptr)
             {
-                frameView.depthTarget = graph.ImportTexture(
+                frameView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
                     depthAttachment->GetTexture(), RHIResourceState::DepthWrite);
             }
             RenderPassRecordContext context = MakeMainSceneRecordContext(
@@ -2571,9 +2576,9 @@ namespace
                     graph, context.identity, *culling);
             }
             pass.AddToGraph(graph, context);
-            graph.Compile();
+            RenderGraphValidationAccess::Compile(graph);
             EXPECT_TRUE(graph.GetCompileStats().compileValid);
-            graph.Execute(commandContext);
+            RenderGraphValidationAccess::Execute(graph, commandContext);
             pass.PublishRecordResults(context.results, context.identity);
             executionReport = context.results->executionReport;
         }
@@ -2595,15 +2600,15 @@ namespace
             RenderSubmissionResourceBatch* batch = nullptr)
         {
             RenderGraph graph;
-            graph.SetDevice(&device);
+            RenderGraphValidationAccess::SetDevice(graph, &device);
             if (colorAttachment != nullptr && colorAttachment->GetTexture() != nullptr)
             {
-                frameView.colorTarget = graph.ImportTexture(
+                frameView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
                     colorAttachment->GetTexture(), RHIResourceState::RenderTarget);
             }
             if (depthAttachment != nullptr && depthAttachment->GetTexture() != nullptr)
             {
-                frameView.depthTarget = graph.ImportTexture(
+                frameView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
                     depthAttachment->GetTexture(), RHIResourceState::DepthWrite);
             }
             RenderPassRecordContext context = MakeMainSceneRecordContext(
@@ -2626,9 +2631,9 @@ namespace
             context.frameSnapshot = MakeRenderPassFrameSnapshot(
                 context, *context.results);
             pass.AddToGraph(graph, context);
-            graph.Compile();
+            RenderGraphValidationAccess::Compile(graph);
             EXPECT_TRUE(graph.GetCompileStats().compileValid);
-            graph.Execute(commandContext);
+            RenderGraphValidationAccess::Execute(graph, commandContext);
             pass.PublishRecordResults(context.results, context.identity);
             executionReport = context.results->executionReport;
         }
@@ -2646,7 +2651,7 @@ namespace
             RenderSubmissionResourceBatch* batch = nullptr)
         {
             RenderGraph graph;
-            graph.SetDevice(&device);
+            RenderGraphValidationAccess::SetDevice(graph, &device);
             RenderPassRecordContext context = MakeMainSceneRecordContext(
                 graph, frameView, scene, opaqueDrawItems, maskedDrawItems,
                 executionPlan, preparation, executionReport,
@@ -2655,9 +2660,9 @@ namespace
             context.frameSnapshot = MakeRenderPassFrameSnapshot(
                 context, *context.results);
             pass.AddToGraph(graph, context);
-            graph.Compile();
+            RenderGraphValidationAccess::Compile(graph);
             EXPECT_TRUE(graph.GetCompileStats().compileValid);
-            graph.Execute(commandContext);
+            RenderGraphValidationAccess::Execute(graph, commandContext);
             pass.PublishRecordResults(context.results, context.identity);
             executionReport = context.results->executionReport;
         }
@@ -2755,15 +2760,15 @@ namespace
                 database.GetCommittedMirror(), database.GetLastChangeSet());
 
             RenderGraph uploadGraph;
-            uploadGraph.SetDevice(&device);
+            RenderGraphValidationAccess::SetDevice(uploadGraph, &device);
             RenderSubmissionResourceBatch uploadBatch;
             uploader->BuildRenderGraph(uploadGraph, &uploadBatch);
-            uploadGraph.Compile();
+            RenderGraphValidationAccess::Compile(uploadGraph);
             bool initialized = uploadGraph.GetCompileStats().compileValid;
             RecordingCommandContext uploadContext;
             if (initialized)
             {
-                uploadGraph.Execute(uploadContext);
+                RenderGraphValidationAccess::Execute(uploadGraph, uploadContext);
                 uploader->CommitRealizedAccess(uploadGraph);
                 const GPUCompletionPoint point = tracker.Submit(&uploadContext);
                 GPUCompletionToken completion;
@@ -3171,7 +3176,7 @@ TEST_F(RenderPassValidationFixture,
         RHITextureDesc::RenderTarget(32u, 32u, RHIFormat::RGBA8_UNORM));
     ASSERT_TRUE(colorTarget);
     SceneRendererExternalTargetDesc externalTarget;
-    externalTarget.colorTarget = colorTarget.Get();
+    externalTarget.colorTarget = colorTarget;
 
     SceneRenderer renderer;
     renderer.SetRenderFeatureReportDeviceForTesting(&device);
@@ -3582,8 +3587,8 @@ TEST(RenderPassStatusValidation, DefaultGraphAdapterValueCapturesViewsAcrossGrap
     RenderGraph firstGraph;
     RenderGraph secondGraph;
     FakeDevice device;
-    firstGraph.SetDevice(&device);
-    secondGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(firstGraph, &device);
+    RenderGraphValidationAccess::SetDevice(secondGraph, &device);
 
     RHITextureDesc targetDesc = RHITextureDesc::RenderTarget(
         4, 4, RHIFormat::RGBA8_UNORM);
@@ -3610,12 +3615,12 @@ TEST(RenderPassStatusValidation, DefaultGraphAdapterValueCapturesViewsAcrossGrap
     secondView.viewportWidth = 8;
     secondView.frameNumber = 100;
 
-    firstGraph.Compile();
-    secondGraph.Compile();
+    RenderGraphValidationAccess::Compile(firstGraph);
+    RenderGraphValidationAccess::Compile(secondGraph);
     RecordingCommandContext firstContext;
     RecordingCommandContext secondContext;
-    firstGraph.Execute(firstContext);
-    secondGraph.Execute(secondContext);
+    RenderGraphValidationAccess::Execute(firstGraph, firstContext);
+    RenderGraphValidationAccess::Execute(secondGraph, secondContext);
 
     ASSERT_EQ(2u, pass.observedViewportWidths.size());
     ASSERT_EQ(2u, pass.observedFrameNumbers.size());
@@ -3633,21 +3638,21 @@ TEST(RenderPassStatusValidation,
     FakeDevice device;
     RenderGraph sourceGraph;
     RenderGraph targetGraph;
-    sourceGraph.SetDevice(&device);
-    targetGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(sourceGraph, &device);
+    RenderGraphValidationAccess::SetDevice(targetGraph, &device);
 
     const RGTextureHandle sourceTarget = sourceGraph.CreateTexture(
         RHITextureDesc::RenderTarget(4, 4, RHIFormat::RGBA8_UNORM));
-    sourceGraph.Clear();
+    RenderGraphValidationAccess::Reset(sourceGraph);
     ViewData view;
     view.colorTarget = sourceTarget;
 
     pass.AddToGraph(targetGraph, view);
-    targetGraph.Compile();
+    RenderGraphValidationAccess::Compile(targetGraph);
     EXPECT_TRUE(targetGraph.GetCompileStats().compileValid);
 
     RecordingCommandContext commands;
-    targetGraph.Execute(commands);
+    RenderGraphValidationAccess::Execute(targetGraph, commands);
     EXPECT_TRUE(pass.observedViewportWidths.empty());
     EXPECT_TRUE(pass.observedFrameNumbers.empty());
     EXPECT_EQ(0u, commands.beginRenderPassCount);
@@ -3781,7 +3786,7 @@ TEST(RenderPassStatusValidation,
     EXPECT_EQ(1u, execution.frameSnapshot->opaqueDrawItems.size());
     EXPECT_EQ(1u, execution.frameSnapshot->maskedDrawItems.size());
 
-    graph.Clear();
+    RenderGraphValidationAccess::Reset(graph);
     EXPECT_FALSE(execution.IsFrameIdentityValid());
 }
 
@@ -3890,7 +3895,7 @@ TEST_F(RenderPassValidationFixture, MigratedDepthAndOpaquePassesFailClosedForMis
         return context;
     };
     RenderGraph depthGraph;
-    depthGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(depthGraph, &device);
     RenderFrameExecutionPlan depthPlan;
     SceneMeshPassPreparation depthPreparation;
     RenderVisibilityResult depthVisibility;
@@ -3924,16 +3929,16 @@ TEST_F(RenderPassValidationFixture, MigratedDepthAndOpaquePassesFailClosedForMis
     EXPECT_FALSE(depthExecution->directLane.executedCountsAvailable);
     EXPECT_EQ(0u, depthExecution->directLane.executedPacketCount);
     EXPECT_EQ(0u, depthExecution->directLane.executedDrawCount);
-    depthGraph.Compile();
+    RenderGraphValidationAccess::Compile(depthGraph);
     ASSERT_TRUE(depthGraph.GetCompileStats().compileValid);
     RecordingCommandContext depthCommands;
-    depthGraph.Execute(depthCommands);
+    RenderGraphValidationAccess::Execute(depthGraph, depthCommands);
     EXPECT_EQ(0u, depthCommands.beginRenderPassCount);
     EXPECT_EQ(0u, depthCommands.drawIndexedCount);
     EXPECT_EQ(0u, depthCommands.drawIndexedIndirectCount);
 
     RenderGraph opaqueGraph;
-    opaqueGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(opaqueGraph, &device);
     RenderFrameExecutionPlan opaquePlan;
     SceneMeshPassPreparation opaquePreparation;
     RenderVisibilityResult opaqueVisibility;
@@ -3965,16 +3970,16 @@ TEST_F(RenderPassValidationFixture, MigratedDepthAndOpaquePassesFailClosedForMis
     EXPECT_FALSE(opaqueExecution->directLane.executedCountsAvailable);
     EXPECT_EQ(0u, opaqueExecution->directLane.executedPacketCount);
     EXPECT_EQ(0u, opaqueExecution->directLane.executedDrawCount);
-    opaqueGraph.Compile();
+    RenderGraphValidationAccess::Compile(opaqueGraph);
     ASSERT_TRUE(opaqueGraph.GetCompileStats().compileValid);
     RecordingCommandContext opaqueCommands;
-    opaqueGraph.Execute(opaqueCommands);
+    RenderGraphValidationAccess::Execute(opaqueGraph, opaqueCommands);
     EXPECT_EQ(0u, opaqueCommands.beginRenderPassCount);
     EXPECT_EQ(0u, opaqueCommands.drawIndexedCount);
     EXPECT_EQ(0u, opaqueCommands.drawIndexedIndirectCount);
 
     RenderGraph hybridGraph;
-    hybridGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(hybridGraph, &device);
     RenderFrameExecutionPlan hybridPlan;
     SceneMeshPassPreparation hybridPreparation;
     RenderVisibilityResult hybridVisibility;
@@ -4005,7 +4010,7 @@ TEST_F(RenderPassValidationFixture, MigratedDepthAndOpaquePassesFailClosedForMis
     EXPECT_EQ(0u, hybridExecution->directLane.executedDrawCount);
 
     RenderGraph unmatchedReportGraph;
-    unmatchedReportGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(unmatchedReportGraph, &device);
     RenderFrameExecutionPlan unmatchedReportPlan;
     SceneMeshPassPreparation unmatchedReportPreparation;
     RenderVisibilityResult unmatchedReportVisibility;
@@ -4038,14 +4043,14 @@ TEST_F(RenderPassValidationFixture,
     {
         ASSERT_NE(pass, nullptr);
         pass->AddToGraph(graph, legacyView);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
         const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
         ASSERT_EQ(1u, diagnostics.passes.size());
         EXPECT_TRUE(diagnostics.passes[0].usages.empty());
 
         RecordingCommandContext commands;
-        graph.Execute(commands);
+        RenderGraphValidationAccess::Execute(graph, commands);
         EXPECT_EQ(0u, commands.beginRenderPassCount);
         EXPECT_EQ(0u, commands.drawCount);
         EXPECT_EQ(0u, commands.drawIndexedCount);
@@ -4081,7 +4086,7 @@ TEST_F(RenderPassValidationFixture,
     };
 
     RenderGraph depthGraph;
-    depthGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(depthGraph, &device);
     RenderFrameExecutionPlan depthPlan;
     SceneMeshPassPreparation depthPreparation;
     RenderVisibilityResult depthVisibility;
@@ -4094,7 +4099,7 @@ TEST_F(RenderPassValidationFixture,
     expectLegacyAdapterRejection(depthBasePass, depthGraph, depthView);
 
     RenderGraph opaqueGraph;
-    opaqueGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(opaqueGraph, &device);
     RenderFrameExecutionPlan opaquePlan;
     SceneMeshPassPreparation opaquePreparation;
     RenderVisibilityResult opaqueVisibility;
@@ -4152,8 +4157,8 @@ TEST_F(RenderPassValidationFixture,
 
     RenderGraph sourceGraph;
     RenderGraph targetGraph;
-    sourceGraph.SetDevice(&device);
-    targetGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(sourceGraph, &device);
+    RenderGraphValidationAccess::SetDevice(targetGraph, &device);
     RenderFrameExecutionPlan depthPlan;
     SceneMeshPassPreparation depthPreparation;
     RenderVisibilityResult depthVisibility;
@@ -4176,10 +4181,10 @@ TEST_F(RenderPassValidationFixture,
               foreignDepthContext.results->depthStats.failureReason);
     EXPECT_EQ(foreignDepthReportBefore.status,
               foreignDepthContext.results->executionReport.status);
-    targetGraph.Compile();
+    RenderGraphValidationAccess::Compile(targetGraph);
     ASSERT_TRUE(targetGraph.GetCompileStats().compileValid);
     RecordingCommandContext depthCommands;
-    targetGraph.Execute(depthCommands);
+    RenderGraphValidationAccess::Execute(targetGraph, depthCommands);
     EXPECT_EQ(0u, depthCommands.beginRenderPassCount);
     EXPECT_EQ(0u, depthCommands.drawIndexedCount);
     EXPECT_EQ(0u, depthCommands.drawIndexedIndirectCount);
@@ -4187,7 +4192,7 @@ TEST_F(RenderPassValidationFixture,
     // A malformed pair with a non-null snapshot but missing results must be
     // rejected before any snapshot/report dereference or graph declaration.
     RenderGraph missingResultsGraph;
-    missingResultsGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(missingResultsGraph, &device);
     RenderFrameExecutionPlan missingResultsPlan;
     SceneMeshPassPreparation missingResultsPreparation;
     RenderVisibilityResult missingResultsVisibility;
@@ -4206,12 +4211,12 @@ TEST_F(RenderPassValidationFixture,
     missingResultsContext.results.reset();
     OpaquePass missingResultsPass;
     missingResultsPass.AddToGraph(missingResultsGraph, missingResultsContext);
-    missingResultsGraph.Compile();
+    RenderGraphValidationAccess::Compile(missingResultsGraph);
     ASSERT_TRUE(missingResultsGraph.GetCompileStats().compileValid);
     ASSERT_EQ(1u, missingResultsGraph.GetDiagnostics().passes.size());
     EXPECT_TRUE(missingResultsGraph.GetDiagnostics().passes[0].usages.empty());
     RecordingCommandContext missingResultsCommands;
-    missingResultsGraph.Execute(missingResultsCommands);
+    RenderGraphValidationAccess::Execute(missingResultsGraph, missingResultsCommands);
     EXPECT_EQ(0u, missingResultsCommands.beginRenderPassCount);
 
     // A fully paired Opaque source remains owned by its source graph when it
@@ -4219,8 +4224,8 @@ TEST_F(RenderPassValidationFixture,
     // not rewrite its results while rejecting the foreign registration.
     RenderGraph opaqueSourceGraph;
     RenderGraph opaqueTargetGraph;
-    opaqueSourceGraph.SetDevice(&device);
-    opaqueTargetGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(opaqueSourceGraph, &device);
+    RenderGraphValidationAccess::SetDevice(opaqueTargetGraph, &device);
     RenderFrameExecutionPlan foreignOpaquePlan;
     SceneMeshPassPreparation foreignOpaquePreparation;
     RenderVisibilityResult foreignOpaqueVisibility;
@@ -4252,12 +4257,12 @@ TEST_F(RenderPassValidationFixture,
         foreignOpaqueContext.identity.frameSequence;
     OpaquePass foreignOpaquePass;
     foreignOpaquePass.AddToGraph(opaqueTargetGraph, foreignOpaqueContext);
-    opaqueTargetGraph.Compile();
+    RenderGraphValidationAccess::Compile(opaqueTargetGraph);
     ASSERT_TRUE(opaqueTargetGraph.GetCompileStats().compileValid);
     ASSERT_EQ(1u, opaqueTargetGraph.GetDiagnostics().passes.size());
     EXPECT_TRUE(opaqueTargetGraph.GetDiagnostics().passes[0].usages.empty());
     RecordingCommandContext foreignOpaqueCommands;
-    opaqueTargetGraph.Execute(foreignOpaqueCommands);
+    RenderGraphValidationAccess::Execute(opaqueTargetGraph, foreignOpaqueCommands);
     EXPECT_EQ(0u, foreignOpaqueCommands.beginRenderPassCount);
     EXPECT_EQ(foreignOpaqueIdentity, foreignOpaqueContext.results->identity);
     EXPECT_EQ(74u, foreignOpaqueContext.results->opaqueStats.directDrawCount);
@@ -4273,7 +4278,7 @@ TEST_F(RenderPassValidationFixture,
               foreignOpaqueContext.results->executionReport.frameSequence);
 
     RenderGraph staleGraph;
-    staleGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(staleGraph, &device);
     RenderFrameExecutionPlan opaquePlan;
     SceneMeshPassPreparation opaquePreparation;
     RenderVisibilityResult opaqueVisibility;
@@ -4301,7 +4306,7 @@ TEST_F(RenderPassValidationFixture,
         staleOpaqueContext.identity.frameSequence;
     const RenderPassRecordIdentity staleResultsIdentity =
         staleOpaqueContext.results->identity;
-    staleGraph.Clear();
+    RenderGraphValidationAccess::Reset(staleGraph);
 
     OpaquePass opaquePass;
     opaquePass.AddToGraph(staleGraph, staleOpaqueContext);
@@ -4314,10 +4319,10 @@ TEST_F(RenderPassValidationFixture,
               staleOpaqueContext.results->executionReport.status);
     EXPECT_EQ(staleOpaqueContext.identity.frameSequence,
               staleOpaqueContext.results->executionReport.frameSequence);
-    staleGraph.Compile();
+    RenderGraphValidationAccess::Compile(staleGraph);
     ASSERT_TRUE(staleGraph.GetCompileStats().compileValid);
     RecordingCommandContext opaqueCommands;
-    staleGraph.Execute(opaqueCommands);
+    RenderGraphValidationAccess::Execute(staleGraph, opaqueCommands);
     EXPECT_EQ(0u, opaqueCommands.beginRenderPassCount);
     EXPECT_EQ(0u, opaqueCommands.drawIndexedCount);
     EXPECT_EQ(0u, opaqueCommands.drawIndexedIndirectCount);
@@ -4389,7 +4394,7 @@ TEST_F(RenderPassValidationFixture,
     {
         SCOPED_TRACE(caseName);
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         RenderFrameExecutionPlan plan;
         SceneMeshPassPreparation preparation;
         RenderVisibilityResult visibility;
@@ -4404,10 +4409,10 @@ TEST_F(RenderPassValidationFixture,
                   context.results->opaqueStats.failureReason);
         EXPECT_EQ(RenderExecutionStatus::Failed,
                   context.results->executionReport.status);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
         RecordingCommandContext commands;
-        graph.Execute(commands);
+        RenderGraphValidationAccess::Execute(graph, commands);
         EXPECT_EQ(0u, commands.beginRenderPassCount);
         EXPECT_EQ(0u, commands.drawIndexedCount);
         EXPECT_EQ(0u, commands.drawIndexedIndirectCount);
@@ -4442,7 +4447,7 @@ TEST_F(RenderPassValidationFixture,
                    {
                        const RGTextureHandle staleShadow =
                            graph.CreateTexture(shadowDesc);
-                       graph.Clear();
+                       RenderGraphValidationAccess::Reset(graph);
                        renewCurrentGraphSource(graph, context);
                        context.directionalShadow.enabled = true;
                        context.directionalShadow.shadowMap = staleShadow;
@@ -4471,7 +4476,7 @@ TEST_F(RenderPassValidationFixture,
                    {
                        const RGTextureHandle staleShadow =
                            graph.CreateTexture(shadowDesc);
-                       graph.Clear();
+                       RenderGraphValidationAccess::Reset(graph);
                        renewCurrentGraphSource(graph, context);
                        context.rayTracedShadow.enabled = true;
                        context.rayTracedShadow.shadowMask = staleShadow;
@@ -4483,7 +4488,7 @@ TEST_F(RenderPassValidationFixture, MigratedDepthPassExecutesItsOwnedRecordConte
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
         32, 32, PipelineCache::GetDefaultDepthStencilFormat());
     const RGTextureHandle depthTarget = graph.CreateTexture(depthDesc);
@@ -4529,11 +4534,11 @@ TEST_F(RenderPassValidationFixture, MigratedDepthPassExecutesItsOwnedRecordConte
     ConfigureResources(pass, gpuResources, pipelineCache);
     pass.SetMaterialSystem(&materialSystem);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
 
     RecordingCommandContext commandContext;
-    graph.Execute(commandContext);
+    RenderGraphValidationAccess::Execute(graph, commandContext);
     EXPECT_EQ(1u, commandContext.beginRenderPassCount);
     EXPECT_TRUE(context.results->depthStats.planValidated);
     EXPECT_EQ(RenderPolicyReason::None, context.results->depthStats.failureReason);
@@ -4550,7 +4555,7 @@ TEST_F(RenderPassValidationFixture,
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     const std::vector<RenderDrawItem> emptyDrawItems;
     const SceneMeshPassPreparation preparation = PrepareOpaquePackets(
@@ -4642,12 +4647,12 @@ TEST_F(RenderPassValidationFixture,
     mutatedConfig.shadowMapSize = 32;
     shadowPass.SetConfig(mutatedConfig);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(2u, graph.GetCompileStats().totalPasses);
 
     RecordingCommandContext commandContext;
-    graph.Execute(commandContext);
+    RenderGraphValidationAccess::Execute(graph, commandContext);
     opaquePass.PublishRecordResults(context.results, context.identity);
     EXPECT_TRUE(opaquePass.GetShadowStats().requested);
     EXPECT_TRUE(opaquePass.GetShadowStats().renderGraphReadDeclared);
@@ -4716,7 +4721,7 @@ TEST_F(RenderPassValidationFixture,
     {
         SCOPED_TRACE(caseName);
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
         RenderFrameExecutionReport report;
         report.frameSequence = 80;
         RenderPassRecordContext context = makeContext(graph, report);
@@ -4775,7 +4780,7 @@ TEST_F(RenderPassValidationFixture,
         OpaquePass opaquePass;
         ConfigureResources(opaquePass, gpuResources, pipelineCache, materialSystem);
         opaquePass.AddToGraph(graph, context);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         EXPECT_TRUE(graph.GetCompileStats().compileValid);
 
         if (selectNonCasterPrimary)
@@ -4791,7 +4796,7 @@ TEST_F(RenderPassValidationFixture,
             EXPECT_TRUE(shadowDiagnostic->usages.empty());
 
             RecordingCommandContext commands;
-            graph.Execute(commands);
+            RenderGraphValidationAccess::Execute(graph, commands);
             // The only render pass belongs to the independently registered
             // Opaque pass.  ShadowPass declared no resource usage above, so
             // it has no render pass to execute for this record.
@@ -4843,8 +4848,8 @@ TEST_F(RenderPassValidationFixture,
 
     RenderGraph graphA;
     RenderGraph graphB;
-    graphA.SetDevice(&device);
-    graphB.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graphA, &device);
+    RenderGraphValidationAccess::SetDevice(graphB, &device);
 
     scene.GetMutableObject(0).entityId = 4801;
     const MeshGPUBuffers meshBuffers =
@@ -5016,15 +5021,15 @@ TEST_F(RenderPassValidationFixture,
     shadowPass.SetConfig(mutatedConfig);
     shadowPass.SetEnabled(false);
 
-    graphB.Compile();
-    graphA.Compile();
+    RenderGraphValidationAccess::Compile(graphB);
+    RenderGraphValidationAccess::Compile(graphA);
     ASSERT_TRUE(graphB.GetCompileStats().compileValid);
     ASSERT_TRUE(graphA.GetCompileStats().compileValid);
 
     RecordingCommandContext commandContextB;
     RecordingCommandContext commandContextA;
-    graphB.Execute(commandContextB);
-    graphA.Execute(commandContextA);
+    RenderGraphValidationAccess::Execute(graphB, commandContextB);
+    RenderGraphValidationAccess::Execute(graphA, commandContextA);
 
     EXPECT_EQ(configB.numCascades,
               contextB.results->shadowStats.configuredCascadeCount);
@@ -5049,7 +5054,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_TRUE(opaquePassA.GetShadowStats().frameShadowReady);
 
     const RenderPassRecordIdentity oldIdentityA = contextA.identity;
-    graphA.Clear();
+    RenderGraphValidationAccess::Reset(graphA);
     RenderPassRecordIdentity refreshedIdentityA = oldIdentityA;
     refreshedIdentityA.graphIdentity = graphA.GetGraphIdentity();
     refreshedIdentityA.graphRecordingGeneration = graphA.GetRecordingGeneration();
@@ -5205,13 +5210,13 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorS
     ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
     depthDesc.debugName = "RayTracedShadowRuntimeDepth";
     RHITextureRef depthTexture = device.CreateTexture(depthDesc);
     ASSERT_TRUE(depthTexture);
-    view.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    view.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
 
     view.viewportWidth = 64;
     view.viewportHeight = 64;
@@ -5239,12 +5244,12 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorS
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     pass.AddToGraph(graph, view);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.dispatchRaysCount, 1u);
     EXPECT_TRUE(ctx.lastDispatchRaysValidation.valid) << ctx.lastDispatchRaysValidation.message;
@@ -5277,18 +5282,18 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRuntimeCreatesDescriptorS
     pass.SetRayTracingScene(&rayTracingScene);
 
     RenderGraph restartedGraph;
-    restartedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(restartedGraph, &device);
     RHITextureRef restartedDepth = device.CreateTexture(depthDesc);
     ASSERT_TRUE(restartedDepth);
     ViewData restartedView = view;
-    restartedView.depthTarget = restartedGraph.ImportTexture(
+    restartedView.depthTarget = RenderGraphValidationAccess::ImportTexture(restartedGraph,
         restartedDepth.Get(), RHIResourceState::DepthRead);
     restartedView.frameNumber = 1;
     pass.AddToGraph(restartedGraph, restartedView);
-    restartedGraph.Compile();
+    RenderGraphValidationAccess::Compile(restartedGraph);
     ASSERT_TRUE(restartedGraph.GetCompileStats().compileValid);
     RecordingCommandContext restartedContext;
-    restartedGraph.Execute(restartedContext);
+    RenderGraphValidationAccess::Execute(restartedGraph, restartedContext);
     ASSERT_EQ(1u, restartedContext.dispatchRaysCount);
     pass.NotifySubmission(GPUCompletionToken{});
     EXPECT_TRUE(pass.GetStats().dispatchRecorded);
@@ -5402,12 +5407,12 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedMaterialT
               "Ray tracing material texture table exceeds the supported descriptor count");
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef depthTexture = device.CreateTexture(RHITextureDesc::DepthStencil(
         4, 4, PipelineCache::GetDefaultDepthStencilFormat()));
     ASSERT_TRUE(depthTexture);
     ViewData overflowView;
-    overflowView.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    overflowView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
     overflowView.viewportWidth = 4;
     overflowView.viewportHeight = 4;
     overflowView.frameNumber = 1;
@@ -5499,12 +5504,12 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaText
               "Ray tracing alpha texture table exceeds the supported descriptor count");
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef depthTexture = device.CreateTexture(RHITextureDesc::DepthStencil(
         4, 4, PipelineCache::GetDefaultDepthStencilFormat()));
     ASSERT_TRUE(depthTexture);
     ViewData overflowView;
-    overflowView.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    overflowView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
     overflowView.viewportWidth = 4;
     overflowView.viewportHeight = 4;
     overflowView.frameNumber = 1;
@@ -5590,12 +5595,12 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassRejectsOversizedAlphaGeom
               "Ray tracing alpha geometry buffer table exceeds the supported descriptor count");
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef depthTexture = device.CreateTexture(RHITextureDesc::DepthStencil(
         4, 4, PipelineCache::GetDefaultDepthStencilFormat()));
     ASSERT_TRUE(depthTexture);
     ViewData overflowView;
-    overflowView.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    overflowView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
     overflowView.viewportWidth = 4;
     overflowView.viewportHeight = 4;
     overflowView.frameNumber = 1;
@@ -5628,19 +5633,19 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescrip
     ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
     colorDesc.debugName = "RayTracedReflectionRuntimeColor";
     RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
     ASSERT_TRUE(sceneColorTexture);
-    view.colorTarget = graph.ImportTexture(sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph, sceneColorTexture.Get(), RHIResourceState::ShaderResource);
 
     RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
     depthDesc.debugName = "RayTracedReflectionRuntimeDepth";
     RHITextureRef depthTexture = device.CreateTexture(depthDesc);
     ASSERT_TRUE(depthTexture);
-    view.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    view.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
 
     view.viewportWidth = 64;
     view.viewportHeight = 64;
@@ -5667,12 +5672,12 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRuntimeCreatesDescrip
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     pass.AddToGraph(graph, view);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.dispatchRaysCount, 1u);
     EXPECT_TRUE(ctx.lastDispatchRaysValidation.valid) << ctx.lastDispatchRaysValidation.message;
@@ -5763,7 +5768,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedMater
               "Ray tracing material texture table exceeds the supported descriptor count");
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     pass.AddToGraph(graph, view);
 
     const RayTracedReflectionPassStats& stats = pass.GetStats();
@@ -5827,7 +5832,7 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassRejectsOversizedGeome
               "Ray tracing geometry buffer table exceeds the supported descriptor count");
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     pass.AddToGraph(graph, view);
 
     const RayTracedReflectionPassStats& stats = pass.GetStats();
@@ -5846,20 +5851,20 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
     ASSERT_NO_FATAL_FAILURE(PrepareRayTracingSceneForSingleObject(device, gpuResources, scene, rayTracingScene));
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
     colorDesc.debugName = "RayTracedReflectionChainColor";
     RHITextureRef sceneColorTexture = device.CreateTexture(colorDesc);
     ASSERT_TRUE(sceneColorTexture);
-    view.colorTarget = graph.ImportTexture(sceneColorTexture.Get(), RHIResourceState::RenderTarget);
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph, sceneColorTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(view.colorTarget, RHIResourceState::RenderTarget);
 
     RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
     depthDesc.debugName = "RayTracedReflectionChainDepth";
     RHITextureRef depthTexture = device.CreateTexture(depthDesc);
     ASSERT_TRUE(depthTexture);
-    view.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    view.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
     graph.SetExportState(view.depthTarget, RHIResourceState::DepthRead);
 
     view.viewportWidth = 64;
@@ -5920,13 +5925,13 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionRenderGraphChainDenoisesB
     EXPECT_FALSE(compositeSetupStats.denoiseFallbackToRaw);
     EXPECT_EQ(compositeSetupStats.source, RayTracedReflectionCompositeSource::DenoisedReflection);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 3u);
     EXPECT_EQ(graph.GetCompileStats().culledPasses, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.dispatchRaysCount, 1u);
     EXPECT_EQ(ctx.drawCount, 2u);
@@ -5970,10 +5975,10 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassReusesHistoryAcrossStable
     auto runFrame = [&](uint64 frameNumber, RecordingCommandContext& ctx)
     {
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
 
         ViewData frameView;
-        frameView.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+        frameView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
         frameView.viewportWidth = 64;
         frameView.viewportHeight = 64;
         frameView.aspectRatio = 1.0f;
@@ -5992,11 +5997,11 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassReusesHistoryAcrossStable
         frameView.resetTemporalHistory = false;
 
         pass.AddToGraph(graph, frameView);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         EXPECT_TRUE(graph.GetCompileStats().compileValid);
         EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
 
-        graph.Execute(ctx);
+        RenderGraphValidationAccess::Execute(graph, ctx);
         pass.NotifySubmission(GPUCompletionToken{});
     };
 
@@ -6055,7 +6060,7 @@ TEST_F(RenderPassValidationFixture,
                               bool resetTemporalHistory) -> RayTracedShadowPassStats
     {
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
 
         RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
             extent, extent, PipelineCache::GetDefaultDepthStencilFormat());
@@ -6068,7 +6073,7 @@ TEST_F(RenderPassValidationFixture,
         }
 
         ViewData frameView;
-        frameView.depthTarget = graph.ImportTexture(
+        frameView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
             depthTexture.Get(), RHIResourceState::DepthRead);
         frameView.viewportWidth = extent;
         frameView.viewportHeight = extent;
@@ -6100,12 +6105,12 @@ TEST_F(RenderPassValidationFixture,
         }
 
         pass.AddToGraph(graph, context);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         EXPECT_TRUE(graph.GetCompileStats().compileValid);
         EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
 
         RecordingCommandContext commands;
-        graph.Execute(commands);
+        RenderGraphValidationAccess::Execute(graph, commands);
         EXPECT_EQ(commands.dispatchRaysCount, 1u);
         EXPECT_TRUE(commands.lastDispatchRaysValidation.valid)
             << commands.lastDispatchRaysValidation.message;
@@ -6192,7 +6197,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
         recordDepthTextures.push_back(depthTexture);
 
         ViewData frameView;
-        frameView.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+        frameView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
         frameView.viewportWidth = 64;
         frameView.viewportHeight = 64;
         frameView.frameNumber = frameNumber;
@@ -6249,8 +6254,8 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
 
     RenderGraph graphA;
     RenderGraph graphB;
-    graphA.SetDevice(&device);
-    graphB.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graphA, &device);
+    RenderGraphValidationAccess::SetDevice(graphB, &device);
     RenderPassRecordContext contextA = makeRecord(graphA, 100);
     RenderPassRecordContext contextB = makeRecord(graphB, 101);
     ConfigurePrimaryDirectionalLightRecord(
@@ -6315,12 +6320,12 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     const FakeBuffer* const constantsB = rayConstantBuffers.back();
     ASSERT_NE(constantsA, nullptr);
     ASSERT_NE(constantsB, nullptr);
-    graphA.Compile();
-    graphB.Compile();
+    RenderGraphValidationAccess::Compile(graphA);
+    RenderGraphValidationAccess::Compile(graphB);
     ASSERT_TRUE(graphA.GetCompileStats().compileValid);
     ASSERT_TRUE(graphB.GetCompileStats().compileValid);
-    RHITexture* const outputA = graphA.GetTexture(contextA.results->rayTracedShadowOutput.shadowMask);
-    RHITexture* const outputB = graphB.GetTexture(contextB.results->rayTracedShadowOutput.shadowMask);
+    RHITexture* const outputA = RenderGraphValidationAccess::GetTexture(graphA, contextA.results->rayTracedShadowOutput.shadowMask);
+    RHITexture* const outputB = RenderGraphValidationAccess::GetTexture(graphB, contextB.results->rayTracedShadowOutput.shadowMask);
     ASSERT_NE(outputA, nullptr);
     ASSERT_NE(outputB, nullptr);
     EXPECT_NE(outputA, outputB);
@@ -6330,8 +6335,8 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     const size_t descriptorCountBefore = device.createdDescriptorSetDescs.size();
     RecordingCommandContext commandsB;
     RecordingCommandContext commandsA;
-    graphB.Execute(commandsB);
-    graphA.Execute(commandsA);
+    RenderGraphValidationAccess::Execute(graphB, commandsB);
+    RenderGraphValidationAccess::Execute(graphA, commandsA);
     ASSERT_EQ(1u, commandsA.dispatchRaysCount);
     ASSERT_EQ(1u, commandsB.dispatchRaysCount);
     ASSERT_GE(constantsA->GetStorage().size(), sizeof(Mat4) * 2 + sizeof(Vec4));
@@ -6381,22 +6386,22 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     // identity-scoped notify path independently of inverse-order submission.
     RenderGraph graphC;
     RenderGraph graphD;
-    graphC.SetDevice(&device);
-    graphD.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graphC, &device);
+    RenderGraphValidationAccess::SetDevice(graphD, &device);
     RenderPassRecordContext contextC = makeRecord(graphC, 102);
     RenderPassRecordContext contextD = makeRecord(graphD, 103);
     pass.SetConfig(configA);
     pass.AddToGraph(graphC, contextC);
     pass.SetConfig(configB);
     pass.AddToGraph(graphD, contextD);
-    graphC.Compile();
-    graphD.Compile();
+    RenderGraphValidationAccess::Compile(graphC);
+    RenderGraphValidationAccess::Compile(graphD);
     ASSERT_TRUE(graphC.GetCompileStats().compileValid);
     ASSERT_TRUE(graphD.GetCompileStats().compileValid);
     RecordingCommandContext commandsC;
     RecordingCommandContext commandsD;
-    graphC.Execute(commandsC);
-    graphD.Execute(commandsD);
+    RenderGraphValidationAccess::Execute(graphC, commandsC);
+    RenderGraphValidationAccess::Execute(graphD, commandsD);
     pass.NotifySubmission(contextC.identity, GPUCompletionToken{});
     EXPECT_EQ(pass.GetStats().samplesPerPixel, configA.rayTracedSamplesPerPixel);
     pass.NotifySubmission(contextD.identity, GPUCompletionToken{});
@@ -6406,8 +6411,8 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     // history and submits normally after E is abandoned.
     RenderGraph abandonedGraph;
     RenderGraph retainedGraph;
-    abandonedGraph.SetDevice(&device);
-    retainedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(abandonedGraph, &device);
+    RenderGraphValidationAccess::SetDevice(retainedGraph, &device);
     RenderPassRecordContext abandoned = makeRecord(abandonedGraph, 104);
     RenderPassRecordContext retained = makeRecord(retainedGraph, 105);
     pass.SetConfig(configA);
@@ -6416,16 +6421,16 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     pass.AddToGraph(retainedGraph, retained);
     ASSERT_TRUE(retained.results->rayTracedShadowStats.historyAvailable);
     pass.ReleaseUnsubmittedFrame(abandoned.identity);
-    retainedGraph.Compile();
+    RenderGraphValidationAccess::Compile(retainedGraph);
     ASSERT_TRUE(retainedGraph.GetCompileStats().compileValid);
     RecordingCommandContext retainedCommands;
-    retainedGraph.Execute(retainedCommands);
+    RenderGraphValidationAccess::Execute(retainedGraph, retainedCommands);
     ASSERT_EQ(1u, retainedCommands.dispatchRaysCount);
     pass.NotifySubmission(retained.identity, GPUCompletionToken{});
     EXPECT_EQ(pass.GetStats().samplesPerPixel, configB.rayTracedSamplesPerPixel);
 
     RenderGraph nextGraph;
-    nextGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(nextGraph, &device);
     RenderPassRecordContext next = makeRecord(nextGraph, 106);
     pass.SetConfig(configB);
     pass.AddToGraph(nextGraph, next);
@@ -6438,18 +6443,18 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     // overwrite its diagnostics nor roll temporal history back to config A.
     RenderGraph delayedGraph;
     RenderGraph rejectedGraph;
-    delayedGraph.SetDevice(&device);
-    rejectedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(delayedGraph, &device);
+    RenderGraphValidationAccess::SetDevice(rejectedGraph, &device);
     RenderPassRecordContext delayed = makeRecord(delayedGraph, 108);
     RenderPassRecordContext rejected = makeRecord(rejectedGraph, 109);
     pass.SetConfig(configA);
     pass.AddToGraph(delayedGraph, delayed);
     pass.SetConfig(configB);
     pass.AddToGraph(rejectedGraph, rejected);
-    delayedGraph.Compile();
+    RenderGraphValidationAccess::Compile(delayedGraph);
     ASSERT_TRUE(delayedGraph.GetCompileStats().compileValid);
     RecordingCommandContext delayedCommands;
-    delayedGraph.Execute(delayedCommands);
+    RenderGraphValidationAccess::Execute(delayedGraph, delayedCommands);
     ASSERT_EQ(1u, delayedCommands.dispatchRaysCount);
     pass.NotifySubmission(rejected.identity, GPUCompletionToken{});
     EXPECT_EQ(pass.GetStats().samplesPerPixel, configB.rayTracedSamplesPerPixel);
@@ -6459,7 +6464,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     EXPECT_FALSE(pass.GetStats().dispatchRecorded);
 
     RenderGraph successorGraph;
-    successorGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(successorGraph, &device);
     RenderPassRecordContext successor = makeRecord(successorGraph, 110);
     pass.SetConfig(configB);
     pass.AddToGraph(successorGraph, successor);
@@ -6477,14 +6482,14 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     pass.SetSubmissionTracker(&compatibilityTracker);
 
     RenderGraph timingGraph;
-    timingGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(timingGraph, &device);
     RenderPassRecordContext timing = makeRecord(timingGraph, 111);
     pass.SetConfig(configB);
     pass.AddToGraph(timingGraph, timing);
-    timingGraph.Compile();
+    RenderGraphValidationAccess::Compile(timingGraph);
     ASSERT_TRUE(timingGraph.GetCompileStats().compileValid);
     RecordingCommandContext timingCommands;
-    timingGraph.Execute(timingCommands);
+    RenderGraphValidationAccess::Execute(timingGraph, timingCommands);
     ASSERT_EQ(1u, timingCommands.dispatchRaysCount);
     GPUCompletionToken timingCompletion;
     ASSERT_TRUE(InsertGPUCompletionPoint(
@@ -6509,7 +6514,7 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     // completing the second graph.
     pass.SetEnabled(true);
     RenderGraph legacyRejectedGraph;
-    legacyRejectedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(legacyRejectedGraph, &device);
     ViewData legacyRejectedView;
     legacyRejectedView.frameNumber = 112;
     legacyRejectedView.viewportWidth = 64;
@@ -6517,44 +6522,44 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassScopesSubmissionAndReleas
     pass.AddToGraph(legacyRejectedGraph, legacyRejectedView);
 
     RenderGraph blockedLegacyGraph;
-    blockedLegacyGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(blockedLegacyGraph, &device);
     RenderPassRecordContext blockedLegacyRecord = makeRecord(blockedLegacyGraph, 113);
     pass.AddToGraph(blockedLegacyGraph, blockedLegacyRecord.view);
-    blockedLegacyGraph.Compile();
+    RenderGraphValidationAccess::Compile(blockedLegacyGraph);
     ASSERT_TRUE(blockedLegacyGraph.GetCompileStats().compileValid);
     RecordingCommandContext blockedLegacyCommands;
-    blockedLegacyGraph.Execute(blockedLegacyCommands);
+    RenderGraphValidationAccess::Execute(blockedLegacyGraph, blockedLegacyCommands);
     EXPECT_EQ(0u, blockedLegacyCommands.dispatchRaysCount);
     pass.NotifySubmission(GPUCompletionToken{});
     EXPECT_EQ(0u, pass.GetStats().width);
     EXPECT_FALSE(pass.GetStats().dispatchRecorded);
 
     RenderGraph completedLegacyGraph;
-    completedLegacyGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(completedLegacyGraph, &device);
     RenderPassRecordContext completedLegacyRecord = makeRecord(completedLegacyGraph, 114);
     pass.AddToGraph(completedLegacyGraph, completedLegacyRecord.view);
-    completedLegacyGraph.Compile();
+    RenderGraphValidationAccess::Compile(completedLegacyGraph);
     ASSERT_TRUE(completedLegacyGraph.GetCompileStats().compileValid);
     RecordingCommandContext completedLegacyCommands;
-    completedLegacyGraph.Execute(completedLegacyCommands);
+    RenderGraphValidationAccess::Execute(completedLegacyGraph, completedLegacyCommands);
     ASSERT_EQ(1u, completedLegacyCommands.dispatchRaysCount);
     pass.NotifySubmission(GPUCompletionToken{});
     EXPECT_TRUE(pass.GetStats().dispatchRecorded);
 
     RenderGraph releasedLegacyGraph;
-    releasedLegacyGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(releasedLegacyGraph, &device);
     RenderPassRecordContext releasedLegacyRecord = makeRecord(releasedLegacyGraph, 115);
     pass.AddToGraph(releasedLegacyGraph, releasedLegacyRecord.view);
     pass.ReleaseUnsubmittedFrame();
 
     RenderGraph postReleaseLegacyGraph;
-    postReleaseLegacyGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(postReleaseLegacyGraph, &device);
     RenderPassRecordContext postReleaseLegacyRecord = makeRecord(postReleaseLegacyGraph, 116);
     pass.AddToGraph(postReleaseLegacyGraph, postReleaseLegacyRecord.view);
-    postReleaseLegacyGraph.Compile();
+    RenderGraphValidationAccess::Compile(postReleaseLegacyGraph);
     ASSERT_TRUE(postReleaseLegacyGraph.GetCompileStats().compileValid);
     RecordingCommandContext postReleaseLegacyCommands;
-    postReleaseLegacyGraph.Execute(postReleaseLegacyCommands);
+    RenderGraphValidationAccess::Execute(postReleaseLegacyGraph, postReleaseLegacyCommands);
     ASSERT_EQ(1u, postReleaseLegacyCommands.dispatchRaysCount);
     pass.NotifySubmission(GPUCompletionToken{});
 }
@@ -6631,7 +6636,7 @@ TEST_F(RenderPassValidationFixture,
         RayTracedShadowRecordOutput rayTracedInputs;
         rayTracedInputs.enabled = true;
         rayTracedInputs.executionState = executionState;
-        rayTracedInputs.shadowMask = graph.ImportTexture(
+        rayTracedInputs.shadowMask = RenderGraphValidationAccess::ImportTexture(graph,
             mask.Get(), RHIResourceState::ShaderResource);
 
         const RenderFramePlanCompileResult compiled = CompileForcedGPUPlan(
@@ -6662,14 +6667,14 @@ TEST_F(RenderPassValidationFixture,
 
     RenderGraph graphA;
     RenderGraph graphB;
-    graphA.SetDevice(&device);
-    graphB.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graphA, &device);
+    RenderGraphValidationAccess::SetDevice(graphB, &device);
     OpaquePass passA;
     OpaquePass passB;
     recordOpaque(graphA, passA, batchA, "OpaqueBatchColorA", "OpaqueBatchMaskA", 624);
     recordOpaque(graphB, passB, batchB, "OpaqueBatchColorB", "OpaqueBatchMaskB", 625);
-    graphA.Compile();
-    graphB.Compile();
+    RenderGraphValidationAccess::Compile(graphA);
+    RenderGraphValidationAccess::Compile(graphB);
     ASSERT_TRUE(graphA.GetCompileStats().compileValid);
     ASSERT_TRUE(graphB.GetCompileStats().compileValid);
 
@@ -6677,8 +6682,8 @@ TEST_F(RenderPassValidationFixture,
     // while executing A. B must still own its actual bindings until B's token.
     RecordingCommandContext commandsB;
     RecordingCommandContext commandsA;
-    graphB.Execute(commandsB);
-    RenderGraphExecution executionB = graphB.TakeExecution();
+    RenderGraphValidationAccess::Execute(graphB, commandsB);
+    RenderGraphExecution executionB = RenderGraphValidationAccess::TakeExecution(graphB);
     ASSERT_TRUE(executionB);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionB.GetState());
     ASSERT_FALSE(commandsB.descriptorSetPointers.empty());
@@ -6693,8 +6698,8 @@ TEST_F(RenderPassValidationFixture,
     // batch. The graph execution owns every binding used by this recording.
     EXPECT_EQ(0u, batchB.GetRetainedObjectCount());
 
-    graphA.Execute(commandsA);
-    RenderGraphExecution executionA = graphA.TakeExecution();
+    RenderGraphValidationAccess::Execute(graphA, commandsA);
+    RenderGraphExecution executionA = RenderGraphValidationAccess::TakeExecution(graphA);
     ASSERT_TRUE(executionA);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionA.GetState());
     ASSERT_FALSE(commandsA.descriptorSetPointers.empty());
@@ -6764,11 +6769,11 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossSt
     auto runFrame = [&](uint64 frameNumber, RecordingCommandContext& ctx)
     {
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
 
         ViewData frameView;
-        frameView.colorTarget = graph.ImportTexture(sceneColorTexture.Get(), RHIResourceState::ShaderResource);
-        frameView.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+        frameView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph, sceneColorTexture.Get(), RHIResourceState::ShaderResource);
+        frameView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
         frameView.viewportWidth = 64;
         frameView.viewportHeight = 64;
         frameView.aspectRatio = 1.0f;
@@ -6787,11 +6792,11 @@ TEST_F(RenderPassValidationFixture, RayTracedReflectionPassReusesHistoryAcrossSt
         frameView.resetTemporalHistory = false;
 
         pass.AddToGraph(graph, frameView);
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         EXPECT_TRUE(graph.GetCompileStats().compileValid);
         EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
 
-        graph.Execute(ctx);
+        RenderGraphValidationAccess::Execute(graph, ctx);
     };
 
     RecordingCommandContext firstCtx;
@@ -6851,7 +6856,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassDisabledDoesNotDeclareOrDrawCascad
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     std::vector<RenderDrawItem> opaqueItems;
     std::vector<RenderDrawItem> maskedItems;
@@ -6873,7 +6878,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassDisabledDoesNotDeclareOrDrawCascad
             graph, pass, view, opaqueItems, maskedItems, compiled.plan,
             preparation, report, MakeShadowPrimaryLight());
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
     EXPECT_EQ(stats.totalPasses, 1u);
@@ -6882,7 +6887,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassDisabledDoesNotDeclareOrDrawCascad
     EXPECT_EQ(results->shadowStats.declaredCascadeResourceCount, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
     EXPECT_EQ(ctx.drawIndexedCount, 0u);
@@ -6895,7 +6900,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassSetupDeclaresCascadeDepthResources
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     view.viewportWidth = 320;
     view.viewportHeight = 180;
@@ -6929,7 +6934,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassSetupDeclaresCascadeDepthResources
             graph, pass, view, opaqueItems, maskedItems, compiled.plan,
             preparation, report, MakeShadowPrimaryLight());
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const DirectionalShadowRecordOutput& output =
         results->directionalShadowOutput;
     ASSERT_TRUE(output.enabled);
@@ -6968,7 +6973,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStabilizesCascadeCentersToShadowTe
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     view.viewportWidth = 320;
     view.viewportHeight = 180;
@@ -7003,13 +7008,13 @@ TEST_F(RenderPassValidationFixture, ShadowPassStabilizesCascadeCentersToShadowTe
             graph, stabilizedPass, view, opaqueItems, maskedItems,
             compiled.plan, preparation, stabilizedReport,
             MakeShadowPrimaryLight());
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_EQ(stabilizedResults->directionalShadowOutput
                   .cascadeViewProjections.size(),
               static_cast<size_t>(3));
 
     RenderGraph unsnappedGraph;
-    unsnappedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(unsnappedGraph, &device);
     config.stabilizeCascades = false;
     RenderFrameExecutionReport unsnappedReport =
         MakeExecutionReport(compiled.plan);
@@ -7023,7 +7028,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStabilizesCascadeCentersToShadowTe
             unsnappedGraph, unsnappedPass, view, opaqueItems, maskedItems,
             compiled.plan, preparation, unsnappedReport,
             MakeShadowPrimaryLight());
-    unsnappedGraph.Compile();
+    RenderGraphValidationAccess::Compile(unsnappedGraph);
 
     ASSERT_EQ(unsnappedResults->directionalShadowOutput
                   .cascadeViewProjections.size(),
@@ -7042,7 +7047,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStableCascadeIgnoresSubTexelCamera
     auto buildFirstCascadeMatrix = [&](const ViewData& inputView)
     {
         RenderGraph graph;
-        graph.SetDevice(&device);
+        RenderGraphValidationAccess::SetDevice(graph, &device);
 
         ViewData localView = inputView;
         std::vector<RenderDrawItem> opaqueItems;
@@ -7067,7 +7072,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassStableCascadeIgnoresSubTexelCamera
             AddTypedShadowRecording(
                 graph, pass, localView, opaqueItems, maskedItems,
                 compiled.plan, preparation, report, MakeShadowPrimaryLight());
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         EXPECT_FALSE(results->directionalShadowOutput
                          .cascadeViewProjections.empty());
         return results->directionalShadowOutput.cascadeViewProjections[0];
@@ -7121,7 +7126,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassSingleCascadeStillDeclaresArrayCom
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     view.viewportWidth = 64;
     view.viewportHeight = 64;
@@ -7154,7 +7159,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassSingleCascadeStillDeclaresArrayCom
         AddTypedShadowRecording(
             graph, pass, view, opaqueItems, maskedItems, compiled.plan,
             preparation, report, MakeShadowPrimaryLight());
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     ASSERT_TRUE(results->directionalShadowOutput.shadowMap.IsValid());
     const RHITextureDesc* desc = graph.GetTextureDesc(
@@ -7176,7 +7181,7 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
     scene.AddObject(nonCaster);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     view.viewportWidth = 320;
     view.viewportHeight = 180;
@@ -7224,10 +7229,10 @@ TEST_F(RenderPassValidationFixture, ShadowPassExecuteResolvesCascadeViewsAndDraw
         AddTypedShadowRecording(
             graph, pass, view, opaqueItems, maskedItems, compiled.plan,
             preparation, report, MakeShadowPrimaryLight());
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.beginRenderPassCount, 2u);
     EXPECT_EQ(ctx.endRenderPassCount, 2u);
@@ -7298,16 +7303,16 @@ TEST_F(RenderPassValidationFixture,
     auto* const pass = static_cast<SkyboxPass*>(registry.GetPasses()[0].get());
     ASSERT_NE(nullptr, pass);
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     ViewData recordView = view;
-    recordView.colorTarget = graph.ImportTexture(
+    recordView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         colorTexture.Get(), RHIResourceState::RenderTarget);
     RenderSkySnapshot disabledSky;
     disabledSky.mode = RenderSkyMode::Disabled;
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, recordView, scene, disabledSky, 900, 900);
     pass->AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
     ASSERT_EQ(1u, graph.GetDiagnostics().passes.size());
     EXPECT_TRUE(graph.GetDiagnostics().passes[0].usages.empty());
@@ -7323,7 +7328,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef graphColor = device.CreateTexture(
         RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
@@ -7332,9 +7337,9 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
             64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
     ASSERT_TRUE(graphColor);
     ASSERT_TRUE(graphDepth);
-    view.colorTarget = graph.ImportTexture(
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         graphColor.Get(), RHIResourceState::RenderTarget);
-    view.depthTarget = graph.ImportTexture(
+    view.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
         graphDepth.Get(), RHIResourceState::DepthRead);
 
     view.viewportWidth = 64;
@@ -7361,9 +7366,9 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsProceduralFullscreenTriangleT
         graph, view, scene, sky, 901, 901);
     pass.AddToGraph(graph, context);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(ctx.beginRenderPassCount, 1u);
     ASSERT_EQ(ctx.endRenderPassCount, 1u);
@@ -7442,8 +7447,8 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDe
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
-    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph, colorTexture.Get(), RHIResourceState::RenderTarget);
     view.viewportWidth = 64;
     view.viewportHeight = 64;
 
@@ -7457,9 +7462,9 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsFullscreenBackgroundWithoutDe
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 902, 902);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(ctx.beginRenderPassCount, 1u);
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
@@ -7475,8 +7480,8 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
-    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph, colorTexture.Get(), RHIResourceState::RenderTarget);
     view.viewportWidth = 64;
     view.viewportHeight = 64;
 
@@ -7486,7 +7491,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
     ASSERT_TRUE(cubemapHandle.IsValid());
     RHITexture* cubemap = gpuResources.GetRegistry().ResolveTextureObject(cubemapHandle);
     ASSERT_NE(cubemap, nullptr);
-    view.environmentSkyTexture = graph.ImportTexture(
+    view.environmentSkyTexture = RenderGraphValidationAccess::ImportTexture(graph,
         cubemap, RHIResourceState::Common);
 
     SkyboxPass pass;
@@ -7504,7 +7509,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 903, 903);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const RenderGraph::Diagnostics graphDiagnostics = graph.GetDiagnostics();
     ASSERT_EQ(1u, graphDiagnostics.passes.size());
     const auto skyUsage = std::find_if(
@@ -7522,7 +7527,7 @@ TEST_F(RenderPassValidationFixture, SkyboxPassDrawsCubemapFullscreenTriangle)
     EXPECT_GT(graphDiagnostics.passes[0].textureBarrierCount, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(ctx.beginRenderPassCount, 1u);
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
@@ -7555,8 +7560,8 @@ TEST_F(RenderPassValidationFixture,
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
-    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph, colorTexture.Get(), RHIResourceState::RenderTarget);
 
     Resource::TextureHandle cubemapResource = CreateCubemapTextureResource(911);
     const RenderResourceHandle cubemapHandle =
@@ -7564,7 +7569,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(cubemapHandle.IsValid());
     RHITexture* cubemap = gpuResources.GetRegistry().ResolveTextureObject(cubemapHandle);
     ASSERT_NE(cubemap, nullptr);
-    view.environmentSkyTexture = graph.ImportTexture(
+    view.environmentSkyTexture = RenderGraphValidationAccess::ImportTexture(graph,
         cubemap, RHIResourceState::Common);
 
     SkyboxPass pass;
@@ -7586,10 +7591,10 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 904, 904);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     // Graph views are a transactional realization boundary. Once an explicit
     // view fails, the frame must not execute a different path that was not in
@@ -7613,8 +7618,8 @@ TEST_F(RenderPassValidationFixture,
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
-    view.colorTarget = graph.ImportTexture(
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         colorTexture.Get(), RHIResourceState::RenderTarget);
 
     SkyboxPass pass;
@@ -7630,10 +7635,10 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 907, 907);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext commands;
-    graph.Execute(commands);
+    RenderGraphValidationAccess::Execute(graph, commands);
     ASSERT_EQ(1u, commands.drawCount);
 
     const FakeBuffer* constantsBuffer = FindCreatedBuffer(
@@ -7663,8 +7668,8 @@ TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenSamplerCannotBeCreate
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
-    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph, colorTexture.Get(), RHIResourceState::RenderTarget);
     device.samplerCreationSucceeds = false;
 
     SkyboxPass pass;
@@ -7678,10 +7683,10 @@ TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenSamplerCannotBeCreate
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 905, 905);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_TRUE(ctx.pipelineSequence.empty());
     EXPECT_EQ(ctx.drawCount, 0u);
@@ -7695,8 +7700,8 @@ TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenConstantsCannotMap)
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE(false);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
-    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph, colorTexture.Get(), RHIResourceState::RenderTarget);
 
     SkyboxPass pass;
     pass.SetResources(&pipelineCache);
@@ -7707,10 +7712,10 @@ TEST_F(RenderPassValidationFixture, SkyboxPassSkipsDrawWhenConstantsCannotMap)
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, view, scene, sky, 906, 906);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_TRUE(ctx.pipelineSequence.empty());
     EXPECT_EQ(ctx.drawCount, 0u);
@@ -7766,23 +7771,23 @@ TEST_F(RenderPassValidationFixture,
 
     RenderGraph graphA;
     RenderGraph graphB;
-    graphA.SetDevice(&device);
-    graphB.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graphA, &device);
+    RenderGraphValidationAccess::SetDevice(graphB, &device);
     ViewData viewA = view;
-    viewA.colorTarget = graphA.ImportTexture(
+    viewA.colorTarget = RenderGraphValidationAccess::ImportTexture(graphA,
         targetsA.first.Get(), RHIResourceState::RenderTarget);
-    viewA.depthTarget = graphA.ImportTexture(
+    viewA.depthTarget = RenderGraphValidationAccess::ImportTexture(graphA,
         targetsA.second.Get(), RHIResourceState::DepthRead);
     viewA.viewportWidth = 64;
     viewA.viewportHeight = 64;
     viewA.cameraPosition = Vec3{2.0f, 3.0f, 4.0f};
     ViewData viewB = view;
-    viewB.colorTarget = graphB.ImportTexture(
+    viewB.colorTarget = RenderGraphValidationAccess::ImportTexture(graphB,
         targetsB.first.Get(), RHIResourceState::RenderTarget);
     viewB.viewportWidth = 128;
     viewB.viewportHeight = 128;
     viewB.cameraPosition = Vec3{9.0f, 8.0f, 7.0f};
-    viewB.environmentSkyTexture = graphB.ImportTexture(
+    viewB.environmentSkyTexture = RenderGraphValidationAccess::ImportTexture(graphB,
         cubemap, RHIResourceState::Common);
 
     RenderSkySnapshot skyA;
@@ -7818,8 +7823,8 @@ TEST_F(RenderPassValidationFixture,
         &contextA.results->executionReport;
     contextA.frameSnapshot = std::move(replacementSnapshot);
 
-    graphA.Compile();
-    graphB.Compile();
+    RenderGraphValidationAccess::Compile(graphA);
+    RenderGraphValidationAccess::Compile(graphB);
     ASSERT_TRUE(graphA.GetCompileStats().compileValid);
     ASSERT_TRUE(graphB.GetCompileStats().compileValid);
     const auto expectAccesses = [](const RenderGraph& graph,
@@ -7896,8 +7901,8 @@ TEST_F(RenderPassValidationFixture,
 
     RecordingCommandContext commandsB;
     RecordingCommandContext commandsA;
-    graphB.Execute(commandsB);
-    graphA.Execute(commandsA);
+    RenderGraphValidationAccess::Execute(graphB, commandsB);
+    RenderGraphValidationAccess::Execute(graphA, commandsA);
     ASSERT_EQ(1u, commandsA.drawCount);
     ASSERT_EQ(1u, commandsB.drawCount);
     ASSERT_EQ(1u, commandsA.renderPasses.size());
@@ -7978,7 +7983,7 @@ TEST_F(RenderPassValidationFixture,
                                  RenderSubmissionResourceBatch* batch = nullptr)
     {
         ViewData recordView = view;
-        recordView.colorTarget = graph.ImportTexture(
+        recordView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
             color, RHIResourceState::RenderTarget);
         RenderSkySnapshot sky;
         sky.mode = RenderSkyMode::SolidColor;
@@ -7989,12 +7994,12 @@ TEST_F(RenderPassValidationFixture,
     const auto expectNoUsageOrCommands = [](RenderGraph& graph,
                                              RecordingCommandContext& commands)
     {
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
         const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
         ASSERT_EQ(1u, diagnostics.passes.size());
         EXPECT_TRUE(diagnostics.passes[0].usages.empty());
-        graph.Execute(commands);
+        RenderGraphValidationAccess::Execute(graph, commands);
         EXPECT_EQ(0u, commands.beginRenderPassCount);
         EXPECT_EQ(0u, commands.drawCount);
     };
@@ -8002,11 +8007,11 @@ TEST_F(RenderPassValidationFixture,
     // The ViewData overload cannot recover an execution mailbox, and the old
     // Setup/Execute entry points are inert too.
     RenderGraph legacyGraph;
-    legacyGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(legacyGraph, &device);
     RHITextureRef legacyColor = makeColor(64);
     ASSERT_TRUE(legacyColor);
     ViewData legacyView = view;
-    legacyView.colorTarget = legacyGraph.ImportTexture(
+    legacyView.colorTarget = RenderGraphValidationAccess::ImportTexture(legacyGraph,
         legacyColor.Get(), RHIResourceState::RenderTarget);
     pass.AddToGraph(legacyGraph, legacyView);
     RecordingCommandContext legacyCommands;
@@ -8017,7 +8022,7 @@ TEST_F(RenderPassValidationFixture,
 
     // A missing color target and a disabled pass do not publish attachments.
     RenderGraph missingColorGraph;
-    missingColorGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(missingColorGraph, &device);
     ViewData missingColorView = view;
     RenderSkySnapshot sky;
     sky.mode = RenderSkyMode::SolidColor;
@@ -8029,7 +8034,7 @@ TEST_F(RenderPassValidationFixture,
 
     pass.SetEnabled(false);
     RenderGraph disabledGraph;
-    disabledGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(disabledGraph, &device);
     RHITextureRef disabledColor = makeColor(64);
     ASSERT_TRUE(disabledColor);
     RenderPassRecordContext disabled = makeContext(
@@ -8042,11 +8047,11 @@ TEST_F(RenderPassValidationFixture,
     // A disabled packet is a complete, explicit no-op even while the
     // compatibility bridge has a supported sky configured from another frame.
     RenderGraph disabledSkyGraph;
-    disabledSkyGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(disabledSkyGraph, &device);
     RHITextureRef disabledSkyColor = makeColor(64);
     ASSERT_TRUE(disabledSkyColor);
     ViewData disabledSkyView = view;
-    disabledSkyView.colorTarget = disabledSkyGraph.ImportTexture(
+    disabledSkyView.colorTarget = RenderGraphValidationAccess::ImportTexture(disabledSkyGraph,
         disabledSkyColor.Get(), RHIResourceState::RenderTarget);
     RenderSkySnapshot disabledSky;
     disabledSky.mode = RenderSkyMode::Disabled;
@@ -8060,8 +8065,8 @@ TEST_F(RenderPassValidationFixture,
     // self-graph incomplete snapshot all fail before any graph declaration.
     RenderGraph sourceGraph;
     RenderGraph foreignGraph;
-    sourceGraph.SetDevice(&device);
-    foreignGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(sourceGraph, &device);
+    RenderGraphValidationAccess::SetDevice(foreignGraph, &device);
     RHITextureRef sourceColor = makeColor(64);
     ASSERT_TRUE(sourceColor);
     RenderPassRecordContext foreign = makeContext(
@@ -8076,12 +8081,12 @@ TEST_F(RenderPassValidationFixture,
 
     RenderGraph staleSourceGraph;
     RenderGraph staleGraph;
-    staleSourceGraph.SetDevice(&device);
-    staleGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(staleSourceGraph, &device);
+    RenderGraphValidationAccess::SetDevice(staleGraph, &device);
     RHITextureRef staleColor = makeColor(64);
     ASSERT_TRUE(staleColor);
     ViewData staleView = view;
-    staleView.colorTarget = staleSourceGraph.ImportTexture(
+    staleView.colorTarget = RenderGraphValidationAccess::ImportTexture(staleSourceGraph,
         staleColor.Get(), RHIResourceState::RenderTarget);
     RenderPassRecordContext stale = MakeSkyboxRecordContext(
         staleGraph, staleView, scene, sky, 933, 933);
@@ -8090,7 +8095,7 @@ TEST_F(RenderPassValidationFixture,
     expectNoUsageOrCommands(staleGraph, staleCommands);
 
     RenderGraph forgedGraph;
-    forgedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(forgedGraph, &device);
     RGTextureHandle forgedColor;
     forgedColor.index = 0;
     forgedColor.graphIdentity = forgedGraph.GetGraphIdentity();
@@ -8104,7 +8109,7 @@ TEST_F(RenderPassValidationFixture,
     expectNoUsageOrCommands(forgedGraph, forgedCommands);
 
     RenderGraph incompleteGraph;
-    incompleteGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(incompleteGraph, &device);
     RHITextureRef incompleteColor = makeColor(64);
     ASSERT_TRUE(incompleteColor);
     RenderPassRecordContext incomplete = makeContext(
@@ -8122,16 +8127,16 @@ TEST_F(RenderPassValidationFixture,
     sealedBatch.ReleaseUnsubmitted(retirement);
     ASSERT_TRUE(sealedBatch.IsSealed());
     RenderGraph sealedGraph;
-    sealedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(sealedGraph, &device);
     RHITextureRef sealedColor = makeColor(64);
     ASSERT_TRUE(sealedColor);
     RenderPassRecordContext sealed = makeContext(
         sealedGraph, sealedColor.Get(), 936, &sealedBatch);
     pass.AddToGraph(sealedGraph, sealed);
     RecordingCommandContext sealedCommands;
-    sealedGraph.Compile();
+    RenderGraphValidationAccess::Compile(sealedGraph);
     ASSERT_TRUE(sealedGraph.GetCompileStats().compileValid);
-    sealedGraph.Execute(sealedCommands);
+    RenderGraphValidationAccess::Execute(sealedGraph, sealedCommands);
     EXPECT_EQ(1u, sealedCommands.beginRenderPassCount);
     EXPECT_EQ(1u, sealedCommands.drawCount);
     EXPECT_EQ(0u, sealedBatch.GetRetainedObjectCount());
@@ -8158,7 +8163,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(layoutProbe);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef color = device.CreateTexture(
         RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
     RHITextureRef depth = device.CreateTexture(
@@ -8167,9 +8172,9 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(color);
     ASSERT_TRUE(depth);
     ViewData recordView = view;
-    recordView.colorTarget = graph.ImportTexture(
+    recordView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         color.Get(), RHIResourceState::RenderTarget);
-    recordView.depthTarget = graph.ImportTexture(
+    recordView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
         depth.Get(), RHIResourceState::DepthRead);
     recordView.viewportWidth = 64;
     recordView.viewportHeight = 64;
@@ -8181,13 +8186,13 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext context = MakeSkyboxRecordContext(
         graph, recordView, scene, sky, 940, 940, &batch);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(0u, batch.GetRetainedObjectCount());
 
     RecordingCommandContext commands;
-    graph.Execute(commands);
-    RenderGraphExecution execution = graph.TakeExecution();
+    RenderGraphValidationAccess::Execute(graph, commands);
+    RenderGraphExecution execution = RenderGraphValidationAccess::TakeExecution(graph);
     ASSERT_TRUE(execution);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, execution.GetState());
     EXPECT_EQ(1u, commands.beginRenderPassCount);
@@ -8199,7 +8204,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(RenderGraphExecutionTestAccess::MarkAdopted(execution));
     ASSERT_TRUE(RenderGraphExecutionTestAccess::Commit(execution, completion));
 
-    graph.Clear();
+    RenderGraphValidationAccess::Reset(graph);
     pipelineCache.Shutdown();
     EXPECT_GT(layoutProbe->GetRefCount(), 1u);
     FakeFence* const completionFence =
@@ -8381,7 +8386,7 @@ TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
     FakeDevice device;
     SceneRenderer renderer;
     auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(96, 64, RHIFormat::RGBA8_UNORM);
@@ -8394,8 +8399,8 @@ TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
     ASSERT_TRUE(depthTarget);
 
     SceneRendererExternalTargetDesc externalTarget;
-    externalTarget.colorTarget = colorTarget.Get();
-    externalTarget.depthTarget = depthTarget.Get();
+    externalTarget.colorTarget = colorTarget;
+    externalTarget.depthTarget = depthTarget;
     externalTarget.colorInitialState = RHIResourceState::ShaderResource;
     externalTarget.colorFinalState = RHIResourceState::ShaderResource;
     externalTarget.depthInitialState = RHIResourceState::DepthRead;
@@ -8419,8 +8424,16 @@ TEST(SceneRendererExternalTargetValidation, ImportsExternalColorAndDepthTargets)
 
     EXPECT_EQ(renderer.GetViewData().viewportWidth, 96u);
     EXPECT_EQ(renderer.GetViewData().viewportHeight, 64u);
-    EXPECT_EQ(renderer.GetRenderGraph()->GetTexture(renderer.GetViewData().colorTarget), colorTarget.Get());
-    EXPECT_EQ(renderer.GetRenderGraph()->GetTexture(renderer.GetViewData().depthTarget), depthTarget.Get());
+    EXPECT_EQ(
+        RenderGraphValidationAccess::GetTexture(
+            *renderer.GetRenderGraph(),
+            renderer.GetViewData().colorTarget),
+        colorTarget.Get());
+    EXPECT_EQ(
+        RenderGraphValidationAccess::GetTexture(
+            *renderer.GetRenderGraph(),
+            renderer.GetViewData().depthTarget),
+        depthTarget.Get());
     EXPECT_EQ(renderer.GetPostProcessStats().backBufferFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(renderer.GetPostProcessStats().toneMappingOutputColorSpace, ToneMappingOutputColorSpace::SRGB);
     EXPECT_EQ(renderer.GetFrameDiagnostics().toneMappingOutputColorSpace, ToneMappingOutputColorSpace::SRGB);
@@ -8432,7 +8445,7 @@ TEST(SceneRendererPassRecordingValidation,
     FakeDevice device;
     SceneRenderer renderer;
     auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
@@ -8448,8 +8461,8 @@ TEST(SceneRendererPassRecordingValidation,
     ASSERT_TRUE(depthTarget);
 
     SceneRendererExternalTargetDesc externalTarget;
-    externalTarget.colorTarget = colorTarget.Get();
-    externalTarget.depthTarget = depthTarget.Get();
+    externalTarget.colorTarget = colorTarget;
+    externalTarget.depthTarget = depthTarget;
     externalTarget.colorInitialState = RHIResourceState::ShaderResource;
     externalTarget.colorFinalState = RHIResourceState::ShaderResource;
     externalTarget.depthInitialState = RHIResourceState::DepthRead;
@@ -8492,9 +8505,13 @@ TEST(SceneRendererPassRecordingValidation,
     EXPECT_EQ(probePtr->typedDepth.recordingGeneration,
               probePtr->typedSnapshotDepth.recordingGeneration);
     EXPECT_EQ(colorTarget.Get(),
-              renderer.GetRenderGraph()->GetTexture(probePtr->typedColor));
+              RenderGraphValidationAccess::GetTexture(
+                  *renderer.GetRenderGraph(),
+                  probePtr->typedColor));
     EXPECT_EQ(depthTarget.Get(),
-              renderer.GetRenderGraph()->GetTexture(probePtr->typedDepth));
+              RenderGraphValidationAccess::GetTexture(
+                  *renderer.GetRenderGraph(),
+                  probePtr->typedDepth));
 
     // The production adapter must retain its value-owned snapshot rather than
     // observe post-build mutations to SceneRenderer's working ViewData/plan.
@@ -8502,10 +8519,10 @@ TEST(SceneRendererPassRecordingValidation,
     renderer.GetViewData().frameNumber = 88;
     plan.frameSequence = 7999;
 
-    renderer.GetRenderGraph()->Compile();
+    RenderGraphValidationAccess::Compile(*renderer.GetRenderGraph());
     ASSERT_TRUE(renderer.GetRenderGraph()->GetCompileStats().compileValid);
     RecordingCommandContext commands;
-    renderer.GetRenderGraph()->Execute(commands);
+    RenderGraphValidationAccess::Execute(*renderer.GetRenderGraph(), commands);
 
     EXPECT_EQ(1u, probePtr->setupCount);
     EXPECT_EQ(probePtr->typedColor.index, probePtr->setupColor.index);
@@ -8525,7 +8542,7 @@ TEST(SceneRendererExternalTargetValidation, InvalidExternalColorTargetFallsBackW
     FakeDevice device;
     SceneRenderer renderer;
     auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
 
     RHITextureDesc invalidColorDesc = RHITextureDesc::RenderTarget(0, 64, RHIFormat::RGBA8_UNORM);
@@ -8533,7 +8550,7 @@ TEST(SceneRendererExternalTargetValidation, InvalidExternalColorTargetFallsBackW
     ASSERT_TRUE(invalidColorTarget);
 
     SceneRendererExternalTargetDesc externalTarget;
-    externalTarget.colorTarget = invalidColorTarget.Get();
+    externalTarget.colorTarget = invalidColorTarget;
     renderer.SetExternalRenderTarget(externalTarget);
     renderer.BuildRenderGraphForTesting();
 
@@ -8551,7 +8568,7 @@ TEST(SceneRendererExternalTargetValidation, FloatExternalTargetKeepsToneMappingO
     FakeDevice device;
     SceneRenderer renderer;
     auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 32, RHIFormat::RGBA16_FLOAT);
@@ -8559,7 +8576,7 @@ TEST(SceneRendererExternalTargetValidation, FloatExternalTargetKeepsToneMappingO
     ASSERT_TRUE(colorTarget);
 
     SceneRendererExternalTargetDesc externalTarget;
-    externalTarget.colorTarget = colorTarget.Get();
+    externalTarget.colorTarget = colorTarget;
     externalTarget.colorInitialState = RHIResourceState::ShaderResource;
     externalTarget.colorFinalState = RHIResourceState::ShaderResource;
 
@@ -8578,7 +8595,7 @@ TEST(SceneRendererDiagnosticsValidation, AggregatesExternalTargetPassChainAndRen
     FakeDevice device;
     SceneRenderer renderer;
     auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(96, 64, RHIFormat::RGBA8_UNORM);
@@ -8591,8 +8608,8 @@ TEST(SceneRendererDiagnosticsValidation, AggregatesExternalTargetPassChainAndRen
     ASSERT_TRUE(depthTarget);
 
     SceneRendererExternalTargetDesc externalTarget;
-    externalTarget.colorTarget = colorTarget.Get();
-    externalTarget.depthTarget = depthTarget.Get();
+    externalTarget.colorTarget = colorTarget;
+    externalTarget.depthTarget = depthTarget;
     externalTarget.colorInitialState = RHIResourceState::ShaderResource;
     externalTarget.colorFinalState = RHIResourceState::ShaderResource;
     externalTarget.depthInitialState = RHIResourceState::DepthRead;
@@ -8865,7 +8882,7 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
@@ -8874,12 +8891,12 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -8888,7 +8905,7 @@ TEST_F(RenderPassValidationFixture, ToneMappingAddsLiveGraphPassAndDrawsFullscre
     EXPECT_EQ(stats.emptyPassUsageCount, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.beginRenderPassCount, 1u);
     EXPECT_EQ(ctx.endRenderPassCount, 1u);
@@ -8984,7 +9001,7 @@ TEST_F(RenderPassValidationFixture, ToneMappingSkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA16_FLOAT));
@@ -8993,15 +9010,15 @@ TEST_F(RenderPassValidationFixture, ToneMappingSkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.drawCount, 0u);
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
@@ -9037,7 +9054,7 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
@@ -9046,12 +9063,12 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -9096,7 +9113,7 @@ TEST_F(RenderPassValidationFixture, BloomAddsLiveGraphPassAndDrawsFullscreenTria
     }
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.beginRenderPassCount, 7u);
     EXPECT_EQ(ctx.endRenderPassCount, 7u);
@@ -9224,7 +9241,7 @@ TEST_F(RenderPassValidationFixture, BloomZeroIntensityCopiesSceneOnly)
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT));
@@ -9233,12 +9250,12 @@ TEST_F(RenderPassValidationFixture, BloomZeroIntensityCopiesSceneOnly)
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -9246,7 +9263,7 @@ TEST_F(RenderPassValidationFixture, BloomZeroIntensityCopiesSceneOnly)
     EXPECT_EQ(stats.totalTransientTextures, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
     EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetBloomPipeline(RHIFormat::RGBA16_FLOAT));
@@ -9270,7 +9287,7 @@ TEST_F(RenderPassValidationFixture, BloomSkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA16_FLOAT));
@@ -9279,15 +9296,15 @@ TEST_F(RenderPassValidationFixture, BloomSkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.drawCount, 0u);
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
@@ -9321,7 +9338,7 @@ TEST_F(RenderPassValidationFixture, FXAAAddsLiveGraphPassAndDrawsFullscreenTrian
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
@@ -9330,12 +9347,12 @@ TEST_F(RenderPassValidationFixture, FXAAAddsLiveGraphPassAndDrawsFullscreenTrian
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -9344,7 +9361,7 @@ TEST_F(RenderPassValidationFixture, FXAAAddsLiveGraphPassAndDrawsFullscreenTrian
     EXPECT_EQ(stats.emptyPassUsageCount, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.beginRenderPassCount, 1u);
     EXPECT_EQ(ctx.endRenderPassCount, 1u);
@@ -9426,7 +9443,7 @@ TEST_F(RenderPassValidationFixture, FXAASkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
@@ -9435,15 +9452,15 @@ TEST_F(RenderPassValidationFixture, FXAASkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.drawCount, 0u);
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
@@ -9495,7 +9512,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingRejectsHDRModeBeforeGraphSchedul
     EXPECT_NE(pass.GetUnsupportedReason().find("HDR"), std::string::npos);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
@@ -9504,17 +9521,17 @@ TEST_F(RenderPassValidationFixture, ColorGradingRejectsHDRModeBeforeGraphSchedul
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
     EXPECT_EQ(ctx.drawCount, 0u);
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
 }
@@ -9535,7 +9552,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingRejectsRequestedLUTBeforeGraphSc
     EXPECT_NE(pass.GetUnsupportedReason().find("LUT"), std::string::npos);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
     RHITextureRef outputTexture =
@@ -9543,12 +9560,12 @@ TEST_F(RenderPassValidationFixture, ColorGradingRejectsRequestedLUTBeforeGraphSc
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
 }
@@ -9574,7 +9591,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingRejectsSetLUTBeforeGraphScheduli
     EXPECT_NE(pass.GetUnsupportedReason().find("LUT"), std::string::npos);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
     RHITextureRef outputTexture =
@@ -9582,12 +9599,12 @@ TEST_F(RenderPassValidationFixture, ColorGradingRejectsSetLUTBeforeGraphScheduli
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
 }
@@ -9609,7 +9626,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingNeutralSettingsStillWritesFullsc
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
@@ -9618,12 +9635,12 @@ TEST_F(RenderPassValidationFixture, ColorGradingNeutralSettingsStillWritesFullsc
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -9632,7 +9649,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingNeutralSettingsStillWritesFullsc
     EXPECT_EQ(stats.emptyPassUsageCount, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.beginRenderPassCount, 1u);
     EXPECT_EQ(ctx.endRenderPassCount, 1u);
@@ -9698,7 +9715,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingUploadsConstantsWithHLSLPacking)
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 24, RHIFormat::RGBA8_UNORM));
@@ -9707,15 +9724,15 @@ TEST_F(RenderPassValidationFixture, ColorGradingUploadsConstantsWithHLSLPacking)
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(ctx.drawCount, 1u);
 
@@ -9793,7 +9810,7 @@ TEST_F(RenderPassValidationFixture, ColorGradingSkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
@@ -9802,15 +9819,15 @@ TEST_F(RenderPassValidationFixture, ColorGradingSkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.drawCount, 0u);
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
@@ -9861,7 +9878,7 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationRejectsSpectralBeforeGrap
     EXPECT_NE(pass.GetUnsupportedReason().find("spectral"), std::string::npos);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
@@ -9870,12 +9887,12 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationRejectsSpectralBeforeGrap
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
@@ -9896,7 +9913,7 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationZeroIntensityStillWritesF
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
@@ -9905,12 +9922,12 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationZeroIntensityStillWritesF
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -9918,7 +9935,7 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationZeroIntensityStillWritesF
     EXPECT_EQ(stats.culledPasses, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.beginRenderPassCount, 1u);
     EXPECT_EQ(ctx.endRenderPassCount, 1u);
@@ -9965,7 +9982,7 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationUploadsConstantsWithHLSLP
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(40, 20, RHIFormat::RGBA8_UNORM));
@@ -9974,15 +9991,15 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationUploadsConstantsWithHLSLP
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(ctx.drawCount, 1u);
 
@@ -10029,7 +10046,7 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationSkipsDrawWhenConstantsCan
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
@@ -10038,15 +10055,15 @@ TEST_F(RenderPassValidationFixture, ChromaticAberrationSkipsDrawWhenConstantsCan
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.drawCount, 0u);
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
@@ -10081,7 +10098,7 @@ TEST_F(RenderPassValidationFixture, VignetteAddsLiveGraphPassAndDrawsFullscreenT
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
@@ -10090,12 +10107,12 @@ TEST_F(RenderPassValidationFixture, VignetteAddsLiveGraphPassAndDrawsFullscreenT
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -10104,7 +10121,7 @@ TEST_F(RenderPassValidationFixture, VignetteAddsLiveGraphPassAndDrawsFullscreenT
     EXPECT_EQ(stats.emptyPassUsageCount, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.beginRenderPassCount, 1u);
     EXPECT_EQ(ctx.endRenderPassCount, 1u);
@@ -10172,7 +10189,7 @@ TEST_F(RenderPassValidationFixture, VignetteSkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
@@ -10181,15 +10198,15 @@ TEST_F(RenderPassValidationFixture, VignetteSkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.drawCount, 0u);
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
@@ -10200,7 +10217,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10209,8 +10226,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessSettings settings;
@@ -10237,13 +10254,13 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomBeforeToneMappingTh
     EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
     EXPECT_TRUE(executeStats.toneMappingBoundaryWarning.empty());
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 8u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(8));
     for (size_t i = 0; i < 4; ++i)
@@ -10266,7 +10283,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10275,8 +10292,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessSettings settings;
@@ -10323,13 +10340,13 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRunsBloomToneMappingColorGra
     EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
     EXPECT_TRUE(executeStats.toneMappingBoundaryWarning.empty());
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 12u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(12));
     for (size_t i = 0; i < 4; ++i)
@@ -10356,7 +10373,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAs
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10365,8 +10382,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAs
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessSettings settings;
@@ -10396,13 +10413,13 @@ TEST_F(RenderPassValidationFixture, PostProcessStackKeepsZeroIntensityVignetteAs
     EXPECT_EQ(executeStats.ldrIntermediateCount, 2u);
     EXPECT_TRUE(executeStats.toneMappingBoundaryValid);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 3u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(3));
     EXPECT_EQ(ctx.pipelineSequence[0], pipelineCache.GetToneMappingPipeline());
@@ -10418,7 +10435,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterTo
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10427,8 +10444,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterTo
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 100);
@@ -10446,7 +10463,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterTo
     EXPECT_EQ(executeStats.ldrIntermediateFormat, RHIFormat::Unknown);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 0u);
@@ -10457,7 +10474,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterLD
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10466,8 +10483,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterLD
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 100);
@@ -10483,7 +10500,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterLD
     EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 0u);
@@ -10494,7 +10511,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterCo
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10503,8 +10520,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterCo
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("ToneMapping", 100);
@@ -10520,7 +10537,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidHDRPassAfterCo
     EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 0u);
@@ -10531,7 +10548,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROut
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10540,8 +10557,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROut
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
@@ -10558,7 +10575,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackRejectsHDRChainWritingLDROut
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(bloom->addToGraphCount, 0u);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 0u);
@@ -10569,7 +10586,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackAllowsHDRChainWritingHDROutp
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10578,8 +10595,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackAllowsHDRChainWritingHDROutp
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
@@ -10596,7 +10613,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackAllowsHDRChainWritingHDROutp
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(bloom->addToGraphCount, 1u);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 1u);
@@ -10607,7 +10624,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidLDREffectBefor
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10616,8 +10633,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidLDREffectBefor
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("FXAA", 100);
@@ -10631,7 +10648,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidLDREffectBefor
     EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 0u);
@@ -10642,7 +10659,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidColorGradingBe
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10651,8 +10668,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidColorGradingBe
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("ColorGrading", 100);
@@ -10666,7 +10683,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidColorGradingBe
     EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 0u);
@@ -10677,7 +10694,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidChromaticAberr
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10686,8 +10703,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidChromaticAberr
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("ChromaticAberration", 100);
@@ -10701,7 +10718,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidChromaticAberr
     EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 0u);
@@ -10712,7 +10729,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidVignetteBefore
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10721,8 +10738,8 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidVignetteBefore
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
     (void)stack.AddEffect<RecordingPostProcessPass>("Vignette", 100);
@@ -10736,7 +10753,7 @@ TEST_F(RenderPassValidationFixture, PostProcessStackReportsInvalidVignetteBefore
     EXPECT_EQ(executeStats.transientIntermediateCount, 0u);
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 0u);
@@ -10839,7 +10856,7 @@ TEST(RenderPostProcessStackValidation, EvaluateEffectsReportsRequestedButUnsuppo
 TEST_F(RenderPassValidationFixture, NoSupportedEffectsReportsNoWork)
 {
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     PostProcessStack stack;
     stack.Execute(graph, RGTextureHandle{}, RGTextureHandle{});
@@ -10849,7 +10866,7 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsReportsNoWork)
     EXPECT_EQ(executeStats.enabledEffectCount, 0u);
     EXPECT_EQ(executeStats.graphPassCount, 0u);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 0u);
@@ -10858,7 +10875,7 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsReportsNoWork)
 TEST_F(RenderPassValidationFixture, NoSupportedEffectsCopiesCompatibleSceneColorToOutput)
 {
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
@@ -10867,8 +10884,8 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsCopiesCompatibleSceneColor
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
@@ -10882,14 +10899,14 @@ TEST_F(RenderPassValidationFixture, NoSupportedEffectsCopiesCompatibleSceneColor
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
     EXPECT_EQ(ctx.copyTextureCount, 1u);
 }
 
 TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryCopiesCompatibleSceneColorToOutput)
 {
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
@@ -10898,8 +10915,8 @@ TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryCopiesCompatibleSc
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
@@ -10914,7 +10931,7 @@ TEST_F(RenderPassValidationFixture, InvalidToneMappingBoundaryCopiesCompatibleSc
     EXPECT_EQ(executeStats.finalOutputFormat, RHIFormat::RGBA8_UNORM);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
     EXPECT_EQ(ctx.copyTextureCount, 1u);
 }
 
@@ -10922,7 +10939,7 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
 {
     FakeDevice device;
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -10931,8 +10948,8 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
@@ -10963,7 +10980,7 @@ TEST(RenderPostProcessStackValidation, MultiPassChainUsesDistinctTransientInterm
     EXPECT_TRUE(HasFlag(intermediateDesc->usage, RHITextureUsage::RenderTarget));
     EXPECT_TRUE(HasFlag(intermediateDesc->usage, RHITextureUsage::ShaderResource));
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 2u);
@@ -10990,19 +11007,19 @@ TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMateri
     std::vector<RenderDrawItem> maskedItems = {maskedItem};
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureDesc velocityDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RG16_FLOAT);
     velocityDesc.debugName = "GraphVelocityForObjectVelocityPass";
     RHITextureRef velocityTexture = device.CreateTexture(velocityDesc);
     ASSERT_TRUE(velocityTexture);
-    view.velocityTarget = graph.ImportTexture(velocityTexture.Get(), RHIResourceState::RenderTarget);
+    view.velocityTarget = RenderGraphValidationAccess::ImportTexture(graph, velocityTexture.Get(), RHIResourceState::RenderTarget);
 
     RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(64, 64, PipelineCache::GetDefaultDepthStencilFormat());
     depthDesc.debugName = "GraphDepthForObjectVelocityPass";
     RHITextureRef depthTexture = device.CreateTexture(depthDesc);
     ASSERT_TRUE(depthTexture);
-    view.depthTarget = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    view.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
 
     view.viewportWidth = 64;
     view.viewportHeight = 64;
@@ -11030,12 +11047,12 @@ TEST_F(RenderPassValidationFixture, ObjectVelocityPassDrawsMaskedItemsWithMateri
     context.results = std::make_shared<RenderPassRecordResults>();
     context.frameSnapshot = MakeRenderPassFrameSnapshot(context, *context.results);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     EXPECT_TRUE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 1u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
     pass.PublishRecordResults(context.results, context.identity);
 
     ASSERT_EQ(ctx.pipelineSequence.size(), static_cast<size_t>(1));
@@ -11125,9 +11142,9 @@ TEST_F(RenderPassValidationFixture,
         EXPECT_TRUE(targets.depth);
 
         RenderPassRecordContext context;
-        context.view.velocityTarget = graph.ImportTexture(
+        context.view.velocityTarget = RenderGraphValidationAccess::ImportTexture(graph,
             targets.velocity.Get(), RHIResourceState::RenderTarget);
-        context.view.depthTarget = graph.ImportTexture(
+        context.view.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
             targets.depth.Get(), RHIResourceState::DepthRead);
         context.view.viewportWidth = extent;
         context.view.viewportHeight = extent;
@@ -11154,8 +11171,8 @@ TEST_F(RenderPassValidationFixture,
 
     RenderGraph graphA;
     RenderGraph graphB;
-    graphA.SetDevice(&device);
-    graphB.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graphA, &device);
+    RenderGraphValidationAccess::SetDevice(graphB, &device);
     RenderSubmissionResourceBatch batchA;
     RenderSubmissionResourceBatch batchB;
     VelocityTargets targetsA;
@@ -11259,8 +11276,8 @@ TEST_F(RenderPassValidationFixture,
     maskedItemsA.clear();
     contextA.view.viewProjectionMatrix[3][0] = 99.0f;
 
-    graphA.Compile();
-    graphB.Compile();
+    RenderGraphValidationAccess::Compile(graphA);
+    RenderGraphValidationAccess::Compile(graphB);
     ASSERT_TRUE(graphA.GetCompileStats().compileValid);
     ASSERT_TRUE(graphB.GetCompileStats().compileValid);
 
@@ -11295,8 +11312,8 @@ TEST_F(RenderPassValidationFixture,
 
     const uint32 retainedBeforeB = batchB.GetRetainedObjectCount();
     RecordingCommandContext commandsB;
-    graphB.Execute(commandsB);
-    RenderGraphExecution executionB = graphB.TakeExecution();
+    RenderGraphValidationAccess::Execute(graphB, commandsB);
+    RenderGraphExecution executionB = RenderGraphValidationAccess::TakeExecution(graphB);
     ASSERT_TRUE(executionB);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionB.GetState());
     EXPECT_EQ(1u, commandsB.beginRenderPassCount);
@@ -11310,8 +11327,8 @@ TEST_F(RenderPassValidationFixture,
 
     const uint32 retainedBeforeA = batchA.GetRetainedObjectCount();
     RecordingCommandContext commandsA;
-    graphA.Execute(commandsA);
-    RenderGraphExecution executionA = graphA.TakeExecution();
+    RenderGraphValidationAccess::Execute(graphA, commandsA);
+    RenderGraphExecution executionA = RenderGraphValidationAccess::TakeExecution(graphA);
     ASSERT_TRUE(executionA);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionA.GetState());
     EXPECT_EQ(1u, commandsA.beginRenderPassCount);
@@ -11419,8 +11436,8 @@ TEST_F(RenderPassValidationFixture,
     // Simulate a cache replacement after command submission. Graph callbacks
     // and the cache release their ownership, leaving the in-flight submission
     // batches as the sole owners besides these test probes.
-    graphA.Clear();
-    graphB.Clear();
+    RenderGraphValidationAccess::Reset(graphA);
+    RenderGraphValidationAccess::Reset(graphB);
     pipelineCache.Shutdown();
     EXPECT_GT(pipelineLayoutProbe->GetRefCount(), 1u);
     EXPECT_GT(setLayoutProbes[0]->GetRefCount(), 1u);
@@ -11510,23 +11527,23 @@ TEST_F(RenderPassValidationFixture,
     };
 
     RenderGraph noHistoryGraph;
-    noHistoryGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(noHistoryGraph, &device);
     auto noHistoryTargets = makeTargets(
         64, "ObjectVelocityNoHistoryVelocity", "ObjectVelocityNoHistoryDepth");
     ASSERT_TRUE(noHistoryTargets.first);
     ASSERT_TRUE(noHistoryTargets.second);
     RenderPassRecordContext noHistory = makeContext(
         noHistoryGraph,
-        noHistoryGraph.ImportTexture(noHistoryTargets.first.Get(),
+        RenderGraphValidationAccess::ImportTexture(noHistoryGraph, noHistoryTargets.first.Get(),
                                      RHIResourceState::RenderTarget),
-        noHistoryGraph.ImportTexture(noHistoryTargets.second.Get(),
+        RenderGraphValidationAccess::ImportTexture(noHistoryGraph, noHistoryTargets.second.Get(),
                                      RHIResourceState::DepthRead),
         610, 610, false);
     pass.AddToGraph(noHistoryGraph, noHistory);
-    noHistoryGraph.Compile();
+    RenderGraphValidationAccess::Compile(noHistoryGraph);
     ASSERT_TRUE(noHistoryGraph.GetCompileStats().compileValid);
     RecordingCommandContext noHistoryCommands;
-    noHistoryGraph.Execute(noHistoryCommands);
+    RenderGraphValidationAccess::Execute(noHistoryGraph, noHistoryCommands);
     EXPECT_EQ(0u, noHistoryCommands.beginRenderPassCount);
     EXPECT_EQ(0u, noHistoryCommands.drawIndexedCount);
     EXPECT_FALSE(noHistory.results->objectVelocityStats.outputDeclared);
@@ -11535,7 +11552,7 @@ TEST_F(RenderPassValidationFixture,
     // Valid temporal data is still insufficient without any planned scene
     // items; the pass must not open an attachment-only render pass.
     RenderGraph emptyGraph;
-    emptyGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(emptyGraph, &device);
     auto emptyTargets = makeTargets(
         64, "ObjectVelocityEmptyVelocity", "ObjectVelocityEmptyDepth");
     ASSERT_TRUE(emptyTargets.first);
@@ -11543,9 +11560,9 @@ TEST_F(RenderPassValidationFixture,
     std::vector<RenderDrawItem> emptyOpaqueItems;
     std::vector<RenderDrawItem> emptyMaskedItems;
     RenderPassRecordContext empty = noHistory;
-    empty.view.velocityTarget = emptyGraph.ImportTexture(
+    empty.view.velocityTarget = RenderGraphValidationAccess::ImportTexture(emptyGraph,
         emptyTargets.first.Get(), RHIResourceState::RenderTarget);
-    empty.view.depthTarget = emptyGraph.ImportTexture(
+    empty.view.depthTarget = RenderGraphValidationAccess::ImportTexture(emptyGraph,
         emptyTargets.second.Get(), RHIResourceState::DepthRead);
     empty.view.previousViewProjectionValid = 1;
     empty.view.resetTemporalHistory = false;
@@ -11559,10 +11576,10 @@ TEST_F(RenderPassValidationFixture,
     empty.results = std::make_shared<RenderPassRecordResults>();
     empty.frameSnapshot = MakeRenderPassFrameSnapshot(empty, *empty.results);
     pass.AddToGraph(emptyGraph, empty);
-    emptyGraph.Compile();
+    RenderGraphValidationAccess::Compile(emptyGraph);
     ASSERT_TRUE(emptyGraph.GetCompileStats().compileValid);
     RecordingCommandContext emptyCommands;
-    emptyGraph.Execute(emptyCommands);
+    RenderGraphValidationAccess::Execute(emptyGraph, emptyCommands);
     EXPECT_EQ(0u, emptyCommands.beginRenderPassCount);
     EXPECT_EQ(0u, emptyCommands.drawIndexedCount);
     EXPECT_FALSE(empty.results->objectVelocityStats.outputDeclared);
@@ -11571,21 +11588,21 @@ TEST_F(RenderPassValidationFixture,
     // The untyped ViewData overload carries no scene/list recording inputs.
     // It remains a bounded compatibility adapter and must fail closed.
     RenderGraph legacyGraph;
-    legacyGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(legacyGraph, &device);
     auto legacyTargets = makeTargets(
         64, "ObjectVelocityLegacyVelocity", "ObjectVelocityLegacyDepth");
     ASSERT_TRUE(legacyTargets.first);
     ASSERT_TRUE(legacyTargets.second);
     ViewData legacyView = empty.view;
-    legacyView.velocityTarget = legacyGraph.ImportTexture(
+    legacyView.velocityTarget = RenderGraphValidationAccess::ImportTexture(legacyGraph,
         legacyTargets.first.Get(), RHIResourceState::RenderTarget);
-    legacyView.depthTarget = legacyGraph.ImportTexture(
+    legacyView.depthTarget = RenderGraphValidationAccess::ImportTexture(legacyGraph,
         legacyTargets.second.Get(), RHIResourceState::DepthRead);
     pass.AddToGraph(legacyGraph, legacyView);
-    legacyGraph.Compile();
+    RenderGraphValidationAccess::Compile(legacyGraph);
     ASSERT_TRUE(legacyGraph.GetCompileStats().compileValid);
     RecordingCommandContext legacyCommands;
-    legacyGraph.Execute(legacyCommands);
+    RenderGraphValidationAccess::Execute(legacyGraph, legacyCommands);
     EXPECT_EQ(0u, legacyCommands.beginRenderPassCount);
     EXPECT_EQ(0u, legacyCommands.drawIndexedCount);
 
@@ -11593,8 +11610,8 @@ TEST_F(RenderPassValidationFixture,
     // malformed graph B context attempts to smuggle it into this pass.
     RenderGraph foreignGraph;
     RenderGraph attackerGraph;
-    foreignGraph.SetDevice(&device);
-    attackerGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(foreignGraph, &device);
+    RenderGraphValidationAccess::SetDevice(attackerGraph, &device);
     RenderPassRecordIdentity foreignIdentity;
     foreignIdentity.graph = &foreignGraph;
     foreignIdentity.graphIdentity = foreignGraph.GetGraphIdentity();
@@ -11613,10 +11630,10 @@ TEST_F(RenderPassValidationFixture,
     attacker.identity.recordEpoch = 621;
     attacker.results = foreignResults;
     pass.AddToGraph(attackerGraph, attacker);
-    attackerGraph.Compile();
+    RenderGraphValidationAccess::Compile(attackerGraph);
     ASSERT_TRUE(attackerGraph.GetCompileStats().compileValid);
     RecordingCommandContext attackerCommands;
-    attackerGraph.Execute(attackerCommands);
+    RenderGraphValidationAccess::Execute(attackerGraph, attackerCommands);
     EXPECT_EQ(foreignIdentity, foreignResults->identity);
     EXPECT_EQ(777u, foreignResults->objectVelocityStats.width);
     EXPECT_TRUE(foreignResults->objectVelocityStats.velocityRecorded);
@@ -11628,17 +11645,17 @@ TEST_F(RenderPassValidationFixture,
     // exclusively to graph A. The target graph must be a true no-op.
     RenderGraph sourceSentinelGraph;
     RenderGraph targetSentinelGraph;
-    sourceSentinelGraph.SetDevice(&device);
-    targetSentinelGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(sourceSentinelGraph, &device);
+    RenderGraphValidationAccess::SetDevice(targetSentinelGraph, &device);
     auto sourceSentinelTargets = makeTargets(
         64, "ObjectVelocitySourceSentinelVelocity", "ObjectVelocitySourceSentinelDepth");
     ASSERT_TRUE(sourceSentinelTargets.first);
     ASSERT_TRUE(sourceSentinelTargets.second);
     RenderPassRecordContext sourceSentinel = makeContext(
         sourceSentinelGraph,
-        sourceSentinelGraph.ImportTexture(sourceSentinelTargets.first.Get(),
+        RenderGraphValidationAccess::ImportTexture(sourceSentinelGraph, sourceSentinelTargets.first.Get(),
                                           RHIResourceState::RenderTarget),
-        sourceSentinelGraph.ImportTexture(sourceSentinelTargets.second.Get(),
+        RenderGraphValidationAccess::ImportTexture(sourceSentinelGraph, sourceSentinelTargets.second.Get(),
                                           RHIResourceState::DepthRead),
         625, 625, true);
     const RenderPassRecordIdentity sourceSentinelIdentity = sourceSentinel.identity;
@@ -11649,7 +11666,7 @@ TEST_F(RenderPassValidationFixture,
     sourceSentinel.results->objectVelocityStats.velocityRecorded = true;
     sourceSentinel.frameSnapshot.reset();
     pass.AddToGraph(targetSentinelGraph, sourceSentinel);
-    targetSentinelGraph.Compile();
+    RenderGraphValidationAccess::Compile(targetSentinelGraph);
     ASSERT_TRUE(targetSentinelGraph.GetCompileStats().compileValid);
     const RenderGraph::Diagnostics targetSentinelDiagnostics =
         targetSentinelGraph.GetDiagnostics();
@@ -11662,7 +11679,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_NE(targetSentinelDiagnostics.passes.end(), targetSentinelPass);
     EXPECT_TRUE(targetSentinelPass->usages.empty());
     RecordingCommandContext targetSentinelCommands;
-    targetSentinelGraph.Execute(targetSentinelCommands);
+    RenderGraphValidationAccess::Execute(targetSentinelGraph, targetSentinelCommands);
     EXPECT_EQ(0u, targetSentinelCommands.beginRenderPassCount);
     EXPECT_EQ(0u, targetSentinelCommands.drawIndexedCount);
     EXPECT_EQ(sourceSentinelIdentity, sourceSentinel.results->identity);
@@ -11676,7 +11693,7 @@ TEST_F(RenderPassValidationFixture,
     // A partially initialized foreign identity is still supplied ownership,
     // not permission for the helper to initialize/overwrite it.
     RenderGraph partialAttackerGraph;
-    partialAttackerGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(partialAttackerGraph, &device);
     auto partialForeignResults = std::make_shared<RenderPassRecordResults>();
     partialForeignResults->identity.graph = &foreignGraph;
     partialForeignResults->identity.graphIdentity = foreignGraph.GetGraphIdentity();
@@ -11693,10 +11710,10 @@ TEST_F(RenderPassValidationFixture,
     partialAttacker.identity.recordEpoch = 622;
     partialAttacker.results = partialForeignResults;
     pass.AddToGraph(partialAttackerGraph, partialAttacker);
-    partialAttackerGraph.Compile();
+    RenderGraphValidationAccess::Compile(partialAttackerGraph);
     ASSERT_TRUE(partialAttackerGraph.GetCompileStats().compileValid);
     RecordingCommandContext partialAttackerCommands;
-    partialAttackerGraph.Execute(partialAttackerCommands);
+    RenderGraphValidationAccess::Execute(partialAttackerGraph, partialAttackerCommands);
     EXPECT_EQ(0u, partialForeignResults->identity.frameSequence);
     EXPECT_EQ(0u, partialForeignResults->identity.recordEpoch);
     EXPECT_EQ(778u, partialForeignResults->objectVelocityStats.width);
@@ -11711,19 +11728,19 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(staleTargets.second);
     RenderGraph sourceGraph;
     RenderGraph staleTargetGraph;
-    sourceGraph.SetDevice(&device);
-    staleTargetGraph.SetDevice(&device);
-    const RGTextureHandle foreignVelocity = sourceGraph.ImportTexture(
+    RenderGraphValidationAccess::SetDevice(sourceGraph, &device);
+    RenderGraphValidationAccess::SetDevice(staleTargetGraph, &device);
+    const RGTextureHandle foreignVelocity = RenderGraphValidationAccess::ImportTexture(sourceGraph,
         staleTargets.first.Get(), RHIResourceState::RenderTarget);
-    const RGTextureHandle foreignDepth = sourceGraph.ImportTexture(
+    const RGTextureHandle foreignDepth = RenderGraphValidationAccess::ImportTexture(sourceGraph,
         staleTargets.second.Get(), RHIResourceState::DepthRead);
     RenderPassRecordContext stale = makeContext(
         staleTargetGraph, foreignVelocity, foreignDepth, 630, 630, true);
     pass.AddToGraph(staleTargetGraph, stale);
-    staleTargetGraph.Compile();
+    RenderGraphValidationAccess::Compile(staleTargetGraph);
     ASSERT_TRUE(staleTargetGraph.GetCompileStats().compileValid);
     RecordingCommandContext staleCommands;
-    staleTargetGraph.Execute(staleCommands);
+    RenderGraphValidationAccess::Execute(staleTargetGraph, staleCommands);
     EXPECT_EQ(0u, staleCommands.beginRenderPassCount);
     EXPECT_FALSE(stale.results->objectVelocityStats.outputDeclared);
     EXPECT_FALSE(stale.results->objectVelocityStats.velocityRecorded);
@@ -11732,7 +11749,7 @@ TEST_F(RenderPassValidationFixture,
     // graph's identity and generation while referring past its resource table.
     // It must be rejected before resource retention or graph declarations.
     RenderGraph forgedGraph;
-    forgedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(forgedGraph, &device);
     RGTextureHandle forgedVelocity;
     forgedVelocity.index = 0;
     forgedVelocity.graphIdentity = forgedGraph.GetGraphIdentity();
@@ -11742,7 +11759,7 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext forged = makeContext(
         forgedGraph, forgedVelocity, forgedDepth, 635, 635, true);
     pass.AddToGraph(forgedGraph, forged);
-    forgedGraph.Compile();
+    RenderGraphValidationAccess::Compile(forgedGraph);
     ASSERT_TRUE(forgedGraph.GetCompileStats().compileValid);
     const RenderGraph::Diagnostics forgedDiagnostics = forgedGraph.GetDiagnostics();
     const auto forgedPass = std::find_if(
@@ -11754,7 +11771,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_NE(forgedDiagnostics.passes.end(), forgedPass);
     EXPECT_TRUE(forgedPass->usages.empty());
     RecordingCommandContext forgedCommands;
-    forgedGraph.Execute(forgedCommands);
+    RenderGraphValidationAccess::Execute(forgedGraph, forgedCommands);
     EXPECT_EQ(0u, forgedCommands.beginRenderPassCount);
     EXPECT_EQ(0u, forgedCommands.drawIndexedCount);
     EXPECT_FALSE(forged.results->objectVelocityStats.outputDeclared);
@@ -11769,20 +11786,20 @@ TEST_F(RenderPassValidationFixture,
     sealedBatch.ReleaseUnsubmitted(retirement);
     ASSERT_TRUE(sealedBatch.IsSealed());
     RenderGraph rejectedGraph;
-    rejectedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(rejectedGraph, &device);
     auto rejectedTargets = makeTargets(
         64, "ObjectVelocityRejectedVelocity", "ObjectVelocityRejectedDepth");
     ASSERT_TRUE(rejectedTargets.first);
     ASSERT_TRUE(rejectedTargets.second);
     RenderPassRecordContext rejected = makeContext(
         rejectedGraph,
-        rejectedGraph.ImportTexture(rejectedTargets.first.Get(),
+        RenderGraphValidationAccess::ImportTexture(rejectedGraph, rejectedTargets.first.Get(),
                                     RHIResourceState::RenderTarget),
-        rejectedGraph.ImportTexture(rejectedTargets.second.Get(),
+        RenderGraphValidationAccess::ImportTexture(rejectedGraph, rejectedTargets.second.Get(),
                                     RHIResourceState::DepthRead),
         640, 640, true, &sealedBatch);
     pass.AddToGraph(rejectedGraph, rejected);
-    rejectedGraph.Compile();
+    RenderGraphValidationAccess::Compile(rejectedGraph);
     ASSERT_TRUE(rejectedGraph.GetCompileStats().compileValid);
     const RenderGraph::Diagnostics rejectedDiagnostics = rejectedGraph.GetDiagnostics();
     const auto rejectedPass = std::find_if(
@@ -11794,7 +11811,7 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_NE(rejectedDiagnostics.passes.end(), rejectedPass);
     EXPECT_FALSE(rejectedPass->usages.empty());
     RecordingCommandContext rejectedCommands;
-    rejectedGraph.Execute(rejectedCommands);
+    RenderGraphValidationAccess::Execute(rejectedGraph, rejectedCommands);
     EXPECT_EQ(1u, rejectedCommands.beginRenderPassCount);
     EXPECT_TRUE(rejected.results->objectVelocityStats.outputDeclared);
     EXPECT_TRUE(rejected.results->objectVelocityStats.velocityRecorded);
@@ -11826,9 +11843,9 @@ TEST_F(RenderPassValidationFixture, DepthPrepassNoPlanDefaultDoesNotMutateTarget
     ConfigureResources(pass, gpuResources, pipelineCache);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     ViewData malformedView = view;
-    malformedView.depthTarget = graph.ImportTexture(
+    malformedView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
         depthTexture.Get(), RHIResourceState::DepthWrite);
     RenderPassRecordContext malformed = MakeMainSceneRecordContext(
         graph, malformedView, scene, opaqueItems, maskedItems, compiled.plan,
@@ -11836,9 +11853,9 @@ TEST_F(RenderPassValidationFixture, DepthPrepassNoPlanDefaultDoesNotMutateTarget
     malformed.executionPlan = nullptr;
     malformed.view.renderFrameExecutionPlan = nullptr;
     pass.AddToGraph(graph, malformed);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(0u, ctx.beginRenderPassCount);
     EXPECT_EQ(0u, ctx.endRenderPassCount);
@@ -11865,9 +11882,9 @@ TEST_F(RenderPassValidationFixture, OpaquePassNoPlanDefaultDoesNotMutateTarget)
     ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     ViewData malformedView = view;
-    malformedView.colorTarget = graph.ImportTexture(
+    malformedView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         colorView->GetTexture(), RHIResourceState::RenderTarget);
     RenderPassRecordContext malformed = MakeMainSceneRecordContext(
         graph, malformedView, scene, opaqueItems, maskedItems, compiled.plan,
@@ -11875,9 +11892,9 @@ TEST_F(RenderPassValidationFixture, OpaquePassNoPlanDefaultDoesNotMutateTarget)
     malformed.executionPlan = nullptr;
     malformed.view.renderFrameExecutionPlan = nullptr;
     pass.AddToGraph(graph, malformed);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(0u, ctx.beginRenderPassCount);
     EXPECT_EQ(0u, ctx.endRenderPassCount);
@@ -12755,13 +12772,13 @@ TEST_F(RenderPassValidationFixture,
     culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef depthTexture = device.CreateTexture(
         RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
     RHITextureViewRef depthView = device.CreateTextureView(depthTexture.Get());
     ASSERT_TRUE(depthView);
     ViewData frameView = view;
-    frameView.depthTarget = graph.ImportTexture(
+    frameView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
         depthTexture.Get(), RHIResourceState::DepthWrite);
     RenderPassRecordContext context = MakeMainSceneRecordContext(
         graph, frameView, scene, opaqueItems, maskedItems, compiled.plan,
@@ -12781,10 +12798,10 @@ TEST_F(RenderPassValidationFixture,
     // A stale exact lease must reject the typed input at graph registration
     // and propagate the shared frame-abort signal without recording work.
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
     RecordingCommandContext commands;
-    graph.Execute(commands);
+    RenderGraphValidationAccess::Execute(graph, commands);
     pass.PublishRecordResults(context.results, context.identity);
 
     ASSERT_TRUE(recordingFailure);
@@ -12990,7 +13007,7 @@ TEST_F(RenderPassValidationFixture,
     view.viewportHeight = 64;
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureDesc plannedColorDesc = RHITextureDesc::RenderTarget(
         64, 64, RHIFormat::RGBA16_FLOAT);
     plannedColorDesc.debugName = "PlannedOpaqueRGBA16Color";
@@ -13004,9 +13021,9 @@ TEST_F(RenderPassValidationFixture,
         graph, view, scene, opaqueItems, maskedItems, compiled.plan,
         preparation, report, compiled.plan.frameSequence);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
     pass.PublishRecordResults(context.results, context.identity);
     report = context.results->executionReport;
 
@@ -13540,7 +13557,7 @@ TEST_F(RenderPassValidationFixture,
                        pipelineCache,
                        materialSystem);
     RenderGraph transparentGraph;
-    transparentGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(transparentGraph, &device);
     RHITextureRef transparentColor = device.CreateTexture(
         RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
     ASSERT_TRUE(transparentColor);
@@ -13551,15 +13568,15 @@ TEST_F(RenderPassValidationFixture,
     transparentView.meshPassPreparation = nullptr;
     transparentView.renderVisibility = nullptr;
     transparentView.renderFrameExecutionReport = nullptr;
-    transparentView.colorTarget = transparentGraph.ImportTexture(
+    transparentView.colorTarget = RenderGraphValidationAccess::ImportTexture(transparentGraph,
         transparentColor.Get(), RHIResourceState::RenderTarget);
     RenderPassRecordContext transparentContext = MakeTransparentRecordContext(
         transparentGraph, transparentView, scene, transparentItems, 619, 619);
     transparentPass.AddToGraph(transparentGraph, transparentContext);
-    transparentGraph.Compile();
+    RenderGraphValidationAccess::Compile(transparentGraph);
     ASSERT_TRUE(transparentGraph.GetCompileStats().compileValid);
     RecordingCommandContext transparentCtx;
-    transparentGraph.Execute(transparentCtx);
+    RenderGraphValidationAccess::Execute(transparentGraph, transparentCtx);
     ASSERT_EQ(1u, transparentCtx.drawIndexedCount);
     ASSERT_EQ(1u, transparentCtx.pipelineSequence.size());
     EXPECT_NE(nullptr, transparentCtx.pipelineSequence[0]);
@@ -14055,9 +14072,9 @@ TEST_F(RenderPassValidationFixture,
     culling.CullCpuFallback(view.viewMatrix, view.projectionMatrix);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     ViewData frameView = view;
-    frameView.colorTarget = graph.ImportTexture(
+    frameView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         colorTexture.Get(), RHIResourceState::RenderTarget);
     RenderPassRecordContext context = MakeMainSceneRecordContext(
         graph, frameView, scene, opaqueItems, maskedItems, compiled.plan,
@@ -14073,10 +14090,10 @@ TEST_F(RenderPassValidationFixture,
     pass.SetResources(&pipelineCache, nullptr);
     pass.SetResourceRegistry(&gpuResources.GetRegistry());
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
     RecordingCommandContext commands;
-    graph.Execute(commands);
+    RenderGraphValidationAccess::Execute(graph, commands);
     pass.PublishRecordResults(context.results, context.identity);
 
     ASSERT_TRUE(recordingFailure);
@@ -14141,9 +14158,9 @@ TEST_F(RenderPassValidationFixture, OpaquePassRejectsMalformedTypedRecordWithout
     OpaquePass pass;
     ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     ViewData malformedView = view;
-    malformedView.colorTarget = graph.ImportTexture(
+    malformedView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         colorView->GetTexture(), RHIResourceState::RenderTarget);
     RenderPassRecordContext malformed = MakeMainSceneRecordContext(
         graph, malformedView, scene, opaqueItems, maskedItems, compiled.plan,
@@ -14151,9 +14168,9 @@ TEST_F(RenderPassValidationFixture, OpaquePassRejectsMalformedTypedRecordWithout
     malformed.executionPlan = nullptr;
     malformed.view.renderFrameExecutionPlan = nullptr;
     pass.AddToGraph(graph, malformed);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(0u, ctx.beginRenderPassCount);
     EXPECT_EQ(0u, ctx.drawIndexedCount);
@@ -14236,9 +14253,9 @@ TEST_F(RenderPassValidationFixture,
     OpaquePass pass;
     ConfigureResources(pass, gpuResources, pipelineCache, materialSystem);
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     ViewData malformedView = view;
-    malformedView.colorTarget = graph.ImportTexture(
+    malformedView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         colorView->GetTexture(), RHIResourceState::RenderTarget);
     RenderPassRecordContext malformed = MakeMainSceneRecordContext(
         graph, malformedView, scene, opaqueItems, maskedItems, compiled.plan,
@@ -14246,9 +14263,9 @@ TEST_F(RenderPassValidationFixture,
     malformed.executionPlan = nullptr;
     malformed.view.renderFrameExecutionPlan = nullptr;
     pass.AddToGraph(graph, malformed);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     // Incomplete typed input has no valid plan and never replays Direct work.
     EXPECT_EQ(0u, ctx.beginRenderPassCount);
@@ -14451,8 +14468,8 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsShadowReceiverOptOutDrawIte
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
-    view.colorTarget = graph.ImportTexture(colorTexture.Get(), RHIResourceState::RenderTarget);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph, colorTexture.Get(), RHIResourceState::RenderTarget);
 
     OpaquePass pass;
     pass.OnAdd(&device);
@@ -14461,7 +14478,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassReportsShadowReceiverOptOutDrawIte
         graph, view, scene, opaqueItems, maskedItems, compiled.plan,
         preparation, report, compiled.plan.frameSequence);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const OpaquePassShadowStats& stats = context.results->opaqueShadowStats;
     EXPECT_EQ(stats.receiverCandidateDrawItemCount, 2u);
@@ -14474,7 +14491,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
     sceneColorDesc.debugName = "GraphSceneColorForOpaquePass";
@@ -14505,10 +14522,10 @@ TEST_F(RenderPassValidationFixture, OpaquePassResolvesRenderGraphColorTargetView
         graph, view, scene, opaqueItems, maskedItems, compiled.plan,
         preparation, report, compiled.plan.frameSequence);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_FALSE(ctx.renderPasses.empty());
     ASSERT_GT(ctx.renderPasses[0].colorAttachmentCount, 0u);
@@ -14554,9 +14571,9 @@ TEST_F(RenderPassValidationFixture,
 
         RenderPassRecordContext context;
         context.view = view;
-        context.view.colorTarget = graph.ImportTexture(
+        context.view.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
             targets.color.Get(), RHIResourceState::RenderTarget);
-        context.view.depthTarget = graph.ImportTexture(
+        context.view.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
             targets.depth.Get(), RHIResourceState::DepthWrite);
         context.view.viewportWidth = 64;
         context.view.viewportHeight = 64;
@@ -14644,8 +14661,8 @@ TEST_F(RenderPassValidationFixture,
 
     RenderGraph graphA;
     RenderGraph graphB;
-    graphA.SetDevice(&device);
-    graphB.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graphA, &device);
+    RenderGraphValidationAccess::SetDevice(graphB, &device);
     RenderSubmissionResourceBatch batchA;
     RenderSubmissionResourceBatch batchB;
     OpaqueTargets targetsA;
@@ -14658,8 +14675,8 @@ TEST_F(RenderPassValidationFixture,
     pass.AddToGraph(graphA, contextA);
     pass.AddToGraph(graphB, contextB);
 
-    graphA.Compile();
-    graphB.Compile();
+    RenderGraphValidationAccess::Compile(graphA);
+    RenderGraphValidationAccess::Compile(graphB);
     ASSERT_TRUE(graphA.GetCompileStats().compileValid);
     ASSERT_TRUE(graphB.GetCompileStats().compileValid);
     expectGraphOwnedAttachmentDeclarations(graphA, contextA);
@@ -14667,8 +14684,8 @@ TEST_F(RenderPassValidationFixture,
 
     const uint32 retainedBeforeB = batchB.GetRetainedObjectCount();
     RecordingCommandContext commandsB;
-    graphB.Execute(commandsB);
-    RenderGraphExecution executionB = graphB.TakeExecution();
+    RenderGraphValidationAccess::Execute(graphB, commandsB);
+    RenderGraphExecution executionB = RenderGraphValidationAccess::TakeExecution(graphB);
     ASSERT_TRUE(executionB);
     ASSERT_EQ(1u, commandsB.renderPasses.size());
     ASSERT_EQ(1u, commandsB.renderPasses[0].colorAttachmentCount);
@@ -14686,8 +14703,8 @@ TEST_F(RenderPassValidationFixture,
 
     const uint32 retainedBeforeA = batchA.GetRetainedObjectCount();
     RecordingCommandContext commandsA;
-    graphA.Execute(commandsA);
-    RenderGraphExecution executionA = graphA.TakeExecution();
+    RenderGraphValidationAccess::Execute(graphA, commandsA);
+    RenderGraphExecution executionA = RenderGraphValidationAccess::TakeExecution(graphA);
     ASSERT_TRUE(executionA);
     ASSERT_EQ(1u, commandsA.renderPasses.size());
     ASSERT_EQ(1u, commandsA.renderPasses[0].colorAttachmentCount);
@@ -14724,8 +14741,8 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(RenderGraphExecutionTestAccess::MarkAdopted(executionA));
     ASSERT_TRUE(RenderGraphExecutionTestAccess::Commit(
         executionA, completionA));
-    graphA.Clear();
-    graphB.Clear();
+    RenderGraphValidationAccess::Reset(graphA);
+    RenderGraphValidationAccess::Reset(graphB);
     viewCache.Clear();
     targetsA.color.Reset();
     targetsA.depth.Reset();
@@ -14760,7 +14777,7 @@ TEST_F(RenderPassValidationFixture,
     // A typed execution cannot fall back to compatibility views when its
     // record snapshot lacks the graph's ResourceViewCache.
     RenderGraph noCacheGraph;
-    noCacheGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(noCacheGraph, &device);
     OpaqueTargets noCacheTargets;
     RenderPassRecordContext noCache = makeContext(
         noCacheGraph, noCacheTargets, nullptr, 1703);
@@ -14775,16 +14792,16 @@ TEST_F(RenderPassValidationFixture,
         &noCache.results->executionReport;
     noCache.frameSnapshot = std::move(noCacheSnapshot);
     pass.AddToGraph(noCacheGraph, noCache);
-    noCacheGraph.Compile();
+    RenderGraphValidationAccess::Compile(noCacheGraph);
     ASSERT_TRUE(noCacheGraph.GetCompileStats().compileValid);
     RecordingCommandContext noCacheCommands;
-    noCacheGraph.Execute(noCacheCommands);
+    RenderGraphValidationAccess::Execute(noCacheGraph, noCacheCommands);
     EXPECT_EQ(0u, noCacheCommands.beginRenderPassCount);
 
     // Clear advances the graph recording generation. A stale context must not
     // bind a replacement target that reuses its old resource slot.
     RenderGraph staleGraph;
-    staleGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(staleGraph, &device);
     OpaqueTargets staleTargets;
     RenderPassRecordContext stale = makeContext(
         staleGraph, staleTargets, nullptr, 1704);
@@ -14794,19 +14811,19 @@ TEST_F(RenderPassValidationFixture,
     stale.results->executionReport.frameSequence = stale.identity.frameSequence;
     ASSERT_TRUE(stale.MatchesTargetGraph(staleGraph));
     ASSERT_TRUE(stale.IsFrameIdentityValid());
-    staleGraph.Clear();
+    RenderGraphValidationAccess::Reset(staleGraph);
     RHITextureRef replacementColor = device.CreateTexture(
         RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
     ASSERT_TRUE(replacementColor);
-    const RGTextureHandle replacementHandle = staleGraph.ImportTexture(
+    const RGTextureHandle replacementHandle = RenderGraphValidationAccess::ImportTexture(staleGraph,
         replacementColor.Get(), RHIResourceState::RenderTarget);
     staleGraph.SetExportState(replacementHandle, RHIResourceState::RenderTarget);
     pass.AddToGraph(staleGraph, stale);
-    staleGraph.Compile();
+    RenderGraphValidationAccess::Compile(staleGraph);
     ASSERT_TRUE(staleGraph.GetCompileStats().compileValid);
     expectNoOpaqueUsages(staleGraph);
     RecordingCommandContext staleCommands;
-    staleGraph.Execute(staleCommands);
+    RenderGraphValidationAccess::Execute(staleGraph, staleCommands);
     EXPECT_EQ(0u, staleCommands.beginRenderPassCount);
     EXPECT_EQ(83u, stale.results->opaqueStats.directDrawCount);
     EXPECT_EQ(RenderPolicyReason::None, stale.results->opaqueStats.failureReason);
@@ -14818,7 +14835,7 @@ TEST_F(RenderPassValidationFixture,
     // can still be forged beyond the graph resource table. It must not
     // declare usage, create views, or fall back to compatibility attachments.
     RenderGraph forgedGraph;
-    forgedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(forgedGraph, &device);
     OpaqueTargets forgedTargets;
     RenderPassRecordContext forged = makeContext(
         forgedGraph, forgedTargets, nullptr, 1705);
@@ -14852,11 +14869,11 @@ TEST_F(RenderPassValidationFixture,
     forged.results->executionReport.status = RenderExecutionStatus::Completed;
     forged.results->executionReport.frameSequence = forged.identity.frameSequence;
     pass.AddToGraph(forgedGraph, forged);
-    forgedGraph.Compile();
+    RenderGraphValidationAccess::Compile(forgedGraph);
     ASSERT_TRUE(forgedGraph.GetCompileStats().compileValid);
     expectNoOpaqueUsages(forgedGraph);
     RecordingCommandContext forgedCommands;
-    forgedGraph.Execute(forgedCommands);
+    RenderGraphValidationAccess::Execute(forgedGraph, forgedCommands);
     EXPECT_EQ(0u, forgedCommands.beginRenderPassCount);
     EXPECT_EQ(84u, forged.results->opaqueStats.directDrawCount);
     EXPECT_EQ(RenderPolicyReason::None, forged.results->opaqueStats.failureReason);
@@ -14872,13 +14889,13 @@ TEST_F(RenderPassValidationFixture,
     // must be rejected by attachment provenance/description validation rather
     // than by the context, snapshot, or results ownership checks.
     RenderGraph reusedSlotGraph;
-    reusedSlotGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(reusedSlotGraph, &device);
     const RGTextureHandle staleColorHandle = reusedSlotGraph.CreateTexture(
         RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
     const RGTextureHandle staleDepthHandle = reusedSlotGraph.CreateTexture(
         RHITextureDesc::DepthStencil(
             64, 64, PipelineCache::GetDefaultDepthStencilFormat()));
-    reusedSlotGraph.Clear();
+    RenderGraphValidationAccess::Reset(reusedSlotGraph);
     OpaqueTargets reusedSlotTargets;
     RenderPassRecordContext reusedSlot = makeContext(
         reusedSlotGraph, reusedSlotTargets, nullptr, 1708);
@@ -14914,11 +14931,11 @@ TEST_F(RenderPassValidationFixture,
     reusedSlot.results->executionReport.frameSequence =
         reusedSlot.identity.frameSequence;
     pass.AddToGraph(reusedSlotGraph, reusedSlot);
-    reusedSlotGraph.Compile();
+    RenderGraphValidationAccess::Compile(reusedSlotGraph);
     ASSERT_TRUE(reusedSlotGraph.GetCompileStats().compileValid);
     expectNoOpaqueUsages(reusedSlotGraph);
     RecordingCommandContext reusedSlotCommands;
-    reusedSlotGraph.Execute(reusedSlotCommands);
+    RenderGraphValidationAccess::Execute(reusedSlotGraph, reusedSlotCommands);
     EXPECT_EQ(0u, reusedSlotCommands.beginRenderPassCount);
     EXPECT_EQ(85u, reusedSlot.results->opaqueStats.directDrawCount);
     EXPECT_EQ(RenderPolicyReason::None,
@@ -14936,17 +14953,17 @@ TEST_F(RenderPassValidationFixture,
     // RTV failure must remain a fail-closed execution failure.
     viewCache.Clear();
     RenderGraph rtvFailureGraph;
-    rtvFailureGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(rtvFailureGraph, &device);
     OpaqueTargets rtvFailureTargets;
     RenderPassRecordContext rtvFailure = makeContext(
         rtvFailureGraph, rtvFailureTargets, nullptr, 1706);
     pass.AddToGraph(rtvFailureGraph, rtvFailure);
-    rtvFailureGraph.Compile();
+    RenderGraphValidationAccess::Compile(rtvFailureGraph);
     ASSERT_TRUE(rtvFailureGraph.GetCompileStats().compileValid);
     expectGraphOwnedAttachmentDeclarations(rtvFailureGraph, rtvFailure);
     device.textureViewCreationSucceeds = false;
     RecordingCommandContext rtvFailureCommands;
-    rtvFailureGraph.Execute(rtvFailureCommands);
+    RenderGraphValidationAccess::Execute(rtvFailureGraph, rtvFailureCommands);
     EXPECT_EQ(0u, rtvFailureCommands.beginRenderPassCount);
     device.textureViewCreationSucceeds = true;
 
@@ -14954,18 +14971,18 @@ TEST_F(RenderPassValidationFixture,
     // isolates the DSV failure path from the previous RTV failure case.
     viewCache.Clear();
     RenderGraph dsvFailureGraph;
-    dsvFailureGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(dsvFailureGraph, &device);
     OpaqueTargets dsvFailureTargets;
     RenderPassRecordContext dsvFailure = makeContext(
         dsvFailureGraph, dsvFailureTargets, nullptr, 1707);
     ASSERT_NE(nullptr, viewCache.GetDefaultRTV(dsvFailureTargets.color.Get()));
     pass.AddToGraph(dsvFailureGraph, dsvFailure);
-    dsvFailureGraph.Compile();
+    RenderGraphValidationAccess::Compile(dsvFailureGraph);
     ASSERT_TRUE(dsvFailureGraph.GetCompileStats().compileValid);
     expectGraphOwnedAttachmentDeclarations(dsvFailureGraph, dsvFailure);
     device.textureViewCreationSucceeds = false;
     RecordingCommandContext dsvFailureCommands;
-    dsvFailureGraph.Execute(dsvFailureCommands);
+    RenderGraphValidationAccess::Execute(dsvFailureGraph, dsvFailureCommands);
     EXPECT_EQ(0u, dsvFailureCommands.beginRenderPassCount);
     device.textureViewCreationSucceeds = true;
 }
@@ -14975,7 +14992,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
     sceneColorDesc.debugName = "GraphSceneColorForOpaqueShadowPass";
@@ -15025,7 +15042,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     ASSERT_EQ(context.directionalShadow.identity, context.identity);
     opaquePass.AddToGraph(graph, context);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
     EXPECT_EQ(stats.totalPasses, 2u);
@@ -15042,7 +15059,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassDeclaresDirectionalShadowReadDurin
     shadowPass.SetConfig(mutatedShadowConfig);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     shadowPass.PublishRecordResults(context.results, context.identity);
     opaquePass.PublishRecordResults(context.results, context.identity);
@@ -15104,7 +15121,7 @@ TEST_F(RenderPassValidationFixture, OpaquePassFailsGraphRealizationWhenRequested
     RVX_REQUIRE_RENDER_RUNTIME_PIPELINE();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureDesc sceneColorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
     sceneColorDesc.debugName = "GraphSceneColorForOpaqueMissingShadowSRV";
@@ -15152,14 +15169,14 @@ TEST_F(RenderPassValidationFixture, OpaquePassFailsGraphRealizationWhenRequested
     ASSERT_EQ(context.directionalShadow.identity, context.identity);
     opaquePass.AddToGraph(graph, context);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     EXPECT_TRUE(context.results->opaqueShadowStats.renderGraphReadDeclared);
 
     device.failDirectionalShadowSRVCreation = true;
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
-    EXPECT_FALSE(graph.TakeExecution());
+    EXPECT_FALSE(RenderGraphValidationAccess::TakeExecution(graph));
     EXPECT_EQ(0u, ctx.beginRenderPassCount);
 
     shadowPass.PublishRecordResults(context.results, context.identity);
@@ -15184,14 +15201,14 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
     std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef colorTarget = device.CreateTexture(
         RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
     ASSERT_TRUE(colorTarget);
     ViewData graphView = view;
     graphView.viewportWidth = 64;
     graphView.viewportHeight = 64;
-    graphView.colorTarget = graph.ImportTexture(
+    graphView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         colorTarget.Get(), RHIResourceState::RenderTarget);
 
     TransparentPass pass;
@@ -15199,11 +15216,11 @@ TEST_F(RenderPassValidationFixture, TransparentPassBindsTransparentPipeline)
     RenderPassRecordContext context = MakeTransparentRecordContext(
         graph, graphView, scene, transparentItems, 1101, 1101);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(static_cast<size_t>(1), ctx.pipelineSequence.size());
     EXPECT_NE(nullptr, ctx.pipelineSequence[0]);
@@ -15220,12 +15237,12 @@ TEST_F(RenderPassValidationFixture,
     std::vector<RenderDrawItem> transparentItems = {MakeDrawItem(MaterialRenderMode::Transparent)};
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef colorTarget = device.CreateTexture(
         RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
     ASSERT_TRUE(colorTarget);
     ViewData graphView = view;
-    graphView.colorTarget = graph.ImportTexture(
+    graphView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         colorTarget.Get(), RHIResourceState::RenderTarget);
 
     TransparentPass pass;
@@ -15233,11 +15250,11 @@ TEST_F(RenderPassValidationFixture,
     RenderPassRecordContext context = MakeTransparentRecordContext(
         graph, graphView, scene, transparentItems, 1102, 1102);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(0u, ctx.drawIndexedCount);
     EXPECT_EQ(0u, ctx.beginRenderPassCount);
@@ -15267,12 +15284,12 @@ TEST_F(RenderPassValidationFixture, TransparentPassDrawsWhenMaterialBindingUsesF
     std::vector<RenderDrawItem> transparentItems = {item};
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef colorTarget = device.CreateTexture(
         RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
     ASSERT_TRUE(colorTarget);
     ViewData graphView = view;
-    graphView.colorTarget = graph.ImportTexture(
+    graphView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         colorTarget.Get(), RHIResourceState::RenderTarget);
 
     TransparentPass pass;
@@ -15280,11 +15297,11 @@ TEST_F(RenderPassValidationFixture, TransparentPassDrawsWhenMaterialBindingUsesF
     RenderPassRecordContext context = MakeTransparentRecordContext(
         graph, graphView, scene, transparentItems, 1103, 1103);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(1u, ctx.drawIndexedCount);
     EXPECT_TRUE(std::any_of(ctx.descriptorSetSequence.begin(), ctx.descriptorSetSequence.end(),
@@ -15379,9 +15396,9 @@ TEST_F(RenderPassValidationFixture,
         EXPECT_TRUE(targets.depth);
 
         ViewData recordView = view;
-        recordView.colorTarget = graph.ImportTexture(
+        recordView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
             targets.color.Get(), RHIResourceState::RenderTarget);
-        recordView.depthTarget = graph.ImportTexture(
+        recordView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
             targets.depth.Get(), RHIResourceState::DepthRead);
         recordView.viewProjectionMatrix = Mat4Identity();
         recordView.viewProjectionMatrix[3][0] = viewTranslation;
@@ -15408,8 +15425,8 @@ TEST_F(RenderPassValidationFixture,
 
     RenderGraph graphA;
     RenderGraph graphB;
-    graphA.SetDevice(&device);
-    graphB.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graphA, &device);
+    RenderGraphValidationAccess::SetDevice(graphB, &device);
     RenderSubmissionResourceBatch batchA;
     RenderSubmissionResourceBatch batchB;
     TransparentTargets targetsA;
@@ -15707,8 +15724,8 @@ TEST_F(RenderPassValidationFixture,
     transparentItemsA.clear();
     contextA.view.viewProjectionMatrix[3][0] = 99.0f;
 
-    graphA.Compile();
-    graphB.Compile();
+    RenderGraphValidationAccess::Compile(graphA);
+    RenderGraphValidationAccess::Compile(graphB);
     ASSERT_TRUE(graphA.GetCompileStats().compileValid);
     ASSERT_TRUE(graphB.GetCompileStats().compileValid);
     const RenderGraph::Diagnostics diagnosticsA = graphA.GetDiagnostics();
@@ -15742,8 +15759,8 @@ TEST_F(RenderPassValidationFixture,
 
     const uint32 retainedBeforeB = batchB.GetRetainedObjectCount();
     RecordingCommandContext commandsB;
-    graphB.Execute(commandsB);
-    RenderGraphExecution executionB = graphB.TakeExecution();
+    RenderGraphValidationAccess::Execute(graphB, commandsB);
+    RenderGraphExecution executionB = RenderGraphValidationAccess::TakeExecution(graphB);
     ASSERT_TRUE(executionB);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionB.GetState());
     EXPECT_EQ(1u, commandsB.beginRenderPassCount);
@@ -15751,8 +15768,8 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(retainedBeforeB, batchB.GetRetainedObjectCount());
     const uint32 retainedBeforeA = batchA.GetRetainedObjectCount();
     RecordingCommandContext commandsA;
-    graphA.Execute(commandsA);
-    RenderGraphExecution executionA = graphA.TakeExecution();
+    RenderGraphValidationAccess::Execute(graphA, commandsA);
+    RenderGraphExecution executionA = RenderGraphValidationAccess::TakeExecution(graphA);
     ASSERT_TRUE(executionA);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionA.GetState());
     EXPECT_EQ(1u, commandsA.beginRenderPassCount);
@@ -15795,8 +15812,8 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(RenderGraphExecutionTestAccess::Commit(
         executionA, completionA));
 
-    graphA.Clear();
-    graphB.Clear();
+    RenderGraphValidationAccess::Reset(graphA);
+    RenderGraphValidationAccess::Reset(graphB);
     pipelineCache.Shutdown();
     EXPECT_GT(pipelineLayoutProbe->GetRefCount(), 1u);
     FakeFence* const completionFence =
@@ -15842,15 +15859,15 @@ TEST_F(RenderPassValidationFixture,
                                  RenderSubmissionResourceBatch* batch = nullptr)
     {
         ViewData recordView = view;
-        recordView.colorTarget = graph.ImportTexture(color, RHIResourceState::RenderTarget);
-        recordView.depthTarget = graph.ImportTexture(depth, RHIResourceState::DepthRead);
+        recordView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph, color, RHIResourceState::RenderTarget);
+        recordView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph, depth, RHIResourceState::DepthRead);
         return MakeTransparentRecordContext(
             graph, recordView, recordScene, drawItems, sequence, sequence, batch);
     };
     const auto expectNoUsageOrCommands = [](RenderGraph& graph,
                                             RecordingCommandContext& commands)
     {
-        graph.Compile();
+        RenderGraphValidationAccess::Compile(graph);
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
         const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
         const auto passDiagnostic = std::find_if(
@@ -15861,14 +15878,14 @@ TEST_F(RenderPassValidationFixture,
             });
         ASSERT_NE(diagnostics.passes.end(), passDiagnostic);
         EXPECT_TRUE(passDiagnostic->usages.empty());
-        graph.Execute(commands);
+        RenderGraphValidationAccess::Execute(graph, commands);
         EXPECT_EQ(0u, commands.beginRenderPassCount);
         EXPECT_EQ(0u, commands.drawIndexedCount);
     };
 
     // A typed empty draw list is not an attachment-only pass.
     RenderGraph emptyGraph;
-    emptyGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(emptyGraph, &device);
     auto emptyTargets = makeTargets(64);
     ASSERT_TRUE(emptyTargets.first);
     ASSERT_TRUE(emptyTargets.second);
@@ -15881,14 +15898,14 @@ TEST_F(RenderPassValidationFixture,
 
     // The ViewData overload cannot rebuild a typed mailbox.
     RenderGraph legacyGraph;
-    legacyGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(legacyGraph, &device);
     auto legacyTargets = makeTargets(64);
     ASSERT_TRUE(legacyTargets.first);
     ASSERT_TRUE(legacyTargets.second);
     ViewData legacyView = view;
-    legacyView.colorTarget = legacyGraph.ImportTexture(
+    legacyView.colorTarget = RenderGraphValidationAccess::ImportTexture(legacyGraph,
         legacyTargets.first.Get(), RHIResourceState::RenderTarget);
-    legacyView.depthTarget = legacyGraph.ImportTexture(
+    legacyView.depthTarget = RenderGraphValidationAccess::ImportTexture(legacyGraph,
         legacyTargets.second.Get(), RHIResourceState::DepthRead);
     pass.AddToGraph(legacyGraph, legacyView);
     RecordingCommandContext legacyCommands;
@@ -15898,8 +15915,8 @@ TEST_F(RenderPassValidationFixture,
     // the target graph has accepted the complete paired context.
     RenderGraph sourceGraph;
     RenderGraph targetGraph;
-    sourceGraph.SetDevice(&device);
-    targetGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(sourceGraph, &device);
+    RenderGraphValidationAccess::SetDevice(targetGraph, &device);
     auto sourceTargets = makeTargets(64);
     ASSERT_TRUE(sourceTargets.first);
     ASSERT_TRUE(sourceTargets.second);
@@ -15918,15 +15935,15 @@ TEST_F(RenderPassValidationFixture,
     // access declarations, even when the remaining typed payload is paired.
     RenderGraph staleSourceGraph;
     RenderGraph staleGraph;
-    staleSourceGraph.SetDevice(&device);
-    staleGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(staleSourceGraph, &device);
+    RenderGraphValidationAccess::SetDevice(staleGraph, &device);
     auto staleTargets = makeTargets(64);
     ASSERT_TRUE(staleTargets.first);
     ASSERT_TRUE(staleTargets.second);
     ViewData staleView = view;
-    staleView.colorTarget = staleSourceGraph.ImportTexture(
+    staleView.colorTarget = RenderGraphValidationAccess::ImportTexture(staleSourceGraph,
         staleTargets.first.Get(), RHIResourceState::RenderTarget);
-    staleView.depthTarget = staleSourceGraph.ImportTexture(
+    staleView.depthTarget = RenderGraphValidationAccess::ImportTexture(staleSourceGraph,
         staleTargets.second.Get(), RHIResourceState::DepthRead);
     RenderPassRecordContext stale = MakeTransparentRecordContext(
         staleGraph, staleView, scene, transparentItems, 1303, 1303);
@@ -15935,7 +15952,7 @@ TEST_F(RenderPassValidationFixture,
     expectNoUsageOrCommands(staleGraph, staleCommands);
 
     RenderGraph forgedGraph;
-    forgedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(forgedGraph, &device);
     RGTextureHandle forgedColor;
     forgedColor.index = 0;
     forgedColor.graphIdentity = forgedGraph.GetGraphIdentity();
@@ -15954,7 +15971,7 @@ TEST_F(RenderPassValidationFixture,
     // A self-graph incomplete snapshot fails before graph declarations become
     // visible. A legacy sealed batch is no longer a graph-lifetime input.
     RenderGraph partialGraph;
-    partialGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(partialGraph, &device);
     auto partialTargets = makeTargets(64);
     ASSERT_TRUE(partialTargets.first);
     ASSERT_TRUE(partialTargets.second);
@@ -15974,7 +15991,7 @@ TEST_F(RenderPassValidationFixture,
     sealedBatch.ReleaseUnsubmitted(retirement);
     ASSERT_TRUE(sealedBatch.IsSealed());
     RenderGraph sealedGraph;
-    sealedGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(sealedGraph, &device);
     auto sealedTargets = makeTargets(64);
     ASSERT_TRUE(sealedTargets.first);
     ASSERT_TRUE(sealedTargets.second);
@@ -15983,9 +16000,9 @@ TEST_F(RenderPassValidationFixture,
         sealedTargets.first.Get(), sealedTargets.second.Get(), 1306, &sealedBatch);
     pass.AddToGraph(sealedGraph, sealed);
     RecordingCommandContext sealedCommands;
-    sealedGraph.Compile();
+    RenderGraphValidationAccess::Compile(sealedGraph);
     ASSERT_TRUE(sealedGraph.GetCompileStats().compileValid);
-    sealedGraph.Execute(sealedCommands);
+    RenderGraphValidationAccess::Execute(sealedGraph, sealedCommands);
     EXPECT_EQ(1u, sealedCommands.beginRenderPassCount);
     EXPECT_EQ(1u, sealedCommands.drawIndexedCount);
     EXPECT_EQ(0u, sealedBatch.GetRetainedObjectCount());
@@ -16095,7 +16112,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     SceneRenderer renderer;
     renderer.SetRenderFeatureReportDeviceForTesting(&device);
     auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(32, 24, RHIFormat::RGBA8_UNORM);
@@ -16104,7 +16121,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     ASSERT_TRUE(colorTarget);
 
     SceneRendererExternalTargetDesc externalTarget;
-    externalTarget.colorTarget = colorTarget.Get();
+    externalTarget.colorTarget = colorTarget;
     externalTarget.colorInitialState = RHIResourceState::ShaderResource;
     externalTarget.colorFinalState = RHIResourceState::ShaderResource;
     renderer.SetExternalRenderTarget(externalTarget);
@@ -16289,7 +16306,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     FakeDevice device;
     SceneRenderer renderer;
     auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
 
     RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(48, 32, RHIFormat::RGBA8_UNORM);
@@ -16298,7 +16315,7 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     ASSERT_TRUE(colorTarget);
 
     SceneRendererExternalTargetDesc externalTarget;
-    externalTarget.colorTarget = colorTarget.Get();
+    externalTarget.colorTarget = colorTarget;
     externalTarget.colorInitialState = RHIResourceState::ShaderResource;
     externalTarget.colorFinalState = RHIResourceState::ShaderResource;
     renderer.SetExternalRenderTarget(externalTarget);
@@ -16388,7 +16405,8 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotIsVersionedAndCa
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"contentType\": \"application/json\""), std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"contentHash\": \"\""), std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"relativePath\": \"\""), std::string::npos);
-    EXPECT_NE(renderGraphDiagnosticsJson.find("\"compileStats\": {"), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"compile\": {"), std::string::npos);
+    EXPECT_NE(renderGraphDiagnosticsJson.find("\"execution\": {"), std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"passes\": ["), std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"resources\": ["), std::string::npos);
     EXPECT_NE(renderGraphDiagnosticsJson.find("\"schedule\": {"), std::string::npos);
@@ -17306,7 +17324,7 @@ TEST(SceneRendererDiagnosticsValidation, RenderFeatureReportMapsModernFeaturesTo
     renderer.SetRenderFeatureReportDeviceForTesting(&device);
 
     auto graph = std::make_unique<RenderGraph>();
-    graph->SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(*graph, &device);
     renderer.SetRenderGraphForTesting(std::move(graph));
 
     renderer.AddPass(std::make_unique<StatusTestPass>("ShadowPass",
@@ -17408,7 +17426,7 @@ TEST_F(RenderPassValidationFixture, FilmGrainAddsLiveGraphPassAndDrawsFullscreen
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
@@ -17417,12 +17435,12 @@ TEST_F(RenderPassValidationFixture, FilmGrainAddsLiveGraphPassAndDrawsFullscreen
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -17431,7 +17449,7 @@ TEST_F(RenderPassValidationFixture, FilmGrainAddsLiveGraphPassAndDrawsFullscreen
     EXPECT_EQ(stats.emptyPassUsageCount, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.beginRenderPassCount, 1u);
     EXPECT_EQ(ctx.endRenderPassCount, 1u);
@@ -17483,7 +17501,7 @@ TEST_F(RenderPassValidationFixture, FilmGrainUploadsConstantsWithHLSLPacking)
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(40, 20, RHIFormat::RGBA8_UNORM));
@@ -17492,15 +17510,15 @@ TEST_F(RenderPassValidationFixture, FilmGrainUploadsConstantsWithHLSLPacking)
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_EQ(ctx.drawCount, 1u);
 
@@ -17543,7 +17561,7 @@ TEST_F(RenderPassValidationFixture, FilmGrainSkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(pass.IsSupported()) << pass.GetUnsupportedReason();
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(16, 16, RHIFormat::RGBA8_UNORM));
@@ -17552,15 +17570,15 @@ TEST_F(RenderPassValidationFixture, FilmGrainSkipsDrawWhenConstantsCannotMap)
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, input, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.drawCount, 0u);
     EXPECT_EQ(ctx.beginRenderPassCount, 0u);
@@ -17596,7 +17614,7 @@ TEST_F(RenderPassValidationFixture, SSAOPassAddsDepthOnlyGraphPassAndDrawsFullsc
     ASSERT_TRUE(pass.IsEnabled());
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureDesc inputDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA16_FLOAT);
     inputDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
@@ -17613,14 +17631,14 @@ TEST_F(RenderPassValidationFixture, SSAOPassAddsDepthOnlyGraphPassAndDrawsFullsc
     ASSERT_TRUE(depthTexture);
 
     PostProcessFrameInputs frameInputs;
-    frameInputs.sceneColor = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    frameInputs.depth = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthWrite);
+    frameInputs.sceneColor = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    frameInputs.depth = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthWrite);
     frameInputs.outputFormat = RHIFormat::RGBA16_FLOAT;
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     pass.AddToGraph(graph, frameInputs, output);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
@@ -17629,7 +17647,7 @@ TEST_F(RenderPassValidationFixture, SSAOPassAddsDepthOnlyGraphPassAndDrawsFullsc
     EXPECT_EQ(graphStats.emptyPassUsageCount, 0u);
 
     RecordingCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(ctx.beginRenderPassCount, 1u);
     EXPECT_EQ(ctx.endRenderPassCount, 1u);
@@ -17845,7 +17863,7 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
 {
     FakeDevice device;
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -17854,8 +17872,8 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
     ASSERT_TRUE(inputTexture);
     ASSERT_TRUE(outputTexture);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
@@ -17919,7 +17937,7 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
     EXPECT_EQ(fxaa->lastInput.index, toneMapping->lastOutput.index);
     EXPECT_EQ(fxaa->lastOutput.index, output.index);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     const auto& graphStats = graph.GetCompileStats();
     EXPECT_TRUE(graphStats.compileValid);
     EXPECT_EQ(graphStats.totalPasses, 3u);
@@ -17928,7 +17946,7 @@ TEST(RenderPostProcessStackValidation, PostProcessStackReportsEffectExecutionPla
 TEST_F(RenderPassValidationFixture, PostProcessFrameInputContractReportsMissingVelocityDepthAndHistory)
 {
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
@@ -17938,10 +17956,10 @@ TEST_F(RenderPassValidationFixture, PostProcessFrameInputContractReportsMissingV
     ASSERT_TRUE(outputTexture);
 
     PostProcessFrameInputs inputs;
-    inputs.sceneColor = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    inputs.sceneColor = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
     inputs.outputFormat = RHIFormat::RGBA16_FLOAT;
     inputs.resetTemporalHistory = true;
-    RGTextureHandle output = graph.ImportTexture(outputTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle output = RenderGraphValidationAccess::ImportTexture(graph, outputTexture.Get(), RHIResourceState::RenderTarget);
     graph.SetExportState(output, RHIResourceState::RenderTarget);
 
     PostProcessStack stack;
@@ -18149,7 +18167,7 @@ TEST_F(RenderPassValidationFixture, DecalRendererReportsUnsupportedWithoutSchedu
     EXPECT_NE(decals.AddDecal(decal), RVX_INVALID_INDEX);
 
     RenderGraph graph;
-    graph.SetDevice(&localDevice);
+    RenderGraphValidationAccess::SetDevice(graph, &localDevice);
 
     RHITextureRef albedoTexture =
         localDevice.CreateTexture(RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
@@ -18164,10 +18182,10 @@ TEST_F(RenderPassValidationFixture, DecalRendererReportsUnsupportedWithoutSchedu
     ASSERT_TRUE(roughnessTexture);
     ASSERT_TRUE(depthTexture);
 
-    RGTextureHandle albedo = graph.ImportTexture(albedoTexture.Get(), RHIResourceState::RenderTarget);
-    RGTextureHandle normal = graph.ImportTexture(normalTexture.Get(), RHIResourceState::RenderTarget);
-    RGTextureHandle roughness = graph.ImportTexture(roughnessTexture.Get(), RHIResourceState::RenderTarget);
-    RGTextureHandle depth = graph.ImportTexture(depthTexture.Get(), RHIResourceState::DepthRead);
+    RGTextureHandle albedo = RenderGraphValidationAccess::ImportTexture(graph, albedoTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle normal = RenderGraphValidationAccess::ImportTexture(graph, normalTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle roughness = RenderGraphValidationAccess::ImportTexture(graph, roughnessTexture.Get(), RHIResourceState::RenderTarget);
+    RGTextureHandle depth = RenderGraphValidationAccess::ImportTexture(graph, depthTexture.Get(), RHIResourceState::DepthRead);
 
     decals.AddToGraph(graph, albedo, normal, roughness, depth, Mat4Identity(), Mat4Identity());
 
@@ -18187,7 +18205,7 @@ TEST_F(RenderPassValidationFixture, DecalRendererReportsUnsupportedWithoutSchedu
     EXPECT_STREQ(GetDecalRendererImplementationTierName(diagnostics.implementationTier), "Unsupported");
     EXPECT_NE(diagnostics.reason.find("not implemented"), std::string::npos);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     EXPECT_EQ(graph.GetCompileStats().totalPasses, 0u);
 
     const fs::path decalSourcePath =
@@ -18458,7 +18476,7 @@ TEST_F(RenderPassValidationFixture,
         EXPECT_TRUE(target.texture);
 
         callerView = {};
-        callerView.depthTarget = graph.ImportTexture(
+        callerView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
             target.texture.Get(), RHIResourceState::DepthWrite);
         callerView.viewportWidth = extent;
         callerView.viewportHeight = extent;
@@ -18471,8 +18489,8 @@ TEST_F(RenderPassValidationFixture,
 
     RenderGraph graphA;
     RenderGraph graphB;
-    graphA.SetDevice(&device);
-    graphB.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graphA, &device);
+    RenderGraphValidationAccess::SetDevice(graphB, &device);
     RenderSubmissionTracker tracker;
     ASSERT_TRUE(tracker.Initialize(&device));
     RenderRetirementQueue retirement;
@@ -18515,13 +18533,13 @@ TEST_F(RenderPassValidationFixture,
     callerViewB.depthTarget = {};
     callerViewB.viewportWidth = 1;
 
-    graphB.Compile();
-    graphA.Compile();
+    RenderGraphValidationAccess::Compile(graphB);
+    RenderGraphValidationAccess::Compile(graphA);
     ASSERT_TRUE(graphA.GetCompileStats().compileValid);
     ASSERT_TRUE(graphB.GetCompileStats().compileValid);
 
     RecordingCommandContext commandsB;
-    graphB.Execute(commandsB);
+    RenderGraphValidationAccess::Execute(graphB, commandsB);
     ASSERT_EQ(1u, commandsB.beginRenderPassCount);
     ASSERT_EQ(1u, commandsB.drawIndexedCount);
     ASSERT_EQ(1u, commandsB.renderPasses.size());
@@ -18532,12 +18550,12 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(targetB.extent,
               commandsB.renderPasses[0].depthStencilAttachment.view->GetTexture()->GetWidth());
     EXPECT_EQ(1u, contextB.results->depthStats.directDrawCount);
-    RenderGraphExecution executionB = graphB.TakeExecution();
+    RenderGraphExecution executionB = RenderGraphValidationAccess::TakeExecution(graphB);
     ASSERT_TRUE(executionB);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionB.GetState());
 
     RecordingCommandContext commandsA;
-    graphA.Execute(commandsA);
+    RenderGraphValidationAccess::Execute(graphA, commandsA);
     ASSERT_EQ(1u, commandsA.beginRenderPassCount);
     ASSERT_EQ(1u, commandsA.drawIndexedCount);
     ASSERT_EQ(1u, commandsA.renderPasses.size());
@@ -18548,7 +18566,7 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(targetA.extent,
               commandsA.renderPasses[0].depthStencilAttachment.view->GetTexture()->GetWidth());
     EXPECT_EQ(1u, contextA.results->depthStats.directDrawCount);
-    RenderGraphExecution executionA = graphA.TakeExecution();
+    RenderGraphExecution executionA = RenderGraphValidationAccess::TakeExecution(graphA);
     ASSERT_TRUE(executionA);
     ASSERT_EQ(RenderGraphExecutionState::Recorded, executionA.GetState());
 
@@ -18573,8 +18591,8 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(RenderGraphExecutionTestAccess::MarkAdopted(executionA));
     ASSERT_TRUE(RenderGraphExecutionTestAccess::Commit(
         executionA, completionA));
-    graphA.Clear();
-    graphB.Clear();
+    RenderGraphValidationAccess::Reset(graphA);
+    RenderGraphValidationAccess::Reset(graphB);
     viewCache.Clear();
     targetA.texture.Reset();
     targetB.texture.Reset();
@@ -18613,13 +18631,13 @@ TEST_F(RenderPassValidationFixture,
     const RenderFrameExecutionReport staleReportBefore =
         contextA.results->executionReport;
     pass.AddToGraph(graphA, contextA);
-    graphA.Compile();
+    RenderGraphValidationAccess::Compile(graphA);
     ASSERT_TRUE(graphA.GetCompileStats().compileValid);
     const RenderGraph::Diagnostics staleDiagnostics = graphA.GetDiagnostics();
     ASSERT_EQ(1u, staleDiagnostics.passes.size());
     EXPECT_TRUE(staleDiagnostics.passes[0].usages.empty());
     RecordingCommandContext staleCommands;
-    graphA.Execute(staleCommands);
+    RenderGraphValidationAccess::Execute(graphA, staleCommands);
     EXPECT_EQ(0u, staleCommands.beginRenderPassCount);
     EXPECT_EQ(71u, contextA.results->depthStats.directDrawCount);
     EXPECT_EQ(RenderPolicyReason::None,
@@ -18663,7 +18681,7 @@ TEST_F(RenderPassValidationFixture,
     opaqueVisibility.cpuVisibleBySourcePacket = {1u};
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     RHITextureRef colorTarget = device.CreateTexture(
         RHITextureDesc::RenderTarget(80, 48, RHIFormat::RGBA8_UNORM));
     RHITextureRef depthTarget = device.CreateTexture(RHITextureDesc::DepthStencil(
@@ -18671,9 +18689,9 @@ TEST_F(RenderPassValidationFixture,
     ASSERT_TRUE(colorTarget);
     ASSERT_TRUE(depthTarget);
     ViewData callerView;
-    callerView.colorTarget = graph.ImportTexture(
+    callerView.colorTarget = RenderGraphValidationAccess::ImportTexture(graph,
         colorTarget.Get(), RHIResourceState::RenderTarget);
-    callerView.depthTarget = graph.ImportTexture(
+    callerView.depthTarget = RenderGraphValidationAccess::ImportTexture(graph,
         depthTarget.Get(), RHIResourceState::DepthWrite);
     callerView.viewportWidth = 80;
     callerView.viewportHeight = 48;
@@ -18696,10 +18714,10 @@ TEST_F(RenderPassValidationFixture,
     callerView.viewportHeight = 1;
     callerView.renderVisibility = nullptr;
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
     RecordingCommandContext commands;
-    graph.Execute(commands);
+    RenderGraphValidationAccess::Execute(graph, commands);
     pass.PublishRecordResults(context.results, context.identity);
 
     ASSERT_EQ(1u, commands.beginRenderPassCount);
@@ -18736,7 +18754,7 @@ TEST_F(RenderPassValidationFixture,
     RenderFrameExecutionReport report = MakeExecutionReport(compiled.plan);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     ViewData recordView;
     recordView.viewportWidth = 96;
     recordView.viewportHeight = 64;
@@ -18775,10 +18793,10 @@ TEST_F(RenderPassValidationFixture,
     EXPECT_EQ(config.numCascades,
               context.results->shadowStats.declaredCascadeResourceCount);
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
     RecordingCommandContext commands;
-    graph.Execute(commands);
+    RenderGraphValidationAccess::Execute(graph, commands);
 
     EXPECT_EQ(config.numCascades, commands.beginRenderPassCount);
     EXPECT_EQ(config.numCascades, commands.endRenderPassCount);
@@ -18827,7 +18845,7 @@ TEST_F(RenderPassValidationFixture,
     pass.SetEnabled(true);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
     ViewData recordView = makeShadowView(graph, nullptr);
     RenderPassRecordContext context = MakeMainSceneRecordContext(
         graph, recordView, emptyScene, emptyDrawItems, emptyDrawItems,
@@ -18836,16 +18854,16 @@ TEST_F(RenderPassValidationFixture,
     context.frameSnapshot = MakeRenderPassFrameSnapshot(
         context, *context.results);
     pass.AddToGraph(graph, context);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
     ASSERT_TRUE(graph.GetCompileStats().compileValid);
     RecordingCommandContext commands;
-    graph.Execute(commands);
+    RenderGraphValidationAccess::Execute(graph, commands);
 
     ASSERT_EQ(config.numCascades, commands.renderPasses.size());
     ASSERT_EQ(config.numCascades,
               context.results->shadowStats.resolvedCascadeViewCount);
     ASSERT_EQ(0u, context.results->shadowStats.drawCount);
-    RHITexture* const shadowTexture = graph.GetTexture(
+    RHITexture* const shadowTexture = RenderGraphValidationAccess::GetTexture(graph,
         context.results->directionalShadowOutput.shadowMap);
     ASSERT_NE(nullptr, shadowTexture);
     RHITextureRef shadowTextureProbe(shadowTexture);
@@ -18866,9 +18884,9 @@ TEST_F(RenderPassValidationFixture,
     }
     ASSERT_EQ(config.numCascades, cascadeViewProbes.size());
 
-    RenderGraphExecution execution = graph.TakeExecution();
+    RenderGraphExecution execution = RenderGraphValidationAccess::TakeExecution(graph);
     ASSERT_TRUE(execution);
-    graph.Clear();
+    RenderGraphValidationAccess::Reset(graph);
     viewCache.Clear();
     for (const RHITextureViewRef& cascadeViewProbe : cascadeViewProbes)
     {
@@ -18881,7 +18899,7 @@ TEST_F(RenderPassValidationFixture,
               shadowTextureProbe->GetRefCount());
 
     RenderGraph staleGraph;
-    staleGraph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(staleGraph, &device);
     ViewData staleView = makeShadowView(staleGraph, nullptr);
     RenderFrameExecutionReport staleReport = MakeExecutionReport(compiled.plan);
     RenderPassRecordContext stale = MakeMainSceneRecordContext(
@@ -18903,15 +18921,15 @@ TEST_F(RenderPassValidationFixture,
     const ShadowPassStats staleStatsBefore = stale.results->shadowStats;
     const RenderFrameExecutionReport staleReportBefore =
         stale.results->executionReport;
-    staleGraph.Clear();
+    RenderGraphValidationAccess::Reset(staleGraph);
     const size_t texturesBeforeStaleRegistration = device.createdTextureDescs.size();
     pass.AddToGraph(staleGraph, stale);
-    staleGraph.Compile();
+    RenderGraphValidationAccess::Compile(staleGraph);
     ASSERT_TRUE(staleGraph.GetCompileStats().compileValid);
     ASSERT_EQ(1u, staleGraph.GetDiagnostics().passes.size());
     EXPECT_TRUE(staleGraph.GetDiagnostics().passes[0].usages.empty());
     RecordingCommandContext staleCommands;
-    staleGraph.Execute(staleCommands);
+    RenderGraphValidationAccess::Execute(staleGraph, staleCommands);
     EXPECT_EQ(0u, staleCommands.beginRenderPassCount);
     EXPECT_EQ(texturesBeforeStaleRegistration, device.createdTextureDescs.size());
     EXPECT_EQ(staleOutputBefore.identity,

@@ -1,6 +1,7 @@
 #include "RenderGraphInternal.h"
 #include "Core/Assert.h"
 #include "Core/Log.h"
+#include "Render/Graph/RenderGraphCompiler.h"
 #include <algorithm>
 #include <iterator>
 #include <string>
@@ -1549,8 +1550,17 @@ namespace RVX
     // =============================================================================
     void CompileRenderGraph(RenderGraphImpl& graph)
     {
-        graph.executionRealized = false;
-        graph.resourcesRealized = false;
+        struct CompileStateGuard
+        {
+            RenderGraphImpl& graph;
+            ~CompileStateGuard()
+            {
+                graph.runtimeState = graph.stats.compileValid
+                    ? RenderGraphRuntimeState::Compiled
+                    : RenderGraphRuntimeState::CompileFailed;
+            }
+        } compileStateGuard{graph};
+
         graph.compileDiagnostics.clear();
         graph.stats = {};
         graph.stats.totalPasses = static_cast<uint32>(graph.passes.size());
@@ -2724,6 +2734,27 @@ namespace RVX
         }
         graph.stats.barrierCount = graph.stats.textureBarrierCount + graph.stats.bufferBarrierCount;
         graph.stats.planHash = ComputeCompiledPlanHash(graph);
+    }
+
+    CompiledRenderGraphPlan RenderGraphCompiler::Compile(
+        RenderGraph& definition,
+        const RenderGraphCompileOptions& options) const
+    {
+        CompiledRenderGraphPlan plan;
+        if (!definition.FinalizeInternal(options))
+            return plan;
+
+        const RenderGraph::CompileStats& stats =
+            definition.GetCompileStats();
+        if (stats.planHash == 0)
+            return plan;
+
+        plan.m_graph = &definition;
+        plan.m_graphIdentity = definition.GetGraphIdentity();
+        plan.m_recordingGeneration = definition.GetRecordingGeneration();
+        plan.m_planHash = stats.planHash;
+        plan.m_finalQueuePolicy = stats.finalQueuePolicy;
+        return plan;
     }
 
 } // namespace RVX

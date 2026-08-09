@@ -17,10 +17,12 @@
 namespace RVX
 {
     inline constexpr const char* RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID = "RVX.RenderGraph.Diagnostics";
-    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 6;
+    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 7;
 
-    class RenderSubmissionResourceBatch;
     class RenderGraph;
+    class RenderGraphCompiler;
+    class RenderGraphExecutor;
+    class RenderGraphValidationAccess;
     class TransientResourcePool;
 
     /** @brief Logical graph access without a physical queue ownership domain. */
@@ -55,6 +57,14 @@ namespace RVX
         bool hasCapabilitySnapshot = false;
         bool enableMemoryAliasing = false;
         bool enableParallelRecording = false;
+    };
+
+    /** @brief Execution-only dependencies; never consulted by graph compilation. */
+    struct RenderGraphExecutionEnvironment
+    {
+        IRHIDevice* device = nullptr;
+        TransientResourcePool* transientResourcePool = nullptr;
+        RHICommandContext* graphicsContext = nullptr;
     };
 
     // =============================================================================
@@ -256,9 +266,6 @@ namespace RVX
         RenderGraph();
         ~RenderGraph();
 
-        void SetDevice(IRHIDevice* device);
-        void SetTransientResourcePool(TransientResourcePool* pool);
-
         /**
          * @brief Select the physical queue contract used while recording passes.
          * @return False when passes have already been recorded and the mode cannot change.
@@ -267,23 +274,15 @@ namespace RVX
          * passes all declare Graphics-domain resource access. MultiQueue must
          * be selected before AddPass so barriers and execution agree.
          */
-        bool SetQueueExecutionMode(QueueExecutionMode mode);
         QueueExecutionMode GetQueueExecutionMode() const;
 
-        /**
-         * @brief Enable independent queue-batch recording on Core JobSystem workers.
-         *
-         * Disabled by default until every participating pass callback is audited
-         * for concurrent recording. Batches in the same dependency level may run
-         * concurrently; dependency levels always complete in order.
-         */
-        void SetParallelRecordingEnabled(bool enabled) noexcept;
+        /** @brief Report whether the compiled plan enables parallel recording. */
         [[nodiscard]] bool IsParallelRecordingEnabled() const noexcept;
 
         /** @brief Stable non-zero identity for this graph instance. */
         uint64 GetGraphIdentity() const;
 
-        /** @brief Non-zero resource-recording generation; changes on Clear(). */
+        /** @brief Non-zero resource-recording generation for this definition. */
         uint64 GetRecordingGeneration() const;
 
         // Create transient resources
@@ -296,10 +295,18 @@ namespace RVX
             const RHITextureViewDesc& desc);
 
         // Import external resources
-        RGTextureHandle ImportTexture(RHITexture* texture, RHIResourceState initialState);
-        RGBufferHandle ImportBuffer(RHIBuffer* buffer, RHIResourceState initialState);
-        RGTextureHandle ImportTexture(RHITexture* texture, const RHITextureAccessSnapshot& initialAccess);
-        RGBufferHandle ImportBuffer(RHIBuffer* buffer, const RHIBufferAccessSnapshot& initialAccess);
+        RGTextureHandle ImportTexture(
+            RHITextureRef texture,
+            RHIResourceState initialState);
+        RGBufferHandle ImportBuffer(
+            RHIBufferRef buffer,
+            RHIResourceState initialState);
+        RGTextureHandle ImportTexture(
+            RHITextureRef texture,
+            const RHITextureAccessSnapshot& initialAccess);
+        RGBufferHandle ImportBuffer(
+            RHIBufferRef buffer,
+            const RHIBufferAccessSnapshot& initialAccess);
 
         // Export final state for external usage
         void SetExportState(RGTextureHandle texture, RHIResourceState finalState);
@@ -311,14 +318,10 @@ namespace RVX
         RHITextureAccessSnapshot GetRealizedAccess(RGTextureHandle texture) const;
         RHIBufferAccessSnapshot GetRealizedAccess(RGBufferHandle buffer) const;
 
-        // Get actual RHI resources from handles (valid after Compile)
-        RHITexture* GetTexture(RGTextureHandle handle) const;
-        RHIBuffer* GetBuffer(RGBufferHandle handle) const;
-
         // Get resource descriptions
-        /** @brief Pointer remains stable until Clear() invalidates the generation. */
+        /** @brief Pointer remains stable for the lifetime of this definition. */
         const RHITextureDesc* GetTextureDesc(RGTextureHandle handle) const;
-        /** @brief Pointer remains stable until Clear() invalidates the generation. */
+        /** @brief Pointer remains stable for the lifetime of this definition. */
         const RHIBufferDesc* GetBufferDesc(RGBufferHandle handle) const;
 
         // Add passes
@@ -336,51 +339,11 @@ namespace RVX
             std::function<void(RenderGraphBuilder&, Data&)> setup,
             std::function<void(const Data&, RenderGraphPassContext&)> execute);
 
-        // Compile the graph
-        void Compile();
-        void Compile(const RenderGraphCompileOptions& options);
-
-        // Execute the graph (graphics only)
-        void Execute(RHICommandContext& ctx);
-
         struct RecordedQueueSubmission
         {
             RHIQueueSubmissionPlan plan;
             std::vector<RHICommandContextRef> ownedContexts;
         };
-
-        /** @brief Record one independent command context per planned queue batch. */
-        bool RecordQueueSubmission(RecordedQueueSubmission& submission);
-
-        /** @brief Transfer this recorded physical realization into one completion-owned execution. */
-        [[nodiscard]] RenderGraphExecution TakeExecution();
-        [[nodiscard]] RenderGraphExecution TakeExecution(
-            RecordedQueueSubmission&& submission);
-
-        /**
-         * @brief Rebuild this recorded graph with Graphics-only access domains.
-         * @note This is the only legal fallback after a MultiQueue plan cannot
-         * be recorded; MultiQueue barriers must never execute on one context.
-         */
-        bool RecompileGraphicsOnly();
-
-        /**
-         * @brief Execute the graph with async compute support
-         * @param graphicsCtx Graphics command context
-         * @param computeCtx Compute command context (can be nullptr to run compute on graphics)
-         * @param computeFence Fence for graphics-compute synchronization
-         * @param frameIndex Frame index used for fence value generation
-         *
-         * When computeCtx is provided, compute passes run asynchronously on the compute queue.
-         * Fences are automatically inserted to synchronize resource access between queues.
-         * @warning This legacy recording API is not integrated with RenderContext's
-         * terminal frame submission. Production rendering must remain GraphicsOnly
-         * until queue-batch submission consumes the graph SubmissionPlan.
-         */
-        void ExecuteAsync(RHICommandContext& graphicsCtx,
-                          RHICommandContext* computeCtx,
-                          RHIFence* computeFence,
-                          uint64 frameIndex = 0);
 
         enum class AsyncComputeFallbackReason : uint8
         {
@@ -420,6 +383,10 @@ namespace RVX
             uint32 lastParallelRecordingLevelCount = 0;
             uint32 lastParallelRecordingBatchCount = 0;
             uint32 partialRealizationRollbackCount = 0;
+            uint32 physicalRealizationCount = 0;
+            RGQueuePolicy requestedQueuePolicy = RGQueuePolicy::GraphicsOnly;
+            RGQueuePolicy finalQueuePolicy = RGQueuePolicy::GraphicsOnly;
+            std::string queueFallbackReason;
             bool memoryAliasingEnabled = false;
             bool memoryAliasingUnsupportedRequested = false;
             bool explicitAliasingBarriersSupported = false;
@@ -627,11 +594,30 @@ namespace RVX
             uint32 plannedSyncIndex = RVX_INVALID_INDEX;
         };
 
+        /** @brief Physical execution telemetry, separate from pure compile data. */
+        struct ExecutionDiagnostics
+        {
+            uint32 physicalRealizationCount = 0;
+            uint32 partialRollbackCount = 0;
+            uint32 recordingTextureLeases = 0;
+            uint32 recordingBufferLeases = 0;
+            uint32 inFlightTextureLeases = 0;
+            uint32 inFlightBufferLeases = 0;
+            uint64 leaseCommitCount = 0;
+            uint64 leaseAbortCount = 0;
+            uint64 leaseDeviceLostCount = 0;
+            uint64 leaseValidationFailureCount = 0;
+            uint32 transientViewCount = 0;
+            uint64 transientViewCreationFailures = 0;
+            RHIDescriptorDiagnostics descriptors;
+        };
+
         struct Diagnostics
         {
             const char* schemaId = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID;
             uint32 schemaVersion = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION;
             CompileStats compileStats;
+            ExecutionDiagnostics execution;
             std::vector<PassDiagnostic> passes;
             std::vector<ResourceDiagnostic> resources;
             std::vector<QueueBatchDiagnostic> queueBatches;
@@ -669,23 +655,44 @@ namespace RVX
         std::string ExportDiagnosticsJson() const;
         bool SaveDiagnosticsJson(const char* filename) const;
 
-        // Memory aliasing control
-        void SetMemoryAliasingEnabled(bool enabled);
+        // Compiled plan diagnostics
         bool IsMemoryAliasingEnabled() const;
-
-        /** @brief Retain graph-owned objects in the current submission batch. */
-        [[nodiscard]] bool RetainSubmissionResources(
-            RenderSubmissionResourceBatch& batch) const;
 
         // Debug/Visualization
         std::string ExportGraphviz() const;
         bool SaveGraphviz(const char* filename) const;
 
-        // Clear for next frame
-        void Clear();
-
     private:
         friend class RenderGraphPassContext;
+        friend class RenderGraphCompiler;
+        friend class RenderGraphExecutor;
+        friend class RenderGraphValidationAccess;
+        void ConfigureDeviceForValidation(IRHIDevice* device);
+        void ConfigurePoolForValidation(TransientResourcePool* pool);
+        void SetParallelRecordingEnabledForValidation(bool enabled) noexcept;
+        void SetMemoryAliasingEnabledForValidation(bool enabled);
+        bool SetQueueExecutionModeForValidation(QueueExecutionMode mode);
+        void CompilePlanInternal();
+        void CompilePlanInternal(const RenderGraphCompileOptions& options);
+        void RecordGraphicsPlanInternal(RHICommandContext& context);
+        bool RecordQueueSubmissionInternal(
+            RecordedQueueSubmission& submission);
+        [[nodiscard]] RenderGraphExecution TakeExecutionInternal();
+        [[nodiscard]] RenderGraphExecution TakeExecutionInternal(
+            RecordedQueueSubmission&& submission);
+        RHITexture* ResolveTexture(RGTextureHandle handle) const;
+        RHIBuffer* ResolveBuffer(RGBufferHandle handle) const;
+        void ResetDefinitionForValidation();
+        RGTextureHandle ImportTextureBorrowedForValidation(
+            RHITexture* texture,
+            const RHITextureAccessSnapshot& initialAccess);
+        RGBufferHandle ImportBufferBorrowedForValidation(
+            RHIBuffer* buffer,
+            const RHIBufferAccessSnapshot& initialAccess);
+        [[nodiscard]] bool FinalizeInternal(
+            const RenderGraphCompileOptions& options);
+        [[nodiscard]] RenderGraphExecution PrepareExecutionInternal(
+            const RenderGraphExecutionEnvironment& environment);
         void AddPassInternal(
             const char* name,
             RenderGraphPassType type,

@@ -9,6 +9,8 @@
 #include "GPUScene/GPUSceneUploader.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
+#include "Render/Graph/RenderGraphCompiler.h"
+#include "Render/Graph/RenderGraphExecutor.h"
 #include "Core/Assert.h"
 #include "Core/Log.h"
 #include "Core/PathUtils.h"
@@ -653,7 +655,6 @@ void SceneRenderer::Initialize(
 
     // Create render graph
     m_renderGraph = std::make_unique<RenderGraph>();
-    m_renderGraph->SetDevice(m_renderContext->GetDevice());
     m_gpuSceneUploader = std::make_unique<GPUSceneUploader>();
     if (!m_gpuSceneUploader->Initialize(
             m_renderContext->GetDevice(),
@@ -706,7 +707,6 @@ void SceneRenderer::Initialize(
     m_transientResourcePool->Initialize(m_renderContext->GetDevice(),
                                         submissionTracker,
                                         m_retirementQueue);
-    m_renderGraph->SetTransientResourcePool(m_transientResourcePool.get());
 
     // Create resource view cache for automatic view management
     m_resourceViewCache = std::make_unique<ResourceViewCache>();
@@ -963,7 +963,7 @@ void SceneRenderer::PrepareForSwapChainResize()
 
     if (m_renderGraph)
     {
-        m_renderGraph->Clear();
+        m_renderGraph.reset();
     }
 
     if (m_resourceViewCache)
@@ -1575,11 +1575,6 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
          !m_depthGPUCullingRecordedState->RetainSubmissionResources(*m_submissionBatch)) ||
         (m_opaqueGPUCullingRecordedState &&
          !m_opaqueGPUCullingRecordedState->RetainSubmissionResources(*m_submissionBatch)))
-    {
-        result.code = RenderFrameExecutionCode::SubmissionFailed;
-        return result;
-    }
-    if (!m_renderGraph->RetainSubmissionResources(*m_submissionBatch))
     {
         result.code = RenderFrameExecutionCode::SubmissionFailed;
         return result;
@@ -3631,16 +3626,10 @@ void SceneRenderer::Render()
         return;
     }
 
-    // Clear the render graph for this frame
-    m_renderGraph->Clear();
-    const bool queuePlanSupported =
-        m_renderContext->GetDevice() &&
-        m_renderContext->GetDevice()
-            ->GetCapabilities().supportsQueueSubmissionPlan;
-    static_cast<void>(m_renderGraph->SetQueueExecutionMode(
-        queuePlanSupported
-            ? RenderGraph::QueueExecutionMode::MultiQueue
-            : RenderGraph::QueueExecutionMode::GraphicsOnly));
+    // A frame owns one definition/plan/execution lineage. Reusing a mutable
+    // graph across frames would make stale handles and partial realization
+    // observable, so start with a fresh recording object.
+    m_renderGraph = std::make_unique<RenderGraph>();
 
     // Build the render graph (creates depth buffer if needed, imports resources)
     BuildRenderGraph();
@@ -3656,9 +3645,19 @@ void SceneRenderer::Render()
         return;
     }
 
-    // Compile the render graph (computes barriers, memory aliasing, pass culling)
-    m_renderGraph->Compile();
-    bool graphCompileValid = m_renderGraph->GetCompileStats().compileValid;
+    // Finalize one immutable queue policy and allocation-free plan. Physical
+    // resources are deliberately unavailable during this stage.
+    RenderGraphCompileOptions compileOptions;
+    compileOptions.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+    if (IRHIDevice* device = m_renderContext->GetDevice())
+    {
+        compileOptions.capabilities = device->GetCapabilities();
+        compileOptions.hasCapabilitySnapshot = true;
+    }
+    RenderGraphCompiler graphCompiler;
+    CompiledRenderGraphPlan compiledPlan =
+        graphCompiler.Compile(*m_renderGraph, compileOptions);
+    bool graphCompileValid = static_cast<bool>(compiledPlan);
 
     if (RenderSubmissionTracker* tracker =
             RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext))
@@ -3666,49 +3665,28 @@ void SceneRenderer::Render()
         RetireOwnerSnapshots(tracker->CaptureLastSubmittedToken());
     }
 
-    // Execute through RenderGraph for automatic barrier management
+    // Prepare contexts, realize physical resources exactly once, record the
+    // final plan, and transfer every lease/view into one completion owner.
     RHICommandContext* ctx = m_renderContext->GetGraphicsContext();
     bool graphExecuted = false;
     const char* executionSkippedReason = nullptr;
     if (ctx && graphCompileValid)
     {
-        if (m_renderGraph->GetQueueExecutionMode() ==
-            RenderGraph::QueueExecutionMode::MultiQueue)
+        RenderGraphExecutionEnvironment executionEnvironment;
+        executionEnvironment.device = m_renderContext->GetDevice();
+        executionEnvironment.transientResourcePool =
+            m_transientResourcePool.get();
+        executionEnvironment.graphicsContext = ctx;
+        RenderGraphExecutor graphExecutor;
+        RenderGraphExecution execution =
+            graphExecutor.Prepare(compiledPlan, executionEnvironment);
+        if (!execution ||
+            !m_renderContext->AdoptRenderGraphExecution(
+                std::move(execution)))
         {
-            RenderGraph::RecordedQueueSubmission submission;
-            if (m_renderGraph->RecordQueueSubmission(submission))
-            {
-                RenderGraphExecution execution =
-                    m_renderGraph->TakeExecution(std::move(submission));
-                if (!execution ||
-                    !m_renderContext->AdoptRenderGraphExecution(
-                        std::move(execution)))
-                {
-                    graphCompileValid = false;
-                    executionSkippedReason =
-                        "RenderContext rejected the completion-owned graph execution";
-                }
-            }
-            else
-            {
-                graphCompileValid = false;
-                executionSkippedReason =
-                    "MultiQueue recording failed before submission adoption";
-            }
-        }
-        else
-        {
-            m_renderGraph->Execute(*ctx);
-            RenderGraphExecution execution =
-                m_renderGraph->TakeExecution();
-            if (!execution ||
-                !m_renderContext->AdoptRenderGraphExecution(
-                    std::move(execution)))
-            {
-                graphCompileValid = false;
-                executionSkippedReason =
-                    "RenderContext rejected the Graphics graph execution";
-            }
+            graphCompileValid = false;
+            executionSkippedReason =
+                "RenderContext rejected the completion-owned graph execution";
         }
         graphExecuted = !m_gpuSceneCullingCommandRecordingFailed &&
             graphCompileValid &&
@@ -4658,7 +4636,7 @@ void SceneRenderer::AddRayTracingSceneBuildPass()
             continue;
 
         RGBufferHandle scratchBufferHandle =
-            m_renderGraph->ImportBuffer(scratchBuffer, RHIResourceState::Common);
+            m_renderGraph->ImportBuffer(RHIBufferRef(scratchBuffer), RHIResourceState::Common);
         m_renderGraph->SetExportState(scratchBufferHandle, RHIResourceState::Common);
         blasScratchHandles.push_back(scratchBufferHandle);
     }
@@ -4672,9 +4650,9 @@ void SceneRenderer::AddRayTracingSceneBuildPass()
     };
 
     RGBufferHandle instanceHandle =
-        m_renderGraph->ImportBuffer(instanceBuffer, RHIResourceState::ShaderResource);
+        m_renderGraph->ImportBuffer(RHIBufferRef(instanceBuffer), RHIResourceState::ShaderResource);
     RGBufferHandle scratchHandle =
-        m_renderGraph->ImportBuffer(tlasScratch, RHIResourceState::Common);
+        m_renderGraph->ImportBuffer(RHIBufferRef(tlasScratch), RHIResourceState::Common);
     m_renderGraph->SetExportState(instanceHandle, RHIResourceState::ShaderResource);
     m_renderGraph->SetExportState(scratchHandle, RHIResourceState::Common);
 
@@ -5014,29 +4992,29 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             recordedState->GetAccessSnapshots();
         GPUDrivenCullPassData handles;
         handles.constants = m_renderGraph->ImportBuffer(
-            constantsBuffer, accessSnapshots.constants);
+            RHIBufferRef(constantsBuffer), accessSnapshots.constants);
         if (usesGPUScene)
         {
             handles.gpuSceneCandidates = m_renderGraph->ImportBuffer(
-                gpuSceneCandidateBuffer, accessSnapshots.gpuSceneCandidates);
+                RHIBufferRef(gpuSceneCandidateBuffer), accessSnapshots.gpuSceneCandidates);
             handles.gpuSceneTables = gpuSceneLease->handles;
             handles.usesGPUScene = true;
         }
         else
         {
             handles.instances = m_renderGraph->ImportBuffer(
-                instanceBuffer, accessSnapshots.instances);
+                RHIBufferRef(instanceBuffer), accessSnapshots.instances);
         }
         handles.instanceIndices = m_renderGraph->ImportBuffer(
-            instanceIndexBuffer, accessSnapshots.instanceIndices);
+            RHIBufferRef(instanceIndexBuffer), accessSnapshots.instanceIndices);
         handles.visibility = m_renderGraph->ImportBuffer(
-            visibilityBuffer, accessSnapshots.visibility);
+            RHIBufferRef(visibilityBuffer), accessSnapshots.visibility);
         handles.visibleInstances = m_renderGraph->ImportBuffer(
-            visibleInstanceBuffer, accessSnapshots.visibleInstances);
+            RHIBufferRef(visibleInstanceBuffer), accessSnapshots.visibleInstances);
         handles.indirectDraws = m_renderGraph->ImportBuffer(
-            indirectDrawBuffer, accessSnapshots.indirectDraws);
+            RHIBufferRef(indirectDrawBuffer), accessSnapshots.indirectDraws);
         handles.drawCount = m_renderGraph->ImportBuffer(
-            drawCountBuffer, accessSnapshots.drawCount);
+            RHIBufferRef(drawCountBuffer), accessSnapshots.drawCount);
 
         m_renderGraph->SetExportAccess(
             handles.constants,
@@ -5304,7 +5282,7 @@ void SceneRenderer::BuildRenderGraph()
                 m_submissionBatch.get(), Ref<RefCounted>(skyTexture->texture)))
         {
             m_viewData.environmentSkyTexture = m_renderGraph->ImportTexture(
-                skyTexture->texture.Get(), skyTexture->accessSnapshot);
+                skyTexture->texture, skyTexture->accessSnapshot);
             m_renderGraph->SetExportState(
                 m_viewData.environmentSkyTexture,
                 RHIResourceState::ShaderResource);
@@ -5358,13 +5336,13 @@ void SceneRenderer::BuildRenderGraph()
             {
                 m_viewData.environmentIrradianceTexture =
                     m_renderGraph->ImportTexture(
-                        irradiance->texture.Get(), irradiance->accessSnapshot);
+                        irradiance->texture, irradiance->accessSnapshot);
                 m_viewData.environmentPrefilteredTexture =
                     m_renderGraph->ImportTexture(
-                        prefiltered->texture.Get(), prefiltered->accessSnapshot);
+                        prefiltered->texture, prefiltered->accessSnapshot);
                 m_viewData.environmentBRDFLUTTexture =
                     m_renderGraph->ImportTexture(
-                        brdfLUT->texture.Get(), brdfLUT->accessSnapshot);
+                        brdfLUT->texture, brdfLUT->accessSnapshot);
                 m_renderGraph->SetExportState(
                     m_viewData.environmentIrradianceTexture,
                     RHIResourceState::ShaderResource);
@@ -5416,8 +5394,10 @@ void SceneRenderer::BuildRenderGraph()
 
     if (m_externalRenderTarget.IsValid())
     {
-        RHITexture* colorTarget = m_externalRenderTarget.colorTarget;
-        backBufferTarget = m_renderGraph->ImportTexture(colorTarget, m_externalRenderTarget.colorInitialState);
+        RHITexture* colorTarget = m_externalRenderTarget.colorTarget.Get();
+        backBufferTarget = m_renderGraph->ImportTexture(
+            m_externalRenderTarget.colorTarget,
+            m_externalRenderTarget.colorInitialState);
         m_viewData.colorTarget = backBufferTarget;
         m_renderGraph->SetExportState(backBufferTarget, m_externalRenderTarget.colorFinalState);
 
@@ -5476,7 +5456,7 @@ void SceneRenderer::BuildRenderGraph()
                 // Import with the actual lifetime snapshot (invalid on first use,
                 // Present after a realized presentation export).
                 backBufferTarget = m_renderGraph->ImportTexture(
-                    backBuffer,
+                    RHITextureRef(backBuffer),
                     m_backBufferAccessSnapshots[backBufferIndex]);
                 m_viewData.colorTarget = backBufferTarget;
                 // Export back to Present state for display
@@ -5499,7 +5479,7 @@ void SceneRenderer::BuildRenderGraph()
     bool importedExternalDepth = false;
     if (m_externalRenderTargetStats.active && m_externalRenderTarget.depthTarget)
     {
-        RHITexture* depthTarget = m_externalRenderTarget.depthTarget;
+        RHITexture* depthTarget = m_externalRenderTarget.depthTarget.Get();
         const bool matchingExtent =
             depthTarget->GetWidth() == m_externalRenderTargetStats.width &&
             depthTarget->GetHeight() == m_externalRenderTargetStats.height &&
@@ -5507,7 +5487,9 @@ void SceneRenderer::BuildRenderGraph()
             depthTarget->GetHeight() > 0;
         if (matchingExtent)
         {
-            m_viewData.depthTarget = m_renderGraph->ImportTexture(depthTarget, m_externalRenderTarget.depthInitialState);
+            m_viewData.depthTarget = m_renderGraph->ImportTexture(
+                m_externalRenderTarget.depthTarget,
+                m_externalRenderTarget.depthInitialState);
             m_renderGraph->SetExportState(m_viewData.depthTarget, m_externalRenderTarget.depthFinalState);
             m_externalRenderTargetStats.importedDepth = true;
             m_externalRenderTargetStats.depthFormat = depthTarget->GetFormat();
@@ -5530,7 +5512,7 @@ void SceneRenderer::BuildRenderGraph()
         {
             // Import the existing depth buffer so RenderGraph can manage its barriers
             m_viewData.depthTarget = m_renderGraph->ImportTexture(
-                m_depthTexture.Get(),
+                m_depthTexture,
                 m_depthAccessSnapshot);
             GPUQueueDomain graphicsDomain = GPUQueueDomain::Graphics;
             TryGetGPUQueueDomain(

@@ -3,7 +3,7 @@
 # =============================================================================
 # Demonstrates:
 # - Direct RHI device and swapchain setup
-# - RenderGraph for automatic barrier management
+# - Explicit resource barriers at the RHI boundary
 # - Basic triangle/textured quad/cube assets consolidated under one sample
 # =============================================================================
 add_executable(BasicRHI
@@ -14,8 +14,6 @@ target_link_libraries(BasicRHI PRIVATE
     RVX::Core
     RVX::RHI
     RVX::RHI_BackendFactory
-    RVX::Render          # Includes RenderGraph
-    RVX::Runtime         # Camera
     RVX::SampleCommon
     RVX::ShaderCompiler
     RVX::HAL

@@ -48,6 +48,15 @@ namespace RVX
         uint32 predecessorResourceIndex = RVX_INVALID_INDEX;
     };
 
+    enum class RGPhysicalBinding : uint8
+    {
+        Unrealized = 0,
+        Imported,
+        Owned,
+        Pooled,
+        BorrowedValidation,
+    };
+
     // =============================================================================
     // Transient Heap - a single memory heap for aliased resources
     // =============================================================================
@@ -63,10 +72,9 @@ namespace RVX
     struct TextureResource
     {
         RHITextureDesc desc;
-        RHITextureRef texture;           // Owned texture (for transient/created textures)
-        RHITexture* importedRaw = nullptr; // Non-owning pointer for imported textures
-        RHITexture* pooledRaw = nullptr; // Non-owning pointer for pooled transient textures
-        RHITexture* realizedRaw = nullptr;
+        RGPhysicalBinding binding = RGPhysicalBinding::Unrealized;
+        RHITextureRef strongBinding;
+        RHITexture* borrowedValidationBinding = nullptr;
         std::optional<TransientTextureLease> pooledLease;
         RHIResourceState initialState = RHIResourceState::Undefined;
         RHIResourceState currentState = RHIResourceState::Undefined;
@@ -78,32 +86,37 @@ namespace RVX
         std::optional<RHIResourceState> exportState;
         std::optional<RHIAccessSnapshot> exportAccess;
         bool imported = false;
-        bool pooled = false;
         
         // Memory aliasing
         ResourceLifetime lifetime;
         MemoryAlias alias;
         
-        // Get the actual texture pointer (either owned or imported)
+        bool IsPooled() const
+        {
+            return binding == RGPhysicalBinding::Pooled;
+        }
+
         RHITexture* GetTexture() const
         {
-            if (imported)
+            if (binding == RGPhysicalBinding::Pooled)
+                return pooledLease ? pooledLease->texture : nullptr;
+            if (binding == RGPhysicalBinding::Imported ||
+                binding == RGPhysicalBinding::Owned)
             {
-                return importedRaw;
+                return strongBinding.Get();
             }
-            if (pooled)
-                return pooledRaw;
-            return texture ? texture.Get() : realizedRaw;
+            if (binding == RGPhysicalBinding::BorrowedValidation)
+                return borrowedValidationBinding;
+            return nullptr;
         }
     };
 
     struct BufferResource
     {
         RHIBufferDesc desc;
-        RHIBufferRef buffer;               // Owned buffer (for transient/created buffers)
-        RHIBuffer* importedRaw = nullptr;  // Non-owning pointer for imported buffers
-        RHIBuffer* pooledRaw = nullptr;    // Non-owning pointer for pooled transient buffers
-        RHIBuffer* realizedRaw = nullptr;
+        RGPhysicalBinding binding = RGPhysicalBinding::Unrealized;
+        RHIBufferRef strongBinding;
+        RHIBuffer* borrowedValidationBinding = nullptr;
         std::optional<TransientBufferLease> pooledLease;
         RHIResourceState initialState = RHIResourceState::Undefined;
         RHIResourceState currentState = RHIResourceState::Undefined;
@@ -121,22 +134,28 @@ namespace RVX
         std::vector<RangeState> rangeStates;
         bool hasRangeTracking = false;
         bool imported = false;
-        bool pooled = false;
         
         // Memory aliasing
         ResourceLifetime lifetime;
         MemoryAlias alias;
         
-        // Get the actual buffer pointer (either owned or imported)
+        bool IsPooled() const
+        {
+            return binding == RGPhysicalBinding::Pooled;
+        }
+
         RHIBuffer* GetBuffer() const
         {
-            if (imported)
+            if (binding == RGPhysicalBinding::Pooled)
+                return pooledLease ? pooledLease->buffer : nullptr;
+            if (binding == RGPhysicalBinding::Imported ||
+                binding == RGPhysicalBinding::Owned)
             {
-                return importedRaw;
+                return strongBinding.Get();
             }
-            if (pooled)
-                return pooledRaw;
-            return buffer ? buffer.Get() : realizedRaw;
+            if (binding == RGPhysicalBinding::BorrowedValidation)
+                return borrowedValidationBinding;
+            return nullptr;
         }
     };
 
@@ -228,6 +247,17 @@ namespace RVX
         bool targetsTerminal = false;
     };
 
+    /** @brief Definition/plan realization state; execution ownership is separate. */
+    enum class RenderGraphRuntimeState : uint8
+    {
+        Recording = 0,
+        Compiled,
+        ResourcesRealized,
+        Recorded,
+        Transferred,
+        CompileFailed,
+    };
+
     struct RenderGraphImpl
     {
         struct QueueSyncPoint
@@ -269,6 +299,8 @@ namespace RVX
         std::vector<TransientHeap> transientHeaps;
         bool enableMemoryAliasing = false;
         bool memoryAliasingRequested = false;
+        TransientResourcePool::Stats executionPoolStats;
+        RHIDescriptorDiagnostics executionDescriptorDiagnostics;
 
         void AppendTextureResource(TextureResource&& resource)
         {
@@ -290,9 +322,8 @@ namespace RVX
         uint32 aliasedTextureCount = 0;
         uint32 aliasedBufferCount = 0;
         uint32 compatibilityStateProjectionCount = 0;
-        bool executionRealized = false;
-        bool resourcesRealized = false;
-        bool executionOwnershipTransferred = false;
+        RenderGraphRuntimeState runtimeState =
+            RenderGraphRuntimeState::Recording;
     };
 
     void CompileRenderGraph(RenderGraphImpl& graph);
@@ -306,12 +337,7 @@ namespace RVX
     bool RecordRenderGraphQueueSubmission(
         RenderGraphImpl& graph,
         RenderGraph::RecordedQueueSubmission& submission);
-    void ExecuteRenderGraphAsync(RenderGraphImpl& graph,
-                                  RHICommandContext& graphicsCtx,
-                                  RHICommandContext* computeCtx,
-                                  RHIFence* computeFence,
-                                  uint64 frameIndex = 0);
-    
+
     // Memory aliasing functions
     void CalculateResourceLifetimes(RenderGraphImpl& graph);
     void ComputeMemoryAliases(RenderGraphImpl& graph);

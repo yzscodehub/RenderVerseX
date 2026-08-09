@@ -2,6 +2,7 @@
 #include "Core/Assert.h"
 #include "Core/Job/JobSystem.h"
 #include "Core/Log.h"
+#include "Render/Graph/RenderGraphExecutor.h"
 
 #include <algorithm>
 #include <chrono>
@@ -30,12 +31,11 @@ namespace RVX
                 return false;
             }
 
-            resource.pooledRaw = lease.texture;
-            resource.pooled = true;
             resource.initialAccessSnapshot = std::move(lease.accessSnapshot);
             resource.initialState = ProjectRHIResourceState(
                 resource.initialAccessSnapshot.uniformAccess);
             resource.pooledLease.emplace(std::move(lease));
+            resource.binding = RGPhysicalBinding::Pooled;
             return true;
         }
 
@@ -55,12 +55,11 @@ namespace RVX
                 return false;
             }
 
-            resource.pooledRaw = lease.buffer;
-            resource.pooled = true;
             resource.initialAccessSnapshot = std::move(lease.accessSnapshot);
             resource.initialState = ProjectRHIResourceState(
                 resource.initialAccessSnapshot.uniformAccess);
             resource.pooledLease.emplace(std::move(lease));
+            resource.binding = RGPhysicalBinding::Pooled;
             return true;
         }
 
@@ -83,11 +82,12 @@ namespace RVX
                     texture.pooledLease.reset();
                     releasedAny = true;
                 }
-                releasedAny |= static_cast<bool>(texture.texture);
-                texture.texture.Reset();
-                texture.pooledRaw = nullptr;
-                texture.realizedRaw = nullptr;
-                texture.pooled = false;
+                if (!texture.imported)
+                {
+                    releasedAny |= static_cast<bool>(texture.strongBinding);
+                    texture.strongBinding.Reset();
+                    texture.binding = RGPhysicalBinding::Unrealized;
+                }
             }
             for (BufferResource& buffer : graph.buffers)
             {
@@ -98,19 +98,21 @@ namespace RVX
                     buffer.pooledLease.reset();
                     releasedAny = true;
                 }
-                releasedAny |= static_cast<bool>(buffer.buffer);
-                buffer.buffer.Reset();
-                buffer.pooledRaw = nullptr;
-                buffer.realizedRaw = nullptr;
-                buffer.pooled = false;
+                if (!buffer.imported)
+                {
+                    releasedAny |= static_cast<bool>(buffer.strongBinding);
+                    buffer.strongBinding.Reset();
+                    buffer.binding = RGPhysicalBinding::Unrealized;
+                }
             }
             for (TransientHeap& heap : graph.transientHeaps)
             {
                 releasedAny |= static_cast<bool>(heap.heap);
                 heap.heap.Reset();
             }
-            graph.resourcesRealized = false;
-            graph.executionRealized = false;
+            graph.runtimeState = graph.stats.compileValid
+                ? RenderGraphRuntimeState::Compiled
+                : RenderGraphRuntimeState::CompileFailed;
             if (releasedAny)
                 ++graph.stats.partialRealizationRollbackCount;
         }
@@ -632,127 +634,6 @@ namespace RVX
             }
         }
 
-        uint32 CountEligibleAsyncComputePasses(const RenderGraphImpl& graph)
-        {
-            uint32 count = 0;
-            for (uint32 passIndex : graph.executionOrder)
-            {
-                if (passIndex >= graph.passes.size())
-                    continue;
-
-                const Pass& pass = graph.passes[passIndex];
-                if (!pass.culled && pass.type == RenderGraphPassType::Compute)
-                {
-                    ++count;
-                }
-            }
-            return count;
-        }
-
-        bool RunsOnComputeQueue(const Pass& pass)
-        {
-            return pass.plannedExecutionQueue ==
-                RenderGraph::DiagnosticExecutionQueue::Compute;
-        }
-
-        struct PlannedQueueSyncRequirements
-        {
-            std::vector<uint8> requiresGraphicsForCompute;
-            std::vector<uint8> requiresComputeForGraphics;
-        };
-
-        PlannedQueueSyncRequirements BuildPlannedQueueSyncRequirements(
-            const RenderGraph::SubmissionPlan& submissionPlan,
-            uint32 passCount)
-        {
-            PlannedQueueSyncRequirements requirements;
-            requirements.requiresGraphicsForCompute.resize(passCount, 0);
-            requirements.requiresComputeForGraphics.resize(passCount, 0);
-
-            auto markTargetBatch = [&](const RenderGraph::PlannedQueueSyncDiagnostic& sync,
-                                       std::vector<uint8>& targetRequirements)
-            {
-                if (sync.targetBatchIndex < submissionPlan.queueBatches.size())
-                {
-                    const RenderGraph::PlannedQueueBatchDiagnostic& targetBatch =
-                        submissionPlan.queueBatches[sync.targetBatchIndex];
-                    for (uint32 targetPassIndex : targetBatch.passIndices)
-                    {
-                        if (targetPassIndex < targetRequirements.size())
-                        {
-                            targetRequirements[targetPassIndex] = 1;
-                        }
-                    }
-                    return;
-                }
-
-                if (sync.targetPassIndex < targetRequirements.size())
-                {
-                    targetRequirements[sync.targetPassIndex] = 1;
-                }
-            };
-
-            for (const RenderGraph::PlannedQueueSyncDiagnostic& sync : submissionPlan.queueSyncs)
-            {
-                if (sync.reason != RenderGraph::DiagnosticSyncReason::CrossQueueDependency)
-                    continue;
-
-                if (sync.sourceQueue == RenderGraph::DiagnosticExecutionQueue::Graphics &&
-                    sync.targetQueue == RenderGraph::DiagnosticExecutionQueue::Compute)
-                {
-                    markTargetBatch(sync, requirements.requiresGraphicsForCompute);
-                }
-                else if (sync.sourceQueue == RenderGraph::DiagnosticExecutionQueue::Compute &&
-                         sync.targetQueue == RenderGraph::DiagnosticExecutionQueue::Graphics)
-                {
-                    markTargetBatch(sync, requirements.requiresComputeForGraphics);
-                }
-            }
-
-            return requirements;
-        }
-
-        bool HasPlannedQueueRequirement(const std::vector<uint8>& requirements, uint32 passIndex)
-        {
-            return passIndex < requirements.size() && requirements[passIndex] != 0;
-        }
-
-        RenderGraph::AsyncComputeFallbackReason GetAsyncFallbackReason(
-            const RenderGraphImpl& graph,
-            RHICommandContext* computeCtx,
-            RHIFence* computeFence,
-            uint32 eligibleComputePasses)
-        {
-            if (!graph.stats.compileValid)
-                return RenderGraph::AsyncComputeFallbackReason::GraphNotCompiled;
-
-            if (graph.queueExecutionMode !=
-                RenderGraph::QueueExecutionMode::MultiQueue)
-            {
-                return RenderGraph::AsyncComputeFallbackReason::AsyncPlanningDisabled;
-            }
-
-            if (eligibleComputePasses == 0)
-                return RenderGraph::AsyncComputeFallbackReason::NoEligibleComputePasses;
-
-            if (!graph.device || !graph.device->GetCapabilities().supportsAsyncCompute)
-                return RenderGraph::AsyncComputeFallbackReason::BackendUnsupported;
-
-            const RHICapabilities& caps = graph.device->GetCapabilities();
-            if (!caps.supportsExplicitQueueFenceSignal)
-                return RenderGraph::AsyncComputeFallbackReason::QueueFenceSignalUnsupported;
-
-            if (!caps.supportsQueueFenceWait)
-                return RenderGraph::AsyncComputeFallbackReason::QueueFenceWaitUnsupported;
-
-            if (!computeCtx)
-                return RenderGraph::AsyncComputeFallbackReason::MissingComputeContext;
-
-            if (!computeFence)
-                return RenderGraph::AsyncComputeFallbackReason::MissingFence;
-
-            return RenderGraph::AsyncComputeFallbackReason::None;
-        }
     } // namespace
 
     // =============================================================================
@@ -760,7 +641,8 @@ namespace RVX
     // =============================================================================
     bool RealizeRenderGraphResources(RenderGraphImpl& graph)
     {
-        if (graph.resourcesRealized)
+        if (graph.runtimeState ==
+            RenderGraphRuntimeState::ResourcesRealized)
             return true;
         if (!graph.device)
         {
@@ -778,9 +660,15 @@ namespace RVX
                 {
                     return !buffer.imported;
                 });
-            graph.resourcesRealized = !hasTransientTexture &&
+            const bool resourcesRealized = !hasTransientTexture &&
                 !hasTransientBuffer && graph.textureViews.empty();
-            return graph.resourcesRealized;
+            if (resourcesRealized)
+            {
+                graph.runtimeState =
+                    RenderGraphRuntimeState::ResourcesRealized;
+                ++graph.stats.physicalRealizationCount;
+            }
+            return resourcesRealized;
         }
 
         // If memory aliasing is enabled and heaps have been computed, use placed resources
@@ -808,24 +696,27 @@ namespace RVX
             // Create Placed Textures
             for (auto& texture : graph.textures)
             {
-                if (texture.imported || texture.texture || texture.pooledRaw)
+                if (texture.binding != RGPhysicalBinding::Unrealized)
                     continue;
 
                 if (texture.alias.heapIndex < graph.transientHeaps.size() &&
                     graph.transientHeaps[texture.alias.heapIndex].heap)
                 {
                     auto* heap = graph.transientHeaps[texture.alias.heapIndex].heap.Get();
-                    texture.texture = graph.device->CreatePlacedTexture(
+                    texture.strongBinding = graph.device->CreatePlacedTexture(
                         heap,
                         texture.alias.heapOffset,
                         texture.desc);
                 }
 
                 // Fallback to independent resource if placed creation fails
-                if (!texture.texture)
+                if (!texture.strongBinding)
                 {
-                    texture.texture = graph.device->CreateTexture(texture.desc);
+                    texture.strongBinding =
+                        graph.device->CreateTexture(texture.desc);
                 }
+                if (texture.strongBinding)
+                    texture.binding = RGPhysicalBinding::Owned;
 
                 texture.initialState = RHIResourceState::Undefined;
                 texture.initialAccessSnapshot = MakeRHITextureAccessSnapshot(
@@ -838,24 +729,27 @@ namespace RVX
             // Create Placed Buffers
             for (auto& buffer : graph.buffers)
             {
-                if (buffer.imported || buffer.buffer || buffer.pooledRaw)
+                if (buffer.binding != RGPhysicalBinding::Unrealized)
                     continue;
 
                 if (buffer.alias.heapIndex < graph.transientHeaps.size() &&
                     graph.transientHeaps[buffer.alias.heapIndex].heap)
                 {
                     auto* heap = graph.transientHeaps[buffer.alias.heapIndex].heap.Get();
-                    buffer.buffer = graph.device->CreatePlacedBuffer(
+                    buffer.strongBinding = graph.device->CreatePlacedBuffer(
                         heap,
                         buffer.alias.heapOffset,
                         buffer.desc);
                 }
 
                 // Fallback to independent resource if placed creation fails
-                if (!buffer.buffer)
+                if (!buffer.strongBinding)
                 {
-                    buffer.buffer = graph.device->CreateBuffer(buffer.desc);
+                    buffer.strongBinding =
+                        graph.device->CreateBuffer(buffer.desc);
                 }
+                if (buffer.strongBinding)
+                    buffer.binding = RGPhysicalBinding::Owned;
 
                 buffer.initialState = RHIResourceState::Undefined;
                 buffer.initialAccessSnapshot = MakeRHIBufferAccessSnapshot(
@@ -870,11 +764,14 @@ namespace RVX
             // No aliasing: create independent resources
             for (auto& texture : graph.textures)
             {
-                if (!texture.imported && !texture.texture && !texture.pooledRaw)
+                if (texture.binding == RGPhysicalBinding::Unrealized)
                 {
                     if (!AcquireTransientTexture(graph, texture))
                     {
-                        texture.texture = graph.device->CreateTexture(texture.desc);
+                        texture.strongBinding =
+                            graph.device->CreateTexture(texture.desc);
+                        if (texture.strongBinding)
+                            texture.binding = RGPhysicalBinding::Owned;
                         texture.initialAccessSnapshot = MakeRHITextureAccessSnapshot(
                             RHIResourceState::Undefined,
                             RHIShaderStage::None,
@@ -887,11 +784,14 @@ namespace RVX
 
             for (auto& buffer : graph.buffers)
             {
-                if (!buffer.imported && !buffer.buffer && !buffer.pooledRaw)
+                if (buffer.binding == RGPhysicalBinding::Unrealized)
                 {
                     if (!AcquireTransientBuffer(graph, buffer))
                     {
-                        buffer.buffer = graph.device->CreateBuffer(buffer.desc);
+                        buffer.strongBinding =
+                            graph.device->CreateBuffer(buffer.desc);
+                        if (buffer.strongBinding)
+                            buffer.binding = RGPhysicalBinding::Owned;
                         buffer.initialAccessSnapshot = MakeRHIBufferAccessSnapshot(
                             RHIResourceState::Undefined,
                             RHIShaderStage::None,
@@ -955,8 +855,9 @@ namespace RVX
             {
                 return buffer.GetBuffer() != nullptr;
             });
-        graph.resourcesRealized = texturesReady && buffersReady && viewsReady;
-        if (!graph.resourcesRealized)
+        const bool resourcesRealized =
+            texturesReady && buffersReady && viewsReady;
+        if (!resourcesRealized)
         {
             RVX_CORE_ERROR(
                 "RenderGraph physical resource realization failed closed");
@@ -964,6 +865,8 @@ namespace RVX
         }
         else
         {
+            graph.runtimeState = RenderGraphRuntimeState::ResourcesRealized;
+            ++graph.stats.physicalRealizationCount;
             // The compiler records a symbolic lease-before edge. Once the
             // physical lease is known, bind the diagnostic/source snapshot
             // without changing the already compiled desired accesses.
@@ -1003,7 +906,7 @@ namespace RVX
                     bindPass(graph.passes[passIndex]);
             }
         }
-        return graph.resourcesRealized;
+        return resourcesRealized;
     }
 
 
@@ -1095,7 +998,7 @@ namespace RVX
             return;
         }
         AccumulateExecutionDiagnostics(graph);
-        graph.executionRealized = true;
+        graph.runtimeState = RenderGraphRuntimeState::Recorded;
     }
 
     bool RecordRenderGraphQueueSubmission(
@@ -1370,214 +1273,31 @@ namespace RVX
         graph.stats.asyncFallbackReason =
             RenderGraph::AsyncComputeFallbackReason::None;
         AccumulateExecutionDiagnostics(graph);
-        graph.executionRealized = true;
+        graph.runtimeState = RenderGraphRuntimeState::Recorded;
         return true;
     }
 
-    void ExecuteRenderGraphAsync(RenderGraphImpl& graph,
-                                  RHICommandContext& graphicsCtx,
-                                  RHICommandContext* computeCtx,
-                                  RHIFence* computeFence,
-                                  uint64 frameIndex)
+    RenderGraphExecution RenderGraphExecutor::Prepare(
+        CompiledRenderGraphPlan& plan,
+        const RenderGraphExecutionEnvironment& environment) const
     {
-        ResetExecutionDiagnostics(graph);
+        RenderGraphExecution execution;
+        RenderGraph* graph = plan.m_graph;
+        const bool validPlan = graph != nullptr &&
+            plan.m_graphIdentity == graph->GetGraphIdentity() &&
+            plan.m_recordingGeneration == graph->GetRecordingGeneration() &&
+            plan.m_planHash == graph->GetCompileStats().planHash;
 
-        const RenderGraph::SubmissionPlan submissionPlan = BuildRenderGraphSubmissionPlan(graph);
-        const PlannedQueueSyncRequirements plannedSyncRequirements =
-            BuildPlannedQueueSyncRequirements(submissionPlan, static_cast<uint32>(graph.passes.size()));
-
-        graph.stats.asyncComputeEligiblePasses = CountEligibleAsyncComputePasses(graph);
-        graph.stats.asyncComputeScheduledPasses = 0;
-        graph.stats.asyncGraphicsScheduledPasses = 0;
-        graph.stats.asyncFenceSignalCount = 0;
-        graph.stats.asyncFenceWaitCount = 0;
-        graph.stats.asyncCrossQueueDependencyCount = submissionPlan.crossQueueSyncCount;
-        graph.stats.asyncFinalQueueJoinCount = 0;
-        graph.stats.asyncComputeSupported =
-            graph.device &&
-            graph.device->GetCapabilities().supportsAsyncCompute &&
-            graph.device->GetCapabilities().supportsExplicitQueueFenceSignal &&
-            graph.device->GetCapabilities().supportsQueueFenceWait;
-
-        RenderGraph::AsyncComputeFallbackReason fallbackReason =
-            GetAsyncFallbackReason(graph, computeCtx, computeFence, graph.stats.asyncComputeEligiblePasses);
-
-        if (fallbackReason != RenderGraph::AsyncComputeFallbackReason::None)
+        // A compiled plan is a one-shot execution capability. Consuming it on
+        // failure prevents callers from retrying after partial external state.
+        plan.m_graph = nullptr;
+        if (!validPlan)
         {
-            graph.stats.asyncFallbackUsed = true;
-            graph.stats.asyncFallbackReason = fallbackReason;
-            ExecuteRenderGraph(graph, graphicsCtx);
-            return;
+            RVX_CORE_ERROR(
+                "RenderGraph executor rejected a stale or foreign compiled plan");
+            return execution;
         }
-
-        graph.stats.asyncFallbackUsed = false;
-        graph.stats.asyncFallbackReason = RenderGraph::AsyncComputeFallbackReason::None;
-        if (!RealizeRenderGraphResources(graph))
-        {
-            graph.stats.asyncFallbackUsed = true;
-            graph.stats.asyncFallbackReason =
-                RenderGraph::AsyncComputeFallbackReason::GraphNotCompiled;
-            return;
-        }
-        ValidatePlannedAccessSources(graph);
-
-        const uint64 fenceBaseValue = (frameIndex + 1u) << 32u;
-        uint64 nextFenceValue = fenceBaseValue;
-        std::vector<int32> passExecutionOrder(graph.passes.size(), -1);
-        for (uint32 order = 0; order < static_cast<uint32>(graph.executionOrder.size()); ++order)
-        {
-            uint32 passIndex = graph.executionOrder[order];
-            if (passIndex < passExecutionOrder.size())
-            {
-                passExecutionOrder[passIndex] = static_cast<int32>(order);
-            }
-        }
-
-        int32 graphicsLastRecordedOrder = -1;
-        int32 computeLastRecordedOrder = -1;
-        uint32 graphicsLastRecordedPassIndex = RVX_INVALID_INDEX;
-        uint32 computeLastRecordedPassIndex = RVX_INVALID_INDEX;
-        int32 graphicsVisibleToComputeOrder = -1;
-        int32 computeVisibleToGraphicsOrder = -1;
-        uint32 executionSerial = 0;
-
-        auto signalGraphicsForCompute = [&](uint32 targetPassIndex)
-        {
-            if (graphicsLastRecordedOrder < 0)
-                return;
-
-            ++nextFenceValue;
-            graphicsCtx.SignalFence(computeFence, nextFenceValue);
-            computeCtx->WaitFence(computeFence, nextFenceValue);
-            graph.lastQueueSyncs.push_back(
-                {RenderGraph::DiagnosticExecutionQueue::Graphics,
-                 RenderGraph::DiagnosticExecutionQueue::Compute,
-                 RenderGraph::DiagnosticSyncReason::CrossQueueDependency,
-                 nextFenceValue,
-                 graphicsLastRecordedPassIndex,
-                 targetPassIndex});
-            graph.stats.asyncFenceSignalCount++;
-            graph.stats.asyncFenceWaitCount++;
-            graphicsVisibleToComputeOrder = graphicsLastRecordedOrder;
-        };
-
-        auto signalComputeForGraphics = [&](uint32 targetPassIndex, bool finalQueueJoin)
-        {
-            if (computeLastRecordedOrder < 0)
-                return;
-
-            ++nextFenceValue;
-            computeCtx->SignalFence(computeFence, nextFenceValue);
-            graphicsCtx.WaitFence(computeFence, nextFenceValue);
-            graph.lastQueueSyncs.push_back(
-                {RenderGraph::DiagnosticExecutionQueue::Compute,
-                 RenderGraph::DiagnosticExecutionQueue::Graphics,
-                 finalQueueJoin ? RenderGraph::DiagnosticSyncReason::FinalQueueJoin
-                                : RenderGraph::DiagnosticSyncReason::CrossQueueDependency,
-                 nextFenceValue,
-                 computeLastRecordedPassIndex,
-                 targetPassIndex});
-            graph.stats.asyncFenceSignalCount++;
-            graph.stats.asyncFenceWaitCount++;
-            if (finalQueueJoin)
-            {
-                graph.stats.asyncFinalQueueJoinCount++;
-            }
-            computeVisibleToGraphicsOrder = computeLastRecordedOrder;
-        };
-
-        for (uint32 passIndex : graph.executionOrder)
-        {
-            if (passIndex >= graph.passes.size())
-                continue;
-
-            Pass& pass = graph.passes[passIndex];
-            if (pass.culled)
-                continue;
-
-            int32 maxGraphicsDependencyOrder = -1;
-            int32 maxComputeDependencyOrder = -1;
-            if (passIndex < graph.passDependencies.size())
-            {
-                for (uint32 dependencyIndex : graph.passDependencies[passIndex])
-                {
-                    if (dependencyIndex >= graph.passes.size() ||
-                        dependencyIndex >= passExecutionOrder.size())
-                    {
-                        continue;
-                    }
-
-                    int32 dependencyOrder = passExecutionOrder[dependencyIndex];
-                    if (dependencyOrder < 0)
-                        continue;
-
-                    const Pass& dependency = graph.passes[dependencyIndex];
-                    if (RunsOnComputeQueue(dependency))
-                    {
-                        maxComputeDependencyOrder = std::max(maxComputeDependencyOrder, dependencyOrder);
-                    }
-                    else
-                    {
-                        maxGraphicsDependencyOrder = std::max(maxGraphicsDependencyOrder, dependencyOrder);
-                    }
-                }
-            }
-
-            if (RunsOnComputeQueue(pass))
-            {
-                if (HasPlannedQueueRequirement(plannedSyncRequirements.requiresGraphicsForCompute, passIndex) &&
-                    maxGraphicsDependencyOrder > graphicsVisibleToComputeOrder)
-                {
-                    signalGraphicsForCompute(passIndex);
-                }
-                ExecutePassOnContext(
-                    pass,
-                    *computeCtx,
-                    RenderGraph::DiagnosticExecutionQueue::Compute,
-                    executionSerial++,
-                    graph);
-                graph.stats.asyncComputeScheduledPasses++;
-                if (passIndex < passExecutionOrder.size())
-                {
-                    computeLastRecordedOrder = passExecutionOrder[passIndex];
-                    computeLastRecordedPassIndex = passIndex;
-                }
-            }
-            else
-            {
-                if (HasPlannedQueueRequirement(plannedSyncRequirements.requiresComputeForGraphics, passIndex) &&
-                    maxComputeDependencyOrder > computeVisibleToGraphicsOrder)
-                {
-                    signalComputeForGraphics(passIndex, false);
-                }
-                ExecutePassOnContext(
-                    pass,
-                    graphicsCtx,
-                    RenderGraph::DiagnosticExecutionQueue::Graphics,
-                    executionSerial++,
-                    graph);
-                graph.stats.asyncGraphicsScheduledPasses++;
-                if (passIndex < passExecutionOrder.size())
-                {
-                    graphicsLastRecordedOrder = passExecutionOrder[passIndex];
-                    graphicsLastRecordedPassIndex = passIndex;
-                }
-            }
-        }
-
-        if (computeLastRecordedOrder > computeVisibleToGraphicsOrder)
-        {
-            signalComputeForGraphics(RVX_INVALID_INDEX, true);
-        }
-        EmitExportBarriers(graph, graphicsCtx);
-        AccumulateExecutionDiagnostics(graph);
-        graph.executionRealized = true;
-
-        if (graph.stats.asyncComputeScheduledPasses == 0)
-        {
-            graph.stats.asyncFallbackUsed = true;
-            graph.stats.asyncFallbackReason = RenderGraph::AsyncComputeFallbackReason::NoEligibleComputePasses;
-        }
+        return graph->PrepareExecutionInternal(environment);
     }
 
 } // namespace RVX
