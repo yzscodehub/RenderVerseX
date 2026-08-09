@@ -63,7 +63,9 @@ namespace RVX::Resource
         ResourceId GenerateMaterialId(const std::string& modelPath, int index);
 
         // Create resources from import result
-        ModelResource* CreateModelResource(const std::string& path, GLTFImportResult& importResult);
+        ModelResource* CreateModelResource(const std::string& path,
+                                           GLTFImportResult& importResult,
+                                           const Diagnostics::TraceContext& traceContext);
         MeshResource* CreateMeshResource(const std::string& modelPath, int index, Mesh::Ptr mesh);
         MaterialResource* CreateMaterialResource(const std::string& modelPath, int index,
                                                    Material::Ptr material,
@@ -72,7 +74,8 @@ namespace RVX::Resource
 
         // Load textures from import result
         std::vector<TextureResource*> LoadTextures(const std::string& modelPath,
-                                                    const std::vector<TextureReference>& textureRefs);
+                                                    const std::vector<TextureReference>& textureRefs,
+                                                    const Diagnostics::TraceContext& traceContext);
 
         ResourceManager* m_manager;
         std::unique_ptr<GLTFImporter> m_gltfImporter;

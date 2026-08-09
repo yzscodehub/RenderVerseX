@@ -18,6 +18,18 @@ namespace RVX::Resource
 {
     namespace
     {
+        Diagnostics::TraceContext ResolveTraceContext(
+            ResourceManager* manager,
+            const Diagnostics::TraceContext& requested)
+        {
+            if (requested.IsEnabled())
+            {
+                return requested;
+            }
+            return manager != nullptr ? manager->GetStartupTraceContext()
+                                      : Diagnostics::TraceContext{};
+        }
+
         float ByteToUnit(uint8_t value)
         {
             return static_cast<float>(value) / 255.0f;
@@ -456,7 +468,11 @@ namespace RVX::Resource
         const bool isSRGB = usage == TextureUsage::Color;
         m_lastLoadStatus = TextureLoadStatus::None;
         m_lastLoadError.clear();
-        return LoadFromFileWithPolicy(absPath.string(), usage, isSRGB, absPath.string());
+        return LoadFromFileWithPolicy(absPath.string(),
+                                      usage,
+                                      isSRGB,
+                                      absPath.string(),
+                                      ResolveTraceContext(m_manager, {}));
     }
 
     // =========================================================================
@@ -464,8 +480,11 @@ namespace RVX::Resource
     // =========================================================================
 
     TextureResource* TextureLoader::LoadFromReference(const TextureReference& ref,
-                                                        const std::string& modelPath)
+                                                        const std::string& modelPath,
+                                                        const Diagnostics::TraceContext& traceContext)
     {
+        const Diagnostics::TraceContext activeTraceContext =
+            ResolveTraceContext(m_manager, traceContext);
         m_lastLoadStatus = TextureLoadStatus::None;
         m_lastLoadError.clear();
 
@@ -482,21 +501,33 @@ namespace RVX::Resource
         ResourceId textureId = GenerateTextureId(cacheKey);
 
         // Check cache first
-        if (m_manager && m_manager->IsInitialized())
         {
-            if (auto* cached = m_manager->GetCache().Get(textureId))
+            Diagnostics::TraceSpan cacheLookupSpan = Diagnostics::BeginTraceSpan(
+                activeTraceContext,
+                "CacheLookup",
+                {{"assetId", textureId}, {"path", sourceKey}});
+            if (m_manager && m_manager->IsInitialized())
             {
-                m_lastLoadStatus = TextureLoadStatus::Loaded;
-                m_lastLoadError.clear();
-                return static_cast<TextureResource*>(cached);
+                if (auto* cached = m_manager->GetCache().Get(textureId))
+                {
+                    cacheLookupSpan.SetAttribute("cacheHit", true);
+                    m_lastLoadStatus = TextureLoadStatus::Loaded;
+                    m_lastLoadError.clear();
+                    return static_cast<TextureResource*>(cached);
+                }
             }
+            cacheLookupSpan.SetAttribute("cacheHit", false);
         }
 
         TextureResource* texture = nullptr;
 
         if (ref.IsExternal())
         {
-            texture = LoadFromFileWithPolicy(sourceKey, ref.usage, ref.isSRGB, cacheKey);
+            texture = LoadFromFileWithPolicy(sourceKey,
+                                              ref.usage,
+                                              ref.isSRGB,
+                                              cacheKey,
+                                              activeTraceContext);
         }
         else
         {
@@ -506,14 +537,15 @@ namespace RVX::Resource
                 // Already decoded raw RGBA pixels (from tinygltf)
                 texture = LoadFromMemoryWithPolicy(ref.embeddedData.data(), ref.embeddedData.size(),
                                                     sourceKey, cacheKey, ref.usage, ref.isSRGB,
-                                                    true, ref.rawWidth, ref.rawHeight);
+                                                    true, ref.rawWidth, ref.rawHeight,
+                                                    activeTraceContext);
             }
             else
             {
                 // Encoded image data (PNG/JPEG) - needs decoding
                 texture = LoadFromMemoryWithPolicy(ref.embeddedData.data(), ref.embeddedData.size(),
                                                     sourceKey, cacheKey, ref.usage, ref.isSRGB,
-                                                    false, 0, 0);
+                                                    false, 0, 0, activeTraceContext);
             }
         }
 
@@ -532,7 +564,9 @@ namespace RVX::Resource
         return texture;
     }
 
-    TextureResource* TextureLoader::LoadFromFile(const std::string& absolutePath)
+    TextureResource* TextureLoader::LoadFromFile(
+        const std::string& absolutePath,
+        const Diagnostics::TraceContext& traceContext)
     {
         m_lastLoadStatus = TextureLoadStatus::None;
         m_lastLoadError.clear();
@@ -541,24 +575,38 @@ namespace RVX::Resource
         const bool isSRGB = usage == TextureUsage::Color;
         const std::string cacheKey = BuildTexturePolicyCacheKey(absolutePath, usage, isSRGB);
 
-        return LoadFromFileWithPolicy(absolutePath, usage, isSRGB, cacheKey);
+        return LoadFromFileWithPolicy(
+            absolutePath,
+            usage,
+            isSRGB,
+            cacheKey,
+            ResolveTraceContext(m_manager, traceContext));
     }
 
     TextureResource* TextureLoader::LoadFromFileWithPolicy(const std::string& absolutePath,
                                                             TextureUsage usage,
                                                             bool isSRGB,
-                                                            const std::string& cacheKey)
+                                                            const std::string& cacheKey,
+                                                            const Diagnostics::TraceContext& traceContext)
     {
         ResourceId textureId = GenerateTextureId(cacheKey);
 
-        if (m_manager && m_manager->IsInitialized())
         {
-            if (auto* cached = m_manager->GetCache().Get(textureId))
+            Diagnostics::TraceSpan cacheLookupSpan = Diagnostics::BeginTraceSpan(
+                traceContext,
+                "CacheLookup",
+                {{"assetId", textureId}, {"path", absolutePath}});
+            if (m_manager && m_manager->IsInitialized())
             {
-                m_lastLoadStatus = TextureLoadStatus::Loaded;
-                m_lastLoadError.clear();
-                return static_cast<TextureResource*>(cached);
+                if (auto* cached = m_manager->GetCache().Get(textureId))
+                {
+                    cacheLookupSpan.SetAttribute("cacheHit", true);
+                    m_lastLoadStatus = TextureLoadStatus::Loaded;
+                    m_lastLoadError.clear();
+                    return static_cast<TextureResource*>(cached);
+                }
             }
+            cacheLookupSpan.SetAttribute("cacheHit", false);
         }
 
         // Check if file exists
@@ -570,10 +618,17 @@ namespace RVX::Resource
             return nullptr;
         }
 
-        // Read file
+        // Keep the encoded read separate from decode.  This covers the exact
+        // stream read owned by TextureLoader; TinyGLTF's earlier image callback
+        // remains explicitly accounted for by its composite BufferRead span.
+        Diagnostics::TraceSpan encodedReadSpan = Diagnostics::BeginTraceSpan(
+            traceContext,
+            "TextureEncodedRead",
+            {{"assetId", textureId}, {"path", absolutePath}});
         std::ifstream file(absolutePath, std::ios::binary | std::ios::ate);
         if (!file.is_open())
         {
+            encodedReadSpan.SetAttribute("result", "open-failed");
             m_lastLoadStatus = TextureLoadStatus::Failed;
             m_lastLoadError = "Cannot open texture file: " + absolutePath;
             RVX_CORE_WARN("TextureLoader: Cannot open file: {}", absolutePath);
@@ -586,11 +641,14 @@ namespace RVX::Resource
         std::vector<uint8_t> fileData(static_cast<size_t>(size));
         if (!file.read(reinterpret_cast<char*>(fileData.data()), size))
         {
+            encodedReadSpan.SetAttribute("result", "read-failed");
             m_lastLoadStatus = TextureLoadStatus::Failed;
             m_lastLoadError = "Failed to read texture file: " + absolutePath;
             RVX_CORE_WARN("TextureLoader: Failed to read file: {}", absolutePath);
             return nullptr;
         }
+        encodedReadSpan.SetAttribute("bytes", static_cast<uint64>(fileData.size()));
+        encodedReadSpan.SetAttribute("result", "read");
 
         const std::string extension = std::filesystem::path(absolutePath).extension().string();
         std::string lowerExtension = extension;
@@ -630,7 +688,14 @@ namespace RVX::Resource
         uint32_t width, height;
         int channels;
 
-        if (!DecodeImage(fileData.data(), fileData.size(), pixels, width, height, channels))
+        if (!DecodeImage(fileData.data(),
+                         fileData.size(),
+                         pixels,
+                         width,
+                         height,
+                         channels,
+                         absolutePath,
+                         traceContext))
         {
             m_lastLoadStatus = TextureLoadStatus::Failed;
             m_lastLoadError = "Failed to decode texture file: " + absolutePath;
@@ -648,39 +713,62 @@ namespace RVX::Resource
         return texture;
     }
 
-    TextureResource* TextureLoader::LoadFromMemory(const void* data, size_t size,
-                                                     const std::string& uniqueKey,
-                                                     TextureUsage usage,
-                                                     bool isRawRGBA,
-                                                     uint32_t width, uint32_t height)
+    TextureResource* TextureLoader::LoadFromMemory(
+        const void* data,
+        size_t size,
+        const std::string& uniqueKey,
+        TextureUsage usage,
+        bool isRawRGBA,
+        uint32_t width,
+        uint32_t height,
+        const Diagnostics::TraceContext& traceContext)
     {
         m_lastLoadStatus = TextureLoadStatus::None;
         m_lastLoadError.clear();
 
         const bool isSRGB = usage == TextureUsage::Color;
         const std::string cacheKey = BuildTexturePolicyCacheKey(uniqueKey, usage, isSRGB);
-        return LoadFromMemoryWithPolicy(data, size, uniqueKey, cacheKey, usage, isSRGB, isRawRGBA, width, height);
+        return LoadFromMemoryWithPolicy(data,
+                                        size,
+                                        uniqueKey,
+                                        cacheKey,
+                                        usage,
+                                        isSRGB,
+                                        isRawRGBA,
+                                        width,
+                                        height,
+                                        ResolveTraceContext(m_manager, traceContext));
     }
 
     TextureResource* TextureLoader::LoadFromMemoryWithPolicy(const void* data, size_t size,
                                                               const std::string& sourceKey,
                                                               const std::string& cacheKey,
-                                                              TextureUsage usage,
-                                                              bool isSRGB,
-                                                              bool isRawRGBA,
-                                                              uint32_t width, uint32_t height)
+                                                           TextureUsage usage,
+                                                           bool isSRGB,
+                                                           bool isRawRGBA,
+                                                           uint32_t width,
+                                                           uint32_t height,
+                                                           const Diagnostics::TraceContext& traceContext)
     {
         ResourceId textureId = GenerateTextureId(cacheKey);
 
         // Check cache
-        if (m_manager && m_manager->IsInitialized())
         {
-            if (auto* cached = m_manager->GetCache().Get(textureId))
+            Diagnostics::TraceSpan cacheLookupSpan = Diagnostics::BeginTraceSpan(
+                traceContext,
+                "CacheLookup",
+                {{"assetId", textureId}, {"path", sourceKey}});
+            if (m_manager && m_manager->IsInitialized())
             {
-                m_lastLoadStatus = TextureLoadStatus::Loaded;
-                m_lastLoadError.clear();
-                return static_cast<TextureResource*>(cached);
+                if (auto* cached = m_manager->GetCache().Get(textureId))
+                {
+                    cacheLookupSpan.SetAttribute("cacheHit", true);
+                    m_lastLoadStatus = TextureLoadStatus::Loaded;
+                    m_lastLoadError.clear();
+                    return static_cast<TextureResource*>(cached);
+                }
             }
+            cacheLookupSpan.SetAttribute("cacheHit", false);
         }
 
         TextureResource* texture = nullptr;
@@ -697,7 +785,14 @@ namespace RVX::Resource
             std::vector<uint8_t> pixels;
             int channels;
 
-            if (!DecodeImage(data, size, pixels, width, height, channels))
+            if (!DecodeImage(data,
+                             size,
+                             pixels,
+                             width,
+                             height,
+                             channels,
+                             sourceKey,
+                             traceContext))
             {
                 RVX_CORE_WARN("TextureLoader: Failed to decode embedded image: {}", sourceKey);
                 m_lastLoadStatus = TextureLoadStatus::Failed;
@@ -796,8 +891,16 @@ namespace RVX::Resource
     bool TextureLoader::DecodeImage(const void* data, size_t size,
                                      std::vector<uint8_t>& outPixels,
                                      uint32_t& outWidth, uint32_t& outHeight,
-                                     int& outChannels)
+                                     int& outChannels,
+                                     const std::string& sourcePath,
+                                     const Diagnostics::TraceContext& traceContext)
     {
+        Diagnostics::TraceSpan decodeSpan = Diagnostics::BeginTraceSpan(
+            traceContext,
+            "TextureDecode",
+            {{"path", sourcePath},
+             {"bytes", static_cast<uint64>(size)},
+             {"decoder", "stb_image"}});
         int width, height, channels;
 
         // Force RGBA output for consistency
@@ -809,6 +912,7 @@ namespace RVX::Resource
 
         if (!pixels)
         {
+            decodeSpan.SetAttribute("result", "failed");
             RVX_CORE_WARN("TextureLoader: stb_image decode failed: {}", stbi_failure_reason());
             return false;
         }
@@ -821,6 +925,10 @@ namespace RVX::Resource
         outPixels.assign(pixels, pixels + pixelCount);
 
         stbi_image_free(pixels);
+        decodeSpan.SetAttribute("result", "decoded");
+        decodeSpan.SetAttribute("width", static_cast<uint64>(outWidth));
+        decodeSpan.SetAttribute("height", static_cast<uint64>(outHeight));
+        decodeSpan.SetAttribute("decodedBytes", static_cast<uint64>(outPixels.size()));
         return true;
     }
 

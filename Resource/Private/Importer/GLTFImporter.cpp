@@ -223,8 +223,16 @@ namespace RVX::Resource
         return ext == ".gltf" || ext == ".glb";
     }
 
-    GLTFImportResult GLTFImporter::Import(const std::string& path, const GLTFImportOptions& options)
+    GLTFImportResult GLTFImporter::Import(
+        const std::string& path,
+        const GLTFImportOptions& options,
+        const Diagnostics::TraceContext& traceContext)
     {
+        Diagnostics::TraceSpan parseSpan = Diagnostics::BeginTraceSpan(
+            traceContext,
+            "GltfParse",
+            {{"path", path},
+             {"parser", "tinygltf"}});
         GLTFImportResult result;
         m_currentFilePath = path;
 
@@ -234,10 +242,11 @@ namespace RVX::Resource
         tinygltf::Model gltfModel;
         std::string error, warning;
         
-        if (!LoadFile(path, gltfModel, error, warning))
+        if (!LoadFile(path, gltfModel, error, warning, parseSpan.GetChildContext()))
         {
             result.success = false;
             result.errorMessage = error;
+            parseSpan.SetAttribute("result", "failed");
             return result;
         }
 
@@ -270,6 +279,10 @@ namespace RVX::Resource
 
         ReportProgress(1.0f, "Complete");
         result.success = true;
+        parseSpan.SetAttribute("result", "loaded");
+        parseSpan.SetAttribute("meshCount", static_cast<uint64>(result.meshes.size()));
+        parseSpan.SetAttribute("materialCount", static_cast<uint64>(result.materials.size()));
+        parseSpan.SetAttribute("textureCount", static_cast<uint64>(result.textures.size()));
         return result;
     }
 
@@ -277,9 +290,24 @@ namespace RVX::Resource
     // File Loading
     // =========================================================================
 
-    bool GLTFImporter::LoadFile(const std::string& path, tinygltf::Model& gltfModel,
-                                 std::string& error, std::string& warning)
+    bool GLTFImporter::LoadFile(const std::string& path,
+                                tinygltf::Model& gltfModel,
+                                std::string& error,
+                                std::string& warning,
+                                const Diagnostics::TraceContext& traceContext)
     {
+        // TinyGLTF owns both the source document read and all referenced
+        // buffer/image loads inside this call.  Its API does not expose those
+        // sub-operations, so this is deliberately reported as one composite
+        // observed boundary rather than fabricated per-file timings.
+        Diagnostics::TraceSpan bufferReadSpan = Diagnostics::BeginTraceSpan(
+            traceContext,
+            "BufferRead",
+            {{"path", path},
+             {"reader", "tinygltf"},
+             {"composite", true},
+             {"includesReferencedBuffers", true},
+             {"includesImageLoadCallbacks", true}});
         tinygltf::TinyGLTF loader;
         loader.SetImageLoader(LoadImageDataAllowingCookedArtifact, nullptr);
 
@@ -297,6 +325,7 @@ namespace RVX::Resource
             success = loader.LoadASCIIFromFile(&gltfModel, &error, &warning, path);
         }
 
+        bufferReadSpan.SetAttribute("result", success ? "loaded" : "failed");
         return success;
     }
 

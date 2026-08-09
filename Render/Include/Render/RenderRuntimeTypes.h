@@ -5,6 +5,7 @@
  * @brief Public value-only render runtime configuration and result contracts.
  */
 
+#include "Core/Diagnostics/Trace.h"
 #include "Render/RenderTransportTypes.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RHI/RHIDefinitions.h"
@@ -172,6 +173,8 @@ namespace RVX
         uint32 frameBuffering = 2;
         RenderTransportConfig transports{};
         RenderIterationBudgets iterationBudgets{};
+        /** @brief Optional correlated diagnostics context; disabled by default. */
+        Diagnostics::TraceContext startupTraceContext{};
         std::chrono::milliseconds startupWatchdog{60000};
         std::chrono::milliseconds shutdownWatchdog{30000};
     };

@@ -5,6 +5,7 @@
 
 #include "Render/RenderSubsystem.h"
 #include "Context/RenderContextInternal.h"
+#include "Core/Diagnostics/Trace.h"
 #include "Core/Log.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/Renderer/RenderScene.h"
@@ -35,6 +36,7 @@ namespace
             const NativeSurfaceDesc& surface,
             RenderResourceStatusTable& statusTable) override
         {
+            m_startupTraceContext = config.startupTraceContext;
             RenderRuntimeResult result;
             RHIBackendType backend = config.backendType;
             if (backend == RHIBackendType::Auto)
@@ -833,6 +835,7 @@ namespace
                     "Graphics submission did not produce a completion point";
                 return result;
             }
+            RecordFirstSubmitted(frameSequence, submittedPoint.value);
 
             GPUCompletionToken completion;
             if (!InsertGPUCompletionPoint(completion, submittedPoint))
@@ -864,6 +867,7 @@ namespace
                 return health;
             }
             m_sceneRenderer->MarkAcceptedFramePresented();
+            RecordFirstPresent(frameSequence);
             return result;
         }
 
@@ -935,8 +939,38 @@ namespace
                 result.message = "Resize redraw submission failed";
                 return result;
             }
+            RecordFirstSubmitted(0, submittedPoint.value);
             m_context->Present();
-            return MakeDeviceRuntimeResult();
+            RenderRuntimeResult health = MakeDeviceRuntimeResult();
+            if (health.code == RenderRuntimeCode::Running)
+            {
+                RecordFirstPresent(0);
+            }
+            return health;
+        }
+
+        void RecordFirstSubmitted(uint64 frameSequence,
+                                  uint64 completionValue)
+        {
+            if (m_firstSubmittedTraceRecorded)
+                return;
+            Diagnostics::RecordTraceInstant(
+                m_startupTraceContext,
+                "FirstFrameSubmitted",
+                {{"sequence", frameSequence},
+                 {"completionValue", completionValue}});
+            m_firstSubmittedTraceRecorded = true;
+        }
+
+        void RecordFirstPresent(uint64 frameSequence)
+        {
+            if (m_firstPresentTraceRecorded)
+                return;
+            Diagnostics::RecordTraceInstant(
+                m_startupTraceContext,
+                "FirstSwapchainPresentAccepted",
+                {{"sequence", frameSequence}});
+            m_firstPresentTraceRecorded = true;
         }
 
         RenderRuntimeResult MakeDeviceRuntimeResult() const
@@ -1143,6 +1177,9 @@ namespace
         RenderResourceRegistry m_resourceRegistry;
         RenderUploadProcessor m_uploadProcessor;
         RenderFrameCaptureResult m_lastCaptureResult{};
+        Diagnostics::TraceContext m_startupTraceContext{};
+        bool m_firstSubmittedTraceRecorded = false;
+        bool m_firstPresentTraceRecorded = false;
     };
 
     class ClearPresentRuntimeFactory final : public IRenderRuntimeFactory,

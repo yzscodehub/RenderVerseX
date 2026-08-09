@@ -46,20 +46,31 @@ Engine* Engine::Get()
 
 bool Engine::Initialize()
 {
+    Diagnostics::TraceSpan startupSpan = Diagnostics::BeginTraceSpan(
+        m_config.startupTraceContext,
+        "EngineInitialize",
+        {{"appName", m_config.appName != nullptr ? m_config.appName : ""}});
     if (m_initialized)
     {
         RVX_CORE_WARN("Engine already initialized");
+        startupSpan.SetAttribute("result", "already-initialized");
         return true;
     }
 
     RVX_CORE_INFO("=== RenderVerseX Engine Initializing ===");
 
     // Initialize time system
+    Diagnostics::RecordTraceInstant(m_config.startupTraceContext,
+                                    "Engine.Time.Initialize");
     Time::Initialize();
 
     // Initialize job system if enabled
     if (m_config.enableJobSystem)
     {
+        Diagnostics::RecordTraceInstant(
+            m_config.startupTraceContext,
+            "Engine.JobSystem.Initialize",
+            {{"workerCount", std::to_string(m_config.jobWorkerCount)}});
         JobSystem::Get().Initialize(m_config.jobWorkerCount);
     }
 
@@ -73,6 +84,7 @@ bool Engine::Initialize()
         }
         m_initialized = false;
         m_shouldShutdown = true;
+        startupSpan.SetAttribute("result", "subsystem-initialization-failed");
         return false;
     }
 
@@ -81,6 +93,7 @@ bool Engine::Initialize()
     m_frameNumber = 0;
 
     RVX_CORE_INFO("=== RenderVerseX Engine Initialized ===");
+    startupSpan.SetAttribute("result", "initialized");
     return true;
 }
 
@@ -299,6 +312,9 @@ void Engine::ShutdownWorlds()
 
 bool Engine::InitializeSubsystems()
 {
+    Diagnostics::TraceSpan subsystemsSpan = Diagnostics::BeginTraceSpan(
+        m_config.startupTraceContext,
+        "Engine.Subsystems.Initialize");
     // Set engine reference for all subsystems
     for (const auto& subsystem : m_subsystems.GetAll())
     {
@@ -314,6 +330,7 @@ bool Engine::InitializeSubsystems()
         {
             RVX_CORE_ERROR(
                 "Dedicated Render composition requires ResourceSubsystem and WindowSubsystem");
+            subsystemsSpan.SetAttribute("result", "missing-required-subsystem");
             return false;
         }
 
@@ -333,6 +350,7 @@ bool Engine::InitializeSubsystems()
                 "(Window code {}, Resource code {})",
                 static_cast<uint32>(windowDependency.code),
                 static_cast<uint32>(resourceDependency.code));
+            subsystemsSpan.SetAttribute("result", "dependency-registration-failed");
             return false;
         }
 
@@ -350,8 +368,12 @@ bool Engine::InitializeSubsystems()
         if (!m_renderComposition->PrepareBeforeSubsystemInitialization())
         {
             RVX_CORE_ERROR("Failed to prepare dedicated Render composition");
+            subsystemsSpan.SetAttribute("result", "render-composition-prepare-failed");
             return false;
         }
+        Diagnostics::RecordTraceInstant(
+            m_config.startupTraceContext,
+            "Engine.RenderComposition.Prepared");
         if (m_activeWorld != nullptr)
         {
             m_renderComposition->OnActiveWorldChanged();
@@ -360,14 +382,40 @@ bool Engine::InitializeSubsystems()
 
     // Initialize in dependency order. The staged hook captures the native
     // surface after Window initialization and before Render starts.
-    return m_subsystems.InitializeAll(
-        [this](EngineSubsystem& subsystem) {
+    Diagnostics::TraceSpan subsystemInitializationSpan;
+    const bool initialized = m_subsystems.InitializeAll(
+        [this, &subsystemInitializationSpan](EngineSubsystem& subsystem) {
+            subsystemInitializationSpan = Diagnostics::BeginTraceSpan(
+                m_config.startupTraceContext,
+                "EngineSubsystemInitialize",
+                {{"name", subsystem.GetName()}});
             if (m_renderComposition != nullptr &&
                 &subsystem == GetSubsystem<RenderSubsystem>())
             {
                 m_renderComposition->BeforeRenderSubsystemInitialize();
             }
+        },
+        [this, &subsystemInitializationSpan](EngineSubsystem& subsystem) {
+            subsystemInitializationSpan.SetAttribute("result", "initialized");
+            subsystemInitializationSpan.End();
+            if (&subsystem == GetSubsystem<WindowSubsystem>())
+            {
+                Diagnostics::RecordTraceInstant(
+                    m_config.startupTraceContext,
+                    "WindowReady");
+            }
+            if (&subsystem == GetSubsystem<RenderSubsystem>())
+            {
+                Diagnostics::RecordTraceInstant(
+                    m_config.startupTraceContext,
+                    "RenderRuntimeReady");
+                Diagnostics::RecordTraceInstant(
+                    m_config.startupTraceContext,
+                    "SwapchainReady");
+            }
         });
+    subsystemsSpan.SetAttribute("result", initialized ? "initialized" : "failed");
+    return initialized;
 }
 
 void Engine::TickSubsystems(float deltaTime)

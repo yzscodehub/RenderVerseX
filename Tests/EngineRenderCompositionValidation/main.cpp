@@ -530,7 +530,7 @@ TEST(EngineRenderCompositionValidation,
     const size_t prepareComposition =
         engine.find("CreateEngineRenderRuntimeCompositionServices(");
     const size_t initialize =
-        engine.find("return m_subsystems.InitializeAll(");
+        engine.find("m_subsystems.InitializeAll(");
 
     ASSERT_NE(windowResult, std::string::npos);
     ASSERT_NE(windowDependency, std::string::npos);

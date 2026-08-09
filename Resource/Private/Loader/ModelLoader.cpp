@@ -45,25 +45,47 @@ namespace RVX::Resource
         std::string absolutePath = absPath.string();
 
         ResourceId modelId = GenerateModelId(absolutePath);
+        const Diagnostics::TraceContext traceContext =
+            m_manager != nullptr ? m_manager->GetStartupTraceContext()
+                                 : Diagnostics::TraceContext{};
 
         // Check cache first
-        if (m_manager && m_manager->IsInitialized())
         {
-            if (auto* cached = m_manager->GetCache().Get(modelId))
+            Diagnostics::TraceSpan cacheLookupSpan = Diagnostics::BeginTraceSpan(
+                traceContext,
+                "CacheLookup",
+                {{"assetId", modelId}, {"path", absolutePath}});
+            if (m_manager && m_manager->IsInitialized())
             {
-                return cached;
+                if (auto* cached = m_manager->GetCache().Get(modelId))
+                {
+                    cacheLookupSpan.SetAttribute("cacheHit", true);
+                    return cached;
+                }
             }
+            cacheLookupSpan.SetAttribute("cacheHit", false);
         }
 
         // Import the model
         RVX_CORE_INFO("ModelLoader: Loading model from {}", absolutePath);
-        GLTFImportResult importResult = m_gltfImporter->Import(absolutePath, m_gltfOptions);
+        Diagnostics::TraceSpan modelIOSpan = Diagnostics::BeginTraceSpan(
+            traceContext,
+            "ModelIO",
+            {{"assetId", modelId}, {"path", absolutePath}});
+        GLTFImportResult importResult = m_gltfImporter->Import(
+            absolutePath,
+            m_gltfOptions,
+            modelIOSpan.GetChildContext());
 
         if (!importResult.success)
         {
             RVX_CORE_ERROR("ModelLoader: Failed to import model: {}", importResult.errorMessage);
+            modelIOSpan.SetAttribute("result", "failed");
             return nullptr;
         }
+        modelIOSpan.SetAttribute("result", "loaded");
+        modelIOSpan.SetAttribute("meshCount", static_cast<uint64>(importResult.meshes.size()));
+        modelIOSpan.SetAttribute("textureCount", static_cast<uint64>(importResult.textures.size()));
 
         // Log warnings
         for (const auto& warning : importResult.warnings)
@@ -72,10 +94,22 @@ namespace RVX::Resource
         }
 
         // Create the model resource
-        ModelResource* modelResource = CreateModelResource(absolutePath, importResult);
-        
+        Diagnostics::TraceSpan prepareSpan = Diagnostics::BeginTraceSpan(
+            traceContext,
+            "CPUPrepare",
+            {{"assetId", modelId}, {"path", absolutePath}});
+        ModelResource* modelResource = CreateModelResource(
+            absolutePath,
+            importResult,
+            prepareSpan.GetChildContext());
+        prepareSpan.SetAttribute("result", modelResource != nullptr ? "prepared" : "failed");
+
         if (modelResource)
         {
+            Diagnostics::TraceSpan publishSpan = Diagnostics::BeginTraceSpan(
+                traceContext,
+                "CPUPublish",
+                {{"assetId", modelId}, {"path", absolutePath}});
             modelResource->SetId(modelId);
             modelResource->SetPath(absolutePath);
             
@@ -88,6 +122,7 @@ namespace RVX::Resource
             {
                 m_manager->GetCache().Store(modelResource);
             }
+            publishSpan.SetAttribute("result", "published");
 
             RVX_CORE_INFO("ModelLoader: Loaded model '{}' with {} meshes, {} materials, {} textures",
                      modelResource->GetName(),
@@ -103,12 +138,18 @@ namespace RVX::Resource
     // Resource Creation
     // =========================================================================
 
-    ModelResource* ModelLoader::CreateModelResource(const std::string& path, GLTFImportResult& importResult)
+    ModelResource* ModelLoader::CreateModelResource(
+        const std::string& path,
+        GLTFImportResult& importResult,
+        const Diagnostics::TraceContext& traceContext)
     {
         auto* modelResource = new ModelResource();
 
         // 1. Load textures first (materials depend on them)
-        std::vector<TextureResource*> loadedTextures = LoadTextures(path, importResult.textures);
+        std::vector<TextureResource*> loadedTextures = LoadTextures(
+            path,
+            importResult.textures,
+            traceContext);
 
         // 2. Create MeshResources
         std::vector<ResourceHandle<MeshResource>> meshHandles;
@@ -242,14 +283,19 @@ namespace RVX::Resource
     }
 
     std::vector<TextureResource*> ModelLoader::LoadTextures(const std::string& modelPath,
-                                                              const std::vector<TextureReference>& textureRefs)
+                                                              const std::vector<TextureReference>& textureRefs,
+                                                              const Diagnostics::TraceContext& traceContext)
     {
         std::vector<TextureResource*> loadedTextures;
         loadedTextures.reserve(textureRefs.size());
 
+        const Diagnostics::TraceContext textureTraceContext = traceContext;
         for (const auto& ref : textureRefs)
         {
-            TextureResource* tex = m_textureLoader->LoadFromReference(ref, modelPath);
+            TextureResource* tex = m_textureLoader->LoadFromReference(
+                ref,
+                modelPath,
+                textureTraceContext);
             loadedTextures.push_back(tex);
         }
 

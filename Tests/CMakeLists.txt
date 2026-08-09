@@ -346,6 +346,14 @@ rvx_add_gtest(
 )
 
 rvx_add_gtest(
+    NAME StartupTimelineValidation
+    SOURCES StartupTimelineValidation/main.cpp
+    LIBS RVX::Core
+    LABELS "unit;diagnostics;startup"
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
     NAME ModelCameraFramingValidation
     SOURCES ModelCameraFramingValidation/main.cpp
     LIBS RVX::SampleCommon

@@ -140,6 +140,7 @@ namespace RVX
         bool m_prepared = false;
         bool m_renderConfigured = false;
         bool m_shutdown = false;
+        bool m_firstPublishedTraceRecorded = false;
     };
 
     [[nodiscard]] std::unique_ptr<IRenderRuntimeCompositionServices>

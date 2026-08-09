@@ -3,6 +3,7 @@
 #include "Samples/SampleRunner.h"
 
 #include "Core/Core.h"
+#include "Core/Diagnostics/Trace.h"
 #include "Engine/Engine.h"
 #include "HAL/Input/KeyCodes.h"
 #include "Render/RenderSubsystem.h"
@@ -153,6 +154,7 @@ namespace RVX
                    argument == "--instancing" ||
                    argument == "--ready-timeout-ms" ||
                    argument == "--ready-max-frames" ||
+                   argument == "--startup-report" ||
                    argument == "--lifetime-report" ||
                    argument == "--lifetime-warmup-frames" ||
                    argument == "--lifetime-observation-frames" ||
@@ -174,6 +176,77 @@ namespace RVX
             ResolvedSampleAsset model;
             std::vector<ResolvedSampleAsset> additionalModels;
             ResolvedSampleAsset environment;
+        };
+
+        class StartupTimelineReporter final
+        {
+        public:
+            explicit StartupTimelineReporter(std::filesystem::path path)
+                : m_path(std::move(path))
+            {
+                if (m_path.empty())
+                {
+                    return;
+                }
+
+                Diagnostics::TraceSessionConfig config;
+                config.enabled = true;
+                config.name = "sample-startup";
+                config.metadata.emplace("build", "RenderVerseX");
+                m_session = Diagnostics::TraceSession::Create(std::move(config));
+                m_rootContext = m_session->CreateRootContext();
+                m_session->RecordInstant("ProcessStart", m_rootContext);
+                m_rootSpan = m_session->BeginSpan("Sample.Startup",
+                                                  m_rootContext);
+            }
+
+            ~StartupTimelineReporter()
+            {
+                static_cast<void>(Finalize());
+            }
+
+            StartupTimelineReporter(const StartupTimelineReporter&) = delete;
+            StartupTimelineReporter& operator=(const StartupTimelineReporter&) = delete;
+
+            [[nodiscard]] Diagnostics::TraceContext GetContext() const
+            {
+                return m_rootSpan.GetChildContext();
+            }
+
+            void SetMetadata(std::string name,
+                             Diagnostics::TraceAttributeValue value)
+            {
+                if (m_session != nullptr)
+                {
+                    m_session->SetMetadata(std::move(name), std::move(value));
+                }
+            }
+
+            [[nodiscard]] bool Finalize()
+            {
+                if (m_finalized)
+                {
+                    return m_written;
+                }
+                m_finalized = true;
+                if (m_session == nullptr)
+                {
+                    m_written = true;
+                    return true;
+                }
+
+                m_rootSpan.End();
+                m_written = m_session->SaveJson(m_path);
+                return m_written;
+            }
+
+        private:
+            std::filesystem::path m_path;
+            std::shared_ptr<Diagnostics::TraceSession> m_session;
+            Diagnostics::TraceContext m_rootContext;
+            Diagnostics::TraceSpan m_rootSpan;
+            bool m_finalized = false;
+            bool m_written = false;
         };
 
         std::filesystem::path GetExecutableDirectory(const char* argv0)
@@ -829,6 +902,10 @@ namespace RVX
                         return false;
                     }
                 }
+                else if (argument == "--startup-report")
+                {
+                    options.startupReportPath = value;
+                }
                 else if (argument == "--lifetime-report")
                 {
                     options.lifetimeReportPath = value;
@@ -1001,6 +1078,7 @@ namespace RVX
             << "  --ready-timeout-ms <milliseconds>\n"
             << "  --ready-max-frames <count>\n"
             << "  --deterministic-orbit\n"
+            << "  --startup-report <path.json>\n"
             << "  --lifetime-report <path.json>\n"
             << "  --lifetime-warmup-frames <count>\n"
             << "  --lifetime-observation-frames <count>\n"
@@ -1052,6 +1130,10 @@ namespace RVX
             return 0;
         }
 
+        StartupTimelineReporter startupTimeline(options.startupReportPath);
+        const Diagnostics::TraceContext startupTraceContext =
+            startupTimeline.GetContext();
+
         const SampleInfo* registeredInfo = m_registry.Find(options.sampleId);
         std::unique_ptr<ISample> sample = m_registry.Create(options.sampleId);
         if (!registeredInfo || !sample)
@@ -1066,19 +1148,29 @@ namespace RVX
                       << registeredInfo->id << "\n";
             return 1;
         }
+        startupTimeline.SetMetadata("sample", registeredInfo->id);
+        startupTimeline.SetMetadata(
+            "requestedBackend",
+            std::string(GetSampleBackendName(options.common.backend)));
 
         SampleSceneOptions sceneOptions;
         ResolvedSampleAssets resolvedAssets;
-        if (!ResolveSceneOptions(*registeredInfo,
-                                 options,
-                                 GetExecutableDirectory(argc > 0 ? argv[0] : nullptr),
-                                 sceneOptions,
-                                 resolvedAssets,
-                                 error))
+        Diagnostics::TraceSpan resolveAssetsSpan = Diagnostics::BeginTraceSpan(
+            startupTraceContext,
+            "AssetResolve");
+        if (!ResolveSceneOptions(
+                *registeredInfo,
+                options,
+                GetExecutableDirectory(argc > 0 ? argv[0] : nullptr),
+                sceneOptions,
+                resolvedAssets,
+                error))
         {
+            resolveAssetsSpan.SetAttribute("result", "failed");
             std::cerr << error << "\n";
             return 1;
         }
+        resolveAssetsSpan.SetAttribute("result", "resolved");
 
         Log::Initialize();
         RVX_CORE_INFO("Starting sample '{}' with requested backend '{}'",
@@ -1100,9 +1192,11 @@ namespace RVX
         engineConfig.windowHeight = options.common.height;
         engineConfig.vsync = options.common.frames == 0;
         engineConfig.enableJobSystem = false;
+        engineConfig.startupTraceContext = startupTraceContext;
         engineConfig.renderRuntime.backendType = options.common.backend;
         engineConfig.renderRuntime.enableValidation =
             options.common.enableValidation;
+        engineConfig.renderRuntime.startupTraceContext = startupTraceContext;
         engine.SetConfig(engineConfig);
 
         auto* window = engine.AddSubsystem<WindowSubsystem>();
@@ -1121,6 +1215,13 @@ namespace RVX
 
         auto* resourceSubsystem =
             engine.AddSubsystem<Resource::ResourceSubsystem>();
+        Resource::ResourceManagerConfig resourceConfig;
+        resourceConfig.startupTraceContext = startupTraceContext;
+        if (!resourceSubsystem->Configure(resourceConfig))
+        {
+            RVX_CORE_ERROR("Failed to configure ResourceSubsystem startup tracing");
+            return 1;
+        }
         auto* input = engine.AddSubsystem<InputSubsystem>();
         auto* render = engine.AddSubsystem<RenderSubsystem>();
 
@@ -1188,7 +1289,18 @@ namespace RVX
                 sceneOptions,
             };
 
+            Diagnostics::TraceSpan setupSpan = Diagnostics::BeginTraceSpan(
+                startupTraceContext,
+                "SampleSetup",
+                {{"sample", registeredInfo->id}});
             setupSucceeded = sample->Setup(context, error);
+            setupSpan.SetAttribute("result",
+                                   setupSucceeded ? "completed" : "failed");
+            setupSpan.End();
+            Diagnostics::RecordTraceInstant(
+                startupTraceContext,
+                "SetupReturned",
+                {{"success", setupSucceeded}});
             context.renderSettings.instancingMode = options.instancingMode;
             if (setupSucceeded &&
                 !engine.SetRenderFrameSettings(context.renderSettings))
@@ -1507,6 +1619,9 @@ namespace RVX
             report.category = "visual";
             report.requestedBackend = options.common.backend;
             report.backend = diagnostics.backend;
+            startupTimeline.SetMetadata(
+                "backend",
+                std::string(GetSampleBackendName(diagnostics.backend)));
             report.frameCount = executedFrames;
             report.submittedFrameSequence =
                 diagnostics.lastSubmittedFrameSequence;
@@ -1614,6 +1729,12 @@ namespace RVX
             sample.reset();
             engine.Shutdown();
 
+            const bool startupReportWritten = startupTimeline.Finalize();
+            if (!startupReportWritten)
+            {
+                RVX_CORE_ERROR("Failed to write startup timeline report");
+            }
+
             if (!succeeded)
             {
                 RVX_CORE_ERROR("Sample '{}' failed: {}",
@@ -1621,13 +1742,17 @@ namespace RVX
                                error);
             }
             Log::Shutdown();
-            return succeeded && reportWritten && lifetimeReportWritten ? 0 : 1;
+            return succeeded && reportWritten && lifetimeReportWritten &&
+                           startupReportWritten
+                       ? 0
+                       : 1;
         }
 
         RVX_CORE_ERROR("{}", error);
         engine.ShutdownRenderRuntime();
         sample.reset();
         engine.Shutdown();
+        static_cast<void>(startupTimeline.Finalize());
         Log::Shutdown();
         return 1;
     }

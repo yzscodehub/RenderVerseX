@@ -31,6 +31,18 @@ namespace
     }
 } // namespace
 
+    bool ResourceSubsystem::Configure(const ResourceManagerConfig& config)
+    {
+        if (m_initialized)
+        {
+            RVX_VERIFY(false,
+                       "ResourceSubsystem configuration is immutable after initialization");
+            return false;
+        }
+        m_config = config;
+        return true;
+    }
+
     void ResourceSubsystem::Initialize()
     {
         if (m_initialized)
@@ -50,7 +62,8 @@ namespace
 
     void ResourceSubsystem::Initialize(const ResourceManagerConfig& config)
     {
-        m_config = config;
+        if (!Configure(config))
+            return;
         Initialize();
     }
 
@@ -489,6 +502,19 @@ namespace
                 m_gateway->TryEnqueueUpload(pending.request);
             if (result.code == RenderUploadEnqueueCode::Accepted)
             {
+                // This instant is emitted only after the narrow render gateway
+                // has accepted ownership of the immutable request.  It is not
+                // inferred from later status polling.
+                const ResourceUploadRequestRef acceptedRequest = pending.request;
+                Diagnostics::RecordTraceInstant(
+                    m_config.startupTraceContext,
+                    "UploadQueued",
+                    {{"assetId", pending.assetId.value},
+                     {"requestSequence", acceptedRequest->GetSequence()},
+                     {"sourceRevision", acceptedRequest->GetSourceRevision()},
+                     {"bytes", acceptedRequest->GetDeclaredPayloadBytes()},
+                     {"kind", static_cast<uint64>(acceptedRequest->GetKind())},
+                     {"operation", static_cast<uint64>(acceptedRequest->GetOperation())}});
                 m_retainedRequests.emplace(
                     pending.handle,
                     RetainedRequest{pending.assetId,

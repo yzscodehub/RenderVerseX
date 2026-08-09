@@ -16,6 +16,7 @@
 #include "Geometry/Asset/Material.h"
 #include "Geometry/Asset/Mesh.h"
 #include "Geometry/Asset/Model.h"
+#include "Core/Diagnostics/Trace.h"
 #include "Resource/Loader/TextureReference.h"
 #include <string>
 #include <vector>
@@ -141,8 +142,9 @@ namespace RVX::Resource
          * @param options Import options (optional)
          * @return GLTFImportResult containing the imported data
          */
-        GLTFImportResult Import(const std::string& path, 
-                                 const GLTFImportOptions& options = GLTFImportOptions());
+        GLTFImportResult Import(const std::string& path,
+                                 const GLTFImportOptions& options = GLTFImportOptions(),
+                                 const Diagnostics::TraceContext& traceContext = {});
 
         // =====================================================================
         // Progress Callback
@@ -154,7 +156,11 @@ namespace RVX::Resource
 
     private:
         // Parsing methods
-        bool LoadFile(const std::string& path, tinygltf::Model& gltfModel, std::string& error, std::string& warning);
+        bool LoadFile(const std::string& path,
+                      tinygltf::Model& gltfModel,
+                      std::string& error,
+                      std::string& warning,
+                      const Diagnostics::TraceContext& traceContext);
         
         void ParseMeshes(const tinygltf::Model& gltf, GLTFImportResult& result, const GLTFImportOptions& options);
         void ParseMaterials(const tinygltf::Model& gltf, GLTFImportResult& result);

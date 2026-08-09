@@ -15,6 +15,7 @@ target_sources(RVX_Core PRIVATE
     Private/Diagnostics/ContentHash.cpp
     Private/Diagnostics/JsonWriter.cpp
     Private/Diagnostics/PortablePath.cpp
+    Private/Diagnostics/Trace.cpp
 
     # Camera contracts
     Private/Camera/Camera.cpp

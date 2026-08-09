@@ -6,6 +6,7 @@
  */
 
 #include "Core/Event/EventBus.h"
+#include "Core/Diagnostics/Trace.h"
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "Core/Subsystem/SubsystemCollection.h"
 #include "Render/RenderRuntimeTypes.h"
@@ -32,6 +33,8 @@ namespace RVX
         bool vsync = true;
         bool enableJobSystem = true;
         size_t jobWorkerCount = 0;  // 0 = auto (hardware concurrency)
+        /** @brief Optional correlated diagnostics context; disabled by default. */
+        Diagnostics::TraceContext startupTraceContext{};
         RenderRuntimeConfig renderRuntime{};
         RenderFrameSettings initialRenderFrameSettings{};
     };

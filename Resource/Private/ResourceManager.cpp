@@ -205,6 +205,9 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
     }
 
     m_config = config;
+    Diagnostics::TraceSpan initializationSpan = Diagnostics::BeginTraceSpan(
+        m_config.startupTraceContext,
+        "Resource.Manager.Initialize");
     m_registry = std::make_unique<ResourceRegistry>();
     m_cache = std::make_unique<ResourceCache>(config.cacheConfig);
     m_cache->SetBeforeRemoveCallback(
@@ -221,6 +224,7 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
     m_initialized = true;
     ConfigureHotReload(config.enableHotReload);
     StartAsyncWorkers();
+    initializationSpan.SetAttribute("result", "initialized");
     RVX_RESOURCE_INFO("ResourceManager initialized");
 }
 
@@ -295,8 +299,14 @@ IResource* ResourceManager::LoadResource(const std::string& path)
         return nullptr;
     }
 
+    Diagnostics::TraceSpan resolveSpan = Diagnostics::BeginTraceSpan(
+        m_config.startupTraceContext,
+        "AssetResolve",
+        {{"requestedPath", path}});
     const ResourcePathResolution resolution =
         ResolveRuntimeResourcePath(m_config.runtimePolicy, m_config.basePath, path);
+    resolveSpan.SetAttribute("resolvedPath", resolution.resolvedPath);
+    resolveSpan.SetAttribute("allowed", resolution.allowed);
     if (!resolution.allowed)
     {
         SetLastLoadDiagnostic(
@@ -312,13 +322,24 @@ IResource* ResourceManager::LoadResource(const std::string& path)
     ResourceId id = GenerateResourceId(path);
 
     // Check cache first
-    if (IResource* cached = m_cache->Get(id))
+    IResource* cached = m_cache->Get(id);
+    Diagnostics::RecordTraceInstant(
+        m_config.startupTraceContext,
+        "CacheLookup",
+        {{"requestedPath", path},
+         {"resourceId", id},
+         {"cacheHit", cached != nullptr}});
+    if (cached != nullptr)
     {
         SetLastLoadDiagnostic(
             MakeLoadDiagnostic(resolution,
                                true,
                                ResourceLoadFailureCode::None,
                                "Resource returned from cache."));
+        Diagnostics::RecordTraceInstant(
+            m_config.startupTraceContext,
+            "CacheHit",
+            {{"requestedPath", path}, {"resourceId", id}});
         return cached;
     }
 
@@ -345,9 +366,23 @@ IResource* ResourceManager::LoadResource(ResourceId id)
 
     if (!m_initialized) return nullptr;
 
+    Diagnostics::TraceSpan resolveSpan = Diagnostics::BeginTraceSpan(
+        m_config.startupTraceContext,
+        "AssetResolve",
+        {{"resourceId", id}});
+
     // Check cache first
-    if (IResource* cached = m_cache->Get(id))
+    IResource* cached = m_cache->Get(id);
+    Diagnostics::RecordTraceInstant(
+        m_config.startupTraceContext,
+        "CacheLookup",
+        {{"resourceId", id}, {"cacheHit", cached != nullptr}});
+    if (cached != nullptr)
     {
+        Diagnostics::RecordTraceInstant(
+            m_config.startupTraceContext,
+            "CacheHit",
+            {{"resourceId", id}});
         return cached;
     }
 
@@ -361,6 +396,9 @@ IResource* ResourceManager::LoadResource(ResourceId id)
 
     const ResourcePathResolution resolution =
         ResolveRuntimeResourcePath(m_config.runtimePolicy, m_config.basePath, metadata->path);
+    resolveSpan.SetAttribute("requestedPath", metadata->path);
+    resolveSpan.SetAttribute("resolvedPath", resolution.resolvedPath);
+    resolveSpan.SetAttribute("allowed", resolution.allowed);
     if (!resolution.allowed)
     {
         SetLastLoadDiagnostic(
@@ -379,6 +417,12 @@ IResource* ResourceManager::LoadInternal(const std::string& path,
                                          const ResourcePathResolution& resolution,
                                          ResourceType type)
 {
+    Diagnostics::TraceSpan loadSpan = Diagnostics::BeginTraceSpan(
+        m_config.startupTraceContext,
+        "ResourceLoad",
+        {{"requestedPath", path},
+         {"resolvedPath", resolution.resolvedPath},
+         {"resourceType", GetResourceTypeName(type)}});
     const std::string& resolvedPath = resolution.resolvedPath;
 
     // Get appropriate loader
@@ -391,6 +435,7 @@ IResource* ResourceManager::LoadInternal(const std::string& path,
                                ResourceLoadFailureCode::LoaderUnavailable,
                                "No loader registered for resource type."));
         RVX_RESOURCE_ERROR("No loader registered for resource type: {}", GetResourceTypeName(type));
+        loadSpan.SetAttribute("result", "loader-unavailable");
         return nullptr;
     }
 
@@ -404,8 +449,15 @@ IResource* ResourceManager::LoadInternal(const std::string& path,
                                ResourceLoadFailureCode::LoaderFailed,
                                "Loader failed to create the resource."));
         RVX_RESOURCE_ERROR("Failed to load resource: {}", path);
+        loadSpan.SetAttribute("result", "loader-failed");
         return nullptr;
     }
+
+    Diagnostics::TraceSpan publishSpan = Diagnostics::BeginTraceSpan(
+        m_config.startupTraceContext,
+        "CPUPublish",
+        {{"requestedPath", path},
+         {"resourceType", GetResourceTypeName(type)}});
 
     // Some loaders cache specialized variants internally while loading. The
     // ResourceManager path API owns the generic path identity, so remove any
@@ -451,6 +503,8 @@ IResource* ResourceManager::LoadInternal(const std::string& path,
     // Mark as loaded
     resource->NotifyLoaded();
     QueueLifecycleEvent(ResourceLifecycleEventType::Ready, resource);
+    publishSpan.SetAttribute("resourceId", resource->GetId());
+    publishSpan.SetAttribute("result", "published");
 
     SetLastLoadDiagnostic(
         MakeLoadDiagnostic(resolution,
@@ -459,6 +513,11 @@ IResource* ResourceManager::LoadInternal(const std::string& path,
                            "Resource loaded successfully."));
     RegisterHotReloadResource(resource, resolution);
 
+    loadSpan.SetAttribute("result", "loaded");
+    Diagnostics::RecordTraceInstant(
+        m_config.startupTraceContext,
+        "CPUReady",
+        {{"requestedPath", path}, {"resourceId", resource->GetId()}});
     RVX_RESOURCE_DEBUG("Loaded resource: {} (type: {})", path, GetResourceTypeName(type));
     return resource;
 }

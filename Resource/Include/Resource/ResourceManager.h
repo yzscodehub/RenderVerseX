@@ -6,6 +6,7 @@
  */
 
 #include "Core/Job/JobSystem.h"
+#include "Core/Diagnostics/Trace.h"
 #include "Resource/DependencyGraph.h"
 #include "Resource/IResource.h"
 #include "Resource/ResourceCache.h"
@@ -47,6 +48,9 @@ namespace RVX::Resource
 
         /// Enable hot reload
         bool enableHotReload = false;
+
+        /** @brief Optional correlated diagnostics context; disabled by default. */
+        Diagnostics::TraceContext startupTraceContext{};
     };
 
     inline ResourceManagerConfig MakeResourceManagerConfigForAppMode(AppMode mode)
@@ -134,6 +138,19 @@ namespace RVX::Resource
         void Initialize(const ResourceManagerConfig& config = {});
         void Shutdown();
         bool IsInitialized() const { return m_initialized; }
+
+        /**
+         * @brief Return the immutable startup correlation context configured
+         * for this manager.
+         *
+         * Loaders use this value only to record observed work.  They must not
+         * mutate the session or manufacture timing outside their own execution
+         * boundary.
+         */
+        [[nodiscard]] Diagnostics::TraceContext GetStartupTraceContext() const
+        {
+            return m_config.startupTraceContext;
+        }
 
         // =====================================================================
         // Synchronous Loading

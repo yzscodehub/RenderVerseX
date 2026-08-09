@@ -30,6 +30,7 @@ namespace RVX
         uint32 readyMaxFrames = 0;
         SampleLifetimeQualificationConfig lifetimeConfig{};
         std::filesystem::path lifetimeReportPath;
+        std::filesystem::path startupReportPath;
         bool renderPathExplicit = false;
         bool waitReady = false;
         bool deterministicCameraOrbit = false;

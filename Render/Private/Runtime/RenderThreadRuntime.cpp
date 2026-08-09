@@ -404,11 +404,15 @@ namespace
 
     RenderRuntimeResult RenderThreadRuntime::Start()
     {
+        Diagnostics::TraceSpan startupSpan = Diagnostics::BeginTraceSpan(
+            m_config.startupTraceContext,
+            "Render.Runtime.Start");
         const RenderLifecycleState lifecycle =
             m_lifecycle.load(std::memory_order_acquire);
         if (lifecycle != RenderLifecycleState::Stopped ||
             m_started.load(std::memory_order_acquire))
         {
+            startupSpan.SetAttribute("result", "already-started");
             return GetLastRuntimeResult();
         }
 
@@ -427,6 +431,7 @@ namespace
                          "configuration validation failed");
             SealPublication();
             PublishDiagnostics();
+            startupSpan.SetAttribute("result", "invalid-configuration");
             return result;
         }
         if (!IsSurfaceValid(m_initialSurface))
@@ -442,6 +447,7 @@ namespace
                          "surface validation failed");
             SealPublication();
             PublishDiagnostics();
+            startupSpan.SetAttribute("result", "invalid-surface");
             return result;
         }
 
@@ -460,6 +466,7 @@ namespace
                          "executor start failed");
             SealPublication();
             PublishDiagnostics();
+            startupSpan.SetAttribute("result", "executor-start-failed");
             return result;
         }
 
@@ -538,6 +545,7 @@ namespace
             if (join.code == RenderExecutorJoinCode::Joined)
             {
                 m_joined.store(true, std::memory_order_release);
+                startupSpan.SetAttribute("result", "startup-timed-out");
                 return result;
             }
 
@@ -585,6 +593,9 @@ namespace
                 TerminateAfterFatalDiagnostics();
             }
         }
+        startupSpan.SetAttribute(
+            "result",
+            result.code == RenderRuntimeCode::Running ? "running" : "failed");
         return result;
     }
 
@@ -1775,6 +1786,9 @@ namespace
 
     RenderPumpDecision RenderThreadRuntime::InitializeOnRenderThread()
     {
+        Diagnostics::TraceSpan initializationSpan = Diagnostics::BeginTraceSpan(
+            m_config.startupTraceContext,
+            "Render.Thread.Initialize");
         if (m_renderThreadGuard.BindCurrentThread() !=
             RenderThreadGuardCode::Owner)
         {
@@ -1784,6 +1798,7 @@ namespace
                 m_config.backendType,
                 m_initialSurface.generation);
             result.message = "Render thread ownership could not be established";
+            initializationSpan.SetAttribute("result", "ownership-violation");
             return FailOnRenderThread(std::move(result));
         }
 
@@ -1813,6 +1828,7 @@ namespace
                 m_config.backendType,
                 m_initialSurface.generation);
             result.message = "Render runtime factory did not create a frame consumer";
+            initializationSpan.SetAttribute("result", "consumer-creation-failed");
             return FailOnRenderThread(std::move(result));
         }
 
@@ -1874,6 +1890,7 @@ namespace
                 m_startupAcknowledged = true;
             }
             m_startupCv.notify_all();
+            initializationSpan.SetAttribute("result", "consumer-initialization-failed");
             return RenderPumpDecision::Stop;
         }
 
@@ -1887,6 +1904,7 @@ namespace
             m_startupAcknowledged = true;
         }
         m_startupCv.notify_all();
+        initializationSpan.SetAttribute("result", "running");
         return RenderPumpDecision::Progressed;
     }
 

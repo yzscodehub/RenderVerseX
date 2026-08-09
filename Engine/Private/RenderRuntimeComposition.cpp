@@ -5,6 +5,7 @@
 
 #include "RenderRuntimeComposition.h"
 
+#include "Core/Diagnostics/Trace.h"
 #include "Render/RenderSubsystem.h"
 #include "RenderContracts/RenderFrameValidation.h"
 #include "Resource/ResourceSubsystem.h"
@@ -249,6 +250,14 @@ namespace RVX
             publication.code == RenderFramePublishCode::ReplacedOlder)
         {
             ++m_stats.publicationAccepted;
+            if (!m_firstPublishedTraceRecorded && publication.sequence > 0U)
+            {
+                Diagnostics::RecordTraceInstant(
+                    m_config.startupTraceContext,
+                    "FirstFramePublished",
+                    {{"sequence", publication.sequence}});
+                m_firstPublishedTraceRecorded = true;
+            }
             if (input.explicitDiscontinuity ||
                 input.settings.temporal.resetHistory)
             {
@@ -406,6 +415,7 @@ namespace RVX
         {
             m_surface = surface;
             m_stats.surfaceGeneration = surface.generation;
+            m_temporalResetPending = true;
         }
     }
 

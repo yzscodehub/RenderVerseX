@@ -390,6 +390,13 @@ namespace RVX::Resource
     {
         std::filesystem::path absPath = std::filesystem::absolute(path);
         std::string absolutePath = absPath.string();
+        const Diagnostics::TraceContext traceContext =
+            m_manager != nullptr ? m_manager->GetStartupTraceContext()
+                                 : Diagnostics::TraceContext{};
+        Diagnostics::TraceSpan prepareSpan = Diagnostics::BeginTraceSpan(
+            traceContext,
+            "CPUPrepare",
+            {{"path", absolutePath}, {"assetKind", "environment"}});
 
         // Load HDR data
         std::vector<float> pixels;
@@ -411,6 +418,7 @@ namespace RVX::Resource
 
         if (!loaded)
         {
+            prepareSpan.SetAttribute("result", "failed");
             if (Log::GetCoreLogger())
             {
                 RVX_CORE_WARN("HDRTextureLoader: Failed to load: {}", absolutePath);
@@ -437,7 +445,11 @@ namespace RVX::Resource
             CubemapFaces cubemap = EquirectangularToCubemap(
                 pixels.data(), width, height, options.cubemapResolution);
 
-            return CreateCubemapTexture(cubemap, BuildHDRCubemapCacheKey(absolutePath, options));
+            TextureResource* texture = CreateCubemapTexture(
+                cubemap,
+                BuildHDRCubemapCacheKey(absolutePath, options));
+            prepareSpan.SetAttribute("result", texture != nullptr ? "prepared" : "failed");
+            return texture;
         }
         else
         {
@@ -450,6 +462,8 @@ namespace RVX::Resource
             {
                 if (auto* cached = m_manager->GetCache().Get(texId))
                 {
+                    prepareSpan.SetAttribute("cacheHit", true);
+                    prepareSpan.SetAttribute("result", "cached");
                     return static_cast<TextureResource*>(cached);
                 }
             }
@@ -472,6 +486,7 @@ namespace RVX::Resource
             // Copy float data to bytes
             std::vector<uint8_t> byteData(pixels.size() * sizeof(float));
             std::memcpy(byteData.data(), pixels.data(), byteData.size());
+            const uint64 preparedBytes = static_cast<uint64>(byteData.size());
 
             texture->SetData(std::move(byteData), metadata);
             texture->MarkLoaded();
@@ -481,6 +496,8 @@ namespace RVX::Resource
                 m_manager->GetCache().Store(texture);
             }
 
+            prepareSpan.SetAttribute("result", "prepared");
+            prepareSpan.SetAttribute("bytes", preparedBytes);
             return texture;
         }
     }
@@ -492,6 +509,13 @@ namespace RVX::Resource
 
         std::filesystem::path absPath = std::filesystem::absolute(path);
         std::string absolutePath = absPath.string();
+        const Diagnostics::TraceContext traceContext =
+            m_manager != nullptr ? m_manager->GetStartupTraceContext()
+                                 : Diagnostics::TraceContext{};
+        Diagnostics::TraceSpan prepareSpan = Diagnostics::BeginTraceSpan(
+            traceContext,
+            "CPUPrepare",
+            {{"path", absolutePath}, {"assetKind", "environmentIBL"}});
 
         // Load HDR data
         std::vector<float> pixels;
@@ -513,6 +537,7 @@ namespace RVX::Resource
 
         if (!loaded)
         {
+            prepareSpan.SetAttribute("result", "failed");
             if (Log::GetCoreLogger())
             {
                 RVX_CORE_WARN("HDRTextureLoader: Failed to load for IBL: {}", absolutePath);
@@ -566,6 +591,12 @@ namespace RVX::Resource
         {
             RVX_CORE_INFO("HDRTextureLoader: IBL generation complete for {}", absPath.filename().string());
         }
+
+        prepareSpan.SetAttribute("result", "prepared");
+        prepareSpan.SetAttribute("environmentReady", ibl.environmentMap != nullptr);
+        prepareSpan.SetAttribute("irradianceReady", ibl.irradianceMap != nullptr);
+        prepareSpan.SetAttribute("prefilteredReady", ibl.prefilteredMap != nullptr);
+        prepareSpan.SetAttribute("brdfReady", ibl.brdfLUT != nullptr);
 
         return ibl;
     }
@@ -957,11 +988,24 @@ namespace RVX::Resource
                                     std::vector<float>& outPixels,
                                     uint32_t& outWidth, uint32_t& outHeight)
     {
+        const Diagnostics::TraceContext traceContext =
+            m_manager != nullptr ? m_manager->GetStartupTraceContext()
+                                 : Diagnostics::TraceContext{};
+        // stb_image exposes HDR disk IO and decoding through one call, so this
+        // span intentionally reports the observed composite rather than
+        // inventing a separate encoded-read duration.
+        Diagnostics::TraceSpan decodeSpan = Diagnostics::BeginTraceSpan(
+            traceContext,
+            "TextureDecode",
+            {{"path", path},
+             {"decoder", "stb_image_hdr"},
+             {"compositeReadDecode", true}});
         int width, height, channels;
         float* data = stbi_loadf(path.c_str(), &width, &height, &channels, 4);
 
         if (!data)
         {
+            decodeSpan.SetAttribute("result", "failed");
             if (Log::GetCoreLogger())
             {
                 RVX_CORE_WARN("HDRTextureLoader: stbi_loadf failed: {}", stbi_failure_reason());
@@ -976,6 +1020,11 @@ namespace RVX::Resource
         outPixels.assign(data, data + pixelCount);
 
         stbi_image_free(data);
+        decodeSpan.SetAttribute("result", "decoded");
+        decodeSpan.SetAttribute("width", static_cast<uint64>(outWidth));
+        decodeSpan.SetAttribute("height", static_cast<uint64>(outHeight));
+        decodeSpan.SetAttribute("decodedBytes",
+                                static_cast<uint64>(outPixels.size() * sizeof(float)));
         return true;
     }
 
@@ -983,6 +1032,15 @@ namespace RVX::Resource
                                     std::vector<float>& outPixels,
                                     uint32_t& outWidth, uint32_t& outHeight)
     {
+        const Diagnostics::TraceContext traceContext =
+            m_manager != nullptr ? m_manager->GetStartupTraceContext()
+                                 : Diagnostics::TraceContext{};
+        Diagnostics::TraceSpan decodeSpan = Diagnostics::BeginTraceSpan(
+            traceContext,
+            "TextureDecode",
+            {{"path", path},
+             {"decoder", "tinyexr"},
+             {"compositeReadDecode", true}});
 #if HAS_TINYEXR
         float* data = nullptr;
         int width, height;
@@ -992,6 +1050,7 @@ namespace RVX::Resource
         int ret = ::LoadEXR(&data, &width, &height, path.c_str(), &err);
         if (ret != TINYEXR_SUCCESS)
         {
+            decodeSpan.SetAttribute("result", "failed");
             if (err)
             {
                 if (Log::GetCoreLogger())
@@ -1010,8 +1069,14 @@ namespace RVX::Resource
         outPixels.assign(data, data + pixelCount);
 
         free(data);
+        decodeSpan.SetAttribute("result", "decoded");
+        decodeSpan.SetAttribute("width", static_cast<uint64>(outWidth));
+        decodeSpan.SetAttribute("height", static_cast<uint64>(outHeight));
+        decodeSpan.SetAttribute("decodedBytes",
+                                static_cast<uint64>(outPixels.size() * sizeof(float)));
         return true;
 #else
+        decodeSpan.SetAttribute("result", "unsupported");
         if (Log::GetCoreLogger())
         {
             RVX_CORE_WARN("HDRTextureLoader: EXR support not compiled in (missing tinyexr)");

@@ -69,6 +69,8 @@ namespace RVX::Resource
         ~ResourceSubsystem() override = default;
 
         const char* GetName() const override { return "ResourceSubsystem"; }
+        /** @brief Configure the manager before Engine initializes the subsystem. */
+        [[nodiscard]] bool Configure(const ResourceManagerConfig& config);
         void Initialize() override;
         void Initialize(const ResourceManagerConfig& config);
         void Deinitialize() override;
