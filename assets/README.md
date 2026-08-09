@@ -37,6 +37,34 @@ Generated imports, compressed textures, mesh optimization output, thumbnails,
 and shader caches belong under the build or derived-data directory, never next
 to the immutable source asset.
 
+## Optional Model Viewer catalog model
+
+`free-1975-porsche-911-930-turbo` is the cataloged real-model validation asset.
+It exercises 75 meshes, 14 materials, 27 source textures, hierarchy bounds,
+camera framing, and the complete CPUReady -> GPUUploadPending -> RenderReady
+path. The source model remains in the ignored developer asset library because
+of its size; its adjacent `license.txt` records the CC-BY-4.0 attribution.
+
+Run the Product Model Viewer against it without an absolute runtime path:
+
+```powershell
+$sample = ".\build\win_x64_debug\Samples\RenderVerseSamples\Debug\RenderVerseSamples.exe"
+& $sample --sample model-viewer `
+  --asset free-1975-porsche-911-930-turbo `
+  --catalog ".\assets\catalog.json" `
+  --asset-root ".\assets" `
+  --backend dx12 --frames 1 --wait-ready `
+  --ready-timeout-ms 180000 --ready-max-frames 1024 `
+  --quality low --width 1280 --height 720 `
+  --diagnostics --validation
+```
+
+Use `--backend vulkan` for the equivalent Vulkan path. With
+`RVX_ENABLE_EXTERNAL_ASSET_TESTS=ON`, CTest registers screenshot, image-content,
+catalog provenance, full model readiness, and draw-execution validation for
+both DX12 and Vulkan. The bundled `r7-triangle` remains the deterministic
+Model Viewer default for ordinary CI and clean source checkouts.
+
 ## Optional environment catalog
 
 `catalog.json` records only environment files whose exact source page, author,

@@ -31,6 +31,7 @@ namespace RVX
         AABB m_bounds;
         ModelCameraFrame m_cameraFrame;
         SampleOrbitCameraController m_orbitCamera;
+        bool m_renderablesEnabled = false;
         bool m_textureEnvironment = false;
         bool m_skyboxCreated = false;
         bool m_lightCreated = false;

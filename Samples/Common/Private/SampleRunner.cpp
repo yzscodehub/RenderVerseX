@@ -1054,7 +1054,7 @@ namespace RVX
             RenderFrameSettings renderSettings = engine.GetRenderFrameSettings();
             Resource::ResourceManager& resources =
                 Resource::ResourceManager::Get();
-            SampleModelLoader models(resources);
+            SampleModelLoader models(resources, *resourceSubsystem);
             SampleEnvironmentLoader environments(resources,
                                                  *resourceSubsystem);
             SampleContext context{
@@ -1145,7 +1145,13 @@ namespace RVX
                             captureFrame && captureQueued ? CaptureRequestId : 0;
                         request.maxTicks = 15000;
                         request.timeout = std::chrono::milliseconds(15000);
-                        request.advanceEngine = false;
+                        // A finite sample can require more than one bounded
+                        // upload-queue iteration before its first renderable
+                        // frame exists. Keep driving Engine while waiting so
+                        // ResourceSubsystem can enqueue the remaining work;
+                        // otherwise a normal textured model can deadlock on
+                        // the first-frame wait after the upload queue drains.
+                        request.advanceEngine = true;
                         const RuntimeFrameWaitResult waitResult =
                             frameDriver.WaitFor(request);
                         diagnostics = waitResult.diagnostics;

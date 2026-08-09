@@ -5,6 +5,7 @@
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
 #include "Scene/Components/CameraComponent.h"
+#include "Scene/Components/StaticMeshComponent.h"
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
 #include "Scene/Components/LightComponent.h"
@@ -20,6 +21,27 @@ namespace RVX
     namespace
     {
         constexpr float32 ModelViewerVerticalFov = 0.78539816339f;
+
+        uint32 SetModelRenderablesEnabled(Scene& scene,
+                                          const LoadedSampleModel& model,
+                                          bool enabled)
+        {
+            uint32 changed = 0;
+            for (Actor::Handle actor : model.instance.actors)
+            {
+                for (StaticMeshComponent* primitive :
+                     scene.GetComponentsForActorImplementing<
+                         StaticMeshComponent>(actor))
+                {
+                    if (primitive && primitive->IsEnabled() != enabled)
+                    {
+                        primitive->SetEnabled(enabled);
+                        ++changed;
+                    }
+                }
+            }
+            return changed;
+        }
 
         const SampleInfo ModelViewerInfo{
             "model-viewer",
@@ -88,6 +110,14 @@ namespace RVX
         orbitSettings.boundsRadius = glm::length(m_bounds.GetExtent());
         m_orbitCamera.Initialize(orbitSettings, context.input);
         m_orbitCamera.Apply(context.camera);
+
+        // Keep partially uploaded models out of extraction. A real asset can
+        // span several bounded upload iterations; publishing its primitives
+        // early would turn ordinary GPUUploadPending state into invalid draw
+        // packets and could let readiness pass after only one mesh appears.
+        static_cast<void>(
+            SetModelRenderablesEnabled(context.scene, m_model, false));
+        m_renderablesEnabled = false;
 
         ActorSpawnParams skyParams;
         skyParams.name = "ModelViewerSky";
@@ -165,8 +195,16 @@ namespace RVX
 
     void ModelViewerSample::Update(SampleContext& context, float deltaTime)
     {
-        static_cast<void>(context);
         static_cast<void>(deltaTime);
+        const SceneAssetReadiness readiness =
+            context.models.UpdateReadiness(context.scene, m_model);
+        if (readiness == SceneAssetReadiness::RenderReady &&
+            !m_renderablesEnabled)
+        {
+            static_cast<void>(
+                SetModelRenderablesEnabled(context.scene, m_model, true));
+            m_renderablesEnabled = true;
+        }
     }
 
     void ModelViewerSample::OnInput(SampleContext& context)
@@ -185,6 +223,10 @@ namespace RVX
             reporter.Enable("ModelResourceLoad");
             reporter.Enable("SceneInstantiation");
             reporter.Enable("ModelInspection");
+            if (m_model.instance.IsRenderReady() && m_renderablesEnabled)
+            {
+                reporter.Enable("ModelRenderReady");
+            }
             reporter.ResourceDiagnostic(
                 "model path=" + m_model.sourcePath.string());
             reporter.ResourceDiagnostic(
@@ -252,6 +294,15 @@ namespace RVX
         const SampleRenderDiagnostics& diagnostics,
         std::string& outPendingReason) const
     {
+        if (!m_model.instance.IsRenderReady() || !m_renderablesEnabled)
+        {
+            outPendingReason =
+                m_model.instance.readiness == SceneAssetReadiness::Failed &&
+                        !m_model.instance.diagnostic.empty()
+                    ? m_model.instance.diagnostic
+                    : "Model Viewer is waiting for all model GPU resources";
+            return false;
+        }
         if (diagnostics.visibleObjectCount == 0)
         {
             outPendingReason =
@@ -281,6 +332,7 @@ namespace RVX
         m_environment = {};
         m_bounds.Reset();
         m_cameraFrame = {};
+        m_renderablesEnabled = false;
         m_textureEnvironment = false;
         m_skyboxCreated = false;
         m_lightCreated = false;

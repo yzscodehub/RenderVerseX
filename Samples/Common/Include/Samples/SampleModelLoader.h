@@ -20,6 +20,7 @@ namespace RVX
     namespace Resource
     {
         class ResourceManager;
+        class ResourceSubsystem;
     }
 
     struct LoadedSampleModel
@@ -38,7 +39,9 @@ namespace RVX
     class SampleModelLoader final
     {
     public:
-        explicit SampleModelLoader(Resource::ResourceManager& resources) noexcept;
+        SampleModelLoader(Resource::ResourceManager& resources,
+                          Resource::ResourceSubsystem& resourceSubsystem)
+            noexcept;
 
         bool Load(const std::filesystem::path& path,
                   Scene& scene,
@@ -52,7 +55,12 @@ namespace RVX
             LoadedSampleModel& outModel,
             std::string& outError) const;
 
+        [[nodiscard]] SceneAssetReadiness UpdateReadiness(
+            Scene& scene,
+            LoadedSampleModel& model) const;
+
     private:
         Resource::ResourceManager& m_resources;
+        Resource::ResourceSubsystem& m_resourceSubsystem;
     };
 } // namespace RVX

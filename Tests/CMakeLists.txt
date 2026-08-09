@@ -1626,6 +1626,130 @@ function(rvx_add_renderverse_pbr_workflow_parity BACKEND_NAME BACKEND_LABEL)
     )
 endfunction()
 
+function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKEND_LABEL)
+    if(NOT RVX_ENABLE_EXTERNAL_ASSET_TESTS OR
+       NOT TARGET RenderVerseSamples OR
+       NOT TARGET ImageContentValidation OR
+       NOT TARGET SampleReportContentValidation)
+        return()
+    endif()
+    if(NOT RVX_EXTERNAL_TEST_ASSET_ROOT)
+        message(FATAL_ERROR
+            "RVX_ENABLE_EXTERNAL_ASSET_TESTS requires RVX_EXTERNAL_TEST_ASSET_ROOT")
+    endif()
+
+    cmake_path(ABSOLUTE_PATH RVX_EXTERNAL_TEST_ASSET_ROOT
+        NORMALIZE OUTPUT_VARIABLE RVX_EXTERNAL_MODEL_ROOT)
+    set(external_catalog "${RVX_EXTERNAL_MODEL_ROOT}/catalog.json")
+    set(external_model
+        "${RVX_EXTERNAL_MODEL_ROOT}/models/free_1975_porsche_911_930_turbo/scene.gltf")
+    set(external_license
+        "${RVX_EXTERNAL_MODEL_ROOT}/models/free_1975_porsche_911_930_turbo/license.txt")
+    foreach(required_file
+            "${external_catalog}"
+            "${external_model}"
+            "${external_license}")
+        if(NOT EXISTS "${required_file}")
+            message(FATAL_ERROR
+                "External Model Viewer gate requires ${required_file}")
+        endif()
+    endforeach()
+
+    foreach(config_name Debug Release RelWithDebInfo MinSizeRel)
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/${config_name}/ExternalAssets")
+        file(MAKE_DIRECTORY
+            "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/${config_name}/ExternalAssets")
+    endforeach()
+
+    set(test_prefix
+        "RenderVerseSamples${BACKEND_LABEL}ExternalPorscheModelViewer")
+    set(capture
+        "${CMAKE_CURRENT_BINARY_DIR}/VisualArtifacts/$<CONFIG>/ExternalAssets/${test_prefix}_320x180.ppm")
+    set(report
+        "${CMAKE_CURRENT_BINARY_DIR}/SampleReports/$<CONFIG>/ExternalAssets/${test_prefix}_320x180.json")
+
+    add_test(
+        NAME ${test_prefix}Validation
+        COMMAND $<TARGET_FILE:RenderVerseSamples>
+            --sample model-viewer
+            --asset free-1975-porsche-911-930-turbo
+            --catalog "${external_catalog}"
+            --asset-root "${RVX_EXTERNAL_MODEL_ROOT}"
+            --backend ${BACKEND_NAME}
+            --smoke
+            --frames 1
+            --wait-ready
+            --ready-timeout-ms 180000
+            --ready-max-frames 1024
+            --width 320
+            --height 180
+            --quality low
+            --screenshot "${capture}"
+            --report "${report}"
+            --diagnostics
+            --validation
+    )
+    set_tests_properties(${test_prefix}Validation PROPERTIES
+        LABELS "visual;gpu;sample;model-viewer;external-assets;qualification-candidate;${BACKEND_NAME}"
+        TIMEOUT 300
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+    )
+
+    add_test(
+        NAME ${test_prefix}ImageContentValidation
+        COMMAND $<TARGET_FILE:ImageContentValidation>
+            --image "${capture}"
+            --min-width 320
+            --min-height 180
+            --min-unique-colors 16
+            --min-luma-range 8
+            --near-black-threshold 8
+            --max-near-black-ratio 0.95
+            --sample-step 2
+    )
+    set_tests_properties(${test_prefix}ImageContentValidation PROPERTIES
+        LABELS "visual;gpu;sample;model-viewer;external-assets;qualification-candidate;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS ${test_prefix}Validation
+    )
+
+    add_test(
+        NAME ${test_prefix}ReportValidation
+        COMMAND $<TARGET_FILE:SampleReportContentValidation>
+            --report "${report}"
+            --sample-name model-viewer
+            --category visual
+            --backend ${BACKEND_NAME}
+            --quality low
+            --min-frame-count 1
+            --min-visible-objects 50
+            --asset-id free-1975-porsche-911-930-turbo
+            --asset-license-spdx CC-BY-4.0
+            --require-redistributable
+            --require-opaque-execution
+            --require-opaque-materials-ready
+            --require-ready
+            --require-readiness-wait
+            --require-enabled-feature ModelResourceLoad
+            --require-enabled-feature SceneInstantiation
+            --require-enabled-feature ModelInspection
+            --require-enabled-feature ModelRenderReady
+            --require-enabled-feature BoundsCameraFraming
+            --require-enabled-feature OrbitCamera
+            --require-resource-diagnostic "model meshes=75"
+            --require-resource-diagnostic "model materials=14"
+            --require-resource-diagnostic "model nodes=141"
+    )
+    set_tests_properties(${test_prefix}ReportValidation PROPERTIES
+        LABELS "visual;gpu;sample;model-viewer;external-assets;qualification-candidate;${BACKEND_NAME}"
+        TIMEOUT 30
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS ${test_prefix}Validation
+    )
+endfunction()
+
 function(rvx_add_renderverse_external_environment_validation BACKEND_NAME BACKEND_LABEL)
     if(NOT RVX_ENABLE_EXTERNAL_ENVIRONMENT_TESTS OR
        NOT TARGET RenderVerseSamples OR
@@ -2041,8 +2165,9 @@ if(WIN32 AND RVX_ENABLE_DX12)
         REPORT_ARGS
         --require-enabled-feature BoundsCameraFraming
         --require-enabled-feature OrbitCamera
+        --require-enabled-feature ModelRenderReady
         --require-enabled-feature ProceduralSkyScene
-        --require-fallback-reason PacketEnvironmentResourcesUnavailable
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
     )
     rvx_add_renderverse_primary_smoke(
         pbr-materials PBRMaterials pbr-material-grid dx12 DX12
@@ -2091,6 +2216,7 @@ if(WIN32 AND RVX_ENABLE_DX12)
     rvx_add_renderverse_pbr_response_validation(dx12 DX12 PBRMaterials)
     rvx_add_renderverse_pbr_texture_smoke(dx12 DX12)
     rvx_add_renderverse_pbr_workflow_parity(dx12 DX12)
+    rvx_add_renderverse_external_model_viewer_validation(dx12 DX12)
     rvx_add_renderverse_external_environment_validation(dx12 DX12)
     rvx_add_renderverse_readiness_smoke(dx12 DX12)
     rvx_add_renderverse_gpu_driven_parity(dx12 DX12)
@@ -2159,8 +2285,9 @@ if(RVX_ENABLE_VULKAN)
         REPORT_ARGS
         --require-enabled-feature BoundsCameraFraming
         --require-enabled-feature OrbitCamera
+        --require-enabled-feature ModelRenderReady
         --require-enabled-feature ProceduralSkyScene
-        --require-fallback-reason PacketEnvironmentResourcesUnavailable
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
     )
     rvx_add_renderverse_primary_smoke(
         pbr-materials PBRMaterials pbr-material-grid vulkan Vulkan
@@ -2209,6 +2336,7 @@ if(RVX_ENABLE_VULKAN)
     rvx_add_renderverse_pbr_response_validation(vulkan Vulkan PBRMaterials)
     rvx_add_renderverse_pbr_texture_smoke(vulkan Vulkan)
     rvx_add_renderverse_pbr_workflow_parity(vulkan Vulkan)
+    rvx_add_renderverse_external_model_viewer_validation(vulkan Vulkan)
     rvx_add_renderverse_external_environment_validation(vulkan Vulkan)
     rvx_add_renderverse_readiness_smoke(vulkan Vulkan)
     rvx_add_renderverse_gpu_driven_parity(vulkan Vulkan)
@@ -2277,8 +2405,9 @@ if(APPLE AND RVX_ENABLE_METAL)
         REPORT_ARGS
         --require-enabled-feature BoundsCameraFraming
         --require-enabled-feature OrbitCamera
+        --require-enabled-feature ModelRenderReady
         --require-enabled-feature ProceduralSkyScene
-        --require-fallback-reason PacketEnvironmentResourcesUnavailable
+        --forbid-fallback-reason PacketEnvironmentResourcesUnavailable
     )
     rvx_add_renderverse_primary_smoke(
         pbr-materials PBRMaterials pbr-material-grid metal Metal

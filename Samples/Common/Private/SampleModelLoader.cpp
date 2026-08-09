@@ -3,6 +3,7 @@
 #include "Samples/SampleModelLoader.h"
 
 #include "Resource/ResourceManager.h"
+#include "Resource/ResourceSubsystem.h"
 #include "Scene/SceneEntity.h"
 #include "Scene/SceneRuntime.h"
 
@@ -17,8 +18,9 @@ namespace RVX
     }
 
     SampleModelLoader::SampleModelLoader(
-        Resource::ResourceManager& resources) noexcept
-        : m_resources(resources)
+        Resource::ResourceManager& resources,
+        Resource::ResourceSubsystem& resourceSubsystem) noexcept
+        : m_resources(resources), m_resourceSubsystem(resourceSubsystem)
     {
     }
 
@@ -84,5 +86,23 @@ namespace RVX
         outModel.instance = std::move(instance);
         outModel.sourcePath = sourcePath;
         return true;
+    }
+
+    SceneAssetReadiness SampleModelLoader::UpdateReadiness(
+        Scene& scene,
+        LoadedSampleModel& model) const
+    {
+        if (!model.resource.IsValid() || !model.resource.IsLoaded())
+        {
+            model.instance.readiness = SceneAssetReadiness::Failed;
+            model.instance.diagnostic =
+                "Model resource became unavailable while awaiting GPU readiness";
+            return model.instance.readiness;
+        }
+        return SceneAssetInstantiator::UpdateReadiness(
+            scene,
+            *model.resource,
+            m_resourceSubsystem,
+            model.instance);
     }
 } // namespace RVX

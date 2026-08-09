@@ -3,6 +3,22 @@
   "schemaVersion": 1,
   "assets": [
     {
+      "id": "free-1975-porsche-911-930-turbo",
+      "kind": "model",
+      "path": "models/free_1975_porsche_911_930_turbo/scene.gltf",
+      "license": {
+        "spdxId": "CC-BY-4.0",
+        "file": "models/free_1975_porsche_911_930_turbo/license.txt"
+      },
+      "source": {
+        "name": "FREE 1975 Porsche 911 (930) Turbo",
+        "uri": "https://sketchfab.com/3d-models/free-1975-porsche-911-930-turbo-8568d9d14a994b9cae59499f0dbed21e",
+        "author": "Lionsharp Studios"
+      },
+      "attribution": "FREE 1975 Porsche 911 (930) Turbo by Lionsharp Studios, licensed under CC-BY-4.0.",
+      "redistributable": true
+    },
+    {
       "id": "cowboy-town-hall-8k",
       "kind": "environment",
       "path": "textures/cowboy_town_hall_8k.exr",
