@@ -365,6 +365,7 @@ namespace RVX
         uint64 m_componentChangeSequence = 0;
         bool m_isDispatchingActorLifecycles = false;
         bool m_isUpdating = false;
+        bool m_isShuttingDown = false;
         bool m_initialized = false;
     };
 } // namespace RVX

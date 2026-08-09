@@ -96,6 +96,7 @@ void SceneManager::Initialize(const SceneConfig& config)
 
     m_config = config;
     m_nextPrimitiveSpatialHandle = s_primitiveSpatialHandleStart;
+    m_isShuttingDown = false;
 
     // Create spatial index
     m_spatialIndex = Spatial::SpatialFactory::Create(config.spatialIndexType);
@@ -109,6 +110,7 @@ void SceneManager::Shutdown()
 {
     if (!m_initialized) return;
 
+    m_isShuttingDown = true;
     m_isDispatchingLifecycles = false;
     m_pendingDestroyEntities.clear();
 
@@ -134,6 +136,7 @@ void SceneManager::Shutdown()
     m_spatialIndex.reset();
 
     m_initialized = false;
+    m_isShuttingDown = false;
     RVX_SCENE_INFO("SceneManager shutdown");
 }
 
@@ -414,6 +417,12 @@ void SceneManager::RegisterPrimitive(PrimitiveComponent* primitive)
 void SceneManager::UnregisterPrimitive(PrimitiveComponent* primitive)
 {
     if (!primitive)
+        return;
+
+    // Shutdown clears every primitive registry and proxy in one bulk step
+    // after lifecycle callbacks have run. Per-entry vector erasure here turns
+    // large scene teardown quadratic without providing observable semantics.
+    if (m_isShuttingDown)
         return;
 
     if (m_registeredPrimitives.erase(primitive) == 0)

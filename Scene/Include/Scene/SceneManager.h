@@ -353,6 +353,7 @@ namespace RVX
         std::unordered_set<PrimitiveComponent*> m_dirtyPrimitiveSet;
         std::unordered_set<SceneEntity::Handle> m_indexedEntityHandles;
         bool m_indexNeedsRebuild = false;
+        bool m_isShuttingDown = false;
 
         // Runtime lifecycle dispatch
         bool m_isDispatchingLifecycles = false;

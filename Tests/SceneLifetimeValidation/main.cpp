@@ -1,4 +1,5 @@
 #include "Core/Log.h"
+#include "Scene/PrimitiveComponent.h"
 #include "Scene/SceneRuntime.h"
 
 #include <gtest/gtest.h>
@@ -28,6 +29,30 @@ namespace
     {
     public:
         const char* GetClassName() const override { return "LifetimeComponent"; }
+    };
+
+    class BulkLifetimePrimitive final : public RVX::PrimitiveComponent
+    {
+    public:
+        const char* GetClassName() const override
+        {
+            return "BulkLifetimePrimitive";
+        }
+
+        void OnRegister() override
+        {
+            RVX::PrimitiveComponent::OnRegister();
+            ++s_registeredCount;
+        }
+
+        void OnUnregister() override
+        {
+            ++s_unregisteredCount;
+            RVX::PrimitiveComponent::OnUnregister();
+        }
+
+        static inline RVX::uint32 s_registeredCount = 0;
+        static inline RVX::uint32 s_unregisteredCount = 0;
     };
 } // namespace
 
@@ -134,4 +159,50 @@ TEST(SceneLifetimeValidation, DestroyingSceneEntityRecursivelyHidesItsSubtree)
     EXPECT_EQ(scene.GetActorCount(), 0u);
     EXPECT_EQ(scene.ResolveActor(parentHandle), nullptr);
     EXPECT_EQ(scene.ResolveActor(childHandle), nullptr);
+}
+
+TEST(SceneLifetimeValidation, BulkShutdownPreservesLifecycleAndInvalidatesHandles)
+{
+    constexpr RVX::uint32 actorCount = 4096;
+    BulkLifetimePrimitive::s_registeredCount = 0;
+    BulkLifetimePrimitive::s_unregisteredCount = 0;
+
+    RVX::Scene scene;
+    ASSERT_TRUE(scene.Initialize());
+    RVX::Actor::Handle firstActorHandle = RVX::Actor::InvalidHandle;
+    RVX::ComponentHandle firstComponentHandle = RVX::InvalidComponentHandle;
+    for (RVX::uint32 actorIndex = 0; actorIndex < actorCount; ++actorIndex)
+    {
+        RVX::SceneEntity* actor = scene.SpawnActor({.name = "BulkActor"});
+        ASSERT_NE(actor, nullptr);
+        auto* component = actor->AddComponent<BulkLifetimePrimitive>();
+        ASSERT_NE(component, nullptr);
+        if (actorIndex == 0)
+        {
+            firstActorHandle = actor->GetHandle();
+            firstComponentHandle = component->GetComponentHandle();
+        }
+    }
+    ASSERT_EQ(BulkLifetimePrimitive::s_registeredCount, actorCount);
+    ASSERT_EQ(scene.GetActorCount(), actorCount);
+    ASSERT_EQ(scene.GetComponents<BulkLifetimePrimitive>().size(), actorCount);
+
+    scene.Shutdown();
+
+    EXPECT_EQ(BulkLifetimePrimitive::s_unregisteredCount, actorCount);
+    EXPECT_EQ(scene.ResolveActor(firstActorHandle), nullptr);
+    EXPECT_EQ(scene.ResolveComponent(firstComponentHandle), nullptr);
+    EXPECT_EQ(scene.GetActorCount(), 0u);
+
+    ASSERT_TRUE(scene.Initialize());
+    RVX::SceneEntity* replacement =
+        scene.SpawnActor({.name = "Replacement"});
+    ASSERT_NE(replacement, nullptr);
+    auto* replacementComponent =
+        replacement->AddComponent<BulkLifetimePrimitive>();
+    ASSERT_NE(replacementComponent, nullptr);
+    EXPECT_NE(replacement->GetHandle(), firstActorHandle);
+    EXPECT_NE(replacementComponent->GetComponentHandle(), firstComponentHandle);
+    EXPECT_EQ(scene.ResolveActor(firstActorHandle), nullptr);
+    EXPECT_EQ(scene.ResolveComponent(firstComponentHandle), nullptr);
 }

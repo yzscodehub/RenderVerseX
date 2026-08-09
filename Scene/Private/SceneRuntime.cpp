@@ -34,6 +34,7 @@ bool Scene::Initialize(const SceneConfig& config)
     if (m_initialized)
         return true;
 
+    m_isShuttingDown = false;
     m_updateThreadId = std::this_thread::get_id();
     m_sceneManager.Initialize(config);
     m_initialized = m_sceneManager.IsInitialized();
@@ -47,6 +48,7 @@ void Scene::Shutdown()
     if (!m_initialized)
         return;
 
+    m_isShuttingDown = true;
     m_activeCameraComponent = InvalidComponentHandle;
 #if defined(RVX_ENABLE_LEGACY_SCENE_API)
     m_activeCamera = nullptr;
@@ -63,10 +65,12 @@ void Scene::Shutdown()
     m_componentsByType.clear();
     m_componentsByActor.clear();
     m_componentQueryViews.clear();
+    m_transformStore = TransformStore{};
     m_pendingComponentRegistrations.clear();
     m_componentChanges.clear();
     m_sceneRevision = 0;
     m_componentChangeSequence = 0;
+    m_isShuttingDown = false;
     m_initialized = false;
 }
 
@@ -562,7 +566,8 @@ void Scene::UnregisterComponent(ActorComponent* component)
     if (!component)
         return;
 
-    std::erase(m_pendingComponentRegistrations, component);
+    if (!m_isShuttingDown)
+        std::erase(m_pendingComponentRegistrations, component);
 
     const ComponentHandle handle = component->GetComponentHandle();
     auto componentIt = m_components.find(handle);
@@ -576,6 +581,21 @@ void Scene::UnregisterComponent(ActorComponent* component)
     const Actor::Handle actorHandle = component->GetOwner()
                                           ? component->GetOwner()->GetHandle()
                                           : Actor::InvalidHandle;
+    if (m_isShuttingDown)
+    {
+        m_components.erase(componentIt);
+        if (handle == m_activeCameraComponent)
+        {
+            m_activeCameraComponent = InvalidComponentHandle;
+#if defined(RVX_ENABLE_LEGACY_SCENE_API)
+            m_activeCamera = nullptr;
+#endif
+        }
+        m_componentHandles.Free(handle);
+        component->AssignComponentHandle(InvalidComponentHandle);
+        return;
+    }
+
     auto typeIt = m_componentsByType.find(componentType);
     if (typeIt != m_componentsByType.end())
     {
@@ -663,12 +683,19 @@ void Scene::DetachActor(Actor* actor)
         return;
 
     std::vector<ActorComponent*> ownedComponents;
-    ownedComponents.reserve(m_components.size());
-    for (const auto& [handle, component] : m_components)
+    const auto actorIt = m_componentsByActor.find(actor->GetHandle());
+    if (actorIt != m_componentsByActor.end())
     {
-        (void)handle;
-        if (component && component->GetOwner() == actor)
-            ownedComponents.push_back(component);
+        ownedComponents.reserve(actorIt->second.size());
+        for (ComponentHandle handle : actorIt->second)
+        {
+            const auto componentIt = m_components.find(handle);
+            if (componentIt != m_components.end() && componentIt->second &&
+                componentIt->second->GetOwner() == actor)
+            {
+                ownedComponents.push_back(componentIt->second);
+            }
+        }
     }
     for (ActorComponent* component : ownedComponents)
     {
