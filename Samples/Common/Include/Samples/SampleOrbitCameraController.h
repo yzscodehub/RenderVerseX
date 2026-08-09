@@ -1,32 +1,18 @@
 #pragma once
 
-/** @file SampleOrbitCameraController.h @brief Backend-neutral orbit camera input. */
+/** @file SampleOrbitCameraController.h @brief Input adapter for OrbitCameraRig. */
 
-#include "Core/MathTypes.h"
+#include "Runtime/Camera/OrbitCameraRig.h"
 
 namespace RVX
 {
     class CameraComponent;
     class InputSubsystem;
 
-    struct SampleOrbitCameraSettings
-    {
-        Vec3 target{0.0f};
-        float distance = 5.0f;
-        float yaw = 0.0f;
-        float pitch = 0.35f;
-        float minDistance = 0.01f;
-        float maxDistance = 100.0f;
-        float minPitch = -1.5f;
-        float maxPitch = 1.5f;
-        float orbitSpeed = 0.005f;
-        float zoomSpeed = 0.5f;
-        float verticalFovRadians = 0.0f;
-        float aspectRatio = 1.0f;
-        float boundsRadius = 0.0f;
-    };
+    /** @brief Sample-facing alias for the backend-neutral rig configuration. */
+    using SampleOrbitCameraSettings = OrbitCameraRigSettings;
 
-    /** @brief Backend-neutral orbit intent shared by live and deterministic input. */
+    /** @brief Raw sample input before it is converted into a rig intent. */
     struct SampleOrbitCameraInput
     {
         bool orbitActive = false;
@@ -35,6 +21,12 @@ namespace RVX
         bool reset = false;
     };
 
+    /**
+     * @brief Keeps sample code to Input -> Intent -> Rig -> CameraComponent.
+     *
+     * All framing and collision decisions are implemented by OrbitCameraRig;
+     * this adapter only observes sample input and writes its resolved pose.
+     */
     class SampleOrbitCameraController final
     {
     public:
@@ -44,19 +36,34 @@ namespace RVX
         void ApplyInput(const SampleOrbitCameraInput& input,
                         CameraComponent& camera);
         void SetAspectRatio(float aspectRatio, CameraComponent& camera);
-        void Apply(CameraComponent& camera) const;
+        bool SetFocus(const AABB& bounds,
+                      const Vec3& pivot,
+                      CameraComponent& camera);
+        bool Fit(CameraComponent& camera);
+        void CaptureResetAnchor();
+        void Apply(CameraComponent& camera);
         void Reset();
 
         [[nodiscard]] const SampleOrbitCameraSettings& GetSettings() const noexcept
         {
-            return m_current;
+            return m_rig.GetSettings();
+        }
+
+        [[nodiscard]] OrbitCameraRigPose GetPose() const
+        {
+            return m_rig.GetPose();
+        }
+
+        [[nodiscard]] bool IsInitialized() const noexcept
+        {
+            return m_rig.IsInitialized();
         }
 
     private:
-        SampleOrbitCameraSettings m_initial;
-        SampleOrbitCameraSettings m_current;
+        OrbitCameraRig m_rig;
         float m_lastMouseX = 0.0f;
         float m_lastMouseY = 0.0f;
-        bool m_initialized = false;
+        float m_pendingAspectRatio = 1.0f;
+        bool m_hasPendingAspectRatio = false;
     };
 } // namespace RVX

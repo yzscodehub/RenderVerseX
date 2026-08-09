@@ -450,12 +450,10 @@ namespace RVX
             return false;
         }
 
-        context.camera.SetPerspective(PBRMaterialsVerticalFov,
-                                      aspect,
-                                      m_cameraFrame.nearPlane,
-                                      m_cameraFrame.farPlane);
         SampleOrbitCameraSettings orbitSettings;
-        orbitSettings.target = m_cameraFrame.target;
+        orbitSettings.mode = OrbitCameraMode::FreeOrbit;
+        orbitSettings.bounds = m_bounds;
+        orbitSettings.pivot = m_cameraFrame.target;
         orbitSettings.distance = m_cameraFrame.distance;
         orbitSettings.yaw = PBRMaterialsInitialYaw;
         orbitSettings.pitch = PBRMaterialsInitialPitch;
@@ -464,13 +462,22 @@ namespace RVX
         orbitSettings.maxDistance =
             std::max(m_cameraFrame.distance * 5.0f,
                      orbitSettings.minDistance * 2.0f);
-        orbitSettings.zoomSpeed =
-            std::max(m_cameraFrame.distance * 0.08f, 0.001f);
+        orbitSettings.zoomExponent = 0.08f;
         orbitSettings.verticalFovRadians = PBRMaterialsVerticalFov;
         orbitSettings.aspectRatio = aspect;
-        orbitSettings.boundsRadius = glm::length(m_bounds.GetExtent());
         m_orbitCamera.Initialize(orbitSettings, context.input);
+        if (!m_orbitCamera.IsInitialized())
+        {
+            outError = "PBR material camera rig initialization failed";
+            return false;
+        }
         m_orbitCamera.Apply(context.camera);
+        const OrbitCameraRigPose orbitPose = m_orbitCamera.GetPose();
+        m_cameraFrame.target = orbitPose.pivot;
+        m_cameraFrame.distance = orbitPose.distance;
+        m_cameraFrame.nearPlane = orbitPose.nearPlane;
+        m_cameraFrame.farPlane = orbitPose.farPlane;
+        m_cameraFrame.valid = orbitPose.valid;
 
         ActorSpawnParams skyParams;
         skyParams.name = "PBRMaterialsSky";

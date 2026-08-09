@@ -10,6 +10,8 @@
 #include "RenderContracts/RenderFrameValidation.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Runtime/Window/WindowSubsystem.h"
+#include "Scene/Components/CameraComponent.h"
+#include "World/World.h"
 
 #include <stdexcept>
 #include <utility>
@@ -212,6 +214,7 @@ namespace RVX
 
         AcknowledgePublishedOneShotValues();
         RouteSurfaceUpdate();
+        ObserveActiveCameraDiscontinuity(activeWorld);
         if (activeWorld == nullptr || !m_services->IsRenderReady())
         {
             return;
@@ -262,6 +265,7 @@ namespace RVX
                 input.settings.temporal.resetHistory)
             {
                 m_temporalResetPublishedSequence = publication.sequence;
+                m_temporalResetPublishedEpoch = input.temporalEpoch;
             }
         }
         else
@@ -333,7 +337,7 @@ namespace RVX
         }
         m_surface = surface;
         m_stats.surfaceGeneration = surface.generation;
-        m_temporalResetPending = true;
+        static_cast<void>(RequestTemporalReset());
         return true;
     }
 
@@ -393,9 +397,55 @@ namespace RVX
             diagnostics.lastAppliedFrameSequence >=
                 m_temporalResetPublishedSequence)
         {
-            m_temporalResetPending = false;
-            m_settings.temporal.resetHistory = false;
+            if (m_temporalEpoch == m_temporalResetPublishedEpoch)
+            {
+                m_temporalResetPending = false;
+                m_settings.temporal.resetHistory = false;
+            }
             m_temporalResetPublishedSequence = 0;
+            m_temporalResetPublishedEpoch = 0;
+        }
+    }
+
+    void RenderRuntimeComposition::ObserveActiveCameraDiscontinuity(
+        World* activeWorld) noexcept
+    {
+        CameraComponent* camera = activeWorld != nullptr
+                                      ? activeWorld->GetActiveCameraComponent()
+                                      : nullptr;
+        const ComponentHandle handle =
+            activeWorld != nullptr
+                ? activeWorld->GetActiveCameraHandle()
+                : InvalidComponentHandle;
+        const uint64 identity = handle.GetPackedValue();
+        const uint64 cutRevision = camera != nullptr && handle.IsValid()
+                                       ? camera->GetCutRevision()
+                                       : 0;
+
+        if (!m_hasObservedActiveCamera)
+        {
+            m_hasObservedActiveCamera = true;
+            m_observedCameraIdentity = identity;
+            m_observedCameraCutRevision = cutRevision;
+            if (identity != 0 && cutRevision != 0)
+            {
+                static_cast<void>(RequestTemporalReset());
+            }
+            return;
+        }
+
+        if (identity != m_observedCameraIdentity)
+        {
+            m_observedCameraIdentity = identity;
+            m_observedCameraCutRevision = cutRevision;
+            static_cast<void>(RequestTemporalReset());
+            return;
+        }
+
+        if (identity != 0 && cutRevision != m_observedCameraCutRevision)
+        {
+            m_observedCameraCutRevision = cutRevision;
+            static_cast<void>(RequestTemporalReset());
         }
     }
 
@@ -415,7 +465,7 @@ namespace RVX
         {
             m_surface = surface;
             m_stats.surfaceGeneration = surface.generation;
-            m_temporalResetPending = true;
+            static_cast<void>(RequestTemporalReset());
         }
     }
 

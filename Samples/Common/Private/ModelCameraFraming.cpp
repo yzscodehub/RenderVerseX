@@ -5,9 +5,10 @@
 
 #include "Samples/ModelCameraFraming.h"
 
+#include "Runtime/Camera/OrbitCameraRig.h"
+
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <limits>
 
 namespace RVX
@@ -18,6 +19,27 @@ namespace RVX
         {
             return std::isfinite(value.x) && std::isfinite(value.y) &&
                    std::isfinite(value.z);
+        }
+
+        float GetFiniteVectorLength(const Vec3& value)
+        {
+            if (!IsFiniteVector(value))
+            {
+                return 0.0f;
+            }
+
+            const float largestComponent = std::max(
+                std::abs(value.x),
+                std::max(std::abs(value.y), std::abs(value.z)));
+            if (largestComponent <= 0.0f)
+            {
+                return 0.0f;
+            }
+
+            const Vec3 scaled = value / largestComponent;
+            const float length = largestComponent * std::sqrt(
+                dot(scaled, scaled));
+            return std::isfinite(length) ? length : 0.0f;
         }
     } // namespace
 
@@ -38,29 +60,34 @@ namespace RVX
         }
 
         const Vec3 extent = bounds.GetExtent();
-        const float radius = glm::length(extent);
+        const float radius = GetFiniteVectorLength(extent);
         if (!IsFiniteVector(extent) || !std::isfinite(radius) ||
             radius <= std::numeric_limits<float>::epsilon())
         {
             return frame;
         }
 
-        const float halfVerticalFov = verticalFovRadians * 0.5f;
-        const float halfHorizontalFov =
-            std::atan(std::tan(halfVerticalFov) * aspect);
-        const float limitingHalfFov =
-            std::max(0.01f, std::min(halfVerticalFov, halfHorizontalFov));
+        OrbitCameraRigSettings settings;
+        settings.mode = OrbitCameraMode::ExteriorInspect;
+        settings.bounds = bounds;
+        settings.pivot = bounds.GetCenter();
+        settings.verticalFovRadians = verticalFovRadians;
+        settings.aspectRatio = aspect;
+        settings.fitMargin = fitMargin;
+        settings.maxDistance = std::numeric_limits<float>::max();
 
-        frame.target = bounds.GetCenter();
-        frame.distance =
-            (radius / std::sin(limitingHalfFov)) * fitMargin;
-        const ModelCameraClipRange clipRange =
-            BuildModelCameraClipRange(frame.distance, radius);
-        frame.nearPlane = clipRange.nearPlane;
-        frame.farPlane = clipRange.farPlane;
-        frame.valid = IsFiniteVector(frame.target) &&
-                      std::isfinite(frame.distance) && frame.distance > 0.0f &&
-                      clipRange.valid;
+        OrbitCameraRig rig;
+        if (!rig.Initialize(settings) || !rig.Fit())
+        {
+            return frame;
+        }
+
+        const OrbitCameraRigPose pose = rig.GetPose();
+        frame.target = pose.pivot;
+        frame.distance = pose.distance;
+        frame.nearPlane = pose.nearPlane;
+        frame.farPlane = pose.farPlane;
+        frame.valid = pose.valid;
         return frame;
     }
 
@@ -70,28 +97,15 @@ namespace RVX
         float nearRadiusMargin,
         float farRadiusMargin)
     {
+        const OrbitCameraClipRange rigRange = OrbitCameraRig::BuildClipRange(
+            distance,
+            boundsRadius,
+            nearRadiusMargin,
+            farRadiusMargin);
         ModelCameraClipRange range;
-        if (!std::isfinite(distance) || distance <= 0.0f ||
-            !std::isfinite(boundsRadius) || boundsRadius <= 0.0f ||
-            !std::isfinite(nearRadiusMargin) || nearRadiusMargin < 1.0f ||
-            !std::isfinite(farRadiusMargin) || farRadiusMargin <= 0.0f)
-        {
-            return range;
-        }
-
-        const float scaleAwareNearFloor = std::max(
-            boundsRadius * 0.001f,
-            std::numeric_limits<float>::epsilon());
-        range.nearPlane = std::max(
-            scaleAwareNearFloor,
-            distance - boundsRadius * nearRadiusMargin);
-        range.farPlane = std::max(
-            range.nearPlane + boundsRadius,
-            distance + boundsRadius * farRadiusMargin);
-        range.valid = std::isfinite(range.nearPlane) &&
-                      std::isfinite(range.farPlane) &&
-                      range.nearPlane > 0.0f &&
-                      range.farPlane > range.nearPlane;
+        range.nearPlane = rigRange.nearPlane;
+        range.farPlane = rigRange.farPlane;
+        range.valid = rigRange.valid;
         return range;
     }
 } // namespace RVX

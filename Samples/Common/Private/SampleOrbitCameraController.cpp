@@ -1,13 +1,11 @@
-/** @file SampleOrbitCameraController.cpp @brief Orbit camera implementation. */
+/** @file SampleOrbitCameraController.cpp @brief Input adapter for OrbitCameraRig. */
 
 #include "Samples/SampleOrbitCameraController.h"
 
 #include "HAL/Input/KeyCodes.h"
 #include "Runtime/Input/InputSubsystem.h"
-#include "Samples/ModelCameraFraming.h"
 #include "Scene/Components/CameraComponent.h"
 
-#include <algorithm>
 #include <cmath>
 
 namespace RVX
@@ -16,40 +14,28 @@ namespace RVX
         const SampleOrbitCameraSettings& settings,
         InputSubsystem* input)
     {
-        m_initial = settings;
-        m_initial.distance = std::max(settings.distance, 0.001f);
-        m_initial.minDistance = std::max(settings.minDistance, 0.001f);
-        m_initial.maxDistance =
-            std::max(settings.maxDistance, m_initial.minDistance);
-        m_initial.distance = std::clamp(m_initial.distance,
-                                       m_initial.minDistance,
-                                       m_initial.maxDistance);
-        m_initial.pitch = std::clamp(settings.pitch,
-                                    settings.minPitch,
-                                    settings.maxPitch);
-        if (!std::isfinite(m_initial.verticalFovRadians) ||
-            m_initial.verticalFovRadians <= 0.0f ||
-            !std::isfinite(m_initial.aspectRatio) ||
-            m_initial.aspectRatio <= 0.0f ||
-            !std::isfinite(m_initial.boundsRadius) ||
-            m_initial.boundsRadius <= 0.0f)
+        SampleOrbitCameraSettings resolvedSettings = settings;
+        if (m_hasPendingAspectRatio)
         {
-            m_initial.verticalFovRadians = 0.0f;
-            m_initial.aspectRatio = 1.0f;
-            m_initial.boundsRadius = 0.0f;
+            resolvedSettings.aspectRatio = m_pendingAspectRatio;
         }
-        m_current = m_initial;
+
+        if (!m_rig.Initialize(resolvedSettings))
+        {
+            return;
+        }
+        static_cast<void>(m_rig.Fit());
+        m_rig.CaptureResetAnchor();
         if (input)
         {
             input->GetMousePosition(m_lastMouseX, m_lastMouseY);
         }
-        m_initialized = true;
     }
 
     void SampleOrbitCameraController::Update(InputSubsystem& input,
                                              CameraComponent& camera)
     {
-        if (!m_initialized)
+        if (!m_rig.IsInitialized())
         {
             return;
         }
@@ -63,8 +49,7 @@ namespace RVX
         static_cast<void>(scrollX);
 
         SampleOrbitCameraInput cameraInput;
-        cameraInput.orbitActive =
-            input.IsMouseButtonDown(MouseButton::Left);
+        cameraInput.orbitActive = input.IsMouseButtonDown(MouseButton::Left);
         cameraInput.pointerDelta =
             Vec2(mouseX - m_lastMouseX, mouseY - m_lastMouseY);
         cameraInput.scrollDelta = scrollY;
@@ -79,33 +64,12 @@ namespace RVX
         const SampleOrbitCameraInput& input,
         CameraComponent& camera)
     {
-        if (!m_initialized)
-        {
-            return;
-        }
-
-        if (input.orbitActive)
-        {
-            m_current.yaw -= input.pointerDelta.x * m_current.orbitSpeed;
-            m_current.pitch = std::clamp(
-                m_current.pitch +
-                    input.pointerDelta.y * m_current.orbitSpeed,
-                m_current.minPitch,
-                m_current.maxPitch);
-        }
-        if (input.scrollDelta != 0.0f)
-        {
-            m_current.distance = std::clamp(
-                m_current.distance -
-                    input.scrollDelta * m_current.zoomSpeed,
-                m_current.minDistance,
-                m_current.maxDistance);
-        }
-        if (input.reset)
-        {
-            Reset();
-        }
-
+        OrbitCameraIntent intent;
+        intent.orbitActive = input.orbitActive;
+        intent.orbitDelta = input.pointerDelta;
+        intent.zoomDelta = input.scrollDelta;
+        intent.reset = input.reset;
+        m_rig.ApplyIntent(intent);
         Apply(camera);
     }
 
@@ -113,51 +77,68 @@ namespace RVX
         float aspectRatio,
         CameraComponent& camera)
     {
-        if (!m_initialized || !std::isfinite(aspectRatio) ||
-            aspectRatio <= 0.0f)
+        if (!std::isfinite(aspectRatio) || aspectRatio <= 0.0f)
         {
             return;
         }
-        m_initial.aspectRatio = aspectRatio;
-        m_current.aspectRatio = aspectRatio;
-        Apply(camera);
+
+        m_pendingAspectRatio = aspectRatio;
+        m_hasPendingAspectRatio = true;
+        if (m_rig.IsInitialized() && m_rig.SetAspectRatio(aspectRatio))
+        {
+            Apply(camera);
+        }
     }
 
-    void SampleOrbitCameraController::Apply(CameraComponent& camera) const
+    bool SampleOrbitCameraController::SetFocus(const AABB& bounds,
+                                                const Vec3& pivot,
+                                                CameraComponent& camera)
     {
-        if (!m_initialized)
+        const bool changed = m_rig.SetFocus(bounds, pivot);
+        if (changed)
+        {
+            Apply(camera);
+        }
+        return changed;
+    }
+
+    bool SampleOrbitCameraController::Fit(CameraComponent& camera)
+    {
+        const bool changed = m_rig.Fit();
+        if (changed)
+        {
+            Apply(camera);
+        }
+        return changed;
+    }
+
+    void SampleOrbitCameraController::CaptureResetAnchor()
+    {
+        m_rig.CaptureResetAnchor();
+    }
+
+    void SampleOrbitCameraController::Apply(CameraComponent& camera)
+    {
+        const OrbitCameraRigPose pose = m_rig.GetPose();
+        if (!pose.valid)
         {
             return;
         }
 
-        const float horizontalDistance =
-            m_current.distance * std::cos(m_current.pitch);
-        const Vec3 position = m_current.target +
-                              Vec3(horizontalDistance * std::sin(m_current.yaw),
-                                   m_current.distance * std::sin(m_current.pitch),
-                                   horizontalDistance * std::cos(m_current.yaw));
-        if (m_current.boundsRadius > 0.0f)
+        camera.SetPerspective(pose.verticalFovRadians,
+                              pose.aspectRatio,
+                              pose.nearPlane,
+                              pose.farPlane);
+        camera.SetPosition(pose.position);
+        camera.LookAt(pose.pivot);
+        if (m_rig.ConsumeDiscontinuity())
         {
-            const ModelCameraClipRange clipRange = BuildModelCameraClipRange(
-                m_current.distance,
-                m_current.boundsRadius);
-            if (clipRange.valid)
-            {
-                camera.SetPerspective(m_current.verticalFovRadians,
-                                      m_current.aspectRatio,
-                                      clipRange.nearPlane,
-                                      clipRange.farPlane);
-            }
+            camera.MarkCut();
         }
-        camera.SetPosition(position);
-        camera.LookAt(m_current.target);
     }
 
     void SampleOrbitCameraController::Reset()
     {
-        if (m_initialized)
-        {
-            m_current = m_initial;
-        }
+        static_cast<void>(m_rig.Reset());
     }
 } // namespace RVX

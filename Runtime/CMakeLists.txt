@@ -23,6 +23,7 @@ target_sources(RVX_Runtime PRIVATE
     Private/Time/TimeSubsystem.cpp
     # Camera
     Private/Camera/FPSController.cpp
+    Private/Camera/OrbitCameraRig.cpp
     Private/Camera/OrbitController.cpp
     Private/Camera/CameraRegistry.cpp
 )

@@ -109,6 +109,12 @@ public:
     /** @brief Orient the owning scene entity toward a world-space target. */
     void LookAt(const Vec3& target);
 
+    /** @brief Mark a deliberate camera discontinuity for temporal consumers. */
+    void MarkCut() noexcept { ++m_cutRevision; }
+
+    /** @brief Monotonic revision incremented by MarkCut(). */
+    [[nodiscard]] uint64 GetCutRevision() const noexcept { return m_cutRevision; }
+
     // =========================================================================
     // Clear Settings
     // =========================================================================
@@ -204,6 +210,7 @@ private:
     // Cached matrices
     mutable Mat4 m_projectionMatrix{1.0f};
     mutable bool m_projectionDirty = true;
+    uint64 m_cutRevision = 0;
 };
 
 } // namespace RVX

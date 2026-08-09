@@ -33,7 +33,7 @@ namespace RVX
      * @param bounds Finite world-space model bounds.
      * @param aspect Viewport width divided by height.
      * @param verticalFovRadians Vertical field of view in radians.
-     * @param fitMargin Multiplicative margin applied to the enclosing sphere distance.
+     * @param fitMargin Scale-aware margin applied after the view-basis corner fit.
      * @return Valid framing parameters, or an invalid result for malformed inputs.
      */
     ModelCameraFrame BuildModelCameraFrame(const AABB& bounds,

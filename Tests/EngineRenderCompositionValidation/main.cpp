@@ -1,6 +1,8 @@
 #include "RenderRuntimeComposition.h"
 
+#include "Core/Log.h"
 #include "RenderContracts/RenderFramePacketV5.h"
+#include "Scene/Components/CameraComponent.h"
 #include "World/World.h"
 
 #include <gtest/gtest.h>
@@ -19,6 +21,16 @@ using namespace RVX;
 
 namespace
 {
+    class LogEnvironment final : public ::testing::Environment
+    {
+    public:
+        void SetUp() override { Log::Initialize(); }
+        void TearDown() override { Log::Shutdown(); }
+    };
+
+    [[maybe_unused]] ::testing::Environment* const g_logEnvironment =
+        ::testing::AddGlobalTestEnvironment(new LogEnvironment());
+
     NativeSurfaceDesc MakeSurface(uint64 generation = 1,
                                   uint32 width = 1280,
                                   uint32 height = 720)
@@ -443,6 +455,49 @@ TEST(EngineRenderCompositionValidation,
               800U);
     EXPECT_EQ(fixture.services->extractionInputs.front().view.viewportHeight,
               600U);
+}
+
+TEST(EngineRenderCompositionValidation,
+     CameraCutRevisionAdvancesEpochAndSurvivesPublicationUntilApplied)
+{
+    CompositionFixture fixture;
+    fixture.PrepareAndConfigure();
+
+    World world;
+    ASSERT_TRUE(world.Initialize());
+    SceneEntity* cameraActor = world.SpawnActor({.name = "Camera"});
+    ASSERT_NE(cameraActor, nullptr);
+    CameraComponent* camera = cameraActor->AddComponent<CameraComponent>();
+    ASSERT_NE(camera, nullptr);
+    ASSERT_TRUE(world.SetActiveCamera(camera->GetComponentHandle()));
+
+    camera->MarkCut();
+    fixture.composition->TickAfterWorlds(&world, 0.01f, 1.0f);
+    ASSERT_EQ(fixture.services->publishedFrames.size(), 1U);
+    const uint64 firstCutEpoch =
+        fixture.services->publishedFrames[0].header.temporalEpoch;
+    EXPECT_TRUE(
+        fixture.services->publishedFrames[0].header.explicitDiscontinuity);
+    EXPECT_GT(firstCutEpoch, 1U);
+
+    camera->MarkCut();
+    fixture.composition->TickAfterWorlds(&world, 0.01f, 2.0f);
+    ASSERT_EQ(fixture.services->publishedFrames.size(), 2U);
+    const uint64 secondCutEpoch =
+        fixture.services->publishedFrames[1].header.temporalEpoch;
+    EXPECT_TRUE(
+        fixture.services->publishedFrames[1].header.explicitDiscontinuity);
+    EXPECT_GT(secondCutEpoch, firstCutEpoch);
+
+    fixture.services->diagnostics.lastAppliedFrameSequence = 2;
+    fixture.composition->TickAfterWorlds(&world, 0.01f, 3.0f);
+    ASSERT_EQ(fixture.services->publishedFrames.size(), 3U);
+    EXPECT_FALSE(
+        fixture.services->publishedFrames[2].header.explicitDiscontinuity);
+    EXPECT_EQ(fixture.services->publishedFrames[2].header.temporalEpoch,
+              secondCutEpoch);
+
+    world.Shutdown();
 }
 
 TEST(EngineRenderCompositionValidation,

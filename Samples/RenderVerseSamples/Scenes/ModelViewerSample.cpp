@@ -95,26 +95,30 @@ namespace RVX
             return false;
         }
 
-        context.camera.SetPerspective(ModelViewerVerticalFov,
-                                      aspect,
-                                      m_cameraFrame.nearPlane,
-                                      m_cameraFrame.farPlane);
         SampleOrbitCameraSettings orbitSettings;
-        orbitSettings.target = m_cameraFrame.target;
+        orbitSettings.mode = OrbitCameraMode::ExteriorInspect;
+        orbitSettings.bounds = m_bounds;
+        orbitSettings.pivot = m_cameraFrame.target;
         orbitSettings.distance = m_cameraFrame.distance;
         orbitSettings.pitch = 0.35877067f;
-        orbitSettings.minDistance =
-            std::max(m_cameraFrame.distance * 0.01f, 0.001f);
         orbitSettings.maxDistance =
-            std::max(m_cameraFrame.distance * 20.0f,
-                     orbitSettings.minDistance * 2.0f);
-        orbitSettings.zoomSpeed =
-            std::max(m_cameraFrame.distance * 0.08f, 0.001f);
+            std::max(m_cameraFrame.distance * 20.0f, 0.001f);
+        orbitSettings.zoomExponent = 0.08f;
         orbitSettings.verticalFovRadians = ModelViewerVerticalFov;
         orbitSettings.aspectRatio = aspect;
-        orbitSettings.boundsRadius = glm::length(m_bounds.GetExtent());
         m_orbitCamera.Initialize(orbitSettings, context.input);
+        if (!m_orbitCamera.IsInitialized())
+        {
+            outError = "Model Viewer could not initialize its orbit camera";
+            return false;
+        }
         m_orbitCamera.Apply(context.camera);
+        const OrbitCameraRigPose orbitPose = m_orbitCamera.GetPose();
+        m_cameraFrame.target = orbitPose.pivot;
+        m_cameraFrame.distance = orbitPose.distance;
+        m_cameraFrame.nearPlane = orbitPose.nearPlane;
+        m_cameraFrame.farPlane = orbitPose.farPlane;
+        m_cameraFrame.valid = orbitPose.valid;
 
         // Keep partially uploaded models out of extraction. A real asset can
         // span several bounded upload iterations; publishing its primitives

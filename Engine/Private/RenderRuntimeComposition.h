@@ -123,6 +123,7 @@ namespace RVX
             const RenderFrameCaptureRequest& request) noexcept;
         [[nodiscard]] RHIBackendType ResolveBackend() const noexcept;
         void AcknowledgePublishedOneShotValues();
+        void ObserveActiveCameraDiscontinuity(World* activeWorld) noexcept;
         void RouteSurfaceUpdate();
 
         RenderRuntimeConfig m_config{};
@@ -135,7 +136,11 @@ namespace RVX
         uint64 m_worldRevision = 0;
         uint64 m_temporalEpoch = 1;
         uint64 m_temporalResetPublishedSequence = 0;
+        uint64 m_temporalResetPublishedEpoch = 0;
         uint64 m_lastAcknowledgedCaptureRequestId = 0;
+        uint64 m_observedCameraIdentity = 0;
+        uint64 m_observedCameraCutRevision = 0;
+        bool m_hasObservedActiveCamera = false;
         bool m_temporalResetPending = false;
         bool m_prepared = false;
         bool m_renderConfigured = false;
