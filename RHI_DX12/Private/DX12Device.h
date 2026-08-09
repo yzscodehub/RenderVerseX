@@ -195,6 +195,10 @@ namespace RVX
             DX12Device* device,
             const RHIQueueSubmissionPlan& plan,
             RHIFence* terminalFence);
+        friend uint64 SubmitDX12CommandContexts(
+            DX12Device* device,
+            std::span<RHICommandContext* const> contexts,
+            RHIFence* signalFence);
 
         bool CreateFactory(bool enableDebugLayer);
         bool SelectAdapter(uint32 preferredIndex, bool allowSoftwareAdapter);

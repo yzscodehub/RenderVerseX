@@ -1429,6 +1429,54 @@ TEST(DX12Validation, UploadGatewayTransfersCopyOwnershipToGraphics)
     EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
 }
 
+TEST(DX12Validation, LargeMipTextureUploadKeepsCrossQueueTimelineAlive)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    auto* dx12Device = static_cast<DX12Device*>(device.get());
+
+    constexpr uint32 Width = 2048;
+    constexpr uint32 Height = 2048;
+    constexpr uint32 MipLevels = 12;
+    size_t byteCount = 0;
+    uint32 mipWidth = Width;
+    uint32 mipHeight = Height;
+    for (uint32 mip = 0; mip < MipLevels; ++mip)
+    {
+        byteCount += static_cast<size_t>(mipWidth) * mipHeight * 4U;
+        mipWidth = mipWidth > 1U ? mipWidth / 2U : 1U;
+        mipHeight = mipHeight > 1U ? mipHeight / 2U : 1U;
+    }
+    std::vector<uint8> pixels(byteCount, 127U);
+
+    GPUUploadService uploadService;
+    uploadService.Initialize(device.get());
+    ASSERT_TRUE(uploadService.IsInitialized());
+
+    GPUUploadTextureDesc desc;
+    desc.textureDesc =
+        RHITextureDesc::Texture2D(Width, Height, RHIFormat::RGBA8_UNORM);
+    desc.textureDesc.mipLevels = MipLevels;
+    desc.textureDesc.debugName = "DX12LargeMipOwnershipUpload";
+    desc.dataSize = pixels.size();
+    const GPUUploadTextureResult result =
+        uploadService.UploadTextureDataWithResult(desc, pixels.data());
+    ASSERT_TRUE(result.succeeded);
+    ASSERT_TRUE(result.isPending);
+    EXPECT_EQ(result.finalAccess.domain, GPUQueueDomain::Graphics);
+    EXPECT_EQ(uploadService.FlushAndWaitForUploads(), 1U);
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+
+    uploadService.Shutdown();
+    device->WaitIdle();
+    EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(
+        *dx12Device,
+        "LargeMipTextureUploadKeepsCrossQueueTimelineAlive"));
+}
+
 TEST(DX12Validation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)
 {
     RenderContextConfig config;

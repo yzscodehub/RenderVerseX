@@ -99,17 +99,30 @@ namespace RVX
             return nullptr;
         }
 
+        const uint64 mappedEnd =
+            size == RVX_WHOLE_SIZE ? m_size : offset + size;
+        if (offset > m_size || mappedEnd < offset || mappedEnd > m_size)
+        {
+            RVX_RHI_ERROR(
+                "DX12: Staging buffer map range [{}, {}) exceeds {} bytes",
+                offset, mappedEnd, m_size);
+            return nullptr;
+        }
+
         // If already mapped, return existing pointer with offset
         if (m_isMapped)
         {
+            m_mappedBegin = std::min(m_mappedBegin, offset);
+            m_mappedEnd = std::max(m_mappedEnd, mappedEnd);
             return static_cast<uint8*>(m_mappedData) + offset;
         }
 
-        // Calculate the range to map
-        uint64 endOffset = (size == RVX_WHOLE_SIZE) ? m_size : (offset + size);
-        D3D12_RANGE range = { offset, endOffset };
+        // Upload heaps are write-only from the CPU's perspective. Declaring an
+        // empty read range avoids an unnecessary driver readback/synchronization
+        // path for large texture staging allocations.
+        D3D12_RANGE readRange = { 0, 0 };
 
-        HRESULT hr = m_resource->Map(0, &range, &m_mappedData);
+        HRESULT hr = m_resource->Map(0, &readRange, &m_mappedData);
         if (FAILED(hr))
         {
             RVX_RHI_ERROR("DX12: Failed to map staging buffer, HRESULT: 0x{:08X}",
@@ -117,6 +130,8 @@ namespace RVX
             return nullptr;
         }
 
+        m_mappedBegin = offset;
+        m_mappedEnd = mappedEnd;
         m_isMapped = true;
         return static_cast<uint8*>(m_mappedData) + offset;
     }
@@ -128,11 +143,13 @@ namespace RVX
             return;
         }
 
-        // Unmap with empty range (no read back needed)
-        D3D12_RANGE emptyRange = { 0, 0 };
-        m_resource->Unmap(0, &emptyRange);
+        // The unmap range describes bytes written by the CPU, not bytes read.
+        const D3D12_RANGE writtenRange = {m_mappedBegin, m_mappedEnd};
+        m_resource->Unmap(0, &writtenRange);
 
         m_mappedData = nullptr;
+        m_mappedBegin = 0;
+        m_mappedEnd = 0;
         m_isMapped = false;
     }
 

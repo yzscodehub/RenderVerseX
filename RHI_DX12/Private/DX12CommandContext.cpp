@@ -2672,42 +2672,34 @@ namespace RVX
                              return queueRank(left) < queueRank(right);
                          });
 
-        ComPtr<ID3D12Fence> queueChainFence;
-        bool requiresQueueChain = false;
-        for (size_t i = 1; i < entries.size(); ++i)
-        {
-            requiresQueueChain |= entries[i - 1].queue != entries[i].queue;
-        }
-        if (requiresQueueChain)
-        {
-            const HRESULT createResult = device->GetD3DDevice()->CreateFence(
-                0,
-                D3D12_FENCE_FLAG_NONE,
-                IID_PPV_ARGS(&queueChainFence));
-            if (FAILED(createResult))
-            {
-                device->HandleDeviceLost(
-                    createResult,
-                    RHIDeviceFaultOperation::CommandSubmission);
-                return 0;
-            }
-        }
-
         uint64 submittedValue = 0;
         bool submissionFailed = false;
-        uint64 queueChainValue = 0;
         for (size_t i = 0; i < entries.size(); ++i)
         {
             SubmissionEntry& entry = entries[i];
             if (i > 0 && entries[i - 1].queue != entry.queue)
             {
-                const uint64 dependencyValue = ++queueChainValue;
+                const uint32 sourceQueueIndex = static_cast<uint32>(
+                    entries[i - 1].context->GetQueueType());
+                RVX_ASSERT(sourceQueueIndex <
+                           device->m_queueTimelineFences.size());
+                ID3D12Fence* queueChainFence =
+                    device->m_queueTimelineFences[sourceQueueIndex].Get();
+                const uint64 dependencyValue =
+                    device->m_queueTimelineNextValues[sourceQueueIndex]++;
+                if (!queueChainFence || dependencyValue == 0)
+                {
+                    RVX_RHI_ERROR(
+                        "SubmitDX12CommandContexts exhausted its queue timeline");
+                    submissionFailed = true;
+                    break;
+                }
                 HRESULT result = entries[i - 1].queue->Signal(
-                    queueChainFence.Get(), dependencyValue);
+                    queueChainFence, dependencyValue);
                 if (SUCCEEDED(result))
                 {
                     result = entry.queue->Wait(
-                        queueChainFence.Get(), dependencyValue);
+                        queueChainFence, dependencyValue);
                 }
                 if (FAILED(result))
                 {

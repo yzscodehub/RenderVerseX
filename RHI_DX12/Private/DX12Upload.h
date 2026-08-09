@@ -45,6 +45,8 @@ namespace RVX
         ComPtr<ID3D12Resource> m_resource;
         uint64 m_size = 0;
         void* m_mappedData = nullptr;
+        uint64 m_mappedBegin = 0;
+        uint64 m_mappedEnd = 0;
         bool m_isMapped = false;
 
         // Wrapper buffer for GetBuffer() interface
