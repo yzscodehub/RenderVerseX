@@ -3,6 +3,7 @@
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/TransientResourcePool.h"
 #include "RHI/RHIHeap.h"
+#include <deque>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -246,6 +247,11 @@ namespace RVX
         bool hasCapabilitySnapshot = false;
         std::vector<TextureResource> textures;
         std::vector<BufferResource> buffers;
+        // Compatibility query snapshots remain address-stable while a
+        // definition is being recorded. Resource vectors may reallocate when
+        // pass setup declares or imports additional resources.
+        std::deque<RHITextureDesc> textureDescSnapshots;
+        std::deque<RHIBufferDesc> bufferDescSnapshots;
         std::vector<TextureViewResource> textureViews;
         std::vector<Ref<RefCounted>> executionResources;
         std::vector<Pass> passes;
@@ -263,6 +269,20 @@ namespace RVX
         std::vector<TransientHeap> transientHeaps;
         bool enableMemoryAliasing = false;
         bool memoryAliasingRequested = false;
+
+        void AppendTextureResource(TextureResource&& resource)
+        {
+            textureDescSnapshots.push_back(resource.desc);
+            textures.push_back(std::move(resource));
+            RVX_ASSERT(textureDescSnapshots.size() == textures.size());
+        }
+
+        void AppendBufferResource(BufferResource&& resource)
+        {
+            bufferDescSnapshots.push_back(resource.desc);
+            buffers.push_back(std::move(resource));
+            RVX_ASSERT(bufferDescSnapshots.size() == buffers.size());
+        }
         
         // Aliasing statistics
         uint64 totalMemoryWithoutAliasing = 0;

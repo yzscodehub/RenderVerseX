@@ -311,6 +311,12 @@ namespace RVX
     inline bool IsTextureViewTypeCompatible(RHITextureUsage usage, RHIFormat textureFormat, const RHITextureViewDesc& desc)
     {
         const RHIFormat viewFormat = desc.format == RHIFormat::Unknown ? textureFormat : desc.format;
+        const uint32 viewFormatValue = static_cast<uint32>(viewFormat);
+        if (viewFormat == RHIFormat::Unknown ||
+            viewFormatValue >= static_cast<uint32>(RHIFormat::Count))
+        {
+            return false;
+        }
         switch (desc.type)
         {
             case RHITextureViewType::ShaderResource:

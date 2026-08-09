@@ -314,6 +314,16 @@ namespace RVX
         VkImageViewCreateInfo viewInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         viewInfo.image = m_texture->GetImage();
         viewInfo.format = ToVkFormat(m_format);
+        if (viewInfo.format == VK_FORMAT_UNDEFINED)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan: Refusing to create texture view '{}' with unresolved format: requested={}, source={}, resolved={}",
+                desc.debugName ? desc.debugName : "<unnamed>",
+                static_cast<uint32>(desc.format),
+                static_cast<uint32>(texture->GetFormat()),
+                static_cast<uint32>(m_format));
+            return;
+        }
 
         // View type based on texture dimension
         switch (texture->GetDimension())

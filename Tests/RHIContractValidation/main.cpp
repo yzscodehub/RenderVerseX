@@ -4,6 +4,7 @@
 #include "RHI/RHIDevice.h"
 #include "RHI/RHIDeviceStatus.h"
 #include "RHI/RHINativeSurface.h"
+#include "RHI/RHITexture.h"
 
 #include <gtest/gtest.h>
 
@@ -1926,6 +1927,34 @@ namespace RVX::Tests
 
         color.SetOptimizedClearDepthStencil({1.0f, 0});
         EXPECT_FALSE(IsRHIOptimizedClearValueCompatible(color));
+    }
+
+    TEST(RHIContractValidation, TextureViewFormatsFailClosedBeforeBackendCreation)
+    {
+        RHITextureViewDesc desc;
+        desc.type = RHITextureViewType::ShaderResource;
+        EXPECT_TRUE(IsTextureViewTypeCompatible(
+            RHITextureUsage::ShaderResource,
+            RHIFormat::RGBA16_FLOAT,
+            desc));
+
+        desc.format = RHIFormat::Count;
+        EXPECT_FALSE(IsTextureViewTypeCompatible(
+            RHITextureUsage::ShaderResource,
+            RHIFormat::RGBA16_FLOAT,
+            desc));
+
+        desc.format = static_cast<RHIFormat>(0xDD);
+        EXPECT_FALSE(IsTextureViewTypeCompatible(
+            RHITextureUsage::ShaderResource,
+            RHIFormat::RGBA16_FLOAT,
+            desc));
+
+        desc.format = RHIFormat::Unknown;
+        EXPECT_FALSE(IsTextureViewTypeCompatible(
+            RHITextureUsage::ShaderResource,
+            RHIFormat::Unknown,
+            desc));
     }
 
     TEST(RHIContractValidation, QueueSubmissionPlanRequiresTopologicalTerminalJoin)

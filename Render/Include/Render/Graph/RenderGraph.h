@@ -153,8 +153,10 @@ namespace RVX
         RGBufferHandle ImportBuffer(
             RHIBufferRef buffer,
             const RHIBufferAccessSnapshot& initialAccess);
+        /** @brief Query an address-stable description for this recording generation. */
         const RHITextureDesc* GetTextureDesc(
             RGTextureHandle texture) const;
+        /** @brief Query an address-stable description for this recording generation. */
         const RHIBufferDesc* GetBufferDesc(RGBufferHandle buffer) const;
         void SetExportState(
             RGTextureHandle texture,
@@ -314,7 +316,9 @@ namespace RVX
         RHIBuffer* GetBuffer(RGBufferHandle handle) const;
 
         // Get resource descriptions
+        /** @brief Pointer remains stable until Clear() invalidates the generation. */
         const RHITextureDesc* GetTextureDesc(RGTextureHandle handle) const;
+        /** @brief Pointer remains stable until Clear() invalidates the generation. */
         const RHIBufferDesc* GetBufferDesc(RGBufferHandle handle) const;
 
         // Add passes

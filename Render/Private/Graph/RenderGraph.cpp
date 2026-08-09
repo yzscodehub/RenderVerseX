@@ -1188,7 +1188,7 @@ namespace RVX
             RHIContentValidity::Invalid);
         resource.currentAccessSnapshot = resource.initialAccessSnapshot;
         resource.imported = false;
-        m_impl->textures.push_back(std::move(resource));
+        m_impl->AppendTextureResource(std::move(resource));
         return RGTextureHandle{
             static_cast<uint32>(m_impl->textures.size() - 1),
             false,
@@ -1210,7 +1210,7 @@ namespace RVX
             RHIContentValidity::Invalid);
         resource.currentAccessSnapshot = resource.initialAccessSnapshot;
         resource.imported = false;
-        m_impl->buffers.push_back(std::move(resource));
+        m_impl->AppendBufferResource(std::move(resource));
         return RGBufferHandle{
             static_cast<uint32>(m_impl->buffers.size() - 1),
             false,
@@ -1279,7 +1279,7 @@ namespace RVX
         resource.initialState = ProjectRHIResourceState(initialAccess.uniformAccess);
         resource.currentState = resource.initialState;
         resource.imported = true;
-        m_impl->textures.push_back(std::move(resource));
+        m_impl->AppendTextureResource(std::move(resource));
         return RGTextureHandle{
             static_cast<uint32>(m_impl->textures.size() - 1),
             false,
@@ -1313,7 +1313,7 @@ namespace RVX
         resource.initialState = ProjectRHIResourceState(initialAccess.uniformAccess);
         resource.currentState = resource.initialState;
         resource.imported = true;
-        m_impl->buffers.push_back(std::move(resource));
+        m_impl->AppendBufferResource(std::move(resource));
         return RGBufferHandle{
             static_cast<uint32>(m_impl->buffers.size() - 1),
             false,
@@ -1465,7 +1465,8 @@ namespace RVX
                                         m_impl->recordingGeneration) ||
             handle.index >= m_impl->textures.size())
             return nullptr;
-        return &m_impl->textures[handle.index].desc;
+        RVX_ASSERT(m_impl->textureDescSnapshots.size() == m_impl->textures.size());
+        return &m_impl->textureDescSnapshots[handle.index];
     }
 
     const RHIBufferDesc* RenderGraph::GetBufferDesc(RGBufferHandle handle) const
@@ -1477,7 +1478,8 @@ namespace RVX
                                         m_impl->recordingGeneration) ||
             handle.index >= m_impl->buffers.size())
             return nullptr;
-        return &m_impl->buffers[handle.index].desc;
+        RVX_ASSERT(m_impl->bufferDescSnapshots.size() == m_impl->buffers.size());
+        return &m_impl->bufferDescSnapshots[handle.index];
     }
 
     RHITextureView* RenderGraph::ResolveTextureView(
@@ -3452,6 +3454,8 @@ namespace RVX
         m_impl->passes.clear();
         m_impl->textures.clear();
         m_impl->buffers.clear();
+        m_impl->textureDescSnapshots.clear();
+        m_impl->bufferDescSnapshots.clear();
         m_impl->executionOrder.clear();
         m_impl->passDependencies.clear();
         m_impl->passDependents.clear();

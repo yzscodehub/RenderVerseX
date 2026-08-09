@@ -4531,6 +4531,48 @@ TEST(RenderGraphValidation, ClearInvalidatesOldHandleGenerationWithoutChangingGr
               std::string::npos);
 }
 
+TEST(RenderGraphValidation, ResourceDescriptionQueriesStayStableDuringDefinitionGrowth)
+{
+    RenderGraph graph;
+
+    RHITextureDesc firstTextureDesc =
+        RHITextureDesc::RenderTarget(320, 180, RHIFormat::RGBA16_FLOAT);
+    RHIBufferDesc firstBufferDesc;
+    firstBufferDesc.size = 4096;
+    firstBufferDesc.usage = RHIBufferUsage::ShaderResource;
+
+    const RGTextureHandle firstTexture = graph.CreateTexture(firstTextureDesc);
+    const RGBufferHandle firstBuffer = graph.CreateBuffer(firstBufferDesc);
+    const RHITextureDesc* stableTextureDesc = graph.GetTextureDesc(firstTexture);
+    const RHIBufferDesc* stableBufferDesc = graph.GetBufferDesc(firstBuffer);
+    ASSERT_NE(nullptr, stableTextureDesc);
+    ASSERT_NE(nullptr, stableBufferDesc);
+
+    // Pass setup is allowed to query an existing resource and then declare or
+    // import more resources. Those mutations must not invalidate the query.
+    for (uint32 index = 0; index < 512; ++index)
+    {
+        RHITextureDesc textureDesc = RHITextureDesc::RenderTarget(
+            16 + index,
+            16,
+            RHIFormat::RGBA8_UNORM);
+        graph.CreateTexture(textureDesc);
+
+        RHIBufferDesc bufferDesc;
+        bufferDesc.size = 64 + index;
+        bufferDesc.usage = RHIBufferUsage::UnorderedAccess;
+        graph.CreateBuffer(bufferDesc);
+    }
+
+    EXPECT_EQ(stableTextureDesc, graph.GetTextureDesc(firstTexture));
+    EXPECT_EQ(RHIFormat::RGBA16_FLOAT, stableTextureDesc->format);
+    EXPECT_EQ(320u, stableTextureDesc->width);
+    EXPECT_EQ(180u, stableTextureDesc->height);
+    EXPECT_EQ(stableBufferDesc, graph.GetBufferDesc(firstBuffer));
+    EXPECT_EQ(4096u, stableBufferDesc->size);
+    EXPECT_EQ(RHIBufferUsage::ShaderResource, stableBufferDesc->usage);
+}
+
 TEST(RenderGraphValidation, InvalidBufferUsageIsReported)
 {
     RenderGraph graph;
