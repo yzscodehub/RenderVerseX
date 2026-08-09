@@ -3264,6 +3264,155 @@ TEST(RenderGraphValidation, MultiQueuePlansCopyComputeGraphicsAndTerminalJoin)
         }));
 }
 
+TEST(RenderGraphValidation,
+     MultiQueueExportReleasesUntouchedExternalRangesToTerminal)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    graph.SetDevice(&device);
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::MultiQueue));
+
+    constexpr uint64 bufferSize = 384;
+    constexpr uint64 dirtyOffset = 96;
+    constexpr uint64 dirtySize = 192;
+    RHIBufferDesc desc;
+    desc.size = bufferSize;
+    desc.usage = RHIBufferUsage::CopyDst |
+                 RHIBufferUsage::Structured;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource = graph.ImportBuffer(
+        &buffer,
+        MakeRHIBufferAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Compute,
+            GPUQueueDomain::Compute,
+            RHIContentValidity::Valid));
+
+    struct Data
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<Data>(
+        "PartialCopyUpdate",
+        RenderGraphPassType::Copy,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                resource.Range(dirtyOffset, dirtySize),
+                RHIResourceState::CopyDest);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportAccess(
+        resource,
+        MakeRHIAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::AllGraphics,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid));
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    const RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    const auto initialRelease = std::find_if(
+        plan.queueBatches.begin(),
+        plan.queueBatches.end(),
+        [](const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+        {
+            return batch.syntheticInitialRelease &&
+                   batch.queue ==
+                       RenderGraph::DiagnosticExecutionQueue::Compute;
+        });
+    ASSERT_NE(initialRelease, plan.queueBatches.end());
+    ASSERT_NE(plan.terminalGraphicsBatchIndex, RVX_INVALID_INDEX);
+    ASSERT_LT(plan.terminalGraphicsBatchIndex, plan.queueBatches.size());
+    const auto& terminal =
+        plan.queueBatches[plan.terminalGraphicsBatchIndex];
+    EXPECT_NE(std::find(terminal.prerequisiteBatchIndices.begin(),
+                        terminal.prerequisiteBatchIndices.end(),
+                        initialRelease->batchIndex),
+              terminal.prerequisiteBatchIndices.end());
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(graph.RecordQueueSubmission(recorded));
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
+    ASSERT_EQ(recorded.ownedContexts.size(), plan.queueBatches.size());
+
+    const auto& releaseContext = *static_cast<FakeCommandContext*>(
+        recorded.ownedContexts[initialRelease->batchIndex].Get());
+    const auto& terminalContext = *static_cast<FakeCommandContext*>(
+        recorded.ownedContexts[plan.terminalGraphicsBatchIndex].Get());
+    const auto hasOwnershipRange = [](
+        const FakeCommandContext& context,
+        GPUQueueDomain before,
+        GPUQueueDomain after,
+        uint64 offset,
+        uint64 size)
+    {
+        return std::any_of(
+            context.bufferBarriers.begin(),
+            context.bufferBarriers.end(),
+            [before, after, offset, size](const RHIBufferBarrier& barrier)
+            {
+                return barrier.hasScopedAccess &&
+                       barrier.accessBefore.domain == before &&
+                       barrier.accessAfter.domain == after &&
+                       barrier.offset == offset &&
+                       barrier.size == size &&
+                       HasDependencyKind(
+                           barrier.dependencyKind,
+                           RHIDependencyKind::Ownership);
+            });
+    };
+
+    EXPECT_TRUE(hasOwnershipRange(
+        releaseContext,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy,
+        dirtyOffset,
+        dirtySize));
+    EXPECT_TRUE(hasOwnershipRange(
+        releaseContext,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Graphics,
+        0,
+        dirtyOffset));
+    EXPECT_TRUE(hasOwnershipRange(
+        releaseContext,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Graphics,
+        dirtyOffset + dirtySize,
+        bufferSize - dirtyOffset - dirtySize));
+    EXPECT_TRUE(hasOwnershipRange(
+        terminalContext,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Graphics,
+        0,
+        dirtyOffset));
+    EXPECT_TRUE(hasOwnershipRange(
+        terminalContext,
+        GPUQueueDomain::Copy,
+        GPUQueueDomain::Graphics,
+        dirtyOffset,
+        dirtySize));
+    EXPECT_TRUE(hasOwnershipRange(
+        terminalContext,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Graphics,
+        dirtyOffset + dirtySize,
+        bufferSize - dirtyOffset - dirtySize));
+}
+
 TEST(RenderGraphValidation, MultiQueueTerminalJoinsIndependentBranchesAndFoldsAliases)
 {
     FakeDevice device;

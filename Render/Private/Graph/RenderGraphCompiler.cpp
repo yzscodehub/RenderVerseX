@@ -2393,6 +2393,30 @@ namespace RVX
                     graph.passes[releasePassIndex]
                         .postTextureBarriers.push_back(std::move(barrier));
                 }
+                else
+                {
+                    const RenderGraph::DiagnosticExecutionQueue sourceQueue =
+                        ToDiagnosticQueue(current.domain);
+                    auto releaseBatch = std::find_if(
+                        graph.initialQueueReleaseBatches.begin(),
+                        graph.initialQueueReleaseBatches.end(),
+                        [sourceQueue](const InitialQueueReleaseBatch& candidate)
+                        {
+                            return candidate.queue == sourceQueue;
+                        });
+                    if (releaseBatch == graph.initialQueueReleaseBatches.end())
+                    {
+                        InitialQueueReleaseBatch batch;
+                        batch.queue = sourceQueue;
+                        graph.initialQueueReleaseBatches.push_back(
+                            std::move(batch));
+                        releaseBatch = std::prev(
+                            graph.initialQueueReleaseBatches.end());
+                    }
+                    releaseBatch->targetsTerminal = true;
+                    releaseBatch->textureBarriers.push_back(
+                        std::move(barrier));
+                }
             };
             if (resource.hasSubresourceTracking)
             {
@@ -2459,6 +2483,30 @@ namespace RVX
                 {
                     graph.passes[releasePassIndex]
                         .postBufferBarriers.push_back(std::move(barrier));
+                }
+                else
+                {
+                    const RenderGraph::DiagnosticExecutionQueue sourceQueue =
+                        ToDiagnosticQueue(current.domain);
+                    auto releaseBatch = std::find_if(
+                        graph.initialQueueReleaseBatches.begin(),
+                        graph.initialQueueReleaseBatches.end(),
+                        [sourceQueue](const InitialQueueReleaseBatch& candidate)
+                        {
+                            return candidate.queue == sourceQueue;
+                        });
+                    if (releaseBatch == graph.initialQueueReleaseBatches.end())
+                    {
+                        InitialQueueReleaseBatch batch;
+                        batch.queue = sourceQueue;
+                        graph.initialQueueReleaseBatches.push_back(
+                            std::move(batch));
+                        releaseBatch = std::prev(
+                            graph.initialQueueReleaseBatches.end());
+                    }
+                    releaseBatch->targetsTerminal = true;
+                    releaseBatch->bufferBarriers.push_back(
+                        std::move(barrier));
                 }
             };
             if (resource.hasRangeTracking)

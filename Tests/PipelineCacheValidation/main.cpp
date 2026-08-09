@@ -7534,7 +7534,7 @@ TEST_F(PipelineCacheValidationFixture,
         ASSERT_NE(entry, nullptr);
         EXPECT_EQ(RVX::RHIBindingType::ShaderResourceBuffer, entry->type);
         EXPECT_EQ(RVX::RHIShaderStage::Vertex, entry->visibility);
-        EXPECT_EQ(RVX::RHIResourceDataVolatility::Immutable,
+        EXPECT_EQ(RVX::RHIResourceDataVolatility::StableWhileBound,
                   entry->resourceDataVolatility);
     }
 

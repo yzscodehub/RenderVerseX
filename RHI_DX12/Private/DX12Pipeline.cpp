@@ -17,17 +17,31 @@ namespace RVX
         D3D12_DESCRIPTOR_RANGE_FLAGS ToDX12DescriptorRangeDataFlags(
             const RHIBindingLayoutEntry& entry)
         {
-            return entry.resourceDataVolatility == RHIResourceDataVolatility::Immutable
-                ? D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC
-                : D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+            switch (entry.resourceDataVolatility)
+            {
+                case RHIResourceDataVolatility::Immutable:
+                    return D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+                case RHIResourceDataVolatility::StableWhileBound:
+                    return D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+                case RHIResourceDataVolatility::Mutable:
+                default:
+                    return D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+            }
         }
 
         D3D12_ROOT_DESCRIPTOR_FLAGS ToDX12RootDescriptorDataFlags(
             const RHIBindingLayoutEntry& entry)
         {
-            return entry.resourceDataVolatility == RHIResourceDataVolatility::Immutable
-                ? D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC
-                : D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE;
+            switch (entry.resourceDataVolatility)
+            {
+                case RHIResourceDataVolatility::Immutable:
+                    return D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC;
+                case RHIResourceDataVolatility::StableWhileBound:
+                    return D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+                case RHIResourceDataVolatility::Mutable:
+                default:
+                    return D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE;
+            }
         }
     } // namespace
 

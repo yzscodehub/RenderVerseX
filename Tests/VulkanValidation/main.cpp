@@ -1,6 +1,7 @@
 #include "Common/GpuTestUtils.h"
 #include "Core/Core.h"
 #include "Render/Context/RenderContext.h"
+#include "Render/Graph/RenderGraph.h"
 #include "Render/GPUUploadService.h"
 #include "RHI/RHI.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
@@ -1165,6 +1166,114 @@ TEST(VulkanValidation, QueueSubmissionPlanExecutesCopyComputeGraphicsDag)
         device->SubmitQueuePlan(plan, terminalFence.Get());
     ASSERT_NE(submittedValue, 0u);
     device->WaitForFence(terminalFence.Get(), submittedValue);
+    device->WaitIdle();
+
+    const VulkanValidationMessageCounts validationAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(validationAfter.errors, validationBefore.errors);
+    EXPECT_EQ(validationAfter.warnings, validationBefore.warnings);
+}
+
+TEST(VulkanValidation,
+     RenderGraphExportReleasesUntouchedComputeOwnedBufferRanges)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+    ASSERT_TRUE(device->GetCapabilities().supportsQueueSubmissionPlan);
+
+    auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
+    if (vulkanDevice->GetComputeQueueFamily() ==
+        vulkanDevice->GetGraphicsQueueFamily())
+    {
+        GTEST_SKIP() << "Adapter has no dedicated Compute queue family";
+    }
+    const VulkanValidationMessageCounts validationBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    constexpr uint64 bufferSize = 384;
+    constexpr uint64 dirtyOffset = 96;
+    constexpr uint64 dirtySize = 192;
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = bufferSize;
+    bufferDesc.usage = RHIBufferUsage::CopyDst |
+                       RHIBufferUsage::Structured;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.stride = sizeof(uint32);
+    bufferDesc.debugName = "VulkanExternalRangeExport";
+    RHIBufferRef buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(buffer.Get(), nullptr);
+
+    const RHIAccessSnapshot undefinedCompute = MakeRHIAccessSnapshot(
+        RHIResourceState::Undefined,
+        RHIShaderStage::None,
+        GPUQueueDomain::Compute,
+        RHIContentValidity::Invalid);
+    const RHIAccessSnapshot computeRead = MakeRHIAccessSnapshot(
+        RHIResourceState::ShaderResource,
+        RHIShaderStage::Compute,
+        GPUQueueDomain::Compute,
+        RHIContentValidity::Valid);
+    RHICommandContextRef establishOwner =
+        device->CreateCommandContext(RHICommandQueueType::Compute);
+    ASSERT_NE(establishOwner.Get(), nullptr);
+    establishOwner->Begin();
+    establishOwner->BufferBarrier(MakeRHIBufferBarrier(
+        buffer.Get(),
+        undefinedCompute,
+        computeRead,
+        0,
+        RVX_WHOLE_SIZE,
+        RHIDiscardIntent::Discard));
+    establishOwner->End();
+    RHIFenceRef establishFence = device->CreateFence(0);
+    ASSERT_NE(establishFence.Get(), nullptr);
+    const uint64 establishValue =
+        device->SubmitCommandContext(establishOwner.Get(),
+                                     establishFence.Get());
+    ASSERT_NE(establishValue, 0u);
+    device->WaitForFence(establishFence.Get(), establishValue);
+
+    RenderGraph graph;
+    graph.SetDevice(device.get());
+    ASSERT_TRUE(graph.SetQueueExecutionMode(
+        RenderGraph::QueueExecutionMode::MultiQueue));
+    const RGBufferHandle resource = graph.ImportBuffer(
+        buffer.Get(), RHIBufferAccessSnapshot{computeRead, {}});
+    struct Data
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<Data>(
+        "VulkanPartialCopyUpdate",
+        RenderGraphPassType::Copy,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                resource.Range(dirtyOffset, dirtySize),
+                RHIResourceState::CopyDest);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportAccess(
+        resource,
+        MakeRHIAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::AllGraphics,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid));
+    graph.Compile();
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(graph.RecordQueueSubmission(recorded));
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
+    RHIFenceRef terminalFence = device->CreateFence(0);
+    ASSERT_NE(terminalFence.Get(), nullptr);
+    const uint64 terminalValue =
+        device->SubmitQueuePlan(recorded.plan, terminalFence.Get());
+    ASSERT_NE(terminalValue, 0u);
+    device->WaitForFence(terminalFence.Get(), terminalValue);
     device->WaitIdle();
 
     const VulkanValidationMessageCounts validationAfter =

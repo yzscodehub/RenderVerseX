@@ -191,6 +191,7 @@ namespace RVX
         std::vector<uint32> targetPassIndices;
         std::vector<RHITextureBarrier> textureBarriers;
         std::vector<RHIBufferBarrier> bufferBarriers;
+        bool targetsTerminal = false;
     };
 
     struct RenderGraphImpl

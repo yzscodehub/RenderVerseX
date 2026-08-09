@@ -442,6 +442,16 @@ namespace RVX::Tests
             RHIResourceDataVolatility::Immutable);
         EXPECT_TRUE(ValidateRHIDescriptorSetLayoutDesc(immutableReadLayout));
 
+        RHIDescriptorSetLayoutDesc stableWhileBoundReadLayout;
+        stableWhileBoundReadLayout.AddBinding(
+            0,
+            RHIBindingType::ShaderResourceBuffer,
+            RHIShaderStage::Vertex,
+            1,
+            RHIResourceDataVolatility::StableWhileBound);
+        EXPECT_TRUE(ValidateRHIDescriptorSetLayoutDesc(
+            stableWhileBoundReadLayout));
+
         RHIDescriptorSetLayoutDesc invalidWritableLayout;
         invalidWritableLayout.AddBinding(
             0,
@@ -453,6 +463,16 @@ namespace RVX::Tests
             ValidateRHIDescriptorSetLayoutDesc(invalidWritableLayout);
         EXPECT_FALSE(validation);
         EXPECT_EQ(validation.code, RHIDescriptorValidationCode::InvalidLayout);
+
+        RHIDescriptorSetLayoutDesc invalidStableWritableLayout;
+        invalidStableWritableLayout.AddBinding(
+            0,
+            RHIBindingType::StorageBuffer,
+            RHIShaderStage::Compute,
+            1,
+            RHIResourceDataVolatility::StableWhileBound);
+        EXPECT_FALSE(ValidateRHIDescriptorSetLayoutDesc(
+            invalidStableWritableLayout));
 
         RHICapabilities capabilities = MakeValidCapabilities(RHIBackendType::Vulkan);
         capabilities.supportsDynamicDescriptorOffsets = false;

@@ -224,6 +224,10 @@ namespace RVX
         m_lastFaultOperation.store(RHIDeviceFaultOperation::None,
                                    std::memory_order_release);
         m_faultSequence.store(0, std::memory_order_release);
+        m_frameFenceValues.fill(0);
+        m_nextFrameFenceValue = 1;
+        m_frameIndex = 0;
+        m_queueTimelineNextValues = {1, 1, 1};
         {
             std::lock_guard lock(m_deviceFaultMutex);
             m_deviceFaultMessage.clear();
@@ -269,6 +273,15 @@ namespace RVX
 
         // Create frame fence
         DX12_CHECK(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_frameFence)));
+        for (uint32 queueIndex = 0;
+             queueIndex < static_cast<uint32>(m_queueTimelineFences.size());
+             ++queueIndex)
+        {
+            DX12_CHECK(m_device->CreateFence(
+                0,
+                D3D12_FENCE_FLAG_NONE,
+                IID_PPV_ARGS(&m_queueTimelineFences[queueIndex])));
+        }
         m_fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!m_fenceEvent)
         {
@@ -334,6 +347,10 @@ namespace RVX
         m_memoryAllocator.Reset();
         #endif
 
+        for (ComPtr<ID3D12Fence>& timelineFence : m_queueTimelineFences)
+        {
+            timelineFence.Reset();
+        }
         m_frameFence.Reset();
         m_copyQueue.Reset();
         m_computeQueue.Reset();
@@ -1311,7 +1328,7 @@ namespace RVX
             return;
         }
         // Signal fence for this frame
-        m_frameFenceValues[m_frameIndex] = m_frameFence->GetCompletedValue() + 1;
+        m_frameFenceValues[m_frameIndex] = m_nextFrameFenceValue++;
         const HRESULT signalResult =
             m_graphicsQueue->Signal(m_frameFence.Get(),
                                     m_frameFenceValues[m_frameIndex]);
@@ -1338,7 +1355,7 @@ namespace RVX
                               RHIDeviceRuntimeStatus::Ready)
                 return false;
 
-            uint64 fenceValue = m_frameFence->GetCompletedValue() + 1;
+            const uint64 fenceValue = m_nextFrameFenceValue++;
             HRESULT result = queue->Signal(m_frameFence.Get(), fenceValue);
             if (FAILED(result))
             {
@@ -1642,17 +1659,20 @@ namespace RVX
 
     uint64 DX12Device::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
     {
+        std::lock_guard lock(m_queueSubmissionMutex);
         return SubmitDX12CommandContext(this, context, signalFence);
     }
 
     uint64 DX12Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
+        std::lock_guard lock(m_queueSubmissionMutex);
         return SubmitDX12CommandContexts(this, contexts, signalFence);
     }
 
     uint64 DX12Device::SubmitQueuePlan(const RHIQueueSubmissionPlan& plan,
                                        RHIFence* terminalFence)
     {
+        std::lock_guard lock(m_queueSubmissionMutex);
         return SubmitDX12QueuePlan(this, plan, terminalFence);
     }
 

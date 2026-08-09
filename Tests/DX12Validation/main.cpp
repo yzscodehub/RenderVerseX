@@ -1307,6 +1307,97 @@ TEST(DX12Validation, QueueSubmissionPlanExecutesCopyComputeGraphicsDag)
     EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
 }
 
+TEST(DX12Validation, QueueSubmissionPlanTransitionsScopedShaderResourceAcrossGraphicsCompute)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    ASSERT_TRUE(device->GetCapabilities().supportsQueueSubmissionPlan);
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+    ASSERT_TRUE(ClearDX12InfoQueue(
+        *dx12Device,
+        "QueueSubmissionPlanTransitionsScopedShaderResourceAcrossGraphicsCompute"));
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 256u;
+    bufferDesc.usage = RHIBufferUsage::ShaderResource;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.debugName = "DX12ScopedQueueShaderResource";
+    RHIBufferRef buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(buffer.Get(), nullptr);
+
+    const RHIAccessSnapshot commonAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::Common,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics);
+    const RHIAccessSnapshot graphicsRead = MakeRHIAccessSnapshot(
+        RHIResourceState::ShaderResource,
+        RHIShaderStage::Pixel,
+        GPUQueueDomain::Graphics);
+    const RHIAccessSnapshot computeRead = MakeRHIAccessSnapshot(
+        RHIResourceState::ShaderResource,
+        RHIShaderStage::Compute,
+        GPUQueueDomain::Compute);
+
+    RHIFenceRef terminalFence = device->CreateFence(0);
+    ASSERT_NE(terminalFence.Get(), nullptr);
+    std::vector<RHICommandContextRef> retainedContexts;
+    retainedContexts.reserve(24u);
+    uint64 submittedValue = 0;
+    for (uint32 submissionIndex = 0; submissionIndex < 8u; ++submissionIndex)
+    {
+        RHICommandContextRef graphicsRelease =
+            device->CreateCommandContext(RHICommandQueueType::Graphics);
+        RHICommandContextRef compute =
+            device->CreateCommandContext(RHICommandQueueType::Compute);
+        RHICommandContextRef graphicsAcquire =
+            device->CreateCommandContext(RHICommandQueueType::Graphics);
+        ASSERT_NE(graphicsRelease.Get(), nullptr);
+        ASSERT_NE(compute.Get(), nullptr);
+        ASSERT_NE(graphicsAcquire.Get(), nullptr);
+
+        graphicsRelease->Begin();
+        graphicsRelease->BufferBarrier(buffer.Get(), commonAccess, graphicsRead);
+        graphicsRelease->BufferBarrier(buffer.Get(), graphicsRead, computeRead);
+        graphicsRelease->End();
+
+        compute->Begin();
+        compute->BufferBarrier(buffer.Get(), graphicsRead, computeRead);
+        compute->BufferBarrier(buffer.Get(), computeRead, graphicsRead);
+        compute->End();
+
+        graphicsAcquire->Begin();
+        graphicsAcquire->BufferBarrier(buffer.Get(), computeRead, graphicsRead);
+        graphicsAcquire->BufferBarrier(buffer.Get(), graphicsRead, commonAccess);
+        graphicsAcquire->End();
+
+        RHIQueueSubmissionPlan plan;
+        plan.batches.push_back(
+            {RHICommandQueueType::Graphics, {graphicsRelease.Get()}, {}});
+        plan.batches.push_back(
+            {RHICommandQueueType::Compute, {compute.Get()}, {0u}});
+        plan.batches.push_back(
+            {RHICommandQueueType::Graphics, {graphicsAcquire.Get()}, {1u}});
+        plan.terminalGraphicsBatchIndex = 2u;
+        ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(plan));
+
+        submittedValue = device->SubmitQueuePlan(plan, terminalFence.Get());
+        ASSERT_NE(submittedValue, 0u);
+        retainedContexts.push_back(std::move(graphicsRelease));
+        retainedContexts.push_back(std::move(compute));
+        retainedContexts.push_back(std::move(graphicsAcquire));
+    }
+
+    device->WaitForFence(terminalFence.Get(), submittedValue);
+    device->WaitIdle();
+    EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(
+        *dx12Device,
+        "QueueSubmissionPlanTransitionsScopedShaderResourceAcrossGraphicsCompute"));
+}
+
 TEST(DX12Validation, UploadGatewayTransfersCopyOwnershipToGraphics)
 {
     RHIDeviceDesc deviceDesc;

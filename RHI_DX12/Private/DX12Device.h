@@ -191,6 +191,11 @@ namespace RVX
         static RootSignatureCacheKey BuildRootSignatureKey(const RHIPipelineLayoutDesc& desc);
 
     private:
+        friend uint64 SubmitDX12QueuePlan(
+            DX12Device* device,
+            const RHIQueueSubmissionPlan& plan,
+            RHIFence* terminalFence);
+
         bool CreateFactory(bool enableDebugLayer);
         bool SelectAdapter(uint32 preferredIndex, bool allowSoftwareAdapter);
         bool CreateDevice(bool enableGPUValidation);
@@ -209,6 +214,13 @@ namespace RVX
         ComPtr<ID3D12CommandQueue> m_computeQueue;
         ComPtr<ID3D12CommandQueue> m_copyQueue;
 
+        // Queue-plan synchronization uses one device-lifetime timeline per
+        // source queue. A queued GPU wait returns immediately, so the fence
+        // object must outlive every outstanding plan that references it.
+        std::array<ComPtr<ID3D12Fence>, 3> m_queueTimelineFences;
+        std::array<uint64, 3> m_queueTimelineNextValues = {1, 1, 1};
+        std::mutex m_queueSubmissionMutex;
+
         // Command signatures keyed by their semantic payload and state effects.
         std::unordered_map<RHIIndirectCommandLayout,
                            ComPtr<ID3D12CommandSignature>,
@@ -219,6 +231,7 @@ namespace RVX
         ComPtr<ID3D12Fence> m_frameFence;
         HANDLE m_fenceEvent = nullptr;
         std::array<uint64, RVX_MAX_FRAME_COUNT> m_frameFenceValues = {};
+        uint64 m_nextFrameFenceValue = 1;
         uint32 m_frameIndex = 0;
 
         // Memory Allocator

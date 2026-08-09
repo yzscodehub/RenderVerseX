@@ -10,11 +10,12 @@
 
 namespace RVX
 {
-    /** @brief Describes whether the resource contents referenced by a descriptor may change. */
+    /** @brief Describes how long descriptor-referenced resource data remains stable. */
     enum class RHIResourceDataVolatility : uint8
     {
         Mutable = 0,
-        Immutable
+        Immutable,
+        StableWhileBound
     };
 
     // =============================================================================
@@ -396,7 +397,7 @@ namespace RVX
                  entry.type == RHIBindingType::StorageBuffer ||
                  entry.type == RHIBindingType::DynamicStorageBuffer ||
                  entry.type == RHIBindingType::StorageTexture) &&
-                entry.resourceDataVolatility == RHIResourceDataVolatility::Immutable)
+                entry.resourceDataVolatility != RHIResourceDataVolatility::Mutable)
             {
                 return RHIDescriptorValidationFail(
                     "dynamic and writable descriptor resources must use mutable data volatility",

@@ -525,6 +525,27 @@ namespace RVX
                 : MakeRHIAccessSnapshot(state);
         }
 
+        D3D12_RESOURCE_STATES ToD3D12LegacyResourceState(
+            RHIResourceState state,
+            bool hasScopedAccess,
+            const RHIAccessSnapshot& scopedAccess)
+        {
+            if (!hasScopedAccess || state != RHIResourceState::ShaderResource)
+            {
+                return ToD3D12ResourceState(state);
+            }
+
+            // A legacy compute command list rejects PIXEL_SHADER_RESOURCE.
+            // Graphics root descriptor tables, however, are emitted with broad
+            // shader visibility and the debug layer requires both read bits at
+            // bind time even when the graph access names one graphics stage.
+            // Queue-domain projection therefore preserves the established
+            // all-graphics state while narrowing only native compute work.
+            return scopedAccess.domain == GPUQueueDomain::Compute
+                ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+                : ToD3D12ResourceState(state);
+        }
+
         void ResolveEnhancedBarrierAccess(
             const RHIAccessSnapshot& before,
             const RHIAccessSnapshot& after,
@@ -996,7 +1017,13 @@ namespace RVX
             return;
         }
 
-        if (legacyBefore == legacyAfter)
+        const D3D12_RESOURCE_STATES nativeBefore =
+            ToD3D12LegacyResourceState(
+                legacyBefore, barrier.hasScopedAccess, scopedBefore);
+        const D3D12_RESOURCE_STATES nativeAfter =
+            ToD3D12LegacyResourceState(
+                legacyAfter, barrier.hasScopedAccess, scopedAfter);
+        if (nativeBefore == nativeAfter)
         {
             if (!barrier.hasScopedAccess ||
                 !HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory) ||
@@ -1021,8 +1048,8 @@ namespace RVX
         d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
         d3dBarrier.Transition.pResource = dx12Buffer->GetResource();
         d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(legacyBefore);
-        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(legacyAfter);
+        d3dBarrier.Transition.StateBefore = nativeBefore;
+        d3dBarrier.Transition.StateAfter = nativeAfter;
 
         m_pendingLegacyBarriers.push_back(d3dBarrier);
     }
@@ -1133,7 +1160,13 @@ namespace RVX
             return;
         }
 
-        if (legacyBefore == legacyAfter)
+        const D3D12_RESOURCE_STATES nativeBefore =
+            ToD3D12LegacyResourceState(
+                legacyBefore, barrier.hasScopedAccess, scopedBefore);
+        const D3D12_RESOURCE_STATES nativeAfter =
+            ToD3D12LegacyResourceState(
+                legacyAfter, barrier.hasScopedAccess, scopedAfter);
+        if (nativeBefore == nativeAfter)
         {
             if (!barrier.hasScopedAccess ||
                 !HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory) ||
@@ -1157,8 +1190,8 @@ namespace RVX
         d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
         d3dBarrier.Transition.pResource = dx12Texture->GetResource();
-        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(legacyBefore);
-        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(legacyAfter);
+        d3dBarrier.Transition.StateBefore = nativeBefore;
+        d3dBarrier.Transition.StateAfter = nativeAfter;
 
         // Handle subresource range
         const auto& range = barrier.subresourceRange;
@@ -2756,7 +2789,8 @@ namespace RVX
             ID3D12CommandQueue* queue = nullptr;
             std::vector<DX12CommandContext*> contexts;
             std::vector<ID3D12CommandList*> commandLists;
-            ComPtr<ID3D12Fence> completionFence;
+            ID3D12Fence* completionFence = nullptr;
+            uint64 completionValue = 0;
         };
 
         std::vector<BatchState> batches(plan.batches.size());
@@ -2798,17 +2832,12 @@ namespace RVX
 
             if (needsCrossQueueSignal[batchIndex] != 0)
             {
-                const HRESULT createResult = device->GetD3DDevice()->CreateFence(
-                    0,
-                    D3D12_FENCE_FLAG_NONE,
-                    IID_PPV_ARGS(&batch.completionFence));
-                if (FAILED(createResult))
-                {
-                    device->HandleDeviceLost(
-                        createResult,
-                        RHIDeviceFaultOperation::CommandSubmission);
-                    return 0;
-                }
+                const uint32 queueIndex = static_cast<uint32>(source.queueType);
+                RVX_ASSERT(queueIndex < device->m_queueTimelineFences.size());
+                batch.completionFence =
+                    device->m_queueTimelineFences[queueIndex].Get();
+                batch.completionValue =
+                    device->m_queueTimelineNextValues[queueIndex]++;
             }
         }
 
@@ -2837,7 +2866,8 @@ namespace RVX
                 {
                     continue;
                 }
-                if (!prerequisite.completionFence)
+                if (!prerequisite.completionFence ||
+                    prerequisite.completionValue == 0)
                 {
                     RVX_RHI_ERROR(
                         "SubmitDX12QueuePlan found a cross-queue dependency without a source signal");
@@ -2845,7 +2875,8 @@ namespace RVX
                     return 0;
                 }
                 const HRESULT waitResult = batch.queue->Wait(
-                    prerequisite.completionFence.Get(), 1);
+                    prerequisite.completionFence,
+                    prerequisite.completionValue);
                 if (FAILED(waitResult))
                 {
                     device->HandleDeviceLost(
@@ -2860,10 +2891,11 @@ namespace RVX
                 static_cast<UINT>(batch.commandLists.size()),
                 batch.commandLists.data());
 
-            if (batch.completionFence)
+            if (batch.completionFence && batch.completionValue != 0)
             {
                 const HRESULT signalResult = batch.queue->Signal(
-                    batch.completionFence.Get(), 1);
+                    batch.completionFence,
+                    batch.completionValue);
                 if (FAILED(signalResult))
                 {
                     device->HandleDeviceLost(

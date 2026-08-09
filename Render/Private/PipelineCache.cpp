@@ -2617,17 +2617,17 @@ bool PipelineCache::CreateGPUSceneRasterPipelineLayout()
     RHIDescriptorSetLayoutDesc objectSetDesc;
     objectSetDesc.debugName = "GPUSceneRasterObjectSetLayout";
     // b0 deliberately preserves the complete ObjectConstants prefix for the
-    // DefaultLit pixel shader.  The three immutable VS SRVs are an independent
-    // replacement for Tier1's t1 instance table.
+    // DefaultLit pixel shader. The three VS SRVs remain stable for one bound
+    // execution but can be updated or transition between later submissions.
     objectSetDesc
         .AddDynamicBinding(0, RHIBindingType::UniformBuffer,
                            RHIShaderStage::Vertex | RHIShaderStage::Pixel)
         .AddBinding(1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex,
-                    1, RHIResourceDataVolatility::Immutable)
+                    1, RHIResourceDataVolatility::StableWhileBound)
         .AddBinding(2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex,
-                    1, RHIResourceDataVolatility::Immutable)
+                    1, RHIResourceDataVolatility::StableWhileBound)
         .AddBinding(3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex,
-                    1, RHIResourceDataVolatility::Immutable);
+                    1, RHIResourceDataVolatility::StableWhileBound);
     m_gpuSceneRasterObjectSetLayout =
         m_device->CreateDescriptorSetLayout(objectSetDesc);
     if (!m_gpuSceneRasterObjectSetLayout)

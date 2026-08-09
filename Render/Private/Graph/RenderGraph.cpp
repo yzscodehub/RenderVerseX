@@ -831,6 +831,13 @@ namespace RVX
                                         targetPassIndex);
                     }
                 }
+                if (release.targetsTerminal &&
+                    plan.terminalGraphicsBatchIndex != RVX_INVALID_INDEX)
+                {
+                    addPrerequisite(releaseIndex,
+                                    plan.terminalGraphicsBatchIndex,
+                                    RVX_INVALID_INDEX);
+                }
 
                 const auto sameQueueBatch = std::find_if(
                     plan.queueBatches.begin() + releaseCount,
