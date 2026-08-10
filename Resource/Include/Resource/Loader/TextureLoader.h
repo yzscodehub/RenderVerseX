@@ -16,6 +16,19 @@
 
 namespace RVX::Resource
 {
+    struct DecodedTextureData
+    {
+        std::shared_ptr<const std::vector<uint8_t>> bytes;
+        TextureMetadata metadata;
+        std::string sourceKey;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return bytes && !bytes->empty() && metadata.width != 0 &&
+                   metadata.height != 0;
+        }
+    };
+
     enum class TextureLoadStatus : uint8_t
     {
         None,
@@ -71,6 +84,31 @@ namespace RVX::Resource
                                             const std::string& modelPath,
                                             const Diagnostics::TraceContext& traceContext = {},
                                             const std::string& resourceIdentityBase = {});
+
+        /** @brief Create one stable logical texture initialized from engine fallback bytes. */
+        TextureResource* CreateStreamingPlaceholder(
+            TextureReference& ref,
+            const std::string& modelPath,
+            const std::string& resourceIdentityBase);
+
+        /** @brief True only for encoded source images that require runtime decode. */
+        [[nodiscard]] bool RequiresDeferredDecode(
+            const TextureReference& ref) const;
+
+        /** @brief Header-only decoded-size estimate used before budget admission. */
+        bool EstimateDecodedByteSize(
+            const TextureReference& ref,
+            const std::string& modelPath,
+            uint64& outBytes,
+            std::string& outError) const;
+
+        /** @brief Decode captured source bytes without cache/registry publication. */
+        bool DecodeReference(
+            const TextureReference& ref,
+            const std::string& modelPath,
+            const Diagnostics::TraceContext& traceContext,
+            DecodedTextureData& outData,
+            std::string& outError);
 
         TextureLoadStatus GetLastLoadStatus() const { return m_lastLoadStatus; }
         const std::string& GetLastLoadError() const { return m_lastLoadError; }

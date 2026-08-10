@@ -3,6 +3,7 @@
 #include "Core/Assert.h"
 #include "Core/Log.h"
 #include "Resource/RenderUploadRequestBuilder.h"
+#include "Resource/Types/ModelResource.h"
 
 #include <algorithm>
 #include <unordered_set>
@@ -89,6 +90,7 @@ namespace
         m_localTerminalRequests.clear();
         m_retainedRequests.clear();
         m_trackedResources.clear();
+        m_streamingModels.clear();
         m_gateway = nullptr;
         m_initialized = false;
         m_updateThreadId = {};
@@ -113,6 +115,7 @@ namespace
         {
             ProcessPendingResources();
             ProcessPendingUploads();
+            ProcessModelTextureStreaming();
         }
     }
 
@@ -181,6 +184,20 @@ namespace
             return;
 
         m_renderShuttingDown = true;
+        for (const ResourceHandle<ModelResource>& model : m_streamingModels)
+        {
+            if (model)
+                model->CancelTextureStreaming();
+        }
+        for (const ResourceHandle<ModelResource>& model : m_streamingModels)
+        {
+            if (model)
+            {
+                ResourceManager::Get().CancelModelTextureStreaming(
+                    model.GetId());
+            }
+        }
+        m_streamingModels.clear();
         m_pendingResources.clear();
         for (PendingUpload& pending : m_pendingUploads)
         {
@@ -370,6 +387,22 @@ namespace
                 break;
             case ResourceLifecycleEventType::BeforeUnload:
                 ++m_renderStats.unloadEvents;
+                if (event.resource &&
+                    event.resource->GetType() == ResourceType::Model)
+                {
+                    auto* model = static_cast<ModelResource*>(
+                        event.resource.Get());
+                    model->CancelTextureStreaming();
+                    ResourceManager::Get().CancelModelTextureStreaming(
+                        event.resourceId);
+                    std::erase_if(
+                        m_streamingModels,
+                        [id = event.resourceId](
+                            const ResourceHandle<ModelResource>& value)
+                        {
+                            return !value || value.GetId() == id;
+                        });
+                }
                 ReleaseAsset(AssetId{event.resourceId});
                 break;
         }
@@ -396,6 +429,13 @@ namespace
             rootResource.GetId() == InvalidResourceId)
         {
             return false;
+        }
+
+        if (rootResource->GetType() == ResourceType::Model)
+        {
+            TrackModelTextureStreaming(
+                ResourceHandle<ModelResource>(
+                    static_cast<ModelResource*>(rootResource.Get())));
         }
 
         const uint64 sourceRevision = m_nextSourceRevision++;
@@ -497,6 +537,216 @@ namespace
         return renderResourceFound;
     }
 
+    void ResourceSubsystem::TrackModelTextureStreaming(
+        ResourceHandle<ModelResource> model)
+    {
+        if (!model ||
+            !model->GetTextureStreamingSnapshot().HasStreamingTextures())
+        {
+            return;
+        }
+        const auto existing = std::find_if(
+            m_streamingModels.begin(),
+            m_streamingModels.end(),
+            [id = model.GetId()](const ResourceHandle<ModelResource>& value)
+            {
+                return value && value.GetId() == id;
+            });
+        if (existing == m_streamingModels.end())
+            m_streamingModels.push_back(std::move(model));
+    }
+
+    void ResourceSubsystem::FailModelTextureStreamingForAsset(
+        AssetId assetId,
+        const std::string& reason)
+    {
+        for (const ResourceHandle<ModelResource>& model : m_streamingModels)
+        {
+            if (!model)
+                continue;
+            const std::vector<ResourceHandle<TextureResource>> textures =
+                model->GetStreamingTextures();
+            const bool referencesAsset = std::any_of(
+                textures.begin(),
+                textures.end(),
+                [assetId](const ResourceHandle<TextureResource>& texture)
+                {
+                    return texture && texture.GetId() == assetId.value;
+                });
+            if (referencesAsset)
+            {
+                if (!ResourceManager::Get()
+                         .CompleteModelTexturePublication(assetId.value,
+                                                          false,
+                                                          reason))
+                {
+                    model->MarkTextureStreamingFailed(reason);
+                }
+            }
+        }
+    }
+
+    void ResourceSubsystem::ProcessModelTextureStreaming()
+    {
+        if (m_gateway == nullptr)
+            return;
+
+        auto isReady = [this](AssetId assetId,
+                              RenderResourceKind kind,
+                              bool requireNoReplacement,
+                              bool& failed)
+        {
+            const RenderResourceResolveResult resolved =
+                ResolveRenderResource(assetId, kind);
+            if (resolved.code == RenderResourceResolveCode::NotFound)
+                return false;
+            if (resolved.code != RenderResourceResolveCode::Resolved ||
+                resolved.status.code != RenderResourceStatusCode::Current ||
+                resolved.status.state == RenderResourcePublicState::Failed ||
+                resolved.status.state == RenderResourcePublicState::Released ||
+                (resolved.status.failure != RenderResourceFailureCode::None &&
+                 resolved.status.replacementState ==
+                     RenderResourceReplacementState::None))
+            {
+                failed = true;
+                return false;
+            }
+            return resolved.status.state == RenderResourcePublicState::GPUReady &&
+                   (!requireNoReplacement ||
+                    resolved.status.replacementState ==
+                        RenderResourceReplacementState::None);
+        };
+        auto hasLocalPublication = [this](AssetId assetId)
+        {
+            const bool pendingResource = std::any_of(
+                m_pendingResources.begin(),
+                m_pendingResources.end(),
+                [assetId](const PendingResource& value)
+                {
+                    return value.assetId == assetId;
+                });
+            const bool pendingUpload = std::any_of(
+                m_pendingUploads.begin(),
+                m_pendingUploads.end(),
+                [assetId](const PendingUpload& value)
+                {
+                    return value.assetId == assetId;
+                });
+            const bool retained = std::any_of(
+                m_retainedRequests.begin(),
+                m_retainedRequests.end(),
+                [assetId](const auto& value)
+                {
+                    return value.second.assetId == assetId;
+                });
+            return pendingResource || pendingUpload || retained;
+        };
+
+        ResourceManager& manager = ResourceManager::Get();
+        const std::vector<ResourceHandle<TextureResource>> publications =
+            manager.GetPendingModelTexturePublications();
+        for (const ResourceHandle<TextureResource>& texture : publications)
+        {
+            if (!texture)
+                continue;
+            const AssetId textureAsset{texture.GetId()};
+            if (hasLocalPublication(textureAsset))
+                continue;
+
+            const RenderResourceResolveResult resolved =
+                ResolveRenderResource(textureAsset,
+                                      RenderResourceKind::Texture);
+            if (resolved.code == RenderResourceResolveCode::NotFound)
+            {
+                static_cast<void>(manager.CompleteModelTexturePublication(
+                    texture.GetId(),
+                    false,
+                    "A streamed texture publication lost its render resource"));
+                continue;
+            }
+
+            bool failed = false;
+            const bool ready = isReady(textureAsset,
+                                       RenderResourceKind::Texture,
+                                       true,
+                                       failed);
+            if (failed)
+            {
+                static_cast<void>(manager.CompleteModelTexturePublication(
+                    texture.GetId(),
+                    false,
+                    "A streamed texture replacement failed on Render"));
+            }
+            else if (ready)
+            {
+                static_cast<void>(manager.CompleteModelTexturePublication(
+                    texture.GetId(), true));
+            }
+        }
+
+        size_t index = 0;
+        while (index < m_streamingModels.size())
+        {
+            ResourceHandle<ModelResource>& model = m_streamingModels[index];
+            if (!model)
+            {
+                m_streamingModels.erase(m_streamingModels.begin() + index);
+                continue;
+            }
+
+            const ModelTextureStreamingSnapshot snapshot =
+                model->GetTextureStreamingSnapshot();
+            if (snapshot.stage == ModelTextureStreamingStage::Failed ||
+                snapshot.stage == ModelTextureStreamingStage::Cancelled ||
+                snapshot.stage == ModelTextureStreamingStage::FullyResident ||
+                snapshot.stage == ModelTextureStreamingStage::None)
+            {
+                m_streamingModels.erase(m_streamingModels.begin() + index);
+                continue;
+            }
+
+            if (snapshot.stage ==
+                ModelTextureStreamingStage::AwaitingMinimumResident)
+            {
+                bool failed = false;
+                bool ready = true;
+                for (const ResourceHandle<MeshResource>& mesh :
+                     model->GetMeshes())
+                {
+                    ready = ready && mesh &&
+                            isReady(AssetId{mesh.GetId()},
+                                    RenderResourceKind::Mesh,
+                                    true,
+                                    failed);
+                }
+                for (const ResourceHandle<MaterialResource>& material :
+                     model->GetMaterials())
+                {
+                    ready = ready && material &&
+                            isReady(AssetId{material.GetId()},
+                                    RenderResourceKind::Material,
+                                    true,
+                                    failed);
+                }
+                if (failed)
+                {
+                    model->MarkTextureStreamingFailed(
+                        "Minimum-resident model dependency failed on Render");
+                }
+                else if (ready)
+                {
+                    static_cast<void>(
+                        ResourceManager::Get().BeginModelTextureStreaming(
+                            model));
+                }
+                ++index;
+                continue;
+            }
+
+            ++index;
+        }
+    }
+
     void ResourceSubsystem::ProcessPendingResources()
     {
         std::stable_sort(
@@ -587,6 +837,9 @@ namespace
             if (replacement)
             {
                 ++m_renderStats.replacementFailures;
+                FailModelTextureStreamingForAsset(
+                    pending.assetId,
+                    "A streamed texture replacement was rejected by the render gateway");
                 if (status.code != RenderResourceStatusCode::Current ||
                     status.state == RenderResourcePublicState::Failed ||
                     status.state == RenderResourcePublicState::Released)
@@ -745,6 +998,9 @@ namespace
                 RenderResourceContentOperation::Replace)
             {
                 ++m_renderStats.replacementFailures;
+                FailModelTextureStreamingForAsset(
+                    pending.assetId,
+                    "A streamed texture replacement request could not be built");
                 return true;
             }
             const RenderReleaseResult release =

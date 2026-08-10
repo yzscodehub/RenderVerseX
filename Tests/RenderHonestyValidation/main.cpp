@@ -1550,6 +1550,34 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
     EXPECT_FALSE(albedo->IsDefaultFallback());
 
     manager.Shutdown();
+
+    // Prepared model loading must recognize an RVA texture as an already
+    // cooked CPU product. It is published directly and never enters the
+    // source-image fallback/decode streaming state machine.
+    RVX::Resource::ResourceManager preparedManager;
+    preparedManager.Initialize(config);
+    auto preparedRequest =
+        preparedManager.RequestAsync<RVX::Resource::ModelResource>(
+            modelPath.string());
+    ASSERT_TRUE(preparedRequest);
+    preparedManager.ProcessCompletedLoads();
+    RVX::Resource::ResourceHandle<RVX::Resource::ModelResource>
+        preparedModel = preparedRequest.TryGet();
+    ASSERT_TRUE(preparedModel);
+    EXPECT_EQ(preparedModel->GetTextureStreamingSnapshot().stage,
+              RVX::Resource::ModelTextureStreamingStage::None);
+    ASSERT_EQ(preparedModel->GetMaterialCount(), 1u);
+    auto preparedAlbedo =
+        preparedModel->GetMaterial(0)->GetAlbedoTexture();
+    ASSERT_TRUE(preparedAlbedo);
+    EXPECT_EQ(preparedAlbedo->GetFormat(),
+              RVX::Resource::TextureFormat::BC1);
+    EXPECT_EQ(preparedAlbedo->GetData().size(), 24u);
+    EXPECT_FALSE(preparedAlbedo->IsStreamingPlaceholder());
+    EXPECT_EQ(preparedManager.GetModelTextureStreamingStats().completedDecodes,
+              0u);
+    preparedManager.Shutdown();
+
     fs::remove_all(dir);
 }
 

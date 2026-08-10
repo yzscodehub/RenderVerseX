@@ -1384,6 +1384,15 @@ rvx_add_gtest(
     TIMEOUT 60
 )
 
+rvx_add_gtest(
+    NAME SceneAssetStreamingValidation
+    SOURCES SceneAssetStreamingValidation/main.cpp
+    LIBS RVX::Core RVX::Resource
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    LABELS "unit;resource;streaming"
+    TIMEOUT 30
+)
+
 # Prepared HDR/IBL environment bundle and immutable admission validation
 rvx_add_gtest(
     NAME EnvironmentPreparedLoadingValidation

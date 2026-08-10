@@ -1667,6 +1667,48 @@ namespace RVX
             startupTimeline.SetMetadata(
                 "backend",
                 std::string(GetSampleBackendName(diagnostics.backend)));
+            if (resourceSubsystem != nullptr)
+            {
+                const Resource::ModelTextureStreamingStats streaming =
+                    resourceSubsystem->GetManager()
+                        .GetModelTextureStreamingStats();
+                startupTimeline.SetMetadata(
+                    "modelTextureDecodedByteBudget",
+                    streaming.decodedByteBudget);
+                startupTimeline.SetMetadata(
+                    "modelTexturePeakDecodedBytes",
+                    streaming.peakReservedDecodedBytes);
+                startupTimeline.SetMetadata(
+                    "modelTextureReservedDecodedBytes",
+                    streaming.reservedDecodedBytes);
+                startupTimeline.SetMetadata(
+                    "modelTextureCompletedDecodedBytes",
+                    streaming.completedDecodedBytes);
+                startupTimeline.SetMetadata(
+                    "modelTextureMaxConcurrentDecodes",
+                    static_cast<uint64>(streaming.maxConcurrentDecodes));
+                startupTimeline.SetMetadata(
+                    "modelTextureActiveDecodes",
+                    static_cast<uint64>(streaming.activeDecodes));
+                startupTimeline.SetMetadata(
+                    "modelTexturePeakConcurrentDecodes",
+                    static_cast<uint64>(streaming.peakActiveDecodes));
+                startupTimeline.SetMetadata(
+                    "modelTextureQueuedDecodes",
+                    static_cast<uint64>(streaming.queuedDecodes));
+                startupTimeline.SetMetadata(
+                    "modelTexturePendingPublications",
+                    static_cast<uint64>(streaming.pendingPublications));
+                startupTimeline.SetMetadata(
+                    "modelTextureCompletedDecodes",
+                    streaming.completedDecodes);
+                startupTimeline.SetMetadata(
+                    "modelTextureFailedDecodes",
+                    streaming.failedDecodes);
+                startupTimeline.SetMetadata(
+                    "modelTextureCancelledDecodes",
+                    streaming.cancelledDecodes);
+            }
             report.frameCount = executedFrames;
             report.submittedFrameSequence =
                 diagnostics.lastSubmittedFrameSequence;

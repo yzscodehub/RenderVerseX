@@ -164,7 +164,7 @@ namespace RVX::Resource
         
         void ParseMeshes(const tinygltf::Model& gltf, GLTFImportResult& result, const GLTFImportOptions& options);
         void ParseMaterials(const tinygltf::Model& gltf, GLTFImportResult& result);
-        void ExtractTextures(const tinygltf::Model& gltf, const std::string& basePath, GLTFImportResult& result);
+        void ExtractTextures(tinygltf::Model& gltf, const std::string& basePath, GLTFImportResult& result);
         void ParseNodes(const tinygltf::Model& gltf, GLTFImportResult& result);
         void ParseScene(const tinygltf::Model& gltf, GLTFImportResult& result);
 

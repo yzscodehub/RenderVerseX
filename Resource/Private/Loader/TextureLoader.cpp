@@ -1,15 +1,19 @@
 #include "Resource/Loader/TextureLoader.h"
+#include "Resource/DefaultResources.h"
 #include "Resource/ResourceCache.h"
 #include "Core/Log.h"
 
 #include <stb_image.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -78,7 +82,7 @@ namespace RVX::Resource
             return (static_cast<size_t>(y) * width + x) * 4u;
         }
 
-        std::vector<uint8_t> GenerateNextMip(const std::vector<uint8_t>& source,
+        std::vector<uint8_t> GenerateNextMip(std::span<const uint8_t> source,
                                              uint32_t sourceWidth,
                                              uint32_t sourceHeight,
                                              TextureUsage usage,
@@ -171,7 +175,7 @@ namespace RVX::Resource
             return target;
         }
 
-        std::vector<uint8_t> BuildMipChain(const std::vector<uint8_t>& basePixels,
+        std::vector<uint8_t> BuildMipChain(std::vector<uint8_t> basePixels,
                                            uint32_t width,
                                            uint32_t height,
                                            TextureUsage usage,
@@ -184,16 +188,39 @@ namespace RVX::Resource
                 return basePixels;
             }
 
-            std::vector<uint8_t> mipChain = basePixels;
-            std::vector<uint8_t> previous = basePixels;
+            size_t totalBytes = 0;
+            uint32_t reserveWidth = width;
+            uint32_t reserveHeight = height;
+            for (uint32_t level = 0; level < outMipLevels; ++level)
+            {
+                totalBytes += static_cast<size_t>(reserveWidth) *
+                              reserveHeight * 4u;
+                reserveWidth = std::max(1u, reserveWidth >> 1u);
+                reserveHeight = std::max(1u, reserveHeight >> 1u);
+            }
+
+            std::vector<uint8_t> mipChain = std::move(basePixels);
+            mipChain.reserve(totalBytes);
+            size_t previousOffset = 0;
             uint32_t previousWidth = width;
             uint32_t previousHeight = height;
 
             for (uint32_t mipLevel = 1; mipLevel < outMipLevels; ++mipLevel)
             {
-                std::vector<uint8_t> next = GenerateNextMip(previous, previousWidth, previousHeight, usage, isSRGB);
+                const size_t previousBytes =
+                    static_cast<size_t>(previousWidth) *
+                    previousHeight * 4u;
+                const std::span<const uint8_t> previous(
+                    mipChain.data() + previousOffset,
+                    previousBytes);
+                std::vector<uint8_t> next =
+                    GenerateNextMip(previous,
+                                    previousWidth,
+                                    previousHeight,
+                                    usage,
+                                    isSRGB);
+                previousOffset = mipChain.size();
                 mipChain.insert(mipChain.end(), next.begin(), next.end());
-                previous = std::move(next);
                 previousWidth = std::max(1u, previousWidth >> 1u);
                 previousHeight = std::max(1u, previousHeight >> 1u);
             }
@@ -304,7 +331,7 @@ namespace RVX::Resource
             return totalSize;
         }
 
-        bool ParseCookedTextureArtifact(const std::vector<uint8_t>& fileData,
+        bool ParseCookedTextureArtifact(std::span<const uint8_t> fileData,
                                         TextureMetadata& outMetadata,
                                         std::vector<uint8_t>& outPixels,
                                         std::string& outError)
@@ -570,7 +597,21 @@ namespace RVX::Resource
 
         TextureResource* texture = nullptr;
 
-        if (ref.IsExternal())
+        if (ref.HasCapturedPayload())
+        {
+            const std::vector<uint8_t>& payload = ref.GetCapturedPayload();
+            texture = LoadFromMemoryWithPolicy(payload.data(),
+                                                payload.size(),
+                                                sourceKey,
+                                                cacheKey,
+                                                ref.usage,
+                                                ref.isSRGB,
+                                                ref.isRawPixelData,
+                                                ref.rawWidth,
+                                                ref.rawHeight,
+                                                activeTraceContext);
+        }
+        else if (ref.IsExternal())
         {
             texture = LoadFromFileWithPolicy(sourceKey,
                                               ref.usage,
@@ -611,6 +652,212 @@ namespace RVX::Resource
         }
 
         return texture;
+    }
+
+    TextureResource* TextureLoader::CreateStreamingPlaceholder(
+        TextureReference& ref,
+        const std::string& modelPath,
+        const std::string& resourceIdentityBase)
+    {
+        if (!ref.IsValid())
+            return nullptr;
+
+        const std::string sourceKey = ref.GetUniqueKey(modelPath);
+        const std::string identityKey = resourceIdentityBase.empty()
+            ? sourceKey
+            : resourceIdentityBase + "#texture_" +
+                  std::to_string(ref.imageIndex) + "_usage_" +
+                  std::to_string(static_cast<uint32>(ref.usage));
+        const std::string cacheKey =
+            BuildTexturePolicyCacheKey(identityKey, ref.usage, ref.isSRGB);
+        const DefaultTexturePayload fallback =
+            DefaultResources::GetTexturePayload(
+                ref.fallbackSemantic,
+                ref.usage,
+                ref.isSRGB);
+
+        auto* texture = new TextureResource();
+        texture->SetId(GenerateTextureId(cacheKey));
+        texture->SetPath(sourceKey);
+        texture->SetName(std::filesystem::path(sourceKey).stem().string());
+        texture->SetDataStorage(fallback.bytes, fallback.metadata);
+        texture->SetEncodedSourceStorage(ref.ShareCapturedPayload());
+        texture->MarkStreamingPlaceholder(true);
+        return texture;
+    }
+
+    bool TextureLoader::RequiresDeferredDecode(
+        const TextureReference& ref) const
+    {
+        if (ref.isRawPixelData)
+            return false;
+
+        std::string extension =
+            std::filesystem::path(ref.path).extension().string();
+        std::transform(extension.begin(),
+                       extension.end(),
+                       extension.begin(),
+                       [](unsigned char value)
+                       {
+                           return static_cast<char>(std::tolower(value));
+                       });
+        return extension != ".rva";
+    }
+
+    bool TextureLoader::EstimateDecodedByteSize(
+        const TextureReference& ref,
+        const std::string& modelPath,
+        uint64& outBytes,
+        std::string& outError) const
+    {
+        outBytes = 0;
+        outError.clear();
+        if (!ref.IsValid())
+        {
+            outError = "Texture reference is invalid";
+            return false;
+        }
+
+        uint32 width = ref.rawWidth;
+        uint32 height = ref.rawHeight;
+        if (!ref.isRawPixelData)
+        {
+            if (!ref.HasCapturedPayload())
+            {
+                outError = "Streaming texture has no importer-captured encoded payload: " +
+                           ref.GetUniqueKey(modelPath);
+                return false;
+            }
+            int decodedWidth = 0;
+            int decodedHeight = 0;
+            int channels = 0;
+            const std::vector<uint8_t>& payload = ref.GetCapturedPayload();
+            if (payload.size() >
+                static_cast<size_t>(std::numeric_limits<int>::max()))
+            {
+                outError = "Encoded texture exceeds stb_image input limits: " +
+                           ref.GetUniqueKey(modelPath);
+                return false;
+            }
+            if (stbi_info_from_memory(
+                    reinterpret_cast<const stbi_uc*>(payload.data()),
+                    static_cast<int>(payload.size()),
+                    &decodedWidth,
+                    &decodedHeight,
+                    &channels) == 0 ||
+                decodedWidth <= 0 || decodedHeight <= 0)
+            {
+                outError = "Texture header probe failed: " +
+                           ref.GetUniqueKey(modelPath);
+                return false;
+            }
+            width = static_cast<uint32>(decodedWidth);
+            height = static_cast<uint32>(decodedHeight);
+        }
+        if (width == 0 || height == 0)
+        {
+            outError = "Texture dimensions are zero";
+            return false;
+        }
+
+        uint64 total = 0;
+        uint32 mipWidth = width;
+        uint32 mipHeight = height;
+        for (;;)
+        {
+            const uint64 levelBytes =
+                static_cast<uint64>(mipWidth) * mipHeight * 4ull;
+            if (levelBytes > std::numeric_limits<uint64>::max() - total)
+            {
+                outError = "Texture decoded-size estimate overflowed";
+                return false;
+            }
+            total += levelBytes;
+            if (mipWidth == 1 && mipHeight == 1)
+                break;
+            mipWidth = std::max(1u, mipWidth / 2u);
+            mipHeight = std::max(1u, mipHeight / 2u);
+        }
+        const uint64 baseBytes =
+            static_cast<uint64>(width) * height * 4ull;
+        if (baseBytes > std::numeric_limits<uint64>::max() - total)
+        {
+            outError = "Texture decode working-set estimate overflowed";
+            return false;
+        }
+        // stb_image temporarily owns the base RGBA allocation while it is
+        // copied, and mip construction reserves the final chain while the
+        // base vector is still alive. finalChain + base is therefore the
+        // conservative per-task decoded working-set admission cost.
+        outBytes = total + baseBytes;
+        return true;
+    }
+
+    bool TextureLoader::DecodeReference(
+        const TextureReference& ref,
+        const std::string& modelPath,
+        const Diagnostics::TraceContext& traceContext,
+        DecodedTextureData& outData,
+        std::string& outError)
+    {
+        outData = {};
+        outError.clear();
+        if (!ref.IsValid() || !ref.HasCapturedPayload())
+        {
+            outError = "Texture decode requires importer-captured bytes";
+            return false;
+        }
+
+        std::vector<uint8_t> pixels;
+        uint32 width = ref.rawWidth;
+        uint32 height = ref.rawHeight;
+        int channels = 4;
+        if (ref.isRawPixelData)
+        {
+            pixels = ref.GetCapturedPayload();
+        }
+        else
+        {
+            const std::vector<uint8_t>& payload = ref.GetCapturedPayload();
+            if (!DecodeImage(payload.data(),
+                              payload.size(),
+                              pixels,
+                              width,
+                              height,
+                              channels,
+                              ref.GetUniqueKey(modelPath),
+                              traceContext))
+            {
+                outError = "Texture decode failed: " + ref.GetUniqueKey(modelPath);
+                return false;
+            }
+        }
+
+        TextureMetadata metadata;
+        metadata.width = width;
+        metadata.height = height;
+        metadata.format = TextureFormat::RGBA8;
+        metadata.mipLevels = 1;
+        metadata.usage = ref.usage;
+        metadata.isSRGB = ref.isSRGB;
+        const size_t expectedBaseSize =
+            static_cast<size_t>(width) * height * 4u;
+        if (pixels.size() != expectedBaseSize)
+        {
+            outError = "Decoded texture byte count does not match RGBA dimensions";
+            return false;
+        }
+        pixels = BuildMipChain(std::move(pixels),
+                               width,
+                               height,
+                               ref.usage,
+                               ref.isSRGB,
+                               metadata.mipLevels);
+        outData.bytes =
+            std::make_shared<const std::vector<uint8_t>>(std::move(pixels));
+        outData.metadata = metadata;
+        outData.sourceKey = ref.GetUniqueKey(modelPath);
+        return outData.IsValid();
     }
 
     TextureResource* TextureLoader::LoadFromFile(
@@ -824,7 +1071,44 @@ namespace RVX::Resource
         }
 
         TextureResource* texture = nullptr;
-        if (isRawRGBA)
+        std::string extension =
+            std::filesystem::path(sourceKey).extension().string();
+        std::transform(extension.begin(),
+                       extension.end(),
+                       extension.begin(),
+                       [](unsigned char value)
+                       {
+                           return static_cast<char>(std::tolower(value));
+                       });
+        if (extension == ".rva")
+        {
+            TextureMetadata metadata;
+            std::vector<uint8_t> pixels;
+            std::string parseError;
+            const auto* bytes = static_cast<const uint8_t*>(data);
+            if (!ParseCookedTextureArtifact(
+                    std::span<const uint8_t>(bytes, size),
+                    metadata,
+                    pixels,
+                    parseError))
+            {
+                m_lastLoadStatus = TextureLoadStatus::Failed;
+                m_lastLoadError = parseError + ": " + sourceKey;
+                return nullptr;
+            }
+
+            texture = new TextureResource();
+            texture->SetId(textureId);
+            texture->SetPath(sourceKey);
+            texture->SetName(
+                std::filesystem::path(sourceKey).stem().string());
+            texture->SetData(std::move(pixels), metadata);
+            if (!m_prepareOnly)
+                texture->NotifyLoaded();
+            if (m_manager && m_manager->IsInitialized())
+                m_manager->GetCache().Store(texture);
+        }
+        else if (isRawRGBA)
         {
             // Raw RGBA data
             std::vector<uint8_t> pixels(static_cast<const uint8_t*>(data),
@@ -955,6 +1239,13 @@ namespace RVX::Resource
              {"decoder", "stb_image"}});
         int width, height, channels;
 
+        if (data == nullptr || size == 0 ||
+            size > static_cast<size_t>(std::numeric_limits<int>::max()))
+        {
+            decodeSpan.SetAttribute("result", "invalid-input");
+            return false;
+        }
+
         // Force RGBA output for consistency
         stbi_uc* pixels = stbi_load_from_memory(
             static_cast<const stbi_uc*>(data),
@@ -966,6 +1257,17 @@ namespace RVX::Resource
         {
             decodeSpan.SetAttribute("result", "failed");
             RVX_CORE_WARN("TextureLoader: stb_image decode failed: {}", stbi_failure_reason());
+            return false;
+        }
+
+        const size_t maxSize = std::numeric_limits<size_t>::max();
+        if (width <= 0 || height <= 0 ||
+            static_cast<size_t>(height) > maxSize / 4u ||
+            static_cast<size_t>(width) >
+                maxSize / (static_cast<size_t>(height) * 4u))
+        {
+            stbi_image_free(pixels);
+            decodeSpan.SetAttribute("result", "invalid-dimensions");
             return false;
         }
 
@@ -1016,7 +1318,12 @@ namespace RVX::Resource
         if (generateMipChain && metadata.format == TextureFormat::RGBA8 && width > 0 && height > 0 &&
             pixels.size() == expectedBaseSize)
         {
-            pixels = BuildMipChain(pixels, width, height, usage, isSRGB, metadata.mipLevels);
+            pixels = BuildMipChain(std::move(pixels),
+                                   width,
+                                   height,
+                                   usage,
+                                   isSRGB,
+                                   metadata.mipLevels);
         }
 
         texture->SetData(std::move(pixels), metadata);

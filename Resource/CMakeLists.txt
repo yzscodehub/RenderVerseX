@@ -32,6 +32,7 @@ target_sources(RVX_Resource PRIVATE
     Private/RenderUploadRequestBuilder.cpp
     Private/ResourceManager.cpp
     Private/ResourceSubsystem.cpp
+    Private/ModelTextureStreamingService.cpp
     Private/DefaultResources.cpp
     
     # Concrete resource types

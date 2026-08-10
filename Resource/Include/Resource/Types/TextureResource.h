@@ -87,11 +87,16 @@ namespace RVX::Resource
         bool IsSRGB() const { return m_metadata.isSRGB; }
         TextureUsage GetUsage() const { return m_metadata.usage; }
         bool IsDefaultFallback() const { return m_isDefaultFallback; }
+        bool IsStreamingPlaceholder() const { return m_isStreamingPlaceholder; }
         const std::string& GetFallbackReason() const { return m_fallbackReason; }
 
         void SetSRGB(bool isSRGB) { m_metadata.isSRGB = isSRGB; }
         void SetUsage(TextureUsage usage) { m_metadata.usage = usage; }
         void MarkDefaultFallback(std::string reason);
+        void MarkStreamingPlaceholder(bool placeholder) noexcept
+        {
+            m_isStreamingPlaceholder = placeholder;
+        }
 
         // =====================================================================
         // Data Access
@@ -104,6 +109,22 @@ namespace RVX::Resource
             return m_data;
         }
         void SetData(std::vector<uint8_t> data, const TextureMetadata& metadata);
+        void SetDataStorage(
+            std::shared_ptr<const std::vector<uint8_t>> data,
+            const TextureMetadata& metadata);
+
+        /** @brief Release decoded CPU pixels after the matching GPU publication retires. */
+        void ReleaseCPUData() noexcept;
+        void SetEncodedSourceStorage(
+            std::shared_ptr<const std::vector<uint8_t>> source) noexcept
+        {
+            m_encodedSource = std::move(source);
+        }
+        [[nodiscard]] const std::shared_ptr<const std::vector<uint8_t>>&
+            GetEncodedSourceStorage() const noexcept
+        {
+            return m_encodedSource;
+        }
 
         // =====================================================================
         // GPU Resources (future)
@@ -118,7 +139,9 @@ namespace RVX::Resource
         TextureMetadata m_metadata;
         std::shared_ptr<const std::vector<uint8_t>> m_data =
             std::make_shared<const std::vector<uint8_t>>();
+        std::shared_ptr<const std::vector<uint8_t>> m_encodedSource;
         bool m_isDefaultFallback = false;
+        bool m_isStreamingPlaceholder = false;
         std::string m_fallbackReason;
 
         // GPU resources (future)

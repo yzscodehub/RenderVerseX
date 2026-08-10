@@ -68,6 +68,12 @@ namespace RVX::Resource
             return extension == ".rva";
         }
 
+        struct ImageCaptureContext
+        {
+            Diagnostics::TraceContext traceContext;
+            std::string modelPath;
+        };
+
         bool LoadImageDataAllowingCookedArtifact(tinygltf::Image* image,
                                                  const int imageIndex,
                                                  std::string* error,
@@ -78,41 +84,60 @@ namespace RVX::Resource
                                                  int size,
                                                  void* userData)
         {
-            if (image && !image->uri.empty() && HasCookedTextureArtifactExtension(image->uri))
+            if (!image || !bytes || size <= 0)
             {
-                if (!bytes || size <= 0)
+                if (error)
                 {
-                    if (error)
-                    {
-                        *error += "Cooked texture artifact is empty for image[" +
-                                  std::to_string(imageIndex) + "] uri = \"" + image->uri + "\"\n";
-                    }
-                    return false;
+                    *error += "Encoded image payload is empty for image[" +
+                              std::to_string(imageIndex) + "]\n";
                 }
-
-                (void)requiredWidth;
-                (void)requiredHeight;
-                (void)userData;
-
-                image->width = -1;
-                image->height = -1;
-                image->component = -1;
-                image->bits = -1;
-                image->pixel_type = -1;
-                image->as_is = true;
-                image->image.assign(bytes, bytes + size);
-                return true;
+                return false;
             }
 
-            return tinygltf::LoadImageData(image,
-                                           imageIndex,
-                                           error,
-                                           warning,
-                                           requiredWidth,
-                                           requiredHeight,
-                                           bytes,
-                                           size,
-                                           userData);
+            (void)requiredWidth;
+            (void)requiredHeight;
+            (void)warning;
+
+            const auto* capture = static_cast<const ImageCaptureContext*>(userData);
+            const std::string source = image->uri.empty()
+                                           ? (capture ? capture->modelPath : std::string{}) +
+                                                 "#image_" + std::to_string(imageIndex)
+                                           : image->uri;
+            Diagnostics::TraceSpan encodedSpan = Diagnostics::BeginTraceSpan(
+                capture ? capture->traceContext : Diagnostics::TraceContext{},
+                "TextureEncodedRead",
+                {{"path", source},
+                 {"imageIndex", static_cast<uint64>(imageIndex)},
+                 {"bytes", static_cast<uint64>(size)},
+                 {"capturedBy", "tinygltf-image-callback"},
+                 {"ioIncludedByParent", true}});
+
+            // Source import captures encoded bytes only. Decode is deliberately
+            // deferred until the minimum-resident model has reached Render.
+            image->width = -1;
+            image->height = -1;
+            image->component = -1;
+            image->bits = -1;
+            image->pixel_type = -1;
+            image->as_is = true;
+            image->image.assign(bytes, bytes + size);
+            encodedSpan.SetAttribute(
+                "cookedArtifact",
+                !image->uri.empty() &&
+                    HasCookedTextureArtifactExtension(image->uri));
+            encodedSpan.SetAttribute("result", "captured");
+            return true;
+        }
+
+        TextureFallbackSemantic GetFallbackSemantic(
+            TextureUsage usage,
+            const char* slotName)
+        {
+            if (usage == TextureUsage::Normal)
+                return TextureFallbackSemantic::FlatNormal;
+            if (slotName != nullptr && std::strcmp(slotName, "emissive") == 0)
+                return TextureFallbackSemantic::Black;
+            return TextureFallbackSemantic::White;
         }
 
         void MarkTextureReferenceUsage(const tinygltf::Model& gltf,
@@ -134,6 +159,7 @@ namespace RVX::Resource
             {
                 ref.usage = usage;
                 ref.isSRGB = isSRGB;
+                ref.fallbackSemantic = GetFallbackSemantic(usage, slotName);
                 assigned[static_cast<size_t>(imageIndex)] = true;
                 return;
             }
@@ -152,6 +178,7 @@ namespace RVX::Resource
             {
                 ref.usage = usage;
                 ref.isSRGB = isSRGB;
+                ref.fallbackSemantic = GetFallbackSemantic(usage, slotName);
             }
 
             RVX_CORE_WARN(
@@ -309,7 +336,9 @@ namespace RVX::Resource
              {"includesReferencedBuffers", true},
              {"includesImageLoadCallbacks", true}});
         tinygltf::TinyGLTF loader;
-        loader.SetImageLoader(LoadImageDataAllowingCookedArtifact, nullptr);
+        ImageCaptureContext imageCapture{traceContext, path};
+        loader.SetImageLoader(LoadImageDataAllowingCookedArtifact,
+                              &imageCapture);
 
         std::filesystem::path filePath(path);
         std::string ext = filePath.extension().string();
@@ -333,14 +362,15 @@ namespace RVX::Resource
     // Texture Extraction
     // =========================================================================
 
-    void GLTFImporter::ExtractTextures(const tinygltf::Model& gltf, const std::string& basePath,
+    void GLTFImporter::ExtractTextures(tinygltf::Model& gltf, const std::string& basePath,
                                         GLTFImportResult& result)
     {
+        (void)basePath;
         result.textures.resize(gltf.images.size());
 
         for (size_t i = 0; i < gltf.images.size(); ++i)
         {
-            const auto& image = gltf.images[i];
+            auto& image = gltf.images[i];
             TextureReference& ref = result.textures[i];
             ref.imageIndex = static_cast<int>(i);
 
@@ -349,6 +379,10 @@ namespace RVX::Resource
                 // External texture file
                 ref.sourceType = TextureSourceType::External;
                 ref.path = image.uri;
+                ref.mimeType = image.mimeType;
+                ref.capturedPayload =
+                    std::make_shared<const std::vector<uint8_t>>(
+                        std::move(image.image));
             }
             else
             {
@@ -358,11 +392,13 @@ namespace RVX::Resource
                 
                 if (!image.image.empty())
                 {
-                    // Already decoded by tinygltf - raw RGBA pixels
-                    ref.embeddedData.assign(image.image.begin(), image.image.end());
-                    ref.isRawPixelData = true;
-                    ref.rawWidth = static_cast<uint32_t>(image.width);
-                    ref.rawHeight = static_cast<uint32_t>(image.height);
+                    // The custom tinygltf callback preserves encoded PNG/JPEG
+                    // bytes. Move them into the streaming descriptor so the
+                    // source is never opened by TextureLoader a second time.
+                    ref.capturedPayload =
+                        std::make_shared<const std::vector<uint8_t>>(
+                            std::move(image.image));
+                    ref.isRawPixelData = false;
                 }
                 else if (image.bufferView >= 0)
                 {

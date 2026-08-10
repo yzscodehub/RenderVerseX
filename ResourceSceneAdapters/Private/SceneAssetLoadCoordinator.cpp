@@ -383,9 +383,9 @@ bool SceneAssetLoadCoordinator::UpdateModel(Entry& entry)
         *entry.model,
         m_resources,
         entry.instance);
-    if (entry.status.IsFailed())
-        return false;
-    if (entry.status.IsFullyResident())
+    const bool minimumResident =
+        entry.status.residency >= SceneAssetResidency::MinimumResident;
+    if (minimumResident)
     {
         if (entry.activateWhenResident && !entry.renderablesActivated)
         {
@@ -401,6 +401,11 @@ bool SceneAssetLoadCoordinator::UpdateModel(Entry& entry)
                                             "MinimumResident");
             entry.minimumResidentMilestone = true;
         }
+    }
+    if (entry.status.IsFailed())
+        return false;
+    if (entry.status.IsFullyResident())
+    {
         if (!entry.fullyResidentMilestone)
         {
             Diagnostics::RecordTraceInstant(entry.traceContext,

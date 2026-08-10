@@ -74,19 +74,23 @@ namespace RVX::Resource
                                            const std::string& sourcePath,
                                            GLTFImportResult& importResult,
                                            TextureLoader& textureLoader,
-                                           const Diagnostics::TraceContext& traceContext);
+                                           const Diagnostics::TraceContext& traceContext,
+                                           bool streamTextures);
         MeshResource* CreateMeshResource(const std::string& modelPath, int index, Mesh::Ptr mesh);
         MaterialResource* CreateMaterialResource(const std::string& modelPath, int index,
                                                    Material::Ptr material,
-                                                   const std::vector<TextureResource*>& textures,
+                                                   const std::vector<ResourceHandle<TextureResource>>& textures,
                                                    const GLTFImportResult& importResult);
 
         // Load textures from import result
-        std::vector<TextureResource*> LoadTextures(const std::string& sourceModelPath,
-                                                    const std::string& resourceIdentityPath,
-                                                    const std::vector<TextureReference>& textureRefs,
-                                                    TextureLoader& textureLoader,
-                                                    const Diagnostics::TraceContext& traceContext);
+        std::vector<ResourceHandle<TextureResource>> LoadTextures(
+            const std::string& sourceModelPath,
+            const std::string& resourceIdentityPath,
+            std::vector<TextureReference>& textureRefs,
+            TextureLoader& textureLoader,
+            const Diagnostics::TraceContext& traceContext,
+            bool streamTextures,
+            std::vector<ModelTextureStreamingSource>& outStreamingSources);
 
         ResourceManager* m_manager = nullptr;
         mutable std::mutex m_optionsMutex;

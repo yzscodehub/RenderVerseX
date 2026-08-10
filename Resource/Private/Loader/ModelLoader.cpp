@@ -134,7 +134,8 @@ IResource* ModelLoader::Load(const std::string& path)
                                                absolutePath.string(),
                                                imported,
                                                textureLoader,
-                                               traceContext);
+                                               traceContext,
+                                               false);
     if (!model)
     {
         return nullptr;
@@ -208,7 +209,8 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
                                                context.resolvedPath,
                                                imported,
                                                textureLoader,
-                                               context.traceContext);
+                                               context.traceContext,
+                                               true);
     if (!model)
     {
         prepareSpan.SetAttribute("result", "failed");
@@ -228,6 +230,18 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
         {
             outError = {ResourceLoadErrorCode::LoaderFailure,
                         "Model loader produced an invalid or duplicate mesh dependency."};
+            return false;
+        }
+    }
+    for (const ResourceHandle<TextureResource>& texture :
+         model->GetStreamingTextures())
+    {
+        if (!texture || (!outBundle.Contains(texture.GetId()) &&
+                         !outBundle.AddDependency(
+                             ResourceHandle<IResource>(texture))))
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "Model loader produced an invalid or duplicate streamed texture dependency."};
             return false;
         }
     }
@@ -275,14 +289,19 @@ ModelResource* ModelLoader::CreateModelResource(const std::string& resourceIdent
                                                 const std::string& sourcePath,
                                                 GLTFImportResult& importResult,
                                                 TextureLoader& textureLoader,
-                                                const Diagnostics::TraceContext& traceContext)
+                                                const Diagnostics::TraceContext& traceContext,
+                                                bool streamTextures)
 {
     auto* model = new ModelResource();
-    const std::vector<TextureResource*> textures = LoadTextures(sourcePath,
-                                                                 resourceIdentityPath,
-                                                                 importResult.textures,
-                                                                 textureLoader,
-                                                                 traceContext);
+    std::vector<ModelTextureStreamingSource> streamingSources;
+    const std::vector<ResourceHandle<TextureResource>> textures =
+        LoadTextures(sourcePath,
+                     resourceIdentityPath,
+                     importResult.textures,
+                     textureLoader,
+                     traceContext,
+                     streamTextures,
+                     streamingSources);
 
     std::vector<ResourceHandle<MeshResource>> meshes;
     meshes.reserve(importResult.meshes.size());
@@ -311,6 +330,10 @@ ModelResource* ModelLoader::CreateModelResource(const std::string& resourceIdent
         }
     }
     model->SetMaterials(std::move(materials));
+    if (streamTextures)
+    {
+        model->SetTextureStreamingSources(std::move(streamingSources));
+    }
     if (importResult.model)
     {
         model->SetRootNode(importResult.model->GetRootNode());
@@ -339,7 +362,7 @@ MaterialResource* ModelLoader::CreateMaterialResource(
     const std::string& modelPath,
     int index,
     Material::Ptr material,
-    const std::vector<TextureResource*>& textures,
+    const std::vector<ResourceHandle<TextureResource>>& textures,
     const GLTFImportResult& importResult)
 {
     (void)importResult;
@@ -359,7 +382,7 @@ MaterialResource* ModelLoader::CreateMaterialResource(
         if (info && info->imageId >= 0 && info->imageId < static_cast<int>(textures.size()) &&
             textures[info->imageId])
         {
-            resource->SetTexture(slot, ResourceHandle<TextureResource>(textures[info->imageId]));
+            resource->SetTexture(slot, textures[info->imageId]);
         }
     };
     associate(material->GetBaseColorTexture(), "albedo");
@@ -370,21 +393,50 @@ MaterialResource* ModelLoader::CreateMaterialResource(
     return resource;
 }
 
-std::vector<TextureResource*> ModelLoader::LoadTextures(
+std::vector<ResourceHandle<TextureResource>> ModelLoader::LoadTextures(
     const std::string& sourceModelPath,
     const std::string& resourceIdentityPath,
-    const std::vector<TextureReference>& references,
+    std::vector<TextureReference>& references,
     TextureLoader& textureLoader,
-    const Diagnostics::TraceContext& traceContext)
+    const Diagnostics::TraceContext& traceContext,
+    bool streamTextures,
+    std::vector<ModelTextureStreamingSource>& outStreamingSources)
 {
-    std::vector<TextureResource*> textures;
+    std::vector<ResourceHandle<TextureResource>> textures;
     textures.reserve(references.size());
-    for (const TextureReference& reference : references)
+    outStreamingSources.clear();
+    outStreamingSources.reserve(streamTextures ? references.size() : 0);
+    for (TextureReference& reference : references)
     {
-        textures.push_back(textureLoader.LoadFromReference(reference,
-                                                           sourceModelPath,
-                                                           traceContext,
-                                                           resourceIdentityPath));
+        const bool deferDecode =
+            streamTextures &&
+            textureLoader.RequiresDeferredDecode(reference);
+        TextureResource* texture = deferDecode
+            ? textureLoader.CreateStreamingPlaceholder(reference,
+                                                       sourceModelPath,
+                                                       resourceIdentityPath)
+            : textureLoader.LoadFromReference(reference,
+                                              sourceModelPath,
+                                              traceContext,
+                                              resourceIdentityPath);
+        textures.emplace_back(texture);
+        if (!deferDecode || !texture)
+            continue;
+
+        ModelTextureStreamingSource source;
+        source.texture = textures.back();
+        source.sourceModelPath = sourceModelPath;
+        source.resourceIdentityBase = resourceIdentityPath;
+        source.traceContext = traceContext;
+        if (!textureLoader.EstimateDecodedByteSize(reference,
+                                                   sourceModelPath,
+                                                   source.estimatedDecodedBytes,
+                                                   source.preflightError))
+        {
+            source.estimatedDecodedBytes = 0;
+        }
+        source.reference = std::move(reference);
+        outStreamingSources.push_back(std::move(source));
     }
     return textures;
 }

@@ -238,6 +238,12 @@ namespace RVX::Resource
             RenderResourceContentOperation operation);
         void ProcessPendingResources();
         void ProcessPendingUploads();
+        void ProcessModelTextureStreaming();
+        void TrackModelTextureStreaming(
+            ResourceHandle<ModelResource> model);
+        void FailModelTextureStreamingForAsset(
+            AssetId assetId,
+            const std::string& reason);
         bool TryBuildPendingResource(PendingResource& pending);
         RenderResourceHandle ResolveDependency(AssetId assetId,
                                                RenderResourceKind kind) const;
@@ -267,6 +273,7 @@ namespace RVX::Resource
                            RenderResourceHandleHash>
             m_retainedRequests{};
         std::vector<ResourceUploadRequestRef> m_localTerminalRequests{};
+        std::vector<ResourceHandle<ModelResource>> m_streamingModels{};
         ResourceRenderStats m_renderStats{};
     };
 } // namespace RVX::Resource

@@ -13,8 +13,10 @@
 #include "Resource/ResourceHandle.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/MaterialResource.h"
+#include "Core/Diagnostics/Trace.h"
 #include "Geometry/Asset/Node.h"
 #include <memory>
+#include <mutex>
 #include <vector>
 #include <string>
 
@@ -30,6 +32,43 @@ namespace RVX
 
 namespace RVX::Resource
 {
+    enum class ModelTextureStreamingStage : uint8
+    {
+        None = 0,
+        AwaitingMinimumResident,
+        Decoding,
+        Uploading,
+        FullyResident,
+        Failed,
+        Cancelled
+    };
+
+    struct ModelTextureStreamingSource
+    {
+        ResourceHandle<TextureResource> texture;
+        TextureReference reference;
+        std::string sourceModelPath;
+        std::string resourceIdentityBase;
+        Diagnostics::TraceContext traceContext;
+        uint64 estimatedDecodedBytes = 0;
+        std::string preflightError;
+    };
+
+    struct ModelTextureStreamingSnapshot
+    {
+        ModelTextureStreamingStage stage = ModelTextureStreamingStage::None;
+        uint32 textureCount = 0;
+        uint32 decodedTextureCount = 0;
+        uint32 residentTextureCount = 0;
+        uint64 decodedBytes = 0;
+        std::string error;
+
+        [[nodiscard]] bool HasStreamingTextures() const noexcept
+        {
+            return textureCount != 0;
+        }
+    };
+
     /**
      * @brief Model resource - complete 3D model with hierarchy
      * 
@@ -66,6 +105,7 @@ namespace RVX::Resource
         size_t GetGPUMemoryUsage() const override;
 
         std::vector<ResourceId> GetRequiredDependencies() const override;
+        std::vector<ResourceId> GetOptionalDependencies() const override;
 
         // =====================================================================
         // Node Tree (Hierarchy Template)
@@ -119,6 +159,26 @@ namespace RVX::Resource
         void SetMaterials(std::vector<ResourceHandle<MaterialResource>> materials);
 
         // =====================================================================
+        // Progressive Texture Residency
+        // =====================================================================
+
+        void SetTextureStreamingSources(
+            std::vector<ModelTextureStreamingSource> sources);
+        [[nodiscard]] std::vector<ModelTextureStreamingSource>
+            BeginTextureStreaming();
+        void RebindTextureStreamingDependency(
+            ResourceId resourceId,
+            ResourceHandle<TextureResource> canonical);
+        void MarkTextureDecodeComplete(uint64 decodedBytes);
+        void MarkTexturePublicationComplete(ResourceId textureId);
+        void MarkTextureStreamingFailed(std::string error);
+        void CancelTextureStreaming() noexcept;
+        [[nodiscard]] ModelTextureStreamingSnapshot
+            GetTextureStreamingSnapshot() const;
+        [[nodiscard]] std::vector<ResourceHandle<TextureResource>>
+            GetStreamingTextures() const;
+
+        // =====================================================================
         // Skeleton (Optional)
         // =====================================================================
 
@@ -163,6 +223,15 @@ namespace RVX::Resource
         std::vector<ResourceHandle<MeshResource>> m_meshes;
         std::vector<ResourceHandle<MaterialResource>> m_materials;
         std::shared_ptr<Skeleton> m_skeleton;
+        mutable std::mutex m_textureStreamingMutex;
+        std::vector<ModelTextureStreamingSource> m_textureStreamingSources;
+        std::vector<ResourceHandle<TextureResource>> m_streamingTextures;
+        ModelTextureStreamingStage m_textureStreamingStage =
+            ModelTextureStreamingStage::None;
+        uint32 m_decodedTextureCount = 0;
+        uint32 m_residentTextureCount = 0;
+        uint64 m_decodedTextureBytes = 0;
+        std::string m_textureStreamingError;
     };
 
 } // namespace RVX::Resource

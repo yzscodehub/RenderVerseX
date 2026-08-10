@@ -1,5 +1,6 @@
 #include "Core/Core.h"
 #include "Resource/Importer/GLTFImporter.h"
+#include "Resource/Loader/TextureLoader.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
@@ -746,22 +747,28 @@ namespace
         }
 
         const TextureReference& texture = result.textures[0];
-        ASSERT_TRUE(texture.isRawPixelData);
-        ASSERT_EQ(5u, texture.rawWidth);
-        ASSERT_EQ(5u, texture.rawHeight);
-        ASSERT_EQ(5u * 5u * 4u, texture.embeddedData.size());
+        ASSERT_FALSE(texture.isRawPixelData);
+        ASSERT_TRUE(texture.HasCapturedPayload());
 
-        const auto channel = [&texture](uint32 x, uint32 y, uint32 component)
+        TextureLoader decoder(nullptr, true);
+        const ResourceHandle<TextureResource> decoded(
+            decoder.LoadFromReference(texture, fixturePath.string()));
+        ASSERT_TRUE(decoded);
+        ASSERT_EQ(5u, decoded->GetWidth());
+        ASSERT_EQ(5u, decoded->GetHeight());
+        ASSERT_GE(decoded->GetData().size(), 5u * 5u * 4u);
+
+        const auto channel = [&decoded](uint32 x, uint32 y, uint32 component)
         {
             const size_t offset =
-                (static_cast<size_t>(y) * texture.rawWidth + x) * 4u + component;
-            return texture.embeddedData[offset];
+                (static_cast<size_t>(y) * decoded->GetWidth() + x) * 4u + component;
+            return decoded->GetData()[offset];
         };
         constexpr uint8 expectedRoughness[] = {13u, 64u, 128u, 191u, 255u};
         constexpr uint8 expectedMetallic[] = {0u, 64u, 128u, 191u, 255u};
-        for (uint32 row = 0; row < texture.rawHeight; ++row)
+        for (uint32 row = 0; row < decoded->GetHeight(); ++row)
         {
-            for (uint32 column = 0; column < texture.rawWidth; ++column)
+            for (uint32 column = 0; column < decoded->GetWidth(); ++column)
             {
                 EXPECT_EQ(expectedRoughness[row], channel(column, row, 1u));
                 EXPECT_EQ(expectedMetallic[column], channel(column, row, 2u));

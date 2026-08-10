@@ -29,6 +29,25 @@ namespace RVX::Resource
 {
     // Forward declarations
     class IResourceLoader;
+    class ModelResource;
+    class ModelTextureStreamingService;
+    class TextureResource;
+
+    struct ModelTextureStreamingStats
+    {
+        uint64 decodedByteBudget = 256ull * 1024ull * 1024ull;
+        uint64 reservedDecodedBytes = 0;
+        uint64 peakReservedDecodedBytes = 0;
+        uint64 completedDecodedBytes = 0;
+        uint32 maxConcurrentDecodes = 0;
+        uint32 activeDecodes = 0;
+        uint32 peakActiveDecodes = 0;
+        uint32 queuedDecodes = 0;
+        uint32 pendingPublications = 0;
+        uint64 completedDecodes = 0;
+        uint64 failedDecodes = 0;
+        uint64 cancelledDecodes = 0;
+    };
 
     /** @brief Immutable loader-specific state captured at request admission. */
     class ResourceLoadPreparationState
@@ -91,6 +110,12 @@ namespace RVX::Resource
         /// Number of async loading threads
         /// Used when ResourceManager initializes Core JobSystem for async loads.
         int asyncThreadCount = 2;
+
+        /// Maximum simultaneously expanded RGBA/mip bytes for model textures.
+        uint64 modelTextureDecodedByteBudget = 256ull * 1024ull * 1024ull;
+
+        /// Clamped to Core JobSystem worker count and an engine maximum of four.
+        uint32 modelTextureMaxConcurrentDecodes = 4;
 
         /// Base path for resources
         std::string basePath = "";
@@ -368,6 +393,25 @@ namespace RVX::Resource
         /// Process completed async loads (call once per frame)
         void ProcessCompletedLoads();
 
+        /** @brief Start deferred model texture decode after fallback residency. */
+        bool BeginModelTextureStreaming(
+            ResourceHandle<ModelResource> model);
+
+        /** @brief GPU publications whose decoded-byte leases remain active. */
+        [[nodiscard]] std::vector<ResourceHandle<TextureResource>>
+            GetPendingModelTexturePublications() const;
+
+        /** @brief Retire one decoded-byte lease after render completion/failure. */
+        bool CompleteModelTexturePublication(ResourceId textureId,
+                                             bool succeeded,
+                                             std::string error = {});
+
+        /** @brief Cancel queued and publication-waiting work for one model. */
+        void CancelModelTextureStreaming(ResourceId modelId);
+
+        [[nodiscard]] ModelTextureStreamingStats
+            GetModelTextureStreamingStats() const;
+
         /** @brief Register the callback drained only by ProcessCompletedLoads. */
         void SetLifecycleEventCallback(ResourceLifecycleEventCallback callback);
 
@@ -455,6 +499,8 @@ namespace RVX::Resource
         bool m_jobSystemInitializedByManager = false;
         std::atomic<size_t> m_pendingAsyncJobCount{0};
         std::atomic<size_t> m_pendingAsyncCompletionCount{0};
+        std::unique_ptr<ModelTextureStreamingService>
+            m_modelTextureStreaming;
 
         mutable std::mutex m_diagnosticMutex;
         ResourceLoadDiagnostic m_lastLoadDiagnostic;

@@ -1,4 +1,5 @@
 #include "Resource/ResourceManager.h"
+#include "ModelTextureStreamingService.h"
 #include "Resource/HotReloadManager.h"
 #include "Resource/Loader/EnvironmentLoader.h"
 #include "Resource/Loader/MeshLoader.h"
@@ -284,6 +285,10 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
     m_initialized = true;
     ConfigureHotReload(config.enableHotReload);
     StartAsyncWorkers();
+    m_modelTextureStreaming =
+        std::make_unique<ModelTextureStreamingService>(
+            m_config.modelTextureDecodedByteBudget,
+            m_config.modelTextureMaxConcurrentDecodes);
     // Publish admission only after every object observed by RequestAsync is
     // initialized. This release pairs with request-side acquire checks.
     m_acceptAsyncRequests.store(true, std::memory_order_release);
@@ -362,6 +367,8 @@ void ResourceManager::Shutdown()
                            false,
                            "ResourceManager is shut down.");
 
+    if (m_modelTextureStreaming)
+        m_modelTextureStreaming->Stop();
     StopAsyncWorkers();
     DrainPreparedLoadCompletions(true);
     {
@@ -376,6 +383,7 @@ void ResourceManager::Shutdown()
     m_cache->Clear();
     m_registry->Clear();
     m_dependencyGraph->Clear();
+    m_modelTextureStreaming.reset();
 
     m_initialized = false;
     DrainLifecycleEvents();
@@ -1181,8 +1189,73 @@ void ResourceManager::ProcessCompletedLoads()
     }
     JobSystem::Get().ProcessMainThreadCompletions();
     DrainPreparedLoadCompletions();
+    if (m_modelTextureStreaming)
+    {
+        m_modelTextureStreaming->DrainCompletions(
+            [this](TextureResource* texture)
+            {
+                if (texture && texture->IsLoaded())
+                {
+                    QueueLifecycleEvent(
+                        ResourceLifecycleEventType::Reloaded,
+                        texture);
+                    return true;
+                }
+                return false;
+            });
+    }
     DrainLegacyAsyncWaiters();
     DrainLifecycleEvents();
+}
+
+bool ResourceManager::BeginModelTextureStreaming(
+    ResourceHandle<ModelResource> model)
+{
+    if (!m_initialized || !IsOwnerThread() || !m_modelTextureStreaming ||
+        !model || !model->IsLoaded())
+    {
+        return false;
+    }
+    return m_modelTextureStreaming->Start(std::move(model));
+}
+
+std::vector<ResourceHandle<TextureResource>>
+ResourceManager::GetPendingModelTexturePublications() const
+{
+    return m_modelTextureStreaming
+               ? m_modelTextureStreaming->GetPendingPublications()
+               : std::vector<ResourceHandle<TextureResource>>{};
+}
+
+bool ResourceManager::CompleteModelTexturePublication(
+    ResourceId textureId,
+    bool succeeded,
+    std::string error)
+{
+    if (!m_initialized || !IsOwnerThread() || !m_modelTextureStreaming)
+        return false;
+    return m_modelTextureStreaming->CompletePublication(
+        textureId,
+        succeeded,
+        std::move(error));
+}
+
+void ResourceManager::CancelModelTextureStreaming(ResourceId modelId)
+{
+    if (!m_initialized || !IsOwnerThread() || !m_modelTextureStreaming ||
+        modelId == InvalidResourceId)
+    {
+        return;
+    }
+    m_modelTextureStreaming->CancelModel(modelId);
+}
+
+ModelTextureStreamingStats
+ResourceManager::GetModelTextureStreamingStats() const
+{
+    return m_modelTextureStreaming
+               ? m_modelTextureStreaming->GetStats()
+               : ModelTextureStreamingStats{};
 }
 
 ResourceLoadOperationOwner ResourceManager::RequestPreparedLoad(
@@ -1843,6 +1916,16 @@ bool ResourceManager::PublishPreparedBundle(const ResourcePathResolution& resolu
             }
         }
         model->SetMaterials(std::move(materials));
+        for (const auto& [resourceId, canonical] : cachedResources)
+        {
+            if (canonical && canonical->GetType() == ResourceType::Texture)
+            {
+                model->RebindTextureStreamingDependency(
+                    resourceId,
+                    ResourceHandle<TextureResource>(
+                        static_cast<TextureResource*>(canonical.Get())));
+            }
+        }
     }
 
     struct StagedPublication
@@ -2170,6 +2253,14 @@ ResourceManager::Stats ResourceManager::GetStats() const
 
     stats.pendingLoads += m_pendingAsyncJobCount.load(std::memory_order_relaxed);
     stats.pendingLoads += m_pendingAsyncCompletionCount.load(std::memory_order_relaxed);
+    if (m_modelTextureStreaming)
+    {
+        const ModelTextureStreamingStats streaming =
+            m_modelTextureStreaming->GetStats();
+        stats.pendingLoads += streaming.queuedDecodes;
+        stats.pendingLoads += streaming.activeDecodes;
+        stats.pendingLoads += streaming.pendingPublications;
+    }
 
     return stats;
 }

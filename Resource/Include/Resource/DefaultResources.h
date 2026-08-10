@@ -14,6 +14,12 @@
 
 namespace RVX::Resource
 {
+    struct DefaultTexturePayload
+    {
+        std::shared_ptr<const std::vector<uint8_t>> bytes;
+        TextureMetadata metadata;
+    };
+
     /**
      * @brief Default resource provider
      * 
@@ -58,6 +64,12 @@ namespace RVX::Resource
 
         /// Get default texture for a specific usage
         static TextureResource* GetDefaultTexture(TextureUsage usage);
+
+        /** @brief Process-lifetime immutable payload for streamed placeholders. */
+        static DefaultTexturePayload GetTexturePayload(
+            TextureFallbackSemantic semantic,
+            TextureUsage usage,
+            bool isSRGB);
 
         // =====================================================================
         // Default Materials

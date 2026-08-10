@@ -215,19 +215,73 @@ SceneAssetStatus SceneAssetInstantiator::UpdateResidency(
         }
     }
 
-    const SceneAssetResidency nextResidency =
-        uploadPending ? SceneAssetResidency::CPUReady
-                      : SceneAssetResidency::FullyResident;
-    if (instance.status.lifecycle != SceneAssetLifecycle::Active ||
+    SceneAssetLifecycle nextLifecycle = SceneAssetLifecycle::Active;
+    SceneAssetResidency nextResidency = SceneAssetResidency::CPUReady;
+    Resource::ResourceLoadError streamingError;
+    std::string streamingDiagnostic;
+    if (!uploadPending)
+    {
+        const Resource::ModelTextureStreamingSnapshot streaming =
+            model.GetTextureStreamingSnapshot();
+        switch (streaming.stage)
+        {
+            case Resource::ModelTextureStreamingStage::AwaitingMinimumResident:
+                nextResidency = SceneAssetResidency::MinimumResident;
+                break;
+            case Resource::ModelTextureStreamingStage::Decoding:
+            case Resource::ModelTextureStreamingStage::Uploading:
+                nextResidency = SceneAssetResidency::Streaming;
+                break;
+            case Resource::ModelTextureStreamingStage::Failed:
+                nextLifecycle = SceneAssetLifecycle::Failed;
+                nextResidency = SceneAssetResidency::MinimumResident;
+                streamingError = {
+                    Resource::ResourceLoadErrorCode::LoaderFailure,
+                    streaming.error.empty()
+                        ? "A streamed model texture failed"
+                        : streaming.error};
+                streamingDiagnostic = streamingError.message;
+                break;
+            case Resource::ModelTextureStreamingStage::Cancelled:
+                nextLifecycle = SceneAssetLifecycle::Cancelled;
+                nextResidency = SceneAssetResidency::MinimumResident;
+                streamingError = {
+                    Resource::ResourceLoadErrorCode::Cancelled,
+                    "Model texture streaming was cancelled"};
+                streamingDiagnostic = streamingError.message;
+                break;
+            case Resource::ModelTextureStreamingStage::None:
+            case Resource::ModelTextureStreamingStage::FullyResident:
+            default:
+                nextResidency = SceneAssetResidency::FullyResident;
+                break;
+        }
+    }
+    if (instance.status.lifecycle != nextLifecycle ||
         instance.status.residency != nextResidency)
     {
         ++instance.status.revision;
     }
-    instance.status.lifecycle = SceneAssetLifecycle::Active;
+    instance.status.lifecycle = nextLifecycle;
     instance.status.residency = nextResidency;
-    instance.status.progress = uploadPending ? 0.75f : 1.0f;
-    instance.status.error = {};
-    instance.status.diagnostic.clear();
+    if (nextResidency == SceneAssetResidency::CPUReady)
+        instance.status.progress = 0.75f;
+    else if (nextResidency == SceneAssetResidency::MinimumResident)
+        instance.status.progress = 0.8f;
+    else if (nextResidency == SceneAssetResidency::Streaming)
+    {
+        const Resource::ModelTextureStreamingSnapshot streaming =
+            model.GetTextureStreamingSnapshot();
+        instance.status.progress = streaming.textureCount == 0
+            ? 0.9f
+            : 0.8f + 0.19f *
+                  (static_cast<float32>(streaming.decodedTextureCount) /
+                   static_cast<float32>(streaming.textureCount));
+    }
+    else
+        instance.status.progress = 1.0f;
+    instance.status.error = std::move(streamingError);
+    instance.status.diagnostic = std::move(streamingDiagnostic);
     return instance.status;
 }
 
