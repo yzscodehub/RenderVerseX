@@ -977,7 +977,7 @@ namespace RVX::Tests
         const size_t inject =
             engine.find("CreateEngineRenderRuntimeCompositionServices(");
         const size_t initialize =
-            engine.find("return m_subsystems.InitializeAll(");
+            engine.find("const bool initialized = m_subsystems.InitializeAll(");
         ASSERT_NE(windowDependency, std::string::npos);
         ASSERT_NE(windowPrerequisite, std::string::npos);
         ASSERT_NE(resourceDependency, std::string::npos);
