@@ -1659,6 +1659,47 @@ TEST(DX12Validation, LargeMipTextureUploadKeepsCrossQueueTimelineAlive)
         "LargeMipTextureUploadKeepsCrossQueueTimelineAlive"));
 }
 
+TEST(DX12Validation, BlockCompressedSmallMipsUseLegalCopyFootprints)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    auto* dx12Device = static_cast<DX12Device*>(device.get());
+
+    // BC7 stores one 16-byte block for every 4x4 texel region. The final 2x2
+    // and 1x1 logical mips still require a 4x4-aligned D3D12 footprint.
+    constexpr uint32 Width = 8;
+    constexpr uint32 Height = 8;
+    constexpr uint32 MipLevels = 4;
+    constexpr size_t ByteCount = 64u + 16u + 16u + 16u;
+    std::array<uint8, ByteCount> blocks{};
+
+    GPUUploadService uploadService;
+    uploadService.Initialize(device.get());
+    ASSERT_TRUE(uploadService.IsInitialized());
+
+    GPUUploadTextureDesc desc;
+    desc.textureDesc =
+        RHITextureDesc::Texture2D(Width, Height, RHIFormat::BC7_UNORM);
+    desc.textureDesc.mipLevels = MipLevels;
+    desc.textureDesc.debugName = "DX12BC7SmallMipUpload";
+    desc.dataSize = blocks.size();
+    const GPUUploadTextureResult result =
+        uploadService.UploadTextureDataWithResult(desc, blocks.data());
+    ASSERT_TRUE(result.succeeded);
+    ASSERT_TRUE(result.isPending);
+    EXPECT_EQ(uploadService.FlushAndWaitForUploads(), 1U);
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+
+    uploadService.Shutdown();
+    device->WaitIdle();
+    EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(
+        *dx12Device,
+        "BlockCompressedSmallMipsUseLegalCopyFootprints"));
+}
+
 TEST(DX12Validation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)
 {
     RenderContextConfig config;

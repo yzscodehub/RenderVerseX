@@ -2507,11 +2507,27 @@ namespace RVX
         srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         srcLoc.PlacedFootprint.Offset = desc.bufferOffset;
         srcLoc.PlacedFootprint.Footprint.Format = dx12Dst->GetDXGIFormat();
-        srcLoc.PlacedFootprint.Footprint.Width = desc.textureRegion.width > 0 ? desc.textureRegion.width : dx12Dst->GetWidth();
-        srcLoc.PlacedFootprint.Footprint.Height = desc.textureRegion.height > 0 ? desc.textureRegion.height : dx12Dst->GetHeight();
+        const uint32 logicalWidth = desc.textureRegion.width > 0
+            ? desc.textureRegion.width
+            : dx12Dst->GetWidth();
+        const uint32 logicalHeight = desc.textureRegion.height > 0
+            ? desc.textureRegion.height
+            : dx12Dst->GetHeight();
+        const bool blockCompressed = IsCompressedFormat(dx12Dst->GetFormat());
+        srcLoc.PlacedFootprint.Footprint.Width = blockCompressed
+            ? (logicalWidth + 3u) & ~3u
+            : logicalWidth;
+        srcLoc.PlacedFootprint.Footprint.Height = blockCompressed
+            ? (logicalHeight + 3u) & ~3u
+            : logicalHeight;
         srcLoc.PlacedFootprint.Footprint.Depth = 1;
+        const uint32 sourceRowBytes = blockCompressed
+            ? (srcLoc.PlacedFootprint.Footprint.Width / 4u) *
+                  GetFormatBytesPerPixel(dx12Dst->GetFormat())
+            : srcLoc.PlacedFootprint.Footprint.Width *
+                  GetFormatBytesPerPixel(dx12Dst->GetFormat());
         srcLoc.PlacedFootprint.Footprint.RowPitch = desc.bufferRowPitch > 0 ? desc.bufferRowPitch
-            : ((srcLoc.PlacedFootprint.Footprint.Width * GetFormatBytesPerPixel(dx12Dst->GetFormat()) + 255) & ~255);
+            : ((sourceRowBytes + 255u) & ~255u);
 
         D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
         dstLoc.pResource = dx12Dst->GetResource();
@@ -2542,11 +2558,27 @@ namespace RVX
         dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         dstLoc.PlacedFootprint.Offset = desc.bufferOffset;
         dstLoc.PlacedFootprint.Footprint.Format = dx12Src->GetDXGIFormat();
-        dstLoc.PlacedFootprint.Footprint.Width = desc.textureRegion.width > 0 ? desc.textureRegion.width : dx12Src->GetWidth();
-        dstLoc.PlacedFootprint.Footprint.Height = desc.textureRegion.height > 0 ? desc.textureRegion.height : dx12Src->GetHeight();
+        const uint32 logicalWidth = desc.textureRegion.width > 0
+            ? desc.textureRegion.width
+            : dx12Src->GetWidth();
+        const uint32 logicalHeight = desc.textureRegion.height > 0
+            ? desc.textureRegion.height
+            : dx12Src->GetHeight();
+        const bool blockCompressed = IsCompressedFormat(dx12Src->GetFormat());
+        dstLoc.PlacedFootprint.Footprint.Width = blockCompressed
+            ? (logicalWidth + 3u) & ~3u
+            : logicalWidth;
+        dstLoc.PlacedFootprint.Footprint.Height = blockCompressed
+            ? (logicalHeight + 3u) & ~3u
+            : logicalHeight;
         dstLoc.PlacedFootprint.Footprint.Depth = 1;
+        const uint32 destinationRowBytes = blockCompressed
+            ? (dstLoc.PlacedFootprint.Footprint.Width / 4u) *
+                  GetFormatBytesPerPixel(dx12Src->GetFormat())
+            : dstLoc.PlacedFootprint.Footprint.Width *
+                  GetFormatBytesPerPixel(dx12Src->GetFormat());
         dstLoc.PlacedFootprint.Footprint.RowPitch = desc.bufferRowPitch > 0 ? desc.bufferRowPitch
-            : ((dstLoc.PlacedFootprint.Footprint.Width * GetFormatBytesPerPixel(dx12Src->GetFormat()) + 255) & ~255);
+            : ((destinationRowBytes + 255u) & ~255u);
 
         D3D12_BOX srcBox = {};
         srcBox.left = desc.textureRegion.x;
