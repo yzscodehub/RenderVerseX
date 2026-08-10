@@ -971,6 +971,44 @@ namespace RVX
             }
         }
 
+        void ValidateWholeBufferPassUsages(RenderGraphImpl& graph)
+        {
+            for (const auto& pass : graph.passes)
+            {
+                std::vector<RHIAccessSnapshot> physicalAccesses(
+                    graph.buffers.size());
+                std::vector<uint8> accessDeclared(graph.buffers.size(), 0);
+
+                for (const auto& usage : pass.usages)
+                {
+                    if (usage.type != ResourceType::Buffer ||
+                        usage.index >= graph.buffers.size())
+                    {
+                        continue;
+                    }
+
+                    if (accessDeclared[usage.index] == 0)
+                    {
+                        physicalAccesses[usage.index] = usage.desiredAccess;
+                        accessDeclared[usage.index] = 1;
+                        continue;
+                    }
+
+                    if (physicalAccesses[usage.index] != usage.desiredAccess)
+                    {
+                        graph.stats.validationErrorCount++;
+                        AddCompileError(
+                            graph,
+                            "RenderGraph pass '" + pass.name +
+                                "' requires incompatible accesses for buffer handle " +
+                                std::to_string(usage.index) +
+                                ", but the RHI supports only whole-resource buffer barriers");
+                        break;
+                    }
+                }
+            }
+        }
+
         bool ContainsIndex(const std::vector<uint32>& values, uint32 target)
         {
             return std::find(values.begin(), values.end(), target) != values.end();
@@ -1571,6 +1609,11 @@ namespace RVX
         graph.stats.explicitAliasingBarriersSupported =
             graph.hasCapabilitySnapshot &&
             graph.capabilitySnapshot.supportsExplicitAliasingBarriers;
+        const bool supportsBufferRangeBarriers =
+            !graph.hasCapabilitySnapshot ||
+            graph.capabilitySnapshot.supportsBufferRangeBarriers;
+        graph.stats.bufferRangeBarriersSupported =
+            supportsBufferRangeBarriers;
         graph.stats.compatibilityStateProjectionCount =
             graph.compatibilityStateProjectionCount;
         graph.passDependencies.clear();
@@ -1581,7 +1624,32 @@ namespace RVX
         graph.aliasedTextureCount = 0;
         graph.aliasedBufferCount = 0;
 
+        if (!supportsBufferRangeBarriers)
+        {
+            const auto nonUniformInitialAccess = std::find_if(
+                graph.buffers.begin(),
+                graph.buffers.end(),
+                [](const BufferResource& resource)
+                {
+                    return !resource.initialAccessSnapshot.rangeOverrides.empty();
+                });
+            if (nonUniformInitialAccess != graph.buffers.end())
+            {
+                graph.stats.compileValid = false;
+                ++graph.stats.validationErrorCount;
+                AddCompileError(
+                    graph,
+                    "RenderGraph compile failed: RHI does not support buffer range barriers but an initial buffer access snapshot is non-uniform");
+                graph.executionOrder.clear();
+                return;
+            }
+        }
+
         ValidatePassUsages(graph);
+        if (!supportsBufferRangeBarriers)
+        {
+            ValidateWholeBufferPassUsages(graph);
+        }
         if (graph.stats.validationErrorCount > 0)
         {
             graph.stats.compileValid = false;
@@ -2529,6 +2597,17 @@ namespace RVX
                     uint64 size = usage.hasRange ? usage.size : RVX_WHOLE_SIZE;
                     uint64 rangeSize = ResolveBufferRangeSize(offset, size, resource.desc.size);
                     bool isWhole = IsWholeBufferRange(offset, size, resource.desc.size);
+
+                    if (!supportsBufferRangeBarriers &&
+                        usage.hasRange &&
+                        !isWhole)
+                    {
+                        ++graph.stats.bufferRangeBarrierCollapseCount;
+                        offset = 0;
+                        size = RVX_WHOLE_SIZE;
+                        rangeSize = resource.desc.size;
+                        isWhole = true;
+                    }
 
                     if (resource.hasRangeTracking || (usage.hasRange && !isWhole))
                     {

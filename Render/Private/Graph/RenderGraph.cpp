@@ -2938,6 +2938,12 @@ namespace RVX
         ss << "Barriers: " << diagnostics.compileStats.barrierCount
            << " total (" << diagnostics.compileStats.textureBarrierCount << " texture, "
            << diagnostics.compileStats.bufferBarrierCount << " buffer)\n";
+        ss << "Buffer range barriers: "
+           << (diagnostics.compileStats.bufferRangeBarriersSupported
+                   ? "supported"
+                   : "whole-resource only")
+           << ", collapsed usages="
+           << diagnostics.compileStats.bufferRangeBarrierCollapseCount << "\n";
         ss << "Scoped access: mismatches="
            << diagnostics.compileStats.accessSnapshotMismatchCount
            << ", compatibility projections="
@@ -3213,6 +3219,10 @@ namespace RVX
         ss << "    \"barrierCount\": " << stats.barrierCount << ",\n";
         ss << "    \"textureBarrierCount\": " << stats.textureBarrierCount << ",\n";
         ss << "    \"bufferBarrierCount\": " << stats.bufferBarrierCount << ",\n";
+        ss << "    \"bufferRangeBarriersSupported\": "
+           << JsonBool(stats.bufferRangeBarriersSupported) << ",\n";
+        ss << "    \"bufferRangeBarrierCollapseCount\": "
+           << stats.bufferRangeBarrierCollapseCount << ",\n";
         ss << "    \"accessSnapshotMismatchCount\": " << stats.accessSnapshotMismatchCount << ",\n";
         ss << "    \"compatibilityStateProjectionCount\": " << stats.compatibilityStateProjectionCount << ",\n";
         ss << "    \"asyncComputeSupported\": " << JsonBool(stats.asyncComputeSupported) << ",\n";

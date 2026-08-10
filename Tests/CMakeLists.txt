@@ -1492,6 +1492,14 @@ set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
 
 target_compile_features(SampleReportContentValidation PRIVATE cxx_std_20)
 
+add_executable(SampleQualificationReportValidation
+    SampleQualificationReportValidation/main.cpp
+)
+set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
+    SampleQualificationReportValidation
+)
+target_compile_features(SampleQualificationReportValidation PRIVATE cxx_std_20)
+
 function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKEND_NAME BACKEND_LABEL)
     cmake_parse_arguments(
         RVX_SAMPLE
@@ -1722,7 +1730,8 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
     if(NOT RVX_ENABLE_EXTERNAL_ASSET_TESTS OR
        NOT TARGET RenderVerseSamples OR
        NOT TARGET ImageContentValidation OR
-       NOT TARGET SampleReportContentValidation)
+       NOT TARGET SampleReportContentValidation OR
+       NOT TARGET SampleQualificationReportValidation)
         return()
     endif()
     if(NOT RVX_EXTERNAL_TEST_ASSET_ROOT)
@@ -1773,7 +1782,7 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
             --frames 1
             --wait-ready
             --ready-timeout-ms 180000
-            --ready-max-frames 1024
+            --ready-max-frames 4096
             --width 320
             --height 180
             --quality low
@@ -1841,85 +1850,209 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
         DEPENDS ${test_prefix}Validation
     )
 
-    foreach(render_path direct gpu-driven)
-        if(render_path STREQUAL "direct")
-            set(path_label Direct)
-        else()
-            set(path_label GPUDriven)
-        endif()
-        set(lifetime_prefix "${test_prefix}${path_label}")
-        set(lifetime_report
-            "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_600.json")
-        set(lifetime_sample_report
-            "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_sample.json")
+    if(TARGET RVXCook)
+        set(cooked_output_root
+            "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerCookedPorsche")
+        set(cooked_model "${cooked_output_root}/scene.rva")
+        set(cooked_fixture RenderVerseSamplesExternalPorscheCookedModelFixture)
+    endif()
+    if(TARGET RVXCook AND NOT TEST ${cooked_fixture})
         add_test(
-            NAME ${lifetime_prefix}Lifetime600
-            COMMAND $<TARGET_FILE:RenderVerseSamples>
-                --sample model-viewer
+            NAME ${cooked_fixture}
+            COMMAND $<TARGET_FILE:RVXCook>
+                --source "${RVX_EXTERNAL_MODEL_ROOT}/models/free_1975_porsche_911_930_turbo"
+                --output "${cooked_output_root}"
+                --manifest "${cooked_output_root}/CookManifest.rvxmanifest"
+                --model-only
+                --non-recursive
+                --fail-on-errors
+        )
+        set_tests_properties(${cooked_fixture} PROPERTIES
+            LABELS "resource;cook;model;external-assets;qualification-fixture"
+            TIMEOUT 600
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+    endif()
+
+    foreach(asset_mode source cooked)
+        if(asset_mode STREQUAL "cooked" AND NOT TARGET RVXCook)
+            continue()
+        endif()
+        if(asset_mode STREQUAL "source")
+            set(mode_label Source)
+            set(model_arguments
                 --asset free-1975-porsche-911-930-turbo
                 --catalog "${external_catalog}"
-                --asset-root "${RVX_EXTERNAL_MODEL_ROOT}"
-                --backend ${BACKEND_NAME}
-                --render-path ${render_path}
-                --smoke
-                --frames 1
-                --wait-ready
-                --ready-timeout-ms 180000
-                --ready-max-frames 1024
-                --width 320
-                --height 180
-                --quality low
-                --deterministic-orbit
-                --lifetime-warmup-frames 120
-                --lifetime-observation-frames 480
-                --lifetime-report "${lifetime_report}"
-                --report "${lifetime_sample_report}"
-                --diagnostics
-                --validation
-        )
-        set_tests_properties(${lifetime_prefix}Lifetime600 PROPERTIES
-            LABELS "visual;gpu;sample;model-viewer;lifetime;external-assets;qualification;${BACKEND_NAME};${render_path}"
-            TIMEOUT 1200
-            WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
-        )
+                --asset-root "${RVX_EXTERNAL_MODEL_ROOT}")
+            set(mode_run_arguments --smoke)
+            set(mode_dependency "")
+        else()
+            set(mode_label Cooked)
+            set(model_arguments --model "${cooked_model}")
+            # The generated model product is intentionally outside the source
+            # catalog. It is still validation-enabled, but cannot claim the
+            # catalog-backed redistributable provenance required by --smoke.
+            set(mode_run_arguments "")
+            set(mode_dependency ${cooked_fixture})
+        endif()
 
-        if(RVX_ENABLE_LONG_RUNNING_QUALIFICATION_TESTS)
-            set(soak_report
-                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_10000.json")
-            set(soak_sample_report
-                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_10000_sample.json")
+        set(direct_capture "")
+        set(gpu_capture "")
+        set(direct_lifetime_test "")
+        set(gpu_lifetime_test "")
+        foreach(render_path direct gpu-driven)
+            if(render_path STREQUAL "direct")
+                set(path_label Direct)
+            else()
+                set(path_label GPUDriven)
+            endif()
+            if(asset_mode STREQUAL "source")
+                # Preserve the established source qualification test names.
+                set(lifetime_prefix "${test_prefix}${path_label}")
+            else()
+                set(lifetime_prefix "${test_prefix}${mode_label}${path_label}")
+            endif()
+            set(lifetime_report
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_600.json")
+            set(lifetime_sample_report
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_sample.json")
+            set(startup_report
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerStartup/${lifetime_prefix}.json")
+            set(lifetime_capture
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_320x180.ppm")
             add_test(
-                NAME ${lifetime_prefix}Lifetime10000
+                NAME ${lifetime_prefix}Lifetime600
                 COMMAND $<TARGET_FILE:RenderVerseSamples>
                     --sample model-viewer
-                    --asset free-1975-porsche-911-930-turbo
-                    --catalog "${external_catalog}"
-                    --asset-root "${RVX_EXTERNAL_MODEL_ROOT}"
+                    ${model_arguments}
                     --backend ${BACKEND_NAME}
                     --render-path ${render_path}
-                    --smoke
+                    ${mode_run_arguments}
                     --frames 1
                     --wait-ready
                     --ready-timeout-ms 180000
-                    --ready-max-frames 1024
+                    --ready-max-frames 4096
                     --width 320
                     --height 180
                     --quality low
                     --deterministic-orbit
+                    --startup-report "${startup_report}"
                     --lifetime-warmup-frames 120
-                    --lifetime-observation-frames 9880
-                    --lifetime-min-duration-ms 300000
-                    --lifetime-resize-interval 2400
-                    --lifetime-resize-settle-frames 60
-                    --lifetime-report "${soak_report}"
-                    --report "${soak_sample_report}"
+                    --lifetime-observation-frames 480
+                    --lifetime-resize-interval 240
+                    --lifetime-resize-settle-frames 30
+                    --lifetime-report "${lifetime_report}"
+                    --screenshot "${lifetime_capture}"
+                    --report "${lifetime_sample_report}"
                     --diagnostics
                     --validation
             )
-            set_tests_properties(${lifetime_prefix}Lifetime10000 PROPERTIES
-                LABELS "visual;gpu;sample;model-viewer;lifetime;soak;external-assets;qualification;${BACKEND_NAME};${render_path}"
-                TIMEOUT 3600
+            set_tests_properties(${lifetime_prefix}Lifetime600 PROPERTIES
+                LABELS "visual;gpu;sample;model-viewer;lifetime;external-assets;qualification;${asset_mode};${BACKEND_NAME};${render_path}"
+                TIMEOUT 1200
                 WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+            )
+            if(mode_dependency)
+                set_property(TEST ${lifetime_prefix}Lifetime600 PROPERTY
+                    DEPENDS ${mode_dependency})
+            endif()
+
+            set(qualification_test ${lifetime_prefix}QualificationValidation)
+            add_test(
+                NAME ${qualification_test}
+                COMMAND $<TARGET_FILE:SampleQualificationReportValidation>
+                    --startup-report "${startup_report}"
+                    --lifetime-report "${lifetime_report}"
+                    --sample-report "${lifetime_sample_report}"
+                    --backend ${BACKEND_NAME}
+                    --render-path ${render_path}
+                    --asset-mode ${asset_mode}
+                    --expected-texture-count 27
+                    --expected-visible-objects 75
+                    --max-first-present-ms 5000
+                    --require-resize
+            )
+            set_tests_properties(${qualification_test} PROPERTIES
+                LABELS "diagnostics;sample;model-viewer;startup;residency;lifetime;qualification;${asset_mode};${BACKEND_NAME};${render_path}"
+                TIMEOUT 30
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                DEPENDS ${lifetime_prefix}Lifetime600
+            )
+
+            if(render_path STREQUAL "direct")
+                set(direct_capture "${lifetime_capture}")
+                set(direct_lifetime_test ${lifetime_prefix}Lifetime600)
+            else()
+                set(gpu_capture "${lifetime_capture}")
+                set(gpu_lifetime_test ${lifetime_prefix}Lifetime600)
+            endif()
+
+            if(RVX_ENABLE_LONG_RUNNING_QUALIFICATION_TESTS)
+                set(soak_report
+                    "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_10000.json")
+                set(soak_sample_report
+                    "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${lifetime_prefix}_10000_sample.json")
+                set(soak_startup_report
+                    "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerStartup/${lifetime_prefix}_10000.json")
+                add_test(
+                    NAME ${lifetime_prefix}Lifetime10000
+                    COMMAND $<TARGET_FILE:RenderVerseSamples>
+                        --sample model-viewer
+                        ${model_arguments}
+                        --backend ${BACKEND_NAME}
+                        --render-path ${render_path}
+                        ${mode_run_arguments}
+                        --frames 1
+                        --wait-ready
+                        --ready-timeout-ms 180000
+                        --ready-max-frames 4096
+                        --width 320
+                        --height 180
+                        --quality low
+                        --deterministic-orbit
+                        --startup-report "${soak_startup_report}"
+                        --lifetime-warmup-frames 120
+                        --lifetime-observation-frames 9880
+                        --lifetime-min-duration-ms 300000
+                        --lifetime-resize-interval 2400
+                        --lifetime-resize-settle-frames 60
+                        --lifetime-report "${soak_report}"
+                        --report "${soak_sample_report}"
+                        --diagnostics
+                        --validation
+                )
+                set_tests_properties(${lifetime_prefix}Lifetime10000 PROPERTIES
+                    LABELS "visual;gpu;sample;model-viewer;lifetime;soak;external-assets;qualification;${asset_mode};${BACKEND_NAME};${render_path}"
+                    TIMEOUT 3600
+                    WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+                )
+                if(mode_dependency)
+                    set_property(TEST ${lifetime_prefix}Lifetime10000 PROPERTY
+                        DEPENDS ${mode_dependency})
+                endif()
+            endif()
+        endforeach()
+
+        if(TARGET VisualGoldenValidation)
+            set(path_parity_report
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${test_prefix}${mode_label}DirectGPUParity.json")
+            set(path_parity_diff
+                "${CMAKE_BINARY_DIR}/artifacts/$<CONFIG>/ModelViewerLifetime/${test_prefix}${mode_label}DirectGPUParity.diff.ppm")
+            add_test(
+                NAME ${test_prefix}${mode_label}DirectGPUParity
+                COMMAND $<TARGET_FILE:VisualGoldenValidation>
+                    --expected "${direct_capture}"
+                    --actual "${gpu_capture}"
+                    --diff "${path_parity_diff}"
+                    --report "${path_parity_report}"
+                    --tolerance 0.0
+                    --max-different-pixels 0
+            )
+            set_tests_properties(${test_prefix}${mode_label}DirectGPUParity PROPERTIES
+                LABELS "visual;gpu;sample;model-viewer;lifetime;parity;external-assets;qualification;${asset_mode};${BACKEND_NAME}"
+                TIMEOUT 30
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                DEPENDS "${direct_lifetime_test};${gpu_lifetime_test}"
             )
         endif()
     endforeach()

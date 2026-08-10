@@ -1011,8 +1011,27 @@ namespace RVX
                 nativeBarrier.AccessBefore,
                 nativeBarrier.AccessAfter);
             nativeBarrier.pResource = dx12Buffer->GetResource();
-            nativeBarrier.Offset = 0;
-            nativeBarrier.Size = UINT64_MAX;
+            const uint64 bufferSize = dx12Buffer->GetSize();
+            if (barrier.offset >= bufferSize)
+            {
+                RVX_RHI_ERROR(
+                    "DX12 enhanced buffer barrier range starts beyond the resource (offset={}, size={})",
+                    barrier.offset,
+                    bufferSize);
+                return;
+            }
+            const uint64 remainingSize = bufferSize - barrier.offset;
+            const uint64 requestedSize =
+                barrier.size == RVX_WHOLE_SIZE
+                    ? remainingSize
+                    : std::min(barrier.size, remainingSize);
+            if (requestedSize == 0)
+            {
+                RVX_RHI_ERROR("DX12 enhanced buffer barrier resolved to an empty range");
+                return;
+            }
+            nativeBarrier.Offset = barrier.offset;
+            nativeBarrier.Size = requestedSize;
             QueueEnhancedBarrier(nativeBarrier);
             return;
         }

@@ -1439,6 +1439,7 @@ TEST(VulkanValidation, DescriptorAndBarrierCapabilities)
     EXPECT_TRUE(caps.supportsDynamicDescriptorOffsets);
     EXPECT_GE(caps.maxDescriptorSets, 4u);
     EXPECT_TRUE(caps.supportsExplicitResourceBarriers);
+    EXPECT_TRUE(caps.supportsBufferRangeBarriers);
     EXPECT_FALSE(caps.emulatesResourceBarriers);
     EXPECT_FALSE(caps.supportsSplitBarrier);
 }

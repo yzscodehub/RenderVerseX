@@ -375,6 +375,11 @@ namespace RVX
         {
             fail("split barriers require explicit resource barriers");
         }
+        if (capabilities.supportsBufferRangeBarriers &&
+            !capabilities.supportsExplicitResourceBarriers)
+        {
+            fail("buffer range barriers require explicit resource barriers");
+        }
         if (capabilities.supportsExplicitAliasingBarriers &&
             !capabilities.supportsExplicitResourceBarriers)
         {
@@ -628,6 +633,14 @@ namespace RVX
             !capabilities.dx12.supportsEnhancedBarriers)
         {
             fail("DX12 enhanced barrier dialect requires native enhanced barrier support");
+        }
+
+        if (capabilities.backendType == RHIBackendType::DX12 &&
+            capabilities.supportsBufferRangeBarriers !=
+                (capabilities.dx12.barrierDialect ==
+                 DX12BarrierDialect::Enhanced))
+        {
+            fail("DX12 buffer range barrier support must match the selected barrier dialect");
         }
 
         if (capabilities.backendType == RHIBackendType::Vulkan &&

@@ -71,6 +71,19 @@ namespace RVX
             static_cast<void>(width);
             static_cast<void>(height);
         }
+        /**
+         * @brief Put an interaction qualification into a deterministic capture state.
+         *
+         * Called once after the sustained interaction window and any surface
+         * resize have completed, one frame before the capture is submitted.
+         */
+        virtual bool PrepareQualificationCapture(SampleContext& context,
+                                                 std::string& outError)
+        {
+            static_cast<void>(context);
+            static_cast<void>(outError);
+            return true;
+        }
         virtual void AppendReport(SampleFeatureReporter& reporter) const = 0;
         virtual SampleReadiness GetReadiness(
             const SampleRenderDiagnostics& diagnostics) const

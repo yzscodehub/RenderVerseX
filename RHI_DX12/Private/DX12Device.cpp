@@ -1308,6 +1308,8 @@ namespace RVX
         m_capabilities.supportsDynamicDescriptorOffsets = true;
         m_capabilities.maxDescriptorSets = 4;
         m_capabilities.supportsExplicitResourceBarriers = true;
+        m_capabilities.supportsBufferRangeBarriers =
+            m_capabilities.dx12.barrierDialect == DX12BarrierDialect::Enhanced;
         m_capabilities.supportsExplicitAliasingBarriers = true;
         m_capabilities.emulatesResourceBarriers = false;
         m_capabilities.supportsMemoryBudgetQuery = true;        // DXGI supports memory budget

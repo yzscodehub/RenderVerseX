@@ -226,7 +226,9 @@ namespace RVX
             m_renderablesEnabled = true;
         }
         if (m_renderablesEnabled &&
-            m_modelActivated && context.options.deterministicCameraOrbit)
+            m_modelActivated &&
+            context.options.deterministicCameraOrbit &&
+            !m_qualificationCapturePrepared)
         {
             SampleOrbitCameraInput input;
             input.orbitActive = true;
@@ -247,6 +249,28 @@ namespace RVX
             m_orbitCamera.ApplyInput(input, context.camera);
             ++m_automationFrameCount;
         }
+    }
+
+    bool ModelViewerSample::PrepareQualificationCapture(
+        SampleContext& context,
+        std::string& outError)
+    {
+        if (!context.options.deterministicCameraOrbit)
+        {
+            m_qualificationCapturePrepared = true;
+            return true;
+        }
+        if (!m_modelActivated || !m_orbitCamera.IsInitialized())
+        {
+            outError =
+                "Model Viewer cannot prepare a deterministic capture before camera activation";
+            return false;
+        }
+
+        m_orbitCamera.Reset();
+        m_orbitCamera.Apply(context.camera);
+        m_qualificationCapturePrepared = true;
+        return true;
     }
 
     void ModelViewerSample::OnInput(SampleContext& context)
@@ -336,6 +360,10 @@ namespace RVX
                 reporter.ResourceDiagnostic(
                     "camera distance=" +
                     std::to_string(m_cameraFrame.distance));
+                if (m_qualificationCapturePrepared)
+                {
+                    reporter.Enable("QualificationCaptureReset");
+                }
             }
         }
         if (m_environment.IsValid())

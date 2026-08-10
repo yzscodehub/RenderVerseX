@@ -1264,6 +1264,7 @@ namespace RVX
         bool lifetimeReportWritten = true;
         bool resizePending = false;
         bool resizeToAlternateExtent = true;
+        bool qualificationCapturePrepared = false;
         bool firstModelFramePresentedRecorded = false;
         uint32 pendingResizeWidth = 0;
         uint32 pendingResizeHeight = 0;
@@ -1378,7 +1379,11 @@ namespace RVX
                           executedFrames >= options.common.frames) ||
                          (lifetimeQualification &&
                           lifetimeQualification->IsComplete() &&
-                          !lifetimeQualification->HasFailed()));
+                          !lifetimeQualification->HasFailed() &&
+                          qualificationCapturePrepared &&
+                          !resizePending &&
+                          diagnostics.surfaceWidth == options.common.width &&
+                          diagnostics.surfaceHeight == options.common.height));
                     const bool captureFrame =
                         !options.common.screenshotPath.empty() &&
                         (fixedCaptureFrame || readyCaptureFrame);
@@ -1507,6 +1512,60 @@ namespace RVX
                             diagnostics,
                             CaptureSampleProcessMemory(),
                             elapsedMs);
+
+                        // A qualification resize may leave the native surface
+                        // at its alternate extent when the observation window
+                        // completes. Restore the requested baseline before
+                        // queuing the final capture so capture metadata, the
+                        // swap chain, and the sample camera agree on one extent.
+                        if (lifetimeQualification->IsComplete() &&
+                            !lifetimeQualification->HasFailed() &&
+                            !options.common.screenshotPath.empty() &&
+                            !resizePending &&
+                            (diagnostics.surfaceWidth != options.common.width ||
+                             diagnostics.surfaceHeight != options.common.height))
+                        {
+                            pendingResizeWidth = options.common.width;
+                            pendingResizeHeight = options.common.height;
+                            if (!window->RequestResize(pendingResizeWidth,
+                                                       pendingResizeHeight))
+                            {
+                                lifetimeQualification->Fail(
+                                    "Failed to restore the capture surface extent");
+                                error =
+                                    "Failed to restore the capture surface extent";
+                                engine.RequestShutdown();
+                            }
+                            else
+                            {
+                                resizePending = true;
+                            }
+                        }
+
+                        if (lifetimeQualification->IsComplete() &&
+                            !lifetimeQualification->HasFailed() &&
+                            !options.common.screenshotPath.empty() &&
+                            !qualificationCapturePrepared &&
+                            !resizePending &&
+                            diagnostics.surfaceWidth == options.common.width &&
+                            diagnostics.surfaceHeight == options.common.height)
+                        {
+                            if (!sample->PrepareQualificationCapture(
+                                    context, error))
+                            {
+                                if (error.empty())
+                                {
+                                    error =
+                                        "Sample failed to prepare its deterministic qualification capture";
+                                }
+                                lifetimeQualification->Fail(error);
+                                engine.RequestShutdown();
+                            }
+                            else
+                            {
+                                qualificationCapturePrepared = true;
+                            }
+                        }
 
                         if (lifetimeQualification->HasFailed())
                         {

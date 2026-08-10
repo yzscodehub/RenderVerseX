@@ -1287,6 +1287,7 @@ namespace RVX
         m_capabilities.supportsDynamicDescriptorOffsets = true;
         m_capabilities.maxDescriptorSets = 4;
         m_capabilities.supportsExplicitResourceBarriers = true;
+        m_capabilities.supportsBufferRangeBarriers = true;
         m_capabilities.emulatesResourceBarriers = false;
         m_capabilities.supportsMemoryBudgetQuery = m_enabledMemoryBudget;
         m_capabilities.supportsPersistentMapping = true;        // Vulkan supports persistent mapping

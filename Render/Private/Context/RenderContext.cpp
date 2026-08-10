@@ -690,9 +690,38 @@ void RenderContext::DestroyCommandContexts()
 
 bool RenderContext::WaitForSurfaceGeneration()
 {
+    if (m_frameActive || m_queueSubmissionPending || m_pendingGraphExecution)
+    {
+        RVX_CORE_ERROR(
+            "RenderContext: Cannot retire a surface generation while frame recording is active");
+        return false;
+    }
+
     if (!m_frameSynchronizer.WaitForAllFrames())
     {
         return false;
+    }
+
+    // Waiting establishes GPU completion, but it does not release the
+    // completion-owned graph executions. Imported swap-chain textures and
+    // their explicit views are deliberately retained by those executions.
+    // Retire every frame slot before the backend releases its back buffers;
+    // otherwise DXGI ResizeBuffers observes outstanding references and Vulkan
+    // can destroy a surface while graph-owned views still exist.
+    for (uint32 slot = 0; slot < RVX_MAX_FRAME_COUNT; ++slot)
+    {
+        if (m_inFlightGraphExecutions[slot])
+        {
+            if (!m_inFlightGraphExecutions[slot]->Retire())
+            {
+                RVX_CORE_ERROR(
+                    "RenderContext: Frame slot {} rejected completed surface retirement",
+                    slot);
+                return false;
+            }
+            m_inFlightGraphExecutions[slot].reset();
+        }
+        m_inFlightQueueContexts[slot].clear();
     }
 
     // Compatibility trackers perform at most one bounded WaitIdle while

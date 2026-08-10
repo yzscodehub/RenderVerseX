@@ -100,9 +100,18 @@ namespace
         void BeginEvent(const char*, uint32 = 0) override {}
         void EndEvent() override {}
         void SetMarker(const char*, uint32 = 0) override {}
-        void BufferBarrier(const RHIBufferBarrier&) override {}
+        void BufferBarrier(const RHIBufferBarrier& barrier) override
+        {
+            bufferBarriers.push_back(barrier);
+        }
         void TextureBarrier(const RHITextureBarrier&) override {}
-        void Barriers(std::span<const RHIBufferBarrier>, std::span<const RHITextureBarrier>) override {}
+        void Barriers(std::span<const RHIBufferBarrier> buffers,
+                      std::span<const RHITextureBarrier>) override
+        {
+            bufferBarriers.insert(bufferBarriers.end(),
+                                  buffers.begin(),
+                                  buffers.end());
+        }
         void BeginBarrier(const RHIBufferBarrier&) override {}
         void BeginBarrier(const RHITextureBarrier&) override {}
         void EndBarrier(const RHIBufferBarrier&) override {}
@@ -155,6 +164,7 @@ namespace
         void WaitFence(RHIFence*, uint64) override {}
 
         uint32 copyCount = 0;
+        std::vector<RHIBufferBarrier> bufferBarriers;
     private:
         RHICommandQueueType m_queue = RHICommandQueueType::Graphics;
     };
@@ -177,6 +187,9 @@ namespace
             m_capabilities.supportsExplicitResourceBarriers = true;
             m_capabilities.supportsDefaultQueueFenceSignal = !compatibility;
             m_capabilities.supportsExplicitQueueFenceSignal = !compatibility;
+            m_capabilities.supportsQueueFenceWait = !compatibility;
+            m_capabilities.supportsMultiQueueBatchSubmit = !compatibility;
+            m_capabilities.supportsQueueSubmissionPlan = !compatibility;
             m_capabilities.emulatesQueueFences = compatibility;
             m_capabilities.supportsAsyncCompute = !compatibility;
             m_capabilities.dx12.resourceBindingTier = 2;
@@ -227,7 +240,11 @@ namespace
         RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc&) override { return {}; }
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc&) override { return {}; }
         RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc&) override { return {}; }
-        RHICommandContextRef CreateCommandContext(RHICommandQueueType) override { return {}; }
+        RHICommandContextRef CreateCommandContext(
+            RHICommandQueueType type) override
+        {
+            return RHICommandContextRef(new FakeCommandContext(type));
+        }
         uint64 SubmitCommandContext(RHICommandContext*, RHIFence* fence = nullptr) override
         {
             return fence ? static_cast<FakeFence*>(fence)->Allocate() : 0;
@@ -837,6 +854,205 @@ namespace
             retryGraph, nullptr, database.GetCommittedVersion()).has_value());
         uploader.ReleaseUnsubmittedFrame();
         batch.ReleaseUnsubmitted(retirement);
+    }
+
+    TEST(GPUSceneUploadValidation,
+         PersistentTableOwnershipSurvivesAFrameBoundaryWithoutRedundantAcquire)
+    {
+        FakeDevice device;
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        GPUSceneUploader uploader;
+        ASSERT_TRUE(uploader.Initialize(&device, &tracker));
+        GPUSceneDatabase database;
+        GPUSceneTransaction add;
+        add.Add(MakeObject(1, 1.0F));
+        ASSERT_TRUE(database.Commit(add).Succeeded());
+        const uint64 version = database.GetCommittedVersion();
+        uploader.Observe(database.GetCommittedMirror(),
+                         database.GetLastChangeSet());
+
+        FakeCommandContext uploadContext;
+        RecordAndExecute(uploader, device, uploadContext);
+        const GPUCompletionPoint uploadPoint = tracker.Submit(&uploadContext);
+        ASSERT_NE(uploadPoint.value, 0U);
+        GPUCompletionToken uploadToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(uploadToken, uploadPoint));
+        uploader.NotifySubmission(uploadToken);
+        CompleteToken(device, uploadToken);
+
+        struct ComputeReadData
+        {
+            std::array<RGBufferHandle, GPU_SCENE_RESIDENT_TABLE_COUNT> tables;
+            RGBufferHandle sink;
+        };
+        struct GraphicsReadData
+        {
+            RGBufferHandle primitive;
+            RGBufferHandle transform;
+            RGBufferHandle sink;
+        };
+        const auto recordGPUSceneFrame = [&device](
+            RenderGraph& graph,
+            const GPUSceneResidentGraphLease& lease,
+            RenderGraph::RecordedQueueSubmission& recorded)
+        {
+            RHIBufferDesc sinkDesc;
+            sinkDesc.size = sizeof(uint32);
+            sinkDesc.stride = sizeof(uint32);
+            sinkDesc.usage = RHIBufferUsage::Structured |
+                             RHIBufferUsage::UnorderedAccess;
+            sinkDesc.memoryType = RHIMemoryType::Default;
+            sinkDesc.debugName = "GPUScene.PersistentOwnershipSink";
+            const RHIBufferRef computeSink = device.CreateBuffer(sinkDesc);
+            const RHIBufferRef graphicsSink = device.CreateBuffer(sinkDesc);
+            EXPECT_NE(computeSink, nullptr);
+            EXPECT_NE(graphicsSink, nullptr);
+            const RGBufferHandle computeSinkHandle = graph.ImportBuffer(
+                computeSink,
+                MakeRHIBufferAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    GPUQueueDomain::Graphics,
+                    RHIContentValidity::Valid));
+            const RGBufferHandle graphicsSinkHandle = graph.ImportBuffer(
+                graphicsSink,
+                MakeRHIBufferAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    GPUQueueDomain::Graphics,
+                    RHIContentValidity::Valid));
+
+            graph.AddPass<ComputeReadData>(
+                "GPUScene.PersistentComputeRead",
+                RenderGraphPassType::Compute,
+                [lease, computeSinkHandle](RenderGraphBuilder& builder,
+                                           ComputeReadData& data)
+                {
+                    for (uint32 tableIndex = 0;
+                         tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+                         ++tableIndex)
+                    {
+                        data.tables[tableIndex] = builder.Read(
+                            lease.handles[tableIndex],
+                            MakeRGAccessDesc(
+                                RHIResourceState::ShaderResource,
+                                RHIShaderStage::Compute));
+                    }
+                    data.sink = builder.Write(
+                        computeSinkHandle,
+                        MakeRGAccessDesc(
+                            RHIResourceState::UnorderedAccess,
+                            RHIShaderStage::Compute));
+                },
+                [](const ComputeReadData&, RHICommandContext&) {});
+            graph.AddPass<GraphicsReadData>(
+                "GPUScene.PersistentGraphicsRead",
+                RenderGraphPassType::Graphics,
+                [lease, graphicsSinkHandle](RenderGraphBuilder& builder,
+                                            GraphicsReadData& data)
+                {
+                    data.primitive = builder.Read(
+                        lease.handles[static_cast<uint32>(
+                            GPUSceneResidentTable::Primitives)],
+                        MakeRGAccessDesc(
+                            RHIResourceState::ShaderResource,
+                            RHIShaderStage::Vertex));
+                    data.transform = builder.Read(
+                        lease.handles[static_cast<uint32>(
+                            GPUSceneResidentTable::Transforms)],
+                        MakeRGAccessDesc(
+                            RHIResourceState::ShaderResource,
+                            RHIShaderStage::Vertex));
+                    data.sink = builder.Write(
+                        graphicsSinkHandle,
+                        MakeRGAccessDesc(
+                            RHIResourceState::UnorderedAccess,
+                            RHIShaderStage::Pixel));
+                },
+                [](const GraphicsReadData&, RHICommandContext&) {});
+
+            RenderGraphCompileOptions options;
+            options.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+            options.capabilities = device.GetCapabilities();
+            options.hasCapabilitySnapshot = true;
+            RenderGraphValidationAccess::Compile(graph, options);
+            EXPECT_TRUE(graph.GetCompileStats().compileValid);
+            EXPECT_EQ(graph.GetQueueExecutionMode(),
+                      RenderGraph::QueueExecutionMode::MultiQueue);
+            EXPECT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(
+                graph, recorded));
+        };
+
+        RenderGraph firstGraph;
+        RenderGraphValidationAccess::SetDevice(firstGraph, &device);
+        const std::optional<GPUSceneResidentGraphLease> firstLease =
+            uploader.AcquireCurrentGraphLease(firstGraph, nullptr, version);
+        ASSERT_TRUE(firstLease.has_value());
+        RenderGraph::RecordedQueueSubmission firstRecorded;
+        recordGPUSceneFrame(firstGraph, *firstLease, firstRecorded);
+        ASSERT_FALSE(firstRecorded.ownedContexts.empty());
+        uploader.CommitRealizedAccess(firstGraph);
+
+        FakeCommandContext terminalContext;
+        const GPUCompletionPoint firstReadPoint = tracker.Submit(&terminalContext);
+        ASSERT_NE(firstReadPoint.value, 0U);
+        GPUCompletionToken firstReadToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(firstReadToken, firstReadPoint));
+        uploader.NotifySubmission(firstReadToken);
+
+        RenderGraph secondGraph;
+        RenderGraphValidationAccess::SetDevice(secondGraph, &device);
+        const std::optional<GPUSceneResidentGraphLease> secondLease =
+            uploader.AcquireCurrentGraphLease(secondGraph, nullptr, version);
+        ASSERT_TRUE(secondLease.has_value());
+        RenderGraph::RecordedQueueSubmission secondRecorded;
+        recordGPUSceneFrame(secondGraph, *secondLease, secondRecorded);
+
+        const RenderGraph::SubmissionPlan plan = secondGraph.GetSubmissionPlan();
+        const auto releaseBatch = std::find_if(
+            plan.queueBatches.begin(),
+            plan.queueBatches.end(),
+            [](const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+            {
+                return batch.syntheticInitialRelease &&
+                       batch.queue ==
+                           RenderGraph::DiagnosticExecutionQueue::Graphics;
+            });
+        ASSERT_NE(releaseBatch, plan.queueBatches.end());
+        ASSERT_LT(releaseBatch->batchIndex,
+                  secondRecorded.ownedContexts.size());
+        const auto* releaseContext = static_cast<const FakeCommandContext*>(
+            secondRecorded.ownedContexts[releaseBatch->batchIndex].Get());
+        ASSERT_NE(releaseContext, nullptr);
+
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+             ++tableIndex)
+        {
+            const bool releasedFromGraphics = std::any_of(
+                releaseContext->bufferBarriers.begin(),
+                releaseContext->bufferBarriers.end(),
+                [&, tableIndex](const RHIBufferBarrier& barrier)
+                {
+                    return barrier.buffer ==
+                               secondLease->buffers[tableIndex].Get() &&
+                           barrier.accessBefore.domain ==
+                               GPUQueueDomain::Graphics &&
+                           barrier.accessAfter.domain ==
+                               GPUQueueDomain::Compute &&
+                           HasDependencyKind(
+                               barrier.dependencyKind,
+                               RHIDependencyKind::Ownership);
+                });
+            const bool rasterTable =
+                tableIndex == static_cast<uint32>(
+                                  GPUSceneResidentTable::Primitives) ||
+                tableIndex == static_cast<uint32>(
+                                  GPUSceneResidentTable::Transforms);
+            EXPECT_EQ(releasedFromGraphics, rasterTable) << tableIndex;
+        }
+        uploader.ReleaseUnsubmittedFrame();
     }
 
     TEST(GPUSceneUploadValidation,

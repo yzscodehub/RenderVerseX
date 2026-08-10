@@ -883,6 +883,9 @@ TEST(DX12Validation, CapabilitiesReflectNativeFeatureQueriesAndCreatePipelineLay
               capabilities.dx12.supportsEnhancedBarriers
                   ? DX12BarrierDialect::Enhanced
                   : DX12BarrierDialect::Legacy);
+    EXPECT_EQ(capabilities.supportsBufferRangeBarriers,
+              capabilities.dx12.barrierDialect ==
+                  DX12BarrierDialect::Enhanced);
 
     if (SUCCEEDED(shaderModelResult) &&
         nativeShaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_0)

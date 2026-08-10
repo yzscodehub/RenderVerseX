@@ -566,6 +566,10 @@ namespace RVX::Tests
         EXPECT_NE(accessHeader.find("RHIDiscardIntent"), std::string::npos);
         EXPECT_NE(dx12.find("D3D12_RESOURCE_BARRIER_TYPE_UAV"), std::string::npos);
         EXPECT_NE(dx12.find("RHIDependencyKind::Memory"), std::string::npos);
+        EXPECT_NE(dx12.find("nativeBarrier.Offset = barrier.offset"),
+                  std::string::npos);
+        EXPECT_NE(dx12.find("nativeBarrier.Size = requestedSize"),
+                  std::string::npos);
         EXPECT_NE(vulkanCommon.find("struct VulkanPipelineStageSupport"),
                   std::string::npos);
         EXPECT_NE(vulkanCommon.find("ToVkPipelineStageFlags2("),
@@ -594,9 +598,32 @@ namespace RVX::Tests
                   std::string::npos);
 
         capabilities.dx12.supportsEnhancedBarriers = true;
+        capabilities.supportsBufferRangeBarriers = true;
         EXPECT_TRUE(ValidateRHICapabilities(capabilities));
         EXPECT_STREQ(GetDX12BarrierDialectName(capabilities.dx12.barrierDialect),
                      "Enhanced");
+    }
+
+    TEST(RHIContractValidation, BufferRangeBarrierCapabilityIsFailClosed)
+    {
+        RHICapabilities capabilities =
+            MakeValidCapabilities(RHIBackendType::Vulkan);
+        capabilities.supportsBufferRangeBarriers = true;
+        capabilities.supportsExplicitResourceBarriers = false;
+        RHICapabilityValidationResult result =
+            ValidateRHICapabilities(capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_NE(result.message.find(
+                      "buffer range barriers require explicit resource barriers"),
+                  std::string::npos);
+
+        capabilities = MakeValidCapabilities(RHIBackendType::DX12);
+        capabilities.supportsBufferRangeBarriers = true;
+        result = ValidateRHICapabilities(capabilities);
+        EXPECT_FALSE(result);
+        EXPECT_NE(result.message.find(
+                      "must match the selected barrier dialect"),
+                  std::string::npos);
     }
 
     TEST(RHIContractValidation, LifetimeOwnersCommitScopedSnapshots)

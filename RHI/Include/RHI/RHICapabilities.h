@@ -114,6 +114,7 @@ namespace RVX
         bool supportsDynamicDescriptorOffsets = false; // Dynamic buffer offsets are supported by descriptor-set binding.
         uint32 maxDescriptorSets = 0;               // Maximum descriptor set slots supported by the base contract.
         bool supportsExplicitResourceBarriers = false; // Backend requires/supports explicit resource barrier commands.
+        bool supportsBufferRangeBarriers = false;   // Backend can independently synchronize byte ranges of one buffer.
         bool supportsExplicitAliasingBarriers = false; // Backend can order placed resources that reuse the same memory.
         bool emulatesResourceBarriers = false;      // Barrier API is emulated/no-op because backend tracks transitions implicitly.
 

@@ -21,6 +21,8 @@ namespace RVX
         void OnViewportResize(SampleContext& context,
                               uint32 width,
                               uint32 height) override;
+        bool PrepareQualificationCapture(SampleContext& context,
+                                         std::string& outError) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
         SampleReadiness GetReadiness(
             const SampleRenderDiagnostics& diagnostics) const override;
@@ -44,6 +46,7 @@ namespace RVX
         bool m_modelActivated = false;
         bool m_renderablesEnabled = false;
         bool m_textureEnvironment = false;
+        bool m_qualificationCapturePrepared = false;
         bool m_skyboxCreated = false;
         bool m_lightCreated = false;
     };

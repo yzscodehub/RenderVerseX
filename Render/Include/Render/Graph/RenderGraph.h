@@ -411,6 +411,8 @@ namespace RVX
             uint32 barrierCount = 0;
             uint32 textureBarrierCount = 0;
             uint32 bufferBarrierCount = 0;
+            bool bufferRangeBarriersSupported = false;
+            uint32 bufferRangeBarrierCollapseCount = 0;
             uint32 mergedBarrierCount = 0;
             uint32 mergedTextureBarrierCount = 0;
             uint32 mergedBufferBarrierCount = 0;

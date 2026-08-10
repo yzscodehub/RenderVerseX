@@ -237,6 +237,8 @@ namespace
     public:
         FakeDevice()
         {
+            m_capabilities.supportsExplicitResourceBarriers = true;
+            m_capabilities.supportsBufferRangeBarriers = true;
             m_capabilities.queueTopology.logicalQueueDomains[
                 static_cast<uint8>(RHICommandQueueType::Compute)] =
                 GPUQueueDomain::Compute;
@@ -369,6 +371,7 @@ namespace
             m_capabilities.supportsDynamicDescriptorOffsets = true;
             m_capabilities.maxDescriptorSets = 4;
             m_capabilities.supportsExplicitResourceBarriers = true;
+            m_capabilities.supportsBufferRangeBarriers = false;
             m_capabilities.supportsDefaultQueueFenceSignal = true;
             m_capabilities.supportsExplicitQueueFenceSignal = true;
             m_capabilities.supportsAsyncCompute = true;
@@ -1906,6 +1909,8 @@ TEST(RenderGraphValidation, DiagnosticsSnapshotReportsPassResourcesLifetimesAndM
     EXPECT_NE(dump.find("ProduceColor"), std::string::npos);
     EXPECT_NE(dump.find("DiagnosticColor"), std::string::npos);
     EXPECT_NE(dump.find("Estimated transient memory"), std::string::npos);
+    EXPECT_NE(dump.find("Buffer range barriers: supported"),
+              std::string::npos);
 
     std::string json = graph.ExportDiagnosticsJson();
     EXPECT_NE(json.find("\"schemaVersion\": 7"), std::string::npos);
@@ -1916,6 +1921,10 @@ TEST(RenderGraphValidation, DiagnosticsSnapshotReportsPassResourcesLifetimesAndM
     EXPECT_NE(json.find("\"contentHash\": \"\""), std::string::npos);
     EXPECT_NE(json.find("\"relativePath\": \"\""), std::string::npos);
     EXPECT_NE(json.find("\"compile\": {"), std::string::npos);
+    EXPECT_NE(json.find("\"bufferRangeBarriersSupported\": true"),
+              std::string::npos);
+    EXPECT_NE(json.find("\"bufferRangeBarrierCollapseCount\": 0"),
+              std::string::npos);
     EXPECT_NE(json.find("\"execution\": {"), std::string::npos);
     EXPECT_NE(json.find("\"memory\": {"), std::string::npos);
     EXPECT_NE(json.find("\"schedule\": {"), std::string::npos);
@@ -3571,6 +3580,218 @@ TEST(RenderGraphValidation,
         GPUQueueDomain::Graphics,
         dirtyOffset + dirtySize,
         bufferSize - dirtyOffset - dirtySize));
+}
+
+TEST(RenderGraphValidation,
+     BufferRangesCollapseToOnePhysicalStateWhenTheRhiCannotTrackThem)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsBufferRangeBarriers = false;
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(
+        graph, RenderGraph::QueueExecutionMode::MultiQueue));
+
+    constexpr uint64 bufferSize = 384;
+    constexpr uint64 dirtyOffset = 96;
+    constexpr uint64 dirtySize = 192;
+    RHIBufferDesc desc;
+    desc.size = bufferSize;
+    desc.usage = RHIBufferUsage::CopyDst |
+                 RHIBufferUsage::Structured;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource =
+        RenderGraphValidationAccess::ImportBuffer(
+            graph,
+            &buffer,
+            MakeRHIBufferAccessSnapshot(
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Compute,
+                GPUQueueDomain::Compute,
+                RHIContentValidity::Valid));
+
+    struct Data
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<Data>(
+        "PartialCopyUpdateWithoutRangeBarriers",
+        RenderGraphPassType::Copy,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                resource.Range(dirtyOffset, dirtySize),
+                RHIResourceState::CopyDest);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportAccess(
+        resource,
+        MakeRHIAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::AllGraphics,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid));
+    RenderGraphValidationAccess::Compile(graph);
+
+    const RenderGraph::CompileStats& stats = graph.GetCompileStats();
+    ASSERT_TRUE(stats.compileValid);
+    EXPECT_FALSE(stats.bufferRangeBarriersSupported);
+    EXPECT_EQ(stats.bufferRangeBarrierCollapseCount, 1u);
+
+    const RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    ASSERT_NE(plan.terminalGraphicsBatchIndex, RVX_INVALID_INDEX);
+    ASSERT_LT(plan.terminalGraphicsBatchIndex, plan.queueBatches.size());
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(
+        graph, recorded));
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
+    ASSERT_EQ(recorded.ownedContexts.size(), plan.queueBatches.size());
+
+    uint32 terminalCopyToGraphicsAcquireCount = 0;
+    for (uint32 contextIndex = 0;
+         contextIndex < recorded.ownedContexts.size();
+         ++contextIndex)
+    {
+        const auto& context = *static_cast<FakeCommandContext*>(
+            recorded.ownedContexts[contextIndex].Get());
+        for (const RHIBufferBarrier& barrier : context.bufferBarriers)
+        {
+            EXPECT_EQ(barrier.offset, 0u);
+            EXPECT_EQ(barrier.size, RVX_WHOLE_SIZE);
+            if (contextIndex == plan.terminalGraphicsBatchIndex &&
+                barrier.hasScopedAccess &&
+                barrier.accessBefore.domain == GPUQueueDomain::Copy &&
+                barrier.accessAfter.domain == GPUQueueDomain::Graphics &&
+                HasDependencyKind(
+                    barrier.dependencyKind,
+                    RHIDependencyKind::Ownership))
+            {
+                ++terminalCopyToGraphicsAcquireCount;
+            }
+        }
+    }
+    EXPECT_EQ(terminalCopyToGraphicsAcquireCount, 1u);
+
+    const RHIBufferAccessSnapshot finalAccess =
+        graph.GetRealizedAccess(resource);
+    EXPECT_EQ(finalAccess.uniformAccess.domain,
+              GPUQueueDomain::Graphics);
+    EXPECT_EQ(finalAccess.uniformAccess.layout,
+              RHIResourceLayout::ShaderReadOnly);
+    EXPECT_TRUE(finalAccess.rangeOverrides.empty());
+}
+
+TEST(RenderGraphValidation,
+     NonUniformInitialBufferAccessFailsWithoutRangeBarrierSupport)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsBufferRangeBarriers = false;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHIBufferDesc desc;
+    desc.size = 384;
+    desc.usage = RHIBufferUsage::Structured;
+    FakeBuffer buffer(desc);
+    RHIBufferAccessSnapshot initialAccess =
+        MakeRHIBufferAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Compute,
+            GPUQueueDomain::Compute,
+            RHIContentValidity::Valid);
+    initialAccess.rangeOverrides.push_back({
+        96,
+        192,
+        MakeRHIAccessSnapshot(
+            RHIResourceState::CopyDest,
+            RHIShaderStage::None,
+            GPUQueueDomain::Copy,
+            RHIContentValidity::Valid)});
+    RenderGraphValidationAccess::ImportBuffer(
+        graph, &buffer, initialAccess);
+
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_FALSE(graph.GetCompileStats().compileValid);
+    EXPECT_GT(graph.GetCompileStats().validationErrorCount, 0u);
+    const auto& diagnostics = graph.GetCompileDiagnostics();
+    EXPECT_TRUE(std::any_of(
+        diagnostics.begin(),
+        diagnostics.end(),
+        [](const std::string& diagnostic)
+        {
+            return diagnostic.find(
+                       "does not support buffer range barriers") !=
+                   std::string::npos;
+        }));
+}
+
+TEST(RenderGraphValidation,
+     ConflictingPassBufferRangesFailWithoutRangeBarrierSupport)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsBufferRangeBarriers = false;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHIBufferDesc desc;
+    desc.size = 384;
+    desc.usage = RHIBufferUsage::CopySrc | RHIBufferUsage::CopyDst;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource =
+        RenderGraphValidationAccess::ImportBuffer(
+            graph,
+            &buffer,
+            MakeRHIBufferAccessSnapshot(
+                RHIResourceState::Common,
+                RHIShaderStage::None,
+                GPUQueueDomain::Graphics,
+                RHIContentValidity::Valid));
+
+    struct Data
+    {
+        RGBufferHandle source;
+        RGBufferHandle destination;
+    };
+    graph.AddPass<Data>(
+        "InPlaceRangeCopy",
+        RenderGraphPassType::Copy,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.source = builder.Read(
+                resource.Range(0, 192),
+                RHIResourceState::CopySource);
+            data.destination = builder.Write(
+                resource.Range(192, 192),
+                RHIResourceState::CopyDest);
+        },
+        [](const Data&, RHICommandContext&) {});
+
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_FALSE(graph.GetCompileStats().compileValid);
+    EXPECT_GT(graph.GetCompileStats().validationErrorCount, 0u);
+    const auto& diagnostics = graph.GetCompileDiagnostics();
+    EXPECT_TRUE(std::any_of(
+        diagnostics.begin(),
+        diagnostics.end(),
+        [](const std::string& diagnostic)
+        {
+            return diagnostic.find(
+                       "supports only whole-resource buffer barriers") !=
+                   std::string::npos;
+        }));
 }
 
 TEST(RenderGraphValidation, MultiQueueTerminalJoinsIndependentBranchesAndFoldsAliases)
