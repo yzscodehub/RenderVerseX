@@ -8,11 +8,12 @@
  * Creates ModelResource with properly indexed MeshResources and MaterialResources.
  */
 
+#include "Resource/Cooked/CookedModelArtifact.h"
+#include "Resource/Importer/GLTFImporter.h"
+#include "Resource/Loader/TextureLoader.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
 #include "Resource/Types/TextureResource.h"
-#include "Resource/Importer/GLTFImporter.h"
-#include "Resource/Loader/TextureLoader.h"
 #include <mutex>
 #include <string>
 
@@ -22,7 +23,7 @@ namespace RVX::Resource
      * @brief Model resource loader
      * 
      * Features:
-     * - Loads models from glTF/GLB formats
+     * - Loads source glTF/GLB and cooked RVX model products
      * - Creates ModelResource with indexed MeshResources and MaterialResources
      * - Uses modelPath#type_index format for ResourceId generation
      * - Integrates with TextureLoader for texture loading
@@ -76,6 +77,16 @@ namespace RVX::Resource
                                            TextureLoader& textureLoader,
                                            const Diagnostics::TraceContext& traceContext,
                                            bool streamTextures);
+        ModelResource* CreateCookedModelResource(
+            const std::string& resourceIdentityPath,
+            const std::string& sourcePath,
+            CookedModelArtifact& artifact,
+            TextureLoader& textureLoader,
+            const Diagnostics::TraceContext& traceContext,
+            std::string& outError);
+        bool BuildPreparedBundle(ModelResource* model,
+                                 PreparedResourceBundle& outBundle,
+                                 ResourceLoadError& outError);
         MeshResource* CreateMeshResource(const std::string& modelPath, int index, Mesh::Ptr mesh);
         MaterialResource* CreateMaterialResource(const std::string& modelPath, int index,
                                                    Material::Ptr material,

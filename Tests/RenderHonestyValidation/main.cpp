@@ -1061,9 +1061,14 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliAppliesMeshProfileLODOptions)
     EXPECT_NE(manifestText.find("failureCount=0"), std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.source=Meshes/Quad.gltf"), std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.output=Meshes/Quad.rva"), std::string::npos);
-    EXPECT_NE(manifestText.find("entry.0.type=Mesh"), std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.type=Model"), std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.dependency.0=Meshes/Quad.rvdeps/meshes.rva"),
+              std::string::npos);
 
-    const std::string artifact = ReadBinaryFile(outputRoot / "Meshes" / "Quad.rva");
+    const std::string modelArtifact = ReadBinaryFile(outputRoot / "Meshes" / "Quad.rva");
+    EXPECT_NE(modelArtifact.find("RVX_MODEL_PREBAKE_V1"), std::string::npos);
+    const std::string artifact =
+        ReadBinaryFile(outputRoot / "Meshes" / "Quad.rvdeps" / "meshes.rva");
     EXPECT_NE(artifact.find("RVX_MESH_PREBAKE_V1"), std::string::npos);
     EXPECT_NE(artifact.find("requestedTangents=1"), std::string::npos);
     EXPECT_NE(artifact.find("requestedOptimization=0"), std::string::npos);
@@ -1924,7 +1929,7 @@ TEST_F(RenderHonestyValidationFixture, MeshImporterWritesCookedTangentArtifact)
     fs::remove_all(dir);
 }
 
-TEST_F(RenderHonestyValidationFixture, AssetDatabaseReimportAcceptsMeshImporterWhenArtifactIsWritten)
+TEST_F(RenderHonestyValidationFixture, AssetDatabaseReimportAcceptsModelImporterWhenArtifactIsWritten)
 {
     fs::path dir = MakeTempDir("rvx_asset_database_mesh_reimport");
     fs::path sourceRoot = dir / "Source";
@@ -1938,18 +1943,20 @@ TEST_F(RenderHonestyValidationFixture, AssetDatabaseReimportAcceptsMeshImporterW
     const RVX::Tools::AssetEntry* entry = database.GetAssetByPath("Meshes/Quad.gltf");
     ASSERT_NE(entry, nullptr);
     const RVX::Tools::AssetGUID guid = entry->guid;
-    EXPECT_EQ(RVX::Tools::AssetType::Mesh, entry->type);
+    EXPECT_EQ(RVX::Tools::AssetType::Model, entry->type);
     EXPECT_TRUE(entry->isDirty);
 
     RVX::Tools::AssetPipeline pipeline;
-    pipeline.RegisterImporter(std::make_unique<RVX::Tools::MeshImporter>());
+    pipeline.RegisterImporter(std::make_unique<RVX::Tools::ModelImporter>());
 
     ASSERT_TRUE(database.ReimportAsset(guid, pipeline));
     const fs::path importedPath = importedRoot / "Meshes" / "Quad.rva";
     ASSERT_TRUE(fs::exists(importedPath));
     const std::string artifact = ReadBinaryFile(importedPath);
-    EXPECT_NE(artifact.find("RVX_MESH_PREBAKE_V1"), std::string::npos);
-    EXPECT_NE(artifact.find("mesh.0.hasTangents=1"), std::string::npos);
+    EXPECT_NE(artifact.find("RVX_MODEL_PREBAKE_V1"), std::string::npos);
+    const std::string meshArtifact =
+        ReadBinaryFile(importedRoot / "Meshes" / "Quad.rvdeps" / "meshes.rva");
+    EXPECT_NE(meshArtifact.find("mesh.0.hasTangents=1"), std::string::npos);
 
     const RVX::Tools::AssetEntry* afterImport = database.GetAsset(guid);
     ASSERT_NE(afterImport, nullptr);

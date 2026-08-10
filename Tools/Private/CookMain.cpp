@@ -31,6 +31,7 @@ namespace
         bool recursive = true;
         bool failOnErrors = false;
         bool rewriteGltfTextureUris = false;
+        bool modelOnly = false;
         bool showHelp = false;
     };
 
@@ -1033,6 +1034,7 @@ namespace
             << "                        and mesh.lodReductionFactor\n"
             << "  --rewrite-gltf-texture-uris\n"
             << "                        Emit runtime .gltf copies with external image URIs redirected to cooked .rva textures\n"
+            << "  --model-only          Cook complete glTF model products and their owned dependencies only\n"
             << "  --non-recursive       Only cook files directly under --source\n"
             << "  --fail-on-errors      Return non-zero when any asset fails to cook\n"
             << "  --help                Show this help\n";
@@ -1104,6 +1106,10 @@ namespace
             {
                 options.rewriteGltfTextureUris = true;
             }
+            else if (arg == "--model-only")
+            {
+                options.modelOnly = true;
+            }
             else if (arg == "--fail-on-errors")
             {
                 options.failOnErrors = true;
@@ -1130,6 +1136,11 @@ namespace
             std::cerr << "--output is required\n";
             return false;
         }
+        if (options.modelOnly && options.rewriteGltfTextureUris)
+        {
+            std::cerr << "--model-only cannot be combined with --rewrite-gltf-texture-uris\n";
+            return false;
+        }
         if (options.manifestPath.empty())
         {
             options.manifestPath = options.outputRoot / "CookManifest.rvxmanifest";
@@ -1138,13 +1149,17 @@ namespace
         return true;
     }
 
-    RVX::Tools::AssetPipeline CreateDefaultPipeline()
+    RVX::Tools::AssetPipeline CreateDefaultPipeline(bool modelOnly)
     {
         RVX::Tools::AssetPipeline pipeline;
-        pipeline.RegisterImporter(std::make_unique<RVX::Tools::TextureImporter>());
-        pipeline.RegisterImporter(std::make_unique<RVX::Tools::MeshImporter>());
-        pipeline.RegisterImporter(std::make_unique<RVX::Tools::ShaderImporter>());
-        pipeline.RegisterImporter(std::make_unique<RVX::Tools::AudioImporter>());
+        if (!modelOnly)
+        {
+            pipeline.RegisterImporter(std::make_unique<RVX::Tools::TextureImporter>());
+            pipeline.RegisterImporter(std::make_unique<RVX::Tools::MeshImporter>());
+            pipeline.RegisterImporter(std::make_unique<RVX::Tools::ShaderImporter>());
+            pipeline.RegisterImporter(std::make_unique<RVX::Tools::AudioImporter>());
+        }
+        pipeline.RegisterImporter(std::make_unique<RVX::Tools::ModelImporter>());
         return pipeline;
     }
 } // namespace
@@ -1185,10 +1200,11 @@ int main(int argc, char** argv)
 
     try
     {
-        RVX::Tools::AssetPipeline pipeline = CreateDefaultPipeline();
+        RVX::Tools::AssetPipeline pipeline = CreateDefaultPipeline(options.modelOnly);
         RVX::Tools::AssetPipeline::ImportOptionsProvider optionsProvider;
         RVX::Tools::TextureImportOptions resolvedTextureOptions = options.textureOptions;
         RVX::Tools::MeshImportOptions resolvedMeshOptions = cookProfile.meshOptions;
+        RVX::Tools::ModelImportOptions resolvedModelOptions;
         if (options.hasTextureOptions ||
             !cookProfile.textureCompressionRules.empty() ||
             cookProfile.hasMeshOptions)
@@ -1196,7 +1212,8 @@ int main(int argc, char** argv)
             optionsProvider = [&options,
                                &cookProfile,
                                &resolvedTextureOptions,
-                               &resolvedMeshOptions](const std::filesystem::path& sourcePath,
+                               &resolvedMeshOptions,
+                               &resolvedModelOptions](const std::filesystem::path& sourcePath,
                                                      RVX::Tools::AssetType assetType) -> const void*
             {
                 if (assetType == RVX::Tools::AssetType::Mesh)
@@ -1208,6 +1225,14 @@ int main(int argc, char** argv)
 
                     resolvedMeshOptions = cookProfile.meshOptions;
                     return &resolvedMeshOptions;
+                }
+
+                if (assetType == RVX::Tools::AssetType::Model)
+                {
+                    if (!cookProfile.hasMeshOptions)
+                        return nullptr;
+                    resolvedModelOptions.mesh = cookProfile.meshOptions;
+                    return &resolvedModelOptions;
                 }
 
                 if (assetType != RVX::Tools::AssetType::Texture)

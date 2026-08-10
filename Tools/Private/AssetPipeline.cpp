@@ -4,7 +4,9 @@
  */
 
 #include "Tools/AssetPipeline.h"
+#include "Core/Diagnostics/ContentHash.h"
 #include "Core/Log.h"
+#include "Resource/Cooked/CookedModelArtifact.h"
 #include "Resource/Importer/GLTFImporter.h"
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/Types/TextureResource.h"
@@ -19,6 +21,7 @@
 #include <limits>
 #include <optional>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 
 namespace RVX::Tools
@@ -82,6 +85,7 @@ namespace
         {
             case AssetType::Texture:   return "Texture";
             case AssetType::Mesh:      return "Mesh";
+            case AssetType::Model:     return "Model";
             case AssetType::Material:  return "Material";
             case AssetType::Shader:    return "Shader";
             case AssetType::Animation: return "Animation";
@@ -1508,6 +1512,14 @@ bool CookManifest::Save(const fs::path& manifestPath, std::string& outError) con
                 file << prefix << "warning." << warningIndex << "="
                      << EscapeManifestValue(entry.warnings[warningIndex]) << "\n";
             }
+            file << prefix << "dependencyCount=" << entry.dependencyOutputs.size() << "\n";
+            for (size_t dependencyIndex = 0;
+                 dependencyIndex < entry.dependencyOutputs.size();
+                 ++dependencyIndex)
+            {
+                file << prefix << "dependency." << dependencyIndex << "="
+                     << EscapeManifestValue(entry.dependencyOutputs[dependencyIndex]) << "\n";
+            }
             file << prefix << "error=" << EscapeManifestValue(entry.error) << "\n";
         }
 
@@ -1650,6 +1662,16 @@ CookManifest AssetPipeline::CookDirectory(const fs::path& sourceDir,
         entry.success = result.success;
         entry.error = result.error;
         entry.warnings = std::move(result.warnings);
+        for (const std::string& output : result.outputPaths)
+        {
+            std::error_code relativeError;
+            const fs::path relativeOutput = fs::relative(output, outputDir, relativeError);
+            const std::string normalized = relativeError
+                ? fs::path(output).generic_string()
+                : relativeOutput.generic_string();
+            if (normalized != entry.outputPath)
+                entry.dependencyOutputs.push_back(normalized);
+        }
         entry.sourceModTime = GetFileWriteTimeTicks(filePath);
         if (fs::exists(outPath))
         {
@@ -1699,8 +1721,8 @@ AssetType AssetPipeline::GetAssetTypeFromExtension(const std::string& ext)
         {".exr", AssetType::Texture},
         {".fbx", AssetType::Mesh},
         {".obj", AssetType::Mesh},
-        {".gltf", AssetType::Mesh},
-        {".glb", AssetType::Mesh},
+        {".gltf", AssetType::Model},
+        {".glb", AssetType::Model},
         {".dae", AssetType::Mesh},
         {".hlsl", AssetType::Shader},
         {".glsl", AssetType::Shader},
@@ -1851,6 +1873,242 @@ ImportResult MeshImporter::Import(const fs::path& sourcePath,
 
     result.success = true;
     result.outputPaths.push_back(outputPath.string());
+    return result;
+}
+
+// ============================================================================
+// ModelImporter
+// ============================================================================
+
+ImportResult ModelImporter::Import(const fs::path& sourcePath,
+                                   const fs::path& outputPath,
+                                   const void* options)
+{
+    ImportResult result;
+    const ModelImportOptions importOptions = options
+        ? *static_cast<const ModelImportOptions*>(options)
+        : ModelImportOptions{};
+    const std::string extension = ToLower(sourcePath.extension().string());
+    if (extension != ".gltf" && extension != ".glb")
+    {
+        result.error = "ModelImporter currently supports only glTF/GLB: " +
+                       sourcePath.string();
+        return result;
+    }
+
+    Resource::GLTFImportOptions gltfOptions;
+    gltfOptions.generateNormals = true;
+    gltfOptions.generateTangents = importOptions.mesh.generateTangents;
+    gltfOptions.mergeMeshes = false;
+    gltfOptions.scaleFactor = importOptions.mesh.scaleFactor;
+
+    Resource::GLTFImporter importer;
+    Resource::GLTFImportResult imported =
+        importer.Import(fs::absolute(sourcePath).string(), gltfOptions);
+    if (!imported.success)
+    {
+        result.error = imported.errorMessage.empty()
+            ? "Model import failed"
+            : imported.errorMessage;
+        return result;
+    }
+    if (imported.hasSkins || imported.hasAnimations || imported.hasMorphTargets)
+    {
+        result.error = "RVX_MODEL_PREBAKE_V1 supports static glTF only; skins, animations and morph targets must be removed or cooked by a future schema";
+        return result;
+    }
+
+    // These material extensions are intentionally accepted because the current
+    // source runtime imports the same core metallic/roughness subset. Keeping
+    // them source-compatible preserves Source/Cooked parity for the Porsche
+    // qualification asset. Geometry, compression and required runtime
+    // extensions remain fail-closed.
+    const std::unordered_set<std::string> sourceCompatibleExtensions = {
+        "KHR_materials_specular",
+        "KHR_materials_clearcoat",
+        "KHR_materials_transmission",
+    };
+    for (const std::string& used : imported.extensionsUsed)
+    {
+        if (!sourceCompatibleExtensions.contains(used))
+        {
+            result.error = "RVX_MODEL_PREBAKE_V1 does not support glTF extension: " + used;
+            return result;
+        }
+        result.warnings.push_back(
+            "Cooked model preserves current source-runtime core PBR semantics and does not add extension-specific shading for " +
+            used);
+    }
+    for (const std::string& required : imported.extensionsRequired)
+    {
+        if (!sourceCompatibleExtensions.contains(required))
+        {
+            result.error = "RVX_MODEL_PREBAKE_V1 cannot satisfy required glTF extension: " + required;
+            return result;
+        }
+    }
+    for (const std::string& warning : imported.warnings)
+        result.warnings.push_back(warning);
+
+    std::vector<std::vector<CookedMeshLodPayload>> meshLods;
+    meshLods.reserve(imported.meshes.size());
+    for (const Mesh::Ptr& mesh : imported.meshes)
+    {
+        if (!mesh || !mesh->IsValid())
+        {
+            result.error = "Model import produced an invalid mesh";
+            return result;
+        }
+        meshLods.push_back(
+            BuildLowerMeshLods(*mesh, importOptions.mesh, result.warnings));
+    }
+
+    const fs::path finalDependencyDirectory =
+        outputPath.parent_path() /
+        (outputPath.stem().string() + ".rvdeps");
+    const fs::path stagingDependencyDirectory =
+        finalDependencyDirectory.string() + ".tmp";
+    const fs::path temporaryRoot = outputPath.string() + ".tmp";
+    std::error_code fileError;
+    fs::remove_all(stagingDependencyDirectory, fileError);
+    fileError.clear();
+    fs::remove(temporaryRoot, fileError);
+    fileError.clear();
+    fs::create_directories(stagingDependencyDirectory / "textures", fileError);
+    if (fileError)
+    {
+        result.error = "Failed to create model dependency staging directory: " +
+                       fileError.message();
+        return result;
+    }
+
+    const fs::path stagingMeshPath = stagingDependencyDirectory / "meshes.rva";
+    if (!WriteMeshArtifact(stagingMeshPath,
+                           sourcePath,
+                           importOptions.mesh,
+                           imported.meshes,
+                           meshLods,
+                           result.error))
+    {
+        fs::remove_all(stagingDependencyDirectory, fileError);
+        return result;
+    }
+
+    Resource::CookedModelArtifact modelArtifact;
+    modelArtifact.sourcePath = sourcePath.generic_string();
+    modelArtifact.meshArtifactPath =
+        (finalDependencyDirectory.filename() / "meshes.rva").generic_string();
+    modelArtifact.materials = imported.materials;
+    modelArtifact.rootNode = imported.model ? imported.model->GetRootNode() : nullptr;
+    if (imported.model && imported.model->GetBoundingBox().IsValid())
+        modelArtifact.bounds = imported.model->GetBoundingBox();
+
+    Resource::TextureLoader textureLoader(nullptr, true);
+    modelArtifact.textures.reserve(imported.textures.size());
+    for (size_t index = 0; index < imported.textures.size(); ++index)
+    {
+        Resource::TextureReference& sourceReference = imported.textures[index];
+        Resource::TextureResource* texture = textureLoader.LoadFromReference(
+            sourceReference,
+            fs::absolute(sourcePath).string(),
+            {},
+            fs::absolute(outputPath).generic_string());
+        if (!texture || textureLoader.WasLastLoadFallback())
+        {
+            result.error = textureLoader.GetLastLoadError().empty()
+                ? "Failed to cook model texture dependency"
+                : textureLoader.GetLastLoadError();
+            fs::remove_all(stagingDependencyDirectory, fileError);
+            return result;
+        }
+        std::unique_ptr<Resource::TextureResource> textureOwner(texture);
+        const fs::path textureName =
+            "texture_" + std::to_string(index) + ".rva";
+        const fs::path stagingTexturePath =
+            stagingDependencyDirectory / "textures" / textureName;
+        TextureImportOptions textureOptions;
+        textureOptions.compressionMode =
+            sourceReference.usage == Resource::TextureUsage::Normal
+                ? TextureCompressionMode::BC5
+                : TextureCompressionMode::BC7;
+        textureOptions.compress = true;
+        textureOptions.sRGB = sourceReference.isSRGB;
+        if (!WriteTextureArtifact(stagingTexturePath,
+                                  sourcePath,
+                                  textureOptions,
+                                  *textureOwner,
+                                  result.warnings,
+                                  result.error))
+        {
+            fs::remove_all(stagingDependencyDirectory, fileError);
+            return result;
+        }
+
+        Resource::TextureReference cookedReference =
+            Resource::TextureReference::CreateExternal(
+                (finalDependencyDirectory.filename() / "textures" / textureName)
+                    .generic_string(),
+                sourceReference.usage,
+                sourceReference.isSRGB);
+        cookedReference.imageIndex = sourceReference.imageIndex;
+        cookedReference.fallbackSemantic = sourceReference.fallbackSemantic;
+        modelArtifact.textures.push_back(std::move(cookedReference));
+    }
+
+    std::vector<uint8> rootBytes;
+    if (!Resource::SerializeCookedModelArtifact(
+            modelArtifact, rootBytes, result.error))
+    {
+        fs::remove_all(stagingDependencyDirectory, fileError);
+        return result;
+    }
+    if (!temporaryRoot.parent_path().empty())
+        fs::create_directories(temporaryRoot.parent_path(), fileError);
+    std::ofstream rootFile(temporaryRoot, std::ios::binary);
+    if (!rootFile.is_open() ||
+        !rootFile.write(reinterpret_cast<const char*>(rootBytes.data()),
+                        static_cast<std::streamsize>(rootBytes.size())))
+    {
+        result.error = "Failed to write model artifact staging file: " +
+                       temporaryRoot.string();
+        fs::remove_all(stagingDependencyDirectory, fileError);
+        fs::remove(temporaryRoot, fileError);
+        return result;
+    }
+    rootFile.close();
+
+    fs::remove_all(finalDependencyDirectory, fileError);
+    fileError.clear();
+    fs::rename(stagingDependencyDirectory, finalDependencyDirectory, fileError);
+    if (fileError)
+    {
+        result.error = "Failed to publish model dependency directory: " +
+                       fileError.message();
+        fs::remove(temporaryRoot, fileError);
+        return result;
+    }
+    fs::remove(outputPath, fileError);
+    fileError.clear();
+    fs::rename(temporaryRoot, outputPath, fileError);
+    if (fileError)
+    {
+        result.error = "Failed to publish model artifact: " + fileError.message();
+        fs::remove_all(finalDependencyDirectory, fileError);
+        fs::remove(temporaryRoot, fileError);
+        return result;
+    }
+
+    result.success = true;
+    result.outputPaths.push_back(outputPath.string());
+    result.outputPaths.push_back(
+        (finalDependencyDirectory / "meshes.rva").string());
+    for (size_t index = 0; index < imported.textures.size(); ++index)
+    {
+        result.outputPaths.push_back(
+            (finalDependencyDirectory / "textures" /
+             ("texture_" + std::to_string(index) + ".rva"))
+                .string());
+    }
     return result;
 }
 

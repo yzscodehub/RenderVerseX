@@ -87,6 +87,10 @@ namespace
         {
             return ResourceType::Mesh;
         }
+        if (firstLine == "RVX_MODEL_PREBAKE_V1")
+        {
+            return ResourceType::Model;
+        }
         if (firstLine == "RVX_SHADER_PREBAKE_V1")
         {
             return ResourceType::Shader;

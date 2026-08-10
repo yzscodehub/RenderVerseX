@@ -34,6 +34,7 @@ target_sources(RVX_Resource PRIVATE
     Private/ResourceSubsystem.cpp
     Private/ModelTextureStreamingService.cpp
     Private/DefaultResources.cpp
+    Private/Cooked/CookedModelArtifact.cpp
     
     # Concrete resource types
     Private/Types/MeshResource.cpp

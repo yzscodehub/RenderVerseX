@@ -30,17 +30,20 @@ namespace fs = std::filesystem;
  */
 enum class AssetType : uint8
 {
-    Unknown,
-    Texture,
-    Mesh,
-    Material,
-    Shader,
-    Animation,
-    Audio,
-    Font,
-    Prefab,
-    Scene,
-    Script
+    // Keep these values stable: AssetType is persisted by the asset database
+    // and cook manifest. New values must be appended rather than inserted.
+    Unknown = 0,
+    Texture = 1,
+    Mesh = 2,
+    Material = 3,
+    Shader = 4,
+    Animation = 5,
+    Audio = 6,
+    Font = 7,
+    Prefab = 8,
+    Scene = 9,
+    Script = 10,
+    Model = 11
 };
 
 /**
@@ -65,6 +68,7 @@ struct CookManifestEntry
     bool success = false;
     std::string error;
     std::vector<std::string> warnings;
+    std::vector<std::string> dependencyOutputs;
     uint64 sourceModTime = 0;
     uint64 outputModTime = 0;
     uint64 outputSize = 0;
@@ -145,6 +149,12 @@ struct MeshImportOptions
     float scaleFactor = 1.0f;
     bool importAnimations = true;
     bool importMaterials = true;
+};
+
+/** @brief Static glTF model product options. */
+struct ModelImportOptions
+{
+    MeshImportOptions mesh;
 };
 
 /**
@@ -288,6 +298,24 @@ public:
 
 private:
     CompilerFactory m_compilerFactory;
+};
+
+/** @brief Complete static glTF model product importer. */
+class ModelImporter : public IAssetImporter
+{
+public:
+    const char* GetName() const override { return "ModelImporter"; }
+
+    std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".gltf", ".glb"};
+    }
+
+    AssetType GetAssetType() const override { return AssetType::Model; }
+
+    ImportResult Import(const fs::path& sourcePath,
+                        const fs::path& outputPath,
+                        const void* options = nullptr) override;
 };
 
 /**

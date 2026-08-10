@@ -6,11 +6,13 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <tiny_gltf.h>
 
-#include <filesystem>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <limits>
+#include <optional>
 
 namespace RVX::Resource
 {
@@ -66,6 +68,54 @@ namespace RVX::Resource
             std::transform(extension.begin(), extension.end(), extension.begin(),
                            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
             return extension == ".rva";
+        }
+
+        std::optional<BoundingBox> ComputeIndexedModelBounds(
+            const Node::Ptr& root,
+            const std::vector<Mesh::Ptr>& meshes)
+        {
+            if (!root)
+                return std::nullopt;
+
+            BoundingBox result;
+            bool hasBounds = false;
+            root->TraverseDepthFirst(
+                [&](Node* node)
+                {
+                    if (!node || node->GetMeshIndex() < 0 ||
+                        node->GetMeshIndex() >= static_cast<int>(meshes.size()))
+                    {
+                        return;
+                    }
+
+                    const Mesh::Ptr& mesh =
+                        meshes[static_cast<size_t>(node->GetMeshIndex())];
+                    if (!mesh || !mesh->GetBoundingBox() ||
+                        !mesh->GetBoundingBox()->IsValid())
+                    {
+                        return;
+                    }
+
+                    const Vec3& min = mesh->GetBoundingBox()->GetMin();
+                    const Vec3& max = mesh->GetBoundingBox()->GetMax();
+                    const std::array<Vec3, 8> corners{{
+                        {min.x, min.y, min.z},
+                        {max.x, min.y, min.z},
+                        {min.x, max.y, min.z},
+                        {max.x, max.y, min.z},
+                        {min.x, min.y, max.z},
+                        {max.x, min.y, max.z},
+                        {min.x, max.y, max.z},
+                        {max.x, max.y, max.z},
+                    }};
+                    const Mat4& world = node->GetWorldMatrix();
+                    for (const Vec3& corner : corners)
+                    {
+                        result.Expand(Vec3(world * Vec4(corner, 1.0f)));
+                        hasBounds = true;
+                    }
+                });
+            return hasBounds ? std::optional<BoundingBox>(result) : std::nullopt;
         }
 
         struct ImageCaptureContext
@@ -282,6 +332,24 @@ namespace RVX::Resource
             result.warnings.push_back(warning);
         }
 
+        result.hasSkins = !gltfModel.skins.empty();
+        result.hasAnimations = !gltfModel.animations.empty();
+        result.extensionsUsed = gltfModel.extensionsUsed;
+        result.extensionsRequired = gltfModel.extensionsRequired;
+        for (const tinygltf::Mesh& mesh : gltfModel.meshes)
+        {
+            for (const tinygltf::Primitive& primitive : mesh.primitives)
+            {
+                if (!primitive.targets.empty())
+                {
+                    result.hasMorphTargets = true;
+                    break;
+                }
+            }
+            if (result.hasMorphTargets)
+                break;
+        }
+
         ReportProgress(0.1f, "Extracting textures");
         ExtractTextures(gltfModel, path, result);
 
@@ -302,6 +370,11 @@ namespace RVX::Resource
             std::filesystem::path filePath(path);
             result.model->suffix = filePath.extension().string();
             result.model->ComputeBoundingBox();
+            if (const auto indexedBounds = ComputeIndexedModelBounds(
+                    result.model->GetRootNode(), result.meshes))
+            {
+                result.model->SetBoundingBox(*indexedBounds);
+            }
         }
 
         ReportProgress(1.0f, "Complete");

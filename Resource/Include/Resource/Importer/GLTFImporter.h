@@ -65,6 +65,13 @@ namespace RVX::Resource
         /// These are not loaded yet - the ModelLoader will handle that
         std::vector<TextureReference> textures;
 
+        /// Source features used by cook-time capability validation.
+        bool hasSkins = false;
+        bool hasAnimations = false;
+        bool hasMorphTargets = false;
+        std::vector<std::string> extensionsUsed;
+        std::vector<std::string> extensionsRequired;
+
         /// Clear all data
         void Clear()
         {
@@ -75,6 +82,11 @@ namespace RVX::Resource
             meshes.clear();
             materials.clear();
             textures.clear();
+            hasSkins = false;
+            hasAnimations = false;
+            hasMorphTargets = false;
+            extensionsUsed.clear();
+            extensionsRequired.clear();
         }
     };
 

@@ -1393,6 +1393,15 @@ rvx_add_gtest(
     TIMEOUT 30
 )
 
+rvx_add_gtest(
+    NAME CookedModelProductValidation
+    SOURCES CookedModelProductValidation/main.cpp
+    LIBS RVX::Core RVX::Resource RVX::Tools
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    LABELS "unit;resource;cook;model"
+    TIMEOUT 120
+)
+
 # Prepared HDR/IBL environment bundle and immutable admission validation
 rvx_add_gtest(
     NAME EnvironmentPreparedLoadingValidation
