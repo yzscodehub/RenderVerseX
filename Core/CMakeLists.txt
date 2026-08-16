@@ -10,6 +10,9 @@ target_sources(RVX_Core PRIVATE
     Private/PathUtils.cpp
     Private/SystemManager.cpp
 
+    # Content identity
+    Private/Hash/SHA256.cpp
+
     # Diagnostics
     Private/Diagnostics/ArtifactMetadata.cpp
     Private/Diagnostics/ContentHash.cpp

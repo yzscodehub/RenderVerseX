@@ -3,6 +3,7 @@
 #include "Core/Types.h"
 
 #include <functional>
+#include <new>
 
 namespace RVX
 {
@@ -105,15 +106,52 @@ namespace RVX
             return HandleType::Create(index, 0);
         }
 
-        void Free(HandleType handle)
+        /**
+         * @brief Try to retire a handle without exposing a partial pool mutation.
+         *
+         * The free-list growth is the only potentially allocating operation.
+         * Reserve it before invalidating the entry so callers on noexcept
+         * boundaries can fail closed and retry with the exact same handle.
+         */
+        [[nodiscard]] bool TryFree(HandleType handle) noexcept
         {
             if (!IsValid(handle))
-                return;
+                return false;
+
+            try
+            {
+                if (m_freeList.size() == m_freeList.capacity())
+                {
+                    m_freeList.reserve(m_freeList.size() + 1);
+                }
+            }
+            catch (...)
+            {
+                return false;
+            }
 
             Index index = handle.GetIndex();
             m_entries[index].allocated = false;
             m_entries[index].generation++;
             m_freeList.push_back(index);
+            return true;
+        }
+
+        /**
+         * @brief Compatibility release API that preserves the previous throwing contract.
+         *
+         * @throws std::bad_alloc when free-list growth cannot be prepared. The
+         * handle remains valid in that case and can be retried through
+         * TryFree().
+         */
+        void Free(HandleType handle)
+        {
+            if (!IsValid(handle))
+                return;
+            if (!TryFree(handle))
+            {
+                throw std::bad_alloc();
+            }
         }
 
         bool IsValid(HandleType handle) const

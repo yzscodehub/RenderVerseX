@@ -4,32 +4,12 @@
 add_library(RVX_Scene STATIC)
 
 target_sources(RVX_Scene PRIVATE
-    # Core scene files
-    Private/Actor.cpp
-    Private/ActorComponent.cpp
-    Private/ActorFactory.cpp
-    Private/SceneComponent.cpp
-    Private/PrimitiveComponent.cpp
-    Private/SceneEntity.cpp
-    Private/SceneManager.cpp
-    Private/SceneRuntime.cpp
-    Private/SceneSystemScheduler.cpp
-    Private/TransformStore.cpp
-    Private/Component.cpp
-    Private/ComponentClassFactory.cpp
-    Private/ComponentFactory.cpp
-    Private/Prefab.cpp
-
-    # Components
-    Private/Components/StaticMeshComponent.cpp
-    Private/Components/MeshRendererComponent.cpp
-    Private/Components/LightComponent.cpp
-    Private/Components/CameraComponent.cpp
-    Private/Components/SkyboxComponent.cpp
-    Private/Components/ReflectionProbeComponent.cpp
-    Private/Components/LightProbeComponent.cpp
-    Private/Components/DecalComponent.cpp
-    Private/Components/LODComponent.cpp
+    Private/ECS/FrozenSceneSnapshot.cpp
+    Private/ECS/SceneFeatureSnapshotStore.cpp
+    Private/ECS/SceneSkinningSnapshotStore.cpp
+    Private/ECS/SceneEcsRuntime.cpp
+    Private/ECS/SceneSpatialIndex.cpp
+    Private/ECS/TransformHierarchy.cpp
 )
 
 target_include_directories(RVX_Scene PUBLIC
@@ -39,8 +19,9 @@ target_include_directories(RVX_Scene PUBLIC
 
 target_link_libraries(RVX_Scene PUBLIC
     RVX::Core
+    RVX::ECS
     RVX::Geometry
-    Spatial
+    RVX::RenderContracts
 )
 
 # Alias for cleaner target names
