@@ -9,19 +9,35 @@
 #include "Core/Diagnostics/Trace.h"
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "Core/Subsystem/SubsystemCollection.h"
+#include "Engine/ECS/IWorldEcsRuntimeServices.h"
+#include "Engine/RenderRuntimeDiagnostics.h"
 #include "Render/RenderRuntimeTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
 
 namespace RVX
 {
     // Forward declarations
-    class RenderRuntimeComposition;
+    class EcsRenderRuntimeComposition;
+    class WorldEcsRuntimeComposition;
     class World;
+    struct WorldConfig;
+    namespace Particle
+    {
+        class ParticleEcsRuntimeGateway;
+    }
+    namespace Water
+    {
+        class WaterEcsRuntimeGateway;
+    }
+    namespace Terrain
+    {
+        class TerrainEcsRuntimeGateway;
+    }
     /**
      * @brief Engine configuration
      */
@@ -37,6 +53,25 @@ namespace RVX
         Diagnostics::TraceContext startupTraceContext{};
         RenderRuntimeConfig renderRuntime{};
         RenderFrameSettings initialRenderFrameSettings{};
+    };
+
+    /** @brief Immutable evidence captured across the most recent shutdown. */
+    struct EngineShutdownDiagnostics
+    {
+        bool available = false;
+        bool initializationAttempted = false;
+        bool initializationSucceeded = false;
+        uint64 frameNumber = 0;
+        size_t worldCountBeforeShutdown = 0;
+        size_t worldCountAfterShutdown = 0;
+        size_t subsystemCount = 0;
+        bool subsystemsStopped = false;
+        bool resourceSubsystemObserved = false;
+        bool resourceSubsystemClean = true;
+        bool activeWorldCleared = false;
+        bool jobSystemStopped = false;
+        RenderShutdownResult render{};
+        bool clean = false;
     };
 
     /**
@@ -141,6 +176,13 @@ namespace RVX
         World* CreateWorld(const std::string& name = "Main");
 
         /**
+         * @brief Create a World from a complete pre-initialization contract.
+         * @param config World configuration applied before subsystems initialize.
+         * @return Pointer to the created world
+         */
+        World* CreateWorld(const WorldConfig& config);
+
+        /**
          * @brief Get a world by name
          * @param name Name of the world
          * @return Pointer to the world or nullptr if not found
@@ -152,6 +194,10 @@ namespace RVX
          * @param name Name of the world to destroy
          */
         void DestroyWorld(const std::string& name);
+
+        /** @brief Return the Engine-owned ECS request and diagnostics service for a World. */
+        [[nodiscard]] IWorldEcsRuntimeServices*
+        GetWorldEcsRuntimeServices(World* world) noexcept;
 
         /**
          * @brief Set the active world for rendering
@@ -179,10 +225,13 @@ namespace RVX
         void Tick(float deltaTime);
 
         /**
-         * @brief Process one frame without rendering
-         * 
-         * Use this when you need manual control over rendering.
-         * Call RenderSubsystem methods directly for rendering.
+         * @brief Process simulation without a separate legacy render call.
+         *
+         * The production ECS path still publishes the active immutable Scene
+         * snapshot through its Engine-owned frame pipeline.  Publication and
+         * completion observation are required to advance exact presentation
+         * proof, including asynchronous World removal.  This method therefore
+         * must not be paired with direct RenderSubsystem calls.
          */
         void TickWithoutRender();
 
@@ -193,14 +242,6 @@ namespace RVX
 
         /// Shutdown the engine
         void Shutdown();
-
-        /**
-         * @brief Stop and drain rendering while Worlds and resources stay alive.
-         *
-         * Host layers use this boundary before releasing external scene or
-         * resource owners. Shutdown() calls it automatically and idempotently.
-         */
-        void ShutdownRenderRuntime();
 
         /// Request engine shutdown (sets shutdown flag)
         void RequestShutdown() { m_shouldShutdown = true; }
@@ -228,12 +269,23 @@ namespace RVX
         /** @brief Queue an explicit render-surface extent generation. */
         [[nodiscard]] bool RequestRenderSurfaceResize(uint32 width,
                                                       uint32 height);
+        /**
+         * @brief Return a copy of the live update-owned render observation.
+         *
+         * A failed initialization or a shutdown returns an unavailable value.
+         */
+        [[nodiscard]] EngineRenderRuntimeDiagnostics
+            GetRenderRuntimeDiagnostics() const noexcept;
         [[nodiscard]] const RenderShutdownResult&
             GetLastRenderShutdownResult() const noexcept
         {
             return m_lastRenderShutdownResult;
         }
-
+        [[nodiscard]] const EngineShutdownDiagnostics&
+            GetLastShutdownDiagnostics() const noexcept
+        {
+            return m_lastShutdownDiagnostics;
+        }
         // =====================================================================
         // Accessors
         // =====================================================================
@@ -248,23 +300,59 @@ namespace RVX
         bool Init() { return Initialize(); }
 
     private:
+        struct WorldEntry;
+
         bool InitializeSubsystems();
         void TickSubsystems(float deltaTime);
         void ShutdownSubsystems();
         void TickWorlds(float deltaTime);
         void ShutdownWorlds();
         void RenderAfterWorlds(float deltaTime);
+        void FinalizeDestroyRequestedWorlds(float deltaTime);
+        [[nodiscard]] bool RollbackFailedInitialization();
+        [[nodiscard]] bool BeginWorldShutdown(WorldEntry& entry);
+        [[nodiscard]] WorldEntry* FindWorldEntry(World* world) noexcept;
+        [[nodiscard]] const WorldEntry* FindWorldEntry(World* world) const noexcept;
+        void SelectNextWorldForShutdown();
+
+        struct WorldEntry
+        {
+            std::unique_ptr<World> world;
+            std::unique_ptr<WorldEcsRuntimeComposition> ecsRuntime;
+            float64 fixedTimeAccumulatorSeconds = 0.0;
+            // The live World that was active when this entry began draining.
+            // It is restored only after this entry's removal proof completes.
+            World* resumeActiveWorld = nullptr;
+            bool destroyRequested = false;
+        };
 
         EngineConfig m_config;
         SubsystemCollection<EngineSubsystem> m_subsystems;
 
         // World management
-        std::unordered_map<std::string, std::unique_ptr<World>> m_worlds;
+        // Declared before World entries so entries drain and destruct while the
+        // global proof owner and its Render/Resource references remain alive.
+        std::unique_ptr<EcsRenderRuntimeComposition> m_ecsRenderComposition;
+        // These Engine-wide animation owners outlive every World composition.
+        // Declaration order is deliberate: Worlds destruct first, then the evaluator releases
+        // its immutable leases, then the request service releases Resource subscriptions.
+        std::shared_ptr<AnimationSceneAdapters::EcsAnimationAssetService>
+            m_ecsAnimationAssetService;
+        std::shared_ptr<AnimationSceneAdapters::ResourceAnimationEcsEvaluator>
+            m_resourceAnimationEvaluator;
+        // These Engine-global feature gateway owners deliberately precede World entries. Every
+        // World owns only a bridge consumer, so World destruction and its exact drain proof run
+        // before the resource-owning Particle gateway or value-only Water/Terrain gateways reset.
+        std::unique_ptr<Particle::ParticleEcsRuntimeGateway> m_particleEcsGateway;
+        std::unique_ptr<Water::WaterEcsRuntimeGateway> m_waterEcsGateway;
+        std::unique_ptr<Terrain::TerrainEcsRuntimeGateway> m_terrainEcsGateway;
+        std::map<std::string, WorldEntry> m_worlds;
         World* m_activeWorld = nullptr;
-        std::unique_ptr<RenderRuntimeComposition> m_renderComposition;
         RenderShutdownResult m_lastRenderShutdownResult{};
+        EngineShutdownDiagnostics m_lastShutdownDiagnostics{};
 
         bool m_initialized = false;
+        bool m_initializationRollbackPending = false;
         bool m_shouldShutdown = false;
         uint64_t m_frameNumber = 0;
 

@@ -1,14 +1,10 @@
 #include "Scripting/ScriptEngine.h"
-#include "Scripting/ScriptComponent.h"
 #include "Scripting/Bindings/CoreBindings.h"
 #include "Scripting/Bindings/MathBindings.h"
-#include "Scripting/Bindings/SceneBindings.h"
 #include "Scripting/Bindings/InputBindings.h"
 
-#include "Core/Event/EventBus.h"
 #include "Runtime/Input/InputSubsystem.h"
 #include "Runtime/Time/Time.h"
-#include "Scene/ComponentEvents.h"
 
 #include <algorithm>
 #include <fstream>
@@ -54,13 +50,6 @@ namespace RVX
         // Register all bindings
         RegisterBindings();
 
-        m_componentAttachedSubscription = EventBus::Get().SubscribeScoped<ComponentAttachedEvent>(
-            [this](const ComponentAttachedEvent& event)
-            {
-                HandleComponentAttached(event.component);
-            },
-            SubscriptionOptions::ForChannel(EventChannel::Entity));
-
         m_initialized = true;
 
         RVX_CORE_INFO("ScriptingSubsystem initialized with scripts directory: {}",
@@ -69,7 +58,7 @@ namespace RVX
 
     void ScriptingSubsystem::Deinitialize()
     {
-        if (!m_initialized && !m_luaState.IsInitialized() && !m_componentAttachedSubscription.IsValid())
+        if (!m_initialized && !m_luaState.IsInitialized())
         {
             return;
         }
@@ -79,13 +68,6 @@ namespace RVX
         // Clear all cached scripts
         m_scripts.clear();
         m_pathToHandle.clear();
-
-        auto components = m_components;
-        for (ScriptComponent* component : components)
-        {
-            UnregisterComponent(component);
-        }
-        m_componentAttachedSubscription = {};
 
         // Shutdown Lua state
         m_luaState.Shutdown();
@@ -104,15 +86,6 @@ namespace RVX
         if (m_inputSubsystem)
         {
             Bindings::SyncInputCache(m_inputSubsystem);
-        }
-
-        // Update registered script components
-        for (ScriptComponent* comp : m_components)
-        {
-            if (comp)
-            {
-                comp->Tick(deltaTime);
-            }
         }
 
         // Check for hot reload
@@ -309,9 +282,6 @@ namespace RVX
         // Register math bindings
         Bindings::RegisterMathBindings(m_luaState);
 
-        // Register scene bindings
-        Bindings::RegisterSceneBindings(m_luaState);
-
         // Register input bindings
         Bindings::RegisterInputBindings(m_luaState);
 
@@ -321,54 +291,6 @@ namespace RVX
     sol::table ScriptingSubsystem::GetOrCreateNamespace(const std::string& name)
     {
         return m_luaState.GetOrCreateNamespace(name);
-    }
-
-    // =========================================================================
-    // Component Management
-    // =========================================================================
-
-    void ScriptingSubsystem::RegisterComponent(ScriptComponent* component)
-    {
-        if (!component)
-        {
-            return;
-        }
-
-        if (std::find(m_components.begin(), m_components.end(), component) == m_components.end())
-        {
-            m_components.push_back(component);
-        }
-
-        if (component->m_engine != this)
-        {
-            component->BindScriptingSubsystem(this);
-        }
-    }
-
-    void ScriptingSubsystem::UnregisterComponent(ScriptComponent* component)
-    {
-        auto it = std::find(m_components.begin(), m_components.end(), component);
-        if (it != m_components.end())
-        {
-            m_components.erase(it);
-        }
-
-        if (component && component->m_engine == this)
-        {
-            component->BindScriptingSubsystem(nullptr);
-        }
-    }
-
-    // =========================================================================
-    // Private Methods
-    // =========================================================================
-
-    void ScriptingSubsystem::HandleComponentAttached(Component* component)
-    {
-        if (auto* scriptComponent = dynamic_cast<ScriptComponent*>(component))
-        {
-            RegisterComponent(scriptComponent);
-        }
     }
 
     void ScriptingSubsystem::CheckForHotReload()
@@ -394,14 +316,6 @@ namespace RVX
                         RVX_CORE_ERROR("ScriptingSubsystem - Hot reload execution failed: {}", result.errorMessage);
                     }
 
-                    // Notify components that use this script
-                    for (ScriptComponent* comp : m_components)
-                    {
-                        if (comp && comp->GetScriptHandle() == handle)
-                        {
-                            comp->OnScriptReloaded();
-                        }
-                    }
                 }
             }
         }

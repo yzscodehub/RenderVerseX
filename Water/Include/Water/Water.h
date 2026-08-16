@@ -13,7 +13,6 @@
  * - Foam and whitecaps
  */
 
-#include "Water/WaterComponent.h"
 #include "Water/WaterTypes.h"
 
 namespace RVX

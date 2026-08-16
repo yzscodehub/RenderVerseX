@@ -7,6 +7,7 @@
 #include "Animation/Core/Interpolation.h"
 #include "Animation/Runtime/AnimationEvaluator.h"
 #include <algorithm>
+#include <limits>
 
 namespace RVX::Animation
 {
@@ -142,6 +143,85 @@ void AnimationState::Update(const BlendContext& context, float deltaTime)
     {
         m_onUpdate(this);
     }
+}
+
+bool AnimationState::CanUpdateTimeUs(const BlendContext& context, TimeUs deltaTimeUs) const
+{
+    if (deltaTimeUs < 0 || m_motionType != StateMotionType::Clip || !m_clip ||
+        m_currentTime > std::numeric_limits<TimeUs>::max() - deltaTimeUs)
+    {
+        return false;
+    }
+
+    float actualSpeed = m_speed;
+    if (!m_speedParameter.empty())
+    {
+        actualSpeed *= context.GetParameter(m_speedParameter, 1.0f);
+    }
+
+    return actualSpeed == 1.0f;
+}
+
+float AnimationState::GetNormalizedTimeAfterUpdateUs(TimeUs deltaTimeUs) const
+{
+    if (!m_clip || m_clip->duration <= 0)
+    {
+        return 0.0f;
+    }
+
+    const TimeUs rawTime = m_currentTime + deltaTimeUs;
+    TimeUs updatedTime = rawTime;
+    if (m_loop)
+    {
+        updatedTime = ApplyWrapMode(rawTime, m_clip->duration, WrapMode::Loop);
+    }
+    else if (rawTime >= m_clip->duration)
+    {
+        updatedTime = m_clip->duration;
+    }
+
+    return static_cast<float>(updatedTime) / static_cast<float>(m_clip->duration);
+}
+
+bool AnimationState::UpdateTimeUs(const BlendContext& context, TimeUs deltaTimeUs)
+{
+    if (!CanUpdateTimeUs(context, deltaTimeUs))
+    {
+        return false;
+    }
+
+    const TimeUs previousTime = m_currentTime;
+    const TimeUs duration = m_clip->duration;
+    const TimeUs rawTime = m_currentTime + deltaTimeUs;
+    bool looped = false;
+
+    if (duration <= 0)
+    {
+        m_currentTime = 0;
+    }
+    else if (m_loop)
+    {
+        looped = rawTime >= duration;
+        m_currentTime = ApplyWrapMode(rawTime, duration, WrapMode::Loop);
+    }
+    else if (rawTime >= duration)
+    {
+        m_currentTime = duration;
+        m_finished = true;
+    }
+    else
+    {
+        m_currentTime = rawTime;
+    }
+
+    DispatchAnimationEvents(previousTime, m_currentTime, looped, false);
+
+    if (m_onUpdate)
+    {
+        m_onUpdate(this);
+    }
+
+    return true;
 }
 
 float AnimationState::Evaluate(const BlendContext& context, SkeletonPose& outPose)

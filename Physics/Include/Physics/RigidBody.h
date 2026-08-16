@@ -188,6 +188,17 @@ public:
                   const Vec3& offset = Vec3(0.0f),
                   const Quat& rotation = Quat(1,0,0,0));
 
+    /**
+     * @brief Atomically replace this body's component-owned collider shape.
+     *
+     * The replacement vector is fully constructed before the prior shape set
+     * is swapped out, so an allocation failure leaves the body unchanged.
+     * A null shape intentionally represents an empty collider.
+     */
+    bool ReplaceCollider(std::shared_ptr<CollisionShape> shape,
+                         const Vec3& offset = Vec3(0.0f),
+                         const Quat& rotation = Quat(1,0,0,0));
+
     void ClearShapes();
     size_t GetShapeCount() const { return m_shapes.size(); }
 

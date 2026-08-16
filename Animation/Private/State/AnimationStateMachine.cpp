@@ -5,6 +5,8 @@
 
 #include "Animation/State/AnimationStateMachine.h"
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace RVX::Animation
 {
@@ -261,6 +263,9 @@ void AnimationStateMachine::ForceState(AnimationState* state, float transitionDu
         m_inTransition = false;
         m_nextState = nullptr;
         m_activeTransition = nullptr;
+        m_forcedTransitionDuration = 0.0f;
+        m_transitionElapsedUs = 0;
+        m_transitionDurationUs = 0;
     }
     else
     {
@@ -269,6 +274,9 @@ void AnimationStateMachine::ForceState(AnimationState* state, float transitionDu
         m_inTransition = true;
         m_transitionProgress = 0.0f;
         m_activeTransition = nullptr;  // No formal transition object
+        m_forcedTransitionDuration = transitionDuration;
+        m_transitionElapsedUs = 0;
+        m_transitionDurationUs = SecondsToTimeUs(static_cast<double>(transitionDuration));
         m_nextState->Enter();
     }
 }
@@ -301,25 +309,216 @@ void AnimationStateMachine::Update(float deltaTime)
     ResetTriggersAfterEval();
 }
 
+bool AnimationStateMachine::UpdateTimeUs(TimeUs deltaTimeUs)
+{
+    if (deltaTimeUs < 0 || !m_running || !m_currentState ||
+        !m_currentState->CanUpdateTimeUs(m_context, deltaTimeUs))
+    {
+        return false;
+    }
+
+    StateTransition* pendingTransition = nullptr;
+    if (m_inTransition)
+    {
+        if (!m_nextState || !m_nextState->CanUpdateTimeUs(m_context, deltaTimeUs) ||
+            m_transitionElapsedUs > std::numeric_limits<TimeUs>::max() - deltaTimeUs)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        const float projectedNormalizedTime =
+            m_currentState->GetNormalizedTimeAfterUpdateUs(deltaTimeUs);
+        pendingTransition = FindTransitionForNormalizedTime(m_currentState,
+                                                             projectedNormalizedTime);
+        if (pendingTransition &&
+            (!pendingTransition->GetDestinationState() ||
+             !pendingTransition->GetDestinationState()->CanUpdateTimeUs(m_context,
+                                                                          deltaTimeUs)))
+        {
+            return false;
+        }
+    }
+
+    m_context.deltaTime = static_cast<float>(TimeUsToSeconds(deltaTimeUs));
+    if (!m_currentState->UpdateTimeUs(m_context, deltaTimeUs))
+    {
+        return false;
+    }
+
+    if (m_inTransition)
+    {
+        UpdateTransitionTimeUs(deltaTimeUs);
+    }
+    else if (pendingTransition)
+    {
+        StartTransition(pendingTransition);
+    }
+
+    EvaluatePose();
+    ResetTriggersAfterEval();
+    return true;
+}
+
+bool AnimationStateMachine::CanUpdateTimeUsWithoutTransition(TimeUs deltaTimeUs) const
+{
+    if (deltaTimeUs < 0 || !m_running || !m_currentState || m_inTransition ||
+        !m_currentState->CanUpdateTimeUs(m_context, deltaTimeUs))
+    {
+        return false;
+    }
+
+    const float projectedNormalizedTime =
+        m_currentState->GetNormalizedTimeAfterUpdateUs(deltaTimeUs);
+    return FindTransitionForNormalizedTime(m_currentState, projectedNormalizedTime) == nullptr;
+}
+
+bool AnimationStateMachine::CanUpdateTimeUsWithRootMotionFreeTransition(
+    TimeUs deltaTimeUs) const
+{
+    const auto supportsRootMotionFreeDirectClip = [this, deltaTimeUs](
+                                                   const AnimationState* state) {
+        if (!state || state->GetMotionType() != StateMotionType::Clip ||
+            !state->GetClip() || state->GetClip()->hasRootMotion ||
+            state->HasRootMotion() || state->GetSpeed() != 1.0f ||
+            !state->GetSpeedParameter().empty())
+        {
+            return false;
+        }
+        return state->CanUpdateTimeUs(m_context, deltaTimeUs);
+    };
+
+    if (deltaTimeUs < 0 || !m_running || !supportsRootMotionFreeDirectClip(m_currentState))
+    {
+        return false;
+    }
+
+    if (m_inTransition)
+    {
+        return m_nextState && m_transitionDurationUs > 0 &&
+               m_transitionElapsedUs <= std::numeric_limits<TimeUs>::max() - deltaTimeUs &&
+               supportsRootMotionFreeDirectClip(m_nextState);
+    }
+
+    const float projectedNormalizedTime =
+        m_currentState->GetNormalizedTimeAfterUpdateUs(deltaTimeUs);
+    StateTransition* pendingTransition = FindTransitionForNormalizedTime(
+        m_currentState,
+        projectedNormalizedTime);
+    if (!pendingTransition || !pendingTransition->GetDestinationState())
+    {
+        return false;
+    }
+
+    const float duration = pendingTransition->GetDuration();
+    if (!std::isfinite(duration) || duration <= 0.0f ||
+        pendingTransition->GetOffset() != 0.0f)
+    {
+        return false;
+    }
+
+    const TimeUs durationUs = SecondsToTimeUs(static_cast<double>(duration));
+    return durationUs > 0 &&
+           supportsRootMotionFreeDirectClip(pendingTransition->GetDestinationState());
+}
+
+bool AnimationStateMachine::CanUpdateTimeUsWithSuppressedRootMotionTransition(
+    TimeUs deltaTimeUs) const
+{
+    const auto supportsUnitDirectClip = [this, deltaTimeUs](const AnimationState* state) {
+        return state && state->GetMotionType() == StateMotionType::Clip &&
+               state->GetClip() && state->GetSpeed() == 1.0f &&
+               state->GetSpeedParameter().empty() &&
+               state->CanUpdateTimeUs(m_context, deltaTimeUs);
+    };
+
+    // This path is intentionally active-transition-only. A newly projected
+    // root-motion transition must remain fail-closed so root extraction never
+    // changes authority within a fixed step.
+    if (deltaTimeUs < 0 || !m_running || !m_inTransition ||
+        m_transitionDurationUs != 250'000 || m_transitionElapsedUs >
+            std::numeric_limits<TimeUs>::max() - deltaTimeUs ||
+        !supportsUnitDirectClip(m_currentState) ||
+        !supportsUnitDirectClip(m_nextState))
+    {
+        return false;
+    }
+
+    if (m_activeTransition && m_activeTransition->GetOffset() != 0.0f)
+    {
+        return false;
+    }
+
+    const AnimationClip::ConstPtr sourceClip = m_currentState->GetClip();
+    const AnimationClip::ConstPtr destinationClip = m_nextState->GetClip();
+    if (!sourceClip->hasRootMotion || !m_currentState->IsLooping() ||
+        destinationClip->hasRootMotion || m_nextState->HasRootMotion() ||
+        !m_skeleton || !sourceClip->skeleton || !destinationClip->skeleton ||
+        sourceClip->skeleton.get() != m_skeleton.get() ||
+        destinationClip->skeleton.get() != m_skeleton.get())
+    {
+        return false;
+    }
+    return true;
+}
+
+bool AnimationStateMachine::CanUpdateTimeUsWithIncomingRootMotionTransition(
+    TimeUs deltaTimeUs) const
+{
+    const auto supportsUnitDirectClip = [this, deltaTimeUs](const AnimationState* state) {
+        return state && state->GetMotionType() == StateMotionType::Clip &&
+               state->GetClip() && state->GetSpeed() == 1.0f &&
+               state->GetSpeedParameter().empty() &&
+               state->CanUpdateTimeUs(m_context, deltaTimeUs);
+    };
+    const auto isQualifiedRootMotionClip = [this](const AnimationClip::ConstPtr& clip) {
+        if (!clip || !clip->hasRootMotion || clip->rootMotionBoneName.empty() ||
+            clip->duration <= 0 || !m_skeleton || !clip->skeleton ||
+            clip->skeleton.get() != m_skeleton.get() ||
+            m_skeleton->FindBoneIndex(clip->rootMotionBoneName) < 0)
+        {
+            return false;
+        }
+
+        return std::any_of(clip->transformTracks.begin(), clip->transformTracks.end(),
+                           [&clip](const TransformTrack& track) {
+            return track.targetType == TrackTargetType::Bone &&
+                   track.targetName == clip->rootMotionBoneName && !track.IsEmpty();
+        });
+    };
+
+    // This path is intentionally active-transition-only. A newly projected
+    // ordinary-to-root-motion transition remains fail-closed so root-motion
+    // authority cannot change within a fixed step.
+    if (deltaTimeUs < 0 || !m_running || !m_inTransition ||
+        m_transitionDurationUs != 250'000 || m_transitionElapsedUs >
+            std::numeric_limits<TimeUs>::max() - deltaTimeUs ||
+        !supportsUnitDirectClip(m_currentState) ||
+        !supportsUnitDirectClip(m_nextState))
+    {
+        return false;
+    }
+
+    if (m_activeTransition && m_activeTransition->GetOffset() != 0.0f)
+    {
+        return false;
+    }
+
+    const AnimationClip::ConstPtr sourceClip = m_currentState->GetClip();
+    const AnimationClip::ConstPtr destinationClip = m_nextState->GetClip();
+    return !sourceClip->hasRootMotion && !m_currentState->HasRootMotion() &&
+           sourceClip->skeleton && sourceClip->skeleton.get() == m_skeleton.get() &&
+           m_nextState->IsLooping() && isQualifiedRootMotionClip(destinationClip);
+}
+
 void AnimationStateMachine::CheckTransitions()
 {
     if (!m_currentState) return;
 
-    float normalizedTime = m_currentState->GetNormalizedTime();
-
-    // Check any-state transitions first (higher priority)
-    for (const auto& t : m_anyStateTransitions)
-    {
-        if (t->GetDestinationState() != m_currentState &&
-            t->CheckConditions(m_context, normalizedTime))
-        {
-            StartTransition(t.get());
-            return;
-        }
-    }
-
-    // Find valid transition from current state
-    StateTransition* validTransition = FindValidTransition(m_currentState);
+    StateTransition* validTransition = FindTransitionForNormalizedTime(
+        m_currentState,
+        m_currentState->GetNormalizedTime());
     if (validTransition)
     {
         StartTransition(validTransition);
@@ -328,8 +527,18 @@ void AnimationStateMachine::CheckTransitions()
 
 StateTransition* AnimationStateMachine::FindValidTransition(AnimationState* fromState)
 {
+    return FindValidTransition(fromState, fromState ? fromState->GetNormalizedTime() : 0.0f);
+}
+
+StateTransition* AnimationStateMachine::FindValidTransition(AnimationState* fromState,
+                                                             float normalizedTime) const
+{
+    if (!fromState)
+    {
+        return nullptr;
+    }
+
     std::vector<StateTransition*> candidates;
-    float normalizedTime = fromState->GetNormalizedTime();
 
     for (const auto& t : m_transitions)
     {
@@ -352,6 +561,31 @@ StateTransition* AnimationStateMachine::FindValidTransition(AnimationState* from
     return candidates[0];
 }
 
+StateTransition* AnimationStateMachine::FindValidAnyStateTransition(float normalizedTime) const
+{
+    for (const auto& transition : m_anyStateTransitions)
+    {
+        if (transition->GetDestinationState() != m_currentState &&
+            transition->CheckConditions(m_context, normalizedTime))
+        {
+            return transition.get();
+        }
+    }
+    return nullptr;
+}
+
+StateTransition* AnimationStateMachine::FindTransitionForNormalizedTime(
+    AnimationState* fromState,
+    float normalizedTime) const
+{
+    if (StateTransition* anyStateTransition = FindValidAnyStateTransition(normalizedTime))
+    {
+        return anyStateTransition;
+    }
+
+    return FindValidTransition(fromState, normalizedTime);
+}
+
 void AnimationStateMachine::StartTransition(StateTransition* transition)
 {
     if (!transition || !transition->GetDestinationState())
@@ -361,6 +595,9 @@ void AnimationStateMachine::StartTransition(StateTransition* transition)
     m_nextState = transition->GetDestinationState();
     m_inTransition = true;
     m_transitionProgress = 0.0f;
+    m_forcedTransitionDuration = 0.0f;
+    m_transitionElapsedUs = 0;
+    m_transitionDurationUs = SecondsToTimeUs(static_cast<double>(transition->GetDuration()));
 
     // Enter next state
     m_nextState->Reset();
@@ -383,7 +620,9 @@ void AnimationStateMachine::UpdateTransition(float deltaTime)
 {
     if (!m_nextState) return;
 
-    float duration = m_activeTransition ? m_activeTransition->GetDuration() : 0.25f;
+    const float duration = m_activeTransition
+        ? m_activeTransition->GetDuration()
+        : m_forcedTransitionDuration;
     
     if (duration <= 0.0f)
     {
@@ -402,6 +641,32 @@ void AnimationStateMachine::UpdateTransition(float deltaTime)
     }
 }
 
+void AnimationStateMachine::UpdateTransitionTimeUs(TimeUs deltaTimeUs)
+{
+    if (!m_nextState)
+    {
+        return;
+    }
+
+    if (m_transitionDurationUs <= 0)
+    {
+        CompleteTransition();
+        return;
+    }
+
+    m_transitionElapsedUs += deltaTimeUs;
+    const TimeUs clampedElapsed = std::min(m_transitionElapsedUs, m_transitionDurationUs);
+    m_transitionProgress = static_cast<float>(clampedElapsed) /
+        static_cast<float>(m_transitionDurationUs);
+
+    m_nextState->UpdateTimeUs(m_context, deltaTimeUs);
+
+    if (m_transitionElapsedUs >= m_transitionDurationUs)
+    {
+        CompleteTransition();
+    }
+}
+
 void AnimationStateMachine::CompleteTransition()
 {
     if (m_currentState)
@@ -414,6 +679,9 @@ void AnimationStateMachine::CompleteTransition()
     m_activeTransition = nullptr;
     m_inTransition = false;
     m_transitionProgress = 0.0f;
+    m_forcedTransitionDuration = 0.0f;
+    m_transitionElapsedUs = 0;
+    m_transitionDurationUs = 0;
 }
 
 void AnimationStateMachine::EvaluatePose()
@@ -483,6 +751,11 @@ void AnimationStateMachine::Reset()
     m_currentState = nullptr;
     m_nextState = nullptr;
     m_inTransition = false;
+    m_activeTransition = nullptr;
+    m_transitionProgress = 0.0f;
+    m_forcedTransitionDuration = 0.0f;
+    m_transitionElapsedUs = 0;
+    m_transitionDurationUs = 0;
     m_outputPose.ResetToBindPose();
 }
 

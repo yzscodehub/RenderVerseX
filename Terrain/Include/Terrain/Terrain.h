@@ -12,7 +12,6 @@
  * - Normal map generation
  */
 
-#include "Terrain/TerrainComponent.h"
 #include "Terrain/TerrainCollider.h"
 #include "Terrain/TerrainTypes.h"
 

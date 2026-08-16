@@ -217,6 +217,55 @@ public:
     void Update(float deltaTime);
 
     /**
+     * @brief Advance direct clip states by an exact microsecond delta.
+     *
+     * Blend-tree states and non-unit effective speeds are intentionally not
+     * supported by this deterministic path.
+     */
+    bool UpdateTimeUs(TimeUs deltaTimeUs);
+
+    /**
+     * @brief Check whether an exact microsecond update can complete without
+     *        entering or advancing a transition.
+     *
+     * This is a side-effect-free gate for owners that require an atomic
+     * direct-clip evaluation. It includes Any State transitions as well as
+     * transitions from the current state.
+     */
+    bool CanUpdateTimeUsWithoutTransition(TimeUs deltaTimeUs) const;
+
+    /**
+     * @brief Check whether an exact update can deterministically enter or
+     *        advance a root-motion-free, direct-clip blend.
+     *
+     * This deliberately supports only unit-speed clip states, non-zero blend
+     * durations, and zero transition offsets.  Those constraints make the
+     * preflight match the mutation path without speculatively changing either
+     * state.  It returns false when no transition is involved.
+     */
+    bool CanUpdateTimeUsWithRootMotionFreeTransition(TimeUs deltaTimeUs) const;
+
+    /**
+     * @brief Check one active 250 ms root-motion-source to ordinary-clip
+     *        blend for exact fixed evaluation.
+     *
+     * The caller suppresses world motion during the blend and removes the
+     * qualified source root from the blended pose. This admits no pending,
+     * reverse, root-motion destination, offset, speed, or blend-tree case.
+     */
+    bool CanUpdateTimeUsWithSuppressedRootMotionTransition(TimeUs deltaTimeUs) const;
+
+    /**
+     * @brief Check one active 250 ms ordinary-clip to root-motion-clip blend
+     *        for exact fixed evaluation.
+     *
+     * The caller suppresses world motion during the blend and removes the
+     * qualified destination root from the blended pose. This admits no
+     * pending, reverse, offset, speed, skeleton-mismatch, or blend-tree case.
+     */
+    bool CanUpdateTimeUsWithIncomingRootMotionTransition(TimeUs deltaTimeUs) const;
+
+    /**
      * @brief Get the output pose
      */
     const SkeletonPose& GetOutputPose() const { return m_outputPose; }
@@ -270,11 +319,17 @@ private:
     void CheckTransitions();
     void StartTransition(StateTransition* transition);
     void UpdateTransition(float deltaTime);
+    void UpdateTransitionTimeUs(TimeUs deltaTimeUs);
     void CompleteTransition();
     void EvaluatePose();
     void ResetTriggersAfterEval();
 
     StateTransition* FindValidTransition(AnimationState* fromState);
+    StateTransition* FindValidTransition(AnimationState* fromState,
+                                         float normalizedTime) const;
+    StateTransition* FindValidAnyStateTransition(float normalizedTime) const;
+    StateTransition* FindTransitionForNormalizedTime(AnimationState* fromState,
+                                                      float normalizedTime) const;
 
     Skeleton::ConstPtr m_skeleton;
 
@@ -292,6 +347,9 @@ private:
     StateTransition* m_activeTransition = nullptr;
     bool m_inTransition = false;
     float m_transitionProgress = 0.0f;
+    float m_forcedTransitionDuration = 0.0f;
+    TimeUs m_transitionElapsedUs = 0;
+    TimeUs m_transitionDurationUs = 0;
 
     // Parameters
     BlendContext m_context;

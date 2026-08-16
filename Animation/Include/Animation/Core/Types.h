@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <string>
 
 namespace RVX::Animation
@@ -32,6 +33,9 @@ constexpr TimeUs kMicrosecondsPerMillisecond = 1'000;
 
 /// Default frame rate
 constexpr int kDefaultFrameRate = 30;
+
+/// Fixed animation simulation frequency used by deterministic update paths.
+constexpr uint64_t kFixedAnimationUpdateHz = 60;
 
 // ============================================================================
 // Time Conversion Utilities
@@ -83,6 +87,52 @@ inline constexpr TimeUs MillisecondsToTimeUs(int64_t ms)
 inline constexpr int64_t TimeUsToMilliseconds(TimeUs timeUs)
 {
     return timeUs / kMicrosecondsPerMillisecond;
+}
+
+/**
+ * @brief Return the cumulative microsecond boundary for a 60 Hz fixed step.
+ *
+ * Step zero is the origin. Consecutive boundaries intentionally distribute the
+ * remainder of one second, so steps one through three are 16666, 16667, and
+ * 16667 microseconds without accumulating floating-point drift.
+ */
+inline constexpr TimeUs Fixed60HzStepBoundaryUs(uint64_t stepSequence)
+{
+    const uint64_t wholeSeconds = stepSequence / kFixedAnimationUpdateHz;
+    const uint64_t remainderSteps = stepSequence % kFixedAnimationUpdateHz;
+    const uint64_t maxTimeUs = static_cast<uint64_t>(std::numeric_limits<TimeUs>::max());
+    const uint64_t microsPerSecond = static_cast<uint64_t>(kMicrosecondsPerSecond);
+    if (wholeSeconds > maxTimeUs / microsPerSecond)
+    {
+        return -1;
+    }
+
+    const uint64_t wholeMicroseconds = wholeSeconds * microsPerSecond;
+    const uint64_t remainderMicroseconds =
+        (remainderSteps * microsPerSecond) / kFixedAnimationUpdateHz;
+    if (wholeMicroseconds > maxTimeUs - remainderMicroseconds)
+    {
+        return -1;
+    }
+
+    return static_cast<TimeUs>(wholeMicroseconds + remainderMicroseconds);
+}
+
+/**
+ * @brief Return the duration of a one-based 60 Hz fixed step in microseconds.
+ */
+inline constexpr TimeUs Fixed60HzStepDeltaUs(uint64_t stepSequence)
+{
+    if (stepSequence == 0)
+    {
+        return 0;
+    }
+
+    const TimeUs currentBoundary = Fixed60HzStepBoundaryUs(stepSequence);
+    const TimeUs previousBoundary = Fixed60HzStepBoundaryUs(stepSequence - 1);
+    return currentBoundary < 0 || previousBoundary < 0
+        ? -1
+        : currentBoundary - previousBoundary;
 }
 
 // ============================================================================

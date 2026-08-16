@@ -2,7 +2,7 @@
 # Terrain Module - Heightmap-based terrain rendering and collision
 # =============================================================================
 # Provides:
-# - TerrainComponent (scene entity terrain attachment)
+# - Pure ECS terrain configuration and runtime bridge
 # - Heightmap (terrain height data management)
 # - TerrainLOD (level-of-detail system with CDLOD/Clipmap support)
 # - TerrainMaterial (multi-layer terrain texturing)
@@ -12,11 +12,14 @@
 add_library(RVX_Terrain STATIC)
 
 target_sources(RVX_Terrain PRIVATE
+    Include/Terrain/ECS/TerrainEcsBridge.h
+    Include/Terrain/ECS/TerrainEcsRuntimeGateway.h
     # Core
+    Private/ECS/TerrainEcsBridge.cpp
+    Private/ECS/TerrainEcsRuntimeGateway.cpp
     Private/TerrainLOD.cpp
     Private/TerrainCollider.cpp
     Private/Heightmap.cpp
-    Private/TerrainComponent.cpp
     Private/TerrainMaterial.cpp
 )
 

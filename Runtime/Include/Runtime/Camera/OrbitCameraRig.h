@@ -36,6 +36,12 @@ namespace RVX
         float aspectRatio = 1.0f;
         float fitMargin = 1.10f;
         float exteriorMarginScale = 0.02f;
+        /** @brief Smallest allowed fraction of the current fitted distance. */
+        float minimumFramingScale = 0.50f;
+        /** @brief Padding left in front of the nearest focused AABB corner. */
+        float nearClipPaddingScale = 0.01f;
+        /** @brief Padding left behind the farthest focused AABB corner. */
+        float farClipPaddingScale = 0.25f;
     };
 
     /** @brief Semantic interaction event consumed by OrbitCameraRig. */
@@ -131,10 +137,22 @@ namespace RVX
             float nearRadiusMargin = 1.10f,
             float farRadiusMargin = 2.0f);
 
+        /** @brief Build tight clip planes from view-space AABB depths. */
+        static OrbitCameraClipRange BuildFocusedClipRange(
+            const AABB& bounds,
+            const Vec3& cameraPosition,
+            const Vec3& viewForward,
+            float nearPaddingScale = 0.01f,
+            float farPaddingScale = 0.25f);
+
     private:
         [[nodiscard]] bool HasFiniteBounds() const;
         [[nodiscard]] float GetBoundsRadius() const;
+        [[nodiscard]] float GetBaseMinimumDistance(
+            const OrbitCameraViewBasis& basis) const;
         [[nodiscard]] float GetExteriorMinimumDistance(
+            const OrbitCameraViewBasis& basis) const;
+        [[nodiscard]] float CalculateFitDistance(
             const OrbitCameraViewBasis& basis) const;
         [[nodiscard]] float ClampDistance(float distance) const;
         [[nodiscard]] bool FitInternal();

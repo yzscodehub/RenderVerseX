@@ -11,10 +11,9 @@ endif()
 target_sources(RVX_Scripting PRIVATE
     Private/LuaState.cpp
     Private/ScriptEngine.cpp
-    Private/ScriptComponent.cpp
+    Private/ECS/ScriptEcsBridge.cpp
     Private/Bindings/CoreBindings.cpp
     Private/Bindings/MathBindings.cpp
-    Private/Bindings/SceneBindings.cpp
     Private/Bindings/InputBindings.cpp
 )
 

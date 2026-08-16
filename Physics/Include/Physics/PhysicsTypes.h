@@ -153,17 +153,65 @@ struct ShapeCastHit
 class BodyHandle
 {
 public:
-    BodyHandle() = default;
-    explicit BodyHandle(uint64 id) : m_id(id) {}
+    using Index = uint32;
 
-    bool IsValid() const { return m_id != 0; }
-    uint64 GetId() const { return m_id; }
+    static constexpr Index InvalidIndex = static_cast<Index>(-1);
 
-    bool operator==(const BodyHandle& other) const { return m_id == other.m_id; }
-    bool operator!=(const BodyHandle& other) const { return m_id != other.m_id; }
+    constexpr BodyHandle() = default;
+    /**
+     * @brief Reconstruct a handle from its stable packed representation.
+     *
+     * Kept for source compatibility with the former single-id body handle.
+     */
+    constexpr explicit BodyHandle(uint64 packedValue) : m_packedValue(packedValue) {}
+
+    /** @brief Create a generation-safe body handle. */
+    static constexpr BodyHandle Create(Index index, uint32 generation)
+    {
+        if (index == InvalidIndex)
+        {
+            return Invalid();
+        }
+
+        return BodyHandle((static_cast<uint64>(generation) << 32u) |
+                          static_cast<uint64>(index + 1u));
+    }
+
+    static constexpr BodyHandle Invalid()
+    {
+        return BodyHandle{};
+    }
+
+    constexpr bool IsValid() const
+    {
+        return static_cast<uint32>(m_packedValue) != 0u;
+    }
+
+    /** @brief Legacy name for the packed handle value. */
+    constexpr uint64 GetId() const { return m_packedValue; }
+    constexpr uint64 GetPackedValue() const { return m_packedValue; }
+    constexpr Index GetIndex() const
+    {
+        return IsValid() ? static_cast<Index>(static_cast<uint32>(m_packedValue) - 1u)
+                         : InvalidIndex;
+    }
+    constexpr uint32 GetGeneration() const
+    {
+        return static_cast<uint32>(m_packedValue >> 32u);
+    }
+
+    constexpr bool operator==(const BodyHandle& other) const
+    {
+        return m_packedValue == other.m_packedValue;
+    }
+    constexpr bool operator!=(const BodyHandle& other) const { return !(*this == other); }
+    constexpr bool operator<(const BodyHandle& other) const
+    {
+        return m_packedValue < other.m_packedValue;
+    }
 
 private:
-    uint64 m_id = 0;
+    uint64 m_packedValue = 0;
 };
 
 } // namespace RVX::Physics

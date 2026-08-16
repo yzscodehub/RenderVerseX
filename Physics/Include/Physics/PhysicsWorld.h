@@ -10,6 +10,7 @@
 #include "Physics/RigidBody.h"
 #include <functional>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -43,6 +44,98 @@ struct PhysicsWorldConfig
  * @brief Collision callback type
  */
 using CollisionCallback = std::function<void(const CollisionEvent&)>;
+
+/**
+ * @brief Deterministic runtime state for physics qualification samples.
+ *
+ * Lifetime counters reset on Initialize(). Live census fields are derived from
+ * the current world and therefore report zero after Shutdown().
+ */
+struct PhysicsRuntimeDiagnosticsSnapshot
+{
+    uint64 fixedStepSequence = 0;
+    uint32 lastSubstepCount = 0;
+    float droppedSimulationTimeSeconds = 0.0f;
+    uint64 substepClampCount = 0;
+
+    size_t staticBodyCount = 0;
+    size_t dynamicBodyCount = 0;
+    size_t kinematicBodyCount = 0;
+    size_t colliderCount = 0;
+
+    uint64 createCount = 0;
+    uint64 destroyCount = 0;
+    uint64 recreateCount = 0;
+    uint64 colliderRebuildCount = 0;
+    uint64 staleHandleRejectCount = 0;
+
+    /** Owned by the World synchronization layer; zero for a standalone world. */
+    uint64 sceneToPhysicsPushCount = 0;
+    /** Owned by the World synchronization layer; zero for a standalone world. */
+    uint64 physicsToScenePullCount = 0;
+
+    uint64 bodyPoseHash = 0;
+};
+
+/** @brief Handle-only creation outcome for clients that must not retain RigidBody pointers. */
+enum class BodyCreateStatus : uint8
+{
+    Created = 0,
+    WorldUnavailable,
+    CapacityExceeded,
+    AllocationFailed,
+};
+
+struct BodyCreateResult
+{
+    BodyCreateStatus status = BodyCreateStatus::WorldUnavailable;
+    BodyHandle handle = BodyHandle::Invalid();
+
+    [[nodiscard]] bool Succeeded() const { return status == BodyCreateStatus::Created; }
+};
+
+/** @brief Explicit handle-only destruction outcome. AlreadyAbsent is safe to acknowledge. */
+enum class BodyDestroyStatus : uint8
+{
+    Destroyed = 0,
+    AlreadyAbsent,
+    ReleaseFailed,
+};
+
+/** @brief Value pose consumed and produced by handle-only body clients. */
+struct BodyPose
+{
+    Vec3 position{0.0f};
+    Quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+};
+
+/** @brief Mutable rigid-body configuration excluding pose and velocities. */
+struct BodyConfiguration
+{
+    BodyType type = BodyType::Dynamic;
+    MotionQuality motionQuality = MotionQuality::Discrete;
+    float mass = 1.0f;
+    float linearDamping = 0.05f;
+    float angularDamping = 0.05f;
+    float gravityScale = 1.0f;
+    uint8 positionConstraints = 0;
+    uint8 rotationConstraints = 0;
+    CollisionLayer layer = Layers::Dynamic;
+    uint32 collisionMask = 0xFFFFFFFFu;
+    CollisionGroup group;
+    bool allowSleep = true;
+    bool isTrigger = false;
+};
+
+/** @brief Snapshot of all bridge-relevant body values. */
+struct BodyState
+{
+    BodyPose pose;
+    Vec3 linearVelocity{0.0f};
+    Vec3 angularVelocity{0.0f};
+    BodyConfiguration configuration;
+    bool sleeping = false;
+};
 
 /**
  * @brief Physics world manages the physics simulation
@@ -116,11 +209,22 @@ public:
     void Step(float deltaTime);
 
     /**
+     * @brief Advance the simulation exactly once using a caller-owned fixed delta.
+     *
+     * This path intentionally does not touch the compatibility accumulator used
+     * by Step(). World-level schedulers should use it when they own fixed-step
+     * accumulation and phase ordering.
+     */
+    void StepFixed(float fixedDelta);
+
+    /**
      * @brief Get current time step
      */
     float GetTimeStep() const { return m_config.fixedTimeStep; }
+    uint32 GetMaxSubSteps() const { return m_config.maxSubSteps; }
     uint32 GetLastStepCount() const { return m_lastStepCount; }
     float GetAccumulatedTime() const { return m_accumulatedTime; }
+    PhysicsRuntimeDiagnosticsSnapshot GetRuntimeDiagnosticsSnapshot() const;
 
     /**
      * @brief Set gravity
@@ -142,14 +246,36 @@ public:
     BodyHandle CreateBody(const RigidBodyDesc& desc);
 
     /**
+     * @brief Create through the generation-safe, value-only body contract.
+     *
+     * This is the ECS-facing lifecycle surface. It deliberately returns no
+     * RigidBody ownership or pointer and keeps legacy pointer APIs separate.
+     */
+    [[nodiscard]] BodyCreateResult CreateBodyValue(const RigidBodyDesc& desc);
+
+    /**
      * @brief Destroy a rigid body
      */
     void DestroyBody(BodyHandle body);
+
+    /** @brief Destroy through the value-only body contract. */
+    [[nodiscard]] BodyDestroyStatus DestroyBodyValue(BodyHandle body);
+
+    /** @brief Read bridge-relevant state without exposing RigidBody storage. */
+    [[nodiscard]] std::optional<BodyState> ReadBodyState(BodyHandle body) const;
+    /** @brief Teleport a body through its generation-safe handle. */
+    [[nodiscard]] bool WriteBodyPose(BodyHandle body, const BodyPose& pose);
+    /** @brief Apply bridge-relevant configuration through its generation-safe handle. */
+    [[nodiscard]] bool WriteBodyConfiguration(BodyHandle body,
+                                              const BodyConfiguration& configuration);
 
     /**
      * @brief Get body count
      */
     size_t GetBodyCount() const { return m_bodies.size(); }
+
+    /** @brief Get the total number of collision shapes attached to bodies. */
+    size_t GetColliderCount() const;
 
     /**
      * @brief Get a body by handle
@@ -187,6 +313,18 @@ public:
      */
     void AddShape(BodyHandle body, std::shared_ptr<CollisionShape> shape,
                   const Vec3& offset = Vec3(0.0f), const Quat& rotation = Quat(1,0,0,0));
+
+    /**
+     * @brief Replace the component-owned collider without exposing an empty
+     * intermediate body state.
+     * @return False when the handle is stale or replacement preparation fails.
+     */
+    bool ReplaceBodyCollider(BodyHandle body,
+                             std::shared_ptr<CollisionShape> shape,
+                             const Vec3& offset = Vec3(0.0f),
+                             const Quat& rotation = Quat(1,0,0,0),
+                             bool isTrigger = false,
+                             bool recordRebuild = true);
 
     // =========================================================================
     // Constraints
@@ -358,6 +496,10 @@ private:
      */
     void RemoveActivePairsForBody(uint64 bodyId);
 
+    bool IsLiveBodyHandle(BodyHandle handle) const;
+    void RecordStaleHandleReject(BodyHandle handle) const;
+    bool TryReleaseBodySlot(BodyHandle handle);
+
     struct BodyPairKey
     {
         uint64 bodyA = 0;
@@ -388,13 +530,36 @@ private:
 
     std::vector<std::shared_ptr<RigidBody>> m_bodies;
     std::unordered_map<uint64, size_t> m_bodyLookup;
-    uint64 m_nextBodyId = 1;
+    struct BodySlot
+    {
+        uint32 generation = 0;
+        bool allocated = false;
+        bool everAllocated = false;
+        /** A generation cannot wrap because that would revive a stale handle. */
+        bool retired = false;
+    };
+    /**
+     * Slot generations intentionally survive Shutdown() so a stale handle
+     * cannot alias a body created by a later Initialize() call.
+     */
+    std::vector<BodySlot> m_bodySlots;
+    std::vector<uint32> m_freeBodySlots;
+
+    friend class PhysicsWorldTestAccess;
 
     std::vector<std::shared_ptr<Constraint>> m_constraints;
     uint64 m_nextConstraintId = 1;
 
     float m_accumulatedTime = 0.0f;
     uint32 m_lastStepCount = 0;
+    uint64 m_fixedStepSequence = 0;
+    float m_droppedSimulationTimeSeconds = 0.0f;
+    uint64 m_substepClampCount = 0;
+    uint64 m_createCount = 0;
+    uint64 m_destroyCount = 0;
+    uint64 m_recreateCount = 0;
+    uint64 m_colliderRebuildCount = 0;
+    mutable uint64 m_staleHandleRejectCount = 0;
 
     CollisionCallback m_onCollisionEnter;
     CollisionCallback m_onCollisionExit;

@@ -12,7 +12,6 @@
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/ParticleSubsystem.h"
-#include "Particle/ParticleComponent.h"
 #include "Particle/ParticleLOD.h"
 #include "Particle/ParticlePool.h"
 #include "Particle/ParticleRenderStats.h"

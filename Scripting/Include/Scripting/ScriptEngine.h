@@ -11,7 +11,6 @@
  * - Manages script hot-reloading
  */
 
-#include "Core/Event/EventHandle.h"
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "Scripting/LuaState.h"
 
@@ -22,9 +21,7 @@
 namespace RVX
 {
     // Forward declarations
-    class Component;
     class InputSubsystem;
-    class ScriptComponent;
 
     /**
      * @brief Handle to a loaded script
@@ -285,25 +282,6 @@ namespace RVX
         sol::state& GetState() { return m_luaState.GetState(); }
         const sol::state& GetState() const { return m_luaState.GetState(); }
 
-        // =====================================================================
-        // Component Management
-        // =====================================================================
-
-        /**
-         * @brief Register a script component (called by ScriptComponent)
-         */
-        void RegisterComponent(ScriptComponent* component);
-
-        /**
-         * @brief Unregister a script component
-         */
-        void UnregisterComponent(ScriptComponent* component);
-
-        /**
-         * @brief Get all registered script components
-         */
-        const std::vector<ScriptComponent*>& GetComponents() const { return m_components; }
-
     private:
         LuaState m_luaState;
         ScriptingSubsystemConfig m_config;
@@ -313,16 +291,12 @@ namespace RVX
         std::unordered_map<std::string, ScriptHandle> m_pathToHandle;
         ScriptHandle m_nextHandle = 1;
 
-        // Registered components
-        std::vector<ScriptComponent*> m_components;
         InputSubsystem* m_inputSubsystem = nullptr;
-        ScopedEventHandle m_componentAttachedSubscription;
         bool m_initialized = false;
 
         // Hot reload
         float m_timeSinceLastCheck = 0.0f;
 
-        void HandleComponentAttached(Component* component);
         void CheckForHotReload();
         ScriptHandle AllocateHandle();
     };

@@ -149,6 +149,19 @@ public:
     void Update(const BlendContext& context, float deltaTime);
 
     /**
+     * @brief Advance a direct clip state by an exact microsecond delta.
+     * @return False without mutation when this state's motion or speed is not
+     *         supported by the deterministic update path.
+     */
+    bool UpdateTimeUs(const BlendContext& context, TimeUs deltaTimeUs);
+
+    /// Check whether UpdateTimeUs can be applied without mutating this state.
+    bool CanUpdateTimeUs(const BlendContext& context, TimeUs deltaTimeUs) const;
+
+    /// Get the normalized time that an accepted fixed update would produce.
+    float GetNormalizedTimeAfterUpdateUs(TimeUs deltaTimeUs) const;
+
+    /**
      * @brief Evaluate and produce output pose
      */
     float Evaluate(const BlendContext& context, SkeletonPose& outPose);

@@ -7,6 +7,7 @@
 #include "Animation/Core/AnimationEvent.h"
 #include "Animation/Core/Interpolation.h"
 #include <algorithm>
+#include <limits>
 
 namespace RVX::Animation
 {
@@ -277,6 +278,55 @@ void AnimationPlayer::Update(float deltaTime)
     EvaluateAndBlend();
 }
 
+bool AnimationPlayer::UpdateTimeUs(TimeUs deltaTimeUs)
+{
+    if (!CanUpdateTimeUs(deltaTimeUs))
+    {
+        return false;
+    }
+
+    for (auto& instance : m_instances)
+    {
+        UpdateInstanceTimeUs(instance, deltaTimeUs);
+    }
+
+    for (auto& instance : m_additiveInstances)
+    {
+        UpdateInstanceTimeUs(instance, deltaTimeUs);
+    }
+
+    CleanupFinishedInstances();
+    EvaluateAndBlend();
+    return true;
+}
+
+bool AnimationPlayer::CanUpdateTimeUs(TimeUs deltaTimeUs) const
+{
+    if (deltaTimeUs < 0)
+    {
+        return false;
+    }
+
+    const auto canUpdateInstances = [this, deltaTimeUs](const std::vector<PlaybackInstance>& instances) {
+        for (const PlaybackInstance& instance : instances)
+        {
+            if (!instance.IsPlaying())
+            {
+                continue;
+            }
+
+            if (!instance.clip || instance.speed * m_globalSpeed != 1.0f ||
+                instance.currentTime > std::numeric_limits<TimeUs>::max() - deltaTimeUs)
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    return canUpdateInstances(m_instances) && canUpdateInstances(m_additiveInstances);
+}
+
 void AnimationPlayer::UpdateInstance(PlaybackInstance& instance, float deltaTime)
 {
     if (!instance.clip || !instance.IsPlaying())
@@ -418,6 +468,124 @@ void AnimationPlayer::UpdateInstance(PlaybackInstance& instance, float deltaTime
         else
         {
             float t = 1.0f - instance.fadeProgress;
+            instance.weight = t * t * (3.0f - 2.0f * t);
+        }
+    }
+
+    m_poseDirty = true;
+}
+
+void AnimationPlayer::UpdateInstanceTimeUs(PlaybackInstance& instance, TimeUs deltaTimeUs)
+{
+    if (!instance.IsPlaying())
+    {
+        return;
+    }
+
+    const TimeUs previousTime = instance.currentTime;
+    const TimeUs duration = instance.clip->duration;
+    const TimeUs rawTime = instance.currentTime + deltaTimeUs;
+    bool looped = false;
+    bool completed = false;
+
+    if (duration <= 0)
+    {
+        instance.currentTime = 0;
+    }
+    else
+    {
+        switch (instance.wrapMode)
+        {
+            case WrapMode::Once:
+                if (rawTime >= duration)
+                {
+                    instance.currentTime = duration;
+                    instance.state = PlaybackState::Stopped;
+                    completed = true;
+                }
+                else
+                {
+                    instance.currentTime = rawTime;
+                }
+                break;
+
+            case WrapMode::Loop:
+                looped = rawTime >= duration;
+                instance.currentTime = ApplyWrapMode(rawTime, duration, WrapMode::Loop);
+                if (looped && instance.onLoop)
+                {
+                    instance.onLoop();
+                }
+                break;
+
+            case WrapMode::PingPong:
+                instance.currentTime = ApplyWrapMode(rawTime, duration, WrapMode::PingPong);
+                break;
+
+            case WrapMode::ClampForever:
+                instance.currentTime = ApplyWrapMode(rawTime, duration, WrapMode::ClampForever);
+                break;
+        }
+    }
+
+    if (m_eventCallback && duration > 0 && (previousTime != instance.currentTime || looped))
+    {
+        AnimationEventDispatcher dispatcher;
+        dispatcher.SetGlobalHandler([this](const AnimationEvent& event) {
+            if (m_eventCallback)
+            {
+                m_eventCallback(event.name);
+            }
+        });
+        dispatcher.Dispatch(instance.clip->eventTrack,
+                            previousTime,
+                            instance.currentTime,
+                            looped,
+                            duration);
+    }
+
+    if (completed)
+    {
+        if (instance.onComplete)
+        {
+            instance.onComplete();
+        }
+        if (m_completionCallback)
+        {
+            m_completionCallback(instance.id);
+        }
+    }
+
+    const float deltaTime = static_cast<float>(TimeUsToSeconds(deltaTimeUs));
+    if (instance.isFadingIn && instance.fadeInDuration > 0.0f)
+    {
+        instance.fadeProgress += deltaTime / instance.fadeInDuration;
+        if (instance.fadeProgress >= 1.0f)
+        {
+            instance.fadeProgress = 1.0f;
+            instance.isFadingIn = false;
+            instance.weight = 1.0f;
+        }
+        else
+        {
+            const float t = instance.fadeProgress;
+            instance.weight = t * t * (3.0f - 2.0f * t);
+        }
+    }
+
+    if (instance.isFadingOut && instance.fadeOutDuration > 0.0f)
+    {
+        instance.fadeProgress += deltaTime / instance.fadeOutDuration;
+        if (instance.fadeProgress >= 1.0f)
+        {
+            instance.fadeProgress = 1.0f;
+            instance.isFadingOut = false;
+            instance.state = PlaybackState::Stopped;
+            instance.weight = 0.0f;
+        }
+        else
+        {
+            const float t = 1.0f - instance.fadeProgress;
             instance.weight = t * t * (3.0f - 2.0f * t);
         }
     }

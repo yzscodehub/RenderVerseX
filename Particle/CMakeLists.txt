@@ -20,11 +20,12 @@ set(PARTICLE_HEADERS
     Include/Particle/ParticleSystem.h
     Include/Particle/ParticleSystemInstance.h
     Include/Particle/ParticleSubsystem.h
-    Include/Particle/ParticleComponent.h
     Include/Particle/ParticleLOD.h
     Include/Particle/ParticlePool.h
     Include/Particle/ParticleRenderStats.h
     Include/Particle/ParticleSystemLoader.h
+    Include/Particle/ECS/ParticleEcsBridge.h
+    Include/Particle/ECS/ParticleEcsRuntimeGateway.h
     
     # Curves
     Include/Particle/Curves/AnimationCurve.h
@@ -77,9 +78,10 @@ set(PARTICLE_SOURCES
     Private/ParticleSystem.cpp
     Private/ParticleSystemInstance.cpp
     Private/ParticleSubsystem.cpp
-    Private/ParticleComponent.cpp
     Private/ParticlePool.cpp
     Private/ParticleSystemLoader.cpp
+    Private/ECS/ParticleEcsBridge.cpp
+    Private/ECS/ParticleEcsRuntimeGateway.cpp
 
     # GPU
     Private/GPU/CPUParticleSimulator.cpp
@@ -122,6 +124,7 @@ add_library(${MODULE_NAME} STATIC
     ${PARTICLE_PRIVATE_HEADERS}
     ${PARTICLE_SOURCES}
 )
+add_library(RVX::Particle ALIAS ${MODULE_NAME})
 
 # ==============================================================================
 # Include Directories
@@ -191,7 +194,6 @@ source_group("Include\\Particle" FILES
     Include/Particle/ParticleSystem.h
     Include/Particle/ParticleSystemInstance.h
     Include/Particle/ParticleSubsystem.h
-    Include/Particle/ParticleComponent.h
     Include/Particle/ParticleLOD.h
     Include/Particle/ParticlePool.h
     Include/Particle/ParticleRenderStats.h
@@ -224,7 +226,6 @@ source_group("Private" FILES
     Private/ParticleSystem.cpp
     Private/ParticleSystemInstance.cpp
     Private/ParticleSubsystem.cpp
-    Private/ParticleComponent.cpp
     Private/ParticlePool.cpp
     Private/ParticleSystemLoader.cpp
 )

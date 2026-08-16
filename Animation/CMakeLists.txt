@@ -29,9 +29,6 @@ target_sources(RVX_Animation PRIVATE
     Private/IK/TwoBoneIK.cpp
     Private/IK/FABRIK.cpp
 
-    # Scene component adapters
-    Private/SceneComponents/AnimatorComponent.cpp
-    Private/SceneComponents/SkeletonComponent.cpp
 )
 
 # Include directories
@@ -43,10 +40,6 @@ target_include_directories(RVX_Animation PUBLIC
 # Dependencies
 target_link_libraries(RVX_Animation PUBLIC
     RVX::Core
-)
-
-target_link_libraries(RVX_Animation PRIVATE
-    RVX::Scene
 )
 
 # Alias for cleaner target names

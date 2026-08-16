@@ -25,10 +25,6 @@ target_sources(RVX_Physics PRIVATE
     # Character Controller
     Private/CharacterController.cpp
 
-    # Scene component adapters
-    Private/SceneComponents/ColliderComponent.cpp
-    Private/SceneComponents/RigidBodyComponent.cpp
-    
     # Built-in Physics Engine
     Private/BuiltIn/Integrator.cpp
     Private/BuiltIn/CollisionDetection.cpp
@@ -46,10 +42,6 @@ target_include_directories(RVX_Physics PUBLIC
 
 target_link_libraries(RVX_Physics PUBLIC
     RVX::Core
-)
-
-target_link_libraries(RVX_Physics PRIVATE
-    RVX::Scene
 )
 
 # Optional: Link Jolt Physics only when the unfinished adapter is explicitly enabled

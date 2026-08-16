@@ -65,9 +65,16 @@ namespace RVX
             !std::isfinite(settings.aspectRatio) ||
             !std::isfinite(settings.fitMargin) ||
             !std::isfinite(settings.exteriorMarginScale) ||
+            !std::isfinite(settings.minimumFramingScale) ||
+            !std::isfinite(settings.nearClipPaddingScale) ||
+            !std::isfinite(settings.farClipPaddingScale) ||
             settings.verticalFovRadians <= 0.0f ||
             settings.verticalFovRadians >= kPi || settings.aspectRatio <= 0.0f ||
-            settings.fitMargin < 1.0f || settings.exteriorMarginScale < 0.0f)
+            settings.fitMargin < 1.0f || settings.exteriorMarginScale < 0.0f ||
+            settings.minimumFramingScale < 0.0f ||
+            settings.minimumFramingScale > 1.0f ||
+            settings.nearClipPaddingScale < 0.0f ||
+            settings.farClipPaddingScale < 0.0f)
         {
             return false;
         }
@@ -258,9 +265,20 @@ namespace RVX
         pose.position = pose.pivot - pose.viewBasis.forward * pose.distance;
         pose.verticalFovRadians = m_current.verticalFovRadians;
         pose.aspectRatio = m_current.aspectRatio;
-        const OrbitCameraClipRange clipRange = BuildClipRange(
-            pose.distance,
-            GetBoundsRadius());
+        OrbitCameraClipRange clipRange;
+        if (HasFiniteBounds())
+        {
+            clipRange = BuildFocusedClipRange(
+                m_current.bounds,
+                pose.position,
+                pose.viewBasis.forward,
+                m_current.nearClipPaddingScale,
+                m_current.farClipPaddingScale);
+        }
+        else
+        {
+            clipRange = BuildClipRange(pose.distance, GetBoundsRadius());
+        }
         if (clipRange.valid)
         {
             pose.nearPlane = clipRange.nearPlane;
@@ -282,12 +300,18 @@ namespace RVX
             return 0.0f;
         }
 
-        float minimum = m_current.minDistance;
+        const OrbitCameraViewBasis basis = GetViewBasis();
+        float minimum = GetBaseMinimumDistance(basis);
         if (m_current.mode == OrbitCameraMode::ExteriorInspect &&
-            HasFiniteBounds())
+            HasFiniteBounds() && m_current.minimumFramingScale > 0.0f)
         {
-            minimum = std::max(minimum,
-                               GetExteriorMinimumDistance(GetViewBasis()));
+            const float fittedDistance = CalculateFitDistance(basis);
+            if (std::isfinite(fittedDistance))
+            {
+                minimum = std::max(
+                    minimum,
+                    fittedDistance * m_current.minimumFramingScale);
+            }
         }
         return minimum;
     }
@@ -320,6 +344,93 @@ namespace RVX
         return range;
     }
 
+    OrbitCameraClipRange OrbitCameraRig::BuildFocusedClipRange(
+        const AABB& bounds,
+        const Vec3& cameraPosition,
+        const Vec3& viewForward,
+        float nearPaddingScale,
+        float farPaddingScale)
+    {
+        OrbitCameraClipRange range;
+        if (!bounds.IsValid() || !IsFiniteVector(bounds.GetMin()) ||
+            !IsFiniteVector(bounds.GetMax()) ||
+            !IsFiniteVector(cameraPosition) || !IsFiniteVector(viewForward) ||
+            !std::isfinite(nearPaddingScale) || nearPaddingScale < 0.0f ||
+            !std::isfinite(farPaddingScale) || farPaddingScale < 0.0f)
+        {
+            return range;
+        }
+
+        const float forwardLength = GetFiniteVectorLength(viewForward);
+        const float boundsRadius = GetFiniteVectorLength(bounds.GetExtent());
+        if (forwardLength <= kMinimumDistance ||
+            boundsRadius <= kMinimumDistance)
+        {
+            return range;
+        }
+
+        const Vec3 forward = viewForward / forwardLength;
+        const Vec3 min = bounds.GetMin();
+        const Vec3 max = bounds.GetMax();
+        const Vec3 corners[8] = {
+            Vec3(min.x, min.y, min.z), Vec3(max.x, min.y, min.z),
+            Vec3(min.x, max.y, min.z), Vec3(max.x, max.y, min.z),
+            Vec3(min.x, min.y, max.z), Vec3(max.x, min.y, max.z),
+            Vec3(min.x, max.y, max.z), Vec3(max.x, max.y, max.z)};
+
+        float nearestDepth = std::numeric_limits<float>::infinity();
+        float farthestDepth = -std::numeric_limits<float>::infinity();
+        for (const Vec3& corner : corners)
+        {
+            const float depth = dot(corner - cameraPosition, forward);
+            nearestDepth = std::min(nearestDepth, depth);
+            farthestDepth = std::max(farthestDepth, depth);
+        }
+        if (!std::isfinite(nearestDepth) || !std::isfinite(farthestDepth))
+        {
+            return range;
+        }
+
+        const float scaleAwareNearFloor = std::max(
+            boundsRadius * 0.001f,
+            std::numeric_limits<float>::epsilon());
+        const float nearPadding = std::max(
+            boundsRadius * nearPaddingScale,
+            scaleAwareNearFloor);
+        if (nearestDepth > std::numeric_limits<float>::epsilon())
+        {
+            range.nearPlane = std::max(
+                scaleAwareNearFloor,
+                nearestDepth - nearPadding);
+            if (range.nearPlane >= nearestDepth)
+            {
+                range.nearPlane = std::max(
+                    std::numeric_limits<float>::epsilon(),
+                    nearestDepth * 0.5f);
+            }
+        }
+        else
+        {
+            // FreeOrbit may intentionally place the camera inside the focus.
+            range.nearPlane = scaleAwareNearFloor;
+        }
+
+        const float farPadding = std::max(
+            boundsRadius * farPaddingScale,
+            scaleAwareNearFloor);
+        const float minimumDepthSpan = std::max(
+            boundsRadius * 0.01f,
+            std::numeric_limits<float>::epsilon());
+        range.farPlane = std::max(
+            farthestDepth + farPadding,
+            range.nearPlane + minimumDepthSpan);
+        range.valid = std::isfinite(range.nearPlane) &&
+                      std::isfinite(range.farPlane) &&
+                      range.nearPlane > 0.0f &&
+                      range.farPlane > range.nearPlane;
+        return range;
+    }
+
     bool OrbitCameraRig::HasFiniteBounds() const
     {
         return m_current.bounds.IsValid() &&
@@ -336,6 +447,18 @@ namespace RVX
         }
 
         return GetFiniteVectorLength(m_current.bounds.GetExtent());
+    }
+
+    float OrbitCameraRig::GetBaseMinimumDistance(
+        const OrbitCameraViewBasis& basis) const
+    {
+        float minimum = m_current.minDistance;
+        if (m_current.mode == OrbitCameraMode::ExteriorInspect &&
+            HasFiniteBounds())
+        {
+            minimum = std::max(minimum, GetExteriorMinimumDistance(basis));
+        }
+        return minimum;
     }
 
     float OrbitCameraRig::GetExteriorMinimumDistance(
@@ -375,11 +498,12 @@ namespace RVX
         return std::clamp(std::max(distance, kMinimumDistance), minimum, maximum);
     }
 
-    bool OrbitCameraRig::FitInternal()
+    float OrbitCameraRig::CalculateFitDistance(
+        const OrbitCameraViewBasis& basis) const
     {
         if (!HasFiniteBounds())
         {
-            return false;
+            return std::numeric_limits<float>::quiet_NaN();
         }
 
         const float halfVerticalFov = m_current.verticalFovRadians * 0.5f;
@@ -388,10 +512,9 @@ namespace RVX
         if (!std::isfinite(tanVertical) || !std::isfinite(tanHorizontal) ||
             tanVertical <= 0.0f || tanHorizontal <= 0.0f)
         {
-            return false;
+            return std::numeric_limits<float>::quiet_NaN();
         }
 
-        const OrbitCameraViewBasis basis = GetViewBasis();
         const Vec3 min = m_current.bounds.GetMin();
         const Vec3 max = m_current.bounds.GetMax();
         const Vec3 corners[8] = {
@@ -400,7 +523,7 @@ namespace RVX
             Vec3(min.x, min.y, max.z), Vec3(max.x, min.y, max.z),
             Vec3(min.x, max.y, max.z), Vec3(max.x, max.y, max.z)};
 
-        float requiredDistance = GetMinimumDistance();
+        float requiredDistance = GetBaseMinimumDistance(basis);
         for (const Vec3& corner : corners)
         {
             const Vec3 offset = corner - m_current.pivot;
@@ -413,15 +536,20 @@ namespace RVX
                                         vertical / tanVertical - alongView);
         }
 
-        if (!std::isfinite(requiredDistance))
-        {
-            return false;
-        }
-
+        const float radius = GetBoundsRadius();
         const float fitPadding = std::max(
-            GetBoundsRadius() * (m_current.fitMargin - 1.0f),
-            GetBoundsRadius() * 0.001f);
+            radius * (m_current.fitMargin - 1.0f),
+            radius * 0.001f);
         const float fittedDistance = requiredDistance + fitPadding;
+        return std::isfinite(fittedDistance)
+                   ? fittedDistance
+                   : std::numeric_limits<float>::quiet_NaN();
+    }
+
+    bool OrbitCameraRig::FitInternal()
+    {
+        const OrbitCameraViewBasis basis = GetViewBasis();
+        const float fittedDistance = CalculateFitDistance(basis);
         if (!std::isfinite(fittedDistance))
         {
             return false;

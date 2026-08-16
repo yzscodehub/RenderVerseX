@@ -15,7 +15,7 @@ target_sources(RVX_Audio PRIVATE
     Private/AudioSource.cpp
     Private/AudioListener.cpp
     Private/AudioSubsystem.cpp
-    Private/SceneComponents/AudioComponent.cpp
+    Private/ECS/AudioEcsBridge.cpp
     Private/Mixer/VoicePool.cpp
     Private/Mixer/AudioBus.cpp
     Private/Mixer/AudioMixer.cpp
@@ -43,9 +43,6 @@ target_include_directories(RVX_Audio PUBLIC
 target_link_libraries(RVX_Audio PUBLIC
     RVX::Core
     RVX::Physics
-)
-
-target_link_libraries(RVX_Audio PRIVATE
     RVX::Scene
 )
 
