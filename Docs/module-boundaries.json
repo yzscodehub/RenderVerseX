@@ -3,17 +3,19 @@
   "projectIncludePrefixes": [
     "AI",
     "Animation",
+    "AnimationSceneAdapters",
     "Audio",
     "Core",
     "Debug",
     "Editor",
+    "ECS",
     "Engine",
     "Geometry",
     "HAL",
     "Networking",
     "Particle",
     "Physics",
-    "Picking",
+    "PhysicsSceneAdapters",
     "Render",
     "RenderContracts",
     "RenderExtraction",
@@ -31,7 +33,6 @@
     "Scene",
     "Scripting",
     "ShaderCompiler",
-    "Spatial",
     "Terrain",
     "Tests",
     "Tools",
@@ -46,11 +47,15 @@
     },
     "Animation": {
       "path": "Animation",
-      "allowed": ["Animation", "Core", "Scene"]
+      "allowed": ["Animation", "Core"]
+    },
+    "AnimationSceneAdapters": {
+      "path": "AnimationSceneAdapters",
+      "allowed": ["Animation", "AnimationSceneAdapters", "Core", "ECS", "Resource", "ResourceSceneAdapters", "Scene"]
     },
     "Audio": {
       "path": "Audio",
-      "allowed": ["Audio", "Core", "Physics", "Scene"]
+      "allowed": ["Audio", "Core", "ECS", "Physics", "Scene"]
     },
     "Core": {
       "path": "Core",
@@ -64,9 +69,13 @@
       "path": "Editor",
       "allowed": ["*"]
     },
+    "ECS": {
+      "path": "ECS",
+      "allowed": ["Core", "ECS"]
+    },
     "Engine": {
       "path": "Engine",
-      "allowed": ["Core", "Engine", "HAL", "Render", "RenderContracts", "RenderExtraction", "Resource", "RHI", "Runtime", "World"]
+      "allowed": ["AnimationSceneAdapters", "Audio", "Core", "ECS", "Engine", "HAL", "Particle", "Physics", "PhysicsSceneAdapters", "Render", "RenderContracts", "RenderExtraction", "Resource", "ResourceSceneAdapters", "RHI", "Runtime", "Scene", "Scripting", "Terrain", "Water", "World"]
     },
     "Geometry": {
       "path": "Geometry",
@@ -82,19 +91,19 @@
     },
     "Particle": {
       "path": "Particle",
-      "allowed": ["Core", "Particle", "RenderContracts", "Resource", "Scene", "ShaderCompiler"]
+      "allowed": ["Core", "ECS", "Particle", "RenderContracts", "Resource", "Scene", "ShaderCompiler"]
     },
     "Physics": {
       "path": "Physics",
       "allowed": ["Core", "Physics", "Scene"]
     },
-    "Picking": {
-      "path": "Picking",
-      "allowed": ["Core", "Picking", "Runtime", "Scene", "World"]
+    "PhysicsSceneAdapters": {
+      "path": "PhysicsSceneAdapters",
+      "allowed": ["Core", "ECS", "Physics", "PhysicsSceneAdapters", "Scene"]
     },
     "Render": {
       "path": "Render",
-      "allowed": ["Core", "Render", "RenderContracts", "RHI", "RHI_BackendFactory", "ShaderCompiler", "Spatial"]
+      "allowed": ["Core", "Render", "RenderContracts", "RHI", "RHI_BackendFactory", "ShaderCompiler"]
     },
     "RenderContracts": {
       "path": "RenderContracts",
@@ -102,15 +111,15 @@
     },
     "RenderExtraction": {
       "path": "RenderExtraction",
-      "allowed": ["Core", "Geometry", "RenderContracts", "RenderExtraction", "Resource", "Scene", "World"]
+      "allowed": ["Core", "ECS", "Geometry", "RenderContracts", "RenderExtraction", "Resource", "Scene", "World"]
     },
     "Resource": {
       "path": "Resource",
-      "allowed": ["Core", "Geometry", "RenderContracts", "Resource"]
+      "allowed": ["Animation", "Core", "Geometry", "RenderContracts", "Resource"]
     },
     "ResourceSceneAdapters": {
       "path": "ResourceSceneAdapters",
-      "allowed": ["Core", "Geometry", "Resource", "ResourceSceneAdapters", "Scene"]
+      "allowed": ["Core", "ECS", "Geometry", "RenderContracts", "Resource", "ResourceSceneAdapters", "Scene"]
     },
     "RHI": {
       "path": "RHI",
@@ -150,23 +159,19 @@
     },
     "Scene": {
       "path": "Scene",
-      "allowed": ["Core", "Geometry", "RenderContracts", "Scene", "Spatial"]
+      "allowed": ["Core", "ECS", "Geometry", "RenderContracts", "Scene"]
     },
     "Scripting": {
       "path": "Scripting",
-      "allowed": ["Core", "Runtime", "Scene", "Scripting"]
+      "allowed": ["Core", "ECS", "Runtime", "Scene", "Scripting"]
     },
     "ShaderCompiler": {
       "path": "ShaderCompiler",
       "allowed": ["Core", "RHI", "ShaderCompiler"]
     },
-    "Spatial": {
-      "path": "Spatial",
-      "allowed": ["Core", "Spatial"]
-    },
     "Terrain": {
       "path": "Terrain",
-      "allowed": ["Core", "RenderContracts", "Scene", "Terrain"]
+      "allowed": ["Core", "ECS", "RenderContracts", "Scene", "Terrain"]
     },
     "Tests": {
       "path": "Tests",
@@ -182,11 +187,11 @@
     },
     "Water": {
       "path": "Water",
-      "allowed": ["Core", "RenderContracts", "Scene", "Water"]
+      "allowed": ["Core", "ECS", "RenderContracts", "Scene", "Water"]
     },
     "World": {
       "path": "World",
-      "allowed": ["Core", "Physics", "Resource", "ResourceSceneAdapters", "Runtime", "Scene", "Spatial", "World"]
+      "allowed": ["AnimationSceneAdapters", "Core", "Physics", "Resource", "ResourceSceneAdapters", "Runtime", "Scene", "World"]
     }
   },
   "legacyEdges": {},

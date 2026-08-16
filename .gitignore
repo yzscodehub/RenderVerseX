@@ -40,6 +40,8 @@ Testing/Temporary/
 # Runtime validation artifacts
 RenderRuntimeFatalDiagnostics.json
 SampleCaptures/
+/artifacts/
+/build-cmake-tests/
 __pycache__/
 
 # Optional machine-local source asset library. Hermetic fixtures belong under

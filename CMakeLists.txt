@@ -24,19 +24,17 @@ option(RVX_ENABLE_DX12 "Enable DirectX 12 backend" ON)
 option(RVX_ENABLE_VULKAN "Enable Vulkan backend" ON)
 option(RVX_ENABLE_METAL "Enable Metal backend (macOS/iOS)" OFF)
 option(RVX_ENABLE_OPENGL "Enable OpenGL backend" OFF)
-option(RVX_BUILD_EDITOR "Build the Editor application and Editor-only validation" ON)
+option(RVX_BUILD_EDITOR "Build the Editor application and Editor-only validation" OFF)
 option(RVX_BUILD_SAMPLES "Build sample applications" ON)
-option(RVX_BUILD_LEGACY_SAMPLES
-    "Build legacy Basic and Showcase sample executables"
-    OFF)
 option(RVX_BUILD_TESTS "Build validation tests" ON)
 option(RVX_ENABLE_TSAN "Enable ThreadSanitizer instrumentation" OFF)
 option(RVX_ENABLE_GPU_VALIDATION_TESTS
     "Register bounded GPU-based validation tests (dedicated/nightly only)"
     OFF)
 
-if(RVX_BUILD_LEGACY_SAMPLES)
-    add_compile_definitions(RVX_ENABLE_LEGACY_SCENE_API=1)
+if(RVX_BUILD_EDITOR)
+    message(FATAL_ERROR
+        "RVX_BUILD_EDITOR is unavailable during the pure Runtime ECS migration; configure with RVX_BUILD_EDITOR=OFF")
 endif()
 
 # =============================================================================
@@ -187,8 +185,9 @@ add_subdirectory(Core)
 add_subdirectory(RenderContracts) # Render-only extraction data contracts
 add_subdirectory(Geometry)     # Geometry module (primitives, queries, algorithms)
 add_subdirectory(HAL)          # Hardware Abstraction Layer (Window, Input)
-add_subdirectory(Spatial)
+add_subdirectory(ECS)          # Runtime sparse-set entity/fragment kernel
 add_subdirectory(Scene)
+add_subdirectory(Animation)
 add_subdirectory(Runtime)      # Runtime subsystems (includes Camera)
 add_subdirectory(RHI)
 add_subdirectory(ShaderCompiler)
@@ -216,15 +215,17 @@ endif()
 add_subdirectory(RHI_BackendFactory) # Enabled RHI backend composition
 
 add_subdirectory(Resource)   # Resource module (canonical resource management)
-add_subdirectory(ResourceSceneAdapters) # Resource model data to Scene actor adapters
+add_subdirectory(ResourceSceneAdapters) # Resource data to pure ECS scene adapters
 add_subdirectory(Physics)    # Physics subsystem
-add_subdirectory(Animation)
+add_subdirectory(PhysicsSceneAdapters) # Pure ECS to Built-in Physics composition
+add_subdirectory(AnimationSceneAdapters) # Animation runtime to Scene ECS adapters
 add_subdirectory(Audio)      # Audio subsystem
-add_subdirectory(World)      # World module (integrates Scene, Spatial, Physics, Picking)
-target_link_libraries(RVX_World PUBLIC RVX::ResourceSceneAdapters)
-add_subdirectory(RenderExtraction) # Scene/World to render contract extraction
+add_subdirectory(World)      # World owns the single Scene ECS runtime
+target_link_libraries(RVX_World
+    PUBLIC RVX::ResourceSceneAdapters
+    PRIVATE RVX::AnimationSceneAdapters)
+add_subdirectory(RenderExtraction) # Frozen ECS values to render contracts
 add_subdirectory(Render)       # Render module (includes RenderGraph)
-add_subdirectory(Picking)
 add_subdirectory(Engine)
 add_subdirectory(Particle)   # GPU-driven particle system
 add_subdirectory(AI)         # AI module (Navigation, BehaviorTree, Perception)
@@ -264,7 +265,6 @@ message(STATUS "  Metal:        ${RVX_ENABLE_METAL}")
 message(STATUS "  OpenGL:       ${RVX_ENABLE_OPENGL}")
 message(STATUS "  Editor:       ${RVX_BUILD_EDITOR}")
 message(STATUS "  Samples:      ${RVX_BUILD_SAMPLES}")
-message(STATUS "  Legacy Samples: ${RVX_BUILD_LEGACY_SAMPLES}")
 message(STATUS "  Tests:        ${RVX_BUILD_TESTS}")
 message(STATUS "  TSAN:         ${RVX_ENABLE_TSAN}")
 message(STATUS "")

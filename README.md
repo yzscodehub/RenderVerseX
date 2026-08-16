@@ -140,7 +140,7 @@ cmake --build build --config Release
 cmake --build build --config Debug
 
 # Build specific target
-cmake --build build --config Release --target ModelViewer
+cmake --build build --config Release --target RenderVerseSamples
 ```
 
 ### Build Options
@@ -152,6 +152,7 @@ cmake --build build --config Release --target ModelViewer
 | `-DRVX_ENABLE_VULKAN=ON/OFF` | ON | Vulkan backend |
 | `-DRVX_ENABLE_METAL=ON/OFF` | OFF | Metal backend (macOS/iOS only) |
 | `-DRVX_ENABLE_OPENGL=ON/OFF` | OFF | OpenGL backend |
+| `-DRVX_BUILD_EDITOR=OFF` | OFF | Required for the pure-ECS Runtime milestone |
 | `-DRVX_BUILD_SAMPLES=ON/OFF` | ON | Build sample applications |
 | `-DRVX_BUILD_TESTS=ON/OFF` | ON | Build validation tests |
 
@@ -162,10 +163,9 @@ Tests are standalone executables (no GoogleTest framework).
 ```bash
 # Run individual validation tests
 ./build/Tests/Release/RenderGraphValidation.exe
-./build/Tests/Release/DX12Validation.exe
-./build/Tests/Release/VulkanValidation.exe
-./build/Tests/Release/DX11Validation.exe
-./build/Tests/Release/SystemIntegrationTest.exe
+./build/Tests/Release/EcsEntityValidation.exe
+./build/Tests/Release/EcsSceneOrchestrationValidation.exe
+./build/Tests/Release/EcsCleanupValidation.exe
 
 # Cross-backend validation (requires multiple backends)
 ./build/Tests/Release/CrossBackendValidation.exe
@@ -179,89 +179,49 @@ incremental build because it rejects missing tests and writes reviewable evidenc
 
 ## Sample Applications
 
-Samples are the Runtime-first demonstration surface while the Editor remains a thin shell. Basic samples focus on one contract or subsystem; Showcase samples compose multiple runtime systems and support smoke/report validation.
+`RenderVerseSamples` is the Runtime product proof surface while the Editor is
+disabled. Each scene uses the same pure-ECS World, resource, render-publication,
+diagnostic, screenshot, and cleanup contracts.
 
 | Sample | Description |
 |--------|-------------|
-| **Basic/BasicRHI** | Consolidated RHI sample for triangle, textured quad, and cube fundamentals |
-| **Basic/ComputeDemo** | GPU compute shader demonstration |
-| **Basic/BackendInfoSample** | Backend selection and RHI capability report contract |
-| **Basic/RenderGraphBasics** | RenderGraph pass chain, import/export, transient resource, and diagnostics artifact |
-| **Basic/ResourcePolicySample** | source/cooked/package policy resolution, missing artifact, and hash mismatch diagnostics |
-| **Basic/TextureUploadSample** | Cooked texture, GPU upload, and texture residency contract |
-| **Basic/MeshMaterialSample** | Mesh resource, PBR material fields, and fallback material reporting |
-| **Basic/SceneActorComponentSample** | Engine, World, ActorComponent, StaticMeshComponent, and RenderExtraction snapshot path |
-| **Basic/PostProcessChainSample** | ToneMapping, Bloom, FXAA, ColorGrading, Vignette, FilmGrain, SSAO, and gated effects |
-| **Basic/LightingShadowSample** | Directional/point/spot lighting, clustered stats, CSM, and procedural sky baseline |
-| **Basic/GpuResidencySample** | GPUResourceManager memory budget, upload, residency, and eviction diagnostics |
-| **Basic/InputCameraSample** | Runtime camera contracts and platform input fallback reporting |
-| **Basic/DebugDrawSample** | CPU debug primitive extraction and explicit missing debug-line GPU pipeline diagnostic |
-| **Basic/DecalDiagnosticsSample** | Decal CPU list/sort contract and explicit deferred decal GPU pass diagnostic |
-| **Basic/SwapChainPolicySample** | External swapchain ownership and raw window-handle unsupported diagnostic |
-| **Basic/ParticleSnapshotSample** | Particle snapshot contract, CPU particle metadata, and GPU payload gating |
-| **Basic/TerrainSnapshotSample** | Terrain snapshot metadata, heightmap/material/LOD diagnostics, and GPU upload gating |
-| **Basic/WaterSnapshotSample** | Water snapshot metadata, simple CPU wave state, and GPU draw/simulation gating |
-| **Basic/PhysicsQuerySample** | PhysicsWorld raycast/overlap query stats and advanced collider fallback reporting |
-| **Basic/AudioFallbackSample** | WAV decode, streaming unsupported diagnostic, and full-buffer fallback path |
-| **Showcase/ModelViewer** | Full-featured glTF model viewer |
-| **Showcase/RenderingShowcase** | Integrated PBR, lighting, shadows, skybox, camera, post-process, and diagnostics |
-| **Showcase/PostProcessShowcase** | Focused post-process presets and enabled/unsupported effect reporting |
-| **Showcase/MaterialShowcase** | PBR material response, material variants, and fallback material reporting |
-| **Showcase/LightingShowcase** | Directional, local, clustered, shadow, sky, and IBL fallback demonstration |
-| **Showcase/SceneInteractionShowcase** | Scene, camera, input, ActorComponent, transform, and picking-oriented smoke |
-| **Showcase/TerrainWaterShowcase** | Terrain/water staging scene with snapshot diagnostics and honest GPU path status |
-| **Showcase/ParticleFXShowcase** | CPU particle staging and GPU particle unsupported diagnostic |
-| **Showcase/ResourceRuntimeShowcase** | cooked/package fixture, ResourceManager diagnostics, and GPU residency summary |
-| **Showcase/PhysicsAudioShowcase** | Physics query/collider smoke, spatial audio staging, and audio streaming fallback |
+| **model-rendering** | Entity, transform, camera, light, atomic model adoption, frozen render snapshot |
+| **model-viewer** | Environment loading, visibility, camera control, model activation |
+| **pbr-materials** | Material slots, streamed textures, IBL, fully-resident texture receipts |
+| **gpu-driven** | Direct/GPU-driven scene parity and indirect submission |
+| **lighting-shadows** | Light fragments, shadows, and incremental scene extraction |
+| **asset-gallery** | Multi-model transactions, layout, residency, and retirement |
+| **render-pipeline** | Render passes, post-processing, and snapshot consistency |
+| **scene-lifecycle** | Create, destroy, reparent, generation reuse, and cleanup |
+| **asset-streaming** | Async load, cancel, unload, reload, and resource retirement |
+| **interior-rendering** | Complex hierarchy, multi-light, multi-material environment |
+| **physics-sandbox** | Fixed-step bodies, colliders, transform sync, and cleanup |
+| **animation-character** | Skeleton, pose, root motion, physics intent, skinning receipts |
+| **rendering-stress** | Large entity/query/dirty-update workloads and performance evidence |
 
 ## Project Structure
 
 ```
 RenderVerseX/
-├── Core/              # Core utilities (Types, Log, Assert, Math, Job System)
-├── Geometry/          # Geometry primitives, spatial queries
-├── HAL/               # Hardware Abstraction Layer (Window, Input)
-├── Spatial/           # Spatial partitioning and queries
-├── Scene/             # Entity-Component system, scene management
-├── Animation/         # Animation system
-├── Runtime/           # Runtime subsystems (Camera, etc.)
-├── Picking/           # Object picking and raycasting
-├── World/             # World management (integrates Scene, Spatial, Picking)
-├── Engine/            # Engine initialization and main loop
-├── RHI/               # Rendering Hardware Interface abstraction
-├── RHI_DX11/          # DirectX 11 backend
-├── RHI_DX12/          # DirectX 12 backend
-├── RHI_Vulkan/        # Vulkan backend
-├── RHI_Metal/         # Metal backend (macOS/iOS)
-├── RHI_OpenGL/        # OpenGL backend (Linux fallback)
-├── ShaderCompiler/    # HLSL compilation and cross-compilation
-├── Render/            # High-level rendering (RenderGraph, Passes, SceneRenderer)
-├── Resource/          # Asset loading and resource management
-├── Particle/          # GPU-driven particle system
-├── AI/                # AI systems (Navigation, BehaviorTree, Perception)
-├── Networking/        # Network communication and replication
-├── Debug/             # Debug tools (profiling, console, stats)
-├── Scripting/         # Lua scripting system with Sol2 bindings
-├── Audio/             # Audio subsystem (MiniAudio)
-├── Tools/             # Asset pipeline and importers
-├── UI/                # UI framework with widgets
-├── Physics/           # Physics subsystem (Jolt Physics)
-├── Terrain/           # Heightmap terrain rendering
-├── Water/             # Water simulation and effects
-└── Editor/            # Editor application with ImGui
-
-Samples/
-├── Basic/             # Focused low-level samples
-│   ├── BasicRHI/
-│   └── ComputeDemo/
-└── Showcase/          # Integrated engine feature samples
-    ├── ModelViewer/
-    ├── RenderingShowcase/
-    ├── SceneInteractionShowcase/
-    ├── TerrainWaterShowcase/
-    └── ParticleFXShowcase/
-Tests/                 # Validation tests
-Docs/                  # Design documents and plans
+├── Core/                    # Core utilities, handles, math, jobs
+├── ECS/                     # Generic entity/fragment/query/processor kernel
+├── Scene/                   # ECS fragments, hierarchy, spatial index, snapshots
+├── World/                   # One SceneEcsRuntime and ECS camera service
+├── Engine/                  # Per-World ECS composition and render publication
+├── Resource/                # Asset loading, streaming, residency, retirement
+├── ResourceSceneAdapters/   # Prepared batches and ECS asset coordinators
+├── RenderExtraction/        # Frozen ECS snapshots to render contracts
+├── Render/                  # RenderGraph, passes, scene database, GPU-driven path
+├── Physics*/                # Physics runtime and pure ECS bridge
+├── Animation*/              # Animation runtime, evaluator, and pure ECS bridge
+├── Audio/                   # Audio runtime and pure ECS bridge
+├── Particle/                # Particle runtime and pure ECS bridge
+├── Terrain/                 # Terrain runtime and pure ECS bridge
+├── Water/                   # Water runtime and pure ECS bridge
+├── RHI*/                    # Backend-neutral RHI and platform backends
+├── Samples/RenderVerseSamples/
+├── Tests/
+└── Docs/
 ```
 
 ## Code Style Guidelines
@@ -270,8 +230,8 @@ Docs/                  # Design documents and plans
 
 | Element | Convention | Example |
 |---------|------------|---------|
-| Classes/Structs | PascalCase | `RenderGraph`, `SceneEntity` |
-| Interfaces | `I` prefix + PascalCase | `IRHIDevice`, `ISpatialEntity` |
+| Classes/Structs | PascalCase | `RenderGraph`, `SceneEcsRuntime` |
+| Interfaces | `I` prefix + PascalCase | `IRHIDevice`, `IPhysicsBackend` |
 | Methods | PascalCase | `CreateBuffer()`, `GetName()` |
 | Member variables | `m_` prefix + camelCase | `m_device`, `m_position` |
 | Static members | `s_` prefix + camelCase | `s_nextHandle`, `s_coreLogger` |
@@ -287,7 +247,7 @@ Docs/                  # Design documents and plans
 4. Standard library headers with `<angle brackets>`
 
 ```cpp
-#include "Scene/SceneEntity.h"  // Corresponding header first
+#include "Scene/ECS/SceneEcsRuntime.h"  // Corresponding header first
 #include "Core/Log.h"           // Project headers
 #include <glm/glm.hpp>          // External libraries
 #include <vector>               // Standard library
@@ -365,11 +325,13 @@ The frame graph system handles automatic resource state tracking, lifetime manag
 
 ### Scene System
 
-Entity-Component architecture with:
-- **Components** - Transform, Mesh, Material, Light, etc.
-- **Spatial Queries** - AABB/Occlusion culling, raycasting
-- **Picking** - Mouse selection and object interaction
-- **World Management** - Multi-world support with subsystems
+The Runtime has one authority path: `Engine -> World -> SceneEcsRuntime`.
+
+- **Entities and fragments** - generation-safe handles plus typed sparse-set data
+- **Processors and barriers** - declared access, deterministic groups, fixed-step phases
+- **Hierarchy and spatial index** - handle-only transform resolution and AABB queries
+- **Frozen snapshots** - RenderExtraction never reads a live mutable Scene
+- **Retirement** - Physics, Animation, Audio, feature, Render, and Resource acknowledgements
 
 ### ShaderCompiler
 
