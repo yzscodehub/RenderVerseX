@@ -1,3 +1,4 @@
+#include "Core/Hash/SHA256.h"
 #include "Resource/ResourceLoadOperation.h"
 
 #include <gtest/gtest.h>
@@ -49,6 +50,20 @@ namespace
     {
         return ResourceHandle<IResource>(resource);
     }
+
+    ResourceContentIdentity MakeExpectedContentIdentity(
+        std::string digest = "f009e85dae4e41d6d1cc9ba534a5948090c986993523280fd7e513df87c40300")
+    {
+        ResourceContentIdentity identity;
+        identity.schemaVersion = RVX_RESOURCE_CONTENT_IDENTITY_SCHEMA_VERSION;
+        identity.domain = ResourceContentIdentityDomain::Source;
+        identity.scope = ResourceContentIdentityScope::SelfContainedArtifact;
+        identity.algorithm = ResourceContentHashAlgorithm::SHA256;
+        identity.digest = std::move(digest);
+        identity.byteCount = 2045;
+        identity.fileCount = 1;
+        return identity;
+    }
 } // namespace
 
 TEST(ResourceLoadOperationValidation, AssetKeyIncludesEveryOutputAffectingInput)
@@ -67,6 +82,22 @@ TEST(ResourceLoadOperationValidation, AssetKeyIncludesEveryOutputAffectingInput)
     const AssetKey differentImportOptions = MakeTextureKey(8, 11, 3);
     const AssetKey differentPlatformProfile = MakeTextureKey(7, 12, 3);
     const AssetKey differentLoaderSchema = MakeTextureKey(7, 11, 4);
+    const ResourceContentIdentity expectedContent = MakeExpectedContentIdentity();
+    const AssetKey expectedContentKey = MakeAssetKey("Assets/Textures/Albedo.png",
+                                                     ResourceType::Texture,
+                                                     7,
+                                                     11,
+                                                     3,
+                                                     expectedContent);
+    ResourceContentIdentity differentContent = expectedContent;
+    differentContent.digest[0] = 'e';
+    const AssetKey differentExpectedContent = MakeAssetKey(
+        "Assets/Textures/Albedo.png",
+        ResourceType::Texture,
+        7,
+        11,
+        3,
+        differentContent);
 
     EXPECT_TRUE(key.IsValid());
     EXPECT_EQ(key, equivalent);
@@ -74,6 +105,8 @@ TEST(ResourceLoadOperationValidation, AssetKeyIncludesEveryOutputAffectingInput)
     EXPECT_NE(key, differentImportOptions);
     EXPECT_NE(key, differentPlatformProfile);
     EXPECT_NE(key, differentLoaderSchema);
+    EXPECT_NE(key, expectedContentKey);
+    EXPECT_NE(expectedContentKey, differentExpectedContent);
 
     std::unordered_set<AssetKey, AssetKeyHash> keys;
     keys.insert(key);
@@ -82,7 +115,57 @@ TEST(ResourceLoadOperationValidation, AssetKeyIncludesEveryOutputAffectingInput)
     keys.insert(differentImportOptions);
     keys.insert(differentPlatformProfile);
     keys.insert(differentLoaderSchema);
-    EXPECT_EQ(keys.size(), 5u);
+    keys.insert(expectedContentKey);
+    keys.insert(differentExpectedContent);
+    EXPECT_EQ(keys.size(), 7u);
+}
+
+TEST(ResourceLoadOperationValidation, SHA256StreamsAcrossChunksAndFormatsLowercaseDigest)
+{
+    Hash::SHA256Hasher hasher;
+    hasher.Update("a", 1);
+    hasher.Update("b", 1);
+    hasher.Update("c", 1);
+    EXPECT_EQ(hasher.FinalizeHex(),
+              "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+    // Finalizing a snapshot must not prevent subsequent parser chunks from
+    // extending the original stream.
+    hasher.Update("def", 3);
+    EXPECT_EQ(hasher.FinalizeHex(),
+              "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721");
+    EXPECT_EQ(Hash::SHA256Hasher{}.FinalizeHex(),
+              "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+}
+
+TEST(ResourceLoadOperationValidation, ContentIdentityRejectsMalformedAndUppercaseDigests)
+{
+    ResourceContentIdentity identity = MakeExpectedContentIdentity();
+    EXPECT_TRUE(identity.IsValid());
+    EXPECT_FALSE(identity.IsEmpty());
+    EXPECT_STREQ(GetResourceContentIdentityDomainName(identity.domain), "source");
+    EXPECT_STREQ(GetResourceContentIdentityScopeName(identity.scope), "self-contained-artifact");
+    EXPECT_STREQ(GetResourceContentHashAlgorithmName(identity.algorithm), "sha256");
+
+    identity.digest[0] = 'F';
+    EXPECT_FALSE(identity.IsValid());
+    EXPECT_FALSE(MakeAssetKey("identity.png", ResourceType::Texture, 0, 0, 1, identity).IsValid());
+}
+
+TEST(ResourceLoadOperationValidation, ContentIdentityScopeHasExactFileCountContract)
+{
+    ResourceContentIdentity identity = MakeExpectedContentIdentity();
+    EXPECT_TRUE(identity.IsValid());
+
+    identity.fileCount = 2;
+    EXPECT_FALSE(identity.IsValid());
+
+    identity.scope = ResourceContentIdentityScope::DependencyClosure;
+    identity.fileCount = 1;
+    EXPECT_FALSE(identity.IsValid());
+
+    identity.fileCount = 2;
+    EXPECT_TRUE(identity.IsValid());
 }
 
 TEST(ResourceLoadOperationValidation, RequestIdsAreMonotonicAndNeverReused)

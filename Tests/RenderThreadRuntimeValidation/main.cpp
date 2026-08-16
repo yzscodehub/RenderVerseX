@@ -307,6 +307,54 @@ namespace
         bool m_released = false;
     };
 
+    class BlockingFrameAcquireHook final : public IRenderFrameAcquireHook,
+                                           public NonMovable
+    {
+    public:
+        void BeforeFrameAcquire() noexcept override
+        {
+            std::unique_lock lock(m_mutex);
+            if (!m_armed)
+            {
+                return;
+            }
+            m_entered = true;
+            m_cv.notify_all();
+            m_cv.wait(lock, [this]() { return m_released; });
+        }
+
+        void Arm()
+        {
+            std::lock_guard lock(m_mutex);
+            m_armed = true;
+        }
+
+        [[nodiscard]] bool WaitUntilEntered(
+            std::chrono::milliseconds timeout)
+        {
+            std::unique_lock lock(m_mutex);
+            return m_cv.wait_for(lock,
+                                 timeout,
+                                 [this]() { return m_entered; });
+        }
+
+        void Release()
+        {
+            {
+                std::lock_guard lock(m_mutex);
+                m_released = true;
+            }
+            m_cv.notify_all();
+        }
+
+    private:
+        std::mutex m_mutex;
+        std::condition_variable m_cv;
+        bool m_armed = false;
+        bool m_entered = false;
+        bool m_released = false;
+    };
+
     NativeSurfaceDesc MakeSurface(uint64 generation = 1,
                                   uint32 width = 64,
                                   uint32 height = 64)
@@ -380,6 +428,13 @@ namespace
             offset += needle.size();
         }
         return count;
+    }
+
+    std::string ReadSourceFile(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file),
+                           std::istreambuf_iterator<char>());
     }
 
     struct PendingGatewayWork
@@ -546,6 +601,336 @@ namespace
         }
         return false;
     }
+
+    class StartupIdentityFrameConsumer final : public IRenderFrameConsumer,
+                                               public NonMovable
+    {
+    public:
+        void PopulateDiagnostics(
+            RenderDiagnosticsSnapshot& diagnostics) const override
+        {
+            m_populateDiagnosticsCount.fetch_add(1,
+                                                 std::memory_order_release);
+            diagnostics.adapterName = "startup-adapter";
+            diagnostics.driverVersion = "startup-driver";
+        }
+
+        [[nodiscard]] uint32 GetPopulateDiagnosticsCount() const noexcept
+        {
+            return m_populateDiagnosticsCount.load(std::memory_order_acquire);
+        }
+
+        RenderRuntimeResult Initialize(
+            const RenderRuntimeConfig& config,
+            const NativeSurfaceDesc& surface,
+            RenderResourceStatusTable&) override
+        {
+            m_backend = config.backendType;
+            m_surfaceGeneration = surface.generation;
+            return MakeRunningResult();
+        }
+
+        RenderRuntimeResult ApplySurface(
+            const NativeSurfaceDesc& surface) override
+        {
+            m_surfaceGeneration = surface.generation;
+            return MakeRunningResult();
+        }
+
+        void ProcessRelease(RenderResourceHandle) override {}
+        void ProcessUpload(ResourceUploadRequestRef) override {}
+
+        RenderRuntimeResult ConsumeFrameV5(
+            const RenderFramePacketV5&,
+            const RenderSceneDatabase&) override
+        {
+            return MakeRunningResult();
+        }
+
+        void PollCompletion() override {}
+        void RetireCompleted() override {}
+
+        RenderShutdownResult Shutdown(RenderTeardownMode) noexcept override
+        {
+            RenderShutdownResult result;
+            result.code = RenderShutdownCode::Completed;
+            result.backend = m_backend;
+            result.surfaceGeneration = m_surfaceGeneration;
+            return result;
+        }
+
+    private:
+        RenderRuntimeResult MakeRunningResult() const
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.backend = m_backend;
+            result.surfaceGeneration = m_surfaceGeneration;
+            return result;
+        }
+
+        mutable std::atomic<uint32> m_populateDiagnosticsCount = 0;
+        RHIBackendType m_backend = RHIBackendType::None;
+        uint64 m_surfaceGeneration = 0;
+    };
+
+    class TimingDiagnosticsFrameConsumer final : public IRenderFrameConsumer,
+                                                  public NonMovable
+    {
+    public:
+        RenderRuntimeResult Initialize(const RenderRuntimeConfig& config,
+                                       const NativeSurfaceDesc& surface,
+                                       RenderResourceStatusTable&) override
+        {
+            m_backend = config.backendType;
+            m_surfaceGeneration = surface.generation;
+            return MakeRunningResult();
+        }
+
+        RenderRuntimeResult ApplySurface(
+            const NativeSurfaceDesc& surface) override
+        {
+            m_surfaceGeneration = surface.generation;
+            return MakeRunningResult();
+        }
+
+        void ProcessRelease(RenderResourceHandle) override {}
+        void ProcessUpload(ResourceUploadRequestRef) override {}
+
+        RenderRuntimeResult ConsumeFrameV5(
+            const RenderFramePacketV5& packet,
+            const RenderSceneDatabase&) override
+        {
+            RenderRuntimeResult result = MakeRunningResult();
+            result.code = m_frameCode;
+            result.frameSequence = packet.GetHeader().sequence;
+            return result;
+        }
+
+        void PollCompletion() override {}
+        void RetireCompleted() override {}
+
+        void PopulateDiagnostics(
+            RenderDiagnosticsSnapshot& diagnostics) const override
+        {
+            diagnostics.cpuFrameTiming = m_cpuTiming;
+        }
+
+        void PopulateCompletionDiagnostics(
+            RenderDiagnosticsSnapshot& diagnostics) const override
+        {
+            if (m_publishGpuOnlyAfterShutdown && !m_shutdownComplete)
+            {
+                return;
+            }
+            diagnostics.gpuFrameTiming = m_gpuTiming;
+            ++m_completionDiagnosticsCount;
+        }
+
+        RenderShutdownResult Shutdown(RenderTeardownMode) noexcept override
+        {
+            m_shutdownComplete = true;
+            if (m_publishGpuOnlyAfterShutdown)
+            {
+                m_gpuTiming = m_shutdownGpuTiming;
+            }
+            RenderShutdownResult result;
+            result.code = RenderShutdownCode::Completed;
+            result.backend = m_backend;
+            result.surfaceGeneration = m_surfaceGeneration;
+            return result;
+        }
+
+        void SetCpuTiming(uint64 sourceSequence, uint64 revision)
+        {
+            RenderCpuFramePhaseDurations phases;
+            phases.frameApply = 0;
+            phases.frameBeginAcquire = 0;
+            phases.renderPrepare = 3;
+            phases.policy = 5;
+            phases.graphBuild = 7;
+            phases.graphCompile = 11;
+            phases.graphRealizeRecord = 13;
+            phases.frameEndSubmit = 17;
+            phases.present = 19;
+            m_cpuTiming.sourceFrameSequence = sourceSequence;
+            m_cpuTiming.requiredSceneRevision = revision;
+            m_cpuTiming.appliedSceneRevision = revision;
+            m_cpuTiming.phases =
+                DiagnosticValue<RenderCpuFramePhaseDurations>::Available(phases);
+        }
+
+        void SetGpuTiming(uint64 sourceSequence, uint64 completionValue)
+        {
+            m_gpuTiming.terminalCriticalPathMilliseconds =
+                DiagnosticValue<float64>::Available(0.0);
+            m_gpuTiming.sourceFrameSequence = sourceSequence;
+            m_gpuTiming.completionValue = completionValue;
+            m_gpuTiming.timestampFrequency = 1000000;
+        }
+
+        void SetGpuTimingOnShutdown(uint64 sourceSequence,
+                                    uint64 completionValue)
+        {
+            m_shutdownGpuTiming.terminalCriticalPathMilliseconds =
+                DiagnosticValue<float64>::Available(0.0);
+            m_shutdownGpuTiming.sourceFrameSequence = sourceSequence;
+            m_shutdownGpuTiming.completionValue = completionValue;
+            m_shutdownGpuTiming.timestampFrequency = 1000000;
+            m_publishGpuOnlyAfterShutdown = true;
+        }
+
+        void SetFrameCode(RenderRuntimeCode code) noexcept
+        {
+            m_frameCode = code;
+        }
+
+        [[nodiscard]] uint32 GetCompletionDiagnosticsCount() const noexcept
+        {
+            return m_completionDiagnosticsCount;
+        }
+
+    private:
+        [[nodiscard]] RenderRuntimeResult MakeRunningResult() const
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.backend = m_backend;
+            result.surfaceGeneration = m_surfaceGeneration;
+            return result;
+        }
+
+        RenderRuntimeCode m_frameCode = RenderRuntimeCode::Running;
+        RenderCpuFrameTimingDiagnostics m_cpuTiming{};
+        RenderGpuFrameTimingDiagnostics m_gpuTiming{};
+        RenderGpuFrameTimingDiagnostics m_shutdownGpuTiming{};
+        bool m_publishGpuOnlyAfterShutdown = false;
+        bool m_shutdownComplete = false;
+        mutable uint32 m_completionDiagnosticsCount = 0;
+        RHIBackendType m_backend = RHIBackendType::None;
+        uint64 m_surfaceGeneration = 0;
+    };
+
+    /** @brief Models a fence that becomes retireable only on an idle owner wake. */
+    class DelayedRetirementFrameConsumer final : public IRenderFrameConsumer,
+                                                  public NonMovable
+    {
+    public:
+        RenderRuntimeResult Initialize(const RenderRuntimeConfig& config,
+                                       const NativeSurfaceDesc& surface,
+                                       RenderResourceStatusTable&) override
+        {
+            m_backend = config.backendType;
+            m_surfaceGeneration = surface.generation;
+            return MakeRunningResult();
+        }
+
+        RenderRuntimeResult ApplySurface(
+            const NativeSurfaceDesc& surface) override
+        {
+            m_surfaceGeneration = surface.generation;
+            return MakeRunningResult();
+        }
+
+        void ProcessRelease(RenderResourceHandle) override {}
+        void ProcessUpload(ResourceUploadRequestRef) override {}
+
+        RenderRuntimeResult ConsumeFrameV5(
+            const RenderFramePacketV5& packet,
+            const RenderSceneDatabase&) override
+        {
+            m_consumedFrameCount.fetch_add(1, std::memory_order_release);
+            m_retirementEntryCount.store(1, std::memory_order_release);
+            m_noPendingCompletionWaitObserved.store(false,
+                                                    std::memory_order_release);
+            RenderRuntimeResult result = MakeRunningResult();
+            result.frameSequence = packet.GetHeader().sequence;
+            return result;
+        }
+
+        void PollCompletion() override
+        {
+            m_completionPollCount.fetch_add(1, std::memory_order_release);
+        }
+
+        void RetireCompleted() override
+        {
+            // The test arms completion after the frame has presented. A
+            // following idle wake must observe and retire it without another
+            // ConsumeFrame call.
+            if (m_completionReady.load(std::memory_order_acquire))
+            {
+                m_retirementEntryCount.store(0, std::memory_order_release);
+            }
+        }
+
+        [[nodiscard]] bool HasPendingCompletionWork() const noexcept override
+        {
+            const bool pending =
+                m_retirementEntryCount.load(std::memory_order_acquire) != 0U;
+            if (!pending)
+            {
+                m_noPendingCompletionWaitObserved.store(
+                    true, std::memory_order_release);
+            }
+            return pending;
+        }
+
+        void PopulateCompletionDiagnostics(
+            RenderDiagnosticsSnapshot& diagnostics) const override
+        {
+            diagnostics.retirement.entryCount =
+                m_retirementEntryCount.load(std::memory_order_acquire);
+        }
+
+        RenderShutdownResult Shutdown(RenderTeardownMode) noexcept override
+        {
+            RenderShutdownResult result;
+            result.code = RenderShutdownCode::Completed;
+            result.backend = m_backend;
+            result.surfaceGeneration = m_surfaceGeneration;
+            return result;
+        }
+
+        [[nodiscard]] uint32 GetConsumedFrameCount() const noexcept
+        {
+            return m_consumedFrameCount.load(std::memory_order_acquire);
+        }
+
+        [[nodiscard]] uint32 GetCompletionPollCount() const noexcept
+        {
+            return m_completionPollCount.load(std::memory_order_acquire);
+        }
+
+        void ArmCompletion() noexcept
+        {
+            m_completionReady.store(true, std::memory_order_release);
+        }
+
+        [[nodiscard]] bool HasObservedNoPendingCompletionWait() const noexcept
+        {
+            return m_noPendingCompletionWaitObserved.load(
+                std::memory_order_acquire);
+        }
+
+    private:
+        [[nodiscard]] RenderRuntimeResult MakeRunningResult() const
+        {
+            RenderRuntimeResult result;
+            result.code = RenderRuntimeCode::Running;
+            result.backend = m_backend;
+            result.surfaceGeneration = m_surfaceGeneration;
+            return result;
+        }
+
+        std::atomic<uint32> m_consumedFrameCount = 0;
+        std::atomic<uint32> m_completionPollCount = 0;
+        std::atomic<uint32> m_retirementEntryCount = 0;
+        std::atomic<bool> m_completionReady = false;
+        mutable std::atomic<bool> m_noPendingCompletionWaitObserved = false;
+        RHIBackendType m_backend = RHIBackendType::None;
+        uint64 m_surfaceGeneration = 0;
+    };
 
     TEST(RenderThreadRuntimeValidation, PublicResultDefaultsAreExact)
     {
@@ -752,6 +1137,30 @@ namespace
     }
 
     TEST(RenderThreadRuntimeValidation,
+         StartupPublishesDeviceIdentityBeforeFirstFrame)
+    {
+        auto consumer = std::make_unique<StartupIdentityFrameConsumer>();
+        StartupIdentityFrameConsumer* consumerProbe = consumer.get();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX12;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            std::move(consumer));
+
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        const RenderDiagnosticsSnapshot diagnostics =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_EQ(diagnostics.lifecycle, RenderLifecycleState::Running);
+        EXPECT_EQ(diagnostics.adapterName, "startup-adapter");
+        EXPECT_EQ(diagnostics.driverVersion, "startup-driver");
+        EXPECT_EQ(consumerProbe->GetPopulateDiagnosticsCount(), 1U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
          ConsumerValueDiagnosticsArePublishedAfterFrameConsumption)
     {
         auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
@@ -760,6 +1169,26 @@ namespace
         probe->frameDiagnostics.rendered = true;
         probe->frameDiagnostics.renderGraphTotalPasses = 11;
         probe->frameDiagnostics.visibleObjectCount = 3;
+        probe->frameDiagnostics.sceneWork.available = true;
+        probe->frameDiagnostics.sceneWork.incrementalUpdateCount = 4;
+        probe->frameDiagnostics.sceneWork.lastRebuiltObjectCount = 10;
+        probe->frameDiagnostics.sceneWork.drawPacketHitCount = 27;
+        probe->frameDiagnostics.sceneWork.drawPacketBuildCount = 3;
+        probe->frameDiagnostics.gpuDrivenCulling
+            .canonicalInstanceUploadWork.cpuCopiedPayloadBytes = 96;
+        probe->frameDiagnostics.gpuDrivenCulling
+            .canonicalInstanceUploadWork.committedPayloadBytes = 96;
+        probe->frameDiagnostics.gpuDrivenCulling
+            .canonicalInstanceUploadWork.mappedRangeCount = 2;
+        probe->frameDiagnostics.gpuDrivenCulling
+            .canonicalInstanceUploadWork.committedRangeCount = 2;
+        probe->frameDiagnostics.gpuDrivenCulling
+            .canonicalInstanceUploadWork.hostVisibilitySynchronizedBytes =
+            DiagnosticValue<uint64>::Available(128);
+        probe->frameDiagnostics.gpuScene.uploadWork.cpuCopiedPayloadBytes = 64;
+        probe->frameDiagnostics.gpuScene.uploadWork.committedPayloadBytes = 64;
+        probe->frameDiagnostics.gpuScene.uploadWork.gpuCopyBytes = 64;
+        probe->frameDiagnostics.gpuScene.uploadWork.gpuCopyRangeCount = 1;
 
         RenderRuntimeConfig config;
         config.backendType = RHIBackendType::DX11;
@@ -781,6 +1210,410 @@ namespace
         EXPECT_TRUE(diagnostics.frameFeatures.rendered);
         EXPECT_EQ(diagnostics.frameFeatures.renderGraphTotalPasses, 11U);
         EXPECT_EQ(diagnostics.frameFeatures.visibleObjectCount, 3U);
+        EXPECT_TRUE(diagnostics.frameFeatures.sceneWork.available);
+        EXPECT_EQ(
+            diagnostics.frameFeatures.sceneWork.incrementalUpdateCount, 4U);
+        EXPECT_EQ(
+            diagnostics.frameFeatures.sceneWork.lastRebuiltObjectCount, 10U);
+        EXPECT_EQ(
+            diagnostics.frameFeatures.sceneWork.drawPacketHitCount, 27U);
+        EXPECT_EQ(
+            diagnostics.frameFeatures.sceneWork.drawPacketBuildCount, 3U);
+        const RenderUploadWorkDiagnostics& canonicalWork = diagnostics
+            .frameFeatures.gpuDrivenCulling.canonicalInstanceUploadWork;
+        EXPECT_EQ(canonicalWork.cpuCopiedPayloadBytes, 96U);
+        EXPECT_EQ(canonicalWork.committedPayloadBytes, 96U);
+        EXPECT_EQ(canonicalWork.mappedRangeCount, 2U);
+        EXPECT_EQ(canonicalWork.committedRangeCount, 2U);
+        ASSERT_TRUE(canonicalWork.hostVisibilitySynchronizedBytes.IsAvailable());
+        EXPECT_EQ(*canonicalWork.hostVisibilitySynchronizedBytes.GetValue(),
+                  128U);
+        EXPECT_EQ(diagnostics.frameFeatures.gpuScene.uploadWork.gpuCopyBytes,
+                  64U);
+        EXPECT_EQ(diagnostics.frameFeatures.gpuScene.uploadWork.gpuCopyRangeCount,
+                  1U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         CompletedFrameTimingSeparatesCpuSuccessFromDelayedGpuCompletion)
+    {
+        auto consumer = std::make_unique<TimingDiagnosticsFrameConsumer>();
+        TimingDiagnosticsFrameConsumer* consumerProbe = consumer.get();
+        // Zero-valued phases remain valid when the consumer supplies the exact
+        // completed frame and RenderScene provenance.
+        consumerProbe->SetCpuTiming(8101, 8101);
+        consumerProbe->SetGpuTiming(8099, 42);
+
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX12;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            std::move(consumer));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8101)).code,
+                  RenderFramePublishCode::Accepted);
+
+        const RenderDiagnosticsSnapshot accepted =
+            runtime.GetDiagnosticsSnapshot();
+        ASSERT_TRUE(accepted.cpuFrameTiming.phases.IsAvailable());
+        EXPECT_EQ(accepted.cpuFrameTiming.sourceFrameSequence, 8101U);
+        EXPECT_EQ(accepted.cpuFrameTiming.requiredSceneRevision, 8101U);
+        EXPECT_EQ(accepted.cpuFrameTiming.appliedSceneRevision, 8101U);
+        EXPECT_TRUE(accepted.sceneValues.available);
+        EXPECT_EQ(accepted.cpuFrameTiming.sourceFrameSequence,
+                  accepted.lastPresentedFrameSequence);
+        EXPECT_EQ(accepted.cpuFrameTiming.requiredSceneRevision,
+                  accepted.sceneValues.requiredSceneRevision);
+        EXPECT_EQ(accepted.cpuFrameTiming.appliedSceneRevision,
+                  accepted.sceneValues.appliedSceneRevision);
+        EXPECT_EQ(accepted.cpuFrameTiming.phases.GetValue()
+                      ->frameApply,
+                  0U);
+        EXPECT_EQ(accepted.cpuFrameTiming.phases.GetValue()
+                      ->frameBeginAcquire,
+                  0U);
+        EXPECT_EQ(accepted.cpuFrameTiming.phases.GetValue()
+                      ->renderPrepare,
+                  3U);
+        EXPECT_TRUE(accepted.gpuFrameTiming
+                        .terminalCriticalPathMilliseconds.IsAvailable());
+        EXPECT_DOUBLE_EQ(*accepted.gpuFrameTiming
+                              .terminalCriticalPathMilliseconds.GetValue(),
+                         0.0);
+        EXPECT_EQ(accepted.gpuFrameTiming.sourceFrameSequence, 8099U);
+        EXPECT_EQ(accepted.gpuFrameTiming.completionValue, 42U);
+        EXPECT_GT(consumerProbe->GetCompletionDiagnosticsCount(), 0U);
+
+        consumerProbe->SetFrameCode(
+            RenderRuntimeCode::RenderGraphValidationFailed);
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8102)).code,
+                  RenderFramePublishCode::Accepted);
+        const RenderDiagnosticsSnapshot rejected =
+            runtime.GetDiagnosticsSnapshot();
+        ASSERT_TRUE(rejected.cpuFrameTiming.phases.IsAvailable());
+        EXPECT_EQ(rejected.cpuFrameTiming.sourceFrameSequence, 8101U);
+        EXPECT_EQ(rejected.cpuFrameTiming.requiredSceneRevision, 8101U);
+        EXPECT_EQ(rejected.cpuFrameTiming.appliedSceneRevision, 8101U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         CompletedFrameTimingRejectsStaleCpuProvenanceWithoutRelabeling)
+    {
+        auto consumer = std::make_unique<TimingDiagnosticsFrameConsumer>();
+        TimingDiagnosticsFrameConsumer* consumerProbe = consumer.get();
+        consumerProbe->SetCpuTiming(7999, 7001);
+
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX12;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            std::move(consumer));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8101)).code,
+                  RenderFramePublishCode::Accepted);
+
+        const RenderDiagnosticsSnapshot diagnostics =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_FALSE(diagnostics.cpuFrameTiming.phases.IsAvailable());
+        EXPECT_FALSE(diagnostics.cpuFrameTiming.phases.GetReason().empty());
+        EXPECT_EQ(diagnostics.cpuFrameTiming.sourceFrameSequence, 0U);
+        EXPECT_EQ(diagnostics.cpuFrameTiming.requiredSceneRevision, 0U);
+        EXPECT_EQ(diagnostics.cpuFrameTiming.appliedSceneRevision, 0U);
+        EXPECT_TRUE(diagnostics.sceneValues.available);
+        EXPECT_EQ(diagnostics.sceneValues.frameSequence, 8101U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         NormalShutdownPublishesLastCompletionOnlyGpuTiming)
+    {
+        auto consumer = std::make_unique<TimingDiagnosticsFrameConsumer>();
+        TimingDiagnosticsFrameConsumer* consumerProbe = consumer.get();
+        consumerProbe->SetGpuTimingOnShutdown(8123, 73);
+
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX12;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            std::move(consumer));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        const RenderDiagnosticsSnapshot beforeShutdown =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_FALSE(beforeShutdown.gpuFrameTiming
+                         .terminalCriticalPathMilliseconds.IsAvailable());
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        const RenderDiagnosticsSnapshot afterShutdown =
+            runtime.GetDiagnosticsSnapshot();
+        ASSERT_TRUE(afterShutdown.gpuFrameTiming
+                        .terminalCriticalPathMilliseconds.IsAvailable());
+        EXPECT_EQ(afterShutdown.gpuFrameTiming.sourceFrameSequence, 8123U);
+        EXPECT_EQ(afterShutdown.gpuFrameTiming.completionValue, 73U);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         CompletionOnlyWakeRetiresDelayedFenceWithoutConsumingAnotherFrame)
+    {
+        auto consumer = std::make_unique<DelayedRetirementFrameConsumer>();
+        DelayedRetirementFrameConsumer* consumerProbe = consumer.get();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            std::move(consumer));
+
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8127)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(WaitForPresentedFrame(runtime, 8127));
+        ASSERT_EQ(consumerProbe->GetConsumedFrameCount(), 1U);
+        ASSERT_EQ(runtime.GetDiagnosticsSnapshot().retirement.entryCount, 1U);
+
+        const uint32 pollsBefore = consumerProbe->GetCompletionPollCount();
+        consumerProbe->ArmCompletion();
+        ASSERT_TRUE(runtime.RequestCompletionPump());
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(8128)).code,
+                  RenderFramePublishCode::ShuttingDown);
+        const auto deadline =
+            std::chrono::steady_clock::now() + RVX_TEST_TIMEOUT;
+        while (std::chrono::steady_clock::now() < deadline &&
+               runtime.GetDiagnosticsSnapshot().retirement.entryCount != 0)
+        {
+            std::this_thread::sleep_for(1ms);
+        }
+
+        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().retirement.entryCount, 0U);
+        EXPECT_GT(consumerProbe->GetCompletionPollCount(), pollsBefore);
+        EXPECT_EQ(consumerProbe->GetConsumedFrameCount(), 1U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         PendingCompletionProgressesWithoutRequestAndIdleWaitDoesNotSpin)
+    {
+        auto consumer = std::make_unique<DelayedRetirementFrameConsumer>();
+        DelayedRetirementFrameConsumer* consumerProbe = consumer.get();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            std::move(consumer));
+
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(8129)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(WaitForPresentedFrame(runtime, 8129));
+        ASSERT_EQ(runtime.GetDiagnosticsSnapshot().retirement.entryCount, 1U);
+
+        const uint32 pollsBefore = consumerProbe->GetCompletionPollCount();
+        consumerProbe->ArmCompletion();
+        const auto deadline =
+            std::chrono::steady_clock::now() + RVX_TEST_TIMEOUT;
+        while (std::chrono::steady_clock::now() < deadline &&
+               runtime.GetDiagnosticsSnapshot().retirement.entryCount != 0)
+        {
+            std::this_thread::sleep_for(1ms);
+        }
+
+        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().retirement.entryCount, 0U);
+        EXPECT_GT(consumerProbe->GetCompletionPollCount(), pollsBefore);
+        while (std::chrono::steady_clock::now() < deadline &&
+               !consumerProbe->HasObservedNoPendingCompletionWait())
+        {
+            std::this_thread::sleep_for(1ms);
+        }
+
+        ASSERT_TRUE(consumerProbe->HasObservedNoPendingCompletionWait());
+        const uint64 idleWaitsBefore =
+            runtime.GetDiagnosticsSnapshot().idleWaitCount;
+        EXPECT_GT(idleWaitsBefore, 0U);
+        const uint64 pumpIterationsAtIdle =
+            runtime.GetDiagnosticsSnapshot().pumpIterationCount;
+        std::this_thread::sleep_for(20ms);
+        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().pumpIterationCount,
+                  pumpIterationsAtIdle);
+        EXPECT_EQ(PublishFrame(runtime, MakePacket(8130)).code,
+                  RenderFramePublishCode::Accepted);
+        EXPECT_TRUE(WaitForPresentedFrame(runtime, 8130));
+        EXPECT_EQ(consumerProbe->GetConsumedFrameCount(), 2U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         GPUSceneCullingQualificationRequestIsOneShotAndOwnerDelivered)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->gpuSceneCullingQualificationAccepted = true;
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+
+        EXPECT_FALSE(runtime.RequestGPUSceneCullingQualificationCapture());
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::GPUSceneCullingQualification),
+                  0U);
+
+        EXPECT_TRUE(runtime.RequestGPUSceneCullingQualificationCapture());
+        EXPECT_FALSE(runtime.RequestGPUSceneCullingQualificationCapture());
+        EXPECT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::GPUSceneCullingQualification,
+            1U,
+            RVX_TEST_TIMEOUT));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::GPUSceneCullingQualification),
+                  1U);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 0U);
+
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+        EXPECT_FALSE(runtime.RequestGPUSceneCullingQualificationCapture());
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         QualificationRequestArrivingBeforeFrameAcquireArmsThatExactFrame)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->gpuSceneCullingQualificationAccepted = true;
+        auto acquireHook = std::make_shared<BlockingFrameAcquireHook>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe),
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            acquireHook);
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        // Force the owner through its pump-start request exchange and pause it
+        // immediately before the publication-serialized frame acquire.
+        acquireHook->Arm();
+        runtime.Wake();
+        const bool ownerReachedAcquire = acquireHook->WaitUntilEntered(
+            RVX_TEST_TIMEOUT);
+        if (!ownerReachedAcquire)
+        {
+            acquireHook->Release();
+            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+            FAIL() << "Render owner did not reach the frame acquire seam";
+            return;
+        }
+
+        const bool requestAccepted =
+            runtime.RequestGPUSceneCullingQualificationCapture();
+        const RenderFramePublishResult publish =
+            PublishFrame(runtime, MakePacket(8131));
+        acquireHook->Release();
+
+        ASSERT_TRUE(requestAccepted);
+        ASSERT_EQ(publish.code, RenderFramePublishCode::Accepted);
+
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 1U, RVX_TEST_TIMEOUT));
+        EXPECT_TRUE(WaitForPresentedFrame(runtime, 8131));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::GPUSceneCullingQualification),
+                  1U);
+        EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 1U);
+        const std::vector<RenderRuntimeTestEvent> events = probe->GetEvents();
+        const auto qualification = std::find(
+            events.begin(),
+            events.end(),
+            RenderRuntimeTestEvent::GPUSceneCullingQualification);
+        const auto frame = std::find(
+            events.begin(), events.end(), RenderRuntimeTestEvent::Frame);
+        ASSERT_NE(events.end(), qualification);
+        ASSERT_NE(events.end(), frame);
+        EXPECT_LT(std::distance(events.begin(), qualification),
+                  std::distance(events.begin(), frame));
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         DirectRasterReadbackRequestArrivingBeforeFrameAcquireArmsThatExactFrame)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->directOpaqueRasterReadbackQualificationAccepted = true;
+        auto acquireHook = std::make_shared<BlockingFrameAcquireHook>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::Dedicated,
+            CreateDedicatedRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe),
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            acquireHook);
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        acquireHook->Arm();
+        runtime.Wake();
+        if (!acquireHook->WaitUntilEntered(RVX_TEST_TIMEOUT))
+        {
+            acquireHook->Release();
+            EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+            FAIL() << "Render owner did not reach the frame acquire seam";
+            return;
+        }
+
+        const bool requestAccepted =
+            runtime.RequestDirectOpaqueRasterReadbackQualificationCapture();
+        const RenderFramePublishResult publish =
+            PublishFrame(runtime, MakePacket(8132));
+        acquireHook->Release();
+
+        ASSERT_TRUE(requestAccepted);
+        ASSERT_EQ(publish.code, RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(
+            RenderRuntimeTestEvent::Frame, 1U, RVX_TEST_TIMEOUT));
+        EXPECT_TRUE(WaitForPresentedFrame(runtime, 8132));
+        EXPECT_EQ(probe->GetEventCount(
+                      RenderRuntimeTestEvent::DirectOpaqueRasterReadbackQualification),
+                  1U);
+        const std::vector<RenderRuntimeTestEvent> events = probe->GetEvents();
+        const auto qualification = std::find(
+            events.begin(),
+            events.end(),
+            RenderRuntimeTestEvent::DirectOpaqueRasterReadbackQualification);
+        const auto frame = std::find(
+            events.begin(), events.end(), RenderRuntimeTestEvent::Frame);
+        ASSERT_NE(events.end(), qualification);
+        ASSERT_NE(events.end(), frame);
+        EXPECT_LT(std::distance(events.begin(), qualification),
+                  std::distance(events.begin(), frame));
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
     }
 
@@ -819,6 +1652,9 @@ namespace
         view.viewportWidth = 64;
         view.viewportHeight = 64;
         RenderExtractionDiagnostics diagnostics;
+        diagnostics.fullScanCount = 1;
+        diagnostics.actorRebuildCount = 2;
+        diagnostics.proxyVisitCount = 2;
         diagnostics.complete = true;
         auto frameV5 = RenderFramePacketV5::Create(
             headerV5,
@@ -837,8 +1673,21 @@ namespace
         ASSERT_EQ(publish.code, RenderFramePublishCode::Accepted);
         EXPECT_EQ(probe->GetLastConsumedPrimitiveIds(),
                   (std::vector<uint64>{11, 22}));
-        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().lastPresentedFrameSequence,
-                  17U);
+        const RenderDiagnosticsSnapshot firstDiagnostics =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_EQ(firstDiagnostics.lastPresentedFrameSequence, 17U);
+        EXPECT_TRUE(firstDiagnostics.sceneValues.available);
+        EXPECT_EQ(firstDiagnostics.sceneValues.frameSequence, 17U);
+        EXPECT_EQ(firstDiagnostics.sceneValues.appliedSceneRevision, 1U);
+        EXPECT_EQ(firstDiagnostics.sceneValues.requiredSceneRevision, 1U);
+        EXPECT_EQ(firstDiagnostics.sceneValues.objectCount, 2U);
+        EXPECT_EQ(firstDiagnostics.sceneValues.lightCount, 0U);
+        EXPECT_TRUE(firstDiagnostics.frameFeatures.extraction.complete);
+        EXPECT_EQ(firstDiagnostics.frameFeatures.extraction.fullScanCount, 1U);
+        EXPECT_EQ(
+            firstDiagnostics.frameFeatures.extraction.actorRebuildCount, 2U);
+        EXPECT_EQ(firstDiagnostics.frameFeatures.extraction.proxyVisitCount,
+                  2U);
 
         headerV5.sequence = 18;
         auto staticFrameV5 = RenderFramePacketV5::Create(
@@ -854,8 +1703,95 @@ namespace
         EXPECT_EQ(staticPublish.code, RenderFramePublishCode::Accepted);
         EXPECT_FALSE(staticPublish.sceneUpdateAccepted);
         EXPECT_EQ(staticPublish.sceneRevision, 1U);
-        EXPECT_EQ(runtime.GetDiagnosticsSnapshot().lastPresentedFrameSequence,
-                  18U);
+        const RenderDiagnosticsSnapshot staticDiagnostics =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_EQ(staticDiagnostics.lastPresentedFrameSequence, 18U);
+        EXPECT_TRUE(staticDiagnostics.sceneValues.available);
+        EXPECT_EQ(staticDiagnostics.sceneValues.frameSequence, 18U);
+        EXPECT_EQ(staticDiagnostics.sceneValues.appliedSceneRevision, 1U);
+        EXPECT_EQ(staticDiagnostics.sceneValues.requiredSceneRevision, 1U);
+        EXPECT_EQ(staticDiagnostics.sceneValues.objectCount, 2U);
+        EXPECT_EQ(staticDiagnostics.sceneValues.lightCount, 0U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         SceneValueDiagnosticsDoNotAdvanceForRejectedConsumption)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        probe->frameDiagnostics.available = true;
+        probe->frameDiagnostics.frameSequence = 7301;
+        probe->frameDiagnostics.rendered = true;
+        probe->frameDiagnostics.visibleObjectCount = 31;
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(
+            config,
+            MakeSurface(),
+            RenderExecutorKind::InlineTest,
+            CreateInlineRenderExecutor(),
+            CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+
+        RenderPrimitiveSnapshot primitive;
+        primitive.objectId = 31;
+        primitive.mesh = RenderResourceHandle{1, 1};
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(7301, {primitive})).code,
+                  RenderFramePublishCode::Accepted);
+        const RenderSceneValueDiagnostics accepted =
+            runtime.GetDiagnosticsSnapshot().sceneValues;
+        const RenderFrameFeatureDiagnostics acceptedFeatures =
+            runtime.GetDiagnosticsSnapshot().frameFeatures;
+        ASSERT_TRUE(accepted.available);
+        EXPECT_EQ(accepted.frameSequence, 7301U);
+        EXPECT_EQ(accepted.appliedSceneRevision, 7301U);
+        EXPECT_EQ(accepted.requiredSceneRevision, 7301U);
+        EXPECT_EQ(accepted.objectCount, 1U);
+        EXPECT_EQ(accepted.lightCount, 0U);
+        ASSERT_TRUE(acceptedFeatures.available);
+        EXPECT_EQ(acceptedFeatures.frameSequence, 7301U);
+        EXPECT_EQ(acceptedFeatures.visibleObjectCount, 31U);
+
+        probe->frameCode = RenderRuntimeCode::RenderGraphValidationFailed;
+        probe->frameDiagnostics.frameSequence = 7302;
+        probe->frameDiagnostics.visibleObjectCount = 99;
+        probe->frameDiagnostics.renderGraphTotalPasses = 999;
+        RenderFrameHeaderV5 rejectedHeader;
+        rejectedHeader.sequence = 7302;
+        rejectedHeader.requiredSceneRevision = accepted.appliedSceneRevision;
+        RenderViewSnapshot view;
+        view.viewportWidth = 64;
+        view.viewportHeight = 64;
+        RenderExtractionDiagnostics extraction;
+        extraction.complete = true;
+        auto rejectedFrame = RenderFramePacketV5::Create(
+            rejectedHeader,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            extraction);
+        ASSERT_NE(rejectedFrame, nullptr);
+        ASSERT_EQ(runtime.TryPublishFrameSet(nullptr, std::move(rejectedFrame))
+                      .code,
+                  RenderFramePublishCode::Accepted);
+
+        const RenderDiagnosticsSnapshot rejected =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_EQ(rejected.lastAppliedFrameSequence, 7301U);
+        EXPECT_TRUE(rejected.sceneValues.available);
+        EXPECT_EQ(rejected.sceneValues.frameSequence, accepted.frameSequence);
+        EXPECT_EQ(rejected.sceneValues.appliedSceneRevision,
+                  accepted.appliedSceneRevision);
+        EXPECT_EQ(rejected.sceneValues.requiredSceneRevision,
+                  accepted.requiredSceneRevision);
+        EXPECT_EQ(rejected.sceneValues.objectCount, accepted.objectCount);
+        EXPECT_EQ(rejected.sceneValues.lightCount, accepted.lightCount);
+        EXPECT_EQ(rejected.frameFeatures.frameSequence,
+                  acceptedFeatures.frameSequence);
+        EXPECT_EQ(rejected.frameFeatures.visibleObjectCount,
+                  acceptedFeatures.visibleObjectCount);
+        EXPECT_EQ(rejected.frameFeatures.renderGraphTotalPasses,
+                  acceptedFeatures.renderGraphTotalPasses);
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
     }
 
@@ -2509,6 +3445,119 @@ namespace
         EXPECT_EQ(probe->GetEventCount(RenderRuntimeTestEvent::Frame), 2U);
         EXPECT_GE(probe->GetEventCount(RenderRuntimeTestEvent::Poll), 2U);
         EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         ResizeBeforeApplicationFrameDoesNotAdvanceFrameSequences)
+    {
+        auto probe = std::make_shared<RenderFrameConsumerTestProbe>();
+        RenderRuntimeConfig config;
+        config.backendType = RHIBackendType::DX11;
+        RenderThreadRuntime runtime(config,
+                                    MakeSurface(),
+                                    RenderExecutorKind::Dedicated,
+                                    CreateDedicatedRenderExecutor(),
+                                    CreateRecordingRenderFrameConsumer(probe));
+        ASSERT_EQ(runtime.Start().code, RenderRuntimeCode::Running);
+        ASSERT_EQ(runtime.RequestResize(MakeSurface(2, 80, 80)).code,
+                  RenderResizeCode::Accepted);
+        ASSERT_TRUE(probe->WaitForEventCount(RenderRuntimeTestEvent::Surface,
+                                             1U,
+                                             RVX_TEST_TIMEOUT));
+        ASSERT_TRUE(WaitForSurfaceGeneration(runtime, 2U));
+
+        const RenderDiagnosticsSnapshot resized =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_EQ(resized.lastSubmittedFrameSequence, 0U);
+        EXPECT_EQ(resized.lastPresentedFrameSequence, 0U);
+
+        ASSERT_EQ(PublishFrame(runtime, MakePacket(73)).code,
+                  RenderFramePublishCode::Accepted);
+        ASSERT_TRUE(WaitForPresentedFrame(runtime, 73U));
+        const RenderDiagnosticsSnapshot rendered =
+            runtime.GetDiagnosticsSnapshot();
+        EXPECT_EQ(rendered.lastSubmittedFrameSequence, 73U);
+        EXPECT_EQ(rendered.lastPresentedFrameSequence, 73U);
+        EXPECT_EQ(runtime.Stop().code, RenderShutdownCode::Completed);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         SurfaceClearTraceDoesNotConsumeApplicationFrameMilestones)
+    {
+        const std::filesystem::path sourcePath{RVX_SOURCE_DIR};
+        const std::string source =
+            ReadSourceFile(sourcePath / "Render" / "Private" /
+                           "RenderSubsystem.cpp");
+        ASSERT_FALSE(source.empty());
+
+        const size_t clearBegin = source.find(
+            "RenderRuntimeResult PresentDeterministicClear(");
+        const size_t clearEnd = source.find("void RecordFirstSubmitted(",
+                                            clearBegin);
+        ASSERT_NE(clearBegin, std::string::npos);
+        ASSERT_NE(clearEnd, std::string::npos);
+        const std::string clear =
+            source.substr(clearBegin, clearEnd - clearBegin);
+        EXPECT_NE(clear.find("RecordFirstSurfaceClear(surfaceGeneration"),
+                  std::string::npos);
+        EXPECT_EQ(clear.find("RecordFirstSubmitted("), std::string::npos);
+        EXPECT_EQ(clear.find("RecordFirstPresent("), std::string::npos);
+        EXPECT_NE(source.find("FirstSurfaceClearPresentAccepted"),
+                  std::string::npos);
+
+        const size_t acceptedBegin = source.find(
+            "RenderRuntimeResult PresentAcceptedFrame(");
+        ASSERT_NE(acceptedBegin, std::string::npos);
+        const std::string accepted =
+            source.substr(acceptedBegin, clearBegin - acceptedBegin);
+        EXPECT_NE(accepted.find("RecordFirstSubmitted(frameSequence"),
+                  std::string::npos);
+        EXPECT_NE(accepted.find("RecordFirstPresent(frameSequence"),
+                  std::string::npos);
+    }
+
+    TEST(RenderThreadRuntimeValidation,
+         SubmittedTimingBindsBeforeCaptureCanDrainTheFrameSlot)
+    {
+        const std::filesystem::path sourcePath{RVX_SOURCE_DIR};
+        const std::string source =
+            ReadSourceFile(sourcePath / "Render" / "Private" /
+                           "RenderSubsystem.cpp");
+        ASSERT_FALSE(source.empty());
+
+        const size_t acceptedBegin = source.find(
+            "RenderRuntimeResult PresentAcceptedFrame(");
+        const size_t clearBegin = source.find(
+            "RenderRuntimeResult PresentDeterministicClear(", acceptedBegin);
+        ASSERT_NE(acceptedBegin, std::string::npos);
+        ASSERT_NE(clearBegin, std::string::npos);
+        const std::string accepted =
+            source.substr(acceptedBegin, clearBegin - acceptedBegin);
+        const size_t present = accepted.find("m_context->Present()");
+        const size_t health = accepted.find("RenderRuntimeResult health", present);
+        const size_t healthFailure = accepted.find(
+            "if (health.code != RenderRuntimeCode::Running)", health);
+        const size_t healthFailureReturn = accepted.find("return health;", healthFailure);
+        const size_t bind = accepted.find("BindSubmittedFrameTiming(");
+        const size_t capture = accepted.find("CompleteCapture(capture)");
+        const size_t watermark = accepted.find(
+            "m_sceneRenderer->MarkAcceptedFramePresented()");
+        const size_t firstPresent = accepted.find("RecordFirstPresent(frameSequence");
+        ASSERT_NE(present, std::string::npos);
+        ASSERT_NE(health, std::string::npos);
+        ASSERT_NE(healthFailure, std::string::npos);
+        ASSERT_NE(healthFailureReturn, std::string::npos);
+        ASSERT_NE(bind, std::string::npos);
+        ASSERT_NE(capture, std::string::npos);
+        ASSERT_NE(watermark, std::string::npos);
+        ASSERT_NE(firstPresent, std::string::npos);
+        EXPECT_LT(present, health);
+        EXPECT_LT(healthFailure, watermark);
+        EXPECT_LT(healthFailureReturn, watermark);
+        EXPECT_LT(health, bind);
+        EXPECT_LT(bind, capture);
+        EXPECT_LT(capture, watermark);
+        EXPECT_LT(watermark, firstPresent);
     }
 
     TEST(RenderThreadRuntimeValidation, PumpProcessesReleaseBeforeUpload)

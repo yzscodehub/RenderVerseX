@@ -5,16 +5,21 @@
 #include "RHI/RHIDeviceStatus.h"
 #include "RHI/RHINativeSurface.h"
 #include "RHI/RHITexture.h"
+#include "RHI/RHIUpload.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
+#include <new>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace RVX::Tests
 {
@@ -178,6 +183,59 @@ namespace RVX::Tests
             void Unmap() override {}
         };
 
+        class QueryContractPool final : public RHIQueryPool
+        {
+        public:
+            QueryContractPool(
+                RHIQueryType type,
+                RHICommandQueueType queueType,
+                uint32 count,
+                uint64 timestampFrequency,
+                uint8 timestampValidBits)
+                : RHIQueryPool(queueType, timestampValidBits)
+                , m_type(type)
+                , m_count(count)
+                , m_timestampFrequency(timestampFrequency)
+            {
+            }
+
+            RHIQueryType GetType() const override { return m_type; }
+            uint32 GetCount() const override { return m_count; }
+            uint64 GetTimestampFrequency() const override
+            {
+                return m_timestampFrequency;
+            }
+
+        private:
+            RHIQueryType m_type = RHIQueryType::Timestamp;
+            uint32 m_count = 0;
+            uint64 m_timestampFrequency = 0;
+        };
+
+        class QueryResolveContractBuffer final : public RHIBuffer
+        {
+        public:
+            QueryResolveContractBuffer(uint64 size, RHIBufferUsage usage)
+                : m_size(size)
+                , m_usage(usage)
+            {
+            }
+
+            uint64 GetSize() const override { return m_size; }
+            RHIBufferUsage GetUsage() const override { return m_usage; }
+            RHIMemoryType GetMemoryType() const override
+            {
+                return RHIMemoryType::Readback;
+            }
+            uint32 GetStride() const override { return 0; }
+            void* Map() override { return nullptr; }
+            void Unmap() override {}
+
+        private:
+            uint64 m_size = 0;
+            RHIBufferUsage m_usage = RHIBufferUsage::None;
+        };
+
         class IndirectExecutionContractBuffer final : public RHIBuffer
         {
         public:
@@ -196,6 +254,93 @@ namespace RVX::Tests
         private:
             uint64 m_size = 0;
             RHIBufferUsage m_usage = RHIBufferUsage::None;
+        };
+
+        class LegacyStagingBuffer final : public RHIStagingBuffer
+        {
+        public:
+            void* Map(uint64 = 0, uint64 = RVX_WHOLE_SIZE) override
+            {
+                ++m_mapCount;
+                return m_storage.data();
+            }
+
+            void Unmap() override
+            {
+                ++m_unmapCount;
+            }
+
+            uint64 GetSize() const override { return m_storage.size(); }
+            RHIBuffer* GetBuffer() const override { return nullptr; }
+
+            uint32 m_mapCount = 0;
+            uint32 m_unmapCount = 0;
+
+        private:
+            std::array<uint8, 16> m_storage{};
+        };
+
+        class LegacyMappedWriteBuffer : public RHIBuffer
+        {
+        public:
+            explicit LegacyMappedWriteBuffer(
+                RHIMemoryType memoryType = RHIMemoryType::Upload)
+                : m_memoryType(memoryType)
+            {
+            }
+
+            uint64 GetSize() const override { return m_storage.size(); }
+            RHIBufferUsage GetUsage() const override { return RHIBufferUsage::CopyDst; }
+            RHIMemoryType GetMemoryType() const override { return m_memoryType; }
+            uint32 GetStride() const override { return 1; }
+
+            void* Map() override
+            {
+                ++m_mapCount;
+                return m_storage.data();
+            }
+
+            void Unmap() override
+            {
+                ++m_unmapCount;
+            }
+
+            std::array<uint8, 16> m_storage{};
+            uint32 m_mapCount = 0;
+            uint32 m_unmapCount = 0;
+
+        private:
+            RHIMemoryType m_memoryType = RHIMemoryType::Upload;
+        };
+
+        class FailingLegacyMappedWriteBuffer final
+            : public LegacyMappedWriteBuffer
+        {
+        public:
+            bool CommitMappedWrite() override
+            {
+                ++commitCount;
+                if (failCommit)
+                    return false;
+                return RHIBuffer::CommitMappedWrite();
+            }
+
+            bool failCommit = true;
+            uint32 commitCount = 0;
+        };
+
+        class PoisonedCancelMappedWriteBuffer final
+            : public LegacyMappedWriteBuffer
+        {
+        protected:
+            bool CancelMappedWriteRangeImpl(uint64, uint64) override
+            {
+                ++cancelCount;
+                return false;
+            }
+
+        public:
+            uint32 cancelCount = 0;
         };
 
         class DescriptorContractLayout final : public RHIDescriptorSetLayout
@@ -360,6 +505,263 @@ namespace RVX::Tests
             return surface;
         }
     } // namespace
+
+    TEST(RHIContractValidation,
+         TimestampQueryContractValidatesPoolQueueRangeAndResolveDestination)
+    {
+        RHIQueryPoolDesc desc;
+        desc.type = RHIQueryType::Timestamp;
+        desc.queueType = RHICommandQueueType::Graphics;
+        desc.count = 2;
+        EXPECT_TRUE(ValidateRHIQueryPoolDesc(desc));
+
+        desc.queueType = RHICommandQueueType::Compute;
+        EXPECT_FALSE(ValidateRHIQueryPoolDesc(desc));
+        EXPECT_NE(std::string(ValidateRHIQueryPoolDesc(desc).message).find("Graphics"),
+                  std::string::npos);
+
+        desc.queueType = static_cast<RHICommandQueueType>(0xFF);
+        EXPECT_FALSE(ValidateRHIQueryPoolDesc(desc));
+
+        QueryContractPool pool(
+            RHIQueryType::Timestamp,
+            RHICommandQueueType::Graphics,
+            2,
+            1000000000ull,
+            64);
+        EXPECT_EQ(pool.GetQueueType(), RHICommandQueueType::Graphics);
+        EXPECT_EQ(pool.GetTimestampValidBits(), 64);
+        EXPECT_TRUE(ValidateRHIQueryPoolMetadata(
+            pool,
+            RHIQueryType::Timestamp,
+            RHICommandQueueType::Graphics));
+        EXPECT_FALSE(ValidateRHIQueryPoolMetadata(
+            pool,
+            RHIQueryType::Timestamp,
+            RHICommandQueueType::Compute));
+        EXPECT_FALSE(ValidateRHIQueryPoolMetadata(
+            pool,
+            RHIQueryType::Occlusion,
+            RHICommandQueueType::Graphics));
+
+        EXPECT_TRUE(ValidateRHIQueryRange(pool, 0, 2));
+        EXPECT_FALSE(ValidateRHIQueryRange(pool, 2, 1));
+        EXPECT_FALSE(ValidateRHIQueryRange(pool, 1, 2));
+        EXPECT_FALSE(ValidateRHIQueryRange(pool, 0, 0));
+
+        QueryResolveContractBuffer resolveBuffer(16, RHIBufferUsage::CopyDst);
+        EXPECT_TRUE(ValidateRHIQueryResolveDestination(
+            pool,
+            0,
+            2,
+            resolveBuffer,
+            0));
+        EXPECT_FALSE(ValidateRHIQueryResolveDestination(
+            pool,
+            0,
+            2,
+            resolveBuffer,
+            8));
+        EXPECT_FALSE(ValidateRHIQueryResolveDestination(
+            pool,
+            0,
+            1,
+            resolveBuffer,
+            4));
+
+        QueryResolveContractBuffer wrongUsageBuffer(16, RHIBufferUsage::CopySrc);
+        EXPECT_FALSE(ValidateRHIQueryResolveDestination(
+            pool,
+            0,
+            1,
+            wrongUsageBuffer,
+            0));
+    }
+
+    TEST(RHIContractValidation, TimestampElapsedDeltaUsesDeclaredModuloWidth)
+    {
+        EXPECT_EQ(CalculateRHITimestampElapsedDelta(0xFEu, 0x02u, 8), 4u);
+        EXPECT_EQ(CalculateRHITimestampElapsedDelta(
+                      std::numeric_limits<uint64>::max() - 1,
+                      1,
+                      64),
+                  3u);
+        EXPECT_EQ(CalculateRHITimestampElapsedDelta(1, 2, 0), 0u);
+        EXPECT_EQ(CalculateRHITimestampElapsedDelta(1, 2, 65), 0u);
+    }
+
+    TEST(RHIContractValidation,
+         TimestampCapabilityRequiresCoherentGraphicsFrequency)
+    {
+        RHICapabilities capabilities = MakeValidCapabilities(RHIBackendType::DX12);
+        EXPECT_TRUE(ValidateRHICapabilities(capabilities));
+
+        capabilities.supportsTimestampQueries = true;
+        EXPECT_FALSE(ValidateRHICapabilities(capabilities));
+        EXPECT_NE(ValidateRHICapabilities(capabilities).message.find("timestamp query support"),
+                  std::string::npos);
+
+        capabilities.timestampFrequency = 1000000000ull;
+        EXPECT_TRUE(ValidateRHICapabilities(capabilities));
+
+        capabilities.supportsTimestampQueries = false;
+        EXPECT_FALSE(ValidateRHICapabilities(capabilities));
+        EXPECT_NE(ValidateRHICapabilities(capabilities).message.find("Graphics timestamp frequency"),
+                  std::string::npos);
+    }
+
+    TEST(RHIContractValidation,
+         StagingCommitDefaultsToLegacyUnmapForCompatibleBackends)
+    {
+        LegacyStagingBuffer staging;
+        ASSERT_NE(staging.Map(), nullptr);
+        EXPECT_TRUE(staging.CommitMappedWrite());
+        EXPECT_EQ(staging.m_mapCount, 1U);
+        EXPECT_EQ(staging.m_unmapCount, 1U);
+    }
+
+    TEST(RHIContractValidation,
+         RangeMappedWriteRejectsInvalidAndStaleAccessThenSupportsCancelRetry)
+    {
+        LegacyMappedWriteBuffer buffer;
+
+        EXPECT_FALSE(buffer.MapWriteRange(0, 0).IsValid());
+        EXPECT_FALSE(buffer.MapWriteRange(15, 2).IsValid());
+        EXPECT_FALSE(buffer.MapWriteRange(std::numeric_limits<uint64>::max(), 1).IsValid());
+        EXPECT_EQ(buffer.m_mapCount, 0U);
+
+        LegacyMappedWriteBuffer readbackBuffer(RHIMemoryType::Readback);
+        EXPECT_FALSE(readbackBuffer.MapWriteRange(0, 4).IsValid());
+        EXPECT_EQ(readbackBuffer.m_mapCount, 0U);
+
+        auto access = buffer.MapWriteRange(4, 4);
+        ASSERT_TRUE(access.IsValid());
+        EXPECT_EQ(access.GetData(), buffer.m_storage.data() + 4);
+        EXPECT_FALSE(buffer.MapWriteRange(8, 2).IsValid());
+
+        auto currentAccess = std::move(access);
+        const RHIHostWriteReceipt staleReceipt =
+            buffer.CommitMappedWriteRange(std::move(access));
+        EXPECT_FALSE(staleReceipt.IsPublished());
+
+        const RHIHostWriteReceipt receipt =
+            buffer.CommitMappedWriteRange(std::move(currentAccess));
+        EXPECT_TRUE(receipt.IsPublished());
+        EXPECT_EQ(receipt.synchronization,
+                  RHIHostWriteSynchronization::Unavailable);
+        EXPECT_EQ(receipt.cpuWriteOffset, 4U);
+        EXPECT_EQ(receipt.cpuWriteSize, 4U);
+        EXPECT_FALSE(receipt.HasSynchronizedRange());
+        EXPECT_EQ(receipt.synchronizedOffset, 0U);
+        EXPECT_EQ(receipt.synchronizedSize, 0U);
+        EXPECT_EQ(buffer.m_unmapCount, 1U);
+
+        const RHIHostWriteReceipt doubleCommitReceipt =
+            buffer.CommitMappedWriteRange(std::move(currentAccess));
+        EXPECT_FALSE(doubleCommitReceipt.IsPublished());
+
+        auto cancelledAccess = buffer.MapWriteRange(8, 2);
+        ASSERT_TRUE(cancelledAccess.IsValid());
+        EXPECT_TRUE(buffer.CancelMappedWriteRange(std::move(cancelledAccess)));
+        EXPECT_FALSE(buffer.CancelMappedWriteRange(std::move(cancelledAccess)));
+        EXPECT_EQ(buffer.m_unmapCount, 2U);
+
+        auto retryAccess = buffer.MapWriteRange(8, 2);
+        ASSERT_TRUE(retryAccess.IsValid());
+        const RHIHostWriteReceipt retryReceipt =
+            buffer.CommitMappedWriteRange(std::move(retryAccess));
+        EXPECT_TRUE(retryReceipt.IsPublished());
+        EXPECT_EQ(buffer.m_mapCount, 3U);
+        EXPECT_EQ(buffer.m_unmapCount, 3U);
+    }
+
+    TEST(RHIContractValidation,
+         RangeMappedWriteAccessAbortsOnScopeExitAndInvalidatesDestroyedOwners)
+    {
+        LegacyMappedWriteBuffer scopeBuffer;
+        {
+            auto access = scopeBuffer.MapWriteRange(2, 4);
+            ASSERT_TRUE(access.IsValid());
+        }
+        EXPECT_EQ(scopeBuffer.m_unmapCount, 1U);
+
+        auto retryAccess = scopeBuffer.MapWriteRange(2, 4);
+        ASSERT_TRUE(retryAccess.IsValid());
+        EXPECT_TRUE(scopeBuffer.CancelMappedWriteRange(std::move(retryAccess)));
+        EXPECT_EQ(scopeBuffer.m_unmapCount, 2U);
+
+        auto owner = std::make_unique<LegacyMappedWriteBuffer>();
+        auto orphanedAccess = owner->MapWriteRange(1, 2);
+        ASSERT_TRUE(orphanedAccess.IsValid());
+        owner.reset();
+        EXPECT_FALSE(orphanedAccess.IsValid());
+        EXPECT_EQ(orphanedAccess.GetData(), nullptr);
+    }
+
+    TEST(RHIContractValidation,
+         FailedRangeCommitAbortsExactlyOnceThenSupportsRetry)
+    {
+        FailingLegacyMappedWriteBuffer buffer;
+        auto failedAccess = buffer.MapWriteRange(2, 4);
+        ASSERT_TRUE(failedAccess.IsValid());
+        EXPECT_FALSE(buffer.CommitMappedWriteRange(
+            std::move(failedAccess)).IsPublished());
+        EXPECT_EQ(buffer.commitCount, 1U);
+        EXPECT_EQ(buffer.m_unmapCount, 1U);
+
+        buffer.failCommit = false;
+        auto retryAccess = buffer.MapWriteRange(2, 4);
+        ASSERT_TRUE(retryAccess.IsValid());
+        EXPECT_TRUE(buffer.CommitMappedWriteRange(
+            std::move(retryAccess)).IsPublished());
+        EXPECT_EQ(buffer.commitCount, 2U);
+        EXPECT_EQ(buffer.m_unmapCount, 2U);
+    }
+
+    TEST(RHIContractValidation,
+         FailedRangeAbortPoisonsOwnerInsteadOfPretendingCleanupSucceeded)
+    {
+        PoisonedCancelMappedWriteBuffer buffer;
+        auto access = buffer.MapWriteRange(1, 2);
+        ASSERT_TRUE(access.IsValid());
+        EXPECT_FALSE(buffer.CancelMappedWriteRange(std::move(access)));
+        EXPECT_EQ(buffer.cancelCount, 1U);
+        EXPECT_FALSE(buffer.MapWriteRange(4, 2).IsValid());
+    }
+
+    TEST(RHIContractValidation,
+         RangeMappedWriteControlPreventsWrongOwnerAndPlacementNewReuse)
+    {
+        LegacyMappedWriteBuffer owner;
+        LegacyMappedWriteBuffer wrongOwner;
+        auto access = owner.MapWriteRange(3, 2);
+        ASSERT_TRUE(access.IsValid());
+        const RHIHostWriteReceipt wrongOwnerReceipt =
+            wrongOwner.CommitMappedWriteRange(std::move(access));
+        EXPECT_FALSE(wrongOwnerReceipt.IsPublished());
+        EXPECT_TRUE(access.IsValid());
+        EXPECT_TRUE(owner.CancelMappedWriteRange(std::move(access)));
+
+        using BufferStorage = std::aligned_storage_t<sizeof(LegacyMappedWriteBuffer),
+                                                      alignof(LegacyMappedWriteBuffer)>;
+        BufferStorage storage;
+        auto* firstOwner = new (&storage) LegacyMappedWriteBuffer();
+        auto staleAccess = firstOwner->MapWriteRange(4, 2);
+        ASSERT_TRUE(staleAccess.IsValid());
+        firstOwner->~LegacyMappedWriteBuffer();
+
+        auto* replacementOwner = new (&storage) LegacyMappedWriteBuffer();
+        EXPECT_FALSE(staleAccess.IsValid());
+        EXPECT_EQ(staleAccess.GetData(), nullptr);
+        EXPECT_FALSE(replacementOwner->CommitMappedWriteRange(
+            std::move(staleAccess)).IsPublished());
+
+        auto replacementAccess = replacementOwner->MapWriteRange(4, 2);
+        ASSERT_TRUE(replacementAccess.IsValid());
+        EXPECT_TRUE(replacementOwner->CancelMappedWriteRange(
+            std::move(replacementAccess)));
+        replacementOwner->~LegacyMappedWriteBuffer();
+    }
 
     TEST(RHIContractValidation, NativeSurfaceRequiresBackendSpecificHandles)
     {
@@ -985,9 +1387,9 @@ namespace RVX::Tests
             ReadSource("Render/Include/Render/RenderSubsystem.h");
         const std::string engine = ReadSource("Engine/Private/Engine.cpp");
         const std::string renderComposition =
-            ReadSource("Engine/Private/RenderRuntimeComposition.cpp");
+            ReadSource("Engine/Private/ECS/EcsRenderRuntimeComposition.cpp");
         const std::string showcase =
-            ReadSource("Samples/Showcase/RenderingShowcase/main.cpp");
+            ReadSource("Samples/RenderVerseSamples/main.cpp");
 
         EXPECT_NE(renderHeader.find("void Configure(const RenderRuntimeConfig& config,"),
                   std::string::npos);
@@ -1002,7 +1404,7 @@ namespace RVX::Tests
             "Resource::ResourceSubsystem>()",
             resourceDependency);
         const size_t inject =
-            engine.find("CreateEngineRenderRuntimeCompositionServices(");
+            engine.find("CreateEngineEcsRenderRuntimeCompositionServices(");
         const size_t initialize =
             engine.find("const bool initialized = m_subsystems.InitializeAll(");
         ASSERT_NE(windowDependency, std::string::npos);
@@ -1629,6 +2031,7 @@ namespace RVX::Tests
         capabilities.supportsAsyncCompute = true;
         EnableIndexedIndirectExecution(capabilities);
         capabilities.supportsTimestampQueries = true;
+        capabilities.timestampFrequency = 1000000000ull;
         capabilities.supportsMemoryBudgetQuery = true;
         capabilities.supportsExplicitHeapManagement = true;
 
@@ -1737,6 +2140,7 @@ namespace RVX::Tests
         capabilities.queueTopology.activeDomainCount = 2;
         EnableIndexedIndirectExecution(capabilities);
         capabilities.supportsTimestampQueries = true;
+        capabilities.timestampFrequency = 1000000000ull;
 
         const FakeRHIDevice device(capabilities);
         const RHICapabilityReport report = device.GetCapabilityReport();

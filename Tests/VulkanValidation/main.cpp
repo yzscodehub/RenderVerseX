@@ -4,23 +4,73 @@
 #include "Render/Context/RenderContext.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/GPUUploadService.h"
+#include "Render/Submission/RasterInstanceStream.h"
 #include "RHI/RHI.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "VulkanCommon.h"
 #include "VulkanDevice.h"
+#include "VulkanResources.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstddef>
+#include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 using namespace RVX;
 
 namespace
 {
+    class LegacyMappedBuffer : public RHIBuffer
+    {
+    public:
+        uint64 GetSize() const override { return m_storage.size(); }
+        RHIBufferUsage GetUsage() const override { return RHIBufferUsage::CopyDst; }
+        RHIMemoryType GetMemoryType() const override { return RHIMemoryType::Upload; }
+        uint32 GetStride() const override { return sizeof(uint32); }
+
+        void* Map() override
+        {
+            ++m_mapCount;
+            return m_storage.data();
+        }
+
+        void Unmap() override
+        {
+            ++m_unmapCount;
+        }
+
+        std::array<uint8, 16> m_storage{};
+        uint32 m_mapCount = 0;
+        uint32 m_unmapCount = 0;
+    };
+
+    class FailingCommitBuffer final : public LegacyMappedBuffer
+    {
+    public:
+        bool CommitMappedWrite() override
+        {
+            ++m_commitCount;
+            if (m_failNextCommit)
+            {
+                m_failNextCommit = false;
+                return false;
+            }
+
+            Unmap();
+            return true;
+        }
+
+        uint32 m_commitCount = 0;
+        bool m_failNextCommit = true;
+    };
+
     RHIShaderRef CompileInlineVulkanGraphicsShader(IRHIDevice& device,
                                                    RHIShaderStage stage,
                                                    const char* entryPoint,
@@ -317,6 +367,62 @@ TEST(VulkanValidation, DeviceCreation)
     auto device = CreateRHIDevice(RHIBackendType::Vulkan, desc);
     RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
     EXPECT_EQ(device->GetBackendType(), RHIBackendType::Vulkan);
+}
+
+TEST(VulkanValidation, DriverIdentityMatchesPhysicalDeviceDriverEvidence)
+{
+    RHIDeviceDesc desc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, desc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(vulkanDevice, nullptr);
+
+    VkPhysicalDeviceDriverProperties driverProperties = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties2 = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    properties2.pNext = &driverProperties;
+    vkGetPhysicalDeviceProperties2(vulkanDevice->GetPhysicalDevice(),
+                                   &properties2);
+    const VkPhysicalDeviceProperties& properties = properties2.properties;
+    ASSERT_GE(properties.apiVersion, VK_API_VERSION_1_3);
+
+    std::string expectedVersion;
+    const auto appendEvidence = [&expectedVersion](const char* label,
+                                                    const std::string& value)
+    {
+        if (value.empty())
+        {
+            return;
+        }
+
+        if (!expectedVersion.empty())
+        {
+            expectedVersion += "; ";
+        }
+        expectedVersion += label;
+        expectedVersion += "=";
+        expectedVersion += value;
+    };
+    appendEvidence("driverName", driverProperties.driverName);
+    appendEvidence("driverInfo", driverProperties.driverInfo);
+    if (properties.driverVersion != 0)
+    {
+        std::array<char, 11> rawDriverVersion = {};
+        std::snprintf(rawDriverVersion.data(),
+                      rawDriverVersion.size(),
+                      "0x%08x",
+                      static_cast<unsigned int>(properties.driverVersion));
+        appendEvidence("rawDriverVersion",
+                       rawDriverVersion.data());
+    }
+
+    ASSERT_FALSE(expectedVersion.empty());
+    const std::string& reportedVersion =
+        device->GetCapabilities().driverVersion;
+    EXPECT_FALSE(reportedVersion.empty());
+    EXPECT_EQ(reportedVersion, expectedVersion);
 }
 
 TEST(VulkanValidation, RayTracingCapabilitiesAreDisabledUntilBackendImplementation)
@@ -754,11 +860,30 @@ TEST(VulkanValidation, NativeIndexedIndirectCommandsRecordOnAvailablePath)
     ASSERT_NE(argumentBuffer.Get(), nullptr);
     ASSERT_NE(countBuffer.Get(), nullptr);
 
+    constexpr uint32 kRenderTargetWidth = 32u;
+    constexpr uint32 kRenderTargetHeight = 32u;
+    constexpr uint32 kReadbackRowPitch = kRenderTargetWidth * 4u;
+    constexpr uint32 kTopWideSampleX = 11u;
+    constexpr uint32 kTopWideSampleY = 10u;
+    constexpr uint32 kMirroredBottomSampleY =
+        kRenderTargetHeight - 1u - kTopWideSampleY;
+
     auto renderTarget = device->CreateTexture(
-        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+        RHITextureDesc::RenderTarget(kRenderTargetWidth,
+                                     kRenderTargetHeight,
+                                     RHIFormat::RGBA8_UNORM));
     ASSERT_NE(renderTarget.Get(), nullptr);
     auto renderTargetView = CreateVulkanRenderTargetView(*device, renderTarget.Get());
     ASSERT_NE(renderTargetView.Get(), nullptr);
+
+    RHIBufferDesc readbackDesc;
+    readbackDesc.size = static_cast<uint64>(kReadbackRowPitch) *
+                        kRenderTargetHeight;
+    readbackDesc.usage = RHIBufferUsage::CopyDst;
+    readbackDesc.memoryType = RHIMemoryType::Readback;
+    readbackDesc.debugName = "VulkanNativeIndexedIndirectReadback";
+    RHIBufferRef readbackBuffer = device->CreateBuffer(readbackDesc);
+    ASSERT_NE(readbackBuffer.Get(), nullptr);
 
     auto context = device->CreateCommandContext(RHICommandQueueType::Graphics);
     auto fence = device->CreateFence(0);
@@ -781,8 +906,13 @@ TEST(VulkanValidation, NativeIndexedIndirectCommandsRecordOnAvailablePath)
     renderPass.AddColorAttachment(renderTargetView.Get(), RHILoadOp::Clear,
                                   RHIStoreOp::Store, {0.0f, 0.0f, 0.0f, 1.0f});
     context->BeginRenderPass(renderPass);
-    context->SetViewport({0.0f, 0.0f, 32.0f, 32.0f, 0.0f, 1.0f});
-    context->SetScissor({0, 0, 32, 32});
+    context->SetViewport({0.0f,
+                          0.0f,
+                          static_cast<float>(kRenderTargetWidth),
+                          static_cast<float>(kRenderTargetHeight),
+                          0.0f,
+                          1.0f});
+    context->SetScissor({0, 0, kRenderTargetWidth, kRenderTargetHeight});
     context->SetPipeline(pipeline.Get());
     context->SetIndexBuffer(indexBuffer.Get(), RHIFormat::R32_UINT);
     context->DrawIndexedIndirect(argumentBuffer.Get(), 0, 1, sizeof(command));
@@ -796,11 +926,406 @@ TEST(VulkanValidation, NativeIndexedIndirectCommandsRecordOnAvailablePath)
                                           sizeof(command));
     }
     context->EndRenderPass();
+    context->TextureBarrier({renderTarget.Get(), RHIResourceState::RenderTarget,
+                             RHIResourceState::CopySource});
+    context->BufferBarrier({readbackBuffer.Get(), RHIResourceState::Common,
+                            RHIResourceState::CopyDest});
+    RHIBufferTextureCopyDesc readbackCopy;
+    readbackCopy.bufferRowPitch = kReadbackRowPitch;
+    readbackCopy.textureRegion = {0, 0, kRenderTargetWidth, kRenderTargetHeight};
+    context->CopyTextureToBuffer(renderTarget.Get(), readbackBuffer.Get(),
+                                 readbackCopy);
+    context->BufferBarrier({readbackBuffer.Get(), RHIResourceState::CopyDest,
+                            RHIResourceState::Common});
     context->End();
 
     const uint64 submittedValue = device->SubmitCommandContext(context.Get(), fence.Get());
     ASSERT_NE(submittedValue, 0u);
     device->WaitForFence(fence.Get(), submittedValue);
+    EXPECT_GE(fence->GetCompletedValue(), submittedValue);
+
+    const auto* readbackPixels =
+        static_cast<const uint8*>(readbackBuffer->Map());
+    ASSERT_NE(readbackPixels, nullptr);
+    const auto* topWidePixel = readbackPixels +
+        static_cast<size_t>(kTopWideSampleY) * kReadbackRowPitch +
+        static_cast<size_t>(kTopWideSampleX) * 4u;
+    const auto* mirroredBottomPixel = readbackPixels +
+        static_cast<size_t>(kMirroredBottomSampleY) * kReadbackRowPitch +
+        static_cast<size_t>(kTopWideSampleX) * 4u;
+
+    // Native Vulkan's positive-height viewport maps clip -Y to top raster
+    // rows, and CopyTextureToBuffer preserves those rows top-to-bottom. The
+    // production fullscreen helper converts the engine's upper-left texture
+    // UV contract to this backend-native raster convention.
+    EXPECT_GT(topWidePixel[1], 128u)
+        << "Expected top-wide sample at (" << kTopWideSampleX << ", "
+        << kTopWideSampleY << ") to be green; observed RGBA=("
+        << static_cast<uint32>(topWidePixel[0]) << ", "
+        << static_cast<uint32>(topWidePixel[1]) << ", "
+        << static_cast<uint32>(topWidePixel[2]) << ", "
+        << static_cast<uint32>(topWidePixel[3]) << ")";
+    EXPECT_GT(topWidePixel[1], topWidePixel[0]);
+    EXPECT_GT(topWidePixel[1], topWidePixel[2]);
+    EXPECT_EQ(topWidePixel[3], 255u);
+    EXPECT_EQ(mirroredBottomPixel[0], 0u)
+        << "Expected vertically mirrored clear sample at ("
+        << kTopWideSampleX << ", " << kMirroredBottomSampleY
+        << "); observed RGBA=(" << static_cast<uint32>(mirroredBottomPixel[0])
+        << ", " << static_cast<uint32>(mirroredBottomPixel[1]) << ", "
+        << static_cast<uint32>(mirroredBottomPixel[2]) << ", "
+        << static_cast<uint32>(mirroredBottomPixel[3]) << ")";
+    EXPECT_EQ(mirroredBottomPixel[1], 0u);
+    EXPECT_EQ(mirroredBottomPixel[2], 0u);
+    EXPECT_EQ(mirroredBottomPixel[3], 255u);
+    readbackBuffer->Unmap();
+    device->WaitIdle();
+
+    const VulkanValidationMessageCounts messagesAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(messagesAfter.errors, messagesBefore.errors);
+    EXPECT_EQ(messagesAfter.warnings, messagesBefore.warnings);
+}
+
+TEST(VulkanValidation,
+     IndexedIndirectCountFirstInstanceRasterMatchesDirectInstanceInput)
+{
+    constexpr uint32 kWidth = 64;
+    constexpr uint32 kHeight = 32;
+    constexpr uint32 kRowPitch = kWidth * 4;
+    constexpr uint32 kFirstInstance = 2;
+
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+    auto* vulkanDevice = dynamic_cast<VulkanDevice*>(device.get());
+    ASSERT_NE(vulkanDevice, nullptr);
+
+    const RHIIndexedIndirectExecutionCapabilities& indirectCapabilities =
+        device->GetCapabilities().indexedIndirectExecution;
+    if (!indirectCapabilities.supportsFirstInstance ||
+        !indirectCapabilities.supportsCountBuffer ||
+        indirectCapabilities.maxDrawCount < 3u)
+    {
+        GTEST_SKIP() << "Vulkan drawIndirectFirstInstance/count support or its "
+                     << "three-draw limit is unavailable; the test intentionally "
+                     << "has no fixed-count fallback.";
+    }
+
+    constexpr const char* kVertexShaderSource = R"(
+        struct VertexInput
+        {
+            uint instanceIndex : INSTANCEINDEX;
+            uint instancePadding : INSTANCEPADDING;
+            uint vertexId : SV_VertexID;
+        };
+        struct VertexOutput
+        {
+            float4 position : SV_Position;
+            nointerpolation float4 color : TEXCOORD0;
+        };
+        VertexOutput VSMain(VertexInput input)
+        {
+            const float2 localPosition = input.vertexId == 0
+                ? float2(-0.17, -0.28)
+                : (input.vertexId == 1
+                    ? float2(0.17, -0.28)
+                    : float2(0.00, 0.28));
+            VertexOutput output;
+            if (input.instanceIndex == 2u)
+            {
+                output.position = float4(localPosition + float2(-0.45, 0.0),
+                                         0.0,
+                                         1.0);
+                output.color = float4(1.0, 0.0, 0.0, 1.0);
+            }
+            else if (input.instanceIndex == 3u)
+            {
+                output.position = float4(localPosition + float2(0.45, 0.0),
+                                         0.0,
+                                         1.0);
+                output.color = float4(0.0, 1.0, 0.0, 1.0);
+            }
+            else if (input.instanceIndex == 4u)
+            {
+                // This row belongs to the second command in both paths. Its
+                // center pixel proves the indirect command stride selected the
+                // intended second payload rather than an adjacent field.
+                output.position = float4(localPosition, 0.0, 1.0);
+                output.color = float4(0.0, 0.0, 1.0, 1.0);
+            }
+            else if (input.instanceIndex == 5u)
+            {
+                // This row belongs only to the third indirect command. A
+                // correct count of two must never expose it.
+                output.position = float4(localPosition + float2(0.0, 0.60),
+                                         0.0,
+                                         1.0);
+                output.color = float4(1.0, 0.0, 1.0, 1.0);
+            }
+            else
+            {
+                // The two rows before firstInstance are deliberate sentinels.
+                // A backend that ignores firstInstance therefore cannot paint
+                // either required foreground sample below.
+                output.position = float4(4.0, 4.0, 0.0, 1.0);
+                output.color = float4(0.0, 0.0, 1.0, 1.0);
+            }
+            if (input.instancePadding != 0u)
+            {
+                // The fixture initializes this production-ABI padding to zero.
+                // A non-zero value must be visibly wrong, so the compiler keeps
+                // the second slot-6 attribute live and validates the full stride.
+                output.position = float4(localPosition + float2(0.0, -0.60),
+                                         0.0,
+                                         1.0);
+                output.color = float4(1.0, 1.0, 0.0, 1.0);
+            }
+            return output;
+        }
+    )";
+    constexpr const char* kPixelShaderSource = R"(
+        struct VertexOutput
+        {
+            float4 position : SV_Position;
+            nointerpolation float4 color : TEXCOORD0;
+        };
+        float4 PSMain(VertexOutput input) : SV_Target0
+        {
+            return input.color * saturate(input.position.w);
+        }
+    )";
+
+    RHIShaderRef vertexShader = CompileInlineVulkanGraphicsShader(
+        *device, RHIShaderStage::Vertex, "VSMain", kVertexShaderSource,
+        "vs_6_0", "VulkanFirstInstanceParityVS");
+    RHIShaderRef pixelShader = CompileInlineVulkanGraphicsShader(
+        *device, RHIShaderStage::Pixel, "PSMain", kPixelShaderSource,
+        "ps_6_0", "VulkanFirstInstanceParityPS");
+    ASSERT_NE(vertexShader.Get(), nullptr);
+    ASSERT_NE(pixelShader.Get(), nullptr);
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "VulkanFirstInstanceParityLayout";
+    RHIPipelineLayoutRef pipelineLayout = device->CreatePipelineLayout(layoutDesc);
+    ASSERT_NE(pipelineLayout.Get(), nullptr);
+
+    RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader = vertexShader.Get();
+    pipelineDesc.pixelShader = pixelShader.Get();
+    pipelineDesc.pipelineLayout = pipelineLayout.Get();
+    pipelineDesc.inputLayout.AddElement("INSTANCEINDEX", RHIFormat::R32_UINT, 6);
+    pipelineDesc.inputLayout.elements.back().alignedByteOffset =
+        static_cast<uint32>(offsetof(GPUInstanceData, sourceIndex));
+    pipelineDesc.inputLayout.elements.back().perInstance = true;
+    pipelineDesc.inputLayout.elements.back().instanceDataStepRate = 1;
+    // Keep the Vulkan binding stride equal to the production GPUInstanceData
+    // ABI instead of reducing it to sourceIndex's field end at byte 200.
+    pipelineDesc.inputLayout.AddElement("INSTANCEPADDING", RHIFormat::R32_UINT, 6);
+    pipelineDesc.inputLayout.elements.back().alignedByteOffset =
+        static_cast<uint32>(offsetof(GPUInstanceData, padding) + sizeof(uint32));
+    pipelineDesc.inputLayout.elements.back().perInstance = true;
+    pipelineDesc.inputLayout.elements.back().instanceDataStepRate = 1;
+    pipelineDesc.rasterizerState = RHIRasterizerState::NoCull();
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = RHIFormat::RGBA8_UNORM;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+    pipelineDesc.debugName = "VulkanFirstInstanceParityPipeline";
+    RHIPipelineRef pipeline = device->CreateGraphicsPipeline(pipelineDesc);
+    ASSERT_NE(pipeline.Get(), nullptr);
+
+    const std::array<uint32, 3> indices{0u, 1u, 2u};
+    const std::array<GPUInstanceData, 6> instanceRows = []
+    {
+        std::array<GPUInstanceData, 6> rows{};
+        rows[0].sourceIndex = 0xA11CE001u;
+        rows[1].sourceIndex = 0xA11CE002u;
+        rows[2].sourceIndex = 2u;
+        rows[3].sourceIndex = 3u;
+        rows[4].sourceIndex = 4u;
+        rows[5].sourceIndex = 5u;
+        return rows;
+    }();
+    auto indexBuffer = CreateVulkanUploadBuffer(
+        *device, RHIBufferUsage::Index, sizeof(uint32), indices.data(),
+        sizeof(indices), "VulkanFirstInstanceParityIndices");
+    auto instanceBuffer = CreateVulkanUploadBuffer(
+        *device, RHIBufferUsage::Vertex, sizeof(GPUInstanceData),
+        instanceRows.data(), sizeof(instanceRows),
+        "VulkanFirstInstanceParityGPUInstanceData");
+
+    struct IndirectArgumentPayload
+    {
+        uint32 prefix = 0u;
+        IndirectDrawIndexedCommand command{3u, 2u, 0u, 0, kFirstInstance};
+        IndirectDrawIndexedCommand visibleSentinel{3u, 1u, 0u, 0, 4u};
+        IndirectDrawIndexedCommand overflowSentinel{3u, 1u, 0u, 0, 5u};
+    };
+    static_assert(offsetof(IndirectArgumentPayload, command) == sizeof(uint32));
+    static_assert(offsetof(IndirectArgumentPayload, visibleSentinel) ==
+                  sizeof(uint32) + sizeof(IndirectDrawIndexedCommand));
+    static_assert(offsetof(IndirectArgumentPayload, overflowSentinel) ==
+                  sizeof(uint32) + 2u * sizeof(IndirectDrawIndexedCommand));
+    const IndirectArgumentPayload argumentPayload;
+    // argumentOffset zero decodes indexCount = 0 from prefix, so it cannot
+    // paint. countOffset = sizeof(uint32) selects the first two real commands;
+    // ignoring it reaches overflowSentinel.
+    const std::array<uint32, 2> countPayload{0u, 2u};
+    auto argumentBuffer = CreateVulkanUploadBuffer(
+        *device, RHIBufferUsage::IndirectArgs,
+        sizeof(IndirectDrawIndexedCommand), &argumentPayload,
+        sizeof(argumentPayload), "VulkanFirstInstanceParityArguments");
+    auto countBuffer = CreateVulkanUploadBuffer(
+        *device, RHIBufferUsage::IndirectArgs, sizeof(uint32),
+        countPayload.data(), sizeof(countPayload),
+        "VulkanFirstInstanceParityCount");
+
+    const auto createTarget = [device = device.get()](const char* name)
+    {
+        RHITextureDesc desc = RHITextureDesc::Texture2D(
+            kWidth, kHeight, RHIFormat::RGBA8_UNORM,
+            RHITextureUsage::RenderTarget | RHITextureUsage::CopySrc);
+        desc.debugName = name;
+        return device->CreateTexture(desc);
+    };
+    RHITextureRef directTarget = createTarget("VulkanFirstInstanceParityDirectTarget");
+    RHITextureRef indirectTarget = createTarget("VulkanFirstInstanceParityIndirectTarget");
+    RHITextureViewRef directTargetView =
+        CreateVulkanRenderTargetView(*device, directTarget.Get());
+    RHITextureViewRef indirectTargetView =
+        CreateVulkanRenderTargetView(*device, indirectTarget.Get());
+    RHIBufferDesc readbackDesc;
+    readbackDesc.size = static_cast<uint64>(kRowPitch) * kHeight;
+    readbackDesc.usage = RHIBufferUsage::CopyDst;
+    readbackDesc.memoryType = RHIMemoryType::Readback;
+    readbackDesc.debugName = "VulkanFirstInstanceParityReadback";
+    RHIBufferRef directReadback = device->CreateBuffer(readbackDesc);
+    RHIBufferRef indirectReadback = device->CreateBuffer(readbackDesc);
+    ASSERT_NE(indexBuffer.Get(), nullptr);
+    ASSERT_NE(instanceBuffer.Get(), nullptr);
+    ASSERT_NE(argumentBuffer.Get(), nullptr);
+    ASSERT_NE(countBuffer.Get(), nullptr);
+    ASSERT_NE(directTarget.Get(), nullptr);
+    ASSERT_NE(indirectTarget.Get(), nullptr);
+    ASSERT_NE(directTargetView.Get(), nullptr);
+    ASSERT_NE(indirectTargetView.Get(), nullptr);
+    ASSERT_NE(directReadback.Get(), nullptr);
+    ASSERT_NE(indirectReadback.Get(), nullptr);
+
+    auto context = device->CreateCommandContext(RHICommandQueueType::Graphics);
+    auto fence = device->CreateFence(0);
+    ASSERT_NE(context.Get(), nullptr);
+    ASSERT_NE(fence.Get(), nullptr);
+
+    const VulkanValidationMessageCounts messagesBefore =
+        vulkanDevice->GetValidationMessageCounts();
+    context->Begin();
+    context->BufferBarrier(
+        {instanceBuffer.Get(), RHIResourceState::Common,
+         RHIResourceState::VertexBuffer});
+    context->BufferBarrier(
+        {indexBuffer.Get(), RHIResourceState::Common, RHIResourceState::IndexBuffer});
+    context->BufferBarrier(
+        {argumentBuffer.Get(), RHIResourceState::Common,
+         RHIResourceState::IndirectArgument});
+    context->BufferBarrier(
+        {countBuffer.Get(), RHIResourceState::Common,
+         RHIResourceState::IndirectArgument});
+
+    const auto beginTarget = [&context, &pipeline, &indexBuffer, &instanceBuffer](
+                                 RHITexture* target,
+                                 RHITextureView* targetView)
+    {
+        context->TextureBarrier(
+            {target, RHIResourceState::Undefined, RHIResourceState::RenderTarget});
+        RHIRenderPassDesc renderPass;
+        renderPass.AddColorAttachment(targetView, RHILoadOp::Clear,
+                                      RHIStoreOp::Store,
+                                      {0.0f, 0.0f, 0.0f, 1.0f});
+        context->BeginRenderPass(renderPass);
+        context->SetViewport({0.0f, 0.0f, static_cast<float>(kWidth),
+                              static_cast<float>(kHeight), 0.0f, 1.0f});
+        context->SetScissor({0, 0, kWidth, kHeight});
+        context->SetPipeline(pipeline.Get());
+        context->SetVertexBuffer(6, instanceBuffer.Get());
+        context->SetIndexBuffer(indexBuffer.Get(), RHIFormat::R32_UINT);
+    };
+
+    beginTarget(directTarget.Get(), directTargetView.Get());
+    context->DrawIndexed(3, 2, 0, 0, kFirstInstance);
+    context->DrawIndexed(3, 1, 0, 0, 4u);
+    context->EndRenderPass();
+    context->TextureBarrier(
+        {directTarget.Get(), RHIResourceState::RenderTarget,
+         RHIResourceState::CopySource});
+
+    beginTarget(indirectTarget.Get(), indirectTargetView.Get());
+    context->DrawIndexedIndirectCount(
+        argumentBuffer.Get(), offsetof(IndirectArgumentPayload, command),
+        countBuffer.Get(), sizeof(uint32), 3,
+        sizeof(IndirectDrawIndexedCommand));
+    context->EndRenderPass();
+    context->TextureBarrier(
+        {indirectTarget.Get(), RHIResourceState::RenderTarget,
+         RHIResourceState::CopySource});
+
+    context->BufferBarrier(
+        {directReadback.Get(), RHIResourceState::Common, RHIResourceState::CopyDest});
+    context->BufferBarrier(
+        {indirectReadback.Get(), RHIResourceState::Common,
+         RHIResourceState::CopyDest});
+    RHIBufferTextureCopyDesc copyDesc;
+    copyDesc.bufferRowPitch = kRowPitch;
+    copyDesc.textureRegion = {0, 0, kWidth, kHeight};
+    context->CopyTextureToBuffer(directTarget.Get(), directReadback.Get(), copyDesc);
+    context->CopyTextureToBuffer(indirectTarget.Get(), indirectReadback.Get(), copyDesc);
+    context->BufferBarrier(
+        {directReadback.Get(), RHIResourceState::CopyDest, RHIResourceState::Common});
+    context->BufferBarrier(
+        {indirectReadback.Get(), RHIResourceState::CopyDest, RHIResourceState::Common});
+    context->End();
+
+    const uint64 submittedValue = device->SubmitCommandContext(context.Get(), fence.Get());
+    ASSERT_NE(submittedValue, 0u);
+    device->WaitForFence(fence.Get(), submittedValue);
+    ASSERT_GE(fence->GetCompletedValue(), submittedValue);
+
+    const auto* directPixels =
+        static_cast<const uint8*>(directReadback->Map());
+    const auto* indirectPixels =
+        static_cast<const uint8*>(indirectReadback->Map());
+    ASSERT_NE(directPixels, nullptr);
+    ASSERT_NE(indirectPixels, nullptr);
+    EXPECT_EQ(std::memcmp(directPixels, indirectPixels,
+                          static_cast<size_t>(readbackDesc.size)),
+              0);
+
+    const auto pixelAt = [](const uint8* pixels, uint32 x, uint32 y)
+    {
+        return pixels + static_cast<size_t>(y) * kRowPitch +
+            static_cast<size_t>(x) * 4u;
+    };
+    const uint8* redForeground = pixelAt(directPixels, 18u, 16u);
+    const uint8* greenForeground = pixelAt(directPixels, 46u, 16u);
+    const uint8* blueSecondCommand = pixelAt(directPixels, 32u, 16u);
+    const uint8* clearBackground = pixelAt(directPixels, 32u, 2u);
+    EXPECT_GT(redForeground[0], 200u);
+    EXPECT_LT(redForeground[1], 32u);
+    EXPECT_GT(greenForeground[1], 200u);
+    EXPECT_LT(greenForeground[0], 32u);
+    EXPECT_LT(blueSecondCommand[0], 32u);
+    EXPECT_LT(blueSecondCommand[1], 32u);
+    EXPECT_GT(blueSecondCommand[2], 200u);
+    EXPECT_EQ(blueSecondCommand[3], 255u);
+    EXPECT_EQ(clearBackground[0], 0u);
+    EXPECT_EQ(clearBackground[1], 0u);
+    EXPECT_EQ(clearBackground[2], 0u);
+    EXPECT_EQ(clearBackground[3], 255u);
+    directReadback->Unmap();
+    indirectReadback->Unmap();
     device->WaitIdle();
 
     const VulkanValidationMessageCounts messagesAfter =
@@ -902,6 +1427,36 @@ TEST(VulkanValidation, BufferCreation)
     EXPECT_EQ(buffer->GetSize(), 1024u);
 }
 
+TEST(VulkanValidation, RHIBufferUploadUsesObservableCommitAndPreflightsBounds)
+{
+    LegacyMappedBuffer legacyBuffer;
+    const std::array<uint32, 2> source = {0x10203040U, 0x50607080U};
+
+    EXPECT_TRUE(legacyBuffer.Upload(source.data(), source.size()));
+    EXPECT_EQ(legacyBuffer.m_mapCount, 1u);
+    EXPECT_EQ(legacyBuffer.m_unmapCount, 1u);
+    EXPECT_EQ(0, std::memcmp(legacyBuffer.m_storage.data(), source.data(),
+                             sizeof(source)));
+
+    EXPECT_FALSE(legacyBuffer.Upload(source.data(), source.size(), 12));
+    EXPECT_FALSE(legacyBuffer.Upload(source.data(),
+                                     std::numeric_limits<uint64>::max()));
+    EXPECT_FALSE(legacyBuffer.Upload<uint32>(nullptr, 1));
+    EXPECT_TRUE(legacyBuffer.Upload<uint32>(nullptr, 0));
+    EXPECT_EQ(legacyBuffer.m_mapCount, 1u);
+    EXPECT_EQ(legacyBuffer.m_unmapCount, 1u);
+
+    FailingCommitBuffer failingBuffer;
+    EXPECT_FALSE(failingBuffer.Upload(source.data(), source.size()));
+    EXPECT_EQ(failingBuffer.m_mapCount, 1u);
+    EXPECT_EQ(failingBuffer.m_commitCount, 1u);
+    EXPECT_EQ(failingBuffer.m_unmapCount, 1u);
+    EXPECT_TRUE(failingBuffer.Upload(source.data(), source.size()));
+    EXPECT_EQ(failingBuffer.m_mapCount, 2u);
+    EXPECT_EQ(failingBuffer.m_commitCount, 2u);
+    EXPECT_EQ(failingBuffer.m_unmapCount, 2u);
+}
+
 TEST(VulkanValidation, UploadBuffer)
 {
     RHIDeviceDesc deviceDesc;
@@ -917,12 +1472,544 @@ TEST(VulkanValidation, UploadBuffer)
     auto buffer = device->CreateBuffer(bufferDesc);
     ASSERT_NE(nullptr, buffer.Get());
 
+    float testData[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    EXPECT_TRUE(buffer->Upload(testData, sizeof(testData) / sizeof(testData[0])));
+
     void* mappedData = buffer->Map();
     ASSERT_NE(nullptr, mappedData);
-
-    float testData[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     std::memcpy(mappedData, testData, sizeof(testData));
+    EXPECT_TRUE(buffer->CommitMappedWrite());
+    EXPECT_TRUE(buffer->CommitMappedWrite()); // A completed commit is idempotent.
+}
+
+TEST(VulkanValidation, RangeMappedWriteReportsActualHostVisibility)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 64;
+    bufferDesc.usage = RHIBufferUsage::CopySrc;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    bufferDesc.debugName = "VulkanRangeMappedWrite";
+    RHIBufferRef buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(buffer.Get(), nullptr);
+
+    void* legacyAccess = buffer->Map();
+    ASSERT_NE(legacyAccess, nullptr);
+    EXPECT_FALSE(buffer->MapWriteRange(4, 4).IsValid());
+    EXPECT_TRUE(buffer->CommitMappedWrite());
+
+    EXPECT_FALSE(buffer->MapWriteRange(0, 0).IsValid());
+    EXPECT_FALSE(buffer->MapWriteRange(60, 8).IsValid());
+    auto access = buffer->MapWriteRange(12, 8);
+    ASSERT_TRUE(access.IsValid());
+    std::memset(access.GetData(), 0xA5, static_cast<size_t>(access.GetSize()));
+    EXPECT_FALSE(buffer->MapWriteRange(24, 4).IsValid());
+    EXPECT_EQ(buffer->Map(), nullptr);
     buffer->Unmap();
+    EXPECT_FALSE(buffer->CommitMappedWrite());
+
+    const RHIHostWriteReceipt receipt =
+        buffer->CommitMappedWriteRange(std::move(access));
+    EXPECT_TRUE(receipt.IsPublished());
+    EXPECT_EQ(receipt.cpuWriteOffset, 12U);
+    EXPECT_EQ(receipt.cpuWriteSize, 8U);
+    if (receipt.synchronization ==
+        RHIHostWriteSynchronization::CoherentNoExplicitSync)
+    {
+        EXPECT_FALSE(receipt.HasSynchronizedRange());
+        EXPECT_EQ(receipt.synchronizedSize, 0U);
+    }
+    else
+    {
+        EXPECT_TRUE(receipt.synchronization ==
+                        RHIHostWriteSynchronization::AtomAlignedRange ||
+                    receipt.synchronization ==
+                        RHIHostWriteSynchronization::WholeAllocation);
+        EXPECT_TRUE(receipt.HasSynchronizedRange());
+    }
+    EXPECT_FALSE(buffer->CommitMappedWriteRange(std::move(access)).IsPublished());
+
+    auto cancelledAccess = buffer->MapWriteRange(24, 4);
+    ASSERT_TRUE(cancelledAccess.IsValid());
+    EXPECT_TRUE(buffer->CancelMappedWriteRange(std::move(cancelledAccess)));
+    auto retryAccess = buffer->MapWriteRange(24, 4);
+    ASSERT_TRUE(retryAccess.IsValid());
+    EXPECT_TRUE(buffer->CommitMappedWriteRange(std::move(retryAccess)).IsPublished());
+
+    RHIStagingBufferDesc stagingDesc;
+    stagingDesc.size = 64;
+    stagingDesc.debugName = "VulkanRangeMappedStaging";
+    RHIStagingBufferRef staging = device->CreateStagingBuffer(stagingDesc);
+    ASSERT_NE(staging.Get(), nullptr);
+    void* legacyStagingAccess = staging->Map(0, 4);
+    ASSERT_NE(legacyStagingAccess, nullptr);
+    EXPECT_FALSE(staging->MapWriteRange(4, 4).IsValid());
+    EXPECT_TRUE(staging->CommitMappedWrite());
+    auto stagingAccess = staging->MapWriteRange(16, 12);
+    ASSERT_TRUE(stagingAccess.IsValid());
+    std::memset(stagingAccess.GetData(), 0x5A,
+                static_cast<size_t>(stagingAccess.GetSize()));
+    EXPECT_EQ(staging->Map(0, 4), nullptr);
+    staging->Unmap();
+    EXPECT_FALSE(staging->CommitMappedWrite());
+    const RHIHostWriteReceipt stagingReceipt =
+        staging->CommitMappedWriteRange(std::move(stagingAccess));
+    EXPECT_TRUE(stagingReceipt.IsPublished());
+    EXPECT_EQ(stagingReceipt.synchronization,
+              RHIHostWriteSynchronization::CoherentNoExplicitSync);
+    EXPECT_FALSE(stagingReceipt.HasSynchronizedRange());
+    EXPECT_EQ(stagingReceipt.synchronizedSize, 0U);
+}
+
+TEST(VulkanValidation, StagingCommitWriteRejectsInvalidAccessAndEndsMappedAccess)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    RHIStagingBufferDesc desc;
+    desc.size = 64;
+    desc.debugName = "VulkanStagingCommitContract";
+    RHIStagingBufferRef staging = device->CreateStagingBuffer(desc);
+    ASSERT_NE(staging.Get(), nullptr);
+
+    EXPECT_FALSE(staging->CommitMappedWrite());
+    void* mapped = staging->Map(0, 16);
+    ASSERT_NE(mapped, nullptr);
+    std::memset(mapped, 0xAB, 16);
+    EXPECT_TRUE(staging->CommitMappedWrite());
+    EXPECT_FALSE(staging->CommitMappedWrite());
+}
+
+TEST(VulkanValidation, StagingMapUsesAllocationBaseForUnalignedSubranges)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
+    const VulkanValidationMessageCounts validationBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    const std::array<uint8, 4> sourceData = {0x12U, 0x34U, 0x56U, 0x78U};
+    RHIStagingBufferDesc stagingDesc;
+    stagingDesc.size = 64;
+    stagingDesc.debugName = "VulkanUnalignedStagingMap";
+    RHIStagingBufferRef staging = device->CreateStagingBuffer(stagingDesc);
+    ASSERT_NE(staging.Get(), nullptr);
+
+    void* mappedData = staging->Map(1, sourceData.size());
+    ASSERT_NE(mappedData, nullptr);
+    std::memcpy(mappedData, sourceData.data(), sourceData.size());
+    ASSERT_TRUE(staging->CommitMappedWrite());
+
+    RHIBufferDesc readbackDesc;
+    readbackDesc.size = stagingDesc.size;
+    readbackDesc.usage = RHIBufferUsage::CopyDst;
+    readbackDesc.memoryType = RHIMemoryType::Readback;
+    readbackDesc.debugName = "VulkanUnalignedStagingReadback";
+    RHIBufferRef readback = device->CreateBuffer(readbackDesc);
+    ASSERT_NE(readback.Get(), nullptr);
+
+    RHIBuffer* stagingBuffer = staging->GetBuffer();
+    ASSERT_NE(stagingBuffer, nullptr);
+    RHICommandContextRef context =
+        device->CreateCommandContext(RHICommandQueueType::Copy);
+    ASSERT_NE(context.Get(), nullptr);
+    context->Begin();
+    context->BufferBarrier(stagingBuffer,
+                           RHIResourceState::Common,
+                           RHIResourceState::CopySource);
+    context->BufferBarrier(readback.Get(),
+                           RHIResourceState::Common,
+                           RHIResourceState::CopyDest);
+    context->CopyBuffer(stagingBuffer,
+                        readback.Get(),
+                        1,
+                        1,
+                        sourceData.size());
+    context->BufferBarrier(readback.Get(),
+                           RHIResourceState::CopyDest,
+                           RHIResourceState::Common);
+    context->End();
+
+    RHIFenceRef completionFence = device->CreateFence(0);
+    ASSERT_NE(completionFence.Get(), nullptr);
+    const uint64 completionValue =
+        device->SubmitCommandContext(context.Get(), completionFence.Get());
+    ASSERT_NE(completionValue, 0U);
+    device->WaitForFence(completionFence.Get(), completionValue);
+
+    const auto* readbackData = static_cast<const uint8*>(readback->Map());
+    ASSERT_NE(readbackData, nullptr);
+    EXPECT_EQ(0, std::memcmp(readbackData + 1,
+                             sourceData.data(),
+                             sourceData.size()));
+    readback->Unmap();
+
+    device->WaitIdle();
+    const VulkanValidationMessageCounts validationAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(validationAfter.errors, validationBefore.errors);
+    EXPECT_EQ(validationAfter.warnings, validationBefore.warnings);
+}
+
+TEST(VulkanValidation, HostMemorySynchronizationContract)
+{
+    EXPECT_EQ(GetVulkanHostMemorySynchronization(RHIMemoryType::Default),
+              VulkanHostMemorySynchronization::None);
+    EXPECT_EQ(GetVulkanHostMemorySynchronization(RHIMemoryType::Upload),
+              VulkanHostMemorySynchronization::Flush);
+    EXPECT_EQ(GetVulkanHostMemorySynchronization(RHIMemoryType::Readback),
+              VulkanHostMemorySynchronization::Invalidate);
+
+    const VulkanMappedMemoryRange alignedRange = MakeVulkanMappedMemoryRange(
+        130, 10, 1024, 64, 64);
+    EXPECT_TRUE(alignedRange.valid);
+    EXPECT_EQ(alignedRange.offset, 128u);
+    EXPECT_EQ(alignedRange.size, 64u);
+    EXPECT_EQ(alignedRange.resourceOffset, 2u);
+
+    const VulkanMappedMemoryRange tailRange = MakeVulkanMappedMemoryRange(
+        960, 40, 1000, 64, 64);
+    EXPECT_TRUE(tailRange.valid);
+    EXPECT_EQ(tailRange.offset, 960u);
+    EXPECT_EQ(tailRange.size, VK_WHOLE_SIZE);
+    EXPECT_EQ(tailRange.resourceOffset, 0u);
+
+    const VulkanMappedMemoryRange unalignedTailRange =
+        MakeVulkanMappedMemoryRange(130, 870, 1000, 64, 64);
+    EXPECT_TRUE(unalignedTailRange.valid);
+    EXPECT_EQ(unalignedTailRange.offset, 128u);
+    EXPECT_EQ(unalignedTailRange.size, VK_WHOLE_SIZE);
+    EXPECT_EQ(unalignedTailRange.resourceOffset, 2u);
+
+    const VulkanMappedMemoryRange mapAlignedRange = MakeVulkanMappedMemoryRange(
+        130, 10, 1024, 64, 256);
+    EXPECT_TRUE(mapAlignedRange.valid);
+    EXPECT_EQ(mapAlignedRange.offset, 0u);
+    EXPECT_EQ(mapAlignedRange.size, 256u);
+    EXPECT_EQ(mapAlignedRange.resourceOffset, 130u);
+
+    EXPECT_FALSE(MakeVulkanMappedMemoryRange(1000, 1, 1000, 64, 64).valid);
+    EXPECT_FALSE(MakeVulkanMappedMemoryRange(960, 41, 1000, 64, 64).valid);
+
+    const VulkanMappedMemoryRange atomAlignedRange =
+        MakeVulkanHostWriteSynchronizationRange(128, 5, 10, 1024, 64);
+    EXPECT_TRUE(atomAlignedRange.valid);
+    EXPECT_EQ(atomAlignedRange.offset, 128U);
+    EXPECT_EQ(atomAlignedRange.size, 64U);
+    EXPECT_EQ(atomAlignedRange.resourceOffset, 5U);
+
+    const VulkanMappedMemoryRange tailSynchronizationRange =
+        MakeVulkanHostWriteSynchronizationRange(960, 0, 40, 1000, 64);
+    EXPECT_TRUE(tailSynchronizationRange.valid);
+    EXPECT_EQ(tailSynchronizationRange.offset, 960U);
+    EXPECT_EQ(tailSynchronizationRange.size, VK_WHOLE_SIZE);
+    EXPECT_EQ(GetVulkanMappedMemoryRangeCoveredSize(tailSynchronizationRange, 1000),
+              40U);
+    EXPECT_FALSE(DoesVulkanMappedMemoryRangeCoverWholeAllocation(
+        tailSynchronizationRange, 1000));
+
+    const VulkanMappedMemoryRange fullAllocationRange =
+        MakeVulkanHostWriteSynchronizationRange(0, 0, 1000, 1000, 64);
+    EXPECT_TRUE(fullAllocationRange.valid);
+    EXPECT_EQ(fullAllocationRange.offset, 0U);
+    EXPECT_EQ(fullAllocationRange.size, VK_WHOLE_SIZE);
+    EXPECT_EQ(GetVulkanMappedMemoryRangeCoveredSize(fullAllocationRange, 1000),
+              1000U);
+    EXPECT_TRUE(DoesVulkanMappedMemoryRangeCoverWholeAllocation(
+        fullAllocationRange, 1000));
+    EXPECT_FALSE(MakeVulkanHostWriteSynchronizationRange(1000, 0, 1, 1000, 64).valid);
+}
+
+TEST(VulkanValidation, HostVisibleBufferRoundTrip)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
+    const VulkanValidationMessageCounts validationBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    const std::array<uint32, 4> sourceData = {0x1U, 0x2345U, 0x6789U, 0xABCDEFU};
+    RHIBufferDesc uploadDesc;
+    uploadDesc.size = sizeof(sourceData);
+    uploadDesc.usage = RHIBufferUsage::CopySrc;
+    uploadDesc.memoryType = RHIMemoryType::Upload;
+    uploadDesc.stride = sizeof(uint32);
+    uploadDesc.debugName = "HostVisibleUpload";
+    RHIBufferRef upload = device->CreateBuffer(uploadDesc);
+    ASSERT_NE(upload.Get(), nullptr);
+
+    void* uploadData = upload->Map();
+    ASSERT_NE(uploadData, nullptr);
+    std::memcpy(uploadData, sourceData.data(), sizeof(sourceData));
+    upload->Unmap();
+    upload->Unmap(); // A completed persistent Map()/Unmap() pair is idempotent.
+
+    RHIBufferDesc readbackDesc;
+    readbackDesc.size = sizeof(sourceData);
+    readbackDesc.usage = RHIBufferUsage::CopyDst;
+    readbackDesc.memoryType = RHIMemoryType::Readback;
+    readbackDesc.stride = sizeof(uint32);
+    readbackDesc.debugName = "HostVisibleReadback";
+    RHIBufferRef readback = device->CreateBuffer(readbackDesc);
+    ASSERT_NE(readback.Get(), nullptr);
+
+    RHICommandContextRef context =
+        device->CreateCommandContext(RHICommandQueueType::Copy);
+    ASSERT_NE(context.Get(), nullptr);
+    context->Begin();
+    context->BufferBarrier(upload.Get(),
+                           RHIResourceState::Common,
+                           RHIResourceState::CopySource);
+    context->BufferBarrier(readback.Get(),
+                           RHIResourceState::Common,
+                           RHIResourceState::CopyDest);
+    context->CopyBuffer(upload.Get(), readback.Get(), 0, 0, sizeof(sourceData));
+    context->BufferBarrier(readback.Get(),
+                           RHIResourceState::CopyDest,
+                           RHIResourceState::Common);
+    context->End();
+
+    RHIFenceRef completionFence = device->CreateFence(0);
+    ASSERT_NE(completionFence.Get(), nullptr);
+    const uint64 completionValue =
+        device->SubmitCommandContext(context.Get(), completionFence.Get());
+    ASSERT_NE(completionValue, 0u);
+    device->WaitForFence(completionFence.Get(), completionValue);
+
+    const void* readbackData = readback->Map();
+    ASSERT_NE(readbackData, nullptr);
+    EXPECT_EQ(0, std::memcmp(readbackData, sourceData.data(), sizeof(sourceData)));
+    readback->Unmap();
+    readback->Unmap(); // A completed on-demand mapping must not be unmapped twice.
+
+    device->WaitIdle();
+    const VulkanValidationMessageCounts validationAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(validationAfter.errors, validationBefore.errors);
+    EXPECT_EQ(validationAfter.warnings, validationBefore.warnings);
+}
+
+TEST(VulkanValidation, PlacedHostVisibleBuffersShareTheirHeapMapping)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
+    const VulkanValidationMessageCounts validationBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::CopySrc | RHIBufferUsage::CopyDst;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    bufferDesc.stride = sizeof(uint32);
+    const IRHIDevice::MemoryRequirements requirements =
+        device->GetBufferMemoryRequirements(bufferDesc);
+    ASSERT_NE(requirements.size, 0u);
+    ASSERT_NE(requirements.alignment, 0u);
+
+    const uint64 firstOffset = 0;
+    const uint64 secondOffset =
+        ((requirements.size + requirements.alignment - 1) / requirements.alignment) *
+        requirements.alignment;
+    ASSERT_GT(secondOffset, firstOffset);
+
+    RHIHeapDesc uploadHeapDesc;
+    uploadHeapDesc.size = secondOffset + requirements.size;
+    uploadHeapDesc.type = RHIHeapType::Upload;
+    uploadHeapDesc.flags = RHIHeapFlags::AllowBuffers;
+    uploadHeapDesc.debugName = "PlacedUploadHeap";
+    RHIHeapRef uploadHeap = device->CreateHeap(uploadHeapDesc);
+    ASSERT_NE(uploadHeap.Get(), nullptr);
+
+    RHIBufferRef firstUpload =
+        device->CreatePlacedBuffer(uploadHeap.Get(), firstOffset, bufferDesc);
+    RHIBufferRef secondUpload =
+        device->CreatePlacedBuffer(uploadHeap.Get(), secondOffset, bufferDesc);
+    ASSERT_NE(firstUpload.Get(), nullptr);
+    ASSERT_NE(secondUpload.Get(), nullptr);
+
+    auto firstUploadAccess = firstUpload->MapWriteRange(16, sizeof(uint32));
+    auto secondUploadAccess = secondUpload->MapWriteRange(16, sizeof(uint32));
+    ASSERT_TRUE(firstUploadAccess.IsValid());
+    ASSERT_TRUE(secondUploadAccess.IsValid());
+    EXPECT_NE(firstUploadAccess.GetData(), secondUploadAccess.GetData());
+    EXPECT_EQ(static_cast<uint8*>(secondUploadAccess.GetData()) -
+                  static_cast<uint8*>(firstUploadAccess.GetData()),
+              static_cast<ptrdiff_t>(secondOffset - firstOffset));
+
+    *static_cast<uint32*>(firstUploadAccess.GetData()) = 0x12345678U;
+    *static_cast<uint32*>(secondUploadAccess.GetData()) = 0x87654321U;
+    const RHIHostWriteReceipt firstUploadReceipt =
+        firstUpload->CommitMappedWriteRange(std::move(firstUploadAccess));
+    const RHIHostWriteReceipt secondUploadReceipt =
+        secondUpload->CommitMappedWriteRange(std::move(secondUploadAccess));
+    EXPECT_EQ(firstUploadReceipt.synchronization,
+              RHIHostWriteSynchronization::CoherentNoExplicitSync);
+    EXPECT_EQ(secondUploadReceipt.synchronization,
+              RHIHostWriteSynchronization::CoherentNoExplicitSync);
+    EXPECT_FALSE(firstUploadReceipt.HasSynchronizedRange());
+    EXPECT_FALSE(secondUploadReceipt.HasSynchronizedRange());
+
+    RHIHeapDesc readbackHeapDesc = uploadHeapDesc;
+    readbackHeapDesc.type = RHIHeapType::Readback;
+    readbackHeapDesc.debugName = "PlacedReadbackHeap";
+    RHIHeapRef readbackHeap = device->CreateHeap(readbackHeapDesc);
+    ASSERT_NE(readbackHeap.Get(), nullptr);
+
+    bufferDesc.memoryType = RHIMemoryType::Readback;
+    RHIBufferRef firstReadback =
+        device->CreatePlacedBuffer(readbackHeap.Get(), firstOffset, bufferDesc);
+    RHIBufferRef secondReadback =
+        device->CreatePlacedBuffer(readbackHeap.Get(), secondOffset, bufferDesc);
+    ASSERT_NE(firstReadback.Get(), nullptr);
+    ASSERT_NE(secondReadback.Get(), nullptr);
+
+    const void* firstReadbackData = firstReadback->Map();
+    const void* secondReadbackData = secondReadback->Map();
+    ASSERT_NE(firstReadbackData, nullptr);
+    ASSERT_NE(secondReadbackData, nullptr);
+    EXPECT_NE(firstReadbackData, secondReadbackData);
+    EXPECT_EQ(reinterpret_cast<const uint8*>(secondReadbackData) -
+                  reinterpret_cast<const uint8*>(firstReadbackData),
+              static_cast<ptrdiff_t>(secondOffset - firstOffset));
+    firstReadback->Unmap();
+    secondReadback->Unmap();
+
+    device->WaitIdle();
+    const VulkanValidationMessageCounts validationAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(validationAfter.errors, validationBefore.errors);
+    EXPECT_EQ(validationAfter.warnings, validationBefore.warnings);
+}
+
+TEST(VulkanValidation, PlacedBufferRejectsMismatchedHeapAndMemoryTypes)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
+    const VulkanValidationMessageCounts validationBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::CopySrc | RHIBufferUsage::CopyDst;
+    bufferDesc.stride = sizeof(uint32);
+    const IRHIDevice::MemoryRequirements requirements =
+        device->GetBufferMemoryRequirements(bufferDesc);
+    ASSERT_NE(requirements.size, 0u);
+
+    RHIHeapDesc uploadHeapDesc;
+    uploadHeapDesc.size = requirements.size;
+    uploadHeapDesc.type = RHIHeapType::Upload;
+    uploadHeapDesc.flags = RHIHeapFlags::AllowBuffers;
+    RHIHeapRef uploadHeap = device->CreateHeap(uploadHeapDesc);
+    ASSERT_NE(uploadHeap.Get(), nullptr);
+
+    RHIHeapDesc readbackHeapDesc = uploadHeapDesc;
+    readbackHeapDesc.type = RHIHeapType::Readback;
+    RHIHeapRef readbackHeap = device->CreateHeap(readbackHeapDesc);
+    ASSERT_NE(readbackHeap.Get(), nullptr);
+
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    RHIBufferRef defaultOnUpload =
+        device->CreatePlacedBuffer(uploadHeap.Get(), 0, bufferDesc);
+    EXPECT_EQ(defaultOnUpload.Get(), nullptr);
+
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    RHIBufferRef uploadOnReadback =
+        device->CreatePlacedBuffer(readbackHeap.Get(), 0, bufferDesc);
+    EXPECT_EQ(uploadOnReadback.Get(), nullptr);
+
+    bufferDesc.memoryType = RHIMemoryType::Readback;
+    RHIBufferRef readbackOnUpload =
+        device->CreatePlacedBuffer(uploadHeap.Get(), 0, bufferDesc);
+    EXPECT_EQ(readbackOnUpload.Get(), nullptr);
+
+    const VulkanValidationMessageCounts validationAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(validationAfter.errors, validationBefore.errors);
+    EXPECT_EQ(validationAfter.warnings, validationBefore.warnings);
+}
+
+TEST(VulkanValidation, PlacedBufferRejectsInvalidBindOffsets)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    auto* vulkanDevice = static_cast<VulkanDevice*>(device.get());
+    const VulkanValidationMessageCounts validationBefore =
+        vulkanDevice->GetValidationMessageCounts();
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::CopySrc;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    bufferDesc.stride = sizeof(uint32);
+    const IRHIDevice::MemoryRequirements requirements =
+        device->GetBufferMemoryRequirements(bufferDesc);
+    ASSERT_NE(requirements.size, 0u);
+
+    RHIHeapDesc heapDesc;
+    heapDesc.size = requirements.size;
+    heapDesc.type = RHIHeapType::Upload;
+    heapDesc.flags = RHIHeapFlags::AllowBuffers;
+    RHIHeapRef heap = device->CreateHeap(heapDesc);
+    ASSERT_NE(heap.Get(), nullptr);
+
+    RHIBufferRef unalignedOffset =
+        device->CreatePlacedBuffer(heap.Get(), 1, bufferDesc);
+    EXPECT_EQ(unalignedOffset.Get(), nullptr);
+
+    RHIBufferRef outOfRangeOffset =
+        device->CreatePlacedBuffer(heap.Get(), requirements.size, bufferDesc);
+    EXPECT_EQ(outOfRangeOffset.Get(), nullptr);
+
+    const VulkanValidationMessageCounts validationAfter =
+        vulkanDevice->GetValidationMessageCounts();
+    EXPECT_EQ(validationAfter.errors, validationBefore.errors);
+    EXPECT_EQ(validationAfter.warnings, validationBefore.warnings);
+}
+
+TEST(VulkanValidation, HostVisibleHeapSynchronizationRejectsInvalidRange)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::Vulkan, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::Vulkan);
+
+    RHIHeapDesc heapDesc;
+    heapDesc.size = 1024;
+    heapDesc.type = RHIHeapType::Upload;
+    heapDesc.flags = RHIHeapFlags::AllowBuffers;
+    RHIHeapRef heap = device->CreateHeap(heapDesc);
+    ASSERT_NE(heap.Get(), nullptr);
+
+    auto* vulkanHeap = static_cast<VulkanHeap*>(heap.Get());
+    ASSERT_NE(vulkanHeap->GetMappedData(), nullptr);
+
+    VulkanMappedMemoryRange invalidRange;
+    invalidRange.offset = heapDesc.size;
+    invalidRange.size = 1;
+    invalidRange.valid = true;
+    EXPECT_FALSE(vulkanHeap->SynchronizeMappedRange(
+        invalidRange,
+        VulkanHostMemorySynchronization::Flush));
 }
 
 TEST(VulkanValidation, TextureCreation)
@@ -1057,8 +2144,10 @@ TEST(VulkanValidation, QueryCapabilitiesReportUnsupportedUntilImplemented)
 
     RHIQueryPoolDesc queryDesc;
     queryDesc.type = RHIQueryType::Timestamp;
+    queryDesc.queueType = RHICommandQueueType::Graphics;
     queryDesc.count = 2;
     queryDesc.debugName = "UnsupportedTimestampQueries";
+    EXPECT_TRUE(ValidateRHIQueryPoolDesc(queryDesc));
     EXPECT_EQ(device->CreateQueryPool(queryDesc).Get(), nullptr);
 }
 

@@ -39,6 +39,8 @@ namespace
     {
         MeshPassProcessorInput input;
         input.packet = BuildLegacyMaterialDrawPacket(MakeBatch(mode, flags));
+        input.geometryAssetId = {101};
+        input.materialAssetId = {201};
         input.sourceOrdinal = 9;
         input.viewDepth = 42.0f;
         return input;
@@ -393,6 +395,57 @@ TEST(MeshPassProcessorValidation,
     EXPECT_EQ(sortedReverse[0].packet.objectId, 80U);
     EXPECT_EQ(sortedForward[1].packet.objectId, 90U);
     EXPECT_EQ(sortedReverse[1].packet.objectId, 90U);
+}
+
+TEST(MeshPassProcessorValidation,
+     CanonicalRasterOrderUsesObjectIdentityBeforeSourceOrdinal)
+{
+    OpaqueMeshPassProcessor processor;
+    MeshPassProcessorInput lowObject = MakeInput();
+    MeshPassProcessorInput highObject = MakeInput();
+    lowObject.packet.objectId = 10;
+    lowObject.sourceOrdinal = 9;
+    highObject.packet.objectId = 900;
+    highObject.sourceOrdinal = 2;
+
+    const std::vector<MeshPassProcessorResult> inputs = {
+        processor.Process(highObject), processor.Process(lowObject)};
+    std::vector<MeshPassProcessorResult> sorted;
+    std::vector<RenderDrawGroupRange> groups;
+    BuildDeterministicRenderDrawGroups(inputs, sorted, groups);
+
+    ASSERT_EQ(sorted.size(), 2U);
+    ASSERT_EQ(groups.size(), 1U);
+    EXPECT_EQ(sorted[0].packet.objectId, 10U);
+    EXPECT_EQ(sorted[1].packet.objectId, 900U);
+}
+
+TEST(MeshPassProcessorValidation,
+     CanonicalRasterGroupOrderIgnoresResourceHandleAllocation)
+{
+    OpaqueMeshPassProcessor processor;
+    MeshPassProcessorInput lowAsset = MakeInput();
+    MeshPassProcessorInput highAsset = MakeInput();
+    lowAsset.geometryAssetId = {10};
+    lowAsset.packet.objectId = 900;
+    lowAsset.packet.geometryKey.mesh = {90, 7};
+    highAsset.geometryAssetId = {20};
+    highAsset.packet.objectId = 10;
+    highAsset.packet.geometryKey.mesh = {1, 2};
+
+    const std::vector<MeshPassProcessorResult> inputs = {
+        processor.Process(highAsset), processor.Process(lowAsset)};
+    std::vector<MeshPassProcessorResult> sorted;
+    std::vector<RenderDrawGroupRange> groups;
+    BuildDeterministicRenderDrawGroups(inputs, sorted, groups);
+
+    ASSERT_EQ(2u, groups.size());
+    ASSERT_EQ(2u, sorted.size());
+    EXPECT_EQ(900u, sorted[0].packet.objectId);
+    EXPECT_EQ((AssetId{10}), sorted[0].geometryAssetId);
+    EXPECT_EQ((RenderResourceHandle{90, 7}), groups[0].key.geometry.mesh);
+    EXPECT_EQ(10u, sorted[1].packet.objectId);
+    EXPECT_EQ((AssetId{20}), sorted[1].geometryAssetId);
 }
 
 TEST(MeshPassProcessorValidation, TransparentProcessorPreservesSourceOrderValues)

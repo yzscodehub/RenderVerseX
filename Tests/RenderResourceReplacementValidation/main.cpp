@@ -10,8 +10,8 @@ namespace RVX
 {
 namespace
 {
-    ResourceUploadRequestCreateInfo MakeSharedTextureRequest(
-        UploadByteStorageRef bytes)
+    ResourceUploadRequestCreateInfo MakeTextureRequest(
+        std::vector<uint8> bytes)
     {
         TextureUploadPayload payload;
         payload.createInfo.width = 1;
@@ -20,7 +20,7 @@ namespace
         payload.createInfo.mipLevels = 1;
         payload.createInfo.arrayLayers = 1;
         payload.createInfo.format = TextureUploadFormat::RGBA8;
-        payload.byteStorage = std::move(bytes);
+        payload.bytes = std::move(bytes);
         payload.subresources.push_back(TextureUploadSubresource{
             UploadByteRange{0, 4, 0}, 0, 0, 4, 4});
 
@@ -38,11 +38,11 @@ namespace
     }
 
     TEST(RenderResourceReplacementValidation,
-         SharedUploadStorageIsRetainedWithoutCompatibilityCopy)
+         PayloadBytesAreRetainedAsValueOwnedStorage)
     {
-        UploadByteStorageRef bytes = UploadByteStorage::Create({1, 2, 3, 4});
+        const std::vector<uint8> sourceBytes = {1, 2, 3, 4};
         ResourceUploadRequestCreateResult result =
-            ResourceUploadRequest::Create(MakeSharedTextureRequest(bytes));
+            ResourceUploadRequest::Create(MakeTextureRequest(sourceBytes));
 
         ASSERT_EQ(result.code, ResourceUploadRequestCreateCode::Created);
         ASSERT_NE(result.request, nullptr);
@@ -51,42 +51,31 @@ namespace
         EXPECT_EQ(result.request->GetSourceRevision(), 1U);
         const auto& payload = std::get<TextureUploadPayload>(
             result.request->GetPayload());
-        EXPECT_TRUE(payload.bytes.empty());
-        EXPECT_EQ(payload.byteStorage, bytes);
+        EXPECT_EQ(payload.bytes, sourceBytes);
         const std::span<const uint8> payloadBytes =
             GetUploadPayloadBytes(payload);
-        EXPECT_EQ(payloadBytes.data(), bytes->GetBytes().data());
-        EXPECT_EQ(payloadBytes.size(), bytes->GetBytes().size());
+        EXPECT_NE(payloadBytes.data(), sourceBytes.data());
+        EXPECT_EQ(payloadBytes.size(), sourceBytes.size());
     }
 
     TEST(RenderResourceReplacementValidation,
-         RejectsConflictingStorageAndMissingReplacementRevision)
+         RejectsMissingReplacementRevision)
     {
-        UploadByteStorageRef bytes = UploadByteStorage::Create({1, 2, 3, 4});
-        ResourceUploadRequestCreateInfo conflicting =
-            MakeSharedTextureRequest(bytes);
-        std::get<TextureUploadPayload>(conflicting.payload).bytes =
-            {1, 2, 3, 4};
-        EXPECT_EQ(ResourceUploadRequest::Create(std::move(conflicting)).code,
-                  ResourceUploadRequestCreateCode::ConflictingByteStorage);
-
         ResourceUploadRequestCreateInfo missingRevision =
-            MakeSharedTextureRequest(std::move(bytes));
+            MakeTextureRequest({1, 2, 3, 4});
         missingRevision.sourceRevision = 0;
         EXPECT_EQ(ResourceUploadRequest::Create(std::move(missingRevision)).code,
                   ResourceUploadRequestCreateCode::InvalidSourceRevision);
 
-        UploadByteStorageRef replacementBytes =
-            UploadByteStorage::Create({1, 2, 3, 4});
         ResourceUploadRequestCreateInfo implicitReplacement =
-            MakeSharedTextureRequest(replacementBytes);
+            MakeTextureRequest({1, 2, 3, 4});
         implicitReplacement.sourceRevision = 0;
         implicitReplacement.provenance.sourceRevision = 7;
         EXPECT_EQ(ResourceUploadRequest::Create(std::move(implicitReplacement)).code,
                   ResourceUploadRequestCreateCode::InvalidSourceRevision);
 
         ResourceUploadRequestCreateInfo conflictingRevision =
-            MakeSharedTextureRequest(std::move(replacementBytes));
+            MakeTextureRequest({1, 2, 3, 4});
         conflictingRevision.sourceRevision = 7;
         conflictingRevision.provenance.sourceRevision = 8;
         EXPECT_EQ(ResourceUploadRequest::Create(std::move(conflictingRevision)).code,

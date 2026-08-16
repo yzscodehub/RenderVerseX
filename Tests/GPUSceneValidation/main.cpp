@@ -23,8 +23,13 @@ namespace
     static_assert(!std::is_convertible_v<GPUSceneDrawRef, GPUScenePrimitiveRef>);
     static_assert(!std::is_move_constructible_v<GPUSceneDatabase>);
     static_assert(!std::is_move_assignable_v<GPUSceneDatabase>);
-    static_assert(std::is_trivially_copyable_v<GPUSceneDiagnostics>);
-    static_assert(std::is_trivially_copyable_v<GPUSceneTableDiagnostics>);
+    // Upload-work receipts carry DiagnosticValue<std::string>, so these
+    // value-only diagnostics are intentionally ordinary copy values rather
+    // than trivially-copyable wire structs.
+    static_assert(std::is_copy_constructible_v<GPUSceneDiagnostics>);
+    static_assert(std::is_copy_assignable_v<GPUSceneDiagnostics>);
+    static_assert(std::is_copy_constructible_v<GPUSceneTableDiagnostics>);
+    static_assert(std::is_copy_assignable_v<GPUSceneTableDiagnostics>);
     static_assert(std::is_trivially_copyable_v<GPUSceneSlotLifecycleDiagnostics>);
     static_assert(std::is_trivially_copyable_v<GPUSceneTimingDiagnostics>);
 
@@ -239,6 +244,27 @@ namespace
         return object;
     }
 } // namespace
+
+TEST(GPUSceneValidation, DiagnosticsRemainIndependentValueCopies)
+{
+    GPUSceneDiagnostics source;
+    source.available = true;
+    source.committedVersion = 41;
+    source.uploadWork.committedPayloadBytes = 128;
+    source.tables[0].residentCapacity = 7;
+    source.tables[0].uploadWork.gpuCopyBytes = 64;
+
+    const GPUSceneDiagnostics copied = source;
+    GPUSceneDiagnostics assigned;
+    assigned = source;
+
+    source.committedVersion = 99;
+    source.tables[0].residentCapacity = 3;
+    EXPECT_EQ(copied.committedVersion, 41U);
+    EXPECT_EQ(copied.tables[0].residentCapacity, 7U);
+    EXPECT_EQ(assigned.uploadWork.committedPayloadBytes, 128U);
+    EXPECT_EQ(assigned.tables[0].uploadWork.gpuCopyBytes, 64U);
+}
 
 TEST(GPUSceneValidation, NullReferencesAndPortableSchemaABIStayExplicit)
 {
@@ -1081,6 +1107,8 @@ TEST(GPUSceneValidation,
     ASSERT_EQ(initial.failureReason, GPUScenePublicationFailureReason::None);
     ASSERT_EQ(initial.publishedObjectCount, objectCount);
     ASSERT_EQ(initial.publishedDrawCount, objectCount);
+    EXPECT_EQ(initial.mutationTotals.fullPublicationCount, 1U);
+    EXPECT_EQ(initial.mutationTotals.materializedObjectCount, objectCount);
 
     RenderScene changedScene;
     for (uint32 index = 0; index < objectCount; ++index)
@@ -1101,6 +1129,9 @@ TEST(GPUSceneValidation,
     EXPECT_EQ(changed.publishedObjectCount, objectCount);
     EXPECT_EQ(changed.publishedDrawCount, objectCount);
     EXPECT_GT(changed.committedVersion, initial.committedVersion);
+    EXPECT_EQ(changed.mutationTotals.incrementalPublicationCount, 1U);
+    EXPECT_EQ(changed.mutationTotals.updateCount, 1U);
+    EXPECT_EQ(changed.mutationTotals.materializedObjectCount, objectCount + 1U);
 
     const GPUSceneChangeSet delta = update.GetLastChangeSetForUpload();
     ASSERT_EQ(delta.committedVersion, changed.committedVersion);
@@ -1121,6 +1152,8 @@ TEST(GPUSceneValidation,
     EXPECT_EQ(noOp.removeCount, 0U);
     EXPECT_EQ(noOp.committedVersion, changed.committedVersion);
     EXPECT_EQ(update.GetLastChangeSetForUpload(), delta);
+    EXPECT_EQ(noOp.mutationTotals.identityOnlyPublicationCount, 1U);
+    EXPECT_EQ(noOp.mutationTotals.updateCount, 1U);
 }
 
 TEST(GPUSceneValidation, PublishedReceivesShadowPrimitiveFlagSurvivesCommitMirror)
@@ -1260,6 +1293,12 @@ TEST(GPUSceneValidation, PublicationFailureKeepsActualCommittedIdentityAndAttemp
     EXPECT_EQ(failed.addCount, 1U);
     EXPECT_FALSE(failed.complete);
     EXPECT_FALSE(failed.executionEligible);
+    EXPECT_EQ(failed.mutationTotals.fullPublicationCount,
+              initial.mutationTotals.fullPublicationCount);
+    EXPECT_EQ(failed.mutationTotals.addCount,
+              initial.mutationTotals.addCount);
+    EXPECT_EQ(failed.mutationTotals.updateCount,
+              initial.mutationTotals.updateCount);
 }
 
 TEST(GPUSceneValidation, ChangedDrawCountUpdatesOneObjectWhileAcceptedOrderRemainsNoOp)

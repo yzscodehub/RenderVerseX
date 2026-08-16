@@ -308,6 +308,20 @@ namespace
             return result;
         }
 
+        bool RequestGPUSceneCullingQualificationCapture() override
+        {
+            m_probe->Record(
+                RenderRuntimeTestEvent::GPUSceneCullingQualification);
+            return m_probe->gpuSceneCullingQualificationAccepted;
+        }
+
+        bool RequestDirectOpaqueRasterReadbackQualificationCapture() override
+        {
+            m_probe->Record(
+                RenderRuntimeTestEvent::DirectOpaqueRasterReadbackQualification);
+            return m_probe->directOpaqueRasterReadbackQualificationAccepted;
+        }
+
         void PollCompletion() override
         {
             m_probe->Record(RenderRuntimeTestEvent::Poll);

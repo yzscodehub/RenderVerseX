@@ -1,8 +1,9 @@
 #include "RenderContracts/FeatureRenderSnapshot.h"
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFramePacketV5.h"
+#include "RenderContracts/RenderFrameValidation.h"
 #include "RenderContracts/RenderIdentity.h"
+#include "RenderContracts/RenderSceneUpdate.h"
 #include "RenderContracts/ResourceUploadRequest.h"
-#include "RenderExtraction/RenderFramePacketBuilder.h"
 #include "ResourceUploadRequestInternal.h"
 
 #include <gtest/gtest.h>
@@ -20,27 +21,9 @@ namespace RVX
 {
 namespace
 {
-    static_assert(!std::is_default_constructible_v<RenderFramePacket>);
-    static_assert(!std::is_copy_constructible_v<RenderFramePacket>);
-    static_assert(!std::is_move_constructible_v<RenderFramePacket>);
     static_assert(!std::is_default_constructible_v<ResourceUploadRequest>);
     static_assert(!std::is_copy_constructible_v<ResourceUploadRequest>);
     static_assert(!std::is_move_constructible_v<ResourceUploadRequest>);
-    static_assert(!std::is_copy_constructible_v<RenderFramePacketBuilder>);
-    static_assert(!std::is_move_constructible_v<RenderFramePacketBuilder>);
-    static_assert(std::is_same_v<
-                  decltype(std::declval<RenderFramePacketBuilder>().Seal()),
-                  std::unique_ptr<const RenderFramePacket>>);
-
-    constexpr uint32 RVX_OMIT_HEADER = 1U << 0U;
-    constexpr uint32 RVX_OMIT_VIEW = 1U << 1U;
-    constexpr uint32 RVX_OMIT_SKY = 1U << 2U;
-    constexpr uint32 RVX_OMIT_ENVIRONMENT = 1U << 3U;
-    constexpr uint32 RVX_OMIT_SETTINGS = 1U << 4U;
-    constexpr uint32 RVX_OMIT_CAPTURE = 1U << 5U;
-    constexpr uint32 RVX_OMIT_FEATURES = 1U << 6U;
-    constexpr uint32 RVX_OMIT_DIAGNOSTICS = 1U << 7U;
-
     ResourceUploadRequestCreateInfo MakeValidMeshRequestInfo()
     {
         MeshUploadPayload payload;
@@ -98,13 +81,6 @@ namespace
         return info;
     }
 
-    RenderFrameHeader MakeValidHeader()
-    {
-        RenderFrameHeader header;
-        header.sequence = 1;
-        return header;
-    }
-
     RenderViewSnapshot MakeValidView()
     {
         RenderViewSnapshot view;
@@ -113,56 +89,11 @@ namespace
         return view;
     }
 
-    RenderFeatureSnapshot MakeCompleteFeatures()
-    {
-        RenderFeatureSnapshot features;
-        features.BeginBuild(1);
-        features.MarkComplete();
-        return features;
-    }
-
     RenderExtractionDiagnostics MakeCompleteDiagnostics()
     {
         RenderExtractionDiagnostics diagnostics;
         diagnostics.complete = true;
         return diagnostics;
-    }
-
-    void PopulateCompletePacketBuilder(RenderFramePacketBuilder& builder,
-                                       uint32 omittedSingletonMask = 0)
-    {
-        if ((omittedSingletonMask & RVX_OMIT_HEADER) == 0)
-        {
-            EXPECT_TRUE(builder.SetHeader(MakeValidHeader()));
-        }
-        if ((omittedSingletonMask & RVX_OMIT_VIEW) == 0)
-        {
-            EXPECT_TRUE(builder.SetView(MakeValidView()));
-        }
-        if ((omittedSingletonMask & RVX_OMIT_SKY) == 0)
-        {
-            EXPECT_TRUE(builder.SetSky(RenderSkySnapshot{}));
-        }
-        if ((omittedSingletonMask & RVX_OMIT_ENVIRONMENT) == 0)
-        {
-            EXPECT_TRUE(builder.SetEnvironment(RenderEnvironmentSnapshot{}));
-        }
-        if ((omittedSingletonMask & RVX_OMIT_SETTINGS) == 0)
-        {
-            EXPECT_TRUE(builder.SetSettings(RenderFrameSettings{}));
-        }
-        if ((omittedSingletonMask & RVX_OMIT_CAPTURE) == 0)
-        {
-            EXPECT_TRUE(builder.SetCaptureRequest(RenderFrameCaptureRequest{}));
-        }
-        if ((omittedSingletonMask & RVX_OMIT_FEATURES) == 0)
-        {
-            EXPECT_TRUE(builder.SetFeatures(MakeCompleteFeatures()));
-        }
-        if ((omittedSingletonMask & RVX_OMIT_DIAGNOSTICS) == 0)
-        {
-            EXPECT_TRUE(builder.SetExtractionDiagnostics(MakeCompleteDiagnostics()));
-        }
     }
 
     void ExpectCreationCode(const ResourceUploadRequestCreateInfo& info,
@@ -1019,1000 +950,106 @@ namespace
                            ResourceUploadRequestCreateCode::InvalidPayload);
     }
 
-    class RenderContractsValidationMissingSingletons : public testing::TestWithParam<uint32>
-    {
-    };
-
-    TEST_P(RenderContractsValidationMissingSingletons, MissingEachSingletonIsRepairable)
-    {
-        RenderFramePacketBuilder builder;
-        const uint32 omitted = GetParam();
-        PopulateCompletePacketBuilder(builder, omitted);
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::MissingValue);
-        EXPECT_EQ(builder.GetState(), RenderFramePacketBuilderState::Building);
-
-        switch (omitted)
-        {
-            case RVX_OMIT_HEADER: EXPECT_TRUE(builder.SetHeader(MakeValidHeader())); break;
-            case RVX_OMIT_VIEW: EXPECT_TRUE(builder.SetView(MakeValidView())); break;
-            case RVX_OMIT_SKY: EXPECT_TRUE(builder.SetSky(RenderSkySnapshot{})); break;
-            case RVX_OMIT_ENVIRONMENT:
-                EXPECT_TRUE(builder.SetEnvironment(RenderEnvironmentSnapshot{}));
-                break;
-            case RVX_OMIT_SETTINGS:
-                EXPECT_TRUE(builder.SetSettings(RenderFrameSettings{}));
-                break;
-            case RVX_OMIT_CAPTURE:
-                EXPECT_TRUE(builder.SetCaptureRequest(RenderFrameCaptureRequest{}));
-                break;
-            case RVX_OMIT_FEATURES:
-                EXPECT_TRUE(builder.SetFeatures(MakeCompleteFeatures()));
-                break;
-            case RVX_OMIT_DIAGNOSTICS:
-                EXPECT_TRUE(builder.SetExtractionDiagnostics(MakeCompleteDiagnostics()));
-                break;
-            default: FAIL() << "unexpected singleton bit"; break;
-        }
-
-        const auto packet = builder.Seal();
-        EXPECT_TRUE(packet);
-        EXPECT_EQ(builder.GetState(), RenderFramePacketBuilderState::Sealed);
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::Sealed);
-    }
-
-    INSTANTIATE_TEST_SUITE_P(
-        AllSingletons,
-        RenderContractsValidationMissingSingletons,
-        testing::Values(
-            RVX_OMIT_HEADER,
-            RVX_OMIT_VIEW,
-            RVX_OMIT_SKY,
-            RVX_OMIT_ENVIRONMENT,
-            RVX_OMIT_SETTINGS,
-            RVX_OMIT_CAPTURE,
-            RVX_OMIT_FEATURES,
-            RVX_OMIT_DIAGNOSTICS));
-
-    TEST(RenderContractsValidation, RejectsSchemaThenRepairs)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderFrameHeader invalid = MakeValidHeader();
-        invalid.schemaVersion = RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION + 1;
-        ASSERT_TRUE(builder.SetHeader(invalid));
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::InvalidSchema);
-        EXPECT_EQ(builder.GetState(), RenderFramePacketBuilderState::Building);
-
-        ASSERT_TRUE(builder.SetHeader(MakeValidHeader()));
-        EXPECT_TRUE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::Sealed);
-    }
-
-    TEST(RenderContractsValidation, BuilderRejectsZeroSequence)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderFrameHeader header = MakeValidHeader();
-        header.sequence = 0;
-        ASSERT_TRUE(builder.SetHeader(header));
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::InvalidSequence);
-    }
-
-    TEST(RenderContractsValidation, RejectsZeroViewport)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderViewSnapshot view = MakeValidView();
-        view.viewportWidth = 0;
-        ASSERT_TRUE(builder.SetView(view));
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::InvalidViewport);
-    }
-
-    enum class NumericFamilyCase : uint8
-    {
-        ViewMatrix,
-        ViewVector,
-        ViewScalar,
-        Primitive,
-        Light,
-        Sky,
-        Environment,
-        Settings
-    };
-
-    class RenderContractsValidationBuilderNumericFamilies :
-        public testing::TestWithParam<NumericFamilyCase>
-    {
-    };
-
-    TEST_P(RenderContractsValidationBuilderNumericFamilies, RejectsEachNonFiniteNumericFamily)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        const float32 nan = std::numeric_limits<float32>::quiet_NaN();
-
-        switch (GetParam())
-        {
-            case NumericFamilyCase::ViewMatrix:
-            {
-                auto view = MakeValidView();
-                view.viewMatrix[0][0] = nan;
-                ASSERT_TRUE(builder.SetView(view));
-                break;
-            }
-            case NumericFamilyCase::ViewVector:
-            {
-                auto view = MakeValidView();
-                view.cameraPosition.x = nan;
-                ASSERT_TRUE(builder.SetView(view));
-                break;
-            }
-            case NumericFamilyCase::ViewScalar:
-            {
-                auto view = MakeValidView();
-                view.absoluteTime = nan;
-                ASSERT_TRUE(builder.SetView(view));
-                break;
-            }
-            case NumericFamilyCase::Primitive:
-            {
-                RenderPrimitiveSnapshot primitive;
-                primitive.objectId = 1;
-                primitive.mesh = RenderResourceHandle{1, 1};
-                primitive.worldTransform[0][0] = nan;
-                ASSERT_TRUE(builder.AddPrimitive(primitive));
-                auto header = MakeValidHeader();
-                header.expectedPrimitiveCount = 1;
-                header.extractedPrimitiveCount = 1;
-                ASSERT_TRUE(builder.SetHeader(header));
-                break;
-            }
-            case NumericFamilyCase::Light:
-            {
-                RenderLightSnapshot light;
-                light.lightId = 1;
-                light.intensity = nan;
-                ASSERT_TRUE(builder.AddLight(light));
-                auto header = MakeValidHeader();
-                header.expectedLightCount = 1;
-                header.extractedLightCount = 1;
-                ASSERT_TRUE(builder.SetHeader(header));
-                break;
-            }
-            case NumericFamilyCase::Sky:
-            {
-                RenderSkySnapshot sky;
-                sky.intensity = nan;
-                ASSERT_TRUE(builder.SetSky(sky));
-                break;
-            }
-            case NumericFamilyCase::Environment:
-            {
-                RenderEnvironmentSnapshot environment;
-                environment.intensity = nan;
-                ASSERT_TRUE(builder.SetEnvironment(environment));
-                break;
-            }
-            case NumericFamilyCase::Settings:
-            {
-                RenderFrameSettings settings;
-                settings.renderScale = nan;
-                ASSERT_TRUE(builder.SetSettings(settings));
-                break;
-            }
-        }
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::InvalidNumericValue);
-    }
-
-    INSTANTIATE_TEST_SUITE_P(
-        AllNumericFamilies,
-        RenderContractsValidationBuilderNumericFamilies,
-        testing::Values(
-            NumericFamilyCase::ViewMatrix,
-            NumericFamilyCase::ViewVector,
-            NumericFamilyCase::ViewScalar,
-            NumericFamilyCase::Primitive,
-            NumericFamilyCase::Light,
-            NumericFamilyCase::Sky,
-            NumericFamilyCase::Environment,
-            NumericFamilyCase::Settings));
-
-    enum class SkyExtendedNumericField : uint8
-    {
-        SunDirection,
-        SunColor,
-        ZenithColor,
-        HorizonColor,
-        GroundColor,
-        BlurLevel,
-        ScatteringIntensity
-    };
-
-    class RenderContractsValidationSkyExtendedNumerics :
-        public testing::TestWithParam<SkyExtendedNumericField>
-    {
-    };
-
-    TEST_P(RenderContractsValidationSkyExtendedNumerics,
-           RejectsNonFiniteSkySnapshotFields)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderSkySnapshot sky;
-        sky.mode = RenderSkyMode::Procedural;
-        const float32 nan = std::numeric_limits<float32>::quiet_NaN();
-
-        switch (GetParam())
-        {
-            case SkyExtendedNumericField::SunDirection:
-                sky.sunDirection.x = nan;
-                break;
-            case SkyExtendedNumericField::SunColor:
-                sky.sunColor.y = nan;
-                break;
-            case SkyExtendedNumericField::ZenithColor:
-                sky.zenithColor.z = nan;
-                break;
-            case SkyExtendedNumericField::HorizonColor:
-                sky.horizonColor.x = nan;
-                break;
-            case SkyExtendedNumericField::GroundColor:
-                sky.groundColor.y = nan;
-                break;
-            case SkyExtendedNumericField::BlurLevel:
-                sky.blurLevel = nan;
-                break;
-            case SkyExtendedNumericField::ScatteringIntensity:
-                sky.scatteringIntensity = nan;
-                break;
-        }
-
-        ASSERT_TRUE(builder.SetSky(sky));
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(),
-                  RenderFrameSealCode::InvalidNumericValue);
-    }
-
-    INSTANTIATE_TEST_SUITE_P(
-        AllExtendedSkyFields,
-        RenderContractsValidationSkyExtendedNumerics,
-        testing::Values(SkyExtendedNumericField::SunDirection,
-                        SkyExtendedNumericField::SunColor,
-                        SkyExtendedNumericField::ZenithColor,
-                        SkyExtendedNumericField::HorizonColor,
-                        SkyExtendedNumericField::GroundColor,
-                        SkyExtendedNumericField::BlurLevel,
-                        SkyExtendedNumericField::ScatteringIntensity));
-
-    TEST(RenderContractsValidation, BuilderRejectsUndeclaredSkyMode)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderSkySnapshot sky;
-        sky.mode = static_cast<RenderSkyMode>(255);
-        ASSERT_TRUE(builder.SetSky(sky));
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(),
-                  RenderFrameSealCode::InvalidNumericValue);
-    }
-
-    enum class NumericConstraintCase : uint8
-    {
-        ViewBounds,
-        PrimitiveBounds,
-        NearPlane,
-        FarPlane,
-        NegativeDelta,
-        Exposure,
-        RenderScale,
-        BloomThreshold,
-        BloomIntensity,
-        ShadowAtlas,
-        ShadowCascades,
-        ShadowDistance,
-        CullingLimit,
-        RayInstanceLimit,
-        RayLimit,
-        DisabledRayShadows,
-        DisabledRayReflections
-    };
-
-    class RenderContractsValidationBuilderNumericConstraints :
-        public testing::TestWithParam<NumericConstraintCase>
-    {
-    };
-
-    TEST_P(RenderContractsValidationBuilderNumericConstraints, RejectsNumericConstraints)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderViewSnapshot view = MakeValidView();
-        RenderFrameSettings settings;
-
-        switch (GetParam())
-        {
-            case NumericConstraintCase::ViewBounds:
-                view.nearPlane = 2.0f;
-                view.farPlane = 1.0f;
-                ASSERT_TRUE(builder.SetView(view));
-                break;
-            case NumericConstraintCase::PrimitiveBounds:
-            {
-                RenderPrimitiveSnapshot primitive;
-                primitive.objectId = 1;
-                primitive.mesh = RenderResourceHandle{1, 1};
-                primitive.boundsMin.x = 1.0f;
-                primitive.boundsMax.x = 0.0f;
-                ASSERT_TRUE(builder.AddPrimitive(primitive));
-                auto header = MakeValidHeader();
-                header.expectedPrimitiveCount = 1;
-                header.extractedPrimitiveCount = 1;
-                ASSERT_TRUE(builder.SetHeader(header));
-                break;
-            }
-            case NumericConstraintCase::NearPlane:
-                view.nearPlane = 0.0f;
-                ASSERT_TRUE(builder.SetView(view));
-                break;
-            case NumericConstraintCase::FarPlane:
-                view.farPlane = view.nearPlane;
-                ASSERT_TRUE(builder.SetView(view));
-                break;
-            case NumericConstraintCase::NegativeDelta:
-                view.deltaTime = -0.1f;
-                ASSERT_TRUE(builder.SetView(view));
-                break;
-            case NumericConstraintCase::Exposure:
-                view.exposure = 0.0f;
-                ASSERT_TRUE(builder.SetView(view));
-                break;
-            case NumericConstraintCase::RenderScale: settings.renderScale = 0.0f; goto set_settings;
-            case NumericConstraintCase::BloomThreshold: settings.postProcess.bloomThreshold = -0.1f; goto set_settings;
-            case NumericConstraintCase::BloomIntensity: settings.postProcess.bloomIntensity = -0.1f; goto set_settings;
-            case NumericConstraintCase::ShadowAtlas: settings.shadows.atlasResolution = 0; goto set_settings;
-            case NumericConstraintCase::ShadowCascades: settings.shadows.cascadeCount = 0; goto set_settings;
-            case NumericConstraintCase::ShadowDistance: settings.shadows.maxDistance = 0.0f; goto set_settings;
-            case NumericConstraintCase::CullingLimit: settings.gpuCulling.maxVisibleObjects = 0; goto set_settings;
-            case NumericConstraintCase::RayInstanceLimit:
-                settings.rayTracing.enabled = true;
-                settings.rayTracing.maxInstances = 0;
-                goto set_settings;
-            case NumericConstraintCase::RayLimit:
-                settings.rayTracing.enabled = true;
-                settings.rayTracing.maxRaysPerPixel = 0;
-                goto set_settings;
-            case NumericConstraintCase::DisabledRayShadows:
-                settings.rayTracing.enableShadows = true;
-                goto set_settings;
-            case NumericConstraintCase::DisabledRayReflections:
-                settings.rayTracing.enableReflections = true;
-                goto set_settings;
-            set_settings:
-                ASSERT_TRUE(builder.SetSettings(settings));
-                break;
-        }
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::InvalidNumericValue);
-    }
-
-    INSTANTIATE_TEST_SUITE_P(
-        AllNumericConstraints,
-        RenderContractsValidationBuilderNumericConstraints,
-        testing::Values(
-            NumericConstraintCase::ViewBounds,
-            NumericConstraintCase::PrimitiveBounds,
-            NumericConstraintCase::NearPlane,
-            NumericConstraintCase::FarPlane,
-            NumericConstraintCase::NegativeDelta,
-            NumericConstraintCase::Exposure,
-            NumericConstraintCase::RenderScale,
-            NumericConstraintCase::BloomThreshold,
-            NumericConstraintCase::BloomIntensity,
-            NumericConstraintCase::ShadowAtlas,
-            NumericConstraintCase::ShadowCascades,
-            NumericConstraintCase::ShadowDistance,
-            NumericConstraintCase::CullingLimit,
-            NumericConstraintCase::RayInstanceLimit,
-            NumericConstraintCase::RayLimit,
-            NumericConstraintCase::DisabledRayShadows,
-            NumericConstraintCase::DisabledRayReflections));
-
-    enum class ExtractionFailureCase : uint8
-    {
-        Code,
-        CompleteBit,
-        SkippedPrimitive,
-        SkippedLight,
-        SkippedProvider
-    };
-
-    class RenderContractsValidationExtractionCompleteness :
-        public testing::TestWithParam<ExtractionFailureCase>
-    {
-    };
-
-    TEST_P(RenderContractsValidationExtractionCompleteness, RejectsIncompleteExtraction)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        auto diagnostics = MakeCompleteDiagnostics();
-
-        switch (GetParam())
-        {
-            case ExtractionFailureCase::Code:
-                diagnostics.code = RenderExtractionCode::MissingProvider;
-                break;
-            case ExtractionFailureCase::CompleteBit: diagnostics.complete = false; break;
-            case ExtractionFailureCase::SkippedPrimitive:
-                diagnostics.skippedPrimitiveCount = 1;
-                break;
-            case ExtractionFailureCase::SkippedLight:
-                diagnostics.skippedLightCount = 1;
-                break;
-            case ExtractionFailureCase::SkippedProvider:
-                diagnostics.skippedFeatureProviderCount = 1;
-                break;
-        }
-        ASSERT_TRUE(builder.SetExtractionDiagnostics(diagnostics));
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::IncompleteExtraction);
-    }
-
-    INSTANTIATE_TEST_SUITE_P(
-        AllExtractionMarkers,
-        RenderContractsValidationExtractionCompleteness,
-        testing::Values(
-            ExtractionFailureCase::Code,
-            ExtractionFailureCase::CompleteBit,
-            ExtractionFailureCase::SkippedPrimitive,
-            ExtractionFailureCase::SkippedLight,
-            ExtractionFailureCase::SkippedProvider));
-
-    enum class FeatureCompletenessCase : uint8
-    {
-        AggregateSchema,
-        AggregateSequence,
-        AggregateStatus,
-        AggregateComplete,
-        ParticleSchema,
-        ParticleSequence,
-        ParticleStatus,
-        ParticleComplete,
-        WaterSchema,
-        WaterSequence,
-        WaterStatus,
-        WaterComplete,
-        TerrainSchema,
-        TerrainSequence,
-        TerrainStatus,
-        TerrainComplete
-    };
-
-    class RenderContractsValidationFeatureCompleteness :
-        public testing::TestWithParam<FeatureCompletenessCase>
-    {
-    };
-
-    TEST_P(RenderContractsValidationFeatureCompleteness, RejectsIncompleteFeatureSnapshot)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        auto features = MakeCompleteFeatures();
-
-        switch (GetParam())
-        {
-            case FeatureCompletenessCase::AggregateSchema: ++features.metadata.schemaVersion; break;
-            case FeatureCompletenessCase::AggregateSequence: ++features.metadata.sequence; break;
-            case FeatureCompletenessCase::AggregateStatus:
-                features.metadata.status = RenderFeatureSnapshotStatus::Incomplete;
-                break;
-            case FeatureCompletenessCase::AggregateComplete: features.metadata.complete = false; break;
-            case FeatureCompletenessCase::ParticleSchema: ++features.particles.metadata.schemaVersion; break;
-            case FeatureCompletenessCase::ParticleSequence: ++features.particles.metadata.sequence; break;
-            case FeatureCompletenessCase::ParticleStatus:
-                features.particles.metadata.status = ParticleRenderSnapshotStatus::Incomplete;
-                break;
-            case FeatureCompletenessCase::ParticleComplete: features.particles.metadata.complete = false; break;
-            case FeatureCompletenessCase::WaterSchema: ++features.water.metadata.schemaVersion; break;
-            case FeatureCompletenessCase::WaterSequence: ++features.water.metadata.sequence; break;
-            case FeatureCompletenessCase::WaterStatus:
-                features.water.metadata.status = WaterRenderSnapshotStatus::Incomplete;
-                break;
-            case FeatureCompletenessCase::WaterComplete: features.water.metadata.complete = false; break;
-            case FeatureCompletenessCase::TerrainSchema: ++features.terrain.metadata.schemaVersion; break;
-            case FeatureCompletenessCase::TerrainSequence: ++features.terrain.metadata.sequence; break;
-            case FeatureCompletenessCase::TerrainStatus:
-                features.terrain.metadata.status = TerrainRenderSnapshotStatus::Incomplete;
-                break;
-            case FeatureCompletenessCase::TerrainComplete: features.terrain.metadata.complete = false; break;
-        }
-        ASSERT_TRUE(builder.SetFeatures(features));
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::IncompleteFeatureSnapshot);
-    }
-
-    INSTANTIATE_TEST_SUITE_P(
-        AggregateAndNestedSnapshots,
-        RenderContractsValidationFeatureCompleteness,
-        testing::Values(
-            FeatureCompletenessCase::AggregateSchema,
-            FeatureCompletenessCase::AggregateSequence,
-            FeatureCompletenessCase::AggregateStatus,
-            FeatureCompletenessCase::AggregateComplete,
-            FeatureCompletenessCase::ParticleSchema,
-            FeatureCompletenessCase::ParticleSequence,
-            FeatureCompletenessCase::ParticleStatus,
-            FeatureCompletenessCase::ParticleComplete,
-            FeatureCompletenessCase::WaterSchema,
-            FeatureCompletenessCase::WaterSequence,
-            FeatureCompletenessCase::WaterStatus,
-            FeatureCompletenessCase::WaterComplete,
-            FeatureCompletenessCase::TerrainSchema,
-            FeatureCompletenessCase::TerrainSequence,
-            FeatureCompletenessCase::TerrainStatus,
-            FeatureCompletenessCase::TerrainComplete));
-
-    enum class CountMismatchCase : uint8
-    {
-        PrimitiveExpected,
-        PrimitiveExtracted,
-        LightExpected,
-        LightExtracted,
-        ProviderExpected,
-        ProviderExtracted,
-        ProviderMetadata,
-        FeatureSkippedProvider,
-        ParticleSkippedCount,
-        ParticleSkippedReasons,
-        AggregateParticleItems,
-        AggregateWaterItems,
-        AggregateTerrainItems,
-        ParticleItems,
-        WaterItems,
-        TerrainItems
-    };
-
-    class RenderContractsValidationBuilderCounts : public testing::TestWithParam<CountMismatchCase>
-    {
-    };
-
-    TEST_P(RenderContractsValidationBuilderCounts, RejectsEachCountMismatch)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderFrameHeader header = MakeValidHeader();
-        RenderFeatureSnapshot features = MakeCompleteFeatures();
-
-        switch (GetParam())
-        {
-            case CountMismatchCase::PrimitiveExpected: header.expectedPrimitiveCount = 1; break;
-            case CountMismatchCase::PrimitiveExtracted: header.extractedPrimitiveCount = 1; break;
-            case CountMismatchCase::LightExpected: header.expectedLightCount = 1; break;
-            case CountMismatchCase::LightExtracted: header.extractedLightCount = 1; break;
-            case CountMismatchCase::ProviderExpected:
-                header.expectedFeatureProviderCount = 1;
-                break;
-            case CountMismatchCase::ProviderExtracted:
-                header.extractedFeatureProviderCount = 1;
-                break;
-            case CountMismatchCase::ProviderMetadata:
-                features.metadata.providerCount = 1;
-                break;
-            case CountMismatchCase::FeatureSkippedProvider:
-                features.metadata.skippedProviderCount = 1;
-                break;
-            case CountMismatchCase::ParticleSkippedCount:
-                features.particles.metadata.skippedInstanceCount = 1;
-                break;
-            case CountMismatchCase::ParticleSkippedReasons:
-                features.particles.skippedReasons.push_back("skipped");
-                break;
-            case CountMismatchCase::AggregateParticleItems:
-                features.metadata.particleItemCount = 1;
-                break;
-            case CountMismatchCase::AggregateWaterItems:
-                features.metadata.waterItemCount = 1;
-                break;
-            case CountMismatchCase::AggregateTerrainItems:
-                features.metadata.terrainItemCount = 1;
-                break;
-            case CountMismatchCase::ParticleItems:
-                features.particles.metadata.itemCount = 1;
-                break;
-            case CountMismatchCase::WaterItems:
-                features.water.metadata.itemCount = 1;
-                break;
-            case CountMismatchCase::TerrainItems:
-                features.terrain.metadata.itemCount = 1;
-                break;
-        }
-        ASSERT_TRUE(builder.SetHeader(header));
-        ASSERT_TRUE(builder.SetFeatures(features));
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::CountMismatch);
-    }
-
-    INSTANTIATE_TEST_SUITE_P(
-        AllCountFields,
-        RenderContractsValidationBuilderCounts,
-        testing::Values(
-            CountMismatchCase::PrimitiveExpected,
-            CountMismatchCase::PrimitiveExtracted,
-            CountMismatchCase::LightExpected,
-            CountMismatchCase::LightExtracted,
-            CountMismatchCase::ProviderExpected,
-            CountMismatchCase::ProviderExtracted,
-            CountMismatchCase::ProviderMetadata,
-            CountMismatchCase::FeatureSkippedProvider,
-            CountMismatchCase::ParticleSkippedCount,
-            CountMismatchCase::ParticleSkippedReasons,
-            CountMismatchCase::AggregateParticleItems,
-            CountMismatchCase::AggregateWaterItems,
-            CountMismatchCase::AggregateTerrainItems,
-            CountMismatchCase::ParticleItems,
-            CountMismatchCase::WaterItems,
-            CountMismatchCase::TerrainItems));
-
-    enum class ResourceReferenceCase : uint8
-    {
-        ZeroPrimitiveObject,
-        InvalidPrimitiveMesh,
-        ZeroLightId,
-        InvalidLightType,
-        ShadowUnexpectedHandle,
-        PartialEnvironmentOne,
-        PartialEnvironmentTwo
-    };
-
-    class RenderContractsValidationResourceReferences :
-        public testing::TestWithParam<ResourceReferenceCase>
-    {
-    };
-
-    TEST_P(RenderContractsValidationResourceReferences, RejectsResourceReferenceRules)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-
-        switch (GetParam())
-        {
-            case ResourceReferenceCase::ZeroPrimitiveObject:
-            case ResourceReferenceCase::InvalidPrimitiveMesh:
-            {
-                RenderPrimitiveSnapshot primitive;
-                primitive.objectId = GetParam() == ResourceReferenceCase::ZeroPrimitiveObject ? 0 : 1;
-                primitive.mesh = GetParam() == ResourceReferenceCase::InvalidPrimitiveMesh
-                    ? RenderResourceHandle{}
-                    : RenderResourceHandle{1, 1};
-                ASSERT_TRUE(builder.AddPrimitive(primitive));
-                auto header = MakeValidHeader();
-                header.expectedPrimitiveCount = 1;
-                header.extractedPrimitiveCount = 1;
-                ASSERT_TRUE(builder.SetHeader(header));
-                break;
-            }
-            case ResourceReferenceCase::ZeroLightId:
-            case ResourceReferenceCase::InvalidLightType:
-            case ResourceReferenceCase::ShadowUnexpectedHandle:
-            {
-                RenderLightSnapshot light;
-                light.lightId = GetParam() == ResourceReferenceCase::ZeroLightId ? 0 : 1;
-                if (GetParam() == ResourceReferenceCase::InvalidLightType)
-                {
-                    light.type = static_cast<RenderLightType>(255);
-                }
-                if (GetParam() == ResourceReferenceCase::ShadowUnexpectedHandle)
-                {
-                    light.shadowResource = RenderResourceHandle{1, 1};
-                }
-                ASSERT_TRUE(builder.AddLight(light));
-                auto header = MakeValidHeader();
-                header.expectedLightCount = 1;
-                header.extractedLightCount = 1;
-                ASSERT_TRUE(builder.SetHeader(header));
-                break;
-            }
-            case ResourceReferenceCase::PartialEnvironmentOne:
-            case ResourceReferenceCase::PartialEnvironmentTwo:
-            {
-                RenderEnvironmentSnapshot environment;
-                environment.irradianceTexture = RenderResourceHandle{1, 1};
-                if (GetParam() == ResourceReferenceCase::PartialEnvironmentTwo)
-                {
-                    environment.prefilteredTexture = RenderResourceHandle{2, 1};
-                }
-                ASSERT_TRUE(builder.SetEnvironment(environment));
-                break;
-            }
-        }
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::InvalidResourceReference);
-    }
-
-    INSTANTIATE_TEST_SUITE_P(
-        RequiredAndConditionalHandles,
-        RenderContractsValidationResourceReferences,
-        testing::Values(
-            ResourceReferenceCase::ZeroPrimitiveObject,
-            ResourceReferenceCase::InvalidPrimitiveMesh,
-            ResourceReferenceCase::ZeroLightId,
-            ResourceReferenceCase::InvalidLightType,
-            ResourceReferenceCase::ShadowUnexpectedHandle,
-            ResourceReferenceCase::PartialEnvironmentOne,
-            ResourceReferenceCase::PartialEnvironmentTwo));
-
     TEST(RenderContractsValidation,
-         AcceptsRenderOwnedShadowIntentWithoutExternalResource)
+         ViewClearPolicyIsVersionedCopiedAndRejectsInvalidValues)
     {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderLightSnapshot light;
-        light.lightId = 1;
-        light.castsShadows = true;
-        ASSERT_TRUE(builder.AddLight(light));
+        RenderFrameHeaderV5 header;
+        header.sequence = 41;
+        header.requiredSceneRevision = 9;
+        RenderViewSnapshot view = MakeValidView();
+        view.clearPolicy = RenderViewClearPolicy::SolidColor;
+        view.clearColor = {0.25f, 0.5f, 0.75f, 1.0f};
 
-        auto header = MakeValidHeader();
-        header.expectedLightCount = 1;
-        header.extractedLightCount = 1;
-        ASSERT_TRUE(builder.SetHeader(header));
-        EXPECT_TRUE(builder.Seal());
-    }
-
-    TEST(RenderContractsValidation, AcceptsOptionalBindingsAndCompleteResourceTriples)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderPrimitiveSnapshot primitive;
-        primitive.objectId = 1;
-        primitive.mesh = RenderResourceHandle{1, 1};
-        primitive.material = {};
-        primitive.fallbackMesh = {};
-        primitive.fallbackMaterial = {};
-        ASSERT_TRUE(builder.AddPrimitive(primitive));
-
-        RenderLightSnapshot light;
-        light.lightId = 1;
-        light.castsShadows = true;
-        ASSERT_TRUE(builder.AddLight(light));
-
-        RenderEnvironmentSnapshot environment;
-        environment.irradianceTexture = RenderResourceHandle{3, 1};
-        environment.prefilteredTexture = RenderResourceHandle{4, 1};
-        environment.brdfLutTexture = RenderResourceHandle{5, 1};
-        ASSERT_TRUE(builder.SetEnvironment(environment));
-
-        auto header = MakeValidHeader();
-        header.expectedPrimitiveCount = 1;
-        header.extractedPrimitiveCount = 1;
-        header.expectedLightCount = 1;
-        header.extractedLightCount = 1;
-        ASSERT_TRUE(builder.SetHeader(header));
-        EXPECT_TRUE(builder.Seal());
-    }
-
-    TEST(RenderContractsValidation,
-         UsesSchemaFourOwnedCanonicalSubmeshMaterialBindings)
-    {
-        EXPECT_EQ(RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION, 4U);
-
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderPrimitiveSnapshot primitive;
-        primitive.objectId = 1;
-        primitive.mesh = RenderResourceHandle{1, 1};
-        primitive.submeshes = {
-            RenderSubmeshMaterialBinding{
-                0, RenderResourceHandle{2, 4}, RenderMaterialMode::Masked},
-            RenderSubmeshMaterialBinding{
-                1, RenderResourceHandle{}, RenderMaterialMode::Transparent}};
-        primitive.material = primitive.submeshes.front().material;
-        ASSERT_TRUE(builder.AddPrimitive(std::move(primitive)));
-
-        auto header = MakeValidHeader();
-        header.expectedPrimitiveCount = 1;
-        header.extractedPrimitiveCount = 1;
-        ASSERT_TRUE(builder.SetHeader(header));
-        const auto packet = builder.Seal();
+        const std::unique_ptr<const RenderFramePacketV5> packet =
+            RenderFramePacketV5::Create(header,
+                                        view,
+                                        RenderFrameSettings{},
+                                        RenderFrameCaptureRequest{},
+                                        MakeCompleteDiagnostics());
         ASSERT_NE(packet, nullptr);
-        ASSERT_EQ(packet->GetPrimitives()[0].submeshes.size(), 2U);
-        EXPECT_EQ(packet->GetPrimitives()[0].submeshes[0].material,
-                  (RenderResourceHandle{2, 4}));
-        EXPECT_EQ(packet->GetPrimitives()[0].submeshes[1].materialMode,
-                  RenderMaterialMode::Transparent);
+        EXPECT_EQ(packet->GetHeader().schemaVersion,
+                  RVX_RENDER_FRAME_PACKET_V5_SCHEMA_VERSION);
+        EXPECT_EQ(packet->GetView().clearPolicy,
+                  RenderViewClearPolicy::SolidColor);
+        EXPECT_FLOAT_EQ(packet->GetView().clearColor.z, 0.75f);
+
+        view.clearColor.x = std::numeric_limits<float32>::quiet_NaN();
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               view,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        view = MakeValidView();
+        view.clearPolicy = static_cast<RenderViewClearPolicy>(255);
+        EXPECT_FALSE(IsValidRenderViewClearValues(view));
+        EXPECT_EQ(RenderFramePacketV5::Create(header,
+                                               view,
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
     }
 
     TEST(RenderContractsValidation,
-         RejectsMalformedSubmeshBindingsButAllowsMissingMaterial)
+         FrameV5RejectsIncompleteInputsAndOwnsAcceptedValues)
     {
-        const auto verifyRejected = [](RenderSubmeshMaterialBinding binding)
-        {
-            RenderFramePacketBuilder builder;
-            PopulateCompletePacketBuilder(builder);
-            RenderPrimitiveSnapshot primitive;
-            primitive.objectId = 1;
-            primitive.mesh = RenderResourceHandle{1, 1};
-            primitive.submeshes.push_back(binding);
-            EXPECT_TRUE(builder.AddPrimitive(std::move(primitive)));
-            auto header = MakeValidHeader();
-            header.expectedPrimitiveCount = 1;
-            header.extractedPrimitiveCount = 1;
-            EXPECT_TRUE(builder.SetHeader(header));
-            EXPECT_EQ(builder.Seal(), nullptr);
-            EXPECT_EQ(builder.GetLastSealCode(),
-                      RenderFrameSealCode::InvalidResourceReference);
-        };
+        RenderFrameHeaderV5 header;
+        header.sequence = 87;
+        header.requiredSceneRevision = 31;
+        header.worldRevision = 12;
 
-        verifyRejected(RenderSubmeshMaterialBinding{
-            1, RenderResourceHandle{}, RenderMaterialMode::Opaque});
-        verifyRejected(RenderSubmeshMaterialBinding{
-            0, RenderResourceHandle{}, static_cast<RenderMaterialMode>(255)});
-    }
+        RenderViewSnapshot view = MakeValidView();
+        view.exposure = 1.25f;
 
-    enum class CaptureRuleCase : uint8
-    {
-        NoneWithId,
-        NoneWithWidth,
-        NoneWithHeight,
-        NoneWithAlpha,
-        InvalidKind,
-        ColorWithoutId,
-        ColorWithoutWidth,
-        ColorWithoutHeight
-    };
+        RenderFrameSettings settings;
+        settings.renderScale = 0.75f;
 
-    class RenderContractsValidationCaptureRequests : public testing::TestWithParam<CaptureRuleCase>
-    {
-    };
+        RenderFrameCaptureRequest captureRequest;
+        captureRequest.requestId = 9;
+        captureRequest.kind = RenderFrameCaptureKind::Color;
+        captureRequest.width = 64;
+        captureRequest.height = 32;
 
-    TEST_P(RenderContractsValidationCaptureRequests, RejectsCaptureRules)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        RenderFrameCaptureRequest request;
+        const std::unique_ptr<const RenderFramePacketV5> packet =
+            RenderFramePacketV5::Create(header,
+                                        view,
+                                        settings,
+                                        captureRequest,
+                                        MakeCompleteDiagnostics());
+        ASSERT_NE(packet, nullptr);
 
-        switch (GetParam())
-        {
-            case CaptureRuleCase::NoneWithId: request.requestId = 1; break;
-            case CaptureRuleCase::NoneWithWidth: request.width = 1; break;
-            case CaptureRuleCase::NoneWithHeight: request.height = 1; break;
-            case CaptureRuleCase::NoneWithAlpha: request.includeAlpha = true; break;
-            case CaptureRuleCase::InvalidKind:
-                request.kind = static_cast<RenderFrameCaptureKind>(255);
-                request.requestId = 1;
-                request.width = 1;
-                request.height = 1;
-                break;
-            case CaptureRuleCase::ColorWithoutId:
-                request.kind = RenderFrameCaptureKind::Color;
-                request.width = 1;
-                request.height = 1;
-                break;
-            case CaptureRuleCase::ColorWithoutWidth:
-                request.kind = RenderFrameCaptureKind::Color;
-                request.requestId = 1;
-                request.height = 1;
-                break;
-            case CaptureRuleCase::ColorWithoutHeight:
-                request.kind = RenderFrameCaptureKind::Color;
-                request.requestId = 1;
-                request.width = 1;
-                break;
-        }
-        ASSERT_TRUE(builder.SetCaptureRequest(request));
-
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::InvalidCaptureRequest);
-    }
-
-    INSTANTIATE_TEST_SUITE_P(
-        NoneAndDeclaredCaptureKinds,
-        RenderContractsValidationCaptureRequests,
-        testing::Values(
-            CaptureRuleCase::NoneWithId,
-            CaptureRuleCase::NoneWithWidth,
-            CaptureRuleCase::NoneWithHeight,
-            CaptureRuleCase::NoneWithAlpha,
-            CaptureRuleCase::InvalidKind,
-            CaptureRuleCase::ColorWithoutId,
-            CaptureRuleCase::ColorWithoutWidth,
-            CaptureRuleCase::ColorWithoutHeight));
-
-    TEST(RenderContractsValidation, SuccessfulSealIsImmutable)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        auto header = MakeValidHeader();
-        header.worldRevision = 7;
-        header.temporalEpoch = 9;
-        header.explicitDiscontinuity = true;
-        ASSERT_TRUE(builder.SetHeader(header));
-        auto view = MakeValidView();
-        view.viewportX = 3;
-        view.viewportY = 4;
-        view.exposure = 2.0f;
-        ASSERT_TRUE(builder.SetView(view));
-
-        const std::unique_ptr<const RenderFramePacket> packet = builder.Seal();
-
-        ASSERT_TRUE(packet);
-        EXPECT_EQ(builder.GetState(), RenderFramePacketBuilderState::Sealed);
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::Sealed);
-        EXPECT_EQ(packet->GetHeader().schemaId, RVX_RENDER_FRAME_PACKET_SCHEMA_ID);
-        EXPECT_EQ(packet->GetHeader().schemaVersion,
-                  RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION);
-        EXPECT_EQ(packet->GetHeader().sequence, 1U);
-        EXPECT_EQ(packet->GetHeader().worldRevision, 7U);
-        EXPECT_EQ(packet->GetHeader().temporalEpoch, 9U);
-        EXPECT_TRUE(packet->GetHeader().explicitDiscontinuity);
-        EXPECT_EQ(packet->GetView().viewportX, 3U);
-        EXPECT_EQ(packet->GetView().viewportY, 4U);
-        EXPECT_FLOAT_EQ(packet->GetView().exposure, 2.0f);
-        EXPECT_TRUE(packet->GetPrimitives().empty());
-        EXPECT_TRUE(packet->GetLights().empty());
-        EXPECT_FALSE(packet->GetSky().skyTexture.IsValid());
-        EXPECT_FALSE(packet->GetEnvironment().irradianceTexture.IsValid());
-        EXPECT_FLOAT_EQ(packet->GetSettings().renderScale, 1.0f);
-        EXPECT_EQ(packet->GetCaptureRequest().kind, RenderFrameCaptureKind::None);
-        EXPECT_TRUE(packet->GetFeatures().metadata.complete);
-        EXPECT_TRUE(packet->GetExtractionDiagnostics().complete);
-    }
-
-    TEST(RenderContractsValidation, PostSealOperationsAreRejected)
-    {
-        RenderFramePacketBuilder builder;
-        PopulateCompletePacketBuilder(builder);
-        const auto packet = builder.Seal();
-        ASSERT_TRUE(packet);
-
-        EXPECT_FALSE(builder.SetHeader(RenderFrameHeader{}));
-        EXPECT_FALSE(builder.SetView(RenderViewSnapshot{}));
-        EXPECT_FALSE(builder.AddPrimitive(RenderPrimitiveSnapshot{}));
-        EXPECT_FALSE(builder.AddLight(RenderLightSnapshot{}));
-        EXPECT_FALSE(builder.SetSky(RenderSkySnapshot{}));
-        EXPECT_FALSE(builder.SetEnvironment(RenderEnvironmentSnapshot{}));
-        EXPECT_FALSE(builder.SetSettings(RenderFrameSettings{}));
-        EXPECT_FALSE(builder.SetCaptureRequest(RenderFrameCaptureRequest{}));
-        EXPECT_FALSE(builder.SetFeatures(RenderFeatureSnapshot{}));
-        EXPECT_FALSE(builder.SetExtractionDiagnostics(RenderExtractionDiagnostics{}));
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetState(), RenderFramePacketBuilderState::Sealed);
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::AlreadySealed);
-        EXPECT_EQ(packet->GetHeader().sequence, 1U);
-        EXPECT_EQ(packet->GetView().viewportWidth, 1U);
-    }
-
-    TEST(RenderContractsValidation, BuilderReturnsDocumentedFirstFailure)
-    {
-        RenderFramePacketBuilder builder;
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::MissingValue);
-
-        PopulateCompletePacketBuilder(builder);
-        auto header = MakeValidHeader();
-        header.schemaVersion = RVX_RENDER_FRAME_PACKET_SCHEMA_VERSION + 1;
         header.sequence = 0;
-        ASSERT_TRUE(builder.SetHeader(header));
-        auto view = MakeValidView();
-        view.viewportWidth = 0;
-        ASSERT_TRUE(builder.SetView(view));
-        EXPECT_FALSE(builder.Seal());
-        EXPECT_EQ(builder.GetLastSealCode(), RenderFrameSealCode::InvalidSchema);
+        view.exposure = 4.0f;
+        settings.renderScale = 0.5f;
+        captureRequest.width = 1;
+
+        EXPECT_EQ(packet->GetHeader().sequence, 87U);
+        EXPECT_EQ(packet->GetHeader().requiredSceneRevision, 31U);
+        EXPECT_FLOAT_EQ(packet->GetView().exposure, 1.25f);
+        EXPECT_FLOAT_EQ(packet->GetSettings().renderScale, 0.75f);
+        EXPECT_EQ(packet->GetCaptureRequest().width, 64U);
+
+        RenderFrameHeaderV5 invalidHeader;
+        invalidHeader.sequence = 1;
+        EXPECT_EQ(RenderFramePacketV5::Create(invalidHeader,
+                                               MakeValidView(),
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               MakeCompleteDiagnostics()),
+                  nullptr);
+
+        RenderExtractionDiagnostics incompleteDiagnostics =
+            MakeCompleteDiagnostics();
+        incompleteDiagnostics.complete = false;
+        EXPECT_EQ(RenderFramePacketV5::Create(packet->GetHeader(),
+                                               MakeValidView(),
+                                               RenderFrameSettings{},
+                                               RenderFrameCaptureRequest{},
+                                               incompleteDiagnostics),
+                  nullptr);
     }
+
 } // namespace
 } // namespace RVX

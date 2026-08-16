@@ -235,8 +235,109 @@ namespace
         double y = 0.0;
     };
 
+    struct PBRViewBasis
+    {
+        double forwardX = 0.0;
+        double forwardY = 0.0;
+        double forwardZ = 0.0;
+        double rightX = 0.0;
+        double rightY = 0.0;
+        double rightZ = 0.0;
+        double upX = 0.0;
+        double upY = 0.0;
+        double upZ = 0.0;
+    };
+
+    [[nodiscard]] double Dot(double x,
+                             double y,
+                             double z,
+                             double axisX,
+                             double axisY,
+                             double axisZ)
+    {
+        return x * axisX + y * axisY + z * axisZ;
+    }
+
+    [[nodiscard]] PBRViewBasis MakePBRViewBasis()
+    {
+        constexpr double CameraYaw = 0.7853981634;
+        constexpr double CameraPitch = 0.2094395102;
+        const double sinYaw = std::sin(CameraYaw);
+        const double cosYaw = std::cos(CameraYaw);
+        const double sinPitch = std::sin(CameraPitch);
+        const double cosPitch = std::cos(CameraPitch);
+        return {
+            .forwardX = -cosPitch * sinYaw,
+            .forwardY = -sinPitch,
+            .forwardZ = -cosPitch * cosYaw,
+            .rightX = cosYaw,
+            .rightY = 0.0,
+            .rightZ = -sinYaw,
+            .upX = -sinPitch * sinYaw,
+            .upY = cosPitch,
+            .upZ = -sinPitch * cosYaw,
+        };
+    }
+
+    [[nodiscard]] double CalculatePBRGridCameraDistance(
+        RVX::uint32 width,
+        RVX::uint32 height)
+    {
+        constexpr double VerticalFov = 0.6981317008;
+        constexpr double MatrixHalfExtent = 3.45;
+        // PBRMaterialsSample passes 1.08 to BuildModelCameraFrame first, then
+        // initializes SampleOrbitCameraController. That controller immediately
+        // calls OrbitCameraRig::Fit using the rig default of 1.10.
+        constexpr double OrbitFitMargin = 1.10;
+        const double aspect = static_cast<double>(width) /
+            static_cast<double>(height);
+        const double tanVertical = std::tan(VerticalFov * 0.5);
+        const double tanHorizontal = tanVertical * aspect;
+        if (!std::isfinite(tanVertical) || !std::isfinite(tanHorizontal) ||
+            tanVertical <= 0.0 || tanHorizontal <= 0.0)
+        {
+            return 0.0;
+        }
+
+        // This is the value-only equivalent of
+        // OrbitCameraRig::CalculateFitDistance for PBRMaterialsSample's
+        // FreeOrbit rig. Its configured minimum distance is below every
+        // corner-fit constraint, so the eight AABB corners are authoritative.
+        const PBRViewBasis basis = MakePBRViewBasis();
+        double requiredDistance = 0.0;
+        for (double x : {-MatrixHalfExtent, MatrixHalfExtent})
+        {
+            for (double y : {-MatrixHalfExtent, MatrixHalfExtent})
+            {
+                for (double z : {-MatrixHalfExtent, MatrixHalfExtent})
+                {
+                    const double alongView = Dot(
+                        x, y, z,
+                        basis.forwardX, basis.forwardY, basis.forwardZ);
+                    const double horizontal = std::abs(Dot(
+                        x, y, z,
+                        basis.rightX, basis.rightY, basis.rightZ));
+                    const double vertical = std::abs(Dot(
+                        x, y, z,
+                        basis.upX, basis.upY, basis.upZ));
+                    requiredDistance = std::max(
+                        requiredDistance, horizontal / tanHorizontal - alongView);
+                    requiredDistance = std::max(
+                        requiredDistance, vertical / tanVertical - alongView);
+                }
+            }
+        }
+
+        const double radius = std::sqrt(
+            3.0 * MatrixHalfExtent * MatrixHalfExtent);
+        const double fitPadding = std::max(
+            radius * (OrbitFitMargin - 1.0), radius * 0.001);
+        return requiredDistance + fitPadding;
+    }
+
     PBRProjectedPoint ProjectPBRGridPoint(
-        const RVX::Test::ImageData& image,
+        RVX::uint32 width,
+        RVX::uint32 height,
         RVX::uint32 row,
         RVX::uint32 column,
         double layerZ)
@@ -245,14 +346,10 @@ namespace
         constexpr double CameraYaw = 0.7853981634;
         constexpr double CameraPitch = 0.2094395102;
         constexpr double GridSpacing = 1.45;
-        constexpr double MatrixExtent = 3.45;
-        constexpr double FitMargin = 1.08;
 
-        const double aspect = static_cast<double>(image.width) /
-            static_cast<double>(image.height);
-        const double distance =
-            std::sqrt(3.0 * MatrixExtent * MatrixExtent) /
-            std::sin(VerticalFov * 0.5) * FitMargin;
+        const double aspect = static_cast<double>(width) /
+            static_cast<double>(height);
+        const double distance = CalculatePBRGridCameraDistance(width, height);
         const double worldX =
             (static_cast<double>(column) - 2.0) * GridSpacing;
         const double worldY =
@@ -278,6 +375,36 @@ namespace
             0.5 - viewY / (2.0 * viewDepth * tanHalfFov)};
     }
 
+    [[nodiscard]] bool ValidatePBRReferenceProjection()
+    {
+        constexpr RVX::uint32 CalibrationWidth = 320;
+        constexpr RVX::uint32 CalibrationHeight = 180;
+        constexpr double ExpectedDistance = 16.711408;
+        constexpr double DistanceTolerance = 0.00001;
+        const double distance = CalculatePBRGridCameraDistance(
+            CalibrationWidth, CalibrationHeight);
+        const PBRProjectedPoint topLeft = ProjectPBRGridPoint(
+            CalibrationWidth, CalibrationHeight, 0, 0, 2.9);
+        const PBRProjectedPoint bottomRight = ProjectPBRGridPoint(
+            CalibrationWidth, CalibrationHeight, 4, 4, 2.9);
+        const RVX::uint32 topLeftX = static_cast<RVX::uint32>(std::lround(
+            topLeft.x * static_cast<double>(CalibrationWidth)));
+        const RVX::uint32 topLeftY = static_cast<RVX::uint32>(std::lround(
+            topLeft.y * static_cast<double>(CalibrationHeight)));
+        const RVX::uint32 bottomRightX = static_cast<RVX::uint32>(std::lround(
+            bottomRight.x * static_cast<double>(CalibrationWidth)));
+        const RVX::uint32 bottomRightY = static_cast<RVX::uint32>(std::lround(
+            bottomRight.y * static_cast<double>(CalibrationHeight)));
+        if (std::abs(distance - ExpectedDistance) > DistanceTolerance ||
+            topLeftX != 97 || topLeftY != 46 ||
+            bottomRightX != 160 || bottomRightY != 159)
+        {
+            std::cerr << "PBR reference projection calibration failed\n";
+            return false;
+        }
+        return true;
+    }
+
     PBRGridResponseMetrics MeasurePBRGridResponse(
         const RVX::Test::ImageData& image,
         double layerZ,
@@ -292,7 +419,8 @@ namespace
             for (RVX::uint32 column = 0; column < GridSize; ++column)
             {
                 const PBRProjectedPoint projected =
-                    ProjectPBRGridPoint(image, row, column, layerZ);
+                    ProjectPBRGridPoint(
+                        image.width, image.height, row, column, layerZ);
                 const RVX::uint32 centerX = static_cast<RVX::uint32>(std::lround(
                     projected.x * static_cast<double>(image.width)));
                 const RVX::uint32 centerY = static_cast<RVX::uint32>(std::lround(
@@ -378,6 +506,10 @@ namespace
     bool ValidatePBRGridResponse(const RVX::Test::ImageData& image,
                                  const Options& options)
     {
+        if (!ValidatePBRReferenceProjection())
+        {
+            return false;
+        }
         const double scale = std::min(
             static_cast<double>(image.width) / 320.0,
             static_cast<double>(image.height) / 180.0);

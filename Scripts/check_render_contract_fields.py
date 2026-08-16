@@ -10,21 +10,25 @@ from typing import Iterable, Sequence
 
 
 DEFAULT_ENTRIES = (
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderFrameHeader",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderViewSnapshot",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderPrimitiveSnapshot",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderLightSnapshot",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderSkySnapshot",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderEnvironmentSnapshot",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderPostProcessSettings",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderShadowSettings",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderGPUCullingSettings",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderRayTracingSettings",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderTemporalSettings",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderFrameSettings",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderFrameCaptureRequest",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderExtractionDiagnostics",
-    "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderFramePacket",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderViewSnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderSubmeshMaterialBinding",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderSkinningPaletteMetadata",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderPrimitiveSnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderLightSnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderSkySnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderEnvironmentSnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderPostProcessSettings",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderShadowSettings",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderGPUCullingSettings",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderRayTracingSettings",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderTemporalSettings",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderFrameSettings",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderFrameCaptureRequest",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderExtractionDiagnostics",
+    "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:AcceptedExtractionDiagnosticsSnapshot",
+    "RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFrameHeaderV5",
+    "RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFramePacketV5",
+    "RenderContracts/Include/RenderContracts/RenderSceneUpdate.h:RenderSceneUpdateBatch",
     "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:UploadByteRange",
     "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:MeshUploadCreateInfo",
     "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:MeshUploadSubmesh",
@@ -62,6 +66,7 @@ class AggregateDecl:
     bases: tuple[tuple[str, ...], ...]
     body: tuple[str, ...]
     source: Path
+    template_parameters: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -166,7 +171,9 @@ def add_aggregate(
 ) -> None:
     existing = aggregates.get(declaration.name)
     if existing is not None and (
-        existing.bases != declaration.bases or existing.body != declaration.body
+        existing.bases != declaration.bases
+        or existing.body != declaration.body
+        or existing.template_parameters != declaration.template_parameters
     ):
         raise ParseError(
             "conflicting duplicate declaration: "
@@ -209,6 +216,54 @@ def parse_base_list(tokens: Sequence[str]) -> tuple[tuple[str, ...], ...]:
             raise ParseError("empty base declaration")
         normalized.append(value)
     return tuple(normalized)
+
+
+def parse_template_parameters(
+    tokens: Sequence[str], declaration_index: int, scope_start: int
+) -> tuple[str, ...]:
+    """Return parameter names for a template declaration immediately before a type.
+
+    The checker only needs names for substituting reachable value fields.  It
+    deliberately keeps this small and fail-closed: unsupported parameter forms
+    are ignored here and will remain unresolved when a specialization is
+    traversed rather than silently treated as an owning value.
+    """
+    if declaration_index <= scope_start or tokens[declaration_index - 1] != ">":
+        return ()
+
+    close = declaration_index - 1
+    depth = 0
+    opening = None
+    for index in range(close, scope_start - 1, -1):
+        token = tokens[index]
+        if token == ">":
+            depth += 1
+        elif token == "<":
+            depth -= 1
+            if depth == 0:
+                opening = index
+                break
+    if opening is None or opening <= scope_start or tokens[opening - 1] != "template":
+        return ()
+
+    parameter_tokens = tokens[opening + 1 : close]
+    parameters: list[str] = []
+    for declaration in split_template_arguments(parameter_tokens):
+        if not declaration:
+            return ()
+        # Strip a default argument before selecting the parameter identifier.
+        if "=" in declaration:
+            declaration = declaration[: declaration.index("=")]
+        candidates = [
+            token
+            for token in declaration
+            if re.fullmatch(r"[A-Za-z_]\w*", token)
+            and token not in {"typename", "class", "struct", "const", "volatile"}
+        ]
+        if not candidates:
+            return ()
+        parameters.append(candidates[-1])
+    return tuple(parameters)
 
 
 def scan_aggregates_and_enums(
@@ -264,6 +319,9 @@ def scan_aggregates_and_enums(
                     if cursor < end and tokens[cursor] == "{":
                         close = find_matching(tokens, cursor, "{", "}")
                         bases = parse_base_list(tokens[index + 2 : cursor])
+                        template_parameters = parse_template_parameters(
+                            tokens, index, start
+                        )
                         add_aggregate(
                             aggregates,
                             AggregateDecl(
@@ -271,6 +329,7 @@ def scan_aggregates_and_enums(
                                 bases,
                                 tuple(tokens[cursor + 1 : close]),
                                 path,
+                                template_parameters,
                             ),
                         )
                         index = close + 1
@@ -734,8 +793,14 @@ class ContractWalker:
         aggregate_stack: tuple[str, ...],
         alias_stack: tuple[str, ...] = (),
         context_namespace: str = "",
+        template_bindings: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         tokens = tuple(token for token in raw_tokens if token not in ("const", "volatile"))
+        if template_bindings:
+            substituted: list[str] = []
+            for token in tokens:
+                substituted.extend(template_bindings.get(token, (token,)))
+            tokens = tuple(substituted)
         if "*" in tokens:
             self.errors.append(f"raw pointer via {path}")
             return
@@ -750,18 +815,49 @@ class ContractWalker:
             if forbidden is not None:
                 self.errors.append(f"forbidden {forbidden} via {path}")
                 return
-            if base not in OWNING_TEMPLATES:
+            if base in OWNING_TEMPLATES:
+                traversed_arguments = arguments[:1] if base == "std::array" else arguments
+                for argument in traversed_arguments:
+                    self._walk_type(
+                        argument,
+                        path,
+                        aggregate_stack,
+                        alias_stack,
+                        context_namespace,
+                        template_bindings,
+                    )
+                return
+
+            resolved_template, template_kind = self._resolve_named_type(
+                base,
+                context_namespace,
+            )
+            if template_kind == "ambiguous":
+                self.errors.append(f"ambiguous reachable type: {base} via {path}")
+                return
+            if template_kind != "aggregate" or resolved_template is None:
                 self.errors.append(f"unresolved reachable type: {base} via {path}")
                 return
-            traversed_arguments = arguments[:1] if base == "std::array" else arguments
-            for argument in traversed_arguments:
-                self._walk_type(
-                    argument,
-                    path,
-                    aggregate_stack,
-                    alias_stack,
-                    context_namespace,
+            declaration = self.index.aggregates[resolved_template]
+            parameters = declaration.template_parameters
+            if not parameters:
+                self.errors.append(
+                    f"unresolved reachable type: {base} via {path}"
                 )
+                return
+            if len(parameters) != len(arguments):
+                self.errors.append(
+                    f"template argument count mismatch: {base} via {path}"
+                )
+                return
+            bindings = dict(zip(parameters, arguments))
+            self._walk_aggregate(
+                declaration,
+                path,
+                aggregate_stack,
+                alias_stack,
+                bindings,
+            )
             return
 
         name = canonical_name(tokens)
@@ -795,12 +891,29 @@ class ContractWalker:
                 aggregate_stack,
                 (*alias_stack, resolved_name),
                 alias_namespace,
+                template_bindings,
             )
             return
         if declaration_kind == "enum":
             return
 
         declaration = self.index.aggregates[resolved_name]
+        self._walk_aggregate(
+            declaration,
+            path,
+            aggregate_stack,
+            alias_stack,
+            template_bindings,
+        )
+
+    def _walk_aggregate(
+        self,
+        declaration: AggregateDecl,
+        path: str,
+        aggregate_stack: tuple[str, ...],
+        alias_stack: tuple[str, ...],
+        template_bindings: dict[str, tuple[str, ...]] | None = None,
+    ) -> None:
         if declaration.name in aggregate_stack:
             return
         next_stack = (*aggregate_stack, declaration.name)
@@ -813,6 +926,7 @@ class ContractWalker:
                 next_stack,
                 alias_stack,
                 declaration_namespace,
+                template_bindings,
             )
         for field in aggregate_fields(declaration):
             self.field_count += 1
@@ -826,6 +940,7 @@ class ContractWalker:
                 next_stack,
                 alias_stack,
                 declaration_namespace,
+                template_bindings,
             )
 
 

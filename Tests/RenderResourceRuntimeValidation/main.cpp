@@ -24,7 +24,7 @@ namespace
         bool destroyed = false;
     };
 
-    class FakeBuffer final : public RHIBuffer
+    class FakeBuffer : public RHIBuffer
     {
     public:
         FakeBuffer(const RHIBufferDesc& desc,
@@ -57,6 +57,24 @@ namespace
         RHIBufferDesc m_desc;
         std::vector<uint8> m_storage;
         std::shared_ptr<DestructionState> m_destruction;
+    };
+
+    class FailingCommitBuffer final : public FakeBuffer
+    {
+    public:
+        FailingCommitBuffer(const RHIBufferDesc& desc,
+                            std::shared_ptr<DestructionState> destruction = {})
+            : FakeBuffer(desc, std::move(destruction))
+        {
+        }
+
+        bool CommitMappedWrite() override
+        {
+            ++m_commitCount;
+            return false;
+        }
+
+        uint32 m_commitCount = 0;
     };
 
     class FakeTexture final : public RHITexture
@@ -94,7 +112,8 @@ namespace
     class FakeStagingBuffer final : public RHIStagingBuffer
     {
     public:
-        explicit FakeStagingBuffer(const RHIStagingBufferDesc& desc)
+        explicit FakeStagingBuffer(const RHIStagingBufferDesc& desc,
+                                   bool failCommit = false)
             : m_size(desc.size)
         {
             RHIBufferDesc bufferDesc;
@@ -103,6 +122,7 @@ namespace
             bufferDesc.memoryType = RHIMemoryType::Upload;
             m_buffer = RHIBufferRef(new FakeBuffer(bufferDesc));
             m_storage.resize(static_cast<size_t>(desc.size));
+            m_failCommit = failCommit;
         }
 
         void* Map(uint64 offset = 0, uint64 size = RVX_WHOLE_SIZE) override
@@ -116,15 +136,30 @@ namespace
             }
             return m_storage.data() + static_cast<size_t>(offset);
         }
-        void Unmap() override {}
+        void Unmap() override { ++m_unmapCount; }
+        bool CommitMappedWrite() override
+        {
+            ++m_commitCount;
+            if (m_failCommit)
+            {
+                return false;
+            }
+            Unmap();
+            return true;
+        }
         uint64 GetSize() const override { return m_size; }
         RHIBuffer* GetBuffer() const override { return m_buffer.Get(); }
         const std::vector<uint8>& GetStorage() const { return m_storage; }
+        uint32 GetCommitCount() const { return m_commitCount; }
+        uint32 GetUnmapCount() const { return m_unmapCount; }
 
     private:
         uint64 m_size = 0;
         RHIBufferRef m_buffer;
         std::vector<uint8> m_storage;
+        bool m_failCommit = false;
+        uint32 m_commitCount = 0;
+        uint32 m_unmapCount = 0;
     };
 
     class FakeCommandContext final : public RHICommandContext
@@ -316,6 +351,13 @@ namespace
             createdBufferDescs.push_back(desc);
             auto state = std::make_shared<DestructionState>();
             resourceBufferStates.push_back(state);
+            if (failNextBufferMappedWriteCommit)
+            {
+                failNextBufferMappedWriteCommit = false;
+                RHIBufferRef failing(new FailingCommitBuffer(
+                    desc, std::move(state)));
+                return failing;
+            }
             return RHIBufferRef(new FakeBuffer(desc, std::move(state)));
         }
         RHITextureRef CreateTexture(const RHITextureDesc& desc) override
@@ -457,7 +499,14 @@ namespace
             {
                 return {};
             }
-            RHIStagingBufferRef staging(new FakeStagingBuffer(desc));
+            ++stagingCreateCount;
+            const bool failCommit = failNextStagingCommit ||
+                                    (failStagingCommitAtCreation != 0 &&
+                                     stagingCreateCount ==
+                                         failStagingCommitAtCreation);
+            failNextStagingCommit = false;
+            RHIStagingBufferRef staging(new FakeStagingBuffer(desc, failCommit));
+            lastStagingOwner = staging;
             lastStaging = static_cast<FakeStagingBuffer*>(staging.Get());
             return staging;
         }
@@ -504,6 +553,11 @@ namespace
         bool failContextCreation = false;
         bool failStagingCreation = false;
         bool failSubmit = false;
+        bool failNextBufferMappedWriteCommit = false;
+        bool failNextStagingCommit = false;
+        uint32 failStagingCommitAtCreation = 0;
+        uint32 stagingCreateCount = 0;
+        RHIStagingBufferRef lastStagingOwner;
         FakeStagingBuffer* lastStaging = nullptr;
     };
 
@@ -668,6 +722,37 @@ namespace
         std::unique_ptr<RenderResourceGateway> gateway;
     };
 
+    TEST_F(RenderResourceRuntimeFixture,
+         LegacyImmediateCommitFailureDoesNotPublishBuffer)
+    {
+        device.capabilities.backendType = RHIBackendType::DX11;
+        ASSERT_TRUE(processor.InitializeLegacy(&device, &tracker));
+
+        const std::array<uint32, 4> source = {1U, 2U, 3U, 4U};
+        GPUUploadBufferDesc desc;
+        desc.size = sizeof(source);
+        desc.usage = RHIBufferUsage::Vertex;
+        desc.stride = sizeof(uint32);
+        device.failNextBufferMappedWriteCommit = true;
+
+        const GPUUploadBufferResult result =
+            processor.UploadLegacyBufferDataWithResult(
+                desc, source.data(), sizeof(source));
+        EXPECT_FALSE(result.succeeded);
+        EXPECT_EQ(result.failureReason, GPUUploadFailureReason::CopyFailed);
+        EXPECT_EQ(result.resource.Get(), nullptr);
+        EXPECT_EQ(processor.GetLegacyStats().bufferUploadCount, 0U);
+        EXPECT_EQ(processor.GetLegacyStats().immediateUploadCount, 0U);
+        EXPECT_EQ(processor.GetLegacyStats().uploadedBytes, 0U);
+        EXPECT_EQ(processor.GetLegacyStats().failedUploadCount, 1U);
+        EXPECT_TRUE(device.commandContexts.empty());
+        EXPECT_EQ(device.submitCount, 0U);
+        ASSERT_EQ(device.resourceBufferStates.size(), 1U);
+        EXPECT_TRUE(device.resourceBufferStates[0]->destroyed);
+
+        processor.ShutdownLegacy();
+    }
+
     TEST_F(RenderResourceRuntimeFixture, MeshCopyIsPendingThenCommitsExactly)
     {
         const AssetId asset{1};
@@ -692,6 +777,69 @@ namespace
         ASSERT_NE(mesh, nullptr);
         EXPECT_EQ(mesh->buffers.size(), 2U);
         EXPECT_EQ(processor.GetInFlightCount(), 0U);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           StagingCommitFailureDoesNotRecordCopyOrPublishCreate)
+    {
+        const AssetId asset{501};
+        const RenderResourceHandle handle =
+            Reserve(asset, RenderResourceKind::Mesh);
+        ResourceUploadRequestRef owner =
+            CreateAndQueue(MakeMeshInfo(asset, handle));
+        device.failNextStagingCommit = true;
+
+        EXPECT_EQ(DequeueAndProcess(),
+                  RenderUploadProcessCode::ResourceCreationFailed);
+
+        const RenderResourceStatus status = gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(status.state, RenderResourcePublicState::Failed);
+        EXPECT_EQ(status.failure,
+                  RenderResourceFailureCode::ResourceCreationFailed);
+        EXPECT_EQ(status.committedContentRevision, 0U);
+        EXPECT_FALSE(registry.HasPending(handle));
+        EXPECT_FALSE(registry.HasExactEntry(handle));
+        EXPECT_EQ(processor.GetInFlightCount(), 0U);
+        EXPECT_EQ(device.submitCount, 0U);
+        ASSERT_NE(device.lastStaging, nullptr);
+        EXPECT_EQ(device.lastStaging->GetCommitCount(), 1U);
+        EXPECT_EQ(device.lastStaging->GetUnmapCount(), 0U);
+        ASSERT_EQ(device.commandContexts.size(), 1U);
+        const auto* context =
+            static_cast<const FakeCommandContext*>(device.commandContexts[0].Get());
+        EXPECT_EQ(context->copyBufferCount, 0U);
+        EXPECT_EQ(context->copyTextureCount, 0U);
+        ASSERT_EQ(device.resourceBufferStates.size(), 1U);
+        EXPECT_TRUE(device.resourceBufferStates[0]->destroyed);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           LaterStagingCommitFailureRetiresTheEntirePendingMeshGeneration)
+    {
+        const AssetId asset{502};
+        const RenderResourceHandle handle =
+            Reserve(asset, RenderResourceKind::Mesh);
+        ResourceUploadRequestRef owner =
+            CreateAndQueue(MakeMeshInfo(asset, handle, true));
+        device.failStagingCommitAtCreation = 2;
+
+        EXPECT_EQ(DequeueAndProcess(),
+                  RenderUploadProcessCode::ResourceCreationFailed);
+
+        const RenderResourceStatus status = gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(status.state, RenderResourcePublicState::Failed);
+        EXPECT_EQ(status.committedContentRevision, 0U);
+        EXPECT_FALSE(registry.HasPending(handle));
+        EXPECT_FALSE(registry.HasExactEntry(handle));
+        EXPECT_EQ(processor.GetInFlightCount(), 0U);
+        EXPECT_EQ(device.submitCount, 0U);
+        ASSERT_EQ(device.commandContexts.size(), 1U);
+        const auto* context =
+            static_cast<const FakeCommandContext*>(device.commandContexts[0].Get());
+        EXPECT_EQ(context->copyBufferCount, 1U);
+        ASSERT_EQ(device.resourceBufferStates.size(), 2U);
+        EXPECT_TRUE(device.resourceBufferStates[0]->destroyed);
+        EXPECT_TRUE(device.resourceBufferStates[1]->destroyed);
     }
 
     TEST_F(RenderResourceRuntimeFixture,
@@ -1097,9 +1245,18 @@ namespace
         ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
         CompleteAndPoll();
         ASSERT_NE(registry.ResolveTexture(first), nullptr);
+        const RenderResourceStatus firstReady =
+            gateway->QueryResourceStatus(first);
+        EXPECT_EQ(firstReady.state, RenderResourcePublicState::GPUReady);
+        EXPECT_EQ(firstReady.committedContentRevision,
+                  registry.GetContentRevision(first));
+        EXPECT_NE(firstReady.committedContentRevision, 0U);
         ASSERT_EQ(gateway->RequestRelease(first).code,
                   RenderReleaseCode::Accepted);
         processor.ProcessRelease(gateway->TryDequeueRelease());
+        const RenderResourceStatus released = gateway->QueryResourceStatus(first);
+        EXPECT_EQ(released.state, RenderResourcePublicState::Released);
+        EXPECT_EQ(released.committedContentRevision, 0U);
         static_cast<void>(retirement.Poll());
 
         const AssetId secondAsset{14};
@@ -1107,10 +1264,20 @@ namespace
             Reserve(secondAsset, RenderResourceKind::Texture);
         EXPECT_EQ(second.slot, first.slot);
         EXPECT_EQ(second.generation, first.generation + 1U);
+        const RenderResourceStatus secondReserved =
+            gateway->QueryResourceStatus(second);
+        EXPECT_EQ(secondReserved.state, RenderResourcePublicState::Reserved);
+        EXPECT_EQ(secondReserved.committedContentRevision, 0U);
         ResourceUploadRequestRef secondOwner =
             CreateAndQueue(MakeTextureInfo(secondAsset, second));
         ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
         CompleteAndPoll();
+
+        const RenderResourceStatus secondReady =
+            gateway->QueryResourceStatus(second);
+        EXPECT_EQ(secondReady.committedContentRevision,
+                  registry.GetContentRevision(second));
+        EXPECT_NE(secondReady.committedContentRevision, 0U);
 
         EXPECT_EQ(registry.ResolveTexture(first), nullptr);
         EXPECT_NE(registry.ResolveTexture(second), nullptr);
@@ -1133,6 +1300,11 @@ namespace
         RHITexture* const initialTexture = initial->texture.Get();
         const uint64 initialContentRevision =
             registry.GetContentRevision(handle);
+        const RenderResourceStatus initialStatus =
+            gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(initialStatus.committedContentRevision,
+                  initialContentRevision);
+        EXPECT_NE(initialStatus.committedContentRevision, 0U);
 
         ResourceUploadRequestCreateInfo replacement =
             MakeTextureInfo(asset, handle);
@@ -1148,6 +1320,8 @@ namespace
         EXPECT_EQ(queuedStatus.replacementState,
                   RenderResourceReplacementState::Queued);
         EXPECT_EQ(queuedStatus.pendingSourceRevision, 1U);
+        EXPECT_EQ(queuedStatus.committedContentRevision,
+                  initialContentRevision);
         EXPECT_TRUE(registry.IsGPUReadyExact(handle));
         ASSERT_NE(registry.ResolveTexture(handle), nullptr);
         EXPECT_EQ(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
@@ -1168,6 +1342,8 @@ namespace
         EXPECT_EQ(uploadingStatus.replacementState,
                   RenderResourceReplacementState::Uploading);
         EXPECT_EQ(uploadingStatus.pendingSourceRevision, 1U);
+        EXPECT_EQ(uploadingStatus.committedContentRevision,
+                  initialContentRevision);
         EXPECT_TRUE(registry.IsGPUReadyExact(handle));
         ASSERT_NE(registry.ResolveTexture(handle), nullptr);
         EXPECT_EQ(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
@@ -1183,9 +1359,61 @@ namespace
         ASSERT_NE(registry.ResolveTexture(handle), nullptr);
         EXPECT_NE(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
         EXPECT_GT(registry.GetContentRevision(handle), initialContentRevision);
+        EXPECT_EQ(completedStatus.committedContentRevision,
+                  registry.GetContentRevision(handle));
         EXPECT_EQ(registry.GetCommittedSourceRevision(handle), 1U);
         EXPECT_EQ(registry.GetPendingSourceRevision(handle), 0U);
         EXPECT_EQ(retirement.GetDiagnostics().entryCount, 1U);
+    }
+
+    TEST_F(RenderResourceRuntimeFixture,
+           StagingCommitFailurePreservesCommittedReplacementContent)
+    {
+        const AssetId asset{503};
+        const RenderResourceHandle handle =
+            Reserve(asset, RenderResourceKind::Texture);
+        ResourceUploadRequestRef initialOwner =
+            CreateAndQueue(MakeTextureInfo(asset, handle));
+        ASSERT_EQ(DequeueAndProcess(), RenderUploadProcessCode::Accepted);
+        CompleteAndPoll();
+
+        const RenderTextureResourceData* const initial =
+            registry.ResolveTexture(handle);
+        ASSERT_NE(initial, nullptr);
+        RHITexture* const initialTexture = initial->texture.Get();
+        const uint64 initialContentRevision =
+            registry.GetContentRevision(handle);
+        EXPECT_EQ(retirement.GetDiagnostics().entryCount, 0U);
+
+        ResourceUploadRequestCreateInfo replacement =
+            MakeTextureInfo(asset, handle);
+        replacement.sequence = 504;
+        replacement.operation = RenderResourceContentOperation::Replace;
+        replacement.sourceRevision = 1;
+        ResourceUploadRequestRef replacementOwner =
+            CreateAndQueue(std::move(replacement));
+        device.failNextStagingCommit = true;
+
+        EXPECT_EQ(DequeueAndProcess(),
+                  RenderUploadProcessCode::ResourceCreationFailed);
+
+        const RenderResourceStatus status = gateway->QueryResourceStatus(handle);
+        EXPECT_EQ(status.state, RenderResourcePublicState::GPUReady);
+        EXPECT_EQ(status.failure,
+                  RenderResourceFailureCode::ResourceCreationFailed);
+        EXPECT_EQ(status.replacementState,
+                  RenderResourceReplacementState::None);
+        EXPECT_EQ(status.pendingSourceRevision, 0U);
+        EXPECT_EQ(status.committedContentRevision, initialContentRevision);
+        EXPECT_TRUE(registry.IsGPUReadyExact(handle));
+        ASSERT_NE(registry.ResolveTexture(handle), nullptr);
+        EXPECT_EQ(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
+        EXPECT_EQ(registry.GetContentRevision(handle), initialContentRevision);
+        EXPECT_EQ(processor.GetInFlightCount(), 0U);
+        EXPECT_EQ(device.submitCount, 1U);
+        ASSERT_NE(device.lastStaging, nullptr);
+        EXPECT_EQ(device.lastStaging->GetCommitCount(), 1U);
+        EXPECT_EQ(device.lastStaging->GetUnmapCount(), 0U);
     }
 
     TEST_F(RenderResourceRuntimeFixture,
@@ -1224,6 +1452,8 @@ namespace
         EXPECT_EQ(failedStatus.replacementState,
                   RenderResourceReplacementState::None);
         EXPECT_EQ(failedStatus.pendingSourceRevision, 0U);
+        EXPECT_EQ(failedStatus.committedContentRevision,
+                  initialContentRevision);
         ASSERT_NE(registry.ResolveTexture(handle), nullptr);
         EXPECT_EQ(registry.ResolveTexture(handle)->texture.Get(), initialTexture);
         EXPECT_EQ(registry.GetContentRevision(handle), initialContentRevision);

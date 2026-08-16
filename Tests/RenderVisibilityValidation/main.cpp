@@ -1,5 +1,7 @@
 #include "Render/Visibility/RenderVisibility.h"
 
+#include "RenderContracts/RenderFrameTypes.h"
+
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -211,6 +213,45 @@ TEST(RenderVisibilityValidation, PassProjectionReusesCanonicalObjectVisibility)
     EXPECT_EQ(3u, incremental.diagnostics.passCandidateCount);
     EXPECT_EQ(3u, incremental.diagnostics.gpuDeferredCandidateCount);
     EXPECT_FALSE(incremental.diagnostics.gpuReadbackPerformed);
+}
+
+TEST(RenderVisibilityValidation,
+     CommonLayerCandidateExcludesDirectAndGPUDrivenLanesIdentically)
+{
+    constexpr uint32 objectLayerMask = 0x00000002U;
+    constexpr uint32 viewCullingMask = 0x00000001U;
+    ASSERT_FALSE(IsRenderLayerVisible(objectLayerMask, viewCullingMask));
+
+    const AABB bounds(Vec3(-0.1f, -0.1f, -5.0f),
+                      Vec3(0.1f, 0.1f, -4.9f));
+    RenderCandidateSet candidates;
+    RenderVisibilityCandidate sceneCandidate = MakeCandidate(
+        0, RenderPassKind::None, RVX_INVALID_INDEX, bounds);
+    sceneCandidate.objectVisible = IsRenderLayerVisible(
+        objectLayerMask, viewCullingMask);
+    ASSERT_NE(RVX_INVALID_INDEX, candidates.Add(sceneCandidate));
+
+    GPUVisibilityProvider gpuProvider;
+    RenderVisibilityResult gpuResult;
+    gpuProvider.Evaluate(candidates, TestRequest(), gpuResult);
+
+    const uint32 firstPassCandidate = static_cast<uint32>(
+        candidates.GetCandidates().size());
+    RenderVisibilityCandidate directCandidate = MakeCandidate(
+        0, RenderPassKind::Opaque, 0, bounds);
+    directCandidate.objectVisible = sceneCandidate.objectVisible;
+    ASSERT_NE(RVX_INVALID_INDEX, candidates.Add(directCandidate));
+    gpuProvider.AppendPassCandidates(candidates, firstPassCandidate, gpuResult);
+
+    CPUVisibilityProvider directProvider;
+    RenderVisibilityResult directResult;
+    directProvider.Evaluate(candidates, TestRequest(), directResult);
+
+    EXPECT_TRUE(directResult.cpuVisibleObjectIndices.empty());
+    EXPECT_TRUE(gpuResult.cpuVisibleObjectIndices.empty());
+    EXPECT_FALSE(directResult.IsDirectPacketVisible(RenderPassKind::Opaque, 0));
+    EXPECT_FALSE(gpuResult.IsDirectPacketVisible(RenderPassKind::Opaque, 0));
+    EXPECT_EQ(0U, gpuResult.diagnostics.gpuDeferredCandidateCount);
 }
 
 TEST(RenderVisibilityValidation, DenseSourceMappingStaysLinearForLargeCandidateSets)

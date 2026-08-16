@@ -214,7 +214,7 @@ finally {
         fresh = [bool]$Fresh
         ctestInventoryCount = $testCount
         architectureBaselineReport = $baselineReport
-        m1ArchitectureGate = "Architecture.M1ArchitectureCut"
+        pureEcsArchitectureGate = "Architecture.PureEcsRuntime"
         nativeLifecycle = if ($null -eq $nativeEvidence) {
             $null
         } else {

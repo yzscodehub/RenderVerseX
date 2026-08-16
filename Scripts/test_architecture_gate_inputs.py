@@ -13,7 +13,7 @@ SCRIPTS_DIR = REPO_ROOT / "Scripts"
 ROOT_ONLY_GATES = (
     "check_cmake_module_visibility.py",
     "check_editor_runtime_boundary.py",
-    "check_architecture_phase_gates.py",
+    "check_pure_ecs_runtime.py",
 )
 MANIFEST_GATES = (
     "check_module_boundaries.py",

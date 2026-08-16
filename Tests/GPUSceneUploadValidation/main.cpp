@@ -24,8 +24,11 @@ namespace
     class FakeBuffer final : public RHIBuffer
     {
     public:
-        explicit FakeBuffer(const RHIBufferDesc& desc)
-            : m_desc(desc), m_bytes(static_cast<size_t>(desc.size))
+        explicit FakeBuffer(const RHIBufferDesc& desc,
+                            uint32* uploadCommitCalls = nullptr)
+            : m_desc(desc),
+              m_bytes(static_cast<size_t>(desc.size)),
+              m_uploadCommitCalls(uploadCommitCalls)
         {
             SetDebugName(desc.debugName);
         }
@@ -41,6 +44,16 @@ namespace
         }
         void Unmap() override {}
         void SetMapFailure(bool enabled) { m_failMap = enabled; }
+        bool CommitMappedWrite() override
+        {
+            ++m_commitCalls;
+            if (m_uploadCommitCalls != nullptr)
+            {
+                ++*m_uploadCommitCalls;
+            }
+            return !m_failCommit;
+        }
+        void SetCommitFailure(bool enabled) { m_failCommit = enabled; }
 
         void CopyFrom(const FakeBuffer& source, uint64 sourceOffset,
                       uint64 targetOffset, uint64 size)
@@ -57,12 +70,16 @@ namespace
 
         const std::vector<uint8>& Bytes() const { return m_bytes; }
         uint32 MapCalls() const { return m_mapCalls; }
+        uint32 CommitCalls() const { return m_commitCalls; }
 
     private:
         RHIBufferDesc m_desc;
         std::vector<uint8> m_bytes;
         uint32 m_mapCalls = 0;
+        uint32 m_commitCalls = 0;
+        uint32* m_uploadCommitCalls = nullptr;
         bool m_failMap = false;
+        bool m_failCommit = false;
     };
 
     class FakeFence final : public RHIFence
@@ -174,10 +191,10 @@ namespace
     public:
         explicit FakeDevice(bool compatibility = false)
         {
-            m_compatibility = compatibility;
-            m_capabilities.backendType = compatibility
+            m_backendType = compatibility
                 ? RHIBackendType::DX11
                 : RHIBackendType::DX12;
+            m_capabilities.backendType = m_backendType;
             m_capabilities.adapterName = "GPUSceneUploadFake";
             m_capabilities.driverVersion = "1";
             m_capabilities.supportsComputePipeline = true;
@@ -217,10 +234,26 @@ namespace
             {
                 --m_createFailureCountdown;
             }
-            RHIBufferRef result(new FakeBuffer(desc));
+            RHIBufferRef result(new FakeBuffer(
+                desc,
+                desc.memoryType == RHIMemoryType::Upload
+                    ? &m_uploadCommitCalls
+                    : nullptr));
             if (m_failUploadMap && desc.memoryType == RHIMemoryType::Upload)
             {
                 static_cast<FakeBuffer*>(result.Get())->SetMapFailure(true);
+            }
+            if (desc.memoryType == RHIMemoryType::Upload)
+            {
+                if (m_failUploadCommitAfter == 0)
+                {
+                    static_cast<FakeBuffer*>(result.Get())->SetCommitFailure(true);
+                    m_failUploadCommitAfter = -1;
+                }
+                else if (m_failUploadCommitAfter > 0)
+                {
+                    --m_failUploadCommitAfter;
+                }
             }
             m_buffers.push_back(static_cast<FakeBuffer*>(result.Get()));
             return result;
@@ -270,7 +303,7 @@ namespace
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override
         {
-            return m_compatibility ? RHIBackendType::DX11 : RHIBackendType::DX12;
+            return m_backendType;
         }
         RHIDeviceRuntimeStatus QueryRuntimeStatus() const noexcept override
         {
@@ -278,12 +311,13 @@ namespace
                                 : RHIDeviceRuntimeStatus::Ready;
         }
 
-        FakeBuffer* Find(const char* name) const
+        FakeBuffer* Find(const char* name,
+                         RHIMemoryType memoryType = RHIMemoryType::Default) const
         {
             for (FakeBuffer* buffer : m_buffers)
             {
                 if (buffer && buffer->GetDebugName() == name &&
-                    buffer->GetMemoryType() == RHIMemoryType::Default)
+                    buffer->GetMemoryType() == memoryType)
                 {
                     return buffer;
                 }
@@ -303,18 +337,45 @@ namespace
             }
             return count;
         }
+        uint32 UploadCommitCalls() const
+        {
+            return m_uploadCommitCalls;
+        }
         void FailCreateAfter(int32 calls) { m_createFailureCountdown = calls; }
         void SetFailUploadMap(bool enabled) { m_failUploadMap = enabled; }
+        void FailUploadCommitAfter(int32 calls) { m_failUploadCommitAfter = calls; }
         void SetDeviceLost(bool lost) { m_deviceLost = lost; }
+        void SetCopyQueueDomain(GPUQueueDomain domain)
+        {
+            m_capabilities.queueTopology.logicalQueueDomains[
+                static_cast<uint8>(RHICommandQueueType::Copy)] = domain;
+            m_capabilities.queueTopology.activeDomainCount =
+                domain == GPUQueueDomain::Copy ? 3 : 2;
+        }
+        void SetQueueSubmissionPlanSupported(bool supported)
+        {
+            m_capabilities.supportsQueueSubmissionPlan = supported;
+        }
+        void SetBackendType(RHIBackendType backendType)
+        {
+            m_backendType = backendType;
+            m_capabilities.backendType = backendType;
+            if (backendType == RHIBackendType::Vulkan)
+            {
+                m_capabilities.vulkan.apiVersion = 1;
+            }
+        }
 
     private:
         RHICapabilities m_capabilities;
         std::vector<FakeBuffer*> m_buffers;
         std::vector<RHIFenceRef> m_fences;
         int32 m_createFailureCountdown = -1;
+        int32 m_failUploadCommitAfter = -1;
+        uint32 m_uploadCommitCalls = 0;
         bool m_failUploadMap = false;
         bool m_deviceLost = false;
-        bool m_compatibility = false;
+        RHIBackendType m_backendType = RHIBackendType::DX12;
     };
 
     GPUSceneObjectData MakeObject(uint64 id, float32 marker)
@@ -333,6 +394,13 @@ namespace
     void RecordAndExecute(GPUSceneUploader& uploader, FakeDevice& device,
                            FakeCommandContext& context)
     {
+        // This helper intentionally exercises the GraphicsOnly recorder. Its
+        // fake capability snapshot must therefore disable queue plans before
+        // GPUScene records the staging import; the production multi-queue
+        // behavior is covered explicitly by UploadStagingUsesCopyDomain...
+        const bool queueSubmissionPlanSupported =
+            device.GetCapabilities().supportsQueueSubmissionPlan;
+        device.SetQueueSubmissionPlanSupported(false);
         RenderGraph graph;
         RenderGraphValidationAccess::SetDevice(graph, &device);
         uploader.BuildRenderGraph(graph, nullptr);
@@ -340,6 +408,7 @@ namespace
         ASSERT_TRUE(graph.GetCompileStats().compileValid);
         RenderGraphValidationAccess::Execute(graph, context);
         uploader.CommitRealizedAccess(graph);
+        device.SetQueueSubmissionPlanSupported(queueSubmissionPlanSupported);
     }
 
     struct GPUSceneLeaseReadPassData
@@ -420,6 +489,188 @@ namespace
         }
     }
 
+    bool HasOwnershipTransition(
+        const RenderGraph::RecordedQueueSubmission& recorded,
+        const RHIBuffer* buffer,
+        GPUQueueDomain before,
+        GPUQueueDomain after)
+    {
+        for (const RHICommandContextRef& context : recorded.ownedContexts)
+        {
+            const auto* fakeContext = dynamic_cast<const FakeCommandContext*>(
+                context.Get());
+            if (!fakeContext)
+            {
+                continue;
+            }
+
+            const bool found = std::any_of(
+                fakeContext->bufferBarriers.begin(),
+                fakeContext->bufferBarriers.end(),
+                [buffer, before, after](const RHIBufferBarrier& barrier)
+                {
+                    return barrier.buffer == buffer &&
+                           barrier.accessBefore.domain == before &&
+                           barrier.accessAfter.domain == after &&
+                           HasDependencyKind(
+                               barrier.dependencyKind,
+                               RHIDependencyKind::Ownership);
+                });
+            if (found)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool HasAnyOwnershipTransition(
+        const RenderGraph::RecordedQueueSubmission& recorded,
+        const RHIBuffer* buffer)
+    {
+        for (const RHICommandContextRef& context : recorded.ownedContexts)
+        {
+            const auto* fakeContext = dynamic_cast<const FakeCommandContext*>(
+                context.Get());
+            if (!fakeContext)
+            {
+                continue;
+            }
+
+            const bool found = std::any_of(
+                fakeContext->bufferBarriers.begin(),
+                fakeContext->bufferBarriers.end(),
+                [buffer](const RHIBufferBarrier& barrier)
+                {
+                    return barrier.buffer == buffer &&
+                           HasDependencyKind(
+                               barrier.dependencyKind,
+                               RHIDependencyKind::Ownership);
+                });
+            if (found)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool HasAnyOwnershipTransition(const FakeCommandContext& context,
+                                   const RHIBuffer* buffer)
+    {
+        return std::any_of(
+            context.bufferBarriers.begin(),
+            context.bufferBarriers.end(),
+            [buffer](const RHIBufferBarrier& barrier)
+            {
+                return barrier.buffer == buffer &&
+                       HasDependencyKind(barrier.dependencyKind,
+                                         RHIDependencyKind::Ownership);
+            });
+    }
+
+    TEST(GPUSceneUploadValidation,
+         UploadStagingUsesCopyDomainWithoutFabricatingGraphicsOwnership)
+    {
+        FakeDevice device;
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        GPUSceneUploader uploader;
+        ASSERT_TRUE(uploader.Initialize(&device, &tracker));
+        GPUSceneDatabase database;
+        GPUSceneTransaction add;
+        add.Add(MakeObject(1, 1.0F));
+        ASSERT_TRUE(database.Commit(add).Succeeded());
+        uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+        // BuildRenderGraph runs before the final submission plan is compiled.
+        // The final plan nevertheless selects the dedicated Copy domain.
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+        uploader.BuildRenderGraph(graph, nullptr);
+        RenderGraphCompileOptions options;
+        options.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+        options.capabilities = device.GetCapabilities();
+        options.hasCapabilitySnapshot = true;
+        RenderGraphValidationAccess::Compile(graph, options);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        ASSERT_EQ(graph.GetQueueExecutionMode(),
+                  RenderGraph::QueueExecutionMode::MultiQueue);
+
+        RenderGraph::RecordedQueueSubmission recorded;
+        ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(
+            graph, recorded));
+        const FakeBuffer* staging = device.Find(
+            "GPUScene.UploadStaging", RHIMemoryType::Upload);
+        const FakeBuffer* target = device.Find("GPUScene.Primitives");
+        ASSERT_NE(staging, nullptr);
+        ASSERT_NE(target, nullptr);
+
+        // CPU-written staging enters its first and only GPU use on Copy: no
+        // fabricated external Graphics->Copy release/acquire is allowed.
+        EXPECT_FALSE(HasOwnershipTransition(
+            recorded, staging, GPUQueueDomain::Graphics, GPUQueueDomain::Copy));
+        EXPECT_FALSE(HasAnyOwnershipTransition(recorded, staging));
+
+        // The persistent table is different: it is produced on Copy and is
+        // exported to Graphics for its later ShaderResource consumers.
+        EXPECT_TRUE(HasOwnershipTransition(
+            recorded, target, GPUQueueDomain::Copy, GPUQueueDomain::Graphics));
+        uploader.ReleaseUnsubmittedFrame();
+    }
+
+    TEST(GPUSceneUploadValidation,
+         UploadStagingFallsBackToGraphicsForAliasedOrUnavailableCopyPlans)
+    {
+        const auto expectNoStagingOwnership = [](FakeDevice& device)
+        {
+            RenderSubmissionTracker tracker;
+            ASSERT_TRUE(tracker.Initialize(&device));
+            GPUSceneUploader uploader;
+            ASSERT_TRUE(uploader.Initialize(&device, &tracker));
+            GPUSceneDatabase database;
+            GPUSceneTransaction add;
+            add.Add(MakeObject(1, 1.0F));
+            ASSERT_TRUE(database.Commit(add).Succeeded());
+            uploader.Observe(database.GetCommittedMirror(),
+                             database.GetLastChangeSet());
+
+            RenderGraph graph;
+            RenderGraphValidationAccess::SetDevice(graph, &device);
+            uploader.BuildRenderGraph(graph, nullptr);
+            RenderGraphCompileOptions options;
+            options.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+            options.capabilities = device.GetCapabilities();
+            options.hasCapabilitySnapshot = true;
+            RenderGraphValidationAccess::Compile(graph, options);
+            ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+            // Both cases resolve the Copy pass to Graphics, so the graphics
+            // recorder is the relevant execution path. The no-plan case must
+            // not attempt to construct a multi-queue submission at all.
+            FakeCommandContext graphicsContext;
+            RenderGraphValidationAccess::Execute(graph, graphicsContext);
+            EXPECT_GT(graphicsContext.copyCount, 0U);
+            const FakeBuffer* staging = device.Find(
+                "GPUScene.UploadStaging", RHIMemoryType::Upload);
+            ASSERT_NE(staging, nullptr);
+            EXPECT_FALSE(HasAnyOwnershipTransition(graphicsContext, staging));
+            uploader.ReleaseUnsubmittedFrame();
+        };
+
+        // Vulkan may legally alias its logical Copy queue to Graphics.
+        FakeDevice aliasedCopyDevice;
+        aliasedCopyDevice.SetBackendType(RHIBackendType::Vulkan);
+        aliasedCopyDevice.SetCopyQueueDomain(GPUQueueDomain::Graphics);
+        expectNoStagingOwnership(aliasedCopyDevice);
+
+        // A distinct topology alone is insufficient: without an executable
+        // queue submission plan RenderGraph routes Copy passes on Graphics.
+        FakeDevice noPlanDevice;
+        noPlanDevice.SetQueueSubmissionPlanSupported(false);
+        expectNoStagingOwnership(noPlanDevice);
+    }
+
     TEST(GPUSceneUploadValidation, FullThenIncrementalUploadKeepsUntouchedRows)
     {
         FakeDevice device;
@@ -459,8 +710,9 @@ namespace
         context.copyCount = 0;
         RecordAndExecute(uploader, device, context);
         EXPECT_GT(context.copyCount, 0U);
-        EXPECT_LT(uploader.GetDiagnostics().frameUploadBytes,
-                  uploader.GetDiagnostics().persistentBytes);
+        // Recording and CPU staging evidence are not GPU-copy publication.
+        EXPECT_EQ(uploader.GetDiagnostics().frameUploadBytes, 0U);
+        EXPECT_EQ(uploader.GetDiagnostics().frameUploadRangeCount, 0U);
         // Only the bounds row changed; an unchanged table is not rewritten.
         EXPECT_EQ(before, primitive->Bytes());
         EXPECT_NE(boundsBefore, bounds->Bytes());
@@ -498,6 +750,19 @@ namespace
         uploader.NotifySubmission(token);
         ASSERT_NE(device.Fence(0), nullptr);
         device.Fence(0)->Complete(fullUpload.value);
+        const GPUSceneUploadMutationTotals fullMutationTotals =
+            uploader.GetDiagnostics().mutationTotals;
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+             ++tableIndex)
+        {
+            // Full materialization writes the exact allocated resident range,
+            // including capacity slack beyond the payload's sentinel/object rows.
+            EXPECT_EQ(fullMutationTotals
+                          .submittedUploadedRowCount[tableIndex],
+                      uploader.GetDiagnostics().tables[tableIndex]
+                          .residentCapacity);
+        }
 
         GPUSceneTransaction update;
         for (uint32 index = 0; index < objectCount; index += 100U)
@@ -515,6 +780,14 @@ namespace
                          database.GetLastChangeSet());
         context.copyCount = 0;
         RecordAndExecute(uploader, device, context);
+
+        EXPECT_EQ(uploader.GetDiagnostics().frameUploadBytes, 0U);
+        EXPECT_EQ(uploader.GetDiagnostics().frameUploadRangeCount, 0U);
+        const GPUCompletionPoint incrementalUpload = tracker.Submit(&context);
+        ASSERT_NE(incrementalUpload.value, 0U);
+        GPUCompletionToken incrementalToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(incrementalToken, incrementalUpload));
+        uploader.NotifySubmission(incrementalToken);
 
         const GPUSceneUploadDiagnostics& diagnostics =
             uploader.GetDiagnostics();
@@ -542,6 +815,18 @@ namespace
         EXPECT_EQ(diagnostics.frameUploadRangeCount,
                   dirtyCount * GPU_SCENE_RESIDENT_TABLE_COUNT);
         EXPECT_EQ(diagnostics.frameUploadBytes, expectedBytes);
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+             ++tableIndex)
+        {
+            // The durable row total exposes a hidden population-sized rewrite:
+            // only the 1% dirty rows may advance after the initial full upload.
+            EXPECT_EQ(diagnostics.mutationTotals
+                          .submittedUploadedRowCount[tableIndex],
+                      static_cast<uint64>(fullMutationTotals
+                                               .submittedUploadedRowCount[tableIndex]) +
+                          dirtyCount);
+        }
     }
 
     TEST(GPUSceneUploadValidation, WarmStaticFrameAndUnsubmittedRetryAreSafe)
@@ -1105,6 +1390,12 @@ namespace
         ASSERT_TRUE(database.Commit(add).Succeeded());
         uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
 
+        // This test records with the GraphicsOnly adapter. Match that policy
+        // in its fake capability snapshot rather than importing Copy-owned
+        // staging into a graph that has no submission plan.
+        const bool queueSubmissionPlanSupported =
+            device.GetCapabilities().supportsQueueSubmissionPlan;
+        device.SetQueueSubmissionPlanSupported(false);
         RenderGraph pendingGraph;
         RenderGraphValidationAccess::SetDevice(pendingGraph, &device);
         uploader.BuildRenderGraph(pendingGraph, nullptr);
@@ -1116,6 +1407,7 @@ namespace
         ASSERT_TRUE(pendingGraph.GetCompileStats().compileValid);
         RenderGraphValidationAccess::Execute(pendingGraph, context);
         uploader.CommitRealizedAccess(pendingGraph);
+        device.SetQueueSubmissionPlanSupported(queueSubmissionPlanSupported);
         const GPUCompletionPoint uploadPoint = tracker.Submit(&context);
         GPUCompletionToken uploadToken;
         ASSERT_TRUE(InsertGPUCompletionPoint(uploadToken, uploadPoint));
@@ -1378,7 +1670,8 @@ namespace
         context.copyCount = 0;
         RecordAndExecute(uploader, device, context);
         EXPECT_GT(context.copyCount, 0U);
-        EXPECT_GT(uploader.GetDiagnostics().frameUploadBytes, 0U);
+        EXPECT_EQ(uploader.GetDiagnostics().frameUploadBytes, 0U);
+        EXPECT_EQ(uploader.GetDiagnostics().frameUploadRangeCount, 0U);
     }
 
     TEST(GPUSceneUploadValidation, ContinuousDeltasCoalesceAndPreserveUntouchedTables)
@@ -1453,7 +1746,7 @@ namespace
         uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
         RecordAndExecute(uploader, device, context);
         EXPECT_TRUE(uploader.GetDiagnostics().continuityLost);
-        EXPECT_TRUE(uploader.GetDiagnostics().fullUpload);
+        EXPECT_FALSE(uploader.GetDiagnostics().fullUpload);
         EXPECT_GE(device.DefaultBufferCount(), beforeGrowth + 6U);
         for (const char* name : {"GPUScene.Primitives", "GPUScene.Bounds", "GPUScene.Transforms",
                                  "GPUScene.Materials", "GPUScene.Geometries", "GPUScene.Draws"})
@@ -1462,6 +1755,11 @@ namespace
             ASSERT_NE(table, nullptr);
             EXPECT_EQ(0U, table->MapCalls());
         }
+        const GPUCompletionPoint fullRetry = tracker.Submit(&context);
+        GPUCompletionToken fullRetryToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(fullRetryToken, fullRetry));
+        uploader.NotifySubmission(fullRetryToken);
+        EXPECT_TRUE(uploader.GetDiagnostics().fullUpload);
     }
 
     TEST(GPUSceneUploadValidation, MultiDomainCompletionAndFutureReadUseBlockReuseUntilAllDomainsComplete)
@@ -1485,7 +1783,10 @@ namespace
         uploader.NotifySubmission(token);
         ASSERT_TRUE(RecordExactLeaseRead(
             uploader, device, graphics, database.GetCommittedVersion()));
-        uploader.NotifySubmission(token); // Merge a same-version future read.
+        const GPUCompletionPoint readPoint = tracker.Submit(&graphics);
+        GPUCompletionToken readToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(readToken, readPoint));
+        uploader.NotifySubmission(readToken);
 
         device.Fence(0)->Complete(token.points[0].value);
         EXPECT_EQ(uploader.PollSafeReclaimVersion(), 0U);
@@ -1503,7 +1804,99 @@ namespace
         device.Fence(1)->Complete(token.points[1].value);
         EXPECT_EQ(uploader.PollSafeReclaimVersion(), 0U);
         device.Fence(2)->Complete(token.points[2].value);
+        EXPECT_EQ(uploader.PollSafeReclaimVersion(), 0U);
+        device.Fence(0)->Complete(readPoint.value);
         EXPECT_GE(uploader.PollSafeReclaimVersion(), database.GetCommittedVersion() - 1U);
+    }
+
+    TEST(GPUSceneUploadValidation,
+         StagingCommitFailureDoesNotPublishPartialTransactionAndCanRetry)
+    {
+        FakeDevice device;
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        GPUSceneUploader uploader;
+        ASSERT_TRUE(uploader.Initialize(&device, &tracker));
+        GPUSceneDatabase database;
+        GPUSceneTransaction add;
+        add.Add(MakeObject(1, 1.0F));
+        ASSERT_TRUE(database.Commit(add).Succeeded());
+        const uint64 version = database.GetCommittedVersion();
+        uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+        // The first staging write commits, the second fails. The uploader must
+        // not record a copy pass, consume dirty state, or claim either a prior
+        // or requested resident version while the multi-table transaction is
+        // incomplete.
+        device.FailUploadCommitAfter(1);
+        RenderGraph failedGraph;
+        RenderGraphValidationAccess::SetDevice(failedGraph, &device);
+        uploader.BuildRenderGraph(failedGraph, nullptr);
+        const GPUSceneUploadDiagnostics& failed = uploader.GetDiagnostics();
+        EXPECT_EQ(failed.failureReason,
+                  GPUSceneUploadFailureReason::StagingCommitFailed);
+        EXPECT_EQ(failed.frameUploadBytes, 0U);
+        EXPECT_EQ(failed.cumulativeUploadBytes, 0U);
+        EXPECT_EQ(failed.frameUploadRangeCount, 0U);
+        EXPECT_EQ(failed.cumulativeUploadRangeCount, 0U);
+        EXPECT_EQ(failed.uploadWork.gpuCopyBytes, 0U);
+        EXPECT_EQ(failed.uploadWork.gpuCopyRangeCount, 0U);
+        EXPECT_EQ(failed.uploadWork.mappedRangeCount, 2U);
+        EXPECT_EQ(failed.uploadWork.committedRangeCount, 1U);
+        EXPECT_GT(failed.uploadWork.cpuCopiedPayloadBytes, 0U);
+        EXPECT_GT(failed.uploadWork.committedPayloadBytes, 0U);
+        EXPECT_FALSE(failed.uploadWork.hostVisibilitySynchronizedBytes.IsAvailable());
+        EXPECT_EQ(failed.tables[static_cast<uint32>(
+                      GPUSceneDiagnosticsTable::Primitives)]
+                      .uploadWork.committedRangeCount,
+                  1U);
+        EXPECT_EQ(failed.tables[static_cast<uint32>(
+                      GPUSceneDiagnosticsTable::Bounds)]
+                      .uploadWork.mappedRangeCount,
+                  1U);
+        EXPECT_EQ(failed.tables[static_cast<uint32>(
+                      GPUSceneDiagnosticsTable::Bounds)]
+                      .uploadWork.committedRangeCount,
+                  0U);
+        EXPECT_FALSE(failed.fullUpload);
+        EXPECT_EQ(device.DefaultBufferCount(), 6U);
+        EXPECT_EQ(device.UploadCommitCalls(), 2U);
+        EXPECT_FALSE(uploader.QueryExactVersionReadiness(version).IsReady());
+
+        FakeCommandContext context;
+        RenderGraphValidationAccess::Compile(failedGraph);
+        ASSERT_TRUE(failedGraph.GetCompileStats().compileValid);
+        RenderGraphValidationAccess::Execute(failedGraph, context);
+        EXPECT_EQ(context.copyCount, 0U);
+
+        RenderGraph leaseGraph;
+        RenderGraphValidationAccess::SetDevice(leaseGraph, &device);
+        EXPECT_FALSE(uploader.AcquireCurrentGraphLease(leaseGraph, nullptr, version));
+
+        // Commit failure applies to a single staging allocation. Retrying must
+        // re-stage every still-dirty table into the existing resident set.
+        RecordAndExecute(uploader, device, context);
+        EXPECT_GT(context.copyCount, 0U);
+        const GPUSceneUploadDiagnostics& recorded = uploader.GetDiagnostics();
+        EXPECT_GT(recorded.uploadWork.committedPayloadBytes, 0U);
+        EXPECT_EQ(recorded.uploadWork.gpuCopyBytes, 0U);
+        EXPECT_EQ(recorded.uploadWork.gpuCopyRangeCount, 0U);
+        EXPECT_EQ(recorded.mutationTotals.submittedUploadCount, 0U);
+        const GPUCompletionPoint point = tracker.Submit(&context);
+        ASSERT_NE(point.value, 0U);
+        GPUCompletionToken token;
+        ASSERT_TRUE(InsertGPUCompletionPoint(token, point));
+        uploader.NotifySubmission(token);
+        ASSERT_NE(device.Fence(0), nullptr);
+        device.Fence(0)->Complete(point.value);
+
+        const GPUSceneUploadDiagnostics& retried = uploader.GetDiagnostics();
+        EXPECT_EQ(retried.failureReason, GPUSceneUploadFailureReason::None);
+        EXPECT_GT(retried.cumulativeUploadBytes, 0U);
+        EXPECT_GT(retried.cumulativeUploadRangeCount, 0U);
+        EXPECT_GT(retried.uploadWork.gpuCopyBytes, 0U);
+        EXPECT_GT(retried.uploadWork.gpuCopyRangeCount, 0U);
+        EXPECT_TRUE(uploader.QueryExactVersionReadiness(version).IsReady());
     }
 
     TEST(GPUSceneUploadValidation, InvalidTokenAndResourceFailuresFailClosedWithoutDefaultMapping)
@@ -1616,6 +2009,119 @@ namespace
         EXPECT_EQ(futureUploader.GetDiagnostics().residentVersion, 0U);
     }
 
+    TEST(GPUSceneUploadValidation,
+         RecordedUploadRejectsPreRecordingTokenAndPublishesCopyTelemetryOnlyOnce)
+    {
+        FakeDevice device;
+        RenderSubmissionTracker tracker;
+        ASSERT_TRUE(tracker.Initialize(&device));
+        GPUSceneUploader uploader;
+        ASSERT_TRUE(uploader.Initialize(&device, &tracker));
+        GPUSceneDatabase database;
+        GPUSceneTransaction add;
+        add.Add(MakeObject(77, 7.0F));
+        ASSERT_TRUE(database.Commit(add).Succeeded());
+        uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+        FakeCommandContext context;
+        const GPUCompletionPoint oldPoint = tracker.Submit(&context);
+        ASSERT_NE(oldPoint.value, 0U);
+        GPUCompletionToken oldToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(oldToken, oldPoint));
+
+        RecordAndExecute(uploader, device, context);
+        const GPUSceneUploadDiagnostics& recorded = uploader.GetDiagnostics();
+        EXPECT_GT(recorded.uploadWork.committedPayloadBytes, 0U);
+        EXPECT_EQ(recorded.frameUploadBytes, 0U);
+        EXPECT_EQ(recorded.cumulativeUploadBytes, 0U);
+        EXPECT_EQ(recorded.uploadWork.gpuCopyBytes, 0U);
+        EXPECT_EQ(recorded.uploadWork.gpuCopyRangeCount, 0U);
+
+        // The prior point was current when recording began, but it cannot own
+        // this later graph recording or publish its residency/copy evidence.
+        uploader.NotifySubmission(oldToken);
+        const GPUSceneUploadDiagnostics& rejected = uploader.GetDiagnostics();
+        EXPECT_EQ(rejected.failureReason,
+                  GPUSceneUploadFailureReason::InvalidCompletionToken);
+        EXPECT_EQ(rejected.residentVersion, 0U);
+        EXPECT_EQ(rejected.frameUploadBytes, 0U);
+        EXPECT_EQ(rejected.cumulativeUploadBytes, 0U);
+        EXPECT_EQ(rejected.frameUploadRangeCount, 0U);
+        EXPECT_EQ(rejected.cumulativeUploadRangeCount, 0U);
+        EXPECT_EQ(rejected.uploadWork.gpuCopyBytes, 0U);
+        EXPECT_EQ(rejected.uploadWork.gpuCopyRangeCount, 0U);
+        EXPECT_EQ(rejected.mutationTotals.submittedUploadCount, 0U);
+        EXPECT_EQ(rejected.mutationTotals.uploadBytes, 0U);
+        for (const uint64 rows :
+             rejected.mutationTotals.submittedUploadedRowCount)
+        {
+            EXPECT_EQ(rows, 0U);
+        }
+        EXPECT_GT(rejected.uploadWork.committedPayloadBytes, 0U);
+        const uint64 rejectedHostBytes =
+            rejected.uploadWork.committedPayloadBytes;
+        for (const GPUSceneTableDiagnostics& table : rejected.tables)
+        {
+            EXPECT_EQ(table.frameUploadBytes, 0U);
+            EXPECT_EQ(table.cumulativeUploadBytes, 0U);
+            EXPECT_EQ(table.uploadWork.gpuCopyBytes, 0U);
+            EXPECT_EQ(table.uploadWork.gpuCopyRangeCount, 0U);
+        }
+
+        // A later scheduler query must preserve that retained attempt rather
+        // than replacing the published host receipts with a zero-work frame.
+        RenderGraph retryGraph;
+        RenderGraphValidationAccess::SetDevice(retryGraph, &device);
+        uploader.BuildRenderGraph(retryGraph, nullptr);
+        EXPECT_EQ(uploader.GetDiagnostics().uploadWork.committedPayloadBytes,
+                  rejectedHostBytes);
+
+        // The recording that reached the command context is retained.  P1
+        // owns those exact commands; a second graph build would be neither
+        // necessary nor permitted while the pending plan is awaiting proof.
+        const GPUCompletionPoint currentPoint = tracker.Submit(&context);
+        ASSERT_NE(currentPoint.value, 0U);
+        GPUCompletionToken currentToken;
+        ASSERT_TRUE(InsertGPUCompletionPoint(currentToken, currentPoint));
+        uploader.NotifySubmission(currentToken);
+        const GPUSceneUploadDiagnostics& published = uploader.GetDiagnostics();
+        EXPECT_EQ(published.failureReason, GPUSceneUploadFailureReason::None);
+        EXPECT_EQ(published.residentVersion, database.GetCommittedVersion());
+        EXPECT_GT(published.frameUploadBytes, 0U);
+        EXPECT_EQ(published.frameUploadBytes, published.cumulativeUploadBytes);
+        EXPECT_GT(published.frameUploadRangeCount, 0U);
+        EXPECT_EQ(published.frameUploadRangeCount,
+                  published.cumulativeUploadRangeCount);
+        EXPECT_EQ(published.uploadWork.gpuCopyBytes,
+                  published.frameUploadBytes);
+        EXPECT_EQ(published.uploadWork.gpuCopyRangeCount,
+                  published.frameUploadRangeCount);
+        EXPECT_EQ(published.mutationTotals.submittedUploadCount, 1U);
+        EXPECT_EQ(published.mutationTotals.uploadBytes,
+                  published.frameUploadBytes);
+        EXPECT_EQ(published.mutationTotals.uploadRangeCount,
+                  published.frameUploadRangeCount);
+        EXPECT_EQ(published.mutationTotals.fullUploadCount, 1U);
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_DIAGNOSTICS_TABLE_COUNT;
+             ++tableIndex)
+        {
+            EXPECT_EQ(published.mutationTotals
+                          .submittedUploadedRowCount[tableIndex],
+                      published.tables[tableIndex].frameUploadBytes /
+                          published.tables[tableIndex].stride);
+        }
+
+        const uint64 cumulativeBytes = published.cumulativeUploadBytes;
+        const uint64 cumulativeRanges = published.cumulativeUploadRangeCount;
+        uploader.NotifySubmission(currentToken);
+        EXPECT_EQ(uploader.GetDiagnostics().cumulativeUploadBytes, cumulativeBytes);
+        EXPECT_EQ(uploader.GetDiagnostics().cumulativeUploadRangeCount,
+                  cumulativeRanges);
+        EXPECT_EQ(uploader.GetDiagnostics().mutationTotals.submittedUploadCount,
+                  1U);
+    }
+
     TEST(GPUSceneUploadValidation, RepeatedFutureReadsMergeToTheLatestSubmissionToken)
     {
         FakeDevice device;
@@ -1714,22 +2220,33 @@ namespace
         FakeCommandContext context;
         RecordAndExecute(uploader, device, context);
         const GPUSceneUploadDiagnostics recorded = uploader.GetDiagnostics();
-        EXPECT_GT(recorded.frameUploadBytes, 0U);
-        EXPECT_EQ(recorded.frameUploadBytes, recorded.cumulativeUploadBytes);
-        EXPECT_EQ(recorded.frameUploadBytes, recorded.peakFrameUploadBytes);
+        EXPECT_EQ(recorded.frameUploadBytes, 0U);
+        EXPECT_EQ(recorded.cumulativeUploadBytes, 0U);
+        EXPECT_EQ(recorded.frameUploadRangeCount, 0U);
+        EXPECT_FALSE(recorded.fullUpload);
+        EXPECT_GT(recorded.uploadWork.committedPayloadBytes, 0U);
         EXPECT_GT(recorded.gpuAllocationBytes, 0U);
         EXPECT_EQ(recorded.bufferSetCount, 1U);
-        EXPECT_TRUE(recorded.fullUpload);
         for (const GPUSceneTableDiagnostics& table : recorded.tables)
         {
-            EXPECT_GT(table.frameUploadBytes, 0U);
-            EXPECT_TRUE(table.fullUpload);
+            EXPECT_EQ(table.frameUploadBytes, 0U);
+            EXPECT_FALSE(table.fullUpload);
         }
 
         const GPUCompletionPoint submitted = tracker.Submit(&context);
         GPUCompletionToken token;
         ASSERT_TRUE(InsertGPUCompletionPoint(token, submitted));
         uploader.NotifySubmission(token);
+        const GPUSceneUploadDiagnostics committed = uploader.GetDiagnostics();
+        EXPECT_GT(committed.frameUploadBytes, 0U);
+        EXPECT_EQ(committed.frameUploadBytes, committed.cumulativeUploadBytes);
+        EXPECT_EQ(committed.frameUploadBytes, committed.peakFrameUploadBytes);
+        EXPECT_TRUE(committed.fullUpload);
+        for (const GPUSceneTableDiagnostics& table : committed.tables)
+        {
+            EXPECT_GT(table.frameUploadBytes, 0U);
+            EXPECT_TRUE(table.fullUpload);
+        }
         CompleteToken(device, token);
         ASSERT_GE(uploader.PollSafeReclaimVersion(), database.GetCommittedVersion());
 
@@ -1741,11 +2258,24 @@ namespace
         const GPUSceneUploadDiagnostics warm = uploader.GetDiagnostics();
         EXPECT_EQ(warm.frameUploadBytes, 0U);
         EXPECT_EQ(warm.frameUploadRangeCount, 0U);
-        EXPECT_EQ(warm.cumulativeUploadBytes, recorded.cumulativeUploadBytes);
-        EXPECT_GE(warm.peakFrameUploadBytes, recorded.peakFrameUploadBytes);
+        EXPECT_EQ(warm.cumulativeUploadBytes, committed.cumulativeUploadBytes);
+        EXPECT_GE(warm.peakFrameUploadBytes, committed.peakFrameUploadBytes);
         EXPECT_EQ(warm.tables[static_cast<uint32>(GPUSceneDiagnosticsTable::Primitives)].
                       residentCapacity,
                   2U);
         EXPECT_FALSE(warm.executionEligible);
+        const GPUSceneUploadMutationTotals beforeIdentityOnlyNotify =
+            warm.mutationTotals;
+        EXPECT_TRUE(uploader.NotifySubmission({}));
+        const GPUSceneUploadMutationTotals afterIdentityOnlyNotify =
+            uploader.GetDiagnostics().mutationTotals;
+        EXPECT_EQ(afterIdentityOnlyNotify.submittedUploadCount,
+                  beforeIdentityOnlyNotify.submittedUploadCount);
+        EXPECT_EQ(afterIdentityOnlyNotify.uploadBytes,
+                  beforeIdentityOnlyNotify.uploadBytes);
+        EXPECT_EQ(afterIdentityOnlyNotify.uploadRangeCount,
+                  beforeIdentityOnlyNotify.uploadRangeCount);
+        EXPECT_EQ(afterIdentityOnlyNotify.submittedUploadedRowCount,
+                  beforeIdentityOnlyNotify.submittedUploadedRowCount);
     }
 } // namespace

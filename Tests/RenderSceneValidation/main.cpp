@@ -1,4 +1,6 @@
 #include "GPUScene/GPUSceneUpdate.h"
+#include "Render/Lighting/LightManager.h"
+#include "Render/Passes/RenderPassRecordContext.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderDrawPacket.h"
 #include "Render/Renderer/RenderSceneDatabase.h"
@@ -117,6 +119,21 @@ namespace RVX
         {
             return renderer.m_frameAccessSnapshotRollback.pending;
         }
+
+        static void ConfirmProvisionalAccessSnapshots(
+            SceneRenderer& renderer) noexcept
+        {
+            renderer.ConfirmProvisionalFrameAccessSnapshots();
+        }
+
+        static uint64 ObserveMutationEvidenceAfter(
+            SceneRenderer& renderer,
+            const RenderMutationEvidenceDiagnostics& previous) noexcept
+        {
+            renderer.m_lastObservedMutationEvidence = previous;
+            renderer.UpdateLiveMutationEvidence();
+            return renderer.m_mutationEvidenceEpoch;
+        }
     };
 } // namespace RVX
 
@@ -124,6 +141,33 @@ using namespace RVX;
 
 namespace
 {
+    class SkinningSemanticTestBuffer final : public RHIBuffer
+    {
+    public:
+        explicit SkinningSemanticTestBuffer(const RHIBufferDesc& desc)
+            : m_desc(desc)
+            , m_storage(static_cast<size_t>(desc.size))
+        {
+        }
+
+        uint64 GetSize() const override { return m_desc.size; }
+        RHIBufferUsage GetUsage() const override { return m_desc.usage; }
+        RHIMemoryType GetMemoryType() const override
+        {
+            return m_desc.memoryType;
+        }
+        uint32 GetStride() const override { return m_desc.stride; }
+        void* Map() override
+        {
+            return m_storage.empty() ? nullptr : m_storage.data();
+        }
+        void Unmap() override {}
+
+    private:
+        RHIBufferDesc m_desc;
+        std::vector<uint8> m_storage;
+    };
+
     TEST(RenderSceneValidation,
          AbortedFrameRestoresProvisionalDepthAndActiveBackBufferAccessSnapshots)
     {
@@ -185,7 +229,11 @@ namespace
         GPUCompletionToken completion;
         ASSERT_TRUE(InsertGPUCompletionPoint(
             completion, {GPUQueueDomain::Graphics, 1u}));
-        renderer.NotifySubmission(completion);
+        // Completion without a recording boundary cannot own this frame and
+        // must not confirm its provisional access snapshots.
+        EXPECT_FALSE(renderer.NotifySubmission(completion));
+        EXPECT_TRUE(SceneRendererTestAccess::HasProvisionalAccessSnapshots(renderer));
+        SceneRendererTestAccess::ConfirmProvisionalAccessSnapshots(renderer);
         EXPECT_FALSE(SceneRendererTestAccess::HasProvisionalAccessSnapshots(renderer));
         EXPECT_EQ(realizedDepth,
                   SceneRendererTestAccess::GetDepthAccessSnapshot(renderer));
@@ -269,7 +317,8 @@ namespace
         RenderResourceHandle AddMeshWithMetadata(
             AssetId asset,
             const MeshUploadCreateInfo& createInfo,
-            const std::vector<MeshUploadSubmesh>& submeshes)
+            const std::vector<MeshUploadSubmesh>& submeshes,
+            bool includeBoneIndexSemantic = false)
         {
             const RenderResourceReserveResult reserved =
                 gateway.ReserveResource(asset, RenderResourceKind::Mesh);
@@ -290,6 +339,18 @@ namespace
             EXPECT_TRUE(registry.BeginPending(handle, RenderResourceKind::Mesh, {}));
             EXPECT_TRUE(registry.SetPendingMeshMetadata(
                 handle, createInfo, submeshes));
+            if (includeBoneIndexSemantic)
+            {
+                RHIBufferDesc boneIndexDesc;
+                boneIndexDesc.size = sizeof(uint32) * 3U;
+                boneIndexDesc.usage = RHIBufferUsage::Vertex;
+                boneIndexDesc.stride = sizeof(uint32);
+                EXPECT_TRUE(registry.AddPendingMeshBuffer(
+                    handle,
+                    RenderMeshBufferSemantic::BoneIndices,
+                    RHIBufferRef(new SkinningSemanticTestBuffer(boneIndexDesc)),
+                    boneIndexDesc.size));
+            }
             EXPECT_TRUE(registry.Commit(handle));
             PackedRenderResourceStatus gpuReady = uploading;
             gpuReady.state = RenderResourcePublicState::GPUReady;
@@ -323,6 +384,39 @@ namespace
                 RenderStatusWriter::Render));
         }
 
+        void ReplaceReadyResource(RenderResourceHandle handle,
+                                  RenderResourceKind kind,
+                                  uint64 sourceRevision,
+                                  std::vector<RenderResourceHandle>
+                                      dependencies = {})
+        {
+            const RenderResourceStatus status =
+                gateway.GetStatusTable().Query(handle);
+            ASSERT_EQ(status.code, RenderResourceStatusCode::Current);
+            ASSERT_EQ(status.state, RenderResourcePublicState::GPUReady);
+            const PackedRenderResourceStatus ready{
+                handle.generation,
+                RenderResourcePublicState::GPUReady,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus queued = ready;
+            queued.state = RenderResourcePublicState::ReplacementQueued;
+            ASSERT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, ready, queued, RenderStatusWriter::Update));
+            PackedRenderResourceStatus replacing = ready;
+            replacing.state = RenderResourcePublicState::Replacing;
+            ASSERT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, queued, replacing, RenderStatusWriter::Render));
+            ASSERT_TRUE(registry.BeginPending(
+                handle,
+                kind,
+                dependencies,
+                RenderResourceContentOperation::Replace,
+                sourceRevision));
+            ASSERT_TRUE(registry.Commit(handle));
+            ASSERT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, replacing, ready, RenderStatusWriter::Render));
+        }
+
         static RenderTransportConfig MakeConfig()
         {
             RenderTransportConfig config;
@@ -341,7 +435,8 @@ namespace
     {
         ParticleRenderSnapshotItem particle;
         particle.instanceId = 7;
-        particle.systemId = 8;
+        particle.systemId = 7;
+        particle.systemAssetId = {.value = 8};
         particle.systemName = "packet-owned-feature";
         particle.worldBounds = AABB(Vec3{-1.0f}, Vec3{1.0f});
         return particle;
@@ -495,6 +590,77 @@ TEST(RenderSceneValidation, AppliesTransactionallyAndOwnsPacketValues)
 }
 
 TEST(RenderSceneValidation,
+     ViewLayerFilteringDoesNotMutateRetainedObjectsOrLights)
+{
+    RenderScene scene;
+
+    RenderObject includedObject;
+    includedObject.entityId = 1;
+    includedObject.drawable = true;
+    includedObject.visible = true;
+    includedObject.layerMask = 0x00000001U;
+    includedObject.bounds = AABB(Vec3(-0.1F, -0.1F, 0.2F),
+                                 Vec3(0.1F, 0.1F, 0.3F));
+    scene.AddObject(includedObject);
+
+    RenderObject excludedObject = includedObject;
+    excludedObject.entityId = 2;
+    excludedObject.layerMask = 0x00000002U;
+    scene.AddObject(excludedObject);
+
+    RenderLight excludedDirectional;
+    excludedDirectional.lightId = 3;
+    excludedDirectional.type = RenderLight::Type::Directional;
+    excludedDirectional.intensity = 8.0F;
+    excludedDirectional.layerMask = 0x00000002U;
+    excludedDirectional.castsShadow = true;
+    scene.AddLight(excludedDirectional);
+
+    RenderLight includedDirectional = excludedDirectional;
+    includedDirectional.lightId = 4;
+    includedDirectional.intensity = 2.0F;
+    includedDirectional.layerMask = 0x00000001U;
+    scene.AddLight(includedDirectional);
+
+    RenderLight excludedPoint;
+    excludedPoint.lightId = 5;
+    excludedPoint.type = RenderLight::Type::Point;
+    excludedPoint.layerMask = 0x00000002U;
+    scene.AddLight(excludedPoint);
+
+    RenderLight includedPoint = excludedPoint;
+    includedPoint.lightId = 6;
+    includedPoint.layerMask = 0x00000001U;
+    scene.AddLight(includedPoint);
+
+    RenderViewSnapshot view;
+    view.cullingMask = 0x00000001U;
+    view.viewProjectionMatrix = Mat4Identity();
+    std::vector<uint32> visibleObjects;
+    scene.CullAgainstView(view, visibleObjects);
+
+    ASSERT_EQ(1U, visibleObjects.size());
+    EXPECT_EQ(0U, visibleObjects.front());
+    // The view cannot alter the retained scene: a second view can select the
+    // other object and all lights remain available to future cameras.
+    EXPECT_EQ(2U, scene.GetObjectCount());
+    EXPECT_EQ(4U, scene.GetLightCount());
+    EXPECT_EQ(0x00000002U, scene.GetLight(0).layerMask);
+
+    const PrimaryDirectionalLightRecordInput primary =
+        SelectPrimaryDirectionalLightRecordInput(scene, view.cullingMask);
+    ASSERT_TRUE(primary.selected);
+    EXPECT_FLOAT_EQ(2.0F, primary.intensity);
+    EXPECT_TRUE(primary.castsShadow);
+
+    LightManager lights;
+    lights.CollectLights(scene, view.cullingMask);
+    EXPECT_FLOAT_EQ(2.0F, lights.GetMainLight().intensity);
+    EXPECT_EQ(1U, lights.GetPointLightCount());
+    EXPECT_EQ(0U, lights.GetPointShadowRequestCount());
+}
+
+TEST(RenderSceneValidation,
      AppliesV5DirectlyFromPersistentDatabaseWithoutCompatibilityPacket)
 {
     RegistryFixture resources;
@@ -542,7 +708,7 @@ TEST(RenderSceneValidation,
 }
 
 TEST(RenderSceneValidation,
-     StaticFramesDoNoRetainedWorkAndOnePercentDirtyRebuildsExactObjects)
+     StaticFramesDoNoRetainedWorkAndOnePercentTransformDirtyUpdatesExactObject)
 {
     RegistryFixture resources;
     MeshUploadCreateInfo createInfo;
@@ -575,6 +741,9 @@ TEST(RenderSceneValidation,
     EXPECT_TRUE(scene.IsFullGPUSceneMutation());
     EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount, 1U);
     EXPECT_EQ(scene.GetRetainedStats().lastRebuiltObjectCount, objectCount);
+    EXPECT_EQ(scene.GetMutationTotals().fullRebuildCount, 1U);
+    EXPECT_EQ(scene.GetMutationTotals().incrementalCommitCount, 0U);
+    EXPECT_EQ(scene.GetMutationTotals().rebuiltObjectCount, objectCount);
     EXPECT_EQ(scene.GetObjectCount(), objectCount);
     EXPECT_EQ(scene.GetDrawCount(), objectCount);
     scene.MarkAcceptedFrameRendered();
@@ -603,6 +772,11 @@ TEST(RenderSceneValidation,
     EXPECT_TRUE(scene.GetGPUSceneRemovedObjectIds().empty());
     EXPECT_EQ(scene.GetRetainedStats().staticReuseCount, 1U);
     EXPECT_EQ(scene.GetRetainedStats().lastRebuiltObjectCount, 0U);
+    // The latest-only frame diagnostics may now describe this static frame,
+    // but durable mutation evidence must retain the earlier full rebuild.
+    EXPECT_EQ(scene.GetMutationTotals().fullRebuildCount, 1U);
+    EXPECT_EQ(scene.GetMutationTotals().incrementalCommitCount, 0U);
+    EXPECT_EQ(scene.GetMutationTotals().rebuiltObjectCount, objectCount);
     EXPECT_EQ(scene.GetDrawPacketCacheStats().packetBuildCount,
               beforeStatic.packetBuildCount);
     scene.MarkAcceptedFrameRendered();
@@ -626,6 +800,8 @@ TEST(RenderSceneValidation,
     EXPECT_EQ(scene.GetRetainedStats().incrementalUpdateCount, 1U);
     EXPECT_EQ(scene.GetRetainedStats().lastRebuiltObjectCount, 1U);
     EXPECT_EQ(scene.GetRetainedStats().lastRemovedObjectCount, 0U);
+    EXPECT_EQ(scene.GetMutationTotals().incrementalCommitCount, 1U);
+    EXPECT_EQ(scene.GetMutationTotals().rebuiltObjectCount, objectCount + 1U);
     EXPECT_EQ(scene.GetGPUSceneChangedObjectIds(),
               std::vector<uint64>({26U}));
     ASSERT_NE(scene.FindObject(26), nullptr);
@@ -636,12 +812,111 @@ TEST(RenderSceneValidation,
         scene.GetDrawPacketCacheStats();
     EXPECT_EQ(afterDirty.entryCount, objectCount);
     EXPECT_EQ(afterDirty.packetBuildCount,
-              beforeDirty.packetBuildCount + 1U);
+              beforeDirty.packetBuildCount);
+    EXPECT_EQ(afterDirty.hitCount, beforeDirty.hitCount + 1U);
     EXPECT_EQ(afterDirty.GetInvalidationCount(
                   RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged),
               beforeDirty.GetInvalidationCount(
-                  RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged) +
-                  1U);
+                  RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged));
+}
+
+TEST(RenderSceneValidation,
+     MutationWatermarkFreezesAtThePresentedBoundaryAndRejectsDoNotReplaceIt)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {901}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    SceneRenderer renderer;
+
+    V5FrameInput initial = MakeFrame(301, 1, 1, false, {MakePrimitive(mesh)});
+    ASSERT_NE(initial.frame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *initial.frame, initial.database, resources.registry).IsApplied());
+    EXPECT_FALSE(renderer.GetFrameDiagnostics().mutationEvidence.completion.available);
+
+    renderer.MarkAcceptedFramePresented();
+    const RenderMutationEvidenceDiagnostics presented =
+        renderer.GetFrameDiagnostics().mutationEvidence;
+    ASSERT_TRUE(presented.completion.available);
+    EXPECT_EQ(1U, presented.completion.completedPresentationCount);
+    EXPECT_EQ(301U, presented.completion.completedFrameSequence);
+    EXPECT_EQ(1U, presented.completion.requiredSceneRevision);
+    EXPECT_EQ(1U, presented.completion.appliedSceneRevision);
+    EXPECT_EQ(1U, presented.scene.fullRebuildCount);
+
+    // Applying/recording a later static frame cannot replace the completed
+    // watermark before that frame has actually crossed the present boundary.
+    const std::unique_ptr<const RenderFramePacketV5> staticFrame =
+        MakeFramePacketV5(302, 1, 1, 1, false);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *staticFrame, initial.database, resources.registry).IsApplied());
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence.completion.completedFrameSequence,
+              presented.completion.completedFrameSequence);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence.scene.fullRebuildCount,
+              presented.scene.fullRebuildCount);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence
+                  .completion.completedPresentationCount,
+              presented.completion.completedPresentationCount);
+
+    const std::unique_ptr<const RenderFramePacketV5> rejectedFrame =
+        MakeFramePacketV5(302, 1, 1, 1, false);
+    EXPECT_EQ(renderer.ApplyFrameV5(
+                  *rejectedFrame, initial.database, resources.registry).code,
+              RenderFrameApplyCode::OutOfOrder);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence.completion.completedFrameSequence,
+              presented.completion.completedFrameSequence);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence
+                  .completion.completedPresentationCount,
+              presented.completion.completedPresentationCount);
+
+    renderer.MarkAcceptedFramePresented();
+    const RenderMutationEvidenceDiagnostics staticPresented =
+        renderer.GetFrameDiagnostics().mutationEvidence;
+    EXPECT_EQ(302U, staticPresented.completion.completedFrameSequence);
+    EXPECT_EQ(2U, staticPresented.completion.completedPresentationCount);
+    EXPECT_EQ(presented.scene.fullRebuildCount,
+              staticPresented.scene.fullRebuildCount);
+
+    // A skipped accepted sequence still crosses exactly one completed
+    // presentation boundary; no missed-frame inference is involved.
+    const std::unique_ptr<const RenderFramePacketV5> skippedFrame =
+        MakeFramePacketV5(304, 1, 1, 1, false);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *skippedFrame, initial.database, resources.registry).IsApplied());
+    EXPECT_EQ(2U, renderer.GetFrameDiagnostics().mutationEvidence
+                      .completion.completedPresentationCount);
+    renderer.MarkAcceptedFramePresented();
+    const RenderMutationEvidenceDiagnostics skippedPresented =
+        renderer.GetFrameDiagnostics().mutationEvidence;
+    EXPECT_EQ(304U, skippedPresented.completion.completedFrameSequence);
+    EXPECT_EQ(3U, skippedPresented.completion.completedPresentationCount);
+}
+
+TEST(RenderSceneValidation,
+     MutationEvidenceEpochAdvancesWhenFullUploadCountDrops)
+{
+    SceneRenderer renderer;
+    RenderMutationEvidenceDiagnostics previous{};
+    previous.gpuSceneUpload.fullUploadCount = 1;
+
+    EXPECT_EQ(2U,
+              SceneRendererTestAccess::ObserveMutationEvidenceAfter(
+                  renderer, previous));
+}
+
+TEST(RenderSceneValidation,
+     MutationEvidenceEpochAdvancesWhenSubmittedUploadedRowsDrop)
+{
+    SceneRenderer renderer;
+    RenderMutationEvidenceDiagnostics previous{};
+    previous.gpuSceneUpload.submittedUploadedRowCount[
+        static_cast<uint32>(GPUSceneDiagnosticsTable::Draws)] = 1;
+
+    EXPECT_EQ(2U,
+              SceneRendererTestAccess::ObserveMutationEvidenceAfter(
+                  renderer, previous));
 }
 
 TEST(RenderSceneValidation, GPUScenePublicationFailureCannotRejectAnAppliedFrame)
@@ -1079,6 +1354,15 @@ TEST(RenderSceneValidation,
     RenderPrimitiveSnapshot initial = MakePrimitive(
         mesh, material, {1.0f, 0.0f, 0.0f});
     initial.skinMatrices = {Mat4Identity()};
+    initial.hasSkinningPaletteProvider = true;
+    initial.skinningPalette.providerComponentId = 0x0000000300000001ULL;
+    initial.skinningPalette.sourceModelResourceId = 901;
+    initial.skinningPalette.poseSequence = 17;
+    const SkinningPaletteHash initialHash =
+        ComputeSkinningPaletteHash(initial.skinMatrices);
+    ASSERT_TRUE(initialHash.IsValid());
+    initial.skinningPalette.paletteHash = initialHash.value;
+    initial.skinningPalette.paletteCount = initialHash.matrixCount;
     ASSERT_TRUE(Apply(scene,
                       resources.registry,
                       1,
@@ -1087,6 +1371,9 @@ TEST(RenderSceneValidation,
                       false,
                       std::move(initial))
                     .IsApplied());
+    const RenderObject& acceptedSkinnedObject = scene.GetObject(0);
+    EXPECT_TRUE(acceptedSkinnedObject.HasValidSkinningPalette());
+    EXPECT_EQ(acceptedSkinnedObject.skinningPalette.poseSequence, 17u);
     const RenderDrawPacketCacheStats afterFirst =
         scene.GetDrawPacketCacheStats();
     ASSERT_EQ(afterFirst.entryCount, 1U);
@@ -1159,6 +1446,111 @@ TEST(RenderSceneValidation,
     EXPECT_EQ(afterRejected.packetBuildCount, afterSecond.packetBuildCount);
     EXPECT_EQ(afterRejected.entryCreationCount,
               afterSecond.entryCreationCount);
+}
+
+TEST(RenderSceneValidation,
+     BoneVertexSemanticsRequireRuntimePaletteForSkinnedPackets)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {124},
+        createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}},
+        true);
+    const RenderResourceHandle material =
+        resources.Add({125}, RenderResourceKind::Material, true);
+    RenderScene scene;
+
+    RenderPrimitiveSnapshot unskinned = MakePrimitive(mesh, material);
+    unskinned.skinMatrices.clear();
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      1,
+                      1,
+                      1,
+                      false,
+                      std::move(unskinned))
+                    .IsApplied());
+
+    const RenderObject& unskinnedObject = scene.GetObject(0);
+    ASSERT_FALSE(unskinnedObject.HasSkinningData());
+    ASSERT_EQ(unskinnedObject.meshBatches.size(), 1U);
+    const MeshBatch& unskinnedBatch = unskinnedObject.meshBatches[0];
+    EXPECT_FALSE(HasRenderBatchFlag(unskinnedBatch.flags,
+                                    RenderBatchFlags::Skinned));
+    const RenderDrawPacket unskinnedLegacyPacket =
+        BuildLegacyMaterialDrawPacket(unskinnedBatch);
+    EXPECT_FALSE(unskinnedLegacyPacket.pipelineKey.skinned);
+    EXPECT_EQ(static_cast<uint32>(unskinnedLegacyPacket.flags) &
+                  static_cast<uint32>(RenderDrawFlags::Skinned),
+              0U);
+
+    std::vector<RenderDrawItem> opaque;
+    std::vector<RenderDrawItem> masked;
+    std::vector<RenderDrawItem> transparent;
+    BuildMaterialDrawLists(
+        scene, {0}, Vec3{0.0f}, opaque, masked, transparent);
+    ASSERT_EQ(opaque.size(), 1U);
+    EXPECT_FALSE(opaque[0].packet.pipelineKey.skinned);
+    EXPECT_EQ(static_cast<uint32>(opaque[0].packet.flags) &
+                  static_cast<uint32>(RenderDrawFlags::Skinned),
+              0U);
+
+    const RenderDrawPacketCacheStats unskinnedCache =
+        scene.GetDrawPacketCacheStats();
+
+    RenderPrimitiveSnapshot skinned = MakePrimitive(mesh, material);
+    skinned.hasSkinningPaletteProvider = true;
+    skinned.skinningPalette.providerComponentId = 0x0000000400000001ULL;
+    skinned.skinningPalette.sourceModelResourceId = 902;
+    skinned.skinningPalette.poseSequence = 18;
+    const SkinningPaletteHash paletteHash =
+        ComputeSkinningPaletteHash(skinned.skinMatrices);
+    ASSERT_TRUE(paletteHash.IsValid());
+    skinned.skinningPalette.paletteHash = paletteHash.value;
+    skinned.skinningPalette.paletteCount = paletteHash.matrixCount;
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      2,
+                      2,
+                      1,
+                      false,
+                      std::move(skinned))
+                    .IsApplied());
+
+    const RenderObject& skinnedObject = scene.GetObject(0);
+    ASSERT_TRUE(skinnedObject.HasValidSkinningPalette());
+    ASSERT_EQ(skinnedObject.meshBatches.size(), 1U);
+    const MeshBatch& skinnedBatch = skinnedObject.meshBatches[0];
+    EXPECT_TRUE(HasRenderBatchFlag(skinnedBatch.flags,
+                                   RenderBatchFlags::Skinned));
+    const RenderDrawPacket skinnedLegacyPacket =
+        BuildLegacyMaterialDrawPacket(skinnedBatch);
+    EXPECT_TRUE(skinnedLegacyPacket.pipelineKey.skinned);
+    EXPECT_NE(static_cast<uint32>(skinnedLegacyPacket.flags) &
+                  static_cast<uint32>(RenderDrawFlags::Skinned),
+              0U);
+
+    BuildMaterialDrawLists(
+        scene, {0}, Vec3{0.0f}, opaque, masked, transparent);
+    ASSERT_EQ(opaque.size(), 1U);
+    EXPECT_TRUE(opaque[0].packet.pipelineKey.skinned);
+    EXPECT_NE(static_cast<uint32>(opaque[0].packet.flags) &
+                  static_cast<uint32>(RenderDrawFlags::Skinned),
+              0U);
+
+    const RenderDrawPacketCacheStats skinnedCache =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(skinnedCache.packetBuildCount,
+              unskinnedCache.packetBuildCount + 1U);
+    EXPECT_EQ(skinnedCache.missCount, unskinnedCache.missCount + 1U);
+    EXPECT_EQ(skinnedCache.GetInvalidationCount(
+                  RenderDrawPacketCacheInvalidationReason::StaticStateChanged),
+              unskinnedCache.GetInvalidationCount(
+                  RenderDrawPacketCacheInvalidationReason::StaticStateChanged) +
+                  1U);
 }
 
 TEST(RenderSceneValidation, RejectsSchemaOrderAndStaleHandlesWithoutMutation)
@@ -1267,6 +1659,173 @@ TEST(RenderSceneValidation,
     EXPECT_EQ(scene.GetObject(0).mesh, pending);
     EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
               fullRebuildsBefore + 1U);
+}
+
+TEST(RenderSceneValidation,
+     StaticSceneRetainsPacketsAcrossExactContentOnlyTextureReplacement)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const std::vector<MeshUploadSubmesh> submeshes = {
+        {0, 3, 0, MeshUploadPrimitiveTopology::Triangles}};
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {43}, createInfo, submeshes);
+    const RenderResourceHandle texture = resources.Add(
+        {44}, RenderResourceKind::Texture, true);
+    const RenderResourceHandle material = resources.Add(
+        {45}, RenderResourceKind::Material, true, {texture});
+    EXPECT_EQ(resources.registry.GetExactKind(texture),
+              RenderResourceKind::Texture);
+    EXPECT_EQ(resources.registry.GetExactKind(
+                  {texture.slot, texture.generation + 1U}),
+              RenderResourceKind::Invalid);
+
+    V5FrameInput input = MakeFrame(
+        1, 1, 1, false, {MakePrimitive(mesh, material)});
+    RenderScene scene;
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *input.frame, input.database, resources.registry).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    const std::unique_ptr<const RenderFramePacketV5> settleFrame =
+        MakeFramePacketV5(2, 1, 1, 1, false);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *settleFrame, input.database, resources.registry).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+
+    const RenderSceneRetainedStats before = scene.GetRetainedStats();
+    const RenderDrawPacketCacheStats cacheBefore =
+        scene.GetDrawPacketCacheStats();
+    const RenderObject& objectBefore = scene.GetObject(0);
+    ASSERT_EQ(objectBefore.meshBatches.size(), 1U);
+    const MeshBatch batchBefore = objectBefore.meshBatches[0];
+
+    resources.ReplaceReadyResource(
+        texture, RenderResourceKind::Texture, 1);
+    const std::unique_ptr<const RenderFramePacketV5> staticFrame =
+        MakeFramePacketV5(3, 1, 1, 1, false);
+    const RenderFrameApplyResult refreshed = scene.ApplyFrameV5(
+        *staticFrame, input.database, resources.registry);
+    ASSERT_TRUE(refreshed.IsApplied());
+    EXPECT_FALSE(refreshed.sceneMutated);
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
+              before.fullRebuildCount);
+    EXPECT_EQ(scene.GetRetainedStats().incrementalUpdateCount,
+              before.incrementalUpdateCount);
+    EXPECT_EQ(scene.GetObjectCount(), 1U);
+    EXPECT_EQ(scene.GetDrawCount(), 1U);
+    const RenderObject& objectAfter = scene.GetObject(0);
+    ASSERT_EQ(objectAfter.meshBatches.size(), 1U);
+    EXPECT_EQ(objectAfter.entityId, objectBefore.entityId);
+    EXPECT_EQ(objectAfter.mesh, objectBefore.mesh);
+    EXPECT_EQ(objectAfter.material, objectBefore.material);
+    EXPECT_EQ(objectAfter.meshBatches[0].mesh, batchBefore.mesh);
+    EXPECT_EQ(objectAfter.meshBatches[0].submeshIndex,
+              batchBefore.submeshIndex);
+    EXPECT_EQ(objectAfter.meshBatches[0].material, batchBefore.material);
+    EXPECT_EQ(objectAfter.meshBatches[0].materialMode,
+              batchBefore.materialMode);
+    const RenderDrawPacketCacheStats cacheAfter =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(cacheAfter.entryCount, cacheBefore.entryCount);
+    EXPECT_EQ(cacheAfter.packetBuildCount, cacheBefore.packetBuildCount);
+}
+
+TEST(RenderSceneValidation,
+     StaticSceneRebuildsForMaterialOrMeshContentReplacement)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const std::vector<MeshUploadSubmesh> submeshes = {
+        {0, 3, 0, MeshUploadPrimitiveTopology::Triangles}};
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {46}, createInfo, submeshes);
+    const RenderResourceHandle material = resources.Add(
+        {47}, RenderResourceKind::Material, true);
+    V5FrameInput input = MakeFrame(
+        1, 1, 1, false, {MakePrimitive(mesh, material)});
+    RenderScene scene;
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *input.frame, input.database, resources.registry).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    const std::unique_ptr<const RenderFramePacketV5> settleFrame =
+        MakeFramePacketV5(2, 1, 1, 1, false);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *settleFrame, input.database, resources.registry).IsApplied());
+    const uint64 fullBeforeMaterial =
+        scene.GetRetainedStats().fullRebuildCount;
+
+    resources.ReplaceReadyResource(
+        material, RenderResourceKind::Material, 1);
+    const std::unique_ptr<const RenderFramePacketV5> materialFrame =
+        MakeFramePacketV5(3, 1, 1, 1, false);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *materialFrame, input.database, resources.registry).IsApplied());
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
+              fullBeforeMaterial + 1U);
+
+    const uint64 fullBeforeMesh = scene.GetRetainedStats().fullRebuildCount;
+    resources.ReplaceReadyResource(mesh, RenderResourceKind::Mesh, 1);
+    const std::unique_ptr<const RenderFramePacketV5> meshFrame =
+        MakeFramePacketV5(4, 1, 1, 1, false);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *meshFrame, input.database, resources.registry).IsApplied());
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount, fullBeforeMesh + 1U);
+}
+
+TEST(RenderSceneValidation,
+     StaticSceneRejectsTopologyUnsafeOrStaleTextureRefreshFromReuse)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const std::vector<MeshUploadSubmesh> submeshes = {
+        {0, 3, 0, MeshUploadPrimitiveTopology::Triangles}};
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {48}, createInfo, submeshes);
+    const RenderResourceHandle dependency = resources.Add(
+        {49}, RenderResourceKind::Texture, true);
+    const RenderResourceHandle texture = resources.Add(
+        {50}, RenderResourceKind::Texture, true, {dependency});
+    const RenderResourceHandle material = resources.Add(
+        {51}, RenderResourceKind::Material, true, {texture});
+    V5FrameInput input = MakeFrame(
+        1, 1, 1, false, {MakePrimitive(mesh, material)});
+    RenderScene scene;
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *input.frame, input.database, resources.registry).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    const std::unique_ptr<const RenderFramePacketV5> settleFrame =
+        MakeFramePacketV5(2, 1, 1, 1, false);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *settleFrame, input.database, resources.registry).IsApplied());
+
+    const uint64 fullBeforeTopologyChange =
+        scene.GetRetainedStats().fullRebuildCount;
+    resources.ReplaceReadyResource(
+        texture, RenderResourceKind::Texture, 1, {dependency});
+    const std::unique_ptr<const RenderFramePacketV5> topologyFrame =
+        MakeFramePacketV5(3, 1, 1, 1, false);
+    const RenderFrameApplyResult topologyResult = scene.ApplyFrameV5(
+        *topologyFrame, input.database, resources.registry);
+    ASSERT_TRUE(topologyResult.IsApplied());
+    EXPECT_TRUE(topologyResult.sceneMutated);
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
+              fullBeforeTopologyChange + 1U);
+
+    const uint64 fullBeforeStale = scene.GetRetainedStats().fullRebuildCount;
+    ASSERT_TRUE(resources.registry.Release(texture));
+    EXPECT_EQ(resources.registry.GetExactKind(texture),
+              RenderResourceKind::Invalid);
+    const std::unique_ptr<const RenderFramePacketV5> staleFrame =
+        MakeFramePacketV5(4, 1, 1, 1, false);
+    const RenderFrameApplyResult staleResult = scene.ApplyFrameV5(
+        *staleFrame, input.database, resources.registry);
+    ASSERT_TRUE(staleResult.IsApplied());
+    EXPECT_TRUE(staleResult.sceneMutated);
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
+              fullBeforeStale + 1U);
 }
 
 TEST(RenderSceneValidation,

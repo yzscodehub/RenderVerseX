@@ -15,6 +15,8 @@ namespace
                                          RVX::RenderPassKind::Opaque)
     {
         RVX::DirectDrawPacket direct;
+        direct.geometryAssetId = {103};
+        direct.materialAssetId = {1000u + materialSlot};
         direct.sourcePacketIndex = ordinal;
         direct.sourceOrdinal = ordinal;
         direct.packet.objectId = 1000 + ordinal;
@@ -264,6 +266,65 @@ TEST(RenderInstanceBatchPlanValidation, PacketIdentityOrderIsDeterministic)
     {
         EXPECT_EQ(first.batches[index].key, second.batches[index].key);
     }
+}
+
+TEST(RenderInstanceBatchPlanValidation,
+     CanonicalBatchOrderIgnoresResourceHandleAllocation)
+{
+    RVX::DirectDrawPacket lowAsset = MakePacket(0);
+    lowAsset.geometryAssetId = {10};
+    lowAsset.packet.objectId = 900;
+    lowAsset.packet.geometryKey.mesh = {90, 7};
+    lowAsset.packetId.objectId = 900;
+    lowAsset.packetId.mesh = lowAsset.packet.geometryKey.mesh;
+
+    RVX::DirectDrawPacket highAsset = MakePacket(1);
+    highAsset.geometryAssetId = {20};
+    highAsset.packet.objectId = 10;
+    highAsset.packet.geometryKey.mesh = {1, 2};
+    highAsset.packetId.objectId = 10;
+    highAsset.packetId.mesh = highAsset.packet.geometryKey.mesh;
+
+    RVX::DirectDrawPacketBatch input;
+    input.pass = RVX::RenderPassKind::Opaque;
+    input.packets = {highAsset, lowAsset};
+    const RVX::RenderInstanceBatchPlan plan =
+        RVX::BuildRenderInstanceBatchPlan(
+            input, RVX::RenderInstancingMode::Auto);
+
+    ASSERT_EQ(2u, plan.batches.size());
+    EXPECT_EQ(900u, plan.batches[0].members[0].packetId.objectId);
+    EXPECT_EQ((RVX::RenderResourceHandle{90, 7}),
+              plan.batches[0].key.geometry.mesh);
+    EXPECT_EQ(10u, plan.batches[1].members[0].packetId.objectId);
+}
+
+TEST(RenderInstanceBatchPlanValidation,
+     CanonicalMemberOrderIgnoresPacketAndResourceHandleAllocation)
+{
+    RVX::DirectDrawPacket lowObject = MakePacket(1);
+    lowObject.packet.objectId = 10;
+    lowObject.packet.geometryKey.mesh = {90, 7};
+    lowObject.packetId.objectId = 900;
+    lowObject.packetId.mesh = {1, 2};
+
+    RVX::DirectDrawPacket highObject = MakePacket(0);
+    highObject.packet.objectId = 900;
+    highObject.packet.geometryKey.mesh = lowObject.packet.geometryKey.mesh;
+    highObject.packetId.objectId = 10;
+    highObject.packetId.mesh = {200, 11};
+
+    RVX::DirectDrawPacketBatch input;
+    input.pass = RVX::RenderPassKind::Opaque;
+    input.packets = {highObject, lowObject};
+    const RVX::RenderInstanceBatchPlan plan =
+        RVX::BuildRenderInstanceBatchPlan(
+            input, RVX::RenderInstancingMode::Auto);
+
+    ASSERT_EQ(1u, plan.batches.size());
+    ASSERT_EQ(2u, plan.batches[0].members.size());
+    EXPECT_EQ(1u, plan.batches[0].members[0].directPacketIndex);
+    EXPECT_EQ(0u, plan.batches[0].members[1].directPacketIndex);
 }
 
 TEST(RenderInstanceBatchPlanValidation,

@@ -229,3 +229,74 @@ TEST(RenderDrawPacketValidation, ProjectsAuthoritativeAndLegacyObjectsToLists)
     ASSERT_NE(legacyItem, opaque.end());
     EXPECT_EQ(legacyItem->submeshIndex, 0U);
 }
+
+TEST(RenderDrawPacketValidation,
+     TransparentDrawOrderUsesFullStableIdentityForEqualDepthAndRejectsNonFiniteDepth)
+{
+    const auto makeTransparentObject = [](uint64 objectId,
+                                          uint32 meshSlot,
+                                          uint32 materialSlot,
+                                          uint32 submeshIndex)
+    {
+        RenderObject object;
+        object.entityId = objectId;
+        object.meshBatchesAuthoritative = true;
+        MeshBatch batch = MakeBatch(RenderMaterialMode::Transparent, submeshIndex);
+        batch.objectId = objectId;
+        batch.mesh = RenderResourceHandle{meshSlot, 2};
+        batch.material = RenderResourceHandle{materialSlot, 3};
+        object.meshBatches = {batch};
+        return object;
+    };
+
+    RenderScene scene;
+    // Deliberately insert in a different order than the identity tie-break.
+    scene.AddObject(makeTransparentObject(30, 13, 23, 2));
+    scene.AddObject(makeTransparentObject(10, 11, 21, 1));
+    scene.AddObject(makeTransparentObject(20, 12, 22, 0));
+
+    std::vector<RenderDrawItem> opaque;
+    std::vector<RenderDrawItem> masked;
+    std::vector<RenderDrawItem> transparent;
+    TransparentDrawListDiagnostics firstDiagnostics;
+    BuildMaterialDrawLists(scene, {2, 0, 1}, Vec3{0.0f}, opaque, masked,
+                           transparent, &firstDiagnostics);
+
+    ASSERT_EQ(3U, transparent.size());
+    EXPECT_TRUE(firstDiagnostics.orderValid);
+    EXPECT_EQ(0U, firstDiagnostics.rejectedNonFiniteDepthCount);
+    EXPECT_EQ(10U, transparent[0].packet.objectId);
+    EXPECT_EQ(20U, transparent[1].packet.objectId);
+    EXPECT_EQ(30U, transparent[2].packet.objectId);
+    EXPECT_TRUE(IsTransparentDrawListStrictlyOrdered(transparent));
+
+    std::vector<RenderDrawItem> repeatedOpaque;
+    std::vector<RenderDrawItem> repeatedMasked;
+    std::vector<RenderDrawItem> repeatedTransparent;
+    TransparentDrawListDiagnostics repeatedDiagnostics;
+    BuildMaterialDrawLists(scene, {0, 1, 2}, Vec3{0.0f}, repeatedOpaque,
+                           repeatedMasked, repeatedTransparent,
+                           &repeatedDiagnostics);
+    ASSERT_EQ(transparent.size(), repeatedTransparent.size());
+    for (size_t index = 0; index < transparent.size(); ++index)
+    {
+        EXPECT_EQ(transparent[index].packet.objectId,
+                  repeatedTransparent[index].packet.objectId);
+        EXPECT_EQ(transparent[index].submeshIndex,
+                  repeatedTransparent[index].submeshIndex);
+        EXPECT_EQ(transparent[index].material,
+                  repeatedTransparent[index].material);
+        EXPECT_EQ(transparent[index].mesh,
+                  repeatedTransparent[index].mesh);
+    }
+    EXPECT_EQ(firstDiagnostics.orderHash, repeatedDiagnostics.orderHash);
+
+    TransparentDrawListDiagnostics invalidDepthDiagnostics;
+    BuildMaterialDrawLists(scene, {0, 1, 2},
+                           Vec3{std::numeric_limits<float32>::quiet_NaN()},
+                           opaque, masked, transparent,
+                           &invalidDepthDiagnostics);
+    EXPECT_TRUE(transparent.empty());
+    EXPECT_EQ(3U, invalidDepthDiagnostics.rejectedNonFiniteDepthCount);
+    EXPECT_TRUE(invalidDepthDiagnostics.orderValid);
+}

@@ -128,7 +128,9 @@ namespace RVX
         Frame = 4,
         Poll = 5,
         Retire = 6,
-        Shutdown = 7
+        Shutdown = 7,
+        GPUSceneCullingQualification = 8,
+        DirectOpaqueRasterReadbackQualification = 9
     };
 
     /** @brief Shared observations for the real runtime conformance fixtures. */
@@ -174,10 +176,12 @@ namespace RVX
         uint32 shutdownNativeError = 0;
         std::string shutdownMessage;
         RenderFrameFeatureDiagnostics frameDiagnostics{};
+        bool gpuSceneCullingQualificationAccepted = false;
+        bool directOpaqueRasterReadbackQualificationAccepted = false;
         bool throwOnFrame = false;
 
     private:
-        static constexpr size_t EVENT_COUNT = 8;
+        static constexpr size_t EVENT_COUNT = 10;
         mutable std::mutex m_mutex;
         mutable std::condition_variable m_cv;
         std::array<uint32, EVENT_COUNT> m_eventCounts{};

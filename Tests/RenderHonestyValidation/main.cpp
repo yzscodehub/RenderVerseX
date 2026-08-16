@@ -25,6 +25,7 @@
 #include "Render/Renderer/ViewData.h"
 #include "Render/Sky/AtmosphericScattering.h"
 #include "Resource/Importer/GLTFImporter.h"
+#include "Resource/CookManifest.h"
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
@@ -32,7 +33,7 @@
 #include "Resource/Types/ShaderResource.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHI.h"
-#include "Scene/Mesh.h"
+#include "Geometry/Asset/Mesh.h"
 #include "Terrain/Heightmap.h"
 #include "Terrain/TerrainLOD.h"
 #include "Terrain/TerrainMaterial.h"
@@ -669,6 +670,66 @@ namespace
             return result;
         }
     };
+
+    class TransactionTestImporter final : public RVX::Tools::IAssetImporter
+    {
+    public:
+        const char* GetName() const override { return "TransactionTestImporter"; }
+        std::vector<std::string> GetSupportedExtensions() const override
+        {
+            return {".ok", ".fail", ".missing", ".vanish"};
+        }
+        RVX::Tools::AssetType GetAssetType() const override
+        {
+            return RVX::Tools::AssetType::Texture;
+        }
+
+        RVX::Tools::ImportResult Import(const fs::path& sourcePath,
+                                        const fs::path& outputPath,
+                                        const void*) override
+        {
+            RVX::Tools::ImportResult result;
+            const std::string extension = sourcePath.extension().string();
+            if (extension == ".vanish")
+            {
+                result.success = true;
+                return result;
+            }
+
+            std::ofstream output(outputPath, std::ios::binary);
+            output << "transaction-cooked=" << sourcePath.filename().string();
+            output.close();
+            if (!output)
+            {
+                result.error = "Failed to write transaction test artifact";
+                return result;
+            }
+
+            if (extension == ".fail")
+            {
+                result.error = "Intentional second importer failure";
+                return result;
+            }
+
+            result.success = true;
+            if (extension == ".missing")
+            {
+                result.outputPaths.push_back(
+                    (outputPath.parent_path() / "declared-but-missing.rva").string());
+            }
+            return result;
+        }
+    };
+
+    void ExpectNoCookTransactionResidue(const fs::path& outputRoot)
+    {
+        const std::string prefix = "." + outputRoot.filename().string() + ".rvx-cook-";
+        for (const fs::directory_entry& entry : fs::directory_iterator(outputRoot.parent_path()))
+        {
+            EXPECT_EQ(entry.path().filename().string().find(prefix), std::string::npos)
+                << "stale cook transaction path: " << entry.path();
+        }
+    }
 }
 
 TEST_F(RenderHonestyValidationFixture, JsonArchiveRejectsInvalidJson)
@@ -844,11 +905,28 @@ TEST_F(RenderHonestyValidationFixture, CookDirectoryWritesManifestForCookedOutpu
     EXPECT_GT(entry.sourceModTime, 0u);
     EXPECT_GT(entry.outputModTime, 0u);
     EXPECT_GT(entry.outputSize, 0u);
+    EXPECT_EQ(entry.sourceContent.relativePath, "Textures/Albedo.tga");
+    EXPECT_EQ(entry.sourceContent.byteCount, fs::file_size(source));
+    EXPECT_EQ(entry.sourceContent.sha256.size(), 64u);
+    EXPECT_EQ(entry.dependencies.size(), 0u);
+    ASSERT_EQ(entry.artifacts.size(), 1u);
+    EXPECT_EQ(entry.artifacts[0].relativePath, "Textures/Albedo.rva");
+    EXPECT_EQ(entry.artifacts[0].byteCount, entry.outputSize);
+    EXPECT_EQ(entry.artifacts[0].sha256.size(), 64u);
+    EXPECT_EQ(entry.importerName, "TextureImporter");
+    EXPECT_NE(entry.canonicalCookSettings.find("settingsSchema=RVX_COOK_SETTINGS_V1\n"),
+              std::string::npos);
+    EXPECT_EQ(entry.cookSettingsHash.size(), 64u);
+    EXPECT_EQ(entry.recipeHash.size(), 64u);
     EXPECT_TRUE(fs::exists(outputRoot / "Textures" / "Albedo.rva"));
 
     const std::string manifestText = ReadBinaryFile(manifestPath);
-    EXPECT_NE(manifestText.find("RVX_COOK_MANIFEST_V1"), std::string::npos);
-    EXPECT_NE(manifestText.find("version=1"), std::string::npos);
+    EXPECT_EQ(RVX::Tools::CookManifest::Version, 2u);
+    EXPECT_NE(manifestText.find("RVX_COOK_MANIFEST_V2"), std::string::npos);
+    EXPECT_NE(manifestText.find("schema=RVX_COOK_MANIFEST"), std::string::npos);
+    EXPECT_NE(manifestText.find("version=2"), std::string::npos);
+    EXPECT_NE(manifestText.find("toolName=RVXCook"), std::string::npos);
+    EXPECT_NE(manifestText.find("toolVersion=2.0.0"), std::string::npos);
     EXPECT_NE(manifestText.find("entryCount=1"), std::string::npos);
     EXPECT_NE(manifestText.find("successCount=1"), std::string::npos);
     EXPECT_NE(manifestText.find("failureCount=0"), std::string::npos);
@@ -856,6 +934,20 @@ TEST_F(RenderHonestyValidationFixture, CookDirectoryWritesManifestForCookedOutpu
     EXPECT_NE(manifestText.find("entry.0.output=Textures/Albedo.rva"), std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.type=Texture"), std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.success=1"), std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.importer=TextureImporter"), std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.source.byteCount="), std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.source.sha256=" + entry.sourceContent.sha256),
+              std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.cookSettingsHash=" + entry.cookSettingsHash),
+              std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.recipeHash=" + entry.recipeHash),
+              std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.dependencyCount=0"), std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.artifactCount=1"), std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.artifact.0.path=Textures/Albedo.rva"),
+              std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.artifact.0.sha256=" + entry.artifacts[0].sha256),
+              std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.warningCount=0"), std::string::npos);
     EXPECT_NE(manifestText.find("RVX_COOK_MANIFEST_END"), std::string::npos);
 
@@ -876,7 +968,7 @@ TEST_F(RenderHonestyValidationFixture, CookDirectoryManifestRejectsSuccessWithou
     RVX::Tools::CookManifest manifest =
         pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
 
-    ASSERT_TRUE(manifest.manifestWritten) << manifest.manifestError;
+    EXPECT_FALSE(manifest.manifestWritten);
     ASSERT_EQ(manifest.entries.size(), 1u);
     EXPECT_EQ(manifest.GetSuccessCount(), 0u);
     EXPECT_EQ(manifest.GetFailureCount(), 1u);
@@ -889,15 +981,412 @@ TEST_F(RenderHonestyValidationFixture, CookDirectoryManifestRejectsSuccessWithou
     EXPECT_FALSE(entry.error.empty());
     EXPECT_EQ(entry.outputModTime, 0u);
     EXPECT_EQ(entry.outputSize, 0u);
+    EXPECT_TRUE(entry.sourceContent.sha256.empty());
+    EXPECT_TRUE(entry.dependencies.empty());
+    EXPECT_TRUE(entry.artifacts.empty());
+    EXPECT_TRUE(entry.cookSettingsHash.empty());
+    EXPECT_TRUE(entry.recipeHash.empty());
     EXPECT_FALSE(fs::exists(outputRoot / "Textures" / "Bad.rva"));
 
-    const std::string manifestText = ReadBinaryFile(manifestPath);
-    EXPECT_NE(manifestText.find("entryCount=1"), std::string::npos);
-    EXPECT_NE(manifestText.find("successCount=0"), std::string::npos);
-    EXPECT_NE(manifestText.find("failureCount=1"), std::string::npos);
-    EXPECT_NE(manifestText.find("entry.0.success=0"), std::string::npos);
-    EXPECT_NE(manifestText.find("entry.0.error=Asset import reported success without writing output"),
-              std::string::npos);
+    EXPECT_FALSE(fs::exists(manifestPath));
+    EXPECT_NE(manifest.manifestError.find("previous package was preserved"), std::string::npos);
+    ExpectNoCookTransactionResidue(outputRoot);
+
+    fs::remove_all(dir);
+}
+
+TEST_F(RenderHonestyValidationFixture,
+       CookDirectoryFailureLeavesExistingPackageAndManifestByteIdentical)
+{
+    const fs::path dir = MakeTempDir("rvx_cook_transaction_import_failure");
+    const fs::path sourceRoot = dir / "Source";
+    const fs::path outputRoot = dir / "Cooked";
+    const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    WriteTextFile(sourceRoot / "A.ok", "first source");
+    WriteTextFile(sourceRoot / "B.fail", "second source");
+    WriteTextFile(outputRoot / "Existing" / "legacy.rva", "old package artifact");
+    WriteTextFile(manifestPath, "old package manifest");
+    const std::string oldArtifact = ReadBinaryFile(outputRoot / "Existing" / "legacy.rva");
+    const std::string oldManifest = ReadBinaryFile(manifestPath);
+
+    RVX::Tools::AssetPipeline pipeline;
+    pipeline.RegisterImporter(std::make_unique<TransactionTestImporter>());
+    const RVX::Tools::CookManifest manifest =
+        pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
+
+    EXPECT_FALSE(manifest.manifestWritten);
+    ASSERT_EQ(manifest.entries.size(), 2u);
+    EXPECT_EQ(manifest.GetSuccessCount(), 1u);
+    EXPECT_EQ(manifest.GetFailureCount(), 1u);
+    EXPECT_EQ(ReadBinaryFile(outputRoot / "Existing" / "legacy.rva"), oldArtifact);
+    EXPECT_EQ(ReadBinaryFile(manifestPath), oldManifest);
+    EXPECT_FALSE(fs::exists(outputRoot / "A.rva"));
+    ExpectNoCookTransactionResidue(outputRoot);
+
+    fs::remove_all(dir);
+}
+
+TEST_F(RenderHonestyValidationFixture,
+       CookDirectoryIdentityAndStagingTamperFailuresPreserveExistingPackage)
+{
+    const auto runFailure = [](const char* testName,
+                               const std::string& sourceFile,
+                               RVX::Tools::AssetPipeline::StagingMutator stagingMutator)
+    {
+        const fs::path dir = MakeTempDir(testName);
+        const fs::path sourceRoot = dir / "Source";
+        const fs::path outputRoot = dir / "Cooked";
+        const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+        WriteTextFile(sourceRoot / sourceFile, "transaction source");
+        WriteTextFile(outputRoot / "Existing" / "legacy.rva", "old package artifact");
+        WriteTextFile(manifestPath, "old package manifest");
+        const std::string oldArtifact = ReadBinaryFile(outputRoot / "Existing" / "legacy.rva");
+        const std::string oldManifest = ReadBinaryFile(manifestPath);
+
+        RVX::Tools::AssetPipeline pipeline;
+        pipeline.RegisterImporter(std::make_unique<TransactionTestImporter>());
+        const RVX::Tools::CookManifest manifest = pipeline.CookDirectory(
+            sourceRoot, outputRoot, true, manifestPath, nullptr, nullptr, std::move(stagingMutator));
+
+        EXPECT_FALSE(manifest.manifestWritten) << manifest.manifestError;
+        EXPECT_EQ(ReadBinaryFile(outputRoot / "Existing" / "legacy.rva"), oldArtifact);
+        EXPECT_EQ(ReadBinaryFile(manifestPath), oldManifest);
+        EXPECT_FALSE(fs::exists(outputRoot / fs::path(sourceFile).replace_extension(".rva")));
+        ExpectNoCookTransactionResidue(outputRoot);
+        fs::remove_all(dir);
+    };
+
+    // The importer reports a product that does not exist, so identity capture
+    // fails after a primary staged artifact has already been written.
+    runFailure("rvx_cook_transaction_identity_failure", "Asset.missing", {});
+
+    // This models a post-import/tamper race: Save re-hashes staged artifacts
+    // immediately before publication and must fail rather than publish.
+    runFailure("rvx_cook_transaction_tamper_failure",
+               "Asset.ok",
+               [](RVX::Tools::CookManifest&,
+                  const fs::path& stagingOutputRoot,
+                  std::string& outError)
+               {
+                   std::error_code ec;
+                   fs::remove(stagingOutputRoot / "Asset.rva", ec);
+                   if (ec)
+                   {
+                       outError = "Failed to tamper staged artifact for test: " + ec.message();
+                       return false;
+                   }
+                   outError.clear();
+                   return true;
+               });
+}
+
+TEST_F(RenderHonestyValidationFixture, CookDirectorySuccessReplacesWholePackageAndExternalManifest)
+{
+    const fs::path dir = MakeTempDir("rvx_cook_transaction_success");
+    const fs::path sourceRoot = dir / "Source";
+    const fs::path outputRoot = dir / "Cooked";
+    const fs::path manifestPath = dir / "PublishedManifest.rvxmanifest";
+    WriteTextFile(sourceRoot / "New.ok", "new source");
+    WriteTextFile(outputRoot / "Obsolete" / "old.rva", "old package artifact");
+    WriteTextFile(manifestPath, "old external manifest");
+
+    RVX::Tools::AssetPipeline pipeline;
+    pipeline.RegisterImporter(std::make_unique<TransactionTestImporter>());
+    const RVX::Tools::CookManifest manifest =
+        pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
+
+    ASSERT_TRUE(manifest.manifestWritten) << manifest.manifestError;
+    EXPECT_TRUE(fs::exists(outputRoot / "New.rva"));
+    EXPECT_FALSE(fs::exists(outputRoot / "Obsolete" / "old.rva"));
+    EXPECT_NE(ReadBinaryFile(manifestPath).find("successCount=1"), std::string::npos);
+    EXPECT_NE(ReadBinaryFile(manifestPath).find("sourceRoot=.\n"), std::string::npos);
+    EXPECT_NE(ReadBinaryFile(manifestPath).find("outputRoot=.\n"), std::string::npos);
+    ExpectNoCookTransactionResidue(outputRoot);
+
+    fs::remove_all(dir);
+}
+
+TEST_F(RenderHonestyValidationFixture, CookManifestV2IsContentHashStableAcrossEquivalentCooks)
+{
+    class DeterministicPngImporter final : public RVX::Tools::IAssetImporter
+    {
+    public:
+        const char* GetName() const override { return "DeterministicPngImporter"; }
+        std::vector<std::string> GetSupportedExtensions() const override { return {".png"}; }
+        RVX::Tools::AssetType GetAssetType() const override { return RVX::Tools::AssetType::Texture; }
+
+        RVX::Tools::ImportResult Import(const fs::path&,
+                                        const fs::path& outputPath,
+                                        const void*) override
+        {
+            std::ofstream output(outputPath, std::ios::binary);
+            if (!output.is_open())
+            {
+                return {false, "Failed to write deterministic cook artifact"};
+            }
+            output << "cooked";
+            if (!output)
+            {
+                return {false, "Failed while writing deterministic cook artifact"};
+            }
+
+            RVX::Tools::ImportResult result;
+            result.success = true;
+            result.outputPaths.push_back(outputPath.string());
+            return result;
+        }
+    };
+
+    fs::path dir = MakeTempDir("rvx_cook_manifest_v2_stable");
+    const fs::path sourceRoot = dir / "Source";
+    const fs::path outputRoot = dir / "Cooked";
+    const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    WriteTextFile(sourceRoot / "Textures" / "Stable.png", "abc");
+
+    RVX::Tools::AssetPipeline pipeline;
+    pipeline.RegisterImporter(std::make_unique<DeterministicPngImporter>());
+
+    RVX::Tools::CookManifest first =
+        pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
+    ASSERT_TRUE(first.manifestWritten) << first.manifestError;
+    const std::string firstManifest = ReadBinaryFile(manifestPath);
+
+    std::error_code timestampError;
+    fs::last_write_time(sourceRoot / "Textures" / "Stable.png",
+                        fs::file_time_type::clock::now(),
+                        timestampError);
+    ASSERT_FALSE(timestampError);
+
+    RVX::Tools::CookManifest second =
+        pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
+    ASSERT_TRUE(second.manifestWritten) << second.manifestError;
+    EXPECT_EQ(ReadBinaryFile(manifestPath), firstManifest);
+    ASSERT_EQ(first.entries.size(), 1u);
+    ASSERT_EQ(second.entries.size(), 1u);
+    EXPECT_EQ(first.entries[0].sourceContent.sha256,
+              "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    EXPECT_EQ(second.entries[0].sourceContent.sha256, first.entries[0].sourceContent.sha256);
+    EXPECT_EQ(second.entries[0].artifacts[0].sha256, first.entries[0].artifacts[0].sha256);
+    EXPECT_EQ(second.entries[0].recipeHash, first.entries[0].recipeHash);
+
+    const fs::path otherDir = MakeTempDir("rvx_cook_manifest_v2_stable_other_root");
+    const fs::path otherSourceRoot = otherDir / "DifferentSourceRoot";
+    const fs::path otherOutputRoot = otherDir / "DifferentCookedRoot";
+    const fs::path otherManifestPath = otherOutputRoot / "CookManifest.rvxmanifest";
+    WriteTextFile(otherSourceRoot / "Textures" / "Stable.png", "abc");
+
+    RVX::Tools::AssetPipeline otherPipeline;
+    otherPipeline.RegisterImporter(std::make_unique<DeterministicPngImporter>());
+    const RVX::Tools::CookManifest third =
+        otherPipeline.CookDirectory(otherSourceRoot, otherOutputRoot, true, otherManifestPath);
+    ASSERT_TRUE(third.manifestWritten) << third.manifestError;
+    EXPECT_EQ(ReadBinaryFile(otherManifestPath), firstManifest);
+
+    fs::remove_all(otherDir);
+
+    fs::remove_all(dir);
+}
+
+TEST_F(RenderHonestyValidationFixture,
+       CookManifestV2CapturesExternalGltfSourceClosureAndRejectsUnsafeUris)
+{
+    const fs::path dir = MakeTempDir("rvx_cook_manifest_gltf_source_closure");
+    const fs::path sourceRoot = dir / "Source";
+    const fs::path outputRoot = dir / "Cooked";
+    const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    const fs::path modelPath = sourceRoot / "Models" / "Quad.gltf";
+    const fs::path imagePath = sourceRoot / "Models" / "Textures" / "Albedo.tga";
+
+    WriteMinimalQuadGltf(modelPath);
+    WriteRgbaTga(imagePath, 2, 2, {
+        255, 0, 0, 255, 0, 255, 0, 255,
+        0, 0, 255, 255, 255, 255, 255, 255,
+    });
+    std::string modelJson = ReadBinaryFile(modelPath);
+    const size_t buffersOffset = modelJson.find("  \"buffers\":");
+    ASSERT_NE(buffersOffset, std::string::npos);
+    modelJson.insert(buffersOffset,
+                     "  \"images\": [ { \"uri\": \"Textures/Albedo.tga\" } ],\n");
+    WriteTextFile(modelPath, modelJson);
+
+    RVX::Tools::AssetPipeline pipeline;
+    pipeline.RegisterImporter(std::make_unique<RVX::Tools::ModelImporter>());
+    const RVX::Tools::CookManifest first =
+        pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
+    ASSERT_TRUE(first.manifestWritten) << first.manifestError;
+    const auto firstModel = std::find_if(first.entries.begin(), first.entries.end(),
+                                         [](const RVX::Tools::CookManifestEntry& entry)
+    {
+        return entry.sourcePath == "Models/Quad.gltf";
+    });
+    ASSERT_NE(firstModel, first.entries.end());
+    const RVX::Tools::CookManifestEntry& firstEntry = *firstModel;
+    ASSERT_TRUE(firstEntry.sourceDependencyClosureRecorded);
+    ASSERT_EQ(firstEntry.sourceDependencies.size(), 2u);
+    EXPECT_EQ(firstEntry.sourceDependencies[0].relativePath, "Models/Quad.bin");
+    EXPECT_EQ(firstEntry.sourceDependencies[1].relativePath, "Models/Textures/Albedo.tga");
+    const std::string firstRecipe = firstEntry.recipeHash;
+    const std::string firstRootHash = firstEntry.sourceContent.sha256;
+
+    RVX::Resource::CookManifest parsed;
+    std::string parseError;
+    ASSERT_TRUE(RVX::Resource::LoadCookManifest(manifestPath, parsed, parseError)) << parseError;
+    RVX::Resource::CookManifestExpectation expected;
+    expected.selector.sourcePath = "Models/Quad.gltf";
+    const RVX::Resource::CookManifestAdmissionReceipt receipt =
+        RVX::Resource::VerifyCookedAssetAdmission(parsed, sourceRoot, outputRoot, expected);
+    ASSERT_TRUE(receipt.IsAccepted()) << receipt.detail;
+    EXPECT_EQ(receipt.observedSourceContentIdentity.scope,
+              RVX::Resource::ResourceContentIdentityScope::DependencyClosure);
+    EXPECT_EQ(receipt.observedSourceContentIdentity.fileCount, 3u);
+
+    std::vector<uint8_t> alteredBin;
+    const std::string originalBin = ReadBinaryFile(sourceRoot / "Models" / "Quad.bin");
+    alteredBin.assign(originalBin.begin(), originalBin.end());
+    ASSERT_FALSE(alteredBin.empty());
+    alteredBin.front() ^= 0x01u;
+    WriteBinaryFile(sourceRoot / "Models" / "Quad.bin", alteredBin);
+    EXPECT_EQ(RVX::Resource::VerifyCookedAssetAdmission(parsed, sourceRoot, outputRoot, expected).code,
+              RVX::Resource::CookManifestAdmissionCode::MountedContentMismatch);
+
+    const RVX::Tools::CookManifest second =
+        pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
+    ASSERT_TRUE(second.manifestWritten) << second.manifestError;
+    const auto secondModel = std::find_if(second.entries.begin(), second.entries.end(),
+                                          [](const RVX::Tools::CookManifestEntry& entry)
+    {
+        return entry.sourcePath == "Models/Quad.gltf";
+    });
+    ASSERT_NE(secondModel, second.entries.end());
+    EXPECT_EQ(secondModel->sourceContent.sha256, firstRootHash);
+    EXPECT_NE(secondModel->sourceDependencies[0].sha256,
+              firstEntry.sourceDependencies[0].sha256);
+    EXPECT_NE(secondModel->recipeHash, firstRecipe);
+
+    const fs::path remoteRoot = dir / "RemoteSource";
+    WriteTextFile(remoteRoot / "Models" / "Remote.gltf",
+                  "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\"https://example.invalid/model.bin\",\"byteLength\":1}]}\n");
+    const RVX::Tools::CookManifest remote = pipeline.CookDirectory(
+        remoteRoot, dir / "RemoteCooked", true, dir / "RemoteCooked" / "CookManifest.rvxmanifest");
+    ASSERT_EQ(remote.entries.size(), 1u);
+    EXPECT_FALSE(remote.manifestWritten);
+    EXPECT_FALSE(remote.entries.front().success);
+
+    const fs::path escapeRoot = dir / "EscapeSource";
+    WriteTextFile(escapeRoot / "Models" / "Escape.gltf",
+                  "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\"../outside.bin\",\"byteLength\":1}]}\n");
+    const RVX::Tools::CookManifest escape = pipeline.CookDirectory(
+        escapeRoot, dir / "EscapeCooked", true, dir / "EscapeCooked" / "CookManifest.rvxmanifest");
+    ASSERT_EQ(escape.entries.size(), 1u);
+    EXPECT_FALSE(escape.manifestWritten);
+    EXPECT_FALSE(escape.entries.front().success);
+
+    fs::remove_all(dir);
+}
+
+TEST_F(RenderHonestyValidationFixture, CookManifestV2ChangesRecipeWhenSourceContentDrifts)
+{
+    fs::path dir = MakeTempDir("rvx_cook_manifest_v2_input_drift");
+    const fs::path sourceRoot = dir / "Source";
+    const fs::path outputRoot = dir / "Cooked";
+    const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    const fs::path source = sourceRoot / "Textures" / "Drift.tga";
+    WriteRgbaTga(source, 2, 2, {
+        1, 2, 3, 255, 4, 5, 6, 255,
+        7, 8, 9, 255, 10, 11, 12, 255
+    });
+
+    RVX::Tools::AssetPipeline pipeline;
+    pipeline.RegisterImporter(std::make_unique<RVX::Tools::TextureImporter>());
+    RVX::Tools::CookManifest first =
+        pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
+    ASSERT_TRUE(first.manifestWritten) << first.manifestError;
+
+    WriteRgbaTga(source, 2, 2, {
+        12, 11, 10, 255, 9, 8, 7, 255,
+        6, 5, 4, 255, 3, 2, 1, 255
+    });
+    RVX::Tools::CookManifest second =
+        pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
+    ASSERT_TRUE(second.manifestWritten) << second.manifestError;
+
+    ASSERT_EQ(first.entries.size(), 1u);
+    ASSERT_EQ(second.entries.size(), 1u);
+    EXPECT_NE(second.entries[0].sourceContent.sha256, first.entries[0].sourceContent.sha256);
+    EXPECT_NE(second.entries[0].recipeHash, first.entries[0].recipeHash);
+
+    fs::remove_all(dir);
+}
+
+TEST_F(RenderHonestyValidationFixture, CookManifestV2ChangesRecipeWhenCookSettingsChange)
+{
+    fs::path dir = MakeTempDir("rvx_cook_manifest_v2_settings_drift");
+    const fs::path sourceRoot = dir / "Source";
+    const fs::path outputRoot = dir / "Cooked";
+    const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    WriteRgbaTga(sourceRoot / "Textures" / "Settings.tga", 2, 2, {
+        32, 64, 128, 255, 64, 128, 32, 255,
+        128, 32, 64, 255, 255, 255, 255, 255
+    });
+
+    RVX::Tools::AssetPipeline pipeline;
+    pipeline.RegisterImporter(std::make_unique<RVX::Tools::TextureImporter>());
+    RVX::Tools::TextureImportOptions options;
+    options.compressionMode = RVX::Tools::TextureCompressionMode::BC1;
+    options.compress = true;
+    const auto optionsProvider = [&options](const fs::path&, RVX::Tools::AssetType) -> const void*
+    {
+        return &options;
+    };
+
+    RVX::Tools::CookManifest first = pipeline.CookDirectory(
+        sourceRoot, outputRoot, true, manifestPath, nullptr, optionsProvider);
+    ASSERT_TRUE(first.manifestWritten) << first.manifestError;
+
+    options.compressionMode = RVX::Tools::TextureCompressionMode::BC3;
+    RVX::Tools::CookManifest second = pipeline.CookDirectory(
+        sourceRoot, outputRoot, true, manifestPath, nullptr, optionsProvider);
+    ASSERT_TRUE(second.manifestWritten) << second.manifestError;
+
+    ASSERT_EQ(first.entries.size(), 1u);
+    ASSERT_EQ(second.entries.size(), 1u);
+    EXPECT_EQ(second.entries[0].sourceContent.sha256, first.entries[0].sourceContent.sha256);
+    EXPECT_NE(second.entries[0].canonicalCookSettings, first.entries[0].canonicalCookSettings);
+    EXPECT_NE(second.entries[0].cookSettingsHash, first.entries[0].cookSettingsHash);
+    EXPECT_NE(second.entries[0].recipeHash, first.entries[0].recipeHash);
+
+    fs::remove_all(dir);
+}
+
+TEST_F(RenderHonestyValidationFixture, CookManifestV2RejectsTamperedOrMissingArtifacts)
+{
+    fs::path dir = MakeTempDir("rvx_cook_manifest_v2_artifact_validation");
+    const fs::path sourceRoot = dir / "Source";
+    const fs::path outputRoot = dir / "Cooked";
+    const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    const fs::path output = outputRoot / "Textures" / "Artifact.rva";
+    WriteRgbaTga(sourceRoot / "Textures" / "Artifact.tga", 2, 2, {
+        16, 32, 48, 255, 64, 80, 96, 255,
+        112, 128, 144, 255, 160, 176, 192, 255
+    });
+
+    RVX::Tools::AssetPipeline pipeline;
+    pipeline.RegisterImporter(std::make_unique<RVX::Tools::TextureImporter>());
+    RVX::Tools::CookManifest manifest =
+        pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
+    ASSERT_TRUE(manifest.manifestWritten) << manifest.manifestError;
+
+    WriteTextFile(output, "tampered cooked artifact");
+    std::string validationError;
+    EXPECT_FALSE(manifest.Save(manifestPath, validationError));
+    EXPECT_NE(validationError.find("artifact"), std::string::npos);
+
+    manifest = pipeline.CookDirectory(sourceRoot, outputRoot, true, manifestPath);
+    ASSERT_TRUE(manifest.manifestWritten) << manifest.manifestError;
+    ASSERT_TRUE(fs::remove(output));
+    validationError.clear();
+    EXPECT_FALSE(manifest.Save(manifestPath, validationError));
+    EXPECT_NE(validationError.find("artifact"), std::string::npos);
 
     fs::remove_all(dir);
 }
@@ -931,7 +1420,8 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliWritesManifestForTextureDirecto
     ASSERT_TRUE(fs::exists(manifestPath));
 
     const std::string manifestText = ReadBinaryFile(manifestPath);
-    EXPECT_NE(manifestText.find("RVX_COOK_MANIFEST_V1"), std::string::npos);
+    EXPECT_NE(manifestText.find("RVX_COOK_MANIFEST_V2"), std::string::npos);
+    EXPECT_NE(manifestText.find("version=2"), std::string::npos);
     EXPECT_NE(manifestText.find("entryCount=1"), std::string::npos);
     EXPECT_NE(manifestText.find("successCount=1"), std::string::npos);
     EXPECT_NE(manifestText.find("failureCount=0"), std::string::npos);
@@ -1062,8 +1552,9 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliAppliesMeshProfileLODOptions)
     EXPECT_NE(manifestText.find("entry.0.source=Meshes/Quad.gltf"), std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.output=Meshes/Quad.rva"), std::string::npos);
     EXPECT_NE(manifestText.find("entry.0.type=Model"), std::string::npos);
-    EXPECT_NE(manifestText.find("entry.0.dependency.0=Meshes/Quad.rvdeps/meshes.rva"),
+    EXPECT_NE(manifestText.find("entry.0.dependency.0.path=Meshes/Quad.rvdeps/meshes.rva"),
               std::string::npos);
+    EXPECT_NE(manifestText.find("entry.0.dependency.0.sha256="), std::string::npos);
 
     const std::string modelArtifact = ReadBinaryFile(outputRoot / "Meshes" / "Quad.rva");
     EXPECT_NE(modelArtifact.find("RVX_MODEL_PREBAKE_V1"), std::string::npos);
@@ -1163,7 +1654,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliRewritesGltfTextureUrisToCooked
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
-    const fs::path sourceTexture = sourceRoot / "Textures" / "Albedo.tga";
+    const fs::path sourceTexture = sourceRoot / "Models" / "Textures" / "Albedo.tga";
     const fs::path sourceModel = sourceRoot / "Models" / "CookedTextureMaterial.gltf";
     const fs::path rewrittenModel = outputRoot / "Models" / "CookedTextureMaterial.gltf";
 
@@ -1203,7 +1694,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliRewritesGltfTextureUrisToCooked
                   "    }\n"
                   "  ],\n"
                   "  \"textures\": [ { \"source\": 0 } ],\n"
-                  "  \"images\": [ { \"name\": \"CookRewriteAlbedo\", \"uri\": \"../Textures/Albedo.tga\" } ],\n"
+                   "  \"images\": [ { \"name\": \"CookRewriteAlbedo\", \"uri\": \"Textures/Albedo.tga\" } ],\n"
                   "  \"buffers\": [\n"
                   "    {\n"
                   "      \"byteLength\": 102,\n"
@@ -1242,24 +1733,27 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliRewritesGltfTextureUrisToCooked
 
     const int exitCode = std::system(command.c_str());
     EXPECT_EQ(exitCode, 0) << command;
-    ASSERT_TRUE(fs::exists(outputRoot / "Textures" / "Albedo.rva"));
+    ASSERT_TRUE(fs::exists(outputRoot / "Models" / "Textures" / "Albedo.rva"));
     ASSERT_TRUE(fs::exists(outputRoot / "Models" / "CookedTextureMaterial.rva"));
     ASSERT_TRUE(fs::exists(rewrittenModel));
     ASSERT_TRUE(fs::exists(manifestPath));
 
     const std::string rewrittenText = ReadBinaryFile(rewrittenModel);
-    EXPECT_NE(rewrittenText.find("\"uri\": \"../Textures/Albedo.rva\""), std::string::npos);
-    EXPECT_EQ(rewrittenText.find("../Textures/Albedo.tga"), std::string::npos);
+    EXPECT_NE(rewrittenText.find("\"uri\": \"Textures/Albedo.rva\""), std::string::npos);
+    EXPECT_EQ(rewrittenText.find("Textures/Albedo.tga"), std::string::npos);
 
     const std::string manifestText = ReadBinaryFile(manifestPath);
     EXPECT_NE(manifestText.find("entryCount=3"), std::string::npos);
     EXPECT_NE(manifestText.find("successCount=3"), std::string::npos);
     EXPECT_NE(manifestText.find("failureCount=0"), std::string::npos);
-    EXPECT_NE(manifestText.find("entry.2.source=Models/CookedTextureMaterial.gltf"), std::string::npos);
-    EXPECT_NE(manifestText.find("entry.2.output=Models/CookedTextureMaterial.gltf"), std::string::npos);
-    EXPECT_NE(manifestText.find("entry.2.warning.0=runtimeGltfTextureUriRewrites=1"), std::string::npos);
+    EXPECT_NE(manifestText.find("source=Models/CookedTextureMaterial.gltf"), std::string::npos);
+    EXPECT_NE(manifestText.find("output=Models/CookedTextureMaterial.gltf"), std::string::npos);
+    EXPECT_NE(manifestText.find("runtimeGltfTextureUriRewrites=1"), std::string::npos);
+    EXPECT_NE(manifestText.find("artifact.0.path=Models/CookedTextureMaterial.gltf"),
+              std::string::npos);
 
-    const std::string artifact = ReadBinaryFile(outputRoot / "Textures" / "Albedo.rva");
+    const std::string artifact =
+        ReadBinaryFile(outputRoot / "Models" / "Textures" / "Albedo.rva");
     EXPECT_NE(artifact.find("format=BC1"), std::string::npos);
     EXPECT_NE(artifact.find("compression=BC1"), std::string::npos);
 
@@ -1512,6 +2006,25 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
     WriteTextFile(modelPath,
                   "{\n"
                   "  \"asset\": { \"version\": \"2.0\" },\n"
+                  "  \"scene\": 0,\n"
+                  "  \"scenes\": [ { \"nodes\": [0] } ],\n"
+                  "  \"nodes\": [ { \"mesh\": 0 } ],\n"
+                  "  \"meshes\": [\n"
+                  "    {\n"
+                  "      \"primitives\": [\n"
+                  "        {\n"
+                  "          \"attributes\": {\n"
+                  "            \"POSITION\": 0,\n"
+                  "            \"NORMAL\": 1,\n"
+                  "            \"TEXCOORD_0\": 2\n"
+                  "          },\n"
+                  "          \"indices\": 3,\n"
+                  "          \"material\": 0,\n"
+                  "          \"mode\": 4\n"
+                  "        }\n"
+                  "      ]\n"
+                  "    }\n"
+                  "  ],\n"
                   "  \"materials\": [\n"
                   "    {\n"
                   "      \"name\": \"CookedBCMaterial\",\n"
@@ -1521,7 +2034,32 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
                   "    }\n"
                   "  ],\n"
                   "  \"textures\": [ { \"source\": 0 } ],\n"
-                  "  \"images\": [ { \"name\": \"CookedAlbedo\", \"uri\": \"Albedo.rva\" } ]\n"
+                  "  \"images\": [ { \"name\": \"CookedAlbedo\", \"uri\": \"Albedo.rva\" } ],\n"
+                  "  \"buffers\": [\n"
+                  "    {\n"
+                  "      \"byteLength\": 102,\n"
+                  "      \"uri\": \"data:application/octet-stream;base64,AACAvwAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAD8AAIA/AAABAAIA\"\n"
+                  "    }\n"
+                  "  ],\n"
+                  "  \"bufferViews\": [\n"
+                  "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": 36, \"target\": 34962 },\n"
+                  "    { \"buffer\": 0, \"byteOffset\": 36, \"byteLength\": 36, \"target\": 34962 },\n"
+                  "    { \"buffer\": 0, \"byteOffset\": 72, \"byteLength\": 24, \"target\": 34962 },\n"
+                  "    { \"buffer\": 0, \"byteOffset\": 96, \"byteLength\": 6, \"target\": 34963 }\n"
+                  "  ],\n"
+                  "  \"accessors\": [\n"
+                  "    {\n"
+                  "      \"bufferView\": 0,\n"
+                  "      \"componentType\": 5126,\n"
+                  "      \"count\": 3,\n"
+                  "      \"type\": \"VEC3\",\n"
+                  "      \"min\": [-1.0, 0.0, 0.0],\n"
+                  "      \"max\": [1.0, 1.0, 0.0]\n"
+                  "    },\n"
+                  "    { \"bufferView\": 1, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\" },\n"
+                  "    { \"bufferView\": 2, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC2\" },\n"
+                  "    { \"bufferView\": 3, \"componentType\": 5123, \"count\": 3, \"type\": \"SCALAR\" }\n"
+                  "  ]\n"
                   "}\n");
 
     RVX::Resource::GLTFImporter gltfImporter;
@@ -2231,6 +2769,13 @@ TEST_F(RenderHonestyValidationFixture, QueryPoolDescriptionValidationRejectsInva
     EXPECT_STREQ(result.message, "query pool count must be greater than zero");
 
     desc.count = 1;
+    desc.queueType = RVX::RHICommandQueueType::Compute;
+    result = RVX::ValidateRHIQueryPoolDesc(desc);
+    EXPECT_FALSE(result);
+    EXPECT_STREQ(result.message,
+                 "timestamp query pools currently require the Graphics queue");
+
+    desc.queueType = RVX::RHICommandQueueType::Graphics;
     desc.type = static_cast<RVX::RHIQueryType>(255);
     result = RVX::ValidateRHIQueryPoolDesc(desc);
     EXPECT_FALSE(result);
@@ -2242,12 +2787,27 @@ TEST_F(RenderHonestyValidationFixture, QueryRangeValidationRejectsOutOfBoundsRes
     class TestQueryPool final : public RVX::RHIQueryPool
     {
     public:
+        TestQueryPool()
+            : RHIQueryPool(RVX::RHICommandQueueType::Graphics, 64u)
+        {
+        }
+
         RVX::RHIQueryType GetType() const override { return RVX::RHIQueryType::Timestamp; }
         RVX::uint32 GetCount() const override { return 4; }
         RVX::uint64 GetTimestampFrequency() const override { return 1000000000ull; }
     };
 
     TestQueryPool pool;
+    EXPECT_TRUE(RVX::ValidateRHIQueryPoolMetadata(
+        pool, RVX::RHIQueryType::Timestamp,
+        RVX::RHICommandQueueType::Graphics));
+    RVX::RHIQueryValidationResult metadata =
+        RVX::ValidateRHIQueryPoolMetadata(
+            pool, RVX::RHIQueryType::Timestamp,
+            RVX::RHICommandQueueType::Compute);
+    EXPECT_FALSE(metadata);
+    EXPECT_STREQ(metadata.message,
+                 "query pool queue does not match the command context queue");
     EXPECT_TRUE(RVX::ValidateRHIQueryRange(pool, 0, 4));
     EXPECT_TRUE(RVX::ValidateRHIQueryRange(pool, 3, 1));
 
@@ -2847,7 +3407,8 @@ TEST_F(RenderHonestyValidationFixture, ResourceManagerTextureLoadDoesNotLeavePol
     RVX::Resource::ResourceCache::Stats stats = manager.GetCache().GetStats();
     EXPECT_EQ(stats.totalResources, 1u);
 
-    manager.Unload(texturePath.string());
+    EXPECT_EQ(manager.Unload(resource->GetId()),
+              RVX::Resource::AssetResidencyReleaseResult::Unloaded);
     EXPECT_FALSE(manager.IsLoaded(texturePath.string()));
     stats = manager.GetCache().GetStats();
     EXPECT_EQ(stats.totalResources, 0u);
@@ -3066,6 +3627,9 @@ TEST_F(RenderHonestyValidationFixture,
                      "RenderThreadRuntime.cpp");
     const std::string renderContractsCMake =
         ReadTextFile(repoRoot / "RenderContracts" / "CMakeLists.txt");
+    const std::string renderFrameValidation =
+        ReadTextFile(repoRoot / "RenderContracts" / "Include" /
+                     "RenderContracts" / "RenderFrameValidation.h");
     const std::string renderExtractionCMake =
         ReadTextFile(repoRoot / "RenderExtraction" / "CMakeLists.txt");
 
@@ -3087,8 +3651,22 @@ TEST_F(RenderHonestyValidationFixture,
               runtimeSource.find("RenderSceneTransportMode"));
     EXPECT_EQ(std::string::npos,
               renderContractsCMake.find("Private/RenderFramePacket.cpp"));
+    EXPECT_NE(std::string::npos,
+              renderFrameValidation.find(
+                  "#include \"RenderContracts/RenderFrameTypes.h\""));
+    EXPECT_EQ(std::string::npos,
+              renderFrameValidation.find(
+                  "#include \"RenderContracts/RenderFramePacket.h\""));
     EXPECT_EQ(std::string::npos,
               renderExtractionCMake.find("Private/RenderFramePacketBuilder.cpp"));
+    EXPECT_FALSE(fs::exists(repoRoot / "RenderContracts" / "Include" /
+                            "RenderContracts" / "RenderFramePacket.h"));
+    EXPECT_FALSE(fs::exists(repoRoot / "RenderContracts" / "Private" /
+                            "RenderFramePacket.cpp"));
+    EXPECT_FALSE(fs::exists(repoRoot / "RenderExtraction" / "Include" /
+                            "RenderExtraction" / "RenderFramePacketBuilder.h"));
+    EXPECT_FALSE(fs::exists(repoRoot / "RenderExtraction" / "Private" /
+                            "RenderFramePacketBuilder.cpp"));
     EXPECT_NE(std::string::npos, source.find("m_viewData.SetupFromSnapshot("));
 }
 

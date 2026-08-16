@@ -1,4 +1,6 @@
 #include "Core/Log.h"
+#include "Geometry/Asset/Mesh.h"
+#include "Geometry/Asset/Model.h"
 #include "Resource/Cooked/CookedMeshArtifactReader.h"
 #include "Resource/Cooked/CookedModelArtifact.h"
 #include "Resource/Importer/GLTFImporter.h"
@@ -8,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -79,6 +82,11 @@ TEST(CookedModelProductValidation, DeterministicRoundTripLoadsWithoutSourceParsi
     ASSERT_GE(first.outputPaths.size(), 3u);
     const std::vector<RVX::uint8> firstBytes = ReadBytes(output);
     ASSERT_FALSE(firstBytes.empty());
+    const std::string firstPrefix(
+        reinterpret_cast<const char*>(firstBytes.data()),
+        std::min<size_t>(firstBytes.size(), 64u));
+    EXPECT_TRUE(firstPrefix.starts_with(
+        RVX::Resource::RVX_MODEL_PREBAKE_LEGACY_MAGIC));
 
     RVX::Tools::ImportResult second = importer.Import(source, output);
     ASSERT_TRUE(second.success) << second.error;
@@ -89,6 +97,7 @@ TEST(CookedModelProductValidation, DeterministicRoundTripLoadsWithoutSourceParsi
     ASSERT_TRUE(RVX::Resource::DeserializeCookedModelArtifact(
         firstBytes, artifact, error)) << error;
     ASSERT_TRUE(artifact.rootNode);
+    EXPECT_TRUE(artifact.animationArtifactPath.empty());
     EXPECT_EQ(artifact.materials.size(), 5u);
     EXPECT_EQ(artifact.textures.size(), 1u);
 
@@ -123,6 +132,47 @@ TEST(CookedModelProductValidation, DeterministicRoundTripLoadsWithoutSourceParsi
     EXPECT_FALSE(model->GetTextureStreamingSnapshot().HasStreamingTextures());
 }
 
+TEST(CookedModelProductValidation,
+     IndexedModelBoundsResolveSingularAndExplicitPrimitivesWithTransforms)
+{
+    const auto makeMesh = [](const RVX::Vec3& min, const RVX::Vec3& max)
+    {
+        auto mesh = std::make_shared<RVX::Mesh>();
+        mesh->SetBoundingBox(min, max);
+        return mesh;
+    };
+
+    RVX::Model model;
+    auto root = std::make_shared<RVX::Node>("Root");
+    root->GetLocalTransform().SetPosition({10.0f, 2.0f, -1.0f});
+    root->SetMeshIndices({0, 1, 1});
+    auto child = std::make_shared<RVX::Node>("SingularChild");
+    child->GetLocalTransform().SetPosition({6.0f, 0.0f, 0.0f});
+    child->SetMeshIndex(2);
+    root->AddChild(child);
+    model.SetRootNode(root);
+
+    const std::vector<RVX::Mesh::Ptr> meshes{
+        makeMesh({0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}),
+        makeMesh({-3.0f, -1.0f, 1.0f}, {-2.0f, 2.0f, 2.0f}),
+        makeMesh({0.0f, 0.0f, 0.0f}, {2.0f, 1.0f, 1.0f}),
+    };
+
+    ASSERT_TRUE(model.ComputeBoundingBox(meshes));
+    EXPECT_EQ(model.GetBoundingBox().GetMin(), (RVX::Vec3{7.0f, 1.0f, -1.0f}));
+    EXPECT_EQ(model.GetBoundingBox().GetMax(), (RVX::Vec3{18.0f, 4.0f, 1.0f}));
+
+    EXPECT_FALSE(model.ComputeBoundingBox({}));
+    EXPECT_FALSE(model.GetBoundingBox().IsValid());
+    EXPECT_FALSE(model.ComputeBoundingBox({meshes[0]}));
+    EXPECT_FALSE(model.GetBoundingBox().IsValid());
+
+    std::vector<RVX::Mesh::Ptr> missingBounds = meshes;
+    missingBounds[1] = std::make_shared<RVX::Mesh>();
+    EXPECT_FALSE(model.ComputeBoundingBox(missingBounds));
+    EXPECT_FALSE(model.GetBoundingBox().IsValid());
+}
+
 TEST(CookedModelProductValidation, PersistedAssetTypeValuesRemainStable)
 {
     EXPECT_EQ(static_cast<RVX::uint8>(RVX::Tools::AssetType::Unknown), 0u);
@@ -133,7 +183,7 @@ TEST(CookedModelProductValidation, PersistedAssetTypeValuesRemainStable)
     EXPECT_EQ(static_cast<RVX::uint8>(RVX::Tools::AssetType::Model), 11u);
 }
 
-TEST(CookedModelProductValidation, UnsupportedSkinnedSourceFailsAtCookTime)
+TEST(CookedModelProductValidation, IncompleteSkinWithoutAnimationFailsAtCookTime)
 {
     const fs::path source =
         fs::path(RVX_SOURCE_DIR) /
@@ -155,7 +205,9 @@ TEST(CookedModelProductValidation, UnsupportedSkinnedSourceFailsAtCookTime)
     const RVX::Tools::ImportResult result =
         importer.Import(skinnedSource, temporary.Get() / "Skinned.rva");
     EXPECT_FALSE(result.success);
-    EXPECT_NE(result.error.find("static glTF"), std::string::npos);
+    EXPECT_FALSE(result.error.empty());
+    EXPECT_FALSE(fs::exists(temporary.Get() / "Skinned.rva"));
+    EXPECT_FALSE(fs::exists(temporary.Get() / "Skinned.rvdeps"));
 }
 
 TEST(CookedModelProductValidation, TextureProductsUseModelPlatformCompressionContract)

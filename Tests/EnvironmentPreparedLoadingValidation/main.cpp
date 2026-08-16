@@ -1,5 +1,6 @@
-#include "Resource/Loader/EnvironmentLoader.h"
+#include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
+#include "Resource/Loader/EnvironmentLoader.h"
 
 #include <gtest/gtest.h>
 
@@ -15,6 +16,7 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 using namespace RVX;
 using namespace RVX::Resource;
@@ -91,6 +93,38 @@ namespace
             }
         }
         return output.good();
+    }
+
+    ResourceContentIdentity ReadExpectedSourceIdentity(const std::filesystem::path& path)
+    {
+        std::ifstream input(path, std::ios::binary | std::ios::ate);
+        if (!input)
+        {
+            return {};
+        }
+        const std::streamsize byteCount = input.tellg();
+        if (byteCount < 0)
+        {
+            return {};
+        }
+        input.seekg(0, std::ios::beg);
+        std::vector<uint8> bytes(static_cast<size_t>(byteCount));
+        if (byteCount != 0 &&
+            !input.read(reinterpret_cast<char*>(bytes.data()), byteCount))
+        {
+            return {};
+        }
+
+        ResourceContentIdentity identity;
+        identity.schemaVersion = RVX_RESOURCE_CONTENT_IDENTITY_SCHEMA_VERSION;
+        identity.domain = ResourceContentIdentityDomain::Source;
+        identity.scope = ResourceContentIdentityScope::SelfContainedArtifact;
+        identity.algorithm = ResourceContentHashAlgorithm::SHA256;
+        identity.digest = Hash::FormatSHA256Digest(
+            Hash::ComputeSHA256(bytes.data(), bytes.size()));
+        identity.byteCount = static_cast<uint64>(bytes.size());
+        identity.fileCount = 1;
+        return identity;
     }
 
     ResourceLoadPreparationContext MakeContext(const std::filesystem::path& path,
@@ -457,4 +491,78 @@ TEST(EnvironmentPreparedLoadingValidation,
     EXPECT_EQ(request.GetSnapshot().assetKey.importOptionsHash,
               canonicalHash);
     EXPECT_FLOAT_EQ(loader->GetOptions().exposure, original.exposure);
+}
+
+TEST(EnvironmentPreparedLoadingValidation,
+     PreparedEnvironmentVerifiesTheSameHDRBytesThatWereDecoded)
+{
+    const ScopedTempFile fixture(MakeUniqueHDRPath("ContentIdentity"));
+    ASSERT_TRUE(WriteHDRFixture(fixture.Get()));
+    const ResourceContentIdentity expected = ReadExpectedSourceIdentity(fixture.Get());
+    ASSERT_TRUE(expected.IsValid());
+    ASSERT_EQ(expected.fileCount, 1u);
+
+    EnvironmentManagerGuard guard;
+    auto* loader = dynamic_cast<EnvironmentLoader*>(
+        ResourceManager::Get().GetLoader(ResourceType::Environment));
+    ASSERT_NE(loader, nullptr);
+    EnvironmentLoadOptions environmentOptions;
+    environmentOptions.quality = HDRIBLQualityProfile::Validation;
+    loader->SetOptions(environmentOptions);
+
+    ResourceLoadOptions verifiedOptions;
+    verifiedOptions.expectedContentIdentity = expected;
+    auto verified = ResourceManager::Get().RequestAsync<EnvironmentResource>(
+        fixture.Get().string(),
+        verifiedOptions);
+    ASSERT_TRUE(verified);
+    for (uint32 attempt = 0; attempt < 500 && !verified.TryGet(); ++attempt)
+    {
+        ResourceManager::Get().ProcessCompletedLoads();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EnvironmentHandle environment = verified.TryGet();
+    ASSERT_TRUE(environment) << verified.GetSnapshot().error.message;
+    const ResourceContentVerificationReceipt& receipt =
+        environment->GetContentVerificationReceipt();
+    EXPECT_EQ(receipt.status, ResourceContentVerificationStatus::Verified);
+    EXPECT_EQ(receipt.expected, expected);
+    EXPECT_EQ(receipt.observed, expected);
+    EXPECT_EQ(receipt.observed.scope,
+              ResourceContentIdentityScope::SelfContainedArtifact);
+    EXPECT_EQ(receipt.observed.fileCount, 1u);
+    EXPECT_EQ(receipt.observed.byteCount, expected.byteCount);
+
+    const AssetKey verifiedKey = verified.GetSnapshot().assetKey;
+    verified.Cancel();
+    environment.Reset();
+    EXPECT_EQ(ResourceManager::Get().Unload(verifiedKey),
+              AssetResidencyReleaseResult::Unloaded);
+
+    // Extra trailing data leaves the valid Radiance image decodable while
+    // changing the exact encoded byte sequence. The old expected identity must
+    // therefore fail before any replacement is published.
+    {
+        std::ofstream output(fixture.Get(), std::ios::binary | std::ios::app);
+        ASSERT_TRUE(output);
+        const char mutation = '\x7f';
+        output.write(&mutation, 1);
+        ASSERT_TRUE(output.good());
+    }
+
+    auto mismatched = ResourceManager::Get().RequestAsync<EnvironmentResource>(
+        fixture.Get().string(),
+        verifiedOptions);
+    ASSERT_TRUE(mismatched);
+    for (uint32 attempt = 0;
+         attempt < 500 && mismatched.GetSnapshot().state != ResourceLoadState::Failed;
+         ++attempt)
+    {
+        ResourceManager::Get().ProcessCompletedLoads();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_EQ(mismatched.GetSnapshot().state, ResourceLoadState::Failed);
+    EXPECT_EQ(mismatched.GetSnapshot().error.code,
+              ResourceLoadErrorCode::ContentIdentityMismatch);
+    EXPECT_FALSE(ResourceManager::Get().IsLoaded(mismatched.GetSnapshot().assetKey));
 }

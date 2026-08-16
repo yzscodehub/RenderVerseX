@@ -1353,3 +1353,33 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLPermutationUsesGeneratedGLSLSource
     EXPECT_EQ(device.lastShaderSource, glslSource);
     EXPECT_NE(device.lastShaderSource, spirvBytes);
 }
+
+TEST(ShaderCompilerPolicyValidation, DebugInformationDoesNotChangeOptimizationMode)
+{
+    RVX::ShaderCompileOptions options;
+
+    options.enableDebugInfo = false;
+    options.enableOptimization = false;
+    EXPECT_EQ(
+        RVX::ResolveShaderOptimizationMode(options),
+        RVX::ShaderOptimizationMode::Disabled);
+
+    options.enableDebugInfo = true;
+    EXPECT_EQ(
+        RVX::ResolveShaderOptimizationMode(options),
+        RVX::ShaderOptimizationMode::Disabled);
+
+    options.enableDebugInfo = false;
+    options.enableOptimization = true;
+    EXPECT_EQ(
+        RVX::ResolveShaderOptimizationMode(options),
+        RVX::ShaderOptimizationMode::Level3);
+
+    options.enableDebugInfo = true;
+    EXPECT_EQ(
+        RVX::ResolveShaderOptimizationMode(options),
+        RVX::ShaderOptimizationMode::Level3);
+
+    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 13,
+                  "Shader optimization-policy changes must invalidate cached bytecode");
+}

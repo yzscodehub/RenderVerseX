@@ -249,7 +249,7 @@ TEST(RenderDrawPacketCacheValidation,
 }
 
 TEST(RenderDrawPacketCacheValidation,
-     CompleteObjectRevisionInvalidatesWithoutChangingResourceGenerations)
+     CompleteObjectRevisionChangeIsWarmHitWithoutInvalidation)
 {
     RenderDrawPacketCache cache;
     const RenderDrawPacketCacheVersions versions = MakeVersions();
@@ -261,20 +261,25 @@ TEST(RenderDrawPacketCacheValidation,
     ASSERT_EQ(cache.Resolve(original, versions, false, packetTemplate).code,
               RenderDrawPacketCacheResolveCode::Miss);
     cache.EndAcceptedPublication();
+    const RenderDrawPacketCacheStats afterFirst = cache.GetStats();
 
     MeshBatch changed = original;
     changed.objectRevision = 42;
     cache.BeginAcceptedPublication();
-    const RenderDrawPacketCacheResolveResult miss =
+    const RenderDrawPacketCacheResolveResult hit =
         cache.Resolve(changed, versions, false, packetTemplate);
     cache.EndAcceptedPublication();
 
-    EXPECT_EQ(miss.code, RenderDrawPacketCacheResolveCode::Miss);
-    EXPECT_EQ(miss.invalidationReason,
-              RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged);
-    EXPECT_EQ(cache.GetStats().GetInvalidationCount(
+    EXPECT_TRUE(hit.IsHit());
+    EXPECT_EQ(hit.invalidationReason,
+              RenderDrawPacketCacheInvalidationReason::None);
+    const RenderDrawPacketCacheStats afterRevision = cache.GetStats();
+    EXPECT_EQ(afterRevision.packetBuildCount, afterFirst.packetBuildCount);
+    EXPECT_EQ(afterRevision.entryCreationCount, afterFirst.entryCreationCount);
+    EXPECT_EQ(afterRevision.GetInvalidationCount(
                   RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged),
-              1U);
+              afterFirst.GetInvalidationCount(
+                  RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged));
 }
 
 TEST(RenderDrawPacketCacheValidation,

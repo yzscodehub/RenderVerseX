@@ -40,6 +40,68 @@ TEST(RenderSceneRevisionValidation, FullResetCreatesPersistentDatabase)
     ASSERT_NE(database.FindPrimitive(11), nullptr);
 }
 
+TEST(RenderSceneRevisionValidation,
+     LightStateHashIsOrderIndependentAndChangesWithRetainedValues)
+{
+    RVX::RenderLightSnapshot first;
+    first.lightId = 10;
+    first.color = RVX::Vec3(1.0f, 0.5f, 0.25f);
+    first.intensity = 2.0f;
+    RVX::RenderLightSnapshot second;
+    second.lightId = 20;
+    second.type = RVX::RenderLightType::Point;
+    second.position = RVX::Vec3(1.0f, 2.0f, 3.0f);
+
+    RVX::RenderSceneMutationAccumulator firstOrder;
+    firstOrder.Begin(0, true);
+    ASSERT_TRUE(firstOrder.UpsertLight(first, true));
+    ASSERT_TRUE(firstOrder.UpsertLight(second, true));
+    RVX::RenderSceneDatabase firstDatabase;
+    ASSERT_TRUE(firstDatabase.Apply(firstOrder.Build(1)).IsApplied());
+
+    RVX::RenderSceneMutationAccumulator reverseOrder;
+    reverseOrder.Begin(0, true);
+    ASSERT_TRUE(reverseOrder.UpsertLight(second, true));
+    ASSERT_TRUE(reverseOrder.UpsertLight(first, true));
+    RVX::RenderSceneDatabase secondDatabase;
+    ASSERT_TRUE(secondDatabase.Apply(reverseOrder.Build(1)).IsApplied());
+    EXPECT_EQ(firstDatabase.ComputeLightStateHash(),
+              secondDatabase.ComputeLightStateHash());
+
+    first.intensity = 3.0f;
+    RVX::RenderSceneMutationAccumulator mutation;
+    mutation.Begin(1);
+    ASSERT_TRUE(mutation.UpsertLight(first));
+    ASSERT_TRUE(firstDatabase.Apply(mutation.Build(2)).IsApplied());
+    EXPECT_NE(firstDatabase.ComputeLightStateHash(),
+              secondDatabase.ComputeLightStateHash());
+}
+
+TEST(RenderSceneRevisionValidation,
+     LightLayerMaskChangesRetainedStateHash)
+{
+    RVX::RenderLightSnapshot light;
+    light.lightId = 9;
+    light.layerMask = 0x00000001U;
+
+    RVX::RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    ASSERT_TRUE(reset.UpsertLight(light, true));
+    RVX::RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(reset.Build(1)).IsApplied());
+    const RVX::uint64 before = database.ComputeLightStateHash();
+
+    light.layerMask = 0x00000002U;
+    RVX::RenderSceneMutationAccumulator update;
+    update.Begin(1);
+    ASSERT_TRUE(update.UpsertLight(light));
+    ASSERT_TRUE(database.Apply(update.Build(2)).IsApplied());
+
+    EXPECT_NE(before, database.ComputeLightStateHash());
+    ASSERT_NE(database.FindLight(9), nullptr);
+    EXPECT_EQ(0x00000002U, database.FindLight(9)->layerMask);
+}
+
 TEST(RenderSceneRevisionValidation, AppliesIncrementalUpsertAndRemoveAtomically)
 {
     RVX::RenderSceneDatabase database;

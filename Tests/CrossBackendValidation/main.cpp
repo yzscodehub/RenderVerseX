@@ -122,6 +122,13 @@ TEST(CrossBackendValidation, DeviceCapabilityReportRenderGraphBaselineConsistenc
         EXPECT_EQ(report.adapterName, caps.adapterName) << ToString(backend);
         EXPECT_EQ(report.driverVersion, caps.driverVersion) << ToString(backend);
         EXPECT_FALSE(report.adapterName.empty()) << ToString(backend);
+        const bool requiresDriverIdentity =
+            backend == RHIBackendType::DX12 ||
+            backend == RHIBackendType::Vulkan;
+        if (requiresDriverIdentity)
+        {
+            EXPECT_FALSE(report.driverVersion.empty()) << ToString(backend);
+        }
         EXPECT_TRUE(report.validationPassed)
             << "Backend " << ToString(backend)
             << " reported invalid capabilities: " << report.validationMessage;
@@ -133,18 +140,34 @@ TEST(CrossBackendValidation, DeviceCapabilityReportRenderGraphBaselineConsistenc
 
         const std::string text = device->ExportCapabilityReportText();
         EXPECT_NE(text.find("RHI Capability Report"), std::string::npos) << ToString(backend);
-        EXPECT_NE(text.find("Adapter: " + report.adapterName), std::string::npos) << ToString(backend);
-        EXPECT_NE(text.find("DriverVersion: " + report.driverVersion), std::string::npos) << ToString(backend);
+        if (!report.adapterName.empty())
+        {
+            EXPECT_NE(text.find("Adapter: " + report.adapterName), std::string::npos)
+                << ToString(backend);
+        }
+        if (!report.driverVersion.empty())
+        {
+            EXPECT_NE(text.find("DriverVersion: " + report.driverVersion), std::string::npos)
+                << ToString(backend);
+        }
         EXPECT_NE(text.find("RenderGraphBaseline: Passed"), std::string::npos) << ToString(backend);
         EXPECT_NE(text.find("RenderGraphBaselineMissing: none"), std::string::npos) << ToString(backend);
 
         const std::string json = device->ExportCapabilityReportJson();
         EXPECT_NE(json.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos) << ToString(backend);
         EXPECT_NE(json.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos) << ToString(backend);
-        EXPECT_NE(json.find("\"adapterName\": \"" + report.adapterName + "\""), std::string::npos)
-            << ToString(backend);
-        EXPECT_NE(json.find("\"driverVersion\": \"" + report.driverVersion + "\""), std::string::npos)
-            << ToString(backend);
+        if (!report.adapterName.empty())
+        {
+            EXPECT_NE(json.find("\"adapterName\": \"" + report.adapterName + "\""),
+                      std::string::npos)
+                << ToString(backend);
+        }
+        if (!report.driverVersion.empty())
+        {
+            EXPECT_NE(json.find("\"driverVersion\": \"" + report.driverVersion + "\""),
+                      std::string::npos)
+                << ToString(backend);
+        }
         EXPECT_NE(json.find("\"renderGraphBaseline\": {"), std::string::npos) << ToString(backend);
         EXPECT_NE(json.find("\"supported\": true"), std::string::npos) << ToString(backend);
 

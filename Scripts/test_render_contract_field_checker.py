@@ -448,6 +448,38 @@ class RenderContractFieldCheckerTests(unittest.TestCase):
             )
             self.assert_forbidden(root, "conflicting duplicate declaration")
 
+    def test_custom_template_value_is_substituted_and_traversed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_header(
+                root,
+                "Root.h",
+                """
+                #include <optional>
+                template <typename State>
+                struct Wrapper { State state; };
+                struct Leaf { int value; };
+                struct Root { std::optional<Wrapper<Leaf>> value; };
+                """,
+            )
+            result = run_checker(root, "Root.h:Root")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("reachable instance fields: 3", result.stdout)
+
+    def test_custom_template_forbidden_argument_still_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            write_header(
+                root,
+                "Root.h",
+                """
+                template <typename State>
+                struct Wrapper { State state; };
+                struct Root { Wrapper<int*> value; };
+                """,
+            )
+            self.assert_forbidden(root, "raw pointer")
+
     def test_missing_root_and_bad_cli_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             missing = Path(temp_dir) / "missing"
@@ -459,7 +491,10 @@ class RenderContractFieldCheckerTests(unittest.TestCase):
     def test_real_render_contract_roots_are_owned_values(self) -> None:
         result = run_checker(
             REPO_ROOT,
-            "RenderContracts/Include/RenderContracts/RenderFramePacket.h:RenderFramePacket",
+            "RenderContracts/Include/RenderContracts/RenderFrameTypes.h:RenderFrameSettings",
+            "RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFrameHeaderV5",
+            "RenderContracts/Include/RenderContracts/RenderFramePacketV5.h:RenderFramePacketV5",
+            "RenderContracts/Include/RenderContracts/RenderSceneUpdate.h:RenderSceneUpdateBatch",
             "RenderContracts/Include/RenderContracts/ResourceUploadRequest.h:ResourceUploadRequest",
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -467,9 +502,9 @@ class RenderContractFieldCheckerTests(unittest.TestCase):
             int(value)
             for value in re.findall(r"reachable instance fields:\s*([0-9]+)", result.stdout)
         ]
-        self.assertEqual(len(counts), 2, result.stdout)
+        self.assertEqual(len(counts), 5, result.stdout)
         self.assertTrue(all(count > 0 for count in counts), result.stdout)
-        self.assertEqual(result.stdout.count("forbidden fields: 0"), 2, result.stdout)
+        self.assertEqual(result.stdout.count("forbidden fields: 0"), 5, result.stdout)
 
 
 if __name__ == "__main__":

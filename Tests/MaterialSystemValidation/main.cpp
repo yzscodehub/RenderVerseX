@@ -14,7 +14,7 @@
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHIUpload.h"
-#include "Scene/Material.h"
+#include "Geometry/Asset/Material.h"
 
 #include <gtest/gtest.h>
 
@@ -37,10 +37,13 @@ namespace
     class FakeBuffer final : public RHIBuffer
     {
     public:
-        explicit FakeBuffer(const RHIBufferDesc& desc, bool mapSucceeds = true)
+        explicit FakeBuffer(const RHIBufferDesc& desc,
+                            bool mapSucceeds = true,
+                            bool commitSucceeds = true)
             : m_desc(desc)
             , m_storage(static_cast<size_t>(desc.size))
             , m_mapSucceeds(mapSucceeds)
+            , m_commitSucceeds(commitSucceeds)
         {
         }
 
@@ -52,20 +55,56 @@ namespace
 
         void* Map() override
         {
-            if (!m_mapSucceeds)
+            if (!m_mapSucceeds || m_storage.empty() || m_isMapped)
                 return nullptr;
 
-            return m_storage.empty() ? nullptr : m_storage.data();
+            m_mappedStorage = m_storage;
+            m_isMapped = true;
+            return m_mappedStorage.data();
         }
-        void Unmap() override {}
+        void Unmap() override
+        {
+            if (!m_isMapped)
+            {
+                return;
+            }
+
+            m_storage = std::move(m_mappedStorage);
+            m_isMapped = false;
+        }
+
+        bool CommitMappedWrite() override
+        {
+            ++m_commitMappedWriteCount;
+            if (!m_isMapped)
+            {
+                return false;
+            }
+            if (!m_commitSucceeds)
+            {
+                m_mappedStorage.clear();
+                m_isMapped = false;
+                return false;
+            }
+
+            m_storage = std::move(m_mappedStorage);
+            m_isMapped = false;
+            return true;
+        }
 
         const std::vector<uint8>& GetStorage() const { return m_storage; }
+        uint32 GetCommitMappedWriteCount() const { return m_commitMappedWriteCount; }
+        void SetCommitSucceeds(bool succeeds) { m_commitSucceeds = succeeds; }
 
     private:
         RHIBufferDesc m_desc;
         std::string m_debugName = m_desc.debugName ? m_desc.debugName : "";
         std::vector<uint8> m_storage;
+        std::vector<uint8> m_mappedStorage;
         bool m_mapSucceeds = true;
+        bool m_commitSucceeds = true;
+        bool m_isMapped = false;
+        uint32 m_commitMappedWriteCount = 0;
     };
 
     class FakeTexture final : public RHITexture
@@ -325,7 +364,8 @@ namespace
             if (failBufferCreation)
                 return nullptr;
 
-            auto buffer = RHIBufferRef(new FakeBuffer(desc, bufferMapSucceeds));
+            auto buffer = RHIBufferRef(new FakeBuffer(
+                desc, bufferMapSucceeds, bufferCommitSucceeds));
             lastCreatedBuffer = static_cast<FakeBuffer*>(buffer.Get());
             retainedBuffers.push_back(buffer);
             return buffer;
@@ -461,6 +501,7 @@ namespace
         bool failBufferCreation = false;
         bool failDescriptorSetCreation = false;
         bool bufferMapSucceeds = true;
+        bool bufferCommitSucceeds = true;
         bool deferFenceCompletion = false;
         RHIBackendType backendType = RHIBackendType::DX12;
         RHICommandQueueType lastCommandQueueType = RHICommandQueueType::Graphics;
@@ -1002,6 +1043,40 @@ namespace
         }
     }
 
+    TEST(FrameConstantUploadArenaValidation,
+         CommitFailureDoesNotPublishSlotAndRetryUsesANewPage)
+    {
+        FakeDevice device;
+        FrameConstantUploadArena arena;
+        ASSERT_TRUE(arena.Initialize(&device, 256, 2, "FrameConstantArenaCommitFail"));
+
+        const uint32 committedValue = 0xCAFE0001u;
+        FrameConstantUploadAllocation committed;
+        ASSERT_TRUE(arena.Allocate(&committedValue, sizeof(committedValue), committed));
+        auto* committedBuffer = static_cast<FakeBuffer*>(committed.buffer.Get());
+        ASSERT_NE(nullptr, committedBuffer);
+
+        committedBuffer->SetCommitSucceeds(false);
+        const uint32 failedValue = 0xCAFE0002u;
+        FrameConstantUploadAllocation failed;
+        EXPECT_FALSE(arena.Allocate(&failedValue, sizeof(failedValue), failed));
+        EXPECT_FALSE(failed.IsValid());
+        EXPECT_EQ(1u, arena.GetUnusablePageCount());
+
+        uint32 retainedValue = 0;
+        std::memcpy(&retainedValue,
+                    committedBuffer->GetStorage().data() + committed.dynamicOffset,
+                    sizeof(retainedValue));
+        EXPECT_EQ(committedValue, retainedValue);
+
+        const uint32 retryValue = 0xCAFE0003u;
+        FrameConstantUploadAllocation retry;
+        ASSERT_TRUE(arena.Allocate(&retryValue, sizeof(retryValue), retry));
+        EXPECT_NE(committed.pageIdentity, retry.pageIdentity);
+        EXPECT_EQ(0u, retry.dynamicOffset);
+        EXPECT_EQ(2u, committedBuffer->GetCommitMappedWriteCount());
+    }
+
     TEST(MaterialSystemValidation,
          PagedMaterialConstantsStartThe8193rdUpdateAtANewPageOffsetZero)
     {
@@ -1365,6 +1440,8 @@ namespace
         EXPECT_EQ(MaterialBindingStatus::Fallback, result.status);
         EXPECT_TRUE(result.IsDrawable());
         EXPECT_TRUE(result.usedFallback);
+        EXPECT_NE(0u, result.descriptorContentKey);
+        EXPECT_EQ(0u, result.descriptorRevision);
         EXPECT_TRUE(Contains(result.message, "fallback"));
 
         materialSystem.Shutdown();
@@ -1375,7 +1452,7 @@ namespace
     {
         FakeDevice device;
         RenderRuntimeTestHarness gpuResources;
-        gpuResources.Initialize(&device);
+        ASSERT_TRUE(gpuResources.Initialize(&device));
 
         ResourceViewCache viewCache;
         viewCache.Initialize(&device);
@@ -1498,6 +1575,270 @@ namespace
         gpuResources.Shutdown();
     }
 
+    TEST(MaterialSystemValidation,
+         MaterialBindingFallbackToReadyPublishesExactSemanticDescriptorEvidence)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+
+        ResourceViewCache viewCache;
+        viewCache.Initialize(&device);
+
+        FakeDescriptorSetLayout materialLayout;
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, &materialLayout, &gpuResources.GetRegistry()));
+
+        auto normalTexture = CreateTextureResource(322);
+        Resource::MaterialResource materialResource;
+        materialResource.SetId(223);
+        materialResource.SetName("SemanticDescriptorEvidenceMaterial");
+        materialResource.SetMaterialData(
+            std::make_shared<Material>("SemanticDescriptorEvidenceMaterial"));
+        materialResource.SetTexture("normal", normalTexture);
+        ASSERT_TRUE(gpuResources.UploadImmediate(normalTexture.Get()));
+        const RenderResourceHandle material =
+            gpuResources.ResolveOrUpload(&materialResource);
+        const RenderResourceHandle texture =
+            gpuResources.GetHandle(normalTexture.GetId());
+        ASSERT_TRUE(material.IsValid());
+        ASSERT_TRUE(texture.IsValid());
+
+        MaterialBindingOptions fallbackOptions;
+        fallbackOptions.allowNormalMap = false;
+        const MaterialBindingResult fallback =
+            materialSystem.PrepareMaterialBinding(
+                material, &viewCache, fallbackOptions);
+        ASSERT_TRUE(fallback.IsDrawable());
+        EXPECT_EQ(MaterialBindingStatus::Fallback, fallback.status);
+        EXPECT_EQ(material, fallback.material);
+        EXPECT_NE(0u, fallback.contentRevision);
+        ASSERT_EQ(1u, fallback.textureEntries.size());
+        EXPECT_EQ(MaterialUploadTextureSlot::Normal,
+                  fallback.textureEntries[0].slot);
+        EXPECT_EQ(texture, fallback.textureEntries[0].texture);
+        EXPECT_NE(0u, fallback.textureEntries[0].contentRevision);
+        EXPECT_TRUE(fallback.textureEntries[0].fallbackUsed);
+        ASSERT_NE(0u, fallback.descriptorContentKey);
+        ASSERT_NE(0u, fallback.descriptorRevision);
+
+        const MaterialBindingResult ready = materialSystem.PrepareMaterialBinding(
+            material, &viewCache);
+        ASSERT_TRUE(ready.IsDrawable());
+        EXPECT_EQ(MaterialBindingStatus::Ready, ready.status);
+        EXPECT_EQ(material, ready.material);
+        ASSERT_EQ(1u, ready.textureEntries.size());
+        EXPECT_EQ(texture, ready.textureEntries[0].texture);
+        EXPECT_FALSE(ready.textureEntries[0].fallbackUsed);
+        EXPECT_NE(fallback.descriptorContentKey, ready.descriptorContentKey);
+        EXPECT_GT(ready.descriptorRevision, fallback.descriptorRevision);
+
+        materialSystem.Shutdown();
+        viewCache.Shutdown();
+        gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation,
+         RasterMaterialSemanticKeyUsesActualResolvedTextureAndCanonicalConstants)
+    {
+        const auto makeReadyKey = [](
+                                      Resource::ResourceId textureId,
+                                      float32 roughness,
+                                      float32 metallic,
+                                      bool reserveUnrelatedTexture) -> uint64
+        {
+            FakeDevice device;
+            RenderRuntimeTestHarness resources;
+            if (!resources.Initialize(&device))
+            {
+                return 0;
+            }
+            ResourceViewCache viewCache;
+            viewCache.Initialize(&device);
+            FakeDescriptorSetLayout layout;
+            MaterialSystem system;
+            if (!system.Initialize(&device, &layout, &resources.GetRegistry()))
+            {
+                viewCache.Shutdown();
+                resources.Shutdown();
+                return 0;
+            }
+            if (reserveUnrelatedTexture)
+            {
+                auto unrelated = CreateTextureResource(9991u);
+                if (!resources.UploadImmediate(unrelated.Get()))
+                {
+                    system.Shutdown();
+                    viewCache.Shutdown();
+                    resources.Shutdown();
+                    return 0;
+                }
+            }
+            auto texture = CreateTextureResource(textureId);
+            auto materialData = std::make_shared<Material>("RasterSemanticMaterial");
+            materialData->SetRoughnessFactor(roughness);
+            materialData->SetMetallicFactor(metallic);
+            Resource::MaterialResource material;
+            material.SetId(9201u);
+            material.SetName("RasterSemanticMaterial");
+            material.SetMaterialData(materialData);
+            material.SetTexture("albedo", texture);
+            uint64 key = 0;
+            if (resources.UploadImmediate(texture.Get()))
+            {
+                const MaterialBindingResult binding =
+                    system.PrepareMaterialBinding(
+                        resources.ResolveOrUpload(&material), &viewCache);
+                if (binding.IsDrawable())
+                {
+                    key = binding.descriptorContentKey;
+                }
+            }
+            system.Shutdown();
+            viewCache.Shutdown();
+            resources.Shutdown();
+            return key;
+        };
+
+        // Independently allocated handles (and shifted physical slots) with
+        // the same AssetIds must yield the same post-resolution evidence.
+        const uint64 baseline = makeReadyKey(9202u, 0.25f, 0.0f, false);
+        const uint64 sameAssetsDifferentAllocation =
+            makeReadyKey(9202u, 0.25f, -0.0f, true);
+        const uint64 changedTexture = makeReadyKey(9203u, 0.25f, 0.0f, true);
+        const uint64 changedConstants = makeReadyKey(9202u, 0.75f, 0.0f, true);
+        ASSERT_NE(0u, baseline);
+        EXPECT_EQ(baseline, sameAssetsDifferentAllocation);
+        EXPECT_NE(baseline, changedTexture);
+        EXPECT_NE(baseline, changedConstants);
+    }
+
+    TEST(MaterialSystemValidation,
+         InstanceBindingKeyUsesStableTextureAssetIdentity)
+    {
+        const auto makeBindingKey = [](
+                                        Resource::ResourceId textureId,
+                                        bool reserveUnrelatedTexture)
+            -> MaterialInstanceBindingKey
+        {
+            FakeDevice device;
+            RenderRuntimeTestHarness resources;
+            if (!resources.Initialize(&device))
+            {
+                return {};
+            }
+            FakeDescriptorSetLayout layout;
+            MaterialSystem system;
+            if (!system.Initialize(&device, &layout, &resources.GetRegistry()))
+            {
+                resources.Shutdown();
+                return {};
+            }
+            if (reserveUnrelatedTexture)
+            {
+                auto unrelated = CreateTextureResource(9992u);
+                if (!resources.UploadImmediate(unrelated.Get()))
+                {
+                    system.Shutdown();
+                    resources.Shutdown();
+                    return {};
+                }
+            }
+
+            auto texture = CreateTextureResource(textureId);
+            Resource::MaterialResource material;
+            material.SetId(9204u);
+            material.SetName("StableInstanceBindingMaterial");
+            material.SetMaterialData(
+                std::make_shared<Material>("StableInstanceBindingMaterial"));
+            material.SetTexture("albedo", texture);
+
+            MaterialInstanceBindingKey key;
+            if (resources.UploadImmediate(texture.Get()))
+            {
+                key = system.ResolveInstanceBindingKey(
+                    resources.ResolveOrUpload(&material));
+            }
+            system.Shutdown();
+            resources.Shutdown();
+            return key;
+        };
+
+        const MaterialInstanceBindingKey baseline =
+            makeBindingKey(9205u, false);
+        const MaterialInstanceBindingKey sameAssetDifferentAllocation =
+            makeBindingKey(9205u, true);
+        const MaterialInstanceBindingKey changedTexture =
+            makeBindingKey(9206u, true);
+
+        ASSERT_TRUE(baseline.parameterTableCompatible);
+        EXPECT_EQ(baseline, sameAssetDifferentAllocation);
+        EXPECT_NE(baseline, changedTexture);
+    }
+
+    TEST(MaterialSystemValidation,
+         RasterMaterialSemanticKeyCanonicalizesResolvedNormalFallbacks)
+    {
+        const auto makeNormalKey = [](
+                                       Resource::ResourceId textureId,
+                                       float32 normalScale,
+                                       bool allowNormalMap) -> uint64
+        {
+            FakeDevice device;
+            RenderRuntimeTestHarness resources;
+            if (!resources.Initialize(&device))
+            {
+                return 0;
+            }
+            ResourceViewCache viewCache;
+            viewCache.Initialize(&device);
+            FakeDescriptorSetLayout layout;
+            MaterialSystem system;
+            if (!system.Initialize(&device, &layout, &resources.GetRegistry()))
+            {
+                viewCache.Shutdown();
+                resources.Shutdown();
+                return 0;
+            }
+            auto texture = CreateTextureResource(textureId);
+            auto materialData = std::make_shared<Material>("RasterNormalSemantic");
+            materialData->SetNormalScale(normalScale);
+            Resource::MaterialResource material;
+            material.SetId(9301u);
+            material.SetName("RasterNormalSemantic");
+            material.SetMaterialData(materialData);
+            material.SetTexture("normal", texture);
+            MaterialBindingOptions options;
+            options.allowNormalMap = allowNormalMap;
+            uint64 key = 0;
+            if (resources.UploadImmediate(texture.Get()))
+            {
+                const MaterialBindingResult binding =
+                    system.PrepareMaterialBinding(
+                        resources.ResolveOrUpload(&material), &viewCache,
+                        options);
+                if (binding.IsDrawable())
+                {
+                    key = binding.descriptorContentKey;
+                }
+            }
+            system.Shutdown();
+            viewCache.Shutdown();
+            resources.Shutdown();
+            return key;
+        };
+
+        const uint64 disabledFirst = makeNormalKey(9302u, 0.25f, false);
+        const uint64 disabledChanged = makeNormalKey(9303u, 2.0f, false);
+        const uint64 enabledFirst = makeNormalKey(9302u, 0.25f, true);
+        const uint64 enabledChanged = makeNormalKey(9303u, 2.0f, true);
+        ASSERT_NE(0u, disabledFirst);
+        ASSERT_NE(0u, enabledFirst);
+        EXPECT_EQ(disabledFirst, disabledChanged);
+        EXPECT_NE(enabledFirst, enabledChanged);
+    }
+
     TEST(MaterialSystemValidation, MaterialBindingDoesNotReportFallbackForOmittedNormalTextureWhenNormalMapsDisabled)
     {
         FakeDevice device;
@@ -1531,6 +1872,65 @@ namespace
         materialSystem.Shutdown();
         viewCache.Shutdown();
         gpuResources.Shutdown();
+    }
+
+    TEST(MaterialSystemValidation,
+         RasterMaterialSemanticKeyUsesStableFallbackTokensForDefaultResources)
+    {
+        const auto makeFallbackKey = [](Resource::ResourceId textureId,
+                                        bool bindDefaultTexture) -> uint64
+        {
+            FakeDevice device;
+            RenderRuntimeTestHarness resources;
+            if (!resources.Initialize(&device))
+            {
+                return 0;
+            }
+            ResourceViewCache viewCache;
+            viewCache.Initialize(&device);
+            FakeDescriptorSetLayout layout;
+            MaterialSystem system;
+            if (!system.Initialize(&device, &layout, &resources.GetRegistry()))
+            {
+                viewCache.Shutdown();
+                resources.Shutdown();
+                return 0;
+            }
+            Resource::MaterialResource material;
+            material.SetId(9401u);
+            material.SetName("RasterFallbackSemantic");
+            material.SetMaterialData(
+                std::make_shared<Material>("RasterFallbackSemantic"));
+            Resource::TextureHandle texture;
+            if (bindDefaultTexture)
+            {
+                texture = CreateTextureResource(textureId);
+                texture->MarkDefaultFallback("semantic default");
+                if (!resources.UploadImmediate(texture.Get()))
+                {
+                    system.Shutdown();
+                    viewCache.Shutdown();
+                    resources.Shutdown();
+                    return 0;
+                }
+                material.SetTexture("albedo", texture);
+            }
+            const MaterialBindingResult binding = system.PrepareMaterialBinding(
+                resources.ResolveOrUpload(&material), &viewCache);
+            const uint64 key = binding.IsDrawable()
+                ? binding.descriptorContentKey : 0;
+            system.Shutdown();
+            viewCache.Shutdown();
+            resources.Shutdown();
+            return key;
+        };
+
+        const uint64 firstDefault = makeFallbackKey(9402u, true);
+        const uint64 replacementDefault = makeFallbackKey(9403u, true);
+        const uint64 omitted = makeFallbackKey(0u, false);
+        ASSERT_NE(0u, firstDefault);
+        EXPECT_EQ(firstDefault, replacementDefault);
+        EXPECT_EQ(firstDefault, omitted);
     }
 
     TEST(MaterialSystemValidation, MaterialBindingDefaultFallbackTextureDoesNotSetTextureFlag)
@@ -1659,6 +2059,127 @@ namespace
             EXPECT_FALSE(materialSystem.PrepareMaterialBinding({}, nullptr).IsDrawable());
             EXPECT_EQ(MaterialBindingStatus::NotInitialized, materialSystem.GetLastBindingResult().status);
         }
+    }
+
+    TEST(MaterialSystemValidation,
+         MappedWriteCommitFailuresDoNotPublishMaterialStateAndRetriesSucceed)
+    {
+        FakeDevice device;
+        RenderRuntimeTestHarness gpuResources;
+        ASSERT_TRUE(gpuResources.Initialize(&device));
+        RHIDescriptorSetLayoutRef materialLayout(
+            new FakeDescriptorSetLayout());
+        MaterialSystem materialSystem;
+        ASSERT_TRUE(materialSystem.Initialize(
+            &device, materialLayout.Get(), &gpuResources.GetRegistry()));
+
+        auto materialData = std::make_shared<Material>("CommitFailureMaterial");
+        materialData->SetBaseColor(Vec4(0.2f, 0.3f, 0.4f, 1.0f));
+        Resource::MaterialResource resource;
+        resource.SetId(901);
+        resource.SetName("CommitFailureMaterial");
+        resource.SetMaterialData(materialData);
+        const RenderResourceHandle material = gpuResources.ResolveOrUpload(&resource);
+        ASSERT_TRUE(material.IsValid());
+
+        const MaterialBindingResult committedPage =
+            materialSystem.PrepareMaterialBinding(material, nullptr);
+        ASSERT_TRUE(committedPage.IsDrawable());
+        ASSERT_TRUE(committedPage.constantBuffer);
+        FakeBuffer* const page =
+            static_cast<FakeBuffer*>(committedPage.constantBuffer.Get());
+        ASSERT_NE(nullptr, page);
+        const uint32 descriptorsBeforePageFailure = device.createdDescriptorSetCount;
+        page->SetCommitSucceeds(false);
+        const MaterialBindingResult pageFailure =
+            materialSystem.PrepareMaterialBinding(material, nullptr);
+        EXPECT_EQ(MaterialBindingStatus::Error, pageFailure.status);
+        EXPECT_FALSE(pageFailure.IsDrawable());
+        EXPECT_FALSE(pageFailure.constantsUpdated);
+        EXPECT_EQ(nullptr, pageFailure.descriptorSet);
+        EXPECT_FALSE(pageFailure.constantBuffer);
+        EXPECT_FALSE(pageFailure.descriptorSetRef);
+        EXPECT_EQ(descriptorsBeforePageFailure, device.createdDescriptorSetCount);
+        EXPECT_TRUE(committedPage.IsDrawable());
+
+        // The failed page is quarantined; retrying allocates a fresh page and
+        // must not reinterpret the failed bytes as a successful update.
+        page->SetCommitSucceeds(true);
+        const MaterialBindingResult pageRetry =
+            materialSystem.PrepareMaterialBinding(material, nullptr);
+        EXPECT_TRUE(pageRetry.IsDrawable());
+        EXPECT_TRUE(pageRetry.constantsUpdated);
+        EXPECT_NE(nullptr, pageRetry.descriptorSet);
+        ASSERT_TRUE(pageRetry.constantBuffer);
+        EXPECT_NE(page, pageRetry.constantBuffer.Get());
+
+        const std::array requests = {
+            MaterialParameterTableEntryRequest{material, true}};
+        MaterialParameterTableSnapshot committedTable;
+        ASSERT_TRUE(materialSystem.CreateMaterialParameterTableSnapshot(
+            requests, nullptr, committedTable));
+        ASSERT_TRUE(committedTable.IsValid());
+        const RHIBufferRef committedTableBuffer = committedTable.buffer;
+        ASSERT_EQ(committedTable.slotCount,
+                  committedTable.rasterMaterialSemanticKeysBySlot.size());
+        ASSERT_LT(material.slot,
+                  committedTable.rasterMaterialSemanticKeysBySlot.size());
+        EXPECT_NE(0u,
+                  committedTable.rasterMaterialSemanticKeysBySlot[
+                      material.slot]);
+
+        device.bufferCommitSucceeds = false;
+        MaterialParameterTableSnapshot failedTable;
+        EXPECT_FALSE(materialSystem.CreateMaterialParameterTableSnapshot(
+            requests, nullptr, failedTable));
+        EXPECT_FALSE(failedTable.IsValid());
+        EXPECT_FALSE(failedTable.buffer);
+        EXPECT_TRUE(failedTable.rasterMaterialSemanticKeysBySlot.empty());
+        EXPECT_TRUE(committedTable.IsValid());
+        EXPECT_EQ(committedTableBuffer.Get(), committedTable.buffer.Get());
+
+        device.bufferCommitSucceeds = true;
+        MaterialParameterTableSnapshot retriedTable;
+        ASSERT_TRUE(materialSystem.CreateMaterialParameterTableSnapshot(
+            requests, nullptr, retriedTable));
+        EXPECT_TRUE(retriedTable.IsValid());
+        EXPECT_NE(committedTable.buffer.Get(), retriedTable.buffer.Get());
+        ASSERT_EQ(retriedTable.slotCount,
+                  retriedTable.rasterMaterialSemanticKeysBySlot.size());
+        EXPECT_EQ(committedTable.rasterMaterialSemanticKeysBySlot,
+                  retriedTable.rasterMaterialSemanticKeysBySlot);
+
+        MaterialBindingSnapshot committedSnapshot;
+        ASSERT_TRUE(materialSystem.CreateMaterialBindingSnapshot(
+            material, nullptr, {}, committedSnapshot));
+        ASSERT_TRUE(committedSnapshot.IsDrawable());
+        const RHIBufferRef committedSnapshotBuffer = committedSnapshot.constantBuffer;
+
+        const uint32 descriptorsBeforeSnapshotFailure =
+            device.createdDescriptorSetCount;
+        device.bufferCommitSucceeds = false;
+        MaterialBindingSnapshot failedSnapshot;
+        EXPECT_FALSE(materialSystem.CreateMaterialBindingSnapshot(
+            material, nullptr, {}, failedSnapshot));
+        EXPECT_FALSE(failedSnapshot.IsDrawable());
+        EXPECT_FALSE(failedSnapshot.constantBuffer);
+        EXPECT_FALSE(failedSnapshot.descriptorSet);
+        EXPECT_EQ(descriptorsBeforeSnapshotFailure,
+                  device.createdDescriptorSetCount);
+        EXPECT_TRUE(committedSnapshot.IsDrawable());
+        EXPECT_EQ(committedSnapshotBuffer.Get(),
+                  committedSnapshot.constantBuffer.Get());
+
+        device.bufferCommitSucceeds = true;
+        MaterialBindingSnapshot retriedSnapshot;
+        ASSERT_TRUE(materialSystem.CreateMaterialBindingSnapshot(
+            material, nullptr, {}, retriedSnapshot));
+        EXPECT_TRUE(retriedSnapshot.IsDrawable());
+        EXPECT_NE(committedSnapshot.constantBuffer.Get(),
+                  retriedSnapshot.constantBuffer.Get());
+
+        materialSystem.Shutdown();
+        gpuResources.Shutdown();
     }
 
     TEST(MaterialSystemValidation, MaterialSetUsesResidentTextureViewForAlbedo)
@@ -2057,6 +2578,12 @@ namespace
         EXPECT_EQ(snapshot.materialCount, 2u);
         EXPECT_EQ(snapshot.slotCount, std::max(first.slot, second.slot) + 1u);
         ASSERT_EQ(snapshot.buffer->GetStride(), sizeof(MaterialGPUConstants));
+        ASSERT_EQ(snapshot.slotCount,
+                  snapshot.rasterMaterialSemanticKeysBySlot.size());
+        ASSERT_LT(first.slot, snapshot.rasterMaterialSemanticKeysBySlot.size());
+        ASSERT_LT(second.slot, snapshot.rasterMaterialSemanticKeysBySlot.size());
+        EXPECT_NE(0u, snapshot.rasterMaterialSemanticKeysBySlot[first.slot]);
+        EXPECT_NE(0u, snapshot.rasterMaterialSemanticKeysBySlot[second.slot]);
 
         auto* buffer = static_cast<FakeBuffer*>(snapshot.buffer.Get());
         const std::vector<uint8>& bytes = buffer->GetStorage();
@@ -2079,6 +2606,8 @@ namespace
             materialSystem.PrepareMaterialBinding(
                 first, &viewCache, firstTableOptions);
         ASSERT_TRUE(firstTableBinding.IsDrawable());
+        EXPECT_EQ(snapshot.rasterMaterialSemanticKeysBySlot[first.slot],
+                  firstTableBinding.descriptorContentKey);
         const RHIDescriptorBinding* firstTableDescriptor =
             FindBinding(firstTableBinding.descriptorSet, 11);
         ASSERT_NE(nullptr, firstTableDescriptor);
