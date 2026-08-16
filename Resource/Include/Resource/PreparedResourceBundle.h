@@ -6,6 +6,7 @@
  */
 
 #include "Resource/IResource.h"
+#include "Resource/ResourceContentIdentity.h"
 #include "Resource/ResourceHandle.h"
 
 #include <string>
@@ -33,6 +34,13 @@ namespace RVX::Resource
     public:
         bool AddDependency(ResourceHandle<IResource> resource);
         bool SetRoot(ResourceHandle<IResource> resource);
+        /**
+         * @brief Attach the identity observed while the worker consumed parser input.
+         *
+         * A bundle accepts at most one valid observed identity.  Absence remains
+         * compatible with loaders which cannot observe their consumed bytes.
+         */
+        bool SetObservedContentIdentity(ResourceContentIdentity identity);
         bool IsValid() const;
         bool IsEmpty() const { return m_entries.empty(); }
         bool Contains(ResourceId resourceId) const
@@ -50,6 +58,11 @@ namespace RVX::Resource
             return m_root;
         }
 
+        [[nodiscard]] const ResourceContentIdentity& GetObservedContentIdentity() const
+        {
+            return m_observedContentIdentity;
+        }
+
         [[nodiscard]] std::string GetValidationError() const;
 
     private:
@@ -58,5 +71,6 @@ namespace RVX::Resource
         std::vector<PreparedResourceEntry> m_entries;
         ResourceHandle<IResource> m_root;
         std::unordered_set<ResourceId> m_resourceIds;
+        ResourceContentIdentity m_observedContentIdentity;
     };
 } // namespace RVX::Resource

@@ -2,24 +2,19 @@
 
 /**
  * @file Node.h
- * @brief Scene graph node with transform and component system
+ * @brief Scene graph node with transform and indexed resource identity
  *
  * Migrated from found::model::Node
  */
 
 #include "Core/Math/AABB.h"
 #include "Core/MathTypes.h"
-#include "Geometry/Asset/Material.h"
-#include "Geometry/Asset/Mesh.h"
-#include <vector>
 #include <memory>
-#include <string>
-#include <unordered_map>
-#include <optional>
 #include <functional>
-#include <type_traits>
-#include <typeinfo>
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace RVX
 {
@@ -105,74 +100,6 @@ namespace RVX
     };
 
     // =========================================================================
-    // Node Component Base
-    // =========================================================================
-
-    /**
-     * @brief Base class for node components
-     */
-    class NodeComponent
-    {
-    public:
-        virtual ~NodeComponent() = default;
-        virtual const char* GetTypeName() const = 0;
-    };
-
-    // =========================================================================
-    // Mesh Component
-    // =========================================================================
-
-    /**
-     * @brief Mesh rendering component
-     */
-    class MeshComponent : public NodeComponent
-    {
-    public:
-        explicit MeshComponent(Mesh::Ptr mesh);
-
-        const char* GetTypeName() const override { return "MeshComponent"; }
-
-        Mesh::Ptr GetMesh() const { return m_mesh; }
-        void SetMesh(Mesh::Ptr mesh) { m_mesh = std::move(mesh); }
-
-        bool IsVisible() const { return m_visible; }
-        void SetVisible(bool visible) { m_visible = visible; }
-
-        bool CastsShadows() const { return m_castShadows; }
-        void SetCastsShadows(bool castShadows) { m_castShadows = castShadows; }
-
-        bool ReceivesShadows() const { return m_receiveShadows; }
-        void SetReceivesShadows(bool receiveShadows) { m_receiveShadows = receiveShadows; }
-
-    private:
-        Mesh::Ptr m_mesh;
-        bool m_visible = true;
-        bool m_castShadows = true;
-        bool m_receiveShadows = true;
-    };
-
-    // =========================================================================
-    // Bone Component
-    // =========================================================================
-
-    /**
-     * @brief Bone component - marks a node as part of a skeleton
-     */
-    class BoneComponent : public NodeComponent
-    {
-    public:
-        explicit BoneComponent(int boneIndex) : m_boneIndex(boneIndex) {}
-
-        const char* GetTypeName() const override { return "BoneComponent"; }
-
-        int GetBoneIndex() const { return m_boneIndex; }
-        void SetBoneIndex(int index) { m_boneIndex = index; }
-
-    private:
-        int m_boneIndex = -1;
-    };
-
-    // =========================================================================
     // Scene Node
     // =========================================================================
 
@@ -181,7 +108,7 @@ namespace RVX
      *
      * Features:
      * - Hierarchical parent-child relationships
-     * - Component-based extension system
+     * - Indexed mesh/material/skin source identity
      * - Cached world matrix computation
      * - Traversal methods (depth-first, breadth-first)
      */
@@ -243,63 +170,6 @@ namespace RVX
         void RemoveFromParent();
 
         // =====================================================================
-        // Component System
-        // =====================================================================
-
-        template<typename T, typename... Args>
-        T* AddComponent(Args&&... args)
-        {
-            static_assert(std::is_base_of_v<NodeComponent, T>, "T must derive from NodeComponent");
-            auto component = std::make_unique<T>(std::forward<Args>(args)...);
-            T* result = component.get();
-            m_components[typeid(T).name()] = std::move(component);
-            return result;
-        }
-
-        template<typename T>
-        T* GetComponent() const
-        {
-            static_assert(std::is_base_of_v<NodeComponent, T>, "T must derive from NodeComponent");
-            auto it = m_components.find(typeid(T).name());
-            return it != m_components.end() ? static_cast<T*>(it->second.get()) : nullptr;
-        }
-
-        template<typename T>
-        bool HasComponent() const
-        {
-            return GetComponent<T>() != nullptr;
-        }
-
-        template<typename T>
-        bool RemoveComponent()
-        {
-            auto it = m_components.find(typeid(T).name());
-            if (it != m_components.end())
-            {
-                m_components.erase(it);
-                return true;
-            }
-            return false;
-        }
-
-        // =====================================================================
-        // Mesh Convenience Methods
-        // =====================================================================
-
-        void SetMesh(Mesh::Ptr mesh);
-        Mesh::Ptr GetMesh() const;
-        void RemoveMesh() { RemoveComponent<MeshComponent>(); }
-
-        // =====================================================================
-        // Bone Convenience Methods
-        // =====================================================================
-
-        void SetBone(int boneIndex);
-        int GetBoneIndex() const;
-        bool IsBone() const { return HasComponent<BoneComponent>(); }
-        void RemoveBone() { RemoveComponent<BoneComponent>(); }
-
-        // =====================================================================
         // Traversal
         // =====================================================================
 
@@ -336,16 +206,39 @@ namespace RVX
         int GetMeshIndex() const { return m_meshIndex; }
         void SetMeshIndex(int index) { m_meshIndex = index; }
 
+        /// Get the explicit engine mesh index for every source primitive.
+        /// An empty list preserves the historical single-mesh/submesh contract
+        /// represented by GetMeshIndex() and GetMaterialIndices().
+        const std::vector<int>& GetMeshIndices() const { return m_meshIndices; }
+        void SetMeshIndices(std::vector<int> indices)
+        {
+            m_meshIndices = std::move(indices);
+        }
+        bool HasExplicitMeshIndices() const { return !m_meshIndices.empty(); }
+
         /// Get material indices for each submesh, references ModelResource.materials[]
         const std::vector<int>& GetMaterialIndices() const { return m_materialIndices; }
         void SetMaterialIndices(const std::vector<int>& indices) { m_materialIndices = indices; }
         void SetMaterialIndex(size_t submeshIndex, int materialIndex);
 
         /// Check if this node uses index-based resource references
-        bool UsesIndexMode() const { return m_meshIndex >= 0; }
+        bool UsesIndexMode() const
+        {
+            return m_meshIndex >= 0 || HasExplicitMeshIndices();
+        }
 
-        /// Check if this node has a mesh (either via MeshComponent or index)
-        bool HasMeshData() const { return m_meshIndex >= 0 || HasComponent<MeshComponent>(); }
+        /// Check if this node has indexed mesh data.
+        bool HasMeshData() const
+        {
+            return UsesIndexMode();
+        }
+
+        /// glTF skin index (-1 when this node is not skinned).  This remains a
+        /// source-hierarchy property so ModelResource instantiation can bind the
+        /// canonical skeleton without guessing from vertex attributes.
+        int GetSkinIndex() const { return m_skinIndex; }
+        void SetSkinIndex(int index) { m_skinIndex = index; }
+        bool HasSkin() const { return m_skinIndex >= 0; }
 
     private:
         std::string m_name;
@@ -359,11 +252,11 @@ namespace RVX
         Node* m_parent = nullptr;
         std::vector<Ptr> m_children;
 
-        std::unordered_map<std::string, std::unique_ptr<NodeComponent>> m_components;
-
         // Resource indices (for Prefab/Instantiate pattern)
         int m_meshIndex = -1;                   ///< Index into ModelResource.meshes[], -1 = no mesh
+        std::vector<int> m_meshIndices;         ///< Explicit index per source primitive (optional)
         std::vector<int> m_materialIndices;    ///< Per-submesh material indices into ModelResource.materials[]
+        int m_skinIndex = -1;                   ///< Source glTF skin index, -1 = no skin
 
         void UpdateWorldMatrix() const;
         void MarkWorldMatrixDirty();

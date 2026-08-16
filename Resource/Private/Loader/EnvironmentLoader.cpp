@@ -265,6 +265,13 @@ bool EnvironmentLoader::Prepare(const ResourceLoadPreparationContext& context,
                     "Environment loader could not form a dependency-first prepared bundle."};
         return false;
     }
+    if (!ibl.observedContentIdentity.IsValid() ||
+        !outBundle.SetObservedContentIdentity(ibl.observedContentIdentity))
+    {
+        outError = {ResourceLoadErrorCode::LoaderFailure,
+                    "Environment loader could not attach the HDR/EXR consumed-byte identity."};
+        return false;
+    }
     return true;
 }
 

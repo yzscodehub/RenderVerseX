@@ -57,6 +57,8 @@ bool ModelTextureStreamingService::Start(
         }
     }
 
+    const std::shared_ptr<std::atomic_bool> cancellationToken =
+        std::make_shared<std::atomic_bool>(false);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_stopping)
@@ -65,8 +67,10 @@ bool ModelTextureStreamingService::Start(
             return false;
         }
         m_liveModels[model.GetId()] = model;
+        m_cancellationTokens[model.GetId()] = cancellationToken;
         for (ModelTextureStreamingSource& source : sources)
-            m_pending.push_back({model, std::move(source)});
+            m_pending.push_back(
+                {model, std::move(source), cancellationToken});
         m_stats.queuedDecodes = static_cast<uint32>(m_pending.size());
     }
     Pump();
@@ -93,6 +97,9 @@ void ModelTextureStreamingService::Pump()
                 [](const DecodeTask& value)
                 {
                     return !value.model ||
+                           !value.cancellationToken ||
+                           value.cancellationToken->load(
+                               std::memory_order_acquire) ||
                            value.model->GetTextureStreamingSnapshot().stage !=
                                ModelTextureStreamingStage::Decoding;
                 });
@@ -122,6 +129,10 @@ void ModelTextureStreamingService::Pump()
                 std::max(m_stats.peakReservedDecodedBytes,
                          m_stats.reservedDecodedBytes);
             ++m_stats.activeDecodes;
+            if (task.model)
+            {
+                ++m_activeDecodesByModel[task.model.GetId()];
+            }
             m_stats.peakActiveDecodes =
                 std::max(m_stats.peakActiveDecodes,
                          m_stats.activeDecodes);
@@ -135,6 +146,8 @@ void ModelTextureStreamingService::Pump()
         const ResourceHandle<ModelResource> failureModel = task.model;
         const ResourceHandle<TextureResource> failureTexture =
             task.source.texture;
+        const std::shared_ptr<std::atomic_bool> failureToken =
+            task.cancellationToken;
         JobHandle job;
         try
         {
@@ -152,6 +165,7 @@ void ModelTextureStreamingService::Pump()
             completion.model = failureModel;
             completion.texture = failureTexture;
             completion.reservedBytes = reservation;
+            completion.cancellationToken = failureToken;
             completion.error =
                 std::string("Model texture job submission failed: ") +
                 exception.what();
@@ -165,6 +179,7 @@ void ModelTextureStreamingService::Pump()
             completion.model = failureModel;
             completion.texture = failureTexture;
             completion.reservedBytes = reservation;
+            completion.cancellationToken = failureToken;
             completion.error =
                 "Model texture job submission failed with an unknown exception";
             m_completions.push_back(std::move(completion));
@@ -183,9 +198,11 @@ void ModelTextureStreamingService::Execute(
     completion.model = task.model;
     completion.texture = task.source.texture;
     completion.reservedBytes = reservedBytes;
+    completion.cancellationToken = task.cancellationToken;
     try
     {
-        if (!task.model ||
+        if (!task.model || !task.cancellationToken ||
+            task.cancellationToken->load(std::memory_order_acquire) ||
             task.model->GetTextureStreamingSnapshot().stage !=
                 ModelTextureStreamingStage::Decoding)
         {
@@ -198,10 +215,28 @@ void ModelTextureStreamingService::Execute(
                                          task.source.sourceModelPath,
                                          task.source.traceContext,
                                          completion.data,
-                                         completion.error))
+                                         completion.error,
+                                         [&task]()
+                                         {
+                                             return !task.cancellationToken ||
+                                                    task.cancellationToken->load(
+                                                        std::memory_order_acquire);
+                                         }))
             {
-                if (completion.error.empty())
+                if (task.cancellationToken->load(std::memory_order_acquire))
+                {
+                    completion.error.clear();
+                    completion.cancelled = true;
+                }
+                else if (completion.error.empty())
+                {
                     completion.error = "Model texture decode failed";
+                }
+            }
+            else if (task.cancellationToken->load(std::memory_order_acquire))
+            {
+                completion.data = {};
+                completion.cancelled = true;
             }
             else if (completion.data.bytes->size() > reservedBytes)
             {
@@ -244,6 +279,22 @@ void ModelTextureStreamingService::DrainCompletions(
             std::lock_guard<std::mutex> lock(m_mutex);
             if (m_stats.activeDecodes != 0)
                 --m_stats.activeDecodes;
+            if (completion.model)
+            {
+                const auto active =
+                    m_activeDecodesByModel.find(completion.model.GetId());
+                if (active != m_activeDecodesByModel.end())
+                {
+                    if (active->second > 1)
+                    {
+                        --active->second;
+                    }
+                    else
+                    {
+                        m_activeDecodesByModel.erase(active);
+                    }
+                }
+            }
         }
 
         const auto releaseReservation = [this, &completion]()
@@ -255,6 +306,8 @@ void ModelTextureStreamingService::DrainCompletions(
         };
 
         if (completion.cancelled || !completion.model ||
+            !completion.cancellationToken ||
+            completion.cancellationToken->load(std::memory_order_acquire) ||
             completion.model->GetTextureStreamingSnapshot().stage !=
                 ModelTextureStreamingStage::Decoding)
         {
@@ -333,6 +386,12 @@ void ModelTextureStreamingService::DrainCompletions(
                        stage == ModelTextureStreamingStage::Cancelled ||
                        stage == ModelTextureStreamingStage::None;
             });
+        std::erase_if(
+            m_cancellationTokens,
+            [this](const auto& entry)
+            {
+                return !m_liveModels.contains(entry.first);
+            });
     }
     Pump();
 }
@@ -398,6 +457,7 @@ bool ModelTextureStreamingService::CompletePublication(
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_liveModels.erase(publication.model.GetId());
+            m_cancellationTokens.erase(publication.model.GetId());
         }
     }
 
@@ -405,8 +465,10 @@ bool ModelTextureStreamingService::CompletePublication(
     return true;
 }
 
-void ModelTextureStreamingService::CancelModel(ResourceId modelId)
+ModelTextureStreamingCancellationResult
+ModelTextureStreamingService::CancelModel(ResourceId modelId)
 {
+    ModelTextureStreamingCancellationResult result;
     ResourceHandle<ModelResource> model;
     std::vector<ResourceHandle<TextureResource>> textures;
     {
@@ -416,6 +478,15 @@ void ModelTextureStreamingService::CancelModel(ResourceId modelId)
         {
             model = live->second;
             m_liveModels.erase(live);
+            result.modelFound = true;
+        }
+
+        const auto token = m_cancellationTokens.find(modelId);
+        if (token != m_cancellationTokens.end())
+        {
+            token->second->store(true, std::memory_order_release);
+            m_cancellationTokens.erase(token);
+            result.modelFound = true;
         }
 
         const size_t before = m_pending.size();
@@ -425,20 +496,32 @@ void ModelTextureStreamingService::CancelModel(ResourceId modelId)
             {
                 return task.model && task.model.GetId() == modelId;
             });
-        m_stats.cancelledDecodes += before - m_pending.size();
+        result.cancelledQueuedDecodes = before - m_pending.size();
+        m_stats.cancelledDecodes += result.cancelledQueuedDecodes;
         m_stats.queuedDecodes = static_cast<uint32>(m_pending.size());
+
+        const auto active = m_activeDecodesByModel.find(modelId);
+        if (active != m_activeDecodesByModel.end())
+        {
+            result.cancellationRequestedForActiveDecodes = active->second;
+            result.modelFound = true;
+        }
 
         for (auto it = m_pendingPublications.begin();
              it != m_pendingPublications.end();)
         {
             if (it->second.model && it->second.model.GetId() == modelId)
             {
-                m_stats.reservedDecodedBytes -=
-                    std::min(m_stats.reservedDecodedBytes,
-                             it->second.reservedBytes);
+                const uint64 released = std::min(
+                    m_stats.reservedDecodedBytes,
+                    it->second.reservedBytes);
+                m_stats.reservedDecodedBytes -= released;
+                result.releasedReservedBytes += released;
                 if (it->second.texture)
                     textures.push_back(it->second.texture);
                 it = m_pendingPublications.erase(it);
+                ++result.cancelledPendingPublications;
+                result.modelFound = true;
             }
             else
             {
@@ -447,14 +530,13 @@ void ModelTextureStreamingService::CancelModel(ResourceId modelId)
         }
     }
 
-    if (model)
-        model->CancelTextureStreaming();
     for (const ResourceHandle<TextureResource>& texture : textures)
     {
         if (texture)
             texture->ReleaseCPUData();
     }
     Pump();
+    return result;
 }
 
 void ModelTextureStreamingService::PruneCompletedJobs()
@@ -478,6 +560,14 @@ void ModelTextureStreamingService::Stop()
             if (model)
                 model->CancelTextureStreaming();
         }
+        for (const auto& [id, token] : m_cancellationTokens)
+        {
+            (void)id;
+            if (token)
+            {
+                token->store(true, std::memory_order_release);
+            }
+        }
         m_stats.cancelledDecodes += m_pending.size();
         m_pending.clear();
         jobs = m_jobs;
@@ -486,10 +576,35 @@ void ModelTextureStreamingService::Stop()
         job.Wait();
 
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    // Jobs are joined before this point, so every admitted active task has
+    // either left a completion record or failed before it could publish one.
+    // Stop deliberately discards those records instead of calling the
+    // owner-thread publication callback; account for that cancellation here
+    // rather than silently zeroing activeDecodes below. A completion that was
+    // already a real decode failure remains a failure, while a valid but
+    // un-published decode is cancelled by this shutdown boundary.
+    uint64 cancelledCompletions = 0;
+    uint64 failedCompletions = 0;
+    for (const DecodeCompletion& completion : m_completions)
+    {
+        if (completion.cancelled || completion.data.IsValid())
+        {
+            ++cancelledCompletions;
+        }
+        else
+        {
+            ++failedCompletions;
+        }
+    }
+    m_stats.cancelledDecodes += cancelledCompletions;
+    m_stats.failedDecodes += failedCompletions;
     m_jobs.clear();
     m_completions.clear();
     m_pendingPublications.clear();
     m_liveModels.clear();
+    m_activeDecodesByModel.clear();
+    m_cancellationTokens.clear();
     m_stats.activeDecodes = 0;
     m_stats.queuedDecodes = 0;
     m_stats.reservedDecodedBytes = 0;

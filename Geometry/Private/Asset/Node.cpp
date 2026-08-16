@@ -168,15 +168,6 @@ namespace RVX
     }
 
     // =========================================================================
-    // MeshComponent Implementation
-    // =========================================================================
-
-    MeshComponent::MeshComponent(Mesh::Ptr mesh)
-        : m_mesh(std::move(mesh))
-    {
-    }
-
-    // =========================================================================
     // Node Implementation
     // =========================================================================
 
@@ -282,48 +273,6 @@ namespace RVX
         {
             m_parent->RemoveChild(this);
         }
-    }
-
-    void Node::SetMesh(Mesh::Ptr mesh)
-    {
-        if (auto* comp = GetComponent<MeshComponent>())
-        {
-            comp->SetMesh(std::move(mesh));
-        }
-        else
-        {
-            AddComponent<MeshComponent>(std::move(mesh));
-        }
-    }
-
-    Mesh::Ptr Node::GetMesh() const
-    {
-        if (auto* comp = GetComponent<MeshComponent>())
-        {
-            return comp->GetMesh();
-        }
-        return nullptr;
-    }
-
-    void Node::SetBone(int boneIndex)
-    {
-        if (auto* bone = GetComponent<BoneComponent>())
-        {
-            bone->SetBoneIndex(boneIndex);
-        }
-        else
-        {
-            AddComponent<BoneComponent>(boneIndex);
-        }
-    }
-
-    int Node::GetBoneIndex() const
-    {
-        if (auto* bone = GetComponent<BoneComponent>())
-        {
-            return bone->GetBoneIndex();
-        }
-        return -1;
     }
 
     void Node::SetMaterialIndex(size_t submeshIndex, int materialIndex)
@@ -468,38 +417,9 @@ namespace RVX
         BoundingBox result;
         bool hasAny = false;
 
-        // Include this node's mesh bounds
-        if (auto mesh = GetMesh())
-        {
-            if (const auto& localBounds = mesh->GetBoundingBox())
-            {
-                const Mat4& world = GetWorldMatrix();
-
-                // Transform all 8 corners
-                const Vec3& min = localBounds->GetMin();
-                const Vec3& max = localBounds->GetMax();
-
-                Vec3 corners[8] = {
-                    {min.x, min.y, min.z},
-                    {max.x, min.y, min.z},
-                    {min.x, max.y, min.z},
-                    {max.x, max.y, min.z},
-                    {min.x, min.y, max.z},
-                    {max.x, min.y, max.z},
-                    {min.x, max.y, max.z},
-                    {max.x, max.y, max.z}
-                };
-
-                for (const auto& corner : corners)
-                {
-                    Vec4 worldCorner = world * Vec4(corner, 1.0f);
-                    result.Expand(Vec3(worldCorner));
-                    hasAny = true;
-                }
-            }
-        }
-
-        // Include children bounds
+        // A Node owns source topology and resource indices only. Model-aware
+        // callers resolve indexed mesh bounds before aggregating model bounds;
+        // this compatibility query can therefore aggregate descendants only.
         for (const auto& child : m_children)
         {
             if (auto childBounds = child->ComputeWorldBoundingBox())

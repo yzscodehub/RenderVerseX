@@ -82,11 +82,14 @@ namespace RVX::Resource
             return (static_cast<size_t>(y) * width + x) * 4u;
         }
 
-        std::vector<uint8_t> GenerateNextMip(std::span<const uint8_t> source,
-                                             uint32_t sourceWidth,
-                                             uint32_t sourceHeight,
-                                             TextureUsage usage,
-                                             bool isSRGB)
+        std::vector<uint8_t> GenerateNextMip(
+            std::span<const uint8_t> source,
+            uint32_t sourceWidth,
+            uint32_t sourceHeight,
+            TextureUsage usage,
+            bool isSRGB,
+            const std::function<bool()>& isCancellationRequested,
+            bool& outCancelled)
         {
             const uint32_t targetWidth = std::max(1u, sourceWidth >> 1u);
             const uint32_t targetHeight = std::max(1u, sourceHeight >> 1u);
@@ -94,6 +97,11 @@ namespace RVX::Resource
 
             for (uint32_t y = 0; y < targetHeight; ++y)
             {
+                if (isCancellationRequested && isCancellationRequested())
+                {
+                    outCancelled = true;
+                    return {};
+                }
                 const uint32_t sourceY0 = (y * sourceHeight) / targetHeight;
                 const uint32_t sourceY1 = std::max(sourceY0 + 1u, ((y + 1u) * sourceHeight + targetHeight - 1u) / targetHeight);
                 for (uint32_t x = 0; x < targetWidth; ++x)
@@ -180,11 +188,23 @@ namespace RVX::Resource
                                            uint32_t height,
                                            TextureUsage usage,
                                            bool isSRGB,
-                                           uint32_t& outMipLevels)
+                                           uint32_t& outMipLevels,
+                                           const std::function<bool()>&
+                                               isCancellationRequested = {},
+                                           bool* outCancelled = nullptr)
         {
-            outMipLevels = CalculateMipLevelCount(width, height);
-            if (outMipLevels <= 1)
+            bool cancelled = false;
+            if (isCancellationRequested && isCancellationRequested())
             {
+                cancelled = true;
+            }
+            outMipLevels = CalculateMipLevelCount(width, height);
+            if (cancelled || outMipLevels <= 1)
+            {
+                if (outCancelled != nullptr)
+                {
+                    *outCancelled = cancelled;
+                }
                 return basePixels;
             }
 
@@ -218,14 +238,85 @@ namespace RVX::Resource
                                     previousWidth,
                                     previousHeight,
                                     usage,
-                                    isSRGB);
+                                    isSRGB,
+                                    isCancellationRequested,
+                                    cancelled);
+                if (cancelled)
+                {
+                    if (outCancelled != nullptr)
+                    {
+                        *outCancelled = true;
+                    }
+                    return {};
+                }
                 previousOffset = mipChain.size();
                 mipChain.insert(mipChain.end(), next.begin(), next.end());
                 previousWidth = std::max(1u, previousWidth >> 1u);
                 previousHeight = std::max(1u, previousHeight >> 1u);
             }
 
+            if (outCancelled != nullptr)
+            {
+                *outCancelled = false;
+            }
             return mipChain;
+        }
+
+        struct CancellableImageReader
+        {
+            const stbi_uc* data = nullptr;
+            size_t size = 0;
+            size_t offset = 0;
+            const std::function<bool()>* isCancellationRequested = nullptr;
+        };
+
+        bool IsImageReaderCancelled(const CancellableImageReader& reader)
+        {
+            return reader.isCancellationRequested != nullptr &&
+                   *reader.isCancellationRequested &&
+                   (*reader.isCancellationRequested)();
+        }
+
+        int ReadCancellableImage(void* user, char* destination, int count)
+        {
+            auto& reader = *static_cast<CancellableImageReader*>(user);
+            if (count <= 0 || IsImageReaderCancelled(reader) ||
+                reader.offset >= reader.size)
+            {
+                return 0;
+            }
+            const size_t available = reader.size - reader.offset;
+            const size_t copied = std::min(available, static_cast<size_t>(count));
+            std::memcpy(destination, reader.data + reader.offset, copied);
+            reader.offset += copied;
+            return static_cast<int>(copied);
+        }
+
+        void SkipCancellableImage(void* user, int count)
+        {
+            auto& reader = *static_cast<CancellableImageReader*>(user);
+            if (IsImageReaderCancelled(reader))
+            {
+                reader.offset = reader.size;
+                return;
+            }
+            if (count < 0)
+            {
+                const size_t rewind = std::min(
+                    reader.offset,
+                    static_cast<size_t>(-static_cast<int64>(count)));
+                reader.offset -= rewind;
+                return;
+            }
+            reader.offset = std::min(
+                reader.size,
+                reader.offset + static_cast<size_t>(count));
+        }
+
+        int IsCancellableImageEof(void* user)
+        {
+            const auto& reader = *static_cast<CancellableImageReader*>(user);
+            return IsImageReaderCancelled(reader) || reader.offset >= reader.size;
         }
 
         std::optional<uint32_t> ParseUint32Field(
@@ -798,10 +889,16 @@ namespace RVX::Resource
         const std::string& modelPath,
         const Diagnostics::TraceContext& traceContext,
         DecodedTextureData& outData,
-        std::string& outError)
+        std::string& outError,
+        const std::function<bool()>& isCancellationRequested)
     {
         outData = {};
         outError.clear();
+        if (isCancellationRequested && isCancellationRequested())
+        {
+            outError = "Texture decode cancelled before it began";
+            return false;
+        }
         if (!ref.IsValid() || !ref.HasCapturedPayload())
         {
             outError = "Texture decode requires importer-captured bytes";
@@ -815,6 +912,11 @@ namespace RVX::Resource
         if (ref.isRawPixelData)
         {
             pixels = ref.GetCapturedPayload();
+            if (isCancellationRequested && isCancellationRequested())
+            {
+                outError = "Texture decode cancelled while copying raw pixels";
+                return false;
+            }
         }
         else
         {
@@ -826,7 +928,8 @@ namespace RVX::Resource
                               height,
                               channels,
                               ref.GetUniqueKey(modelPath),
-                              traceContext))
+                              traceContext,
+                              isCancellationRequested))
             {
                 outError = "Texture decode failed: " + ref.GetUniqueKey(modelPath);
                 return false;
@@ -847,12 +950,21 @@ namespace RVX::Resource
             outError = "Decoded texture byte count does not match RGBA dimensions";
             return false;
         }
+        bool cancelledWhileBuildingMips = false;
         pixels = BuildMipChain(std::move(pixels),
                                width,
                                height,
                                ref.usage,
                                ref.isSRGB,
-                               metadata.mipLevels);
+                               metadata.mipLevels,
+                               isCancellationRequested,
+                               &cancelledWhileBuildingMips);
+        if (cancelledWhileBuildingMips ||
+            (isCancellationRequested && isCancellationRequested()))
+        {
+            outError = "Texture decode cancelled while generating mip levels";
+            return false;
+        }
         outData.bytes =
             std::make_shared<const std::vector<uint8_t>>(std::move(pixels));
         outData.metadata = metadata;
@@ -1229,7 +1341,9 @@ namespace RVX::Resource
                                      uint32_t& outWidth, uint32_t& outHeight,
                                      int& outChannels,
                                      const std::string& sourcePath,
-                                     const Diagnostics::TraceContext& traceContext)
+                                     const Diagnostics::TraceContext& traceContext,
+                                     const std::function<bool()>&
+                                         isCancellationRequested)
     {
         Diagnostics::TraceSpan decodeSpan = Diagnostics::BeginTraceSpan(
             traceContext,
@@ -1246,17 +1360,47 @@ namespace RVX::Resource
             return false;
         }
 
-        // Force RGBA output for consistency
-        stbi_uc* pixels = stbi_load_from_memory(
+        if (isCancellationRequested && isCancellationRequested())
+        {
+            decodeSpan.SetAttribute("result", "cancelled-before-decode");
+            return false;
+        }
+
+        // stbi does not accept a cancellation token. Its callback input path
+        // does: ending reads when cancelled makes compressed-image decode
+        // cooperatively fail at the next decoder input checkpoint.
+        CancellableImageReader reader{
             static_cast<const stbi_uc*>(data),
-            static_cast<int>(size),
-            &width, &height, &channels, STBI_rgb_alpha
-        );
+            size,
+            0,
+            &isCancellationRequested};
+        const stbi_io_callbacks callbacks{
+            &ReadCancellableImage,
+            &SkipCancellableImage,
+            &IsCancellableImageEof};
+        stbi_uc* pixels = stbi_load_from_callbacks(
+            &callbacks,
+            &reader,
+            &width,
+            &height,
+            &channels,
+            STBI_rgb_alpha);
 
         if (!pixels)
         {
-            decodeSpan.SetAttribute("result", "failed");
+            decodeSpan.SetAttribute(
+                "result",
+                isCancellationRequested && isCancellationRequested()
+                    ? "cancelled-during-decode"
+                    : "failed");
             RVX_CORE_WARN("TextureLoader: stb_image decode failed: {}", stbi_failure_reason());
+            return false;
+        }
+
+        if (isCancellationRequested && isCancellationRequested())
+        {
+            stbi_image_free(pixels);
+            decodeSpan.SetAttribute("result", "cancelled-after-decode");
             return false;
         }
 

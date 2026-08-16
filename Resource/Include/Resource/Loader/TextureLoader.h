@@ -11,6 +11,7 @@
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/TextureResource.h"
 #include "Resource/Loader/TextureReference.h"
+#include <functional>
 #include <string>
 #include <memory>
 
@@ -108,7 +109,8 @@ namespace RVX::Resource
             const std::string& modelPath,
             const Diagnostics::TraceContext& traceContext,
             DecodedTextureData& outData,
-            std::string& outError);
+            std::string& outError,
+            const std::function<bool()>& isCancellationRequested = {});
 
         TextureLoadStatus GetLastLoadStatus() const { return m_lastLoadStatus; }
         const std::string& GetLastLoadError() const { return m_lastLoadError; }
@@ -181,7 +183,8 @@ namespace RVX::Resource
                          uint32_t& outWidth, uint32_t& outHeight,
                          int& outChannels,
                          const std::string& sourcePath,
-                         const Diagnostics::TraceContext& traceContext);
+                         const Diagnostics::TraceContext& traceContext,
+                         const std::function<bool()>& isCancellationRequested = {});
 
         TextureResource* LoadFromFileWithPolicy(const std::string& absolutePath,
                                                  TextureUsage usage,

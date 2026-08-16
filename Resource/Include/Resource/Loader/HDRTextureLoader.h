@@ -16,12 +16,14 @@
 
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
+#include "Resource/ResourceContentIdentity.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/TextureResource.h"
 #include <string>
 #include <memory>
 #include <array>
 #include <functional>
+#include <vector>
 
 namespace RVX::Resource
 {
@@ -53,6 +55,15 @@ namespace RVX::Resource
 
         /// Number of mip levels in prefiltered map
         uint32_t prefilteredMipLevels = 0;
+
+        /**
+         * @brief Identity of the exact encoded HDR/EXR bytes decoded for this bake.
+         *
+         * This is populated only from the immutable byte vector supplied to the
+         * decoder.  EnvironmentLoader forwards it into its prepared bundle so
+         * owner-thread publication can verify catalog content identity.
+         */
+        ResourceContentIdentity observedContentIdentity;
 
         bool IsValid() const 
         { 
@@ -258,12 +269,25 @@ namespace RVX::Resource
     private:
         // Loading helpers
         bool LoadHDR(const std::string& path,
+                     const std::vector<uint8>& sourceBytes,
                      std::vector<float>& outPixels,
                      uint32_t& outWidth, uint32_t& outHeight);
 
         bool LoadEXR(const std::string& path,
+                     const std::vector<uint8>& sourceBytes,
                      std::vector<float>& outPixels,
                      uint32_t& outWidth, uint32_t& outHeight);
+
+        /** @brief Decode one already-consumed immutable source byte vector. */
+        TextureResource* LoadWithOptionsFromBytes(const std::string& path,
+                                                  const std::vector<uint8>& sourceBytes,
+                                                  const HDRLoadOptions& options);
+
+        /** @brief Bake IBL from one already-consumed immutable source byte vector. */
+        IBLData LoadIBLFromBytes(const std::string& path,
+                                 const std::vector<uint8>& sourceBytes,
+                                 const HDRLoadOptions& options,
+                                 const CancellationPredicate& cancellationRequested);
 
         // Cubemap helpers
         Vec3 GetCubemapDirection(CubemapFaces::Face face, float u, float v) const;

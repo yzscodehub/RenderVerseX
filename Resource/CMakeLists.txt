@@ -23,6 +23,8 @@ add_library(RVX_Resource STATIC)
 target_sources(RVX_Resource PRIVATE
     # Core resource management
     Private/IResource.cpp
+    Private/ResourceContentIdentity.cpp
+    Private/CookManifest.cpp
     Private/ResourceLoadOperation.cpp
     Private/PreparedResourceBundle.cpp
     Private/ResourceCache.cpp
@@ -30,10 +32,12 @@ target_sources(RVX_Resource PRIVATE
     Private/DependencyGraph.cpp
     Private/RuntimeResourcePolicy.cpp
     Private/RenderUploadRequestBuilder.cpp
+    Private/ResourceRetirementLedger.cpp
     Private/ResourceManager.cpp
     Private/ResourceSubsystem.cpp
     Private/ModelTextureStreamingService.cpp
     Private/DefaultResources.cpp
+    Private/Cooked/CookedAnimationArtifact.cpp
     Private/Cooked/CookedModelArtifact.cpp
     
     # Concrete resource types
@@ -41,8 +45,10 @@ target_sources(RVX_Resource PRIVATE
     Private/Types/TextureResource.cpp
     Private/Types/ShaderResource.cpp
     Private/Types/MaterialResource.cpp
+    Private/Types/MaterialInstanceResource.cpp
     Private/Types/ModelResource.cpp
     Private/Types/AudioResource.cpp
+    Private/Types/AnimationResource.cpp
     Private/Types/EnvironmentResource.cpp
 
     # Loaders
@@ -51,6 +57,7 @@ target_sources(RVX_Resource PRIVATE
     Private/Loader/TextureLoader.cpp
     Private/Loader/ModelLoader.cpp
     Private/Loader/AudioLoader.cpp
+    Private/Loader/AnimationLoader.cpp
     Private/Loader/HDRTextureLoader.cpp
     Private/Loader/EnvironmentLoader.cpp
 
@@ -77,6 +84,7 @@ endif()
 
 target_link_libraries(RVX_Resource PUBLIC
     RVX_Core
+    RVX::Animation
     RVX::Geometry
     RVX::RenderContracts
 )

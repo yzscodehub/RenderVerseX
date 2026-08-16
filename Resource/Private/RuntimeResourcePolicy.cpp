@@ -171,6 +171,12 @@ namespace RVX::Resource
             return ToLower(extension);
         }
 
+        bool IsCookedArtifactExtension(const std::string& path)
+        {
+            const std::string extension = GetExtensionLower(path);
+            return extension == ".rva" || extension == ".rvxanim";
+        }
+
         ResourcePathResolution Deny(ResourcePathResolution resolution,
                                     ResourceLoadFailureCode failure,
                                     const std::string& message)
@@ -443,7 +449,7 @@ namespace RVX::Resource
 
         if (scheme.empty())
         {
-            resolution.domain = GetExtensionLower(path) == ".rva"
+            resolution.domain = IsCookedArtifactExtension(path)
                 ? ResourceLoadDomain::CookedArtifact
                 : ResourceLoadDomain::SourceAsset;
         }

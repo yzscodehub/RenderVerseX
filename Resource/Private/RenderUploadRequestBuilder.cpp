@@ -242,13 +242,35 @@ namespace
         const VertexAttribute* uv = nullptr;
         for (const char* uvName : uvNames)
         {
-            uv = mesh->GetAttribute(uvName);
-            if (uv != nullptr && uv->GetData() != nullptr &&
-                uv->GetTotalSize() > 0)
+            const VertexAttribute* candidate = mesh->GetAttribute(uvName);
+            if (candidate == nullptr)
             {
-                break;
+                continue;
             }
-            uv = nullptr;
+
+            const bool isValidUV =
+                candidate->GetData() != nullptr &&
+                candidate->GetVertexCount() == mesh->GetVertexCount() &&
+                candidate->GetComponents() == 2 &&
+                candidate->GetType() == AttributeType::Float &&
+                candidate->GetStride() == sizeof(Vec2) &&
+                candidate->GetTotalSize() ==
+                    mesh->GetVertexCount() * sizeof(Vec2);
+            if (!isValidUV)
+            {
+                return {RenderUploadRequestBuildCode::InvalidResource};
+            }
+
+            if (uv == nullptr)
+            {
+                uv = candidate;
+            }
+        }
+
+        std::vector<Vec2> fallbackUVs;
+        if (uv == nullptr)
+        {
+            fallbackUVs.assign(mesh->GetVertexCount(), Vec2{0.0f, 0.0f});
         }
 
         const VertexAttribute* tangent =
@@ -278,7 +300,12 @@ namespace
             !appendAttribute(position, payload.positionRange) ||
             !appendAttribute(mesh->GetAttribute(VertexBufferNames::Normal),
                              payload.normalRange) ||
-            !appendAttribute(uv, payload.uvRange) ||
+            !AppendRange(payload.bytes,
+                         uv != nullptr ? uv->GetData() : fallbackUVs.data(),
+                         uv != nullptr ? uv->GetTotalSize()
+                                       : fallbackUVs.size() * sizeof(Vec2),
+                         uv != nullptr ? uv->GetStride() : sizeof(Vec2),
+                         payload.uvRange) ||
             !AppendRange(payload.bytes,
                          hasTangentBasis ? tangent->GetData()
                                              : fallbackTangents.data(),
@@ -331,11 +358,6 @@ namespace
         {
             return {RenderUploadRequestBuildCode::PayloadOverflow};
         }
-        payload.byteStorage =
-            UploadByteStorage::Create(std::move(payload.bytes));
-        if (!payload.byteStorage)
-            return {RenderUploadRequestBuildCode::InvalidResource};
-
         ResourceUploadRequestCreateInfo info;
         info.sequence = sequence;
         info.assetId = AssetId{resource.GetId()};
@@ -379,11 +401,11 @@ namespace
         payload.createInfo.isCubemap = metadata.isCubemap;
         payload.createInfo.isArray = metadata.isArray;
         payload.createInfo.isSRGB = metadata.isSRGB;
-        payload.byteStorage =
-            UploadByteStorage::CreateShared(resource.GetDataStorage());
-        const std::span<const uint8> textureBytes =
-            GetUploadPayloadBytes(payload);
-        if (!payload.byteStorage || textureBytes.empty())
+        // The request must remain valid after the resource publishes a new
+        // backing store, so capture the currently visible texture bytes now.
+        payload.bytes = resource.GetData();
+        const std::span<const uint8> textureBytes = payload.bytes;
+        if (textureBytes.empty())
             return {RenderUploadRequestBuildCode::InvalidResource};
 
         uint64 offset = 0;
@@ -481,7 +503,7 @@ namespace
             MaterialUploadTextureSlot::MetallicRoughness,
             MaterialUploadTextureSlot::Occlusion,
             MaterialUploadTextureSlot::Emissive};
-        const std::shared_ptr<Material> material = resource.GetMaterial();
+        const std::shared_ptr<const Material> material = resource.GetMaterial();
 
         std::vector<RenderResourceHandle> dependencies;
         for (MaterialUploadTextureSlot slot : slots)

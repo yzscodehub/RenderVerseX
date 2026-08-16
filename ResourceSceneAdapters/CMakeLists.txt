@@ -1,14 +1,12 @@
 # =============================================================================
-# ResourceSceneAdapters Module - Resource model data to Scene actor adapters
+# ResourceSceneAdapters Module - Resource model data to pure Scene ECS adapters
 # =============================================================================
 add_library(RVX_ResourceSceneAdapters STATIC)
 
 target_sources(RVX_ResourceSceneAdapters PRIVATE
-    Private/ResourceSceneAdapters.cpp
-    Private/ComponentFactoryDefaults.cpp
-    Private/ModelResourceSceneInstantiation.cpp
-    Private/SceneAssetInstantiation.cpp
-    Private/SceneAssetLoadCoordinator.cpp
+    Private/ECS/EcsEnvironmentLoadCoordinator.cpp
+    Private/ECS/EcsSceneAssetLoadCoordinator.cpp
+    Private/ECS/PreparedModelBatch.cpp
 )
 
 target_include_directories(RVX_ResourceSceneAdapters PUBLIC
@@ -18,6 +16,7 @@ target_include_directories(RVX_ResourceSceneAdapters PUBLIC
 
 target_link_libraries(RVX_ResourceSceneAdapters PUBLIC
     RVX::Core
+    RVX::ECS
     RVX::Geometry
     RVX::Resource
     RVX::Scene

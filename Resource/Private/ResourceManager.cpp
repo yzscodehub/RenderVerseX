@@ -1,12 +1,14 @@
 #include "Resource/ResourceManager.h"
 #include "ModelTextureStreamingService.h"
 #include "Resource/HotReloadManager.h"
+#include "Resource/Loader/AnimationLoader.h"
 #include "Resource/Loader/EnvironmentLoader.h"
 #include "Resource/Loader/MeshLoader.h"
 #include "Resource/Loader/ModelLoader.h"
 #include "Resource/Loader/ShaderLoader.h"
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/Types/MaterialResource.h"
+#include "Resource/Types/MaterialInstanceResource.h"
 #include "Resource/Types/ModelResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "Core/Assert.h"
@@ -33,6 +35,565 @@
 
 namespace RVX::Resource
 {
+
+class AssetResidencyLeaseControl final
+{
+public:
+    struct Snapshot
+    {
+        uint64 activeLeases = 0;
+        uint64 protectedResources = 0;
+        uint64 queuedUnloads = 0;
+        uint64 blockedEvictions = 0;
+    };
+
+    using DeferredUnloadCallback =
+        std::function<bool(const AssetKey&, uint64)>;
+
+    explicit AssetResidencyLeaseControl(DeferredUnloadCallback onDeferredUnload)
+        : m_onDeferredUnload(std::move(onDeferredUnload))
+    {
+    }
+
+    bool BeginAcquire(const AssetKey& assetKey, ResourceId rootResourceId)
+    {
+        if (!assetKey.IsValid() || rootResourceId == InvalidResourceId)
+        {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_acceptingLeases)
+        {
+            return false;
+        }
+
+        Entry& entry = m_entries[assetKey];
+        if (entry.activeLeaseCount == 0 && entry.pendingAcquireCount == 0)
+        {
+            entry.unloadQueued = false;
+            entry.closureHold = false;
+            entry.exactUnloadInProgress = false;
+            entry.exactUnloadThread = {};
+        }
+        else if (entry.rootResourceId != rootResourceId)
+        {
+            return false;
+        }
+        entry.rootResourceId = rootResourceId;
+        ++entry.pendingAcquireCount;
+        return true;
+    }
+
+    bool PromoteAcquire(const AssetKey& assetKey,
+                        ResourceId rootResourceId,
+                        std::vector<ResourceId> dependencyClosure,
+                        uint64& outGeneration)
+    {
+        if (!assetKey.IsValid() || rootResourceId == InvalidResourceId ||
+            dependencyClosure.empty())
+        {
+            return false;
+        }
+
+        std::sort(dependencyClosure.begin(), dependencyClosure.end());
+        dependencyClosure.erase(
+            std::unique(dependencyClosure.begin(), dependencyClosure.end()),
+            dependencyClosure.end());
+        if (dependencyClosure.front() == InvalidResourceId)
+        {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        if (!m_acceptingLeases || found == m_entries.end() ||
+            found->second.rootResourceId != rootResourceId ||
+            found->second.pendingAcquireCount == 0)
+        {
+            return false;
+        }
+
+        Entry& entry = found->second;
+        --entry.pendingAcquireCount;
+        if (entry.activeLeaseCount == 0)
+        {
+            entry.generation = AllocateGenerationLocked();
+            entry.dependencyClosure = std::move(dependencyClosure);
+            entry.unloadQueued = false;
+            entry.closureHold = false;
+            entry.exactUnloadInProgress = false;
+            entry.exactUnloadThread = {};
+        }
+        else if (entry.dependencyClosure != dependencyClosure)
+        {
+            ++entry.pendingAcquireCount;
+            return false;
+        }
+
+        ++entry.activeLeaseCount;
+        ++m_activeLeaseCount;
+        outGeneration = entry.generation;
+        return true;
+    }
+
+    void AbortAcquire(const AssetKey& assetKey, ResourceId rootResourceId) noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        if (found == m_entries.end() || found->second.rootResourceId != rootResourceId ||
+            found->second.pendingAcquireCount == 0)
+        {
+            return;
+        }
+
+        --found->second.pendingAcquireCount;
+        if (found->second.pendingAcquireCount == 0 &&
+            found->second.activeLeaseCount == 0 &&
+            !found->second.unloadQueued)
+        {
+            m_entries.erase(found);
+        }
+    }
+
+    AssetResidencyReleaseResult RequestExactUnload(const AssetKey& assetKey)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        if (found == m_entries.end())
+        {
+            return AssetResidencyReleaseResult::Unloaded;
+        }
+
+        Entry& entry = found->second;
+        if (entry.activeLeaseCount == 0 && entry.pendingAcquireCount == 0)
+        {
+            if (!entry.closureHold)
+            {
+                return AssetResidencyReleaseResult::Unloaded;
+            }
+            if (entry.exactUnloadInProgress || entry.unloadQueued)
+            {
+                return AssetResidencyReleaseResult::Queued;
+            }
+
+            // A previous precise retirement failed closed. Re-queueing is
+            // explicit and keeps the completion-owned residency hold intact
+            // until the exact closure transaction succeeds. The manager's
+            // callback has no route back into this control; invoking it under
+            // the lock avoids a throwing std::function copy in this boundary.
+            entry.unloadQueued = true;
+            if (m_onDeferredUnload)
+            {
+                try
+                {
+                    if (!m_onDeferredUnload(assetKey, entry.generation))
+                    {
+                        entry.unloadQueued = false;
+                        return AssetResidencyReleaseResult::RetainedFailure;
+                    }
+                }
+                catch (...)
+                {
+                    entry.unloadQueued = false;
+                    return AssetResidencyReleaseResult::RetainedFailure;
+                }
+            }
+        }
+        else
+        {
+            entry.unloadQueued = true;
+        }
+        return AssetResidencyReleaseResult::Queued;
+    }
+
+    void CancelExactUnload(const AssetKey& assetKey) noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        if (found != m_entries.end())
+        {
+            // A cache hit/republication reclaims the root ownership record.
+            // Do not let an older lease generation complete that superseded
+            // explicit-release request after the root became active again.
+            found->second.unloadQueued = false;
+            found->second.closureHold = false;
+            found->second.exactUnloadInProgress = false;
+            found->second.exactUnloadThread = {};
+            if (found->second.activeLeaseCount == 0 &&
+                found->second.pendingAcquireCount == 0)
+            {
+                m_entries.erase(found);
+            }
+        }
+    }
+
+    bool HasLiveLeaseForResource(ResourceId resourceId,
+                                 bool countBlockedEviction)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (const auto& [assetKey, entry] : m_entries)
+        {
+            (void)assetKey;
+            const bool exactTransactionOwnsRemoval =
+                entry.exactUnloadInProgress &&
+                entry.exactUnloadThread == std::this_thread::get_id();
+            if (((entry.activeLeaseCount != 0 ||
+                  (entry.closureHold && !exactTransactionOwnsRemoval)) &&
+                 std::binary_search(entry.dependencyClosure.begin(),
+                                    entry.dependencyClosure.end(),
+                                    resourceId)) ||
+                (entry.pendingAcquireCount != 0 &&
+                 entry.rootResourceId == resourceId))
+            {
+                if (countBlockedEviction)
+                {
+                    ++m_blockedEvictionCount;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool IsSoleActiveLease(const AssetKey& assetKey,
+                           uint64 generation) const noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        return found != m_entries.end() && generation != 0 &&
+               found->second.generation == generation &&
+               found->second.activeLeaseCount == 1 &&
+               found->second.pendingAcquireCount == 0;
+    }
+
+    bool TryBeginQueuedUnload(const AssetKey& assetKey,
+                              uint64 generation,
+                              ResourceId rootResourceId)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        if (found == m_entries.end() || found->second.generation != generation ||
+            found->second.activeLeaseCount != 0 ||
+            found->second.pendingAcquireCount != 0 ||
+            !found->second.unloadQueued || !found->second.closureHold ||
+            found->second.exactUnloadInProgress)
+        {
+            return false;
+        }
+
+        for (const auto& [otherKey, other] : m_entries)
+        {
+            (void)otherKey;
+            if (other.activeLeaseCount != 0 &&
+                std::binary_search(other.dependencyClosure.begin(),
+                                   other.dependencyClosure.end(),
+                                   rootResourceId))
+            {
+                return false;
+            }
+        }
+
+        found->second.unloadQueued = false;
+        found->second.exactUnloadInProgress = true;
+        found->second.exactUnloadThread = std::this_thread::get_id();
+        return true;
+    }
+
+    bool IsQueuedUnload(const AssetKey& assetKey, uint64 generation) const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        return found != m_entries.end() && found->second.generation == generation &&
+               found->second.unloadQueued;
+    }
+
+    void RequeueUnload(const AssetKey& assetKey, uint64 generation) noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        if (found != m_entries.end() && found->second.generation == generation &&
+            found->second.activeLeaseCount == 0 &&
+            found->second.pendingAcquireCount == 0)
+        {
+            found->second.unloadQueued = true;
+            found->second.closureHold = true;
+            found->second.exactUnloadInProgress = false;
+            found->second.exactUnloadThread = {};
+        }
+    }
+
+    void RetainFailedUnload(const AssetKey& assetKey,
+                            uint64 generation) noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        if (found != m_entries.end() &&
+            found->second.generation == generation &&
+            found->second.activeLeaseCount == 0 &&
+            found->second.pendingAcquireCount == 0)
+        {
+            found->second.unloadQueued = false;
+            found->second.closureHold = true;
+            found->second.exactUnloadInProgress = false;
+            found->second.exactUnloadThread = {};
+        }
+    }
+
+    void CompleteUnload(const AssetKey& assetKey, uint64 generation)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        if (found != m_entries.end() &&
+            (generation == 0 || found->second.generation == generation) &&
+            found->second.activeLeaseCount == 0 &&
+            found->second.pendingAcquireCount == 0 &&
+            !found->second.unloadQueued)
+        {
+            m_entries.erase(found);
+        }
+    }
+
+    void Release(const AssetKey& assetKey, uint64 generation) noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        if (found == m_entries.end() || found->second.generation != generation ||
+            found->second.activeLeaseCount == 0)
+        {
+            return;
+        }
+
+        --found->second.activeLeaseCount;
+        --m_activeLeaseCount;
+        const bool queueUnload = found->second.activeLeaseCount == 0 &&
+                                 found->second.unloadQueued;
+        if (queueUnload)
+        {
+            found->second.closureHold = true;
+            if (m_onDeferredUnload)
+            {
+                try
+                {
+                    if (!m_onDeferredUnload(assetKey, generation))
+                    {
+                        found->second.unloadQueued = false;
+                    }
+                }
+                catch (...)
+                {
+                    // Lease destruction remains noexcept and the closure hold
+                    // prevents eviction until an explicit retry is admitted.
+                    found->second.unloadQueued = false;
+                }
+            }
+        }
+    }
+
+    /**
+     * @brief Consume a lease on behalf of the Scene closure facade.
+     *
+     * Unlike the destructor path this reports whether this caller was the
+     * final consumer. The callback is still invoked outside the control lock,
+     * so it cannot observe a partially-mutated lease entry.
+     */
+    bool ReleaseForSceneClosure(const AssetKey& assetKey,
+                                uint64 generation,
+                                bool& outFinalQueued) noexcept
+    {
+        outFinalQueued = false;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto found = m_entries.find(assetKey);
+        if (found == m_entries.end() ||
+            found->second.generation != generation ||
+            found->second.activeLeaseCount == 0)
+        {
+            return false;
+        }
+
+        --found->second.activeLeaseCount;
+        --m_activeLeaseCount;
+        outFinalQueued = found->second.activeLeaseCount == 0 &&
+                         found->second.unloadQueued;
+        if (outFinalQueued)
+        {
+            found->second.closureHold = true;
+            if (m_onDeferredUnload)
+            {
+                try
+                {
+                    if (!m_onDeferredUnload(assetKey, generation))
+                    {
+                        found->second.unloadQueued = false;
+                        found->second.closureHold = false;
+                        ++found->second.activeLeaseCount;
+                        ++m_activeLeaseCount;
+                        outFinalQueued = false;
+                        return false;
+                    }
+                }
+                catch (...)
+                {
+                    found->second.unloadQueued = false;
+                    found->second.closureHold = false;
+                    ++found->second.activeLeaseCount;
+                    ++m_activeLeaseCount;
+                    outFinalQueued = false;
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    Snapshot GetSnapshot() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        Snapshot snapshot;
+        snapshot.activeLeases = m_activeLeaseCount;
+        snapshot.blockedEvictions = m_blockedEvictionCount;
+        std::unordered_set<ResourceId> protectedResources;
+        for (const auto& [assetKey, entry] : m_entries)
+        {
+            (void)assetKey;
+            if (entry.activeLeaseCount != 0 || entry.closureHold)
+            {
+                protectedResources.insert(entry.dependencyClosure.begin(),
+                                          entry.dependencyClosure.end());
+            }
+            else if (entry.pendingAcquireCount != 0)
+            {
+                protectedResources.insert(entry.rootResourceId);
+            }
+            if (entry.unloadQueued)
+            {
+                ++snapshot.queuedUnloads;
+            }
+        }
+        snapshot.protectedResources = protectedResources.size();
+        return snapshot;
+    }
+
+    void StopAcceptingLeases() noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_acceptingLeases = false;
+        m_onDeferredUnload = {};
+    }
+
+private:
+    struct Entry
+    {
+        uint64 generation = 0;
+        uint64 activeLeaseCount = 0;
+        uint64 pendingAcquireCount = 0;
+        ResourceId rootResourceId = InvalidResourceId;
+        std::vector<ResourceId> dependencyClosure;
+        bool unloadQueued = false;
+        // The last Scene/lease consumer transfers ownership to this hold.
+        // It remains active through queueing, exact CPU closure commit, and a
+        // fail-closed Render retirement admission. Only the precise owner
+        // transaction may temporarily bypass cache removal protection.
+        bool closureHold = false;
+        bool exactUnloadInProgress = false;
+        std::thread::id exactUnloadThread{};
+    };
+
+    uint64 AllocateGenerationLocked()
+    {
+        const uint64 generation = m_nextGeneration++;
+        if (m_nextGeneration == 0)
+        {
+            m_nextGeneration = 1;
+        }
+        return generation == 0 ? AllocateGenerationLocked() : generation;
+    }
+
+    mutable std::mutex m_mutex;
+    std::unordered_map<AssetKey, Entry, AssetKeyHash> m_entries;
+    DeferredUnloadCallback m_onDeferredUnload;
+    uint64 m_nextGeneration = 1;
+    uint64 m_activeLeaseCount = 0;
+    uint64 m_blockedEvictionCount = 0;
+    bool m_acceptingLeases = true;
+};
+
+AssetResidencyLease::AssetResidencyLease(
+    std::weak_ptr<AssetResidencyLeaseControl> control,
+    AssetKey assetKey,
+    uint64 generation,
+    std::vector<ResourceId> dependencyClosure) noexcept
+    : m_control(std::move(control))
+    , m_assetKey(std::move(assetKey))
+    , m_generation(generation)
+    , m_dependencyClosure(std::move(dependencyClosure))
+{
+}
+
+AssetResidencyLease::~AssetResidencyLease()
+{
+    Reset();
+}
+
+AssetResidencyLease::AssetResidencyLease(AssetResidencyLease&& other) noexcept
+    : m_control(std::move(other.m_control))
+    , m_assetKey(std::move(other.m_assetKey))
+    , m_generation(other.m_generation)
+    , m_dependencyClosure(std::move(other.m_dependencyClosure))
+{
+    other.m_generation = 0;
+}
+
+AssetResidencyLease& AssetResidencyLease::operator=(
+    AssetResidencyLease&& other) noexcept
+{
+    if (this != &other)
+    {
+        Reset();
+        m_control = std::move(other.m_control);
+        m_assetKey = std::move(other.m_assetKey);
+        m_generation = other.m_generation;
+        m_dependencyClosure = std::move(other.m_dependencyClosure);
+        other.m_generation = 0;
+    }
+    return *this;
+}
+
+bool AssetResidencyLease::IsValid() const noexcept
+{
+    return m_generation != 0 && m_assetKey.IsValid() && !m_control.expired();
+}
+
+const AssetKey& AssetResidencyLease::GetAssetKey() const noexcept
+{
+    return m_assetKey;
+}
+
+uint64 AssetResidencyLease::GetGeneration() const noexcept
+{
+    return m_generation;
+}
+
+const std::vector<ResourceId>& AssetResidencyLease::GetDependencyClosure() const noexcept
+{
+    return m_dependencyClosure;
+}
+
+void AssetResidencyLease::Reset() noexcept
+{
+    if (m_generation != 0)
+    {
+        if (const std::shared_ptr<AssetResidencyLeaseControl> control =
+                m_control.lock())
+        {
+            control->Release(m_assetKey, m_generation);
+        }
+    }
+    m_control.reset();
+    m_assetKey = {};
+    m_generation = 0;
+    m_dependencyClosure.clear();
+}
 
 static ResourceManager* s_instance = nullptr;
 
@@ -87,7 +648,8 @@ namespace
         {
             return ResourceType::Mesh;
         }
-        if (firstLine == "RVX_MODEL_PREBAKE_V1")
+        if (firstLine == "RVX_MODEL_PREBAKE_V1" ||
+            firstLine == "RVX_MODEL_PREBAKE_V2")
         {
             return ResourceType::Model;
         }
@@ -146,6 +708,51 @@ namespace
         return static_cast<uint64>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
     }
 
+    bool VerifyPreparedContentIdentity(
+        const AssetKey& assetKey,
+        const PreparedResourceBundle& bundle,
+        ResourceContentVerificationReceipt& outReceipt,
+        ResourceLoadError& outError)
+    {
+        outReceipt = {};
+        outReceipt.expected = assetKey.expectedContentIdentity;
+        outReceipt.observed = bundle.GetObservedContentIdentity();
+
+        if (assetKey.expectedContentIdentity.IsEmpty())
+        {
+            if (outReceipt.observed.IsValid())
+            {
+                outReceipt.status = ResourceContentVerificationStatus::Observed;
+            }
+            return true;
+        }
+
+        // AssetKey admission rejects malformed expectations. Keep this check
+        // defensive because third-party callers may construct an AssetKey
+        // directly before giving it to ResourceLoadOperationOwner.
+        if (!assetKey.expectedContentIdentity.IsValid())
+        {
+            outError = {ResourceLoadErrorCode::InvalidRequest,
+                        "The requested resource content identity is malformed."};
+            return false;
+        }
+        if (!outReceipt.observed.IsValid())
+        {
+            outError = {ResourceLoadErrorCode::ContentIdentityUnavailable,
+                        "The loader did not observe a valid identity for the consumed asset bytes."};
+            return false;
+        }
+        if (outReceipt.observed != assetKey.expectedContentIdentity)
+        {
+            outError = {ResourceLoadErrorCode::ContentIdentityMismatch,
+                        "The bytes consumed by the loader do not match the requested content identity."};
+            return false;
+        }
+
+        outReceipt.status = ResourceContentVerificationStatus::Verified;
+        return true;
+    }
+
     std::string BuildAssetResourceIdentity(const AssetKey& assetKey)
     {
         // Preserve the established path-only ResourceId for the default
@@ -154,16 +761,30 @@ namespace
         // deterministic suffix and therefore cannot overwrite that entry.
         if (assetKey.importOptionsHash == 0 &&
             assetKey.platformProfileHash == 0 &&
-            assetKey.loaderSchemaVersion == 1)
+            assetKey.loaderSchemaVersion == 1 &&
+            assetKey.expectedContentIdentity.IsEmpty())
         {
             return assetKey.canonicalPath;
         }
 
-        return assetKey.canonicalPath + "#rvx_asset_" +
+        std::string identity = assetKey.canonicalPath + "#rvx_asset_" +
                std::to_string(static_cast<uint32>(assetKey.resourceType)) + "_" +
                std::to_string(assetKey.importOptionsHash) + "_" +
                std::to_string(assetKey.platformProfileHash) + "_" +
                std::to_string(assetKey.loaderSchemaVersion);
+        if (assetKey.expectedContentIdentity.IsEmpty())
+        {
+            return identity;
+        }
+
+        return identity + "_content_" +
+               std::to_string(assetKey.expectedContentIdentity.schemaVersion) + "_" +
+               std::to_string(static_cast<uint32>(assetKey.expectedContentIdentity.domain)) + "_" +
+               std::to_string(static_cast<uint32>(assetKey.expectedContentIdentity.scope)) + "_" +
+               std::to_string(static_cast<uint32>(assetKey.expectedContentIdentity.algorithm)) + "_" +
+               assetKey.expectedContentIdentity.digest + "_" +
+               std::to_string(assetKey.expectedContentIdentity.byteCount) + "_" +
+               std::to_string(assetKey.expectedContentIdentity.fileCount);
     }
 
     ResourceId GetResourceIdForAssetKey(const AssetKey& assetKey)
@@ -262,7 +883,8 @@ ResourceManager& ResourceManager::Get()
 
 void ResourceManager::Initialize(const ResourceManagerConfig& config)
 {
-    if (m_initialized)
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    if (m_initialized || m_shuttingDown)
     {
         RVX_RESOURCE_WARN("ResourceManager already initialized");
         return;
@@ -270,11 +892,41 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
 
     m_config = config;
     m_ownerThreadToken = GetCurrentThreadToken();
+    m_cancelledLoadCount.store(0, std::memory_order_relaxed);
+    m_closureUnloadRequestCount.store(0, std::memory_order_relaxed);
+    m_closureUnloadedResourceCount.store(0, std::memory_order_relaxed);
+    m_closureRetainedResourceCount.store(0, std::memory_order_relaxed);
+    m_closureUnloadRejectedCount.store(0, std::memory_order_relaxed);
     Diagnostics::TraceSpan initializationSpan = Diagnostics::BeginTraceSpan(
         m_config.startupTraceContext,
         "Resource.Manager.Initialize");
     m_registry = std::make_unique<ResourceRegistry>();
     m_cache = std::make_unique<ResourceCache>(config.cacheConfig);
+    m_assetResidencyControl = std::make_shared<AssetResidencyLeaseControl>(
+        [this](const AssetKey& assetKey, uint64 generation)
+        {
+            try
+            {
+                std::lock_guard<std::mutex> lock(m_pendingLeaseUnloadMutex);
+                m_pendingLeaseUnloads.emplace_back(assetKey, generation);
+                return true;
+            }
+            catch (...)
+            {
+                return false;
+            }
+        });
+    const std::weak_ptr<AssetResidencyLeaseControl> residencyControl =
+        m_assetResidencyControl;
+    m_cache->SetCanRemoveCallback(
+        [residencyControl](ResourceId resourceId)
+        {
+            const std::shared_ptr<AssetResidencyLeaseControl> control =
+                residencyControl.lock();
+            return !control || !control->HasLiveLeaseForResource(
+                                   resourceId,
+                                   true);
+        });
     m_cache->SetBeforeRemoveCallback(
         [this](IResource* resource)
         {
@@ -282,7 +934,6 @@ void ResourceManager::Initialize(const ResourceManagerConfig& config)
                                 resource);
         });
     m_dependencyGraph = std::make_unique<DependencyGraph>();
-
     // Register default loaders
     RegisterDefaultLoaders();
 
@@ -318,6 +969,9 @@ void ResourceManager::RegisterDefaultLoaders()
     auto modelLoader = std::make_unique<ModelLoader>(this);
     RegisterLoader(ResourceType::Model, std::move(modelLoader));
 
+    auto animationLoader = std::make_unique<AnimationLoader>();
+    RegisterLoader(ResourceType::Animation, std::move(animationLoader));
+
     auto environmentLoader = std::make_unique<EnvironmentLoader>();
     RegisterLoader(ResourceType::Environment, std::move(environmentLoader));
 
@@ -326,11 +980,22 @@ void ResourceManager::RegisterDefaultLoaders()
 
 void ResourceManager::Shutdown()
 {
-    if (!m_initialized) return;
-    if (!IsOwnerThread())
     {
-        RVX_RESOURCE_ERROR("ResourceManager::Shutdown must run on its owner/update thread");
-        return;
+        std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+        if (!m_initialized || m_shuttingDown)
+        {
+            return;
+        }
+        if (!IsOwnerThread())
+        {
+            RVX_RESOURCE_ERROR("ResourceManager::Shutdown must run on its owner/update thread");
+            return;
+        }
+
+        // Block loaded-resource acquisition before worker cancellation and
+        // serialize the final cache teardown with m_loadMutex below.
+        m_shuttingDown = true;
+        m_initialized = false;
     }
 
     // Stop accepting new subscriptions before waiting.  Existing workers retain
@@ -382,18 +1047,35 @@ void ResourceManager::Shutdown()
     DrainLegacyAsyncWaiters();
     ProcessCompletedLoads();
 
-    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    std::lock_guard<std::recursive_mutex> shutdownLock(m_loadMutex);
     m_loaders.clear();
-    m_cache->Clear();
+    m_cache->ClearInternal(true);
     m_registry->Clear();
     m_dependencyGraph->Clear();
+    m_publishedAssetKeys.clear();
     m_modelTextureStreaming.reset();
+    if (m_assetResidencyControl)
+    {
+        m_assetResidencyControl->StopAcceptingLeases();
+        m_assetResidencyControl.reset();
+    }
+    {
+        std::lock_guard<std::mutex> pendingLeaseLock(m_pendingLeaseUnloadMutex);
+        m_pendingLeaseUnloads.clear();
+    }
 
-    m_initialized = false;
+    m_shuttingDown = false;
     DrainLifecycleEvents();
     SetLifecycleEventCallback({});
+    SetClosureRetirementCallback({});
     m_reloadCallback = {};
     RVX_RESOURCE_INFO("ResourceManager shutdown");
+}
+
+bool ResourceManager::IsInitialized() const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    return m_initialized && !m_shuttingDown;
 }
 
 IResource* ResourceManager::LoadResource(const std::string& path)
@@ -483,6 +1165,22 @@ IResource* ResourceManager::LoadResource(const std::string& path,
          {"cacheHit", cached != nullptr}});
     if (cached != nullptr)
     {
+        bool reactivationFailed = false;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+            const auto published = m_publishedAssetKeys.find(id);
+            reactivationFailed = published != m_publishedAssetKeys.end() &&
+                                 !ReactivatePublishedRoot(id, assetKey);
+        }
+        if (reactivationFailed)
+        {
+            SetLastLoadDiagnostic(
+                MakeLoadDiagnostic(resolution,
+                                   false,
+                                   ResourceLoadFailureCode::LoaderFailed,
+                                   "Could not reactivate the exact root ownership claim."));
+            return nullptr;
+        }
         SetLastLoadDiagnostic(
             MakeLoadDiagnostic(resolution,
                                true,
@@ -762,7 +1460,7 @@ IResource* ResourceManager::LoadInternal(const std::string& path,
         m_cache->Contains(loaderAssignedId))
     {
         resource->AddRef();
-        m_cache->Remove(loaderAssignedId);
+        static_cast<void>(m_cache->Remove(loaderAssignedId));
         releaseLoaderCacheRetainAfterStore = true;
     }
 
@@ -949,6 +1647,14 @@ void ResourceManager::RegisterHotReloadResource(IResource* resource, const Resou
         return;
     }
 
+    // An expected consumed-byte identity pins this publication to the exact
+    // verified artifact. Hot reload's unload-first replacement semantics
+    // cannot preserve that contract, so this root is deliberately untracked.
+    if (!resource->GetContentVerificationReceipt().expected.IsEmpty())
+    {
+        return;
+    }
+
     HotReloadManager& hotReload = HotReloadManager::Get();
     hotReload.RegisterResource(resource, resolution.resolvedPath);
 
@@ -1027,8 +1733,15 @@ bool ResourceManager::IsLoaded(const std::string& path) const
 
 bool ResourceManager::IsLoaded(const AssetKey& assetKey) const
 {
-    return m_initialized && m_cache && assetKey.IsValid() &&
-           m_cache->ContainsLoaded(GetResourceIdForAssetKey(assetKey));
+    if (!m_initialized || !m_cache || !assetKey.IsValid())
+    {
+        return false;
+    }
+
+    const ResourceId resourceId = GetResourceIdForAssetKey(assetKey);
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    return IsPublishedRootActive(resourceId, assetKey) &&
+           m_cache->ContainsLoaded(resourceId);
 }
 
 bool ResourceManager::IsLoaded(ResourceId id) const
@@ -1036,28 +1749,1212 @@ bool ResourceManager::IsLoaded(ResourceId id) const
     return m_cache && m_cache->ContainsLoaded(id);
 }
 
-void ResourceManager::Unload(const std::string& path)
+MaterialInstanceCreateResult ResourceManager::CreateMaterialInstance(
+    const ResourceHandle<MaterialResource>& parent,
+    const std::string& runtimeKey)
+{
+    MaterialInstanceCreateResult result;
+    const auto fail = [&result](MaterialInstanceMutationCode code,
+                                ResourceId resourceId,
+                                std::string message)
+    {
+        result.receipt.code = code;
+        result.receipt.resourceId = resourceId;
+        result.receipt.message = std::move(message);
+        return result;
+    };
+
+    if (!m_initialized || !m_cache || !m_registry || !m_dependencyGraph)
+    {
+        return fail(MaterialInstanceMutationCode::ManagerNotInitialized,
+                    InvalidResourceId,
+                    "ResourceManager must be initialized before creating a material instance.");
+    }
+    if (!IsOwnerThread())
+    {
+        return fail(MaterialInstanceMutationCode::OwnerThreadRequired,
+                    InvalidResourceId,
+                    "Runtime material instances can only be created on the ResourceManager owner/update thread.");
+    }
+    if (!parent || !parent.IsLoaded() || runtimeKey.empty())
+    {
+        return fail(MaterialInstanceMutationCode::InvalidParent,
+                    InvalidResourceId,
+                    "A loaded parent material and non-empty runtime key are required.");
+    }
+
+    const AssetKey runtimeAssetKey = MakeAssetKey(
+        "runtime://material-instance/" + runtimeKey,
+        ResourceType::Material);
+    const ResourceId resourceId = GetResourceIdForAssetKey(runtimeAssetKey);
+    result.assetKey = runtimeAssetKey;
+
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    IResource* cachedParent = m_cache->Get(parent.GetId());
+    if (cachedParent != parent.Get() || !m_cache->ContainsLoaded(parent.GetId()) ||
+        !m_registry->Contains(parent.GetId()) || !m_dependencyGraph->Contains(parent.GetId()))
+    {
+        return fail(MaterialInstanceMutationCode::InvalidParent,
+                    resourceId,
+                    "The parent material is not the ResourceManager-published material identity.");
+    }
+    if (m_cache->Contains(resourceId) || m_registry->Contains(resourceId) ||
+        m_dependencyGraph->Contains(resourceId) || m_publishedAssetKeys.contains(resourceId))
+    {
+        return fail(MaterialInstanceMutationCode::RuntimeKeyConflict,
+                    resourceId,
+                    "The runtime material-instance key already resolves to a live resource identity.");
+    }
+
+    auto* rawInstance = new MaterialInstanceResource(parent, runtimeKey);
+    MaterialInstanceHandle instance(rawInstance);
+    rawInstance->SetId(resourceId);
+    rawInstance->SetPath(runtimeAssetKey.canonicalPath);
+    rawInstance->SetName(runtimeKey);
+    if (!rawInstance->InitializeFromParent())
+    {
+        return fail(MaterialInstanceMutationCode::InvalidParent,
+                    resourceId,
+                    "The immutable parent material could not initialize an instance state.");
+    }
+
+    const std::vector<ResourceId> dependencies = rawInstance->GetRequiredDependencies();
+    if (dependencies.empty())
+    {
+        return fail(MaterialInstanceMutationCode::InvalidParent,
+                    resourceId,
+                    "A material instance must retain its immutable parent as a dependency.");
+    }
+    for (ResourceId dependencyId : dependencies)
+    {
+        if (!m_cache->ContainsLoaded(dependencyId))
+        {
+            return fail(MaterialInstanceMutationCode::DependencyUnavailable,
+                        resourceId,
+                        "A parent material dependency is not published and loaded.");
+        }
+    }
+
+    ResourceMetadata metadata;
+    metadata.id = resourceId;
+    metadata.path = runtimeAssetKey.canonicalPath;
+    metadata.name = runtimeKey;
+    metadata.type = ResourceType::Material;
+    metadata.dependencies = dependencies;
+
+    // Identity and releaseable ownership share one record. Reserve before any
+    // owner-database mutation so a runtime root cannot publish without its
+    // initial Active claim.
+    try
+    {
+        m_publishedAssetKeys.reserve(m_publishedAssetKeys.size() + 1);
+    }
+    catch (const std::exception& error)
+    {
+        return fail(MaterialInstanceMutationCode::TransactionFailed,
+                    resourceId,
+                    error.what());
+    }
+    catch (...)
+    {
+        return fail(MaterialInstanceMutationCode::TransactionFailed,
+                    resourceId,
+                    "Could not reserve runtime material-instance ownership state.");
+    }
+
+    bool assetKeyInserted = false;
+    bool registryInserted = false;
+    bool graphInserted = false;
+    try
+    {
+        assetKeyInserted = m_publishedAssetKeys.emplace(
+            resourceId,
+            PublishedRootRecord{runtimeAssetKey, RootOwnershipState::Active}).second;
+        if (!assetKeyInserted)
+        {
+            throw std::runtime_error("Runtime material-instance AssetKey collision.");
+        }
+        // Mark owner-table rollback eligibility before each call. Registry and
+        // dependency-graph implementations may allocate after their first
+        // insertion, so an exception does not prove that no partial mutation
+        // occurred.
+        registryInserted = true;
+        m_registry->Register(metadata);
+        graphInserted = true;
+        m_dependencyGraph->AddResource(resourceId, dependencies);
+        if (!m_cache->StorePreparedBatch({rawInstance}))
+        {
+            throw std::runtime_error("Resource cache rejected the material-instance publication.");
+        }
+    }
+    catch (const std::exception& error)
+    {
+        if (graphInserted)
+        {
+            m_dependencyGraph->RemoveResource(resourceId);
+        }
+        if (registryInserted)
+        {
+            m_registry->Unregister(resourceId);
+        }
+        if (assetKeyInserted)
+        {
+            m_publishedAssetKeys.erase(resourceId);
+        }
+        return fail(MaterialInstanceMutationCode::TransactionFailed,
+                    resourceId,
+                    error.what());
+    }
+    catch (...)
+    {
+        if (graphInserted)
+        {
+            m_dependencyGraph->RemoveResource(resourceId);
+        }
+        if (registryInserted)
+        {
+            m_registry->Unregister(resourceId);
+        }
+        if (assetKeyInserted)
+        {
+            m_publishedAssetKeys.erase(resourceId);
+        }
+        return fail(MaterialInstanceMutationCode::TransactionFailed,
+                    resourceId,
+                    "An unknown failure interrupted material-instance publication.");
+    }
+
+    QueueLifecycleEvent(ResourceLifecycleEventType::Ready, rawInstance);
+    result.instance = std::move(instance);
+    result.receipt.code = MaterialInstanceMutationCode::Applied;
+    result.receipt.resourceId = resourceId;
+    result.receipt.revision = rawInstance->GetRevision();
+    result.receipt.message = "Runtime material instance published.";
+    return result;
+}
+
+MaterialInstanceMutationReceipt ResourceManager::UpdateMaterialInstance(
+    const MaterialInstanceHandle& instance,
+    const MaterialInstancePatch& patch)
+{
+    MaterialInstanceMutationReceipt receipt;
+    receipt.resourceId = instance ? instance.GetId() : InvalidResourceId;
+    if (!m_initialized || !m_cache || !m_registry || !m_dependencyGraph)
+    {
+        receipt.code = MaterialInstanceMutationCode::ManagerNotInitialized;
+        receipt.message = "ResourceManager must be initialized before updating a material instance.";
+        return receipt;
+    }
+    if (!IsOwnerThread())
+    {
+        receipt.code = MaterialInstanceMutationCode::OwnerThreadRequired;
+        receipt.message = "Runtime material instances can only be updated on the ResourceManager owner/update thread.";
+        return receipt;
+    }
+    if (!instance)
+    {
+        receipt.code = MaterialInstanceMutationCode::InvalidInstance;
+        receipt.message = "The material-instance handle is invalid.";
+        return receipt;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    IResource* cached = m_cache->Get(instance.GetId());
+    if (cached != instance.Get() || !instance.IsLoaded() ||
+        !m_registry->Contains(instance.GetId()) ||
+        !m_dependencyGraph->Contains(instance.GetId()))
+    {
+        receipt.code = MaterialInstanceMutationCode::InvalidInstance;
+        receipt.message = "The material-instance handle is not the current ResourceManager-published identity.";
+        return receipt;
+    }
+
+    MaterialInstanceResource::PreparedState prepared;
+    std::string message;
+    const MaterialInstanceMutationCode buildCode =
+        instance->BuildPatchedState(patch, prepared, message);
+    if (buildCode != MaterialInstanceMutationCode::Applied)
+    {
+        receipt.code = buildCode;
+        receipt.revision = instance->GetRevision();
+        receipt.message = std::move(message);
+        return receipt;
+    }
+
+    if (instance->HasSameState(prepared))
+    {
+        receipt.code = MaterialInstanceMutationCode::NoChange;
+        receipt.revision = instance->GetRevision();
+        receipt.message = "The patch is already reflected by the published material instance.";
+        return receipt;
+    }
+
+    for (const auto& [slot, texture] : prepared.textures)
+    {
+        (void)slot;
+        if (!texture || !texture.IsLoaded() ||
+            m_cache->Get(texture.GetId()) != texture.Get())
+        {
+            receipt.code = MaterialInstanceMutationCode::DependencyUnavailable;
+            receipt.revision = instance->GetRevision();
+            receipt.message =
+                "A texture override is not the canonical ResourceManager-published identity.";
+            return receipt;
+        }
+    }
+    if (prepared.shader &&
+        (!prepared.shader.IsLoaded() ||
+         m_cache->Get(prepared.shader.GetId()) != prepared.shader.Get()))
+    {
+        receipt.code = MaterialInstanceMutationCode::DependencyUnavailable;
+        receipt.revision = instance->GetRevision();
+        receipt.message =
+            "The material shader is not the canonical ResourceManager-published identity.";
+        return receipt;
+    }
+
+    for (ResourceId dependencyId : prepared.dependencies)
+    {
+        if (!m_cache->ContainsLoaded(dependencyId))
+        {
+            receipt.code = MaterialInstanceMutationCode::DependencyUnavailable;
+            receipt.revision = instance->GetRevision();
+            receipt.message = "A patch dependency is not published and loaded.";
+            return receipt;
+        }
+    }
+
+    const std::vector<ResourceId> previousDependencies =
+        m_dependencyGraph->GetDependencies(instance.GetId());
+    const bool dependenciesChanged = previousDependencies != prepared.dependencies;
+    if (dependenciesChanged && m_assetResidencyControl &&
+        m_assetResidencyControl->HasLiveLeaseForResource(instance.GetId(), false))
+    {
+        receipt.code = MaterialInstanceMutationCode::NeedsResidencyRefresh;
+        receipt.revision = instance->GetRevision();
+        receipt.message = "The material instance has a live residency lease; texture dependency changes require a closure refresh contract.";
+        return receipt;
+    }
+
+    const std::optional<ResourceMetadata> previousMetadata =
+        m_registry->FindById(instance.GetId());
+    if (!previousMetadata)
+    {
+        receipt.code = MaterialInstanceMutationCode::TransactionFailed;
+        receipt.revision = instance->GetRevision();
+        receipt.message = "The published material instance has no registry metadata to update.";
+        return receipt;
+    }
+    ResourceMetadata updatedMetadata = *previousMetadata;
+    updatedMetadata.dependencies = prepared.dependencies;
+
+    try
+    {
+        // Both manager and graph boundaries remain serialized for the full
+        // mutation. No Scene/Render observer can see the new material state
+        // until its dependency metadata has been replaced.
+        if (dependenciesChanged)
+        {
+            m_registry->Update(updatedMetadata);
+            m_dependencyGraph->UpdateDependencies(instance.GetId(), prepared.dependencies);
+        }
+        instance->CommitPatchedState(std::move(prepared));
+    }
+    catch (const std::exception& error)
+    {
+        // CommitPatchedState is noexcept and is intentionally last. A failure
+        // before it leaves the material unchanged; restore metadata best-effort
+        // in case an allocator failed inside one of the owner databases.
+        if (dependenciesChanged)
+        {
+            try
+            {
+                m_registry->Update(*previousMetadata);
+                m_dependencyGraph->UpdateDependencies(instance.GetId(), previousDependencies);
+            }
+            catch (...)
+            {
+                RVX_RESOURCE_ERROR("Material-instance dependency rollback failed for {}", instance.GetId());
+            }
+        }
+        receipt.code = MaterialInstanceMutationCode::TransactionFailed;
+        receipt.revision = instance->GetRevision();
+        receipt.message = error.what();
+        return receipt;
+    }
+    catch (...)
+    {
+        if (dependenciesChanged)
+        {
+            try
+            {
+                m_registry->Update(*previousMetadata);
+                m_dependencyGraph->UpdateDependencies(instance.GetId(), previousDependencies);
+            }
+            catch (...)
+            {
+                RVX_RESOURCE_ERROR("Material-instance dependency rollback failed for {}", instance.GetId());
+            }
+        }
+        receipt.code = MaterialInstanceMutationCode::TransactionFailed;
+        receipt.revision = instance->GetRevision();
+        receipt.message = "An unknown failure interrupted the material-instance transaction.";
+        return receipt;
+    }
+
+    receipt.code = MaterialInstanceMutationCode::Applied;
+    receipt.revision = instance->GetRevision();
+    receipt.message = "Runtime material instance updated.";
+    QueueLifecycleEvent(ResourceLifecycleEventType::Reloaded, instance.Get());
+    return receipt;
+}
+
+AssetResidencyReleaseResult ResourceManager::Unload(const std::string& path)
 {
     if (!m_initialized)
     {
-        return;
+        return AssetResidencyReleaseResult::NotFound;
     }
 
     const ResourcePathResolution resolution =
         ResolveRuntimeResourcePath(m_config.runtimePolicy, m_config.basePath, path);
     if (resolution.allowed)
     {
-        Unload(GetCanonicalResolvedResourceId(resolution));
+        return Unload(GetCanonicalResolvedResourceId(resolution));
     }
+    return AssetResidencyReleaseResult::NotFound;
 }
 
-void ResourceManager::Unload(ResourceId id)
+AssetResidencyReleaseResult ResourceManager::Unload(ResourceId id)
+{
+    if (id == InvalidResourceId)
+    {
+        return AssetResidencyReleaseResult::NotFound;
+    }
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    const auto publishedRoot = m_publishedAssetKeys.find(id);
+    if (publishedRoot != m_publishedAssetKeys.end())
+    {
+        // Route published roots through their exact AssetKey path. A
+        // ReleasePending record represents a retryable explicit request, not
+        // an absent identity, and this avoids a second state machine for id
+        // callers.
+        const AssetKey publishedAssetKey = publishedRoot->second.assetKey;
+        return Unload(publishedAssetKey);
+    }
+    if (m_assetResidencyControl &&
+        m_assetResidencyControl->HasLiveLeaseForResource(id, false))
+    {
+        return AssetResidencyReleaseResult::BlockedByLease;
+    }
+    return UnloadResourceNow(id);
+}
+
+AssetResidencyReleaseResult ResourceManager::Unload(const AssetKey& assetKey)
+{
+    if (!assetKey.IsValid())
+    {
+        return AssetResidencyReleaseResult::NotFound;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    const ResourceId resourceId = GetResourceIdForAssetKey(assetKey);
+    const auto publishedRoot = m_publishedAssetKeys.find(resourceId);
+    if (publishedRoot == m_publishedAssetKeys.end() ||
+        publishedRoot->second.assetKey != assetKey)
+    {
+        return AssetResidencyReleaseResult::NotFound;
+    }
+
+    // State transitions are stored in the existing root record rather than a
+    // separate set, so consuming an explicit release claim and retrying it
+    // never allocate. Both immediate and deferred failures remain
+    // ReleasePending until a cache hit explicitly reactivates the root or the
+    // final closure deletion removes its identity record.
+    if (publishedRoot->second.ownership == RootOwnershipState::Active)
+    {
+        publishedRoot->second.ownership = RootOwnershipState::ReleasePending;
+        publishedRoot->second.pendingClosureGeneration =
+            AllocateClosureGeneration();
+    }
+    if (m_assetResidencyControl)
+    {
+        const AssetResidencyReleaseResult admission =
+            m_assetResidencyControl->RequestExactUnload(assetKey);
+        if (admission == AssetResidencyReleaseResult::Queued)
+        {
+            return admission;
+        }
+    }
+
+    const AssetResidencyReleaseResult result = UnloadClosureNow(resourceId);
+    if (m_assetResidencyControl &&
+        result == AssetResidencyReleaseResult::Unloaded)
+    {
+        // No live lease is associated with this request. Keeping no dormant
+        // generation lets a future publish/acquire begin a fresh lease epoch.
+        m_assetResidencyControl->CompleteUnload(assetKey, 0);
+    }
+    return result;
+}
+
+AssetResidencyReleaseResult ResourceManager::Evict(const AssetKey& assetKey)
+{
+    if (!assetKey.IsValid())
+    {
+        return AssetResidencyReleaseResult::NotFound;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    const ResourceId resourceId = GetResourceIdForAssetKey(assetKey);
+    if (!IsPublishedRootActive(resourceId, assetKey))
+    {
+        return AssetResidencyReleaseResult::NotFound;
+    }
+    if (m_assetResidencyControl &&
+        m_assetResidencyControl->HasLiveLeaseForResource(resourceId, false))
+    {
+        return AssetResidencyReleaseResult::BlockedByLease;
+    }
+    return EvictResourceNow(resourceId);
+}
+
+AssetResidencyLease ResourceManager::AcquireAssetResidencyLease(
+    const AssetKey& assetKey)
+{
+    if (!m_initialized || !assetKey.IsValid() || !m_cache ||
+        !m_dependencyGraph || !m_assetResidencyControl)
+    {
+        return {};
+    }
+
+    const ResourceId rootResourceId = GetResourceIdForAssetKey(assetKey);
+    std::vector<ResourceId> dependencyClosure;
+    std::lock_guard<std::recursive_mutex> loadLock(m_loadMutex);
+    std::unique_lock<std::shared_mutex> removalBarrier =
+        m_cache->LockRemovalsForResidency();
+    if (!IsPublishedRootActive(rootResourceId, assetKey))
+    {
+        return {};
+    }
+    if (!m_assetResidencyControl->BeginAcquire(assetKey, rootResourceId))
+    {
+        return {};
+    }
+
+    const auto abortAcquire = [this, &assetKey, rootResourceId]() noexcept
+    {
+        m_assetResidencyControl->AbortAcquire(assetKey, rootResourceId);
+    };
+
+    try
+    {
+        if (!m_cache->ContainsLoadedUnderResidencyBarrier(rootResourceId))
+        {
+            abortAcquire();
+            return {};
+        }
+        dependencyClosure = m_dependencyGraph->GetAllDependencies(rootResourceId);
+        dependencyClosure.push_back(rootResourceId);
+        std::sort(dependencyClosure.begin(), dependencyClosure.end());
+        dependencyClosure.erase(
+            std::unique(dependencyClosure.begin(), dependencyClosure.end()),
+            dependencyClosure.end());
+        for (ResourceId dependencyId : dependencyClosure)
+        {
+            if (dependencyId == InvalidResourceId ||
+                !m_cache->ContainsLoadedUnderResidencyBarrier(dependencyId))
+            {
+                abortAcquire();
+                return {};
+            }
+        }
+    }
+    catch (...)
+    {
+        abortAcquire();
+        return {};
+    }
+
+    uint64 generation = 0;
+    if (!m_assetResidencyControl->PromoteAcquire(assetKey,
+                                                 rootResourceId,
+                                                 dependencyClosure,
+                                                 generation))
+    {
+        abortAcquire();
+        return {};
+    }
+    return AssetResidencyLease(
+        m_assetResidencyControl,
+        assetKey,
+        generation,
+        std::move(dependencyClosure));
+}
+
+bool ResourceManager::IsSoleAssetResidencyConsumer(
+    const AssetResidencyLease& lease) const noexcept
+{
+    if (!lease.IsValid() || !m_assetResidencyControl)
+    {
+        return false;
+    }
+    return m_assetResidencyControl->IsSoleActiveLease(
+        lease.m_assetKey,
+        lease.m_generation);
+}
+
+std::optional<AssetKey> ResourceManager::FindPublishedAssetKey(
+    ResourceId resourceId) const
+{
+    if (resourceId == InvalidResourceId)
+    {
+        return std::nullopt;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    const auto found = m_publishedAssetKeys.find(resourceId);
+    return found != m_publishedAssetKeys.end()
+               ? std::optional<AssetKey>(found->second.assetKey)
+               : std::nullopt;
+}
+
+AssetResidencyLeaseConsumeResult
+ResourceManager::ConsumeSceneAssetResidencyLease(AssetResidencyLease& lease)
+{
+    AssetResidencyLeaseConsumeResult result;
+    if (!m_initialized || !lease.IsValid() || !m_assetResidencyControl)
+    {
+        return result;
+    }
+
+    const std::shared_ptr<AssetResidencyLeaseControl> leaseControl =
+        lease.m_control.lock();
+    if (leaseControl != m_assetResidencyControl)
+    {
+        return result;
+    }
+
+    const AssetKey assetKey = lease.m_assetKey;
+    const uint64 leaseGeneration = lease.m_generation;
+    const ResourceId rootResourceId = GetResourceIdForAssetKey(assetKey);
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    const auto root = m_publishedAssetKeys.find(rootResourceId);
+    if (root == m_publishedAssetKeys.end() ||
+        root->second.assetKey != assetKey)
+    {
+        result.code = AssetResidencyLeaseConsumeCode::NotFound;
+        return result;
+    }
+
+    // Scene consumption may encounter an earlier explicit Unload() request
+    // for the same root. Only an Active -> ReleasePending transition belongs
+    // to this attempt; an existing ReleasePending record is independent
+    // caller intent and must survive shared lease consumption.
+    const RootOwnershipState ownershipBeforeAdmission =
+        root->second.ownership;
+    const uint64 closureGenerationBeforeAdmission =
+        root->second.pendingClosureGeneration;
+    const bool ownsProvisionalAdmission =
+        ownershipBeforeAdmission == RootOwnershipState::Active;
+    if (ownsProvisionalAdmission)
+    {
+        root->second.ownership = RootOwnershipState::ReleasePending;
+        root->second.pendingClosureGeneration =
+            AllocateClosureGeneration();
+    }
+    if (root->second.pendingClosureGeneration == 0)
+    {
+        result.code = AssetResidencyLeaseConsumeCode::RetainedFailure;
+        return result;
+    }
+
+    const auto rollbackProvisionalAdmission = [&]() noexcept
+    {
+        if (!ownsProvisionalAdmission)
+        {
+            return;
+        }
+
+        root->second.ownership = ownershipBeforeAdmission;
+        root->second.pendingClosureGeneration =
+            closureGenerationBeforeAdmission;
+        m_assetResidencyControl->CancelExactUnload(assetKey);
+    };
+
+    const AssetResidencyReleaseResult requested =
+        m_assetResidencyControl->RequestExactUnload(assetKey);
+    if (requested != AssetResidencyReleaseResult::Queued)
+    {
+        rollbackProvisionalAdmission();
+        result.code = AssetResidencyLeaseConsumeCode::RetainedFailure;
+        return result;
+    }
+
+    bool finalQueued = false;
+    if (!m_assetResidencyControl->ReleaseForSceneClosure(
+            assetKey, leaseGeneration, finalQueued))
+    {
+        rollbackProvisionalAdmission();
+        result.code = AssetResidencyLeaseConsumeCode::RetainedFailure;
+        return result;
+    }
+
+    // A non-final Scene consumer relinquishes only its own lease. When this
+    // call created the provisional exact-unload request, the root and its
+    // remaining consumers stay active, so that request must not survive as a
+    // permanently queued future unload. Keep the allocated generation as
+    // value-only receipt provenance, but restore only this call's root/control
+    // state before returning ReleasedShared.
+    const uint64 closureGeneration =
+        root->second.pendingClosureGeneration;
+    if (!finalQueued)
+    {
+        rollbackProvisionalAdmission();
+    }
+
+    // The control has consumed this exact generation. Do not invoke Reset(),
+    // which would try to decrement the same lease a second time.
+    lease.m_control.reset();
+    lease.m_assetKey = {};
+    lease.m_generation = 0;
+    lease.m_dependencyClosure.clear();
+
+    result.rootAssetId = AssetId{rootResourceId};
+    result.leaseGeneration = leaseGeneration;
+    result.closureGeneration = closureGeneration;
+    result.code = finalQueued
+                      ? AssetResidencyLeaseConsumeCode::QueuedForClosure
+                      : AssetResidencyLeaseConsumeCode::ReleasedShared;
+    return result;
+}
+
+bool ResourceManager::IsPublishedRootActive(
+    ResourceId resourceId,
+    const AssetKey& assetKey) const
+{
+    const auto found = m_publishedAssetKeys.find(resourceId);
+    return found != m_publishedAssetKeys.end() &&
+           found->second.assetKey == assetKey &&
+           found->second.ownership == RootOwnershipState::Active;
+}
+
+bool ResourceManager::ReactivatePublishedRoot(
+    ResourceId resourceId,
+    const AssetKey& assetKey)
+{
+    const auto found = m_publishedAssetKeys.find(resourceId);
+    if (found == m_publishedAssetKeys.end() ||
+        found->second.assetKey != assetKey)
+    {
+        return false;
+    }
+    found->second.ownership = RootOwnershipState::Active;
+    found->second.pendingClosureGeneration = 0;
+    if (m_assetResidencyControl)
+    {
+        m_assetResidencyControl->CancelExactUnload(assetKey);
+    }
+    return true;
+}
+
+uint64 ResourceManager::AllocateClosureGeneration() noexcept
+{
+    const uint64 generation = m_nextClosureGeneration++;
+    if (m_nextClosureGeneration == 0)
+    {
+        m_nextClosureGeneration = 1;
+    }
+    return generation == 0 ? AllocateClosureGeneration() : generation;
+}
+
+std::optional<ResourceClosureRetirementOutcome>
+ResourceManager::MakeClosureRetirementOutcome(
+    ResourceId rootResourceId,
+    const ClosureUnloadPlan& plan) const
+{
+    const auto root = m_publishedAssetKeys.find(rootResourceId);
+    if (root == m_publishedAssetKeys.end() ||
+        root->second.ownership != RootOwnershipState::ReleasePending ||
+        root->second.pendingClosureGeneration == 0)
+    {
+        return std::nullopt;
+    }
+
+    ResourceClosureRetirementOutcome outcome;
+    outcome.rootAssetId = AssetId{rootResourceId};
+    outcome.closureGeneration = root->second.pendingClosureGeneration;
+    outcome.reason = ResourceClosureRetirementReason::SceneTeardown;
+    outcome.removedResourceIds = plan.removalOrder;
+    outcome.sharedRetainedResourceIds = plan.sharedRetainedResourceIds;
+    return outcome.IsStructurallyValid()
+               ? std::optional<ResourceClosureRetirementOutcome>(
+                     std::move(outcome))
+               : std::nullopt;
+}
+
+AssetResidencyReleaseResult ResourceManager::UnloadResourceNow(ResourceId id)
 {
     std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    if (!m_cache || !m_cache->Contains(id))
+    {
+        return AssetResidencyReleaseResult::NotFound;
+    }
+    if (!m_cache->Remove(id))
+    {
+        return AssetResidencyReleaseResult::BlockedByLease;
+    }
+    if (m_registry)
+    {
+        m_registry->Unregister(id);
+    }
+    if (m_dependencyGraph)
+    {
+        m_dependencyGraph->RemoveResource(id);
+    }
+    m_publishedAssetKeys.erase(id);
+    return AssetResidencyReleaseResult::Unloaded;
+}
 
-    if (m_cache) m_cache->Remove(id);
-    if (m_registry) m_registry->Unregister(id);
-    if (m_dependencyGraph) m_dependencyGraph->RemoveResource(id);
+std::optional<ResourceManager::ClosureUnloadPlan>
+ResourceManager::BuildClosureUnloadPlan(ResourceId rootResourceId) const
+{
+    if (!m_cache || !m_dependencyGraph || rootResourceId == InvalidResourceId ||
+        !m_dependencyGraph->Contains(rootResourceId) ||
+        m_dependencyGraph->HasCircularDependency(rootResourceId))
+    {
+        return std::nullopt;
+    }
+
+    std::vector<ResourceId> closure =
+        m_dependencyGraph->GetAllDependencies(rootResourceId);
+    closure.push_back(rootResourceId);
+    std::sort(closure.begin(), closure.end());
+    closure.erase(std::unique(closure.begin(), closure.end()), closure.end());
+
+    std::unordered_set<ResourceId> closureIds(closure.begin(), closure.end());
+    std::unordered_set<ResourceId> retainedIds;
+
+    // A resource can be both a dependency of the requested root and an
+    // independently published root in its own right. Runtime material
+    // instances are the important case: their immutable parent material (and
+    // then the parent's textures) must survive instance teardown. Seed those
+    // independently-owned roots before propagating retention to descendants.
+    for (ResourceId resourceId : closure)
+    {
+        const auto published = m_publishedAssetKeys.find(resourceId);
+        if (resourceId != rootResourceId &&
+            published != m_publishedAssetKeys.end() &&
+            published->second.ownership == RootOwnershipState::Active)
+        {
+            retainedIds.insert(resourceId);
+        }
+    }
+
+    // A resource remains owned when a still-live dependent outside the
+    // candidate release set needs it. Retention propagates down the closure:
+    // if a shared material remains, its textures must remain too. Iterate to a
+    // fixed point over immutable graph snapshots before the first removal.
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (ResourceId candidate : closure)
+        {
+            if (retainedIds.contains(candidate))
+            {
+                continue;
+            }
+
+            const std::vector<ResourceId> dependents =
+                m_dependencyGraph->GetDependents(candidate);
+            for (ResourceId dependent : dependents)
+            {
+                const bool dependentWillRemain =
+                    !closureIds.contains(dependent) || retainedIds.contains(dependent);
+                // Cache residency is deliberately not ownership. Evicting an
+                // active root drops only its physical cache record while its
+                // registry, dependency graph and exact root identity remain
+                // authoritative for a later reload. Such an evicted external
+                // dependent must continue to pin this candidate, otherwise a
+                // different root can delete shared graph dependencies and
+                // leave the active root structurally broken.
+                if (dependentWillRemain &&
+                    m_dependencyGraph->Contains(dependent))
+                {
+                    retainedIds.insert(candidate);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    std::unordered_set<ResourceId> releaseIds;
+    releaseIds.reserve(closure.size());
+    for (ResourceId resourceId : closure)
+    {
+        if (!retainedIds.contains(resourceId))
+        {
+            releaseIds.insert(resourceId);
+        }
+    }
+
+    ClosureUnloadPlan plan;
+    plan.sharedRetainedResourceIds.assign(retainedIds.begin(),
+                                          retainedIds.end());
+    std::sort(plan.sharedRetainedResourceIds.begin(),
+              plan.sharedRetainedResourceIds.end());
+    plan.removalOrder.reserve(releaseIds.size());
+
+    // Remove outer consumers first. Choosing the smallest ready ResourceId
+    // gives a deterministic release order without relying on unordered-map
+    // iteration inside DependencyGraph.
+    while (!releaseIds.empty())
+    {
+        ResourceId next = InvalidResourceId;
+        for (ResourceId candidate : releaseIds)
+        {
+            bool hasReleasableDependent = false;
+            for (ResourceId dependent : m_dependencyGraph->GetDependents(candidate))
+            {
+                if (releaseIds.contains(dependent))
+                {
+                    hasReleasableDependent = true;
+                    break;
+                }
+            }
+            if (!hasReleasableDependent &&
+                (next == InvalidResourceId || candidate < next))
+            {
+                next = candidate;
+            }
+        }
+
+        // The graph was cycle-free when the plan was built. Reaching here
+        // means a concurrent graph mutation escaped manager serialization;
+        // fail closed before any irreversible cache release.
+        if (next == InvalidResourceId)
+        {
+            return std::nullopt;
+        }
+        plan.removalOrder.push_back(next);
+        releaseIds.erase(next);
+    }
+    return plan;
+}
+
+AssetResidencyReleaseResult ResourceManager::UnloadClosureNow(
+    ResourceId rootResourceId)
+{
+    // Queued lease releases enter here outside their caller's manager lock.
+    // Keep plan construction, root-ownership inspection and owner-database
+    // mutation in the same recursive critical section as immediate unloads.
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    m_closureUnloadRequestCount.fetch_add(1, std::memory_order_relaxed);
+    const std::optional<ClosureUnloadPlan> plan =
+        BuildClosureUnloadPlan(rootResourceId);
+    if (!plan)
+    {
+        m_closureUnloadRejectedCount.fetch_add(1, std::memory_order_relaxed);
+        return m_dependencyGraph && m_dependencyGraph->Contains(rootResourceId)
+                   ? AssetResidencyReleaseResult::Rejected
+                   : AssetResidencyReleaseResult::NotFound;
+    }
+
+    // Preflight every physical removal while the manager's owner lock is held.
+    // Lease acquisition and graph publication use the same lock, making the
+    // following irreversible cache/registry release a single owner-thread
+    // transaction rather than a best-effort recursive deletion.
+    if (m_assetResidencyControl)
+    {
+        for (ResourceId resourceId : plan->removalOrder)
+        {
+            if (m_assetResidencyControl->HasLiveLeaseForResource(resourceId, false))
+            {
+                m_closureUnloadRejectedCount.fetch_add(1,
+                                                        std::memory_order_relaxed);
+                return AssetResidencyReleaseResult::BlockedByLease;
+            }
+        }
+    }
+
+    // Copy the callback before entering ResourceCache's pre-commit gate. Its
+    // allocation, if any, must never follow a Render RequestRelease side
+    // effect. A missing callback deliberately preserves the established
+    // legacy lifecycle path for standalone ResourceManager use.
+    ResourceClosureRetirementCallback retirementCallback;
+    {
+        std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
+        retirementCallback = m_closureRetirementCallback;
+    }
+    const std::optional<ResourceClosureRetirementOutcome> retirementOutcome =
+        retirementCallback ? MakeClosureRetirementOutcome(rootResourceId, *plan)
+                           : std::nullopt;
+    if (retirementCallback && !retirementOutcome)
+    {
+        m_closureUnloadRejectedCount.fetch_add(1, std::memory_order_relaxed);
+        return AssetResidencyReleaseResult::RetainedFailure;
+    }
+
+    bool lifecyclePreCommitRejected = false;
+    bool lifecycleCommitted = false;
+    bool retirementFailedRetained = false;
+    const auto commitBeforeUnloadEvents =
+        [this,
+         &retirementCallback,
+         &retirementOutcome,
+         &lifecyclePreCommitRejected,
+         &lifecycleCommitted,
+         &retirementFailedRetained](
+            const ResourceCacheBatchSnapshot& resources) noexcept -> bool
+    {
+        // ResourceCache constructs this retained snapshot while it owns its
+        // mutex and after all guards have passed. Therefore this complete,
+        // value-owned lifecycle batch describes exactly the resources about
+        // to be released; no direct cache removal can interleave between
+        // staging and mutation.
+        try
+        {
+            std::vector<ResourceLifecycleEvent> beforeUnloadEvents;
+            beforeUnloadEvents.reserve(resources.size());
+            for (const auto& [resourceId, resource] : resources)
+            {
+                ResourceLifecycleEvent event;
+                event.type = ResourceLifecycleEventType::BeforeUnload;
+                event.resourceId = resourceId;
+                event.resource = resource;
+                beforeUnloadEvents.push_back(std::move(event));
+            }
+
+            // The pre-commit gate runs cache -> lifecycle, matching direct
+            // cache callbacks. All allocation precedes the first Render
+            // RequestRelease side effect.
+            std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
+            m_lifecycleEvents.reserve(m_lifecycleEvents.size() +
+                                      beforeUnloadEvents.size());
+
+            if (retirementCallback)
+            {
+                const ResourceClosureRetirementAdmission admission =
+                    retirementCallback(*retirementOutcome);
+                if (admission.code !=
+                    ResourceClosureRetirementAdmissionCode::CommitCpuClosure)
+                {
+                    retirementFailedRetained = admission.code ==
+                                               ResourceClosureRetirementAdmissionCode::FailedRetained;
+                    return false;
+                }
+                for (ResourceLifecycleEvent& event : beforeUnloadEvents)
+                {
+                    event.closureRetirementToken = admission.receipt.token;
+                }
+            }
+            static_assert(std::is_nothrow_move_constructible_v<ResourceLifecycleEvent>);
+            for (ResourceLifecycleEvent& event : beforeUnloadEvents)
+            {
+                m_lifecycleEvents.push_back(std::move(event));
+            }
+            lifecycleCommitted = true;
+            return true;
+        }
+        catch (...)
+        {
+            lifecyclePreCommitRejected = true;
+            return false;
+        }
+    };
+
+    // The cache owns the resource lifetime boundary. Its batch transaction
+    // holds the residency barrier continuously, rechecks every ownership
+    // guard, and performs no mutation if any member is now protected. Only
+    // after that succeeds may the owner databases retire their matching
+    // registry/graph records.
+    if (!m_cache->RemoveBatch(plan->removalOrder, commitBeforeUnloadEvents))
+    {
+        m_closureUnloadRejectedCount.fetch_add(1, std::memory_order_relaxed);
+        if (retirementFailedRetained)
+        {
+            return AssetResidencyReleaseResult::RetainedFailure;
+        }
+        return lifecyclePreCommitRejected
+                   ? AssetResidencyReleaseResult::Rejected
+                   : AssetResidencyReleaseResult::BlockedByLease;
+    }
+    RVX_DEBUG_ASSERT(lifecycleCommitted || plan->removalOrder.empty());
+
+    // A cache entry already evicted before RemoveBatch acquired its barrier is
+    // intentionally a no-op in that batch. Its registry/graph record still
+    // belongs to this explicitly released closure and is retired here.
+    for (ResourceId resourceId : plan->removalOrder)
+    {
+        if (m_registry)
+        {
+            m_registry->Unregister(resourceId);
+        }
+        if (m_dependencyGraph)
+        {
+            m_dependencyGraph->RemoveResource(resourceId);
+        }
+        m_publishedAssetKeys.erase(resourceId);
+    }
+
+    m_closureUnloadedResourceCount.fetch_add(plan->removalOrder.size(),
+                                               std::memory_order_relaxed);
+    m_closureRetainedResourceCount.fetch_add(
+        plan->sharedRetainedResourceIds.size(),
+                                               std::memory_order_relaxed);
+    return AssetResidencyReleaseResult::Unloaded;
+}
+
+AssetResidencyReleaseResult ResourceManager::EvictResourceNow(ResourceId id)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+    if (!m_cache || !m_cache->Contains(id))
+    {
+        return AssetResidencyReleaseResult::NotFound;
+    }
+    // Runtime material instances have no loader capable of reconstructing a
+    // cache-only eviction. Treat eviction as a complete owner-database unload
+    // so their runtime AssetKey can be reused and no registry/graph tombstone
+    // survives after the object becomes unreachable.
+    if (dynamic_cast<MaterialInstanceResource*>(m_cache->Get(id)) != nullptr)
+    {
+        return UnloadResourceNow(id);
+    }
+    return m_cache->Remove(id)
+               ? AssetResidencyReleaseResult::Unloaded
+               : AssetResidencyReleaseResult::BlockedByLease;
+}
+
+void ResourceManager::ProcessPendingLeaseUnloads()
+{
+    if (!m_assetResidencyControl || !IsOwnerThread())
+    {
+        return;
+    }
+
+    std::vector<std::pair<AssetKey, uint64>> pending;
+    {
+        std::lock_guard<std::mutex> lock(m_pendingLeaseUnloadMutex);
+        pending.swap(m_pendingLeaseUnloads);
+    }
+
+    const auto pendingLess = [](const auto& left, const auto& right)
+    {
+        const AssetKey& leftKey = left.first;
+        const AssetKey& rightKey = right.first;
+        if (leftKey.canonicalPath != rightKey.canonicalPath)
+        {
+            return leftKey.canonicalPath < rightKey.canonicalPath;
+        }
+        if (leftKey.resourceType != rightKey.resourceType)
+        {
+            return static_cast<uint32>(leftKey.resourceType) <
+                   static_cast<uint32>(rightKey.resourceType);
+        }
+        if (leftKey.importOptionsHash != rightKey.importOptionsHash)
+        {
+            return leftKey.importOptionsHash < rightKey.importOptionsHash;
+        }
+        if (leftKey.platformProfileHash != rightKey.platformProfileHash)
+        {
+            return leftKey.platformProfileHash < rightKey.platformProfileHash;
+        }
+        if (leftKey.loaderSchemaVersion != rightKey.loaderSchemaVersion)
+        {
+            return leftKey.loaderSchemaVersion < rightKey.loaderSchemaVersion;
+        }
+        return left.second < right.second;
+    };
+    std::sort(pending.begin(), pending.end(), pendingLess);
+    pending.erase(
+        std::unique(
+            pending.begin(),
+            pending.end(),
+            [](const auto& left, const auto& right)
+            {
+                return left.second == right.second && left.first == right.first;
+            }),
+        pending.end());
+
+    std::vector<std::pair<AssetKey, uint64>> retry;
+    retry.reserve(pending.size());
+    for (const auto& [assetKey, generation] : pending)
+    {
+        // Serialize reactivation/publication against authorization and the
+        // precise closure transaction. Without this owner lock, a cache hit
+        // could cancel the hold after TryBeginQueuedUnload and before
+        // UnloadClosureNow acquires m_loadMutex.
+        std::lock_guard<std::recursive_mutex> unloadLock(m_loadMutex);
+        const ResourceId rootResourceId = GetResourceIdForAssetKey(assetKey);
+        if (!m_assetResidencyControl->TryBeginQueuedUnload(
+                assetKey,
+                generation,
+                rootResourceId))
+        {
+            if (m_assetResidencyControl->IsQueuedUnload(assetKey, generation))
+            {
+                retry.emplace_back(assetKey, generation);
+            }
+            continue;
+        }
+
+        const AssetResidencyReleaseResult result =
+            UnloadClosureNow(rootResourceId);
+        bool verifiedNotFound = false;
+        if (result == AssetResidencyReleaseResult::NotFound)
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+            verifiedNotFound =
+                (!m_cache || !m_cache->Contains(rootResourceId)) &&
+                (!m_dependencyGraph ||
+                 !m_dependencyGraph->Contains(rootResourceId));
+        }
+
+        if (result != AssetResidencyReleaseResult::Unloaded &&
+            !(result == AssetResidencyReleaseResult::NotFound &&
+              verifiedNotFound))
+        {
+            if (result == AssetResidencyReleaseResult::RetainedFailure)
+            {
+                // The Scene/Render facade retained a terminal receipt with
+                // CPU ownership still intact. Do not hammer the same closure
+                // generation on every owner tick; explicit retry or a cache
+                // reactivation is required to establish a new generation.
+                m_assetResidencyControl->RetainFailedUnload(assetKey,
+                                                            generation);
+                continue;
+            }
+            // A rejected plan is not a completed unload. Preserve the exact
+            // lease request for diagnostics/retry rather than silently
+            // dropping it after TryBeginQueuedUnload cleared the flag.
+            m_assetResidencyControl->RequeueUnload(assetKey, generation);
+            retry.emplace_back(assetKey, generation);
+            continue;
+        }
+        m_assetResidencyControl->CompleteUnload(assetKey, generation);
+    }
+
+    if (!retry.empty())
+    {
+        std::lock_guard<std::mutex> lock(m_pendingLeaseUnloadMutex);
+        for (const auto& candidate : retry)
+        {
+            const bool alreadyQueued = std::any_of(
+                m_pendingLeaseUnloads.begin(),
+                m_pendingLeaseUnloads.end(),
+                [&candidate](const auto& existing)
+                {
+                    return existing.second == candidate.second &&
+                           existing.first == candidate.first;
+                });
+            if (!alreadyQueued)
+            {
+                m_pendingLeaseUnloads.push_back(candidate);
+            }
+        }
+    }
 }
 
 void ResourceManager::UnloadUnused()
@@ -1072,22 +2969,81 @@ void ResourceManager::Clear()
 {
     std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
 
-    if (m_cache) m_cache->Clear();
+    // Admission, closure planning and cache removal all serialize through
+    // m_loadMutex. Inspect lease ownership only after taking that lock, then
+    // use the cache's all-or-nothing transaction before clearing matching
+    // registry/graph/identity state.
+    if (m_assetResidencyControl &&
+        m_assetResidencyControl->GetSnapshot().activeLeases != 0)
+    {
+        return;
+    }
+    if (m_cache)
+    {
+        bool lifecyclePreCommitRejected = false;
+        bool lifecycleCommitted = false;
+        const auto commitBeforeUnloadEvents =
+            [this,
+             &lifecyclePreCommitRejected,
+             &lifecycleCommitted](
+                const ResourceCacheBatchSnapshot& resources) noexcept -> bool
+        {
+            // Clear is a complete owner-database transaction. Build every
+            // retained BeforeUnload value while the cache holds its mutex,
+            // then reserve the update-side queue before the first cache
+            // retain is released. This is the same cache -> lifecycle lock
+            // ordering used by closure removal and direct cache callbacks.
+            try
+            {
+                std::vector<ResourceLifecycleEvent> beforeUnloadEvents;
+                beforeUnloadEvents.reserve(resources.size());
+                for (const auto& [resourceId, resource] : resources)
+                {
+                    ResourceLifecycleEvent event;
+                    event.type = ResourceLifecycleEventType::BeforeUnload;
+                    event.resourceId = resourceId;
+                    event.resource = resource;
+                    beforeUnloadEvents.push_back(std::move(event));
+                }
+
+                std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
+                m_lifecycleEvents.reserve(m_lifecycleEvents.size() +
+                                          beforeUnloadEvents.size());
+                static_assert(
+                    std::is_nothrow_move_constructible_v<ResourceLifecycleEvent>);
+                for (ResourceLifecycleEvent& event : beforeUnloadEvents)
+                {
+                    m_lifecycleEvents.push_back(std::move(event));
+                }
+                lifecycleCommitted = true;
+                return true;
+            }
+            catch (...)
+            {
+                lifecyclePreCommitRejected = true;
+                return false;
+            }
+        };
+
+        if (!m_cache->ClearAllOrNothing(commitBeforeUnloadEvents))
+        {
+            // No cache, registry, graph or root-ownership mutation occurred.
+            // A failed lifecycle reservation is a fail-closed Clear rather
+            // than a best-effort resource release with missing retirement.
+            (void)lifecyclePreCommitRejected;
+            return;
+        }
+        RVX_DEBUG_ASSERT(lifecycleCommitted);
+    }
+
     if (m_registry) m_registry->Clear();
     if (m_dependencyGraph) m_dependencyGraph->Clear();
+    m_publishedAssetKeys.clear();
 }
 
 void ResourceManager::EnableHotReload(bool enable)
 {
     ConfigureHotReload(enable);
-}
-
-void ResourceManager::Unload(const AssetKey& assetKey)
-{
-    if (assetKey.IsValid())
-    {
-        Unload(GetResourceIdForAssetKey(assetKey));
-    }
 }
 
 bool ResourceManager::IsHotReloadEnabled() const
@@ -1193,6 +3149,7 @@ void ResourceManager::ProcessCompletedLoads()
     }
     JobSystem::Get().ProcessMainThreadCompletions();
     DrainPreparedLoadCompletions();
+    ProcessPendingLeaseUnloads();
     if (m_modelTextureStreaming)
     {
         m_modelTextureStreaming->DrainCompletions(
@@ -1244,14 +3201,15 @@ bool ResourceManager::CompleteModelTexturePublication(
         std::move(error));
 }
 
-void ResourceManager::CancelModelTextureStreaming(ResourceId modelId)
+ModelTextureStreamingCancellationResult
+ResourceManager::CancelModelTextureStreaming(ResourceId modelId)
 {
     if (!m_initialized || !IsOwnerThread() || !m_modelTextureStreaming ||
         modelId == InvalidResourceId)
     {
-        return;
+        return {};
     }
-    m_modelTextureStreaming->CancelModel(modelId);
+    return m_modelTextureStreaming->CancelModel(modelId);
 }
 
 ModelTextureStreamingStats
@@ -1270,6 +3228,13 @@ ResourceLoadOperationOwner ResourceManager::RequestPreparedLoad(
 {
     if (!m_acceptAsyncRequests.load(std::memory_order_acquire))
     {
+        return {};
+    }
+
+    if (!options.expectedContentIdentity.IsEmpty() &&
+        !options.expectedContentIdentity.IsValid())
+    {
+        RVX_RESOURCE_WARN("ResourceManager rejected async request '{}' with a malformed content identity", path);
         return {};
     }
 
@@ -1362,7 +3327,8 @@ ResourceLoadOperationOwner ResourceManager::RequestPreparedLoad(
                                 resourceType,
                                 options.importOptionsHash,
                                 options.platformProfileHash,
-                                options.loaderSchemaVersion);
+                                options.loaderSchemaVersion,
+                                options.expectedContentIdentity);
         if (!assetKey.IsValid())
         {
             RVX_RESOURCE_WARN("ResourceManager cannot create an async asset key for '{}'", path);
@@ -1386,12 +3352,48 @@ ResourceLoadOperationOwner ResourceManager::RequestPreparedLoad(
         {
             if (IResource* cached = m_cache->Get(rootResourceId))
             {
+                const auto publishedRoot = m_publishedAssetKeys.find(rootResourceId);
+                if (publishedRoot == m_publishedAssetKeys.end() ||
+                    publishedRoot->second.assetKey != assetKey ||
+                    cached->GetId() != rootResourceId ||
+                    cached->GetType() != assetKey.resourceType)
+                {
+                    RVX_RESOURCE_ERROR(
+                        "ResourceManager rejected cached async resource {} because its structured root identity does not match the request",
+                        rootResourceId);
+                    return {};
+                }
+                if (!assetKey.expectedContentIdentity.IsEmpty())
+                {
+                    const ResourceContentVerificationReceipt& receipt =
+                        cached->GetContentVerificationReceipt();
+                    if (!receipt.IsVerified() ||
+                        receipt.expected != assetKey.expectedContentIdentity ||
+                        receipt.observed != assetKey.expectedContentIdentity)
+                    {
+                        RVX_RESOURCE_ERROR(
+                            "ResourceManager rejected cached async resource {} because its content verification receipt is not exact",
+                            rootResourceId);
+                        return {};
+                    }
+                }
+                if (!ReactivatePublishedRoot(rootResourceId, assetKey))
+                {
+                    RVX_RESOURCE_ERROR(
+                        "ResourceManager rejected cached async resource {} because its root ownership claim could not be reactivated",
+                        rootResourceId);
+                    return {};
+                }
                 ResourceLoadOperationOwner cachedOperation =
                     ResourceLoadOperationOwner::Create(assetKey, std::move(options));
-                if (cachedOperation && cachedOperation.BeginLoading() &&
-                    cachedOperation.BeginAwaitingPublish())
+                if (!cachedOperation || !cachedOperation.BeginLoading() ||
+                    !cachedOperation.BeginAwaitingPublish() ||
+                    !cachedOperation.CompleteReady(ResourceHandle<IResource>(cached)))
                 {
-                    cachedOperation.CompleteReady(ResourceHandle<IResource>(cached));
+                    RVX_RESOURCE_ERROR(
+                        "ResourceManager rejected cached async resource {} because its ready operation could not be completed",
+                        rootResourceId);
+                    return {};
                 }
                 return cachedOperation;
             }
@@ -1575,49 +3577,60 @@ void ResourceManager::DrainPreparedLoadCompletions(bool shutdownCancellation)
     for (PreparedLoadCompletion& completion : completions)
     {
         m_pendingAsyncCompletionCount.fetch_sub(1, std::memory_order_relaxed);
-        if (shutdownCancellation || completion.cancelled ||
-            completion.error.code == ResourceLoadErrorCode::Cancelled ||
-            completion.operation.IsCancellationRequested())
+        try
         {
-            completion.operation.CompleteCancelled(
-                shutdownCancellation ? "ResourceManager is shutting down."
-                                      : "All resource-load subscribers cancelled their request.");
-            RemoveInFlightLoad(completion.assetKey, completion.operation.GetRequestId());
-            continue;
-        }
-
-        if (completion.error.HasError())
-        {
-            completion.operation.CompleteFailed(std::move(completion.error));
-            RemoveInFlightLoad(completion.assetKey, completion.operation.GetRequestId());
-            continue;
-        }
-
-        if (!completion.operation.BeginOwnerPublication())
-        {
-            completion.operation.CompleteCancelled(
-                "Resource publication was cancelled before owner commit.");
-            RemoveInFlightLoad(completion.assetKey, completion.operation.GetRequestId());
-            continue;
-        }
-
-        ResourceLoadError publishError;
-        if (PublishPreparedBundle(completion.resolution,
-                                  completion.requestedPath,
-                                  completion.assetKey,
-                                  completion.bundle,
-                                  publishError))
-        {
-            completion.operation.CompleteReady(completion.bundle.GetRoot());
-        }
-        else
-        {
-            if (!publishError.HasError())
+            if (shutdownCancellation || completion.cancelled ||
+                completion.error.code == ResourceLoadErrorCode::Cancelled ||
+                completion.operation.IsCancellationRequested())
             {
-                publishError = {ResourceLoadErrorCode::PublishFailure,
-                                "Prepared resource publication failed without a diagnostic."};
+                m_cancelledLoadCount.fetch_add(1, std::memory_order_relaxed);
+                completion.operation.CompleteCancelled(
+                    shutdownCancellation ? "ResourceManager is shutting down."
+                                          : "All resource-load subscribers cancelled their request.");
             }
-            completion.operation.CompleteFailed(std::move(publishError));
+            else if (completion.error.HasError())
+            {
+                completion.operation.CompleteFailed(std::move(completion.error));
+            }
+            else if (!completion.operation.BeginOwnerPublication())
+            {
+                completion.operation.CompleteCancelled(
+                    "Resource publication was cancelled before owner commit.");
+            }
+            else
+            {
+                ResourceLoadError publishError;
+                if (PublishPreparedBundle(completion.resolution,
+                                          completion.requestedPath,
+                                          completion.assetKey,
+                                          completion.bundle,
+                                          publishError))
+                {
+                    completion.operation.CompleteReady(completion.bundle.GetRoot());
+                }
+                else
+                {
+                    if (!publishError.HasError())
+                    {
+                        publishError = {ResourceLoadErrorCode::PublishFailure,
+                                        "Prepared resource publication failed without a diagnostic."};
+                    }
+                    completion.operation.CompleteFailed(std::move(publishError));
+                }
+            }
+        }
+        catch (const std::exception& error)
+        {
+            RVX_RESOURCE_ERROR("Prepared resource owner publication failed: {}", error.what());
+            completion.operation.CompleteFailed(
+                {ResourceLoadErrorCode::PublishFailure, error.what()});
+        }
+        catch (...)
+        {
+            RVX_RESOURCE_ERROR("Prepared resource owner publication failed with an unknown exception");
+            completion.operation.CompleteFailed(
+                {ResourceLoadErrorCode::PublishFailure,
+                 "An unknown exception interrupted owner-thread publication."});
         }
         RemoveInFlightLoad(completion.assetKey, completion.operation.GetRequestId());
     }
@@ -1695,27 +3708,55 @@ bool ResourceManager::PublishPreparedBundle(const ResourcePathResolution& resolu
                                             PreparedResourceBundle& bundle,
                                             ResourceLoadError& outError)
 {
-    Diagnostics::TraceSpan publishSpan = Diagnostics::BeginTraceSpan(
-        m_config.startupTraceContext,
-        "CPUPublish",
-        {{"requestedPath", requestedPath},
-         {"resourceType", GetResourceTypeName(assetKey.resourceType)}});
+    Diagnostics::TraceSpan publishSpan;
+    try
+    {
+        publishSpan = Diagnostics::BeginTraceSpan(
+            m_config.startupTraceContext,
+            "CPUPublish",
+            {{"requestedPath", requestedPath},
+             {"resourceType", GetResourceTypeName(assetKey.resourceType)}});
+    }
+    catch (const std::exception& error)
+    {
+        outError = {ResourceLoadErrorCode::PublishFailure, error.what()};
+        return false;
+    }
+    catch (...)
+    {
+        outError = {ResourceLoadErrorCode::PublishFailure,
+                    "Could not begin prepared resource publication tracing."};
+        return false;
+    }
+
     // Publication is short, owner-thread work, but it must be serialized with
     // cache/in-flight admission so concurrent RequestAsync callers cannot miss
     // both the operation and its newly published cache object.
     std::unique_lock<std::recursive_mutex> publicationLock(m_loadMutex);
-    if (!m_initialized || !ValidatePreparedBundle(bundle, outError))
+    bool publicationCommitted = false;
+    try
     {
-        return false;
-    }
+        if (!m_initialized || !ValidatePreparedBundle(bundle, outError))
+        {
+            return false;
+        }
 
-    ResourceHandle<IResource> root = bundle.GetRoot();
-    if (!root || root->GetType() != assetKey.resourceType)
-    {
-        outError = {ResourceLoadErrorCode::PublishFailure,
-                    "Prepared bundle root does not match the requested resource type."};
-        return false;
-    }
+        ResourceContentVerificationReceipt contentVerificationReceipt;
+        if (!VerifyPreparedContentIdentity(assetKey,
+                                           bundle,
+                                           contentVerificationReceipt,
+                                           outError))
+        {
+            return false;
+        }
+
+        ResourceHandle<IResource> root = bundle.GetRoot();
+        if (!root || root->GetType() != assetKey.resourceType)
+        {
+            outError = {ResourceLoadErrorCode::PublishFailure,
+                        "Prepared bundle root does not match the requested resource type."};
+            return false;
+        }
 
     // The AssetKey is the authority for a coalesced root identity.  A loader
     // may use an absolute source path internally, but aliases must resolve to
@@ -1750,7 +3791,47 @@ bool ResourceManager::PublishPreparedBundle(const ResourcePathResolution& resolu
     for (const PreparedResourceEntry& entry : bundle.GetEntries())
     {
         IResource* prepared = entry.isRoot ? root.Get() : entry.resource.Get();
-        if (IResource* cached = m_cache->Get(prepared->GetId()))
+        IResource* cached = m_cache->Get(prepared->GetId());
+        const auto publishedRoot = m_publishedAssetKeys.find(prepared->GetId());
+        if (!entry.isRoot && publishedRoot != m_publishedAssetKeys.end())
+        {
+            if (cached == nullptr)
+            {
+                outError = {ResourceLoadErrorCode::PublishFailure,
+                            "A prepared dependency collides with a reserved published root whose cache entry is absent."};
+                return false;
+            }
+
+            const std::optional<ResourceMetadata> metadata =
+                m_registry->FindById(prepared->GetId());
+            if (cached->GetId() != prepared->GetId() ||
+                cached->GetType() != publishedRoot->second.assetKey.resourceType ||
+                !metadata || metadata->id != prepared->GetId() ||
+                metadata->type != publishedRoot->second.assetKey.resourceType ||
+                !m_dependencyGraph->Contains(prepared->GetId()))
+            {
+                outError = {ResourceLoadErrorCode::PublishFailure,
+                            "A prepared dependency collides with a published root whose structured identity is incomplete."};
+                return false;
+            }
+
+            const ResourceContentIdentity& expectedIdentity =
+                publishedRoot->second.assetKey.expectedContentIdentity;
+            if (!expectedIdentity.IsEmpty())
+            {
+                const ResourceContentVerificationReceipt& receipt =
+                    cached->GetContentVerificationReceipt();
+                if (!receipt.IsVerified() || receipt.expected != expectedIdentity ||
+                    receipt.observed != expectedIdentity)
+                {
+                    outError = {ResourceLoadErrorCode::PublishFailure,
+                                "A prepared dependency collides with a published root lacking an exact verified content receipt."};
+                    return false;
+                }
+            }
+        }
+
+        if (cached != nullptr)
         {
             if (cached->GetType() != prepared->GetType())
             {
@@ -2040,8 +4121,73 @@ bool ResourceManager::PublishPreparedBundle(const ResourcePathResolution& resolu
         }
     };
 
+    // Exact identity and root ownership state form one owner-side publication
+    // transaction. Keeping the identity after a later explicit release is
+    // intentional, but a new publication must never become cache-visible if
+    // recording or reactivating its root claim fails.
+    const ResourceId rootResourceId = root.GetId();
+    bool rootIdentityInserted = false;
+    bool rootOwnershipChanged = false;
+    RootOwnershipState previousRootOwnership = RootOwnershipState::Active;
     try
     {
+        const auto existing = m_publishedAssetKeys.find(rootResourceId);
+        if (existing != m_publishedAssetKeys.end() &&
+            existing->second.assetKey != assetKey)
+        {
+            outError = {ResourceLoadErrorCode::PublishFailure,
+                        "Prepared root collides with another AssetKey identity."};
+            return false;
+        }
+        m_publishedAssetKeys.reserve(m_publishedAssetKeys.size() + 1);
+    }
+    catch (const std::exception& error)
+    {
+        outError = {ResourceLoadErrorCode::PublishFailure, error.what()};
+        return false;
+    }
+    catch (...)
+    {
+        outError = {ResourceLoadErrorCode::PublishFailure,
+                    "Could not reserve prepared root ownership state."};
+        return false;
+    }
+
+    const auto rollbackRootOwnership = [&]() noexcept
+    {
+        if (rootIdentityInserted)
+        {
+            m_publishedAssetKeys.erase(rootResourceId);
+        }
+        else if (rootOwnershipChanged)
+        {
+            const auto found = m_publishedAssetKeys.find(rootResourceId);
+            if (found != m_publishedAssetKeys.end())
+            {
+                found->second.ownership = previousRootOwnership;
+            }
+        }
+    };
+
+    try
+    {
+        const auto [identity, insertedIdentity] =
+            m_publishedAssetKeys.emplace(
+                rootResourceId,
+                PublishedRootRecord{assetKey, RootOwnershipState::Active});
+        if (!insertedIdentity && identity->second.assetKey != assetKey)
+        {
+            throw std::runtime_error("Prepared root AssetKey identity changed during publication.");
+        }
+        rootIdentityInserted = insertedIdentity;
+        if (!insertedIdentity)
+        {
+            previousRootOwnership = identity->second.ownership;
+            rootOwnershipChanged =
+                previousRootOwnership != RootOwnershipState::Active;
+            identity->second.ownership = RootOwnershipState::Active;
+        }
+
         std::vector<IResource*> cacheBatch;
         cacheBatch.reserve(staged.size());
         for (StagedPublication& publication : staged)
@@ -2064,23 +4210,54 @@ bool ResourceManager::PublishPreparedBundle(const ResourcePathResolution& resolu
         if (!m_cache->StorePreparedBatch(cacheBatch))
         {
             rollbackMetadata();
+            rollbackRootOwnership();
             outError = {ResourceLoadErrorCode::PublishFailure,
                         "Resource cache rejected the prepared publication batch."};
             return false;
         }
+
+        // The receipt becomes visible only after every publication owner has
+        // committed successfully. A failed identity check above therefore
+        // cannot leave a partially marked root in the registry or cache.
+        root->SetContentVerificationReceipt(std::move(contentVerificationReceipt));
+        // StorePreparedBatch() plus receipt installation is the owner-side
+        // commit point. No later observer or tracing error may fail the load.
+        publicationCommitted = true;
     }
     catch (const std::exception& error)
     {
         rollbackMetadata();
+        rollbackRootOwnership();
         outError = {ResourceLoadErrorCode::PublishFailure, error.what()};
         return false;
     }
     catch (...)
     {
         rollbackMetadata();
+        rollbackRootOwnership();
         outError = {ResourceLoadErrorCode::PublishFailure,
                     "An unknown error interrupted the prepared resource transaction."};
         return false;
+    }
+
+    if (!publicationCommitted)
+    {
+        outError = {ResourceLoadErrorCode::PublishFailure,
+                    "Prepared resource publication did not reach its commit point."};
+        return false;
+    }
+
+    if (m_assetResidencyControl)
+    {
+        try
+        {
+            m_assetResidencyControl->CancelExactUnload(assetKey);
+        }
+        catch (...)
+        {
+            RVX_RESOURCE_ERROR("Committed resource {} could not cancel a stale residency unload",
+                               root.GetId());
+        }
     }
 
     // No rollback-capable work remains. Release admission serialization before
@@ -2155,9 +4332,45 @@ bool ResourceManager::PublishPreparedBundle(const ResourcePathResolution& resolu
         RVX_RESOURCE_ERROR("Committed resource {} post-publish observer failed with an unknown exception",
                            root.GetId());
     }
-    publishSpan.SetAttribute("resourceId", root.GetId());
-    publishSpan.SetAttribute("result", "published");
+    try
+    {
+        publishSpan.SetAttribute("resourceId", root.GetId());
+        publishSpan.SetAttribute("result", "published");
+    }
+    catch (const std::exception& error)
+    {
+        RVX_RESOURCE_ERROR("Committed resource {} publication trace failed: {}",
+                           root.GetId(),
+                           error.what());
+    }
+    catch (...)
+    {
+        RVX_RESOURCE_ERROR("Committed resource {} publication trace failed with an unknown exception",
+                           root.GetId());
+    }
     return true;
+    }
+    catch (const std::exception& error)
+    {
+        if (publicationCommitted)
+        {
+            RVX_RESOURCE_ERROR("Committed resource publication observer failed: {}", error.what());
+            return true;
+        }
+        outError = {ResourceLoadErrorCode::PublishFailure, error.what()};
+        return false;
+    }
+    catch (...)
+    {
+        if (publicationCommitted)
+        {
+            RVX_RESOURCE_ERROR("Committed resource publication observer failed with an unknown exception");
+            return true;
+        }
+        outError = {ResourceLoadErrorCode::PublishFailure,
+                    "An unknown exception interrupted prepared resource publication."};
+        return false;
+    }
 }
 
 void ResourceManager::RemoveInFlightLoad(const AssetKey& assetKey,
@@ -2181,6 +4394,13 @@ void ResourceManager::SetLifecycleEventCallback(
 {
     std::lock_guard<std::mutex> lock(m_lifecycleMutex);
     m_lifecycleEventCallback = std::move(callback);
+}
+
+void ResourceManager::SetClosureRetirementCallback(
+    ResourceClosureRetirementCallback callback)
+{
+    std::lock_guard<std::mutex> lock(m_lifecycleMutex);
+    m_closureRetirementCallback = std::move(callback);
 }
 
 void ResourceManager::QueueLifecycleEvent(ResourceLifecycleEventType type,
@@ -2226,12 +4446,40 @@ void ResourceManager::DrainLifecycleEvents()
         }
         if (callback)
         {
-            callback(event);
+            try
+            {
+                callback(event);
+            }
+            catch (const std::exception& error)
+            {
+                RVX_RESOURCE_ERROR("Resource lifecycle observer failed for {}: {}",
+                                   event.resourceId,
+                                   error.what());
+            }
+            catch (...)
+            {
+                RVX_RESOURCE_ERROR("Resource lifecycle observer failed for {} with an unknown exception",
+                                   event.resourceId);
+            }
         }
         if (event.type == ResourceLifecycleEventType::Reloaded &&
             m_reloadCallback)
         {
-            m_reloadCallback(event.resourceId, event.resource.Get());
+            try
+            {
+                m_reloadCallback(event.resourceId, event.resource.Get());
+            }
+            catch (const std::exception& error)
+            {
+                RVX_RESOURCE_ERROR("Resource reload observer failed for {}: {}",
+                                   event.resourceId,
+                                   error.what());
+            }
+            catch (...)
+            {
+                RVX_RESOURCE_ERROR("Resource reload observer failed for {} with an unknown exception",
+                                   event.resourceId);
+            }
         }
     }
 }
@@ -2269,6 +4517,72 @@ ResourceManager::Stats ResourceManager::GetStats() const
     return stats;
 }
 
+ResourceDiagnosticsSnapshot ResourceManager::GetDiagnosticsSnapshot() const
+{
+    ResourceDiagnosticsSnapshot snapshot;
+    {
+        std::lock_guard<std::recursive_mutex> loadLock(m_loadMutex);
+        snapshot.activeOperations = m_inFlightLoads.size();
+        for (const auto& [assetKey, operation] : m_inFlightLoads)
+        {
+            (void)assetKey;
+            snapshot.activeSubscribers += operation.GetSnapshot().subscriberCount;
+        }
+
+        if (m_cache)
+        {
+            const ResourceCache::Stats cache = m_cache->GetStats();
+            snapshot.cacheEntryCount = cache.totalResources;
+            snapshot.cacheCPUBytes = cache.memoryUsage;
+            snapshot.cacheGPUBytes = cache.gpuMemoryUsage;
+            snapshot.cacheHits = cache.hitCount;
+            snapshot.cacheMisses = cache.missCount;
+        }
+    }
+
+    snapshot.pendingAsyncJobs =
+        m_pendingAsyncJobCount.load(std::memory_order_relaxed);
+    snapshot.pendingAsyncCompletions =
+        m_pendingAsyncCompletionCount.load(std::memory_order_relaxed);
+    snapshot.cancelledLoadCount =
+        m_cancelledLoadCount.load(std::memory_order_relaxed);
+    snapshot.closureUnloadRequestCount =
+        m_closureUnloadRequestCount.load(std::memory_order_relaxed);
+    snapshot.closureUnloadedResourceCount =
+        m_closureUnloadedResourceCount.load(std::memory_order_relaxed);
+    snapshot.closureRetainedResourceCount =
+        m_closureRetainedResourceCount.load(std::memory_order_relaxed);
+    snapshot.closureUnloadRejectedCount =
+        m_closureUnloadRejectedCount.load(std::memory_order_relaxed);
+
+    if (m_modelTextureStreaming)
+    {
+        const ModelTextureStreamingStats streaming =
+            m_modelTextureStreaming->GetStats();
+        snapshot.decodeQueuedCount = streaming.queuedDecodes;
+        snapshot.decodeActiveCount = streaming.activeDecodes;
+        snapshot.decodeCompletedCount = streaming.completedDecodes;
+        snapshot.decodeFailedCount = streaming.failedDecodes;
+        snapshot.decodeCancelledCount = streaming.cancelledDecodes;
+        snapshot.decodeCompletedBytes = streaming.completedDecodedBytes;
+        snapshot.decodeReservedBytes = streaming.reservedDecodedBytes;
+        snapshot.decodePeakReservedBytes = streaming.peakReservedDecodedBytes;
+        snapshot.decodeBudgetBytes = streaming.decodedByteBudget;
+        snapshot.pendingPublicationCount = streaming.pendingPublications;
+    }
+
+    if (m_assetResidencyControl)
+    {
+        const AssetResidencyLeaseControl::Snapshot residency =
+            m_assetResidencyControl->GetSnapshot();
+        snapshot.activeLeaseCount = residency.activeLeases;
+        snapshot.protectedResourceCount = residency.protectedResources;
+        snapshot.queuedLeaseUnloadCount = residency.queuedUnloads;
+        snapshot.leaseBlockedEvictionCount = residency.blockedEvictions;
+    }
+    return snapshot;
+}
+
 ResourceType ResourceManager::GetTypeFromExtension(const std::string& extension)
 {
     std::string ext = extension;
@@ -2296,7 +4610,7 @@ ResourceType ResourceManager::GetTypeFromExtension(const std::string& extension)
         return ResourceType::Shader;
 
     // Animation
-    if (ext == ".anim" || ext == ".animation")
+    if (ext == ".anim" || ext == ".animation" || ext == ".rvxanim")
         return ResourceType::Animation;
 
     // Audio

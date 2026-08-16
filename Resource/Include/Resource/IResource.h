@@ -8,6 +8,7 @@
 #include "Core/AssetResource.h"
 #include "Core/RefCounted.h"
 #include "Core/Types.h"
+#include "Resource/ResourceContentIdentity.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -92,6 +93,13 @@ namespace RVX::Resource
         std::string_view GetAssetResourceName() const override { return GetName(); }
         bool IsAssetResourceLoaded() const override { return IsLoaded(); }
 
+        /** @brief Read-only owner-thread receipt for prepared content verification. */
+        [[nodiscard]] const ResourceContentVerificationReceipt&
+        GetContentVerificationReceipt() const noexcept
+        {
+            return m_contentVerificationReceipt;
+        }
+
         // =====================================================================
         // Type
         // =====================================================================
@@ -164,6 +172,9 @@ namespace RVX::Resource
         /** @brief Invoke the on-loaded observer after publication is visible. */
         void NotifyLoadedObserver();
 
+        /** @brief Called only by ResourceManager after its publication transaction commits. */
+        void SetContentVerificationReceipt(ResourceContentVerificationReceipt receipt) noexcept;
+
         friend class ResourceManager;
         friend class ResourceCache;
         friend class ResourceLoader;
@@ -171,6 +182,7 @@ namespace RVX::Resource
         friend class MeshLoader;
         friend class ShaderLoader;
         friend class ModelLoader;
+        friend class AnimationLoader;
         friend class DefaultResources;
 
     private:
@@ -183,6 +195,7 @@ namespace RVX::Resource
 
         LoadCallback m_onLoaded;
         LoadCallback m_onUnloaded;
+        ResourceContentVerificationReceipt m_contentVerificationReceipt;
     };
 
     // =========================================================================

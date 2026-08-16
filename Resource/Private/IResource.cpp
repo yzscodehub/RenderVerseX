@@ -1,5 +1,6 @@
 #include "Resource/IResource.h"
 #include <functional>
+#include <utility>
 
 namespace RVX::Resource
 {
@@ -64,6 +65,12 @@ void IResource::NotifyLoadedObserver()
     {
         m_onLoaded(this);
     }
+}
+
+void IResource::SetContentVerificationReceipt(
+    ResourceContentVerificationReceipt receipt) noexcept
+{
+    m_contentVerificationReceipt = std::move(receipt);
 }
 
 void IResource::NotifyUnloaded()

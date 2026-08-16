@@ -1,7 +1,10 @@
 #include "Resource/Loader/ModelLoader.h"
 
 #include "Core/Log.h"
+#include "Geometry/Asset/VertexAttribute.h"
+#include "Resource/Cooked/CookedAnimationArtifact.h"
 #include "Resource/Cooked/CookedMeshArtifactReader.h"
+#include "Resource/Types/AnimationResource.h"
 
 #include <algorithm>
 #include <bit>
@@ -9,6 +12,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <string_view>
 
 namespace RVX::Resource
 {
@@ -75,9 +79,37 @@ namespace
         return extension == ".rva";
     }
 
+    bool ReadCookedAnimation(const std::filesystem::path& path,
+                             CookedAnimationArtifact& outArtifact,
+                             std::string& outError)
+    {
+        constexpr uint64 MaxAnimationArtifactBytes = 256ull * 1024ull * 1024ull;
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file.is_open())
+        {
+            outError = "Cannot open contained animation artifact: " + path.string();
+            return false;
+        }
+        const std::streamsize byteCount = file.tellg();
+        if (byteCount <= 0 || static_cast<uint64>(byteCount) > MaxAnimationArtifactBytes)
+        {
+            outError = "Contained animation artifact byte count is invalid: " + path.string();
+            return false;
+        }
+        file.seekg(0, std::ios::beg);
+        std::vector<uint8> bytes(static_cast<size_t>(byteCount));
+        if (!file.read(reinterpret_cast<char*>(bytes.data()), byteCount))
+        {
+            outError = "Failed to read contained animation artifact: " + path.string();
+            return false;
+        }
+        return DeserializeCookedAnimationArtifact(bytes, outArtifact, outError);
+    }
+
     bool ResolveContainedCookedDependency(
         const std::filesystem::path& productDirectory,
         const std::string& relativeValue,
+        std::string_view expectedExtension,
         std::filesystem::path& outPath)
     {
         const std::filesystem::path relativePath(relativeValue);
@@ -116,11 +148,87 @@ namespace
 
         std::string extension = canonicalCandidate.extension().string();
         std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
-        if (extension != ".rva")
+        if (extension != expectedExtension)
             return false;
 
         outPath = canonicalCandidate;
         return true;
+    }
+
+    bool HasValidSkinningAttributes(const Mesh& mesh)
+    {
+        const VertexAttribute* boneIndices =
+            mesh.GetAttribute(VertexBufferNames::BoneIndices);
+        const VertexAttribute* boneWeights =
+            mesh.GetAttribute(VertexBufferNames::BoneWeights);
+        const size_t vertexCount = mesh.GetVertexCount();
+        return vertexCount != 0 && boneIndices && boneWeights &&
+               boneIndices->GetVertexCount() == vertexCount &&
+               boneWeights->GetVertexCount() == vertexCount;
+    }
+
+    bool ValidateSkinnedNodeMeshes(const ModelResource& model,
+                                   std::string& outError)
+    {
+        const Node::Ptr root = model.GetRootNode();
+        if (!root || !model.GetSkeleton())
+        {
+            outError = "Skinned cooked model is missing its canonical skeleton.";
+            return false;
+        }
+
+        bool valid = true;
+        root->TraverseDepthFirst(
+            [&](Node* node)
+            {
+                if (!valid || !node || !node->HasSkin())
+                    return;
+
+                std::vector<int> fallbackMeshIndices;
+                const std::vector<int>* meshIndices = &node->GetMeshIndices();
+                if (meshIndices->empty() && node->GetMeshIndex() >= 0)
+                {
+                    fallbackMeshIndices.push_back(node->GetMeshIndex());
+                    meshIndices = &fallbackMeshIndices;
+                }
+                if (meshIndices->empty())
+                {
+                    valid = false;
+                    return;
+                }
+                for (const int meshIndex : *meshIndices)
+                {
+                    if (meshIndex < 0 ||
+                        meshIndex >= static_cast<int>(model.GetMeshCount()))
+                    {
+                        valid = false;
+                        return;
+                    }
+                    const ResourceHandle<MeshResource> meshResource =
+                        model.GetMesh(static_cast<size_t>(meshIndex));
+                    if (!meshResource)
+                    {
+                        valid = false;
+                        return;
+                    }
+                    for (size_t lod = 0;
+                         lod < meshResource->GetLODCount();
+                         ++lod)
+                    {
+                        const Mesh::Ptr mesh = meshResource->GetLODMesh(lod);
+                        if (!mesh || !HasValidSkinningAttributes(*mesh))
+                        {
+                            valid = false;
+                            return;
+                        }
+                    }
+                }
+            });
+        if (!valid)
+        {
+            outError = "Skinned cooked model mesh is missing valid bone_indices or bone_weights data.";
+        }
+        return valid;
     }
 } // namespace
 
@@ -265,6 +373,11 @@ IResource* ModelLoader::Load(const std::string& path)
             material->NotifyLoaded();
         }
     }
+    if (const AnimationHandle animation = model->GetAnimationResource();
+        animation && !animation->IsLoaded())
+    {
+        animation->NotifyLoaded();
+    }
     model->NotifyLoaded();
     return model;
 }
@@ -282,6 +395,7 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
     Diagnostics::TraceSpan importSpan = Diagnostics::BeginTraceSpan(
         context.traceContext, "ModelIO", {{"path", context.resolvedPath}});
     ModelResource* model = nullptr;
+    ResourceContentIdentity observedContentIdentity;
     if (IsCookedModelPath(context.resolvedPath))
     {
         CookedModelArtifact artifact;
@@ -292,7 +406,10 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
             outError = {ResourceLoadErrorCode::LoaderFailure, cookedError};
             return false;
         }
-        importSpan.SetAttribute("format", "RVX_MODEL_PREBAKE_V1");
+        importSpan.SetAttribute("format",
+                                artifact.animationArtifactPath.empty()
+                                    ? "RVX_MODEL_PREBAKE_V1"
+                                    : "RVX_MODEL_PREBAKE_V2");
         importSpan.SetAttribute("result", "prepared");
         importSpan.End();
 
@@ -335,6 +452,7 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
             outError = {ResourceLoadErrorCode::LoaderFailure, imported.errorMessage};
             return false;
         }
+        observedContentIdentity = imported.observedContentIdentity;
         importSpan.SetAttribute("result", "prepared");
         importSpan.End();
 
@@ -365,7 +483,19 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
     model->SetId(context.rootResourceId);
     model->SetPath(context.requestedPath);
     model->SetName(std::filesystem::path(context.requestedPath).stem().string());
-    return BuildPreparedBundle(model, outBundle, outError);
+    if (!BuildPreparedBundle(model, outBundle, outError))
+    {
+        return false;
+    }
+
+    if (observedContentIdentity.IsValid() &&
+        !outBundle.SetObservedContentIdentity(std::move(observedContentIdentity)))
+    {
+        outError = {ResourceLoadErrorCode::LoaderFailure,
+                    "Model loader could not attach its observed source content identity."};
+        return false;
+    }
+    return true;
 }
 
 bool ModelLoader::BuildPreparedBundle(ModelResource* model,
@@ -373,6 +503,14 @@ bool ModelLoader::BuildPreparedBundle(ModelResource* model,
                                       ResourceLoadError& outError)
 {
     ResourceHandle<IResource> preparedModel(model);
+    if (const AnimationHandle animation = model->GetAnimationResource();
+        animation && !outBundle.Contains(animation.GetId()) &&
+        !outBundle.AddDependency(ResourceHandle<IResource>(animation)))
+    {
+        outError = {ResourceLoadErrorCode::LoaderFailure,
+                    "Model loader produced an invalid or duplicate animation dependency."};
+        return false;
+    }
     for (const ResourceHandle<MeshResource>& mesh : model->GetMeshes())
     {
         if (!mesh || (!outBundle.Contains(mesh.GetId()) &&
@@ -442,6 +580,7 @@ ModelResource* ModelLoader::CreateCookedModelResource(
     std::filesystem::path meshPath;
     if (!ResolveContainedCookedDependency(modelDirectory,
                                           artifact.meshArtifactPath,
+                                          ".rva",
                                           meshPath))
     {
         outError = "Cooked model mesh dependency must resolve to a contained .rva product";
@@ -451,6 +590,42 @@ ModelResource* ModelLoader::CreateCookedModelResource(
     if (!CookedMeshArtifactReader::ReadFile(meshPath.string(), cookedMeshes, outError))
         return nullptr;
 
+    AnimationHandle animation;
+    if (!artifact.animationArtifactPath.empty())
+    {
+        std::filesystem::path animationPath;
+        if (!ResolveContainedCookedDependency(modelDirectory,
+                                              artifact.animationArtifactPath,
+                                              ".rvxanim",
+                                              animationPath))
+        {
+            outError = "Cooked model animation dependency must resolve to a contained .rvxanim product";
+            return nullptr;
+        }
+
+        CookedAnimationArtifact animationArtifact;
+        if (!ReadCookedAnimation(animationPath, animationArtifact, outError))
+            return nullptr;
+        if (animationArtifact.sourcePath != artifact.sourcePath)
+        {
+            outError = "Cooked model and contained animation source paths do not match";
+            return nullptr;
+        }
+
+        auto animationResource = std::make_unique<AnimationResource>();
+        const std::string animationIdentityPath = resourceIdentityPath + "#animation";
+        animationResource->SetId(GenerateResourceId(animationIdentityPath));
+        animationResource->SetPath(animationIdentityPath);
+        animationResource->SetName(animationPath.stem().string());
+        if (!animationResource->SetData(animationArtifact.skeleton,
+                                        animationArtifact.clips))
+        {
+            outError = "Contained animation artifact could not be admitted by AnimationResource";
+            return nullptr;
+        }
+        animation = AnimationHandle(animationResource.release());
+    }
+
     std::vector<ResourceHandle<TextureResource>> textures;
     textures.reserve(artifact.textures.size());
     for (TextureReference& reference : artifact.textures)
@@ -458,6 +633,7 @@ ModelResource* ModelLoader::CreateCookedModelResource(
         std::filesystem::path resolvedTexturePath;
         if (!ResolveContainedCookedDependency(modelDirectory,
                                               reference.path,
+                                              ".rva",
                                               resolvedTexturePath))
         {
             outError = "Cooked model texture dependency must resolve to a contained .rva product";
@@ -523,6 +699,7 @@ ModelResource* ModelLoader::CreateCookedModelResource(
     }
     model->SetMaterials(std::move(materials));
     model->SetRootNode(std::move(artifact.rootNode));
+    model->SetAnimationResource(std::move(animation));
 
     bool hierarchyValid = model->GetRootNode() != nullptr;
     if (hierarchyValid)
@@ -532,6 +709,21 @@ ModelResource* ModelLoader::CreateCookedModelResource(
             {
                 if (!node || node->GetMeshIndex() < -1 ||
                     node->GetMeshIndex() >= static_cast<int>(model->GetMeshCount()))
+                {
+                    hierarchyValid = false;
+                    return;
+                }
+                for (const int meshIndex : node->GetMeshIndices())
+                {
+                    if (meshIndex < 0 ||
+                        meshIndex >= static_cast<int>(model->GetMeshCount()))
+                    {
+                        hierarchyValid = false;
+                        return;
+                    }
+                }
+                if (node->GetSkinIndex() < -1 || node->GetSkinIndex() > 0 ||
+                    (node->HasSkin() && !model->GetAnimationResource()))
                 {
                     hierarchyValid = false;
                     return;
@@ -549,7 +741,11 @@ ModelResource* ModelLoader::CreateCookedModelResource(
     }
     if (!hierarchyValid)
     {
-        outError = "Cooked model hierarchy references an invalid mesh or material index";
+        outError = "Cooked model hierarchy references invalid mesh, material, or skin data";
+        return nullptr;
+    }
+    if (model->GetAnimationResource() && !ValidateSkinnedNodeMeshes(*model, outError))
+    {
         return nullptr;
     }
     return model.release();
@@ -607,6 +803,35 @@ ModelResource* ModelLoader::CreateModelResource(const std::string& resourceIdent
     if (importResult.model)
     {
         model->SetRootNode(importResult.model->GetRootNode());
+    }
+    const bool hasSkeletalPayload = importResult.skeleton ||
+                                    !importResult.animationClips.empty();
+    if (hasSkeletalPayload)
+    {
+        if (!importResult.skeleton || importResult.animationClips.empty())
+        {
+            delete model;
+            return nullptr;
+        }
+
+        auto animation = std::make_unique<AnimationResource>();
+        const std::string animationIdentityPath = resourceIdentityPath + "#animation";
+        animation->SetId(GenerateResourceId(animationIdentityPath));
+        animation->SetPath(animationIdentityPath);
+        animation->SetName(std::filesystem::path(sourcePath).stem().string() + "_Animation");
+        if (!animation->SetData(importResult.skeleton,
+                                importResult.animationClips))
+        {
+            delete model;
+            return nullptr;
+        }
+        model->SetAnimationResource(AnimationHandle(animation.release()));
+        std::string skinningError;
+        if (!ValidateSkinnedNodeMeshes(*model, skinningError))
+        {
+            delete model;
+            return nullptr;
+        }
     }
     return model;
 }

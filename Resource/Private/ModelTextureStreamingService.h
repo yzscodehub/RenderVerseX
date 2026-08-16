@@ -5,6 +5,7 @@
 #include "Resource/Types/ModelResource.h"
 
 #include <deque>
+#include <atomic>
 #include <functional>
 #include <mutex>
 #include <unordered_map>
@@ -32,7 +33,8 @@ namespace RVX::Resource
         bool CompletePublication(ResourceId textureId,
                                  bool succeeded,
                                  std::string error = {});
-        void CancelModel(ResourceId modelId);
+        [[nodiscard]] ModelTextureStreamingCancellationResult
+            CancelModel(ResourceId modelId);
         void Stop();
 
         [[nodiscard]] ModelTextureStreamingStats GetStats() const;
@@ -42,6 +44,7 @@ namespace RVX::Resource
         {
             ResourceHandle<ModelResource> model;
             ModelTextureStreamingSource source;
+            std::shared_ptr<std::atomic_bool> cancellationToken;
         };
 
         struct DecodeCompletion
@@ -52,6 +55,7 @@ namespace RVX::Resource
             std::string error;
             uint64 reservedBytes = 0;
             bool cancelled = false;
+            std::shared_ptr<std::atomic_bool> cancellationToken;
         };
 
         struct PendingPublication
@@ -71,6 +75,9 @@ namespace RVX::Resource
         std::vector<JobHandle> m_jobs;
         std::unordered_map<ResourceId, ResourceHandle<ModelResource>>
             m_liveModels;
+        std::unordered_map<ResourceId, uint32> m_activeDecodesByModel;
+        std::unordered_map<ResourceId, std::shared_ptr<std::atomic_bool>>
+            m_cancellationTokens;
         std::unordered_map<ResourceId, PendingPublication>
             m_pendingPublications;
         ModelTextureStreamingStats m_stats;

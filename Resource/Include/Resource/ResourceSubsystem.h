@@ -7,14 +7,21 @@
 
 #include "Core/Subsystem/EngineSubsystem.h"
 #include "RenderContracts/IRenderResourceGateway.h"
+#include "Resource/ResourceDiagnosticsView.h"
 #include "Resource/ResourceHandle.h"
 #include "Resource/ResourceManager.h"
+#include "Resource/ResourcePublicationView.h"
+#include "Resource/ResourceRetirementLedger.h"
+#include "Resource/Types/ModelResource.h"
 
 #include <functional>
 #include <future>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace RVX::Resource
@@ -59,10 +66,40 @@ namespace RVX::Resource
         size_t retainedRequestCount = 0;
     };
 
+    /** @brief Immutable evidence retained after ResourceSubsystem shutdown. */
+    struct ResourceShutdownDiagnostics
+    {
+        bool available = false;
+        ResourceDiagnosticsSnapshot beforeManagerShutdown{};
+        ResourceDiagnosticsSnapshot afterManagerShutdown{};
+        bool lifecycleCallbackDetached = false;
+        bool managerStopped = false;
+        bool clean = false;
+    };
+
+    enum class ModelTextureStreamingRenderCancellationState : uint8
+    {
+        Cancelled = 0,
+        AwaitingRenderRetirement
+    };
+
+    /** @brief Cancellation result spanning stream CPU ownership and gateway handoff. */
+    struct ModelTextureStreamingCancellationReport
+    {
+        ModelTextureStreamingCancellationResult stream;
+        uint64 discardedPendingUploads = 0;
+        uint64 discardedPendingReplacements = 0;
+        uint64 acceptedRenderReplacements = 0;
+        ModelTextureStreamingRenderCancellationState renderState =
+            ModelTextureStreamingRenderCancellationState::Cancelled;
+    };
+
     /**
      * @brief Sole update-thread producer for the render-resource gateway.
      */
-    class ResourceSubsystem : public EngineSubsystem
+    class ResourceSubsystem : public EngineSubsystem,
+                              public IResourcePublicationView,
+                              public IResourceDiagnosticsView
     {
     public:
         // =====================================================================
@@ -88,6 +125,26 @@ namespace RVX::Resource
             AssetId assetId,
             RenderResourceKind kind) const;
 
+        /**
+         * @brief Read one exact Resource publication without mutating its state.
+         *
+         * This must be called by the update-owner thread. A different caller
+         * receives ResourcePublicationQueryCode::WrongThread without a log or
+         * state change.
+         */
+        [[nodiscard]] ResourcePublicationQueryResult QueryResourcePublication(
+            ResourceId resourceId,
+            ResourceType expectedType) const noexcept override;
+
+        /**
+         * @brief Read the complete Resource diagnostics snapshot by value.
+         *
+         * This observes update-owned manager and gateway-handoff state, so a
+         * non-owner caller is rejected before any mutable container is read.
+         */
+        [[nodiscard]] ResourceDiagnosticsQueryResult
+            QueryResourceDiagnostics() const override;
+
         /** @brief Publish or atomically replace a runtime-created GPU resource. */
         [[nodiscard]] bool PublishRenderResource(
             ResourceHandle<IResource> resource,
@@ -103,7 +160,106 @@ namespace RVX::Resource
         /** @brief Release retained request payloads after observing terminal state. */
         void DrainTerminalRenderRequests();
 
+        /**
+         * @brief Admit an exact ResourceManager closure result for GPU retirement.
+         *
+         * A later ResourceManager closure implementation must call this before
+         * it removes the corresponding tracked render mappings.  The outcome
+         * carries only CPU closure ownership; this subsystem snapshots the
+         * current AssetId-to-RenderResourceHandle generations before it asks
+         * Render to release anything.
+         */
+        [[nodiscard]] ResourceClosureRetirementSubmitResult
+            SubmitClosureRetirement(
+                const ResourceClosureRetirementOutcome& outcome);
+
+        /** @brief Poll one exact closure through the narrow render gateway. */
+        [[nodiscard]] ResourceClosureRetirementPollResult
+            PollClosureRetirement(ResourceRetirementToken token);
+
+        /** @brief Return a copy of an exact closure retirement receipt. */
+        [[nodiscard]] std::optional<ResourceClosureRetirementReceipt>
+            QueryClosureRetirement(ResourceRetirementToken token) const;
+
+        /** @brief Discard a terminal receipt; stale or duplicate tokens reject. */
+        [[nodiscard]] ResourceClosureRetirementAcknowledgeResult
+            AcknowledgeClosureRetirement(ResourceRetirementToken token);
+
+        /**
+         * @brief Transfer one Scene consumer's exact CPU lease into closure retirement.
+         *
+         * A non-final consumer completes as shared without touching Render.
+         * The final consumer remains queued until ResourceManager has produced
+         * its exact removed/shared closure outcome and Render has retired the
+         * captured generations.
+         */
+        [[nodiscard]] ResourceSceneClosureReleaseBeginResult
+            BeginSceneAssetClosureRelease(AssetResidencyLease&& lease) noexcept;
+
+        [[nodiscard]] std::optional<ResourceSceneClosureReleaseReceipt>
+            QuerySceneAssetClosureRelease(
+                ResourceSceneClosureReleaseToken token) const;
+
+        [[nodiscard]] ResourceSceneClosureReleaseAcknowledgeResult
+            AcknowledgeSceneAssetClosureRelease(
+                ResourceSceneClosureReleaseToken token);
+
+        /** @brief Explicitly fail outstanding receipts after a Render device-loss signal. */
+        void NotifyRenderDeviceLost();
+
+        /**
+         * @brief Cancel a model stream before Scene teardown touches its actors.
+         *
+         * CPU decode/publication work is removed immediately. Requests already
+         * accepted by the render gateway remain completion-owned and are
+         * reported as AwaitingRenderRetirement rather than being unsafely
+         * cancelled from the update thread.
+         */
+        [[nodiscard]] ModelTextureStreamingCancellationReport
+            CancelModelTextureStreaming(ResourceHandle<ModelResource> model);
+
+        /** @brief Re-arm a cancelled cached stream for a newly active Scene consumer. */
+        [[nodiscard]] bool EnsureModelTextureStreaming(
+            ResourceHandle<ModelResource> model);
+
+        /**
+         * @brief Begin a previously registered model texture stream.
+         *
+         * Registration and decode are deliberately separate. The Scene asset
+         * coordinator may call this only after its minimum-resident fallback
+         * revision has been consumed and presented by Render. ResourceSubsystem
+         * does not infer that consumer-visible boundary from GPU resource
+         * readiness alone.
+         */
+        [[nodiscard]] bool BeginModelTextureStreaming(
+            ResourceHandle<ModelResource> model);
+
+        /** @brief True while Render owns a cancelled model's accepted replacement. */
+        [[nodiscard]] bool IsModelTextureStreamingRetirementPending(
+            ResourceId modelId) const;
+
+        /** @brief Transfer a CPU residency pin to the update-side retirement observer. */
+        void RetainAssetResidencyUntilModelTextureRetirement(
+            ResourceId modelId,
+            AssetResidencyLease lease);
+
+        /**
+         * @brief True when an update-owned Scene asset coordinator may safely
+         * cancel Scene state and transfer completion-owned residency leases.
+         *
+         * This intentionally uses ResourceSubsystem's resource-lifecycle
+         * state, so direct subsystem validation remains supported without
+         * relying on EngineSubsystem registration state.
+         */
+        [[nodiscard]] bool CanTeardownSceneAssets() const noexcept;
+
         ResourceRenderStats GetRenderResourceStats() const;
+        [[nodiscard]] ResourceDiagnosticsSnapshot GetDiagnosticsSnapshot() const;
+        [[nodiscard]] const ResourceShutdownDiagnostics&
+            GetLastShutdownDiagnostics() const noexcept
+        {
+            return m_lastShutdownDiagnostics;
+        }
 
         // =====================================================================
         // Resource Loading
@@ -122,6 +278,13 @@ namespace RVX::Resource
             if (!RequireUpdateThread("Load"))
                 return {};
             return ResourceManager::Get().Load<T>(id);
+        }
+
+        /** @brief Retain an already-published loaded resource without initiating I/O. */
+        template<typename T>
+        [[nodiscard]] ResourceHandle<T> TryAcquireLoaded(ResourceId id)
+        {
+            return ResourceManager::Get().TryAcquireLoaded<T>(id);
         }
 
         template<typename T>
@@ -244,11 +407,32 @@ namespace RVX::Resource
         void FailModelTextureStreamingForAsset(
             AssetId assetId,
             const std::string& reason);
+        void RetireModelTextureStreamingRequest(
+            const RenderResourceHandle& handle);
         bool TryBuildPendingResource(PendingResource& pending);
         RenderResourceHandle ResolveDependency(AssetId assetId,
                                                RenderResourceKind kind) const;
         void ReleaseAsset(AssetId assetId);
         void RemovePendingAsset(AssetId assetId);
+        [[nodiscard]] ResourceClosureRetirementAdmission
+            AdmitClosureRetirement(
+                const ResourceClosureRetirementOutcome& outcome);
+        void PollClosureRetirements();
+        /**
+         * @brief Discard only terminal Scene receipts during subsystem shutdown.
+         *
+         * Runtime callers keep terminal evidence until they explicitly
+         * acknowledge it. Shutdown is the one ownership boundary where no
+         * caller can observe the receipt again, so terminal ledger and Scene
+         * tombstones must be drained before ResourceManager tears down its
+         * residency control.
+         */
+        void DrainTerminalSceneClosureReleasesForShutdown();
+        void RemoveTrackedRetirementCaptures(
+            ResourceRetirementToken token);
+        void UpdateSceneClosureReleaseFromAdmission(
+            const ResourceClosureRetirementOutcome& outcome,
+            const ResourceClosureRetirementAdmission& admission);
         static RenderResourceKind ToRenderResourceKind(ResourceType type);
         static RenderUploadPriority GetUploadPriority(ResourceType type);
 
@@ -258,6 +442,12 @@ namespace RVX::Resource
         ResourceManagerConfig m_config{};
         IRenderResourceGateway* m_gateway = nullptr;
         std::thread::id m_updateThreadId{};
+        // Query admission is synchronized independently from the update-owned
+        // resource maps so a tooling thread can be rejected safely while the
+        // subsystem enters or leaves its owner-thread lifetime.
+        mutable std::mutex m_publicationViewMutex;
+        std::thread::id m_publicationViewOwner{};
+        bool m_publicationViewAvailable = false;
         bool m_initialized = false;
         bool m_renderShuttingDown = false;
         uint64 m_nextRequestSequence = 1;
@@ -274,7 +464,26 @@ namespace RVX::Resource
             m_retainedRequests{};
         std::vector<ResourceUploadRequestRef> m_localTerminalRequests{};
         std::vector<ResourceHandle<ModelResource>> m_streamingModels{};
+        std::unordered_map<ResourceId,
+                           std::unordered_set<RenderResourceHandle,
+                                              RenderResourceHandleHash>>
+            m_pendingModelTextureRetirements{};
+        std::unordered_map<ResourceId, std::vector<AssetResidencyLease>>
+            m_retainedModelTextureLeases{};
+
+        struct SceneClosureReleaseEntry
+        {
+            ResourceSceneClosureReleaseReceipt receipt{};
+            // A failed manager consumption never drops the original lease.
+            // This preserves CPU residency and a retryable value-owned proof.
+            AssetResidencyLease retainedLease{};
+        };
+        uint64 m_nextSceneClosureReleaseToken = 1;
+        std::vector<SceneClosureReleaseEntry> m_sceneClosureReleases{};
+        std::vector<ResourceRetirementToken> m_activeClosureRetirements{};
+        ResourceRetirementLedger m_retirementLedger{};
         ResourceRenderStats m_renderStats{};
+        ResourceShutdownDiagnostics m_lastShutdownDiagnostics{};
     };
 } // namespace RVX::Resource
 
@@ -282,6 +491,15 @@ namespace RVX
 {
     using Resource::RenderResourceResolveCode;
     using Resource::RenderResourceResolveResult;
+    using Resource::IResourcePublicationView;
+    using Resource::IResourceDiagnosticsView;
+    using Resource::ResourceDiagnosticsQueryCode;
+    using Resource::ResourceDiagnosticsQueryResult;
+    using Resource::ResourcePublicationQueryCode;
+    using Resource::ResourcePublicationQueryResult;
     using Resource::ResourceRenderStats;
+    using Resource::ResourceShutdownDiagnostics;
+    using Resource::ModelTextureStreamingCancellationReport;
+    using Resource::ModelTextureStreamingRenderCancellationState;
     using Resource::ResourceSubsystem;
 } // namespace RVX

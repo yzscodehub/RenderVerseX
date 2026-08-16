@@ -76,8 +76,20 @@ namespace RVX::Resource
         // Material Data
         // =====================================================================
 
-        std::shared_ptr<Material> GetMaterial() const { return m_material; }
-        void SetMaterialData(std::shared_ptr<Material> material);
+        /**
+         * @brief Read the immutable material value represented by this resource.
+         *
+         * Runtime changes must go through MaterialInstanceResource and
+         * ResourceManager::UpdateMaterialInstance() so revision, dependency,
+         * upload and RenderScene meaning advance atomically.
+         */
+        [[nodiscard]] std::shared_ptr<const Material> GetMaterial() const
+        {
+            return m_material;
+        }
+
+        /** @brief Set prepared material data before ResourceManager publication. */
+        bool SetMaterialData(std::shared_ptr<Material> material);
 
         const std::string& GetMaterialName() const;
         MaterialWorkflow GetWorkflow() const;
@@ -98,7 +110,8 @@ namespace RVX::Resource
         // Textures
         // =====================================================================
 
-        void SetTexture(const std::string& slot, ResourceHandle<TextureResource> texture);
+        /** @brief Set a prepared texture dependency before publication. */
+        bool SetTexture(const std::string& slot, ResourceHandle<TextureResource> texture);
         ResourceHandle<TextureResource> GetTexture(const std::string& slot) const;
         const std::unordered_map<std::string, ResourceHandle<TextureResource>>& GetTextures() const;
 
@@ -113,7 +126,8 @@ namespace RVX::Resource
         // Shader
         // =====================================================================
 
-        void SetShader(ResourceHandle<ShaderResource> shader);
+        /** @brief Set a prepared shader dependency before publication. */
+        bool SetShader(ResourceHandle<ShaderResource> shader);
         ResourceHandle<ShaderResource> GetShader() const;
         bool HasShader() const;
         bool HasValidShaderRuntimeContract() const;
@@ -121,6 +135,15 @@ namespace RVX::Resource
         MaterialShaderContractSnapshot GetShaderContractSnapshot() const;
         std::string ExportShaderContractSnapshotJson() const;
         bool SaveShaderContractSnapshotJson(const char* filename) const;
+
+    protected:
+        /** @brief Commit a fully validated manager-owned material state. */
+        void CommitManagedMaterialState(
+            std::shared_ptr<Material> material,
+            std::unordered_map<std::string, ResourceHandle<TextureResource>> textures,
+            ResourceHandle<ShaderResource> shader);
+
+        [[nodiscard]] bool CanModifyPreparedState() const noexcept;
 
     private:
         std::shared_ptr<Material> m_material;

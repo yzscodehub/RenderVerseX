@@ -1,5 +1,6 @@
 #include "Resource/Loader/HDRTextureLoader.h"
 
+#include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
 #include "Resource/ResourceCache.h"
 
@@ -18,6 +19,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <limits>
@@ -355,6 +357,61 @@ namespace RVX::Resource
                    << "|samples=" << std::max(1u, numSamples);
             return stream.str();
         }
+
+        /**
+         * @brief Read the encoded source exactly once before it is decoded.
+         *
+         * Prepared loading hashes this returned vector and passes the same
+         * vector into stb_image/tinyexr; it must never hash one disk read and
+         * decode another one.
+         */
+        bool ReadEncodedImageBytes(const std::filesystem::path& path,
+                                   std::vector<uint8>& outBytes,
+                                   std::string& outError)
+        {
+            outBytes.clear();
+            outError.clear();
+
+            std::ifstream input(path, std::ios::binary | std::ios::ate);
+            if (!input.is_open())
+            {
+                outError = "Cannot open HDR/EXR source: " + path.string();
+                return false;
+            }
+
+            const std::streamsize byteCount = input.tellg();
+            if (byteCount < 0)
+            {
+                outError = "Cannot determine HDR/EXR source size: " + path.string();
+                return false;
+            }
+            input.seekg(0, std::ios::beg);
+
+            outBytes.resize(static_cast<size_t>(byteCount));
+            if (byteCount != 0 &&
+                !input.read(reinterpret_cast<char*>(outBytes.data()), byteCount))
+            {
+                outBytes.clear();
+                outError = "Cannot read HDR/EXR source bytes: " + path.string();
+                return false;
+            }
+            return true;
+        }
+
+        ResourceContentIdentity BuildSelfContainedSourceIdentity(
+            const std::vector<uint8>& sourceBytes)
+        {
+            ResourceContentIdentity identity;
+            identity.schemaVersion = RVX_RESOURCE_CONTENT_IDENTITY_SCHEMA_VERSION;
+            identity.domain = ResourceContentIdentityDomain::Source;
+            identity.scope = ResourceContentIdentityScope::SelfContainedArtifact;
+            identity.algorithm = ResourceContentHashAlgorithm::SHA256;
+            identity.digest = Hash::FormatSHA256Digest(
+                Hash::ComputeSHA256(sourceBytes.data(), sourceBytes.size()));
+            identity.byteCount = static_cast<uint64>(sourceBytes.size());
+            identity.fileCount = 1;
+            return identity;
+        }
     } // namespace
 
     // =========================================================================
@@ -409,9 +466,31 @@ namespace RVX::Resource
             return false;
         }
 
+        // Capture encoded source bytes once. The identity is derived from this
+        // exact immutable vector and this same vector is given to stb/tinyexr,
+        // so a file replacement cannot occur between hashing and decoding.
+        std::vector<uint8> sourceBytes;
+        std::string readError;
+        if (!ReadEncodedImageBytes(context.resolvedPath, sourceBytes, readError))
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure, std::move(readError)};
+            return false;
+        }
+        const ResourceContentIdentity observedContentIdentity =
+            BuildSelfContainedSourceIdentity(sourceBytes);
+        if (!observedContentIdentity.IsValid())
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "HDR loader could not construct an identity for consumed source bytes."};
+            return false;
+        }
+
         HDRTextureLoader preparedLoader(nullptr, true);
         HDRLoadOptions options;
-        TextureResource* texture = preparedLoader.LoadWithOptions(context.resolvedPath, options);
+        TextureResource* texture = preparedLoader.LoadWithOptionsFromBytes(
+            context.resolvedPath,
+            sourceBytes,
+            options);
         if (!texture)
         {
             outError = {ResourceLoadErrorCode::LoaderFailure,
@@ -435,6 +514,12 @@ namespace RVX::Resource
                         "HDR loader could not construct a prepared bundle."};
             return false;
         }
+        if (!outBundle.SetObservedContentIdentity(observedContentIdentity))
+        {
+            outError = {ResourceLoadErrorCode::LoaderFailure,
+                        "HDR loader could not attach its consumed-byte identity."};
+            return false;
+        }
         return true;
     }
 
@@ -446,7 +531,35 @@ namespace RVX::Resource
                                                          const HDRLoadOptions& options)
     {
         std::filesystem::path absPath = std::filesystem::absolute(path);
-        std::string absolutePath = absPath.string();
+        std::vector<uint8> sourceBytes;
+        std::string readError;
+        if (!ReadEncodedImageBytes(absPath, sourceBytes, readError))
+        {
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_WARN("HDRTextureLoader: {}", readError);
+            }
+            return GetDefaultEnvironmentMap();
+        }
+
+        TextureResource* texture = LoadWithOptionsFromBytes(
+            absPath.string(),
+            sourceBytes,
+            options);
+        if (!texture && Log::GetCoreLogger())
+        {
+            RVX_CORE_WARN("HDRTextureLoader: Failed to load: {}", absPath.string());
+        }
+        return texture ? texture : GetDefaultEnvironmentMap();
+    }
+
+    TextureResource* HDRTextureLoader::LoadWithOptionsFromBytes(
+        const std::string& path,
+        const std::vector<uint8>& sourceBytes,
+        const HDRLoadOptions& options)
+    {
+        std::filesystem::path absPath = std::filesystem::absolute(path);
+        const std::string absolutePath = absPath.string();
         const Diagnostics::TraceContext traceContext =
             m_manager != nullptr ? m_manager->GetStartupTraceContext()
                                  : Diagnostics::TraceContext{};
@@ -466,21 +579,17 @@ namespace RVX::Resource
         bool loaded = false;
         if (ext == ".hdr")
         {
-            loaded = LoadHDR(absolutePath, pixels, width, height);
+            loaded = LoadHDR(absolutePath, sourceBytes, pixels, width, height);
         }
         else if (ext == ".exr")
         {
-            loaded = LoadEXR(absolutePath, pixels, width, height);
+            loaded = LoadEXR(absolutePath, sourceBytes, pixels, width, height);
         }
 
         if (!loaded)
         {
             prepareSpan.SetAttribute("result", "failed");
-            if (Log::GetCoreLogger())
-            {
-                RVX_CORE_WARN("HDRTextureLoader: Failed to load: {}", absolutePath);
-            }
-            return GetDefaultEnvironmentMap();
+            return nullptr;
         }
 
         // Apply exposure
@@ -566,8 +675,33 @@ namespace RVX::Resource
                                        const HDRLoadOptions& options,
                                        const CancellationPredicate& cancellationRequested)
     {
-        IBLData ibl;
+        if (IsCancellationRequested(cancellationRequested))
+        {
+            return {};
+        }
 
+        std::filesystem::path absPath = std::filesystem::absolute(path);
+        std::vector<uint8> sourceBytes;
+        std::string readError;
+        if (!ReadEncodedImageBytes(absPath, sourceBytes, readError))
+        {
+            if (Log::GetCoreLogger())
+            {
+                RVX_CORE_WARN("HDRTextureLoader: {}", readError);
+            }
+            return {};
+        }
+
+        return LoadIBLFromBytes(absPath.string(), sourceBytes, options, cancellationRequested);
+    }
+
+    IBLData HDRTextureLoader::LoadIBLFromBytes(
+        const std::string& path,
+        const std::vector<uint8>& sourceBytes,
+        const HDRLoadOptions& options,
+        const CancellationPredicate& cancellationRequested)
+    {
+        IBLData ibl;
         if (IsCancellationRequested(cancellationRequested))
         {
             return ibl;
@@ -594,11 +728,11 @@ namespace RVX::Resource
         bool loaded = false;
         if (ext == ".hdr")
         {
-            loaded = LoadHDR(absolutePath, pixels, width, height);
+            loaded = LoadHDR(absolutePath, sourceBytes, pixels, width, height);
         }
         else if (ext == ".exr")
         {
-            loaded = LoadEXR(absolutePath, pixels, width, height);
+            loaded = LoadEXR(absolutePath, sourceBytes, pixels, width, height);
         }
 
         if (!loaded)
@@ -730,6 +864,13 @@ namespace RVX::Resource
         prepareSpan.SetAttribute("irradianceReady", ibl.irradianceMap != nullptr);
         prepareSpan.SetAttribute("prefilteredReady", ibl.prefilteredMap != nullptr);
         prepareSpan.SetAttribute("brdfReady", ibl.brdfLUT != nullptr);
+
+        ibl.observedContentIdentity = BuildSelfContainedSourceIdentity(sourceBytes);
+        if (!ibl.observedContentIdentity.IsValid())
+        {
+            DiscardIBLData(ibl);
+            prepareSpan.SetAttribute("result", "identity-failed");
+        }
 
         return ibl;
     }
@@ -1177,23 +1318,29 @@ namespace RVX::Resource
     // =========================================================================
 
     bool HDRTextureLoader::LoadHDR(const std::string& path,
+                                    const std::vector<uint8>& sourceBytes,
                                     std::vector<float>& outPixels,
                                     uint32_t& outWidth, uint32_t& outHeight)
     {
         const Diagnostics::TraceContext traceContext =
             m_manager != nullptr ? m_manager->GetStartupTraceContext()
                                  : Diagnostics::TraceContext{};
-        // stb_image exposes HDR disk IO and decoding through one call, so this
-        // span intentionally reports the observed composite rather than
-        // inventing a separate encoded-read duration.
+        // The caller owns the only source read. Decode exactly that immutable
+        // byte vector so observed content identity and parser input cannot
+        // diverge due to a between-read file replacement.
         Diagnostics::TraceSpan decodeSpan = Diagnostics::BeginTraceSpan(
             traceContext,
             "TextureDecode",
             {{"path", path},
              {"decoder", "stb_image_hdr"},
-             {"compositeReadDecode", true}});
+             {"inMemorySource", true}});
         int width, height, channels;
-        float* data = stbi_loadf(path.c_str(), &width, &height, &channels, 4);
+        float* data = stbi_loadf_from_memory(sourceBytes.data(),
+                                             static_cast<int>(sourceBytes.size()),
+                                             &width,
+                                             &height,
+                                             &channels,
+                                             4);
 
         if (!data)
         {
@@ -1221,6 +1368,7 @@ namespace RVX::Resource
     }
 
     bool HDRTextureLoader::LoadEXR(const std::string& path,
+                                    const std::vector<uint8>& sourceBytes,
                                     std::vector<float>& outPixels,
                                     uint32_t& outWidth, uint32_t& outHeight)
     {
@@ -1232,14 +1380,20 @@ namespace RVX::Resource
             "TextureDecode",
             {{"path", path},
              {"decoder", "tinyexr"},
-             {"compositeReadDecode", true}});
+             {"inMemorySource", true}});
 #if HAS_TINYEXR
         float* data = nullptr;
         int width, height;
         const char* err = nullptr;
 
-        // Use :: prefix to call the global tinyexr function, not this member function
-        int ret = ::LoadEXR(&data, &width, &height, path.c_str(), &err);
+        // Use the memory API rather than tinyexr's file API so the parser
+        // receives the exact bytes whose SHA-256 is recorded for publication.
+        int ret = ::LoadEXRFromMemory(&data,
+                                      &width,
+                                      &height,
+                                      sourceBytes.data(),
+                                      sourceBytes.size(),
+                                      &err);
         if (ret != TINYEXR_SUCCESS)
         {
             decodeSpan.SetAttribute("result", "failed");

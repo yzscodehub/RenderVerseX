@@ -1,5 +1,6 @@
 #include "Resource/ResourceCache.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -14,7 +15,7 @@ ResourceCache::ResourceCache(const CacheConfig& config)
 
 ResourceCache::~ResourceCache()
 {
-    Clear();
+    ClearInternal(true);
 }
 
 void ResourceCache::Store(IResource* resource)
@@ -41,6 +42,7 @@ bool ResourceCache::StoreBatchInternal(const std::vector<IResource*>& resources,
     if (resources.empty())
         return true;
 
+    std::shared_lock<std::shared_mutex> removalLock(m_removalBarrier);
     std::lock_guard<std::mutex> lock(m_mutex);
 
     std::unordered_set<ResourceId> batchIds;
@@ -182,7 +184,8 @@ void ResourceCache::EvictToMemoryLimitLocked() noexcept
                 const ResourceId victimId = *it;
                 auto victimIt = m_resources.find(victimId);
                 if (victimIt != m_resources.end() &&
-                    victimIt->second->GetRefCount() == 1)
+                    victimIt->second->GetRefCount() == 1 &&
+                    CanRemove(victimId))
                 {
                     currentUsage -= victimIt->second->GetTotalMemoryUsage();
                     victims.push_back(victimId);
@@ -193,7 +196,8 @@ void ResourceCache::EvictToMemoryLimitLocked() noexcept
             {
                 auto victimIt = m_resources.find(victimId);
                 if (victimIt == m_resources.end() ||
-                    victimIt->second->GetRefCount() != 1)
+                    victimIt->second->GetRefCount() != 1 ||
+                    !CanRemove(victimId))
                 {
                     continue;
                 }
@@ -244,39 +248,204 @@ bool ResourceCache::ContainsLoaded(ResourceId id) const
     return it != m_resources.end() && it->second != nullptr && it->second->IsLoaded();
 }
 
-void ResourceCache::Remove(ResourceId id)
+bool ResourceCache::Remove(ResourceId id)
 {
+    std::shared_lock<std::shared_mutex> removalLock(m_removalBarrier);
     std::lock_guard<std::mutex> lock(m_mutex);
 
     auto it = m_resources.find(id);
-    if (it != m_resources.end())
+    if (it == m_resources.end())
     {
-        NotifyBeforeRemove(it->second);
-        if (it->second->Release())
+        return false;
+    }
+    if (!CanRemove(id))
+    {
+        return false;
+    }
+
+    NotifyBeforeRemove(it->second);
+    if (it->second->Release())
+    {
+        delete it->second;
+    }
+    m_resources.erase(it);
+    RemoveLRU(id);
+    return true;
+}
+
+bool ResourceCache::RemoveBatch(const std::vector<ResourceId>& resourceIds,
+                                const ResourceCacheBatchPreCommit& preCommit)
+{
+    if (resourceIds.empty())
+    {
+        return true;
+    }
+
+    // This is deliberately a unique lock, unlike Remove(). A residency
+    // acquire holds this barrier exclusively while it snapshots its closure;
+    // holding it across the whole batch makes closure release and acquisition
+    // serializable rather than merely individually safe.
+    std::unique_lock<std::shared_mutex> removalLock(m_removalBarrier);
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    // Every fallible/guarded check completes before the first Release(). Do
+    // not allocate here: a duplicate check is intentionally O(n^2), because
+    // closure size is normally small and allocation failure after a partial
+    // resource release would violate this API's transaction contract.
+    for (size_t index = 0; index < resourceIds.size(); ++index)
+    {
+        const ResourceId id = resourceIds[index];
+        if (id == InvalidResourceId)
         {
-            delete it->second;
+            return false;
         }
-        m_resources.erase(it);
+        for (size_t previous = 0; previous < index; ++previous)
+        {
+            if (resourceIds[previous] == id)
+            {
+                return false;
+            }
+        }
+
+        const auto found = m_resources.find(id);
+        if (found != m_resources.end() && !CanRemove(id))
+        {
+            return false;
+        }
+    }
+
+    // Manager-side lifecycle events have to be fully value-owned and staged
+    // before a cache reference can be released. The callback is intentionally
+    // a pre-commit gate: after it succeeds, all following batch mutation is
+    // no-throw. Direct ResourceCache callers retain the traditional observer
+    // behaviour below.
+    if (preCommit)
+    {
+        try
+        {
+            const ResourceCacheBatchSnapshot snapshot =
+                BuildBatchSnapshot(&resourceIds);
+            if (!preCommit(snapshot))
+            {
+                return false;
+            }
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    for (ResourceId id : resourceIds)
+    {
+        const auto found = m_resources.find(id);
+        if (found == m_resources.end())
+        {
+            continue;
+        }
+
+        if (!preCommit)
+        {
+            NotifyBeforeRemove(found->second);
+        }
+        if (found->second->Release())
+        {
+            delete found->second;
+        }
+        m_resources.erase(found);
         RemoveLRU(id);
     }
+    return true;
+}
+
+bool ResourceCache::ClearAllOrNothing(
+    const ResourceCacheBatchPreCommit& preCommit)
+{
+    // Keep the exclusive barrier from preflight through the final release.
+    // A residency lease acquires this same barrier before it snapshots its
+    // closure, making Clear and lease admission serializable.
+    std::unique_lock<std::shared_mutex> removalLock(m_removalBarrier);
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    // Complete all fallible ownership checks before releasing a single cache
+    // reference. This deliberately does not allocate after preflight.
+    for (const auto& [resourceId, resource] : m_resources)
+    {
+        (void)resource;
+        if (!CanRemove(resourceId))
+        {
+            return false;
+        }
+    }
+
+    if (preCommit)
+    {
+        try
+        {
+            const ResourceCacheBatchSnapshot snapshot = BuildBatchSnapshot(nullptr);
+            if (!preCommit(snapshot))
+            {
+                return false;
+            }
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    for (auto resource = m_resources.begin(); resource != m_resources.end();)
+    {
+        if (!preCommit)
+        {
+            NotifyBeforeRemove(resource->second);
+        }
+        if (resource->second->Release())
+        {
+            delete resource->second;
+        }
+        resource = m_resources.erase(resource);
+    }
+    m_lruList.clear();
+    m_lruMap.clear();
+    return true;
 }
 
 void ResourceCache::Clear()
 {
+    std::shared_lock<std::shared_mutex> removalLock(m_removalBarrier);
+    ClearInternal(false);
+}
+
+void ResourceCache::ClearInternal(bool ignoreRemovalProtection)
+{
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    for (auto& [id, resource] : m_resources)
+    auto resource = m_resources.begin();
+    while (resource != m_resources.end())
     {
-        NotifyBeforeRemove(resource);
-        if (resource->Release())
+        if (!ignoreRemovalProtection && !CanRemove(resource->first))
         {
-            delete resource;
+            ++resource;
+            continue;
         }
+
+        NotifyBeforeRemove(resource->second);
+        if (resource->second->Release())
+        {
+            delete resource->second;
+        }
+        resource = m_resources.erase(resource);
     }
 
-    m_resources.clear();
     m_lruList.clear();
     m_lruMap.clear();
+    for (const auto& [id, retained] : m_resources)
+    {
+        (void)retained;
+        m_lruList.push_front(id);
+        m_lruMap.emplace(id, m_lruList.begin());
+    }
 }
 
 size_t ResourceCache::GetMemoryUsage() const
@@ -305,6 +474,7 @@ size_t ResourceCache::GetGPUMemoryUsage() const
 
 void ResourceCache::SetMemoryLimit(size_t bytes)
 {
+    std::shared_lock<std::shared_mutex> removalLock(m_removalBarrier);
     std::lock_guard<std::mutex> lock(m_mutex);
     m_config.maxMemoryBytes = bytes;
     EvictToMemoryLimitLocked();
@@ -312,6 +482,7 @@ void ResourceCache::SetMemoryLimit(size_t bytes)
 
 void ResourceCache::Evict(size_t targetBytes)
 {
+    std::shared_lock<std::shared_mutex> removalLock(m_removalBarrier);
     std::lock_guard<std::mutex> lock(m_mutex);
 
     size_t currentUsage = 0;
@@ -321,11 +492,21 @@ void ResourceCache::Evict(size_t targetBytes)
         currentUsage += resource->GetTotalMemoryUsage();
     }
 
-    while (currentUsage > targetBytes && !m_lruList.empty())
+    std::vector<ResourceId> candidates;
+    candidates.reserve(m_lruList.size());
+    for (auto it = m_lruList.rbegin(); it != m_lruList.rend(); ++it)
     {
-        ResourceId victimId = m_lruList.back();
+        candidates.push_back(*it);
+    }
+
+    for (ResourceId victimId : candidates)
+    {
+        if (currentUsage <= targetBytes)
+        {
+            break;
+        }
         auto victimIt = m_resources.find(victimId);
-        if (victimIt != m_resources.end())
+        if (victimIt != m_resources.end() && CanRemove(victimId))
         {
             currentUsage -= victimIt->second->GetTotalMemoryUsage();
             NotifyBeforeRemove(victimIt->second);
@@ -334,13 +515,14 @@ void ResourceCache::Evict(size_t targetBytes)
                 delete victimIt->second;
             }
             m_resources.erase(victimIt);
+            RemoveLRU(victimId);
         }
-        RemoveLRU(victimId);
     }
 }
 
 void ResourceCache::EvictUnused()
 {
+    std::shared_lock<std::shared_mutex> removalLock(m_removalBarrier);
     std::lock_guard<std::mutex> lock(m_mutex);
 
     std::vector<ResourceId> toRemove;
@@ -348,7 +530,7 @@ void ResourceCache::EvictUnused()
     for (const auto& [id, resource] : m_resources)
     {
         // If ref count is 1, only the cache holds a reference
-        if (resource->GetRefCount() == 1)
+        if (resource->GetRefCount() == 1 && CanRemove(id))
         {
             toRemove.push_back(id);
         }
@@ -403,6 +585,13 @@ void ResourceCache::SetBeforeRemoveCallback(
     m_beforeRemoveCallback = std::move(callback);
 }
 
+void ResourceCache::SetCanRemoveCallback(
+    std::function<bool(ResourceId)> callback)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_canRemoveCallback = std::move(callback);
+}
+
 void ResourceCache::NotifyBeforeRemove(IResource* resource) noexcept
 {
     if (m_beforeRemoveCallback)
@@ -418,13 +607,86 @@ void ResourceCache::NotifyBeforeRemove(IResource* resource) noexcept
     }
 }
 
+bool ResourceCache::CanRemove(ResourceId id) noexcept
+{
+    if (!m_canRemoveCallback)
+    {
+        return true;
+    }
+
+    try
+    {
+        return m_canRemoveCallback(id);
+    }
+    catch (...)
+    {
+        // The cache must fail closed: a broken ownership observer cannot make
+        // a live resource disappear under a caller that requested protection.
+        return false;
+    }
+}
+
+std::unique_lock<std::shared_mutex>
+ResourceCache::LockRemovalsForResidency()
+{
+    return std::unique_lock<std::shared_mutex>(m_removalBarrier);
+}
+
+bool ResourceCache::ContainsLoadedUnderResidencyBarrier(ResourceId id) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto it = m_resources.find(id);
+    return it != m_resources.end() && it->second != nullptr &&
+           it->second->IsLoaded();
+}
+
+ResourceCacheBatchSnapshot ResourceCache::BuildBatchSnapshot(
+    const std::vector<ResourceId>* orderedResourceIds) const
+{
+    ResourceCacheBatchSnapshot resources;
+    if (orderedResourceIds != nullptr)
+    {
+        resources.reserve(orderedResourceIds->size());
+        for (ResourceId resourceId : *orderedResourceIds)
+        {
+            const auto found = m_resources.find(resourceId);
+            if (found != m_resources.end() && found->second != nullptr)
+            {
+                resources.emplace_back(resourceId,
+                                       ResourceHandle<IResource>(found->second));
+            }
+        }
+        return resources;
+    }
+
+    resources.reserve(m_resources.size());
+    for (const auto& [resourceId, resource] : m_resources)
+    {
+        if (resource != nullptr)
+        {
+            resources.emplace_back(resourceId, ResourceHandle<IResource>(resource));
+        }
+    }
+
+    std::sort(resources.begin(),
+              resources.end(),
+              [](const auto& left, const auto& right)
+              {
+                  return left.first < right.first;
+              });
+    return resources;
+}
+
 void ResourceCache::TouchLRU(ResourceId id)
 {
     auto it = m_lruMap.find(id);
     if (it != m_lruMap.end())
     {
-        m_lruList.erase(it->second);
-        m_lruList.push_front(id);
+        // Relinking an existing list node cannot allocate or throw. Erasing
+        // before push_front could leave the LRU structures inconsistent if
+        // the new-node allocation failed while a cache acquisition holds the
+        // resource mutex.
+        m_lruList.splice(m_lruList.begin(), m_lruList, it->second);
         it->second = m_lruList.begin();
     }
 }

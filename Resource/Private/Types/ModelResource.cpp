@@ -33,6 +33,43 @@ size_t ModelResource::GetMemoryUsage() const
             total += mat->GetMemoryUsage();
         }
     }
+
+    if (m_animationResource)
+    {
+        total += m_animationResource->GetMemoryUsage();
+    }
+    else if (m_skeleton)
+    {
+        total += sizeof(Animation::Skeleton);
+        for (const Animation::Bone& bone : m_skeleton->bones)
+        {
+            total += sizeof(Animation::Bone) + bone.name.capacity() +
+                     bone.childIndices.capacity() * sizeof(int);
+        }
+    }
+    if (!m_animationResource)
+    {
+        for (const auto& [name, clip] : m_animationClips)
+        {
+            total += name.capacity();
+            if (!clip)
+                continue;
+            total += sizeof(Animation::AnimationClip) + clip->name.capacity() +
+                     clip->description.capacity();
+            for (const Animation::TransformTrack& track : clip->transformTracks)
+            {
+                total += sizeof(Animation::TransformTrack) + track.targetName.capacity();
+                total += track.translationKeyframes.capacity() *
+                         sizeof(Animation::KeyframeVec3);
+                total += track.rotationKeyframes.capacity() *
+                         sizeof(Animation::KeyframeQuat);
+                total += track.scaleKeyframes.capacity() *
+                         sizeof(Animation::KeyframeVec3);
+                total += track.matrixKeyframes.capacity() *
+                         sizeof(Animation::KeyframeMat4);
+            }
+        }
+    }
     
     return total;
 }
@@ -71,7 +108,12 @@ std::vector<ResourceId> ModelResource::GetRequiredDependencies() const
             deps.push_back(mat.GetId());
         }
     }
-    
+
+    if (m_animationResource.IsValid())
+    {
+        deps.push_back(m_animationResource.GetId());
+    }
+
     return deps;
 }
 
@@ -86,6 +128,7 @@ std::vector<ResourceId> ModelResource::GetOptionalDependencies() const
         if (texture)
             dependencies.push_back(texture.GetId());
     }
+
     return dependencies;
 }
 
@@ -147,10 +190,51 @@ void ModelResource::SetMaterials(std::vector<ResourceHandle<MaterialResource>> m
     m_materials = std::move(materials);
 }
 
+Animation::Skeleton::ConstPtr ModelResource::GetSkeleton() const
+{
+    return m_animationResource ? m_animationResource->GetSkeleton() : m_skeleton;
+}
+
+void ModelResource::SetSkeleton(Animation::Skeleton::ConstPtr skeleton)
+{
+    m_animationResource = nullptr;
+    m_skeleton = std::move(skeleton);
+}
+
+const ModelResource::AnimationClipMap& ModelResource::GetAnimationClips() const
+{
+    return m_animationResource ? m_animationResource->GetClips() : m_animationClips;
+}
+
+Animation::AnimationClip::ConstPtr ModelResource::GetAnimationClip(const std::string& name) const
+{
+    return m_animationResource ? m_animationResource->GetClip(name)
+                               : (m_animationClips.contains(name)
+                                      ? m_animationClips.at(name)
+                                      : nullptr);
+}
+
+void ModelResource::SetAnimationClips(AnimationClipMap clips)
+{
+    m_animationResource = nullptr;
+    m_animationClips = std::move(clips);
+}
+
+void ModelResource::SetAnimationResource(AnimationHandle animation)
+{
+    m_animationResource = std::move(animation);
+    if (m_animationResource)
+    {
+        m_skeleton.reset();
+        m_animationClips.clear();
+    }
+}
+
 void ModelResource::SetTextureStreamingSources(
     std::vector<ModelTextureStreamingSource> sources)
 {
     std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    m_textureStreamingTemplateSources = sources;
     m_textureStreamingSources = std::move(sources);
     m_streamingTextures.clear();
     m_streamingTextures.reserve(m_textureStreamingSources.size());
@@ -203,6 +287,11 @@ void ModelResource::RebindTextureStreamingDependency(
         return;
     }
     for (ModelTextureStreamingSource& source : m_textureStreamingSources)
+    {
+        if (source.texture && source.texture.GetId() == resourceId)
+            source.texture = canonical;
+    }
+    for (ModelTextureStreamingSource& source : m_textureStreamingTemplateSources)
     {
         if (source.texture && source.texture.GetId() == resourceId)
             source.texture = canonical;
@@ -296,6 +385,41 @@ void ModelResource::CancelTextureStreaming() noexcept
     }
     m_textureStreamingSources.clear();
     m_textureStreamingStage = ModelTextureStreamingStage::Cancelled;
+}
+
+bool ModelResource::RestartTextureStreamingAfterCancellation()
+{
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    if (m_textureStreamingStage != ModelTextureStreamingStage::Cancelled)
+    {
+        return false;
+    }
+
+    m_textureStreamingSources.clear();
+    m_decodedTextureCount = 0;
+    m_residentTextureCount = 0;
+    m_decodedTextureBytes = 0;
+    m_textureStreamingError.clear();
+    for (const ModelTextureStreamingSource& source :
+         m_textureStreamingTemplateSources)
+    {
+        if (!source.texture)
+        {
+            continue;
+        }
+        if (!source.texture->IsStreamingPlaceholder())
+        {
+            ++m_decodedTextureCount;
+            ++m_residentTextureCount;
+            continue;
+        }
+        m_textureStreamingSources.push_back(source);
+    }
+
+    m_textureStreamingStage = m_textureStreamingSources.empty()
+                                  ? ModelTextureStreamingStage::FullyResident
+                                  : ModelTextureStreamingStage::AwaitingMinimumResident;
+    return true;
 }
 
 ModelTextureStreamingSnapshot ModelResource::GetTextureStreamingSnapshot() const

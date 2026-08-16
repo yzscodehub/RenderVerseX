@@ -8,6 +8,7 @@
 #include "Core/Diagnostics/Trace.h"
 #include "Core/Types.h"
 #include "Resource/IResource.h"
+#include "Resource/ResourceContentIdentity.h"
 #include "Resource/ResourceHandle.h"
 
 #include <functional>
@@ -68,6 +69,8 @@ namespace RVX::Resource
         uint64 importOptionsHash = 0;
         uint64 platformProfileHash = 0;
         uint32 loaderSchemaVersion = 1;
+        /// Optional expected consumed-byte identity; it is part of cache and in-flight identity.
+        ResourceContentIdentity expectedContentIdentity;
 
         bool IsValid() const;
 
@@ -89,7 +92,8 @@ namespace RVX::Resource
                           ResourceType resourceType,
                           uint64 importOptionsHash = 0,
                           uint64 platformProfileHash = 0,
-                          uint32 loaderSchemaVersion = 1);
+                          uint32 loaderSchemaVersion = 1,
+                          ResourceContentIdentity expectedContentIdentity = {});
 
     enum class ResourceLoadState : uint8
     {
@@ -126,6 +130,8 @@ namespace RVX::Resource
         LoaderFailure,
         PublishFailure,
         TypeMismatch,
+        ContentIdentityUnavailable,
+        ContentIdentityMismatch,
         Cancelled
     };
 
@@ -159,6 +165,15 @@ namespace RVX::Resource
         uint64 importOptionsHash = 0;
         uint64 platformProfileHash = 0;
         uint32 loaderSchemaVersion = 1;
+
+        /**
+         * @brief Optional expectation for bytes actually consumed by the worker.
+         *
+         * A non-empty value must satisfy ResourceContentIdentity::IsValid().
+         * A valid value splits cache and in-flight identity from every other
+         * expectation for the same path/import profile.
+         */
+        ResourceContentIdentity expectedContentIdentity;
 
         Diagnostics::TraceContext traceContext;
     };

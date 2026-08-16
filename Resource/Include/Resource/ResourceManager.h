@@ -7,20 +7,25 @@
 
 #include "Core/Job/JobSystem.h"
 #include "Core/Diagnostics/Trace.h"
+#include "Resource/AssetResidencyLease.h"
 #include "Resource/DependencyGraph.h"
 #include "Resource/IResource.h"
 #include "Resource/PreparedResourceBundle.h"
 #include "Resource/ResourceCache.h"
+#include "Resource/ResourceDiagnostics.h"
 #include "Resource/ResourceHandle.h"
 #include "Resource/ResourceLoadOperation.h"
+#include "Resource/ResourceRetirementLedger.h"
 #include "Resource/ResourceRegistry.h"
 #include "Resource/RuntimeResourcePolicy.h"
+#include "Resource/Types/MaterialInstanceResource.h"
 #include <atomic>
 #include <chrono>
 #include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -47,6 +52,16 @@ namespace RVX::Resource
         uint64 completedDecodes = 0;
         uint64 failedDecodes = 0;
         uint64 cancelledDecodes = 0;
+    };
+
+    /** @brief CPU-side result of cancelling one model's deferred texture stream. */
+    struct ModelTextureStreamingCancellationResult
+    {
+        bool modelFound = false;
+        uint64 cancelledQueuedDecodes = 0;
+        uint64 cancellationRequestedForActiveDecodes = 0;
+        uint64 cancelledPendingPublications = 0;
+        uint64 releasedReservedBytes = 0;
     };
 
     /** @brief Immutable loader-specific state captured at request admission. */
@@ -151,10 +166,57 @@ namespace RVX::Resource
         ResourceLifecycleEventType type = ResourceLifecycleEventType::Ready;
         ResourceId resourceId = InvalidResourceId;
         ResourceHandle<IResource> resource;
+        // A closure admitted by ResourceSubsystem has already captured this
+        // exact RenderResourceHandle before the cache releases CPU ownership.
+        // The legacy per-resource callback must not request a second release.
+        ResourceRetirementToken closureRetirementToken{};
     };
 
     using ResourceLifecycleEventCallback =
         std::function<void(const ResourceLifecycleEvent&)>;
+
+    enum class ResourceClosureRetirementAdmissionCode : uint8
+    {
+        CommitCpuClosure = 0,
+        RetryLater,
+        FailedRetained,
+    };
+
+    /** @brief Result of the pre-commit Render retirement admission. */
+    struct ResourceClosureRetirementAdmission
+    {
+        ResourceClosureRetirementAdmissionCode code =
+            ResourceClosureRetirementAdmissionCode::RetryLater;
+        ResourceClosureRetirementReceipt receipt{};
+    };
+
+    using ResourceClosureRetirementCallback = std::function<
+        ResourceClosureRetirementAdmission(const ResourceClosureRetirementOutcome&)>;
+
+    /** @brief Manager-side consumption result for an exact Scene residency pin. */
+    enum class AssetResidencyLeaseConsumeCode : uint8
+    {
+        QueuedForClosure = 0,
+        ReleasedShared,
+        RetainedFailure,
+        InvalidLease,
+        NotFound,
+    };
+
+    struct AssetResidencyLeaseConsumeResult
+    {
+        AssetResidencyLeaseConsumeCode code =
+            AssetResidencyLeaseConsumeCode::InvalidLease;
+        AssetId rootAssetId{};
+        uint64 leaseGeneration = 0;
+        uint64 closureGeneration = 0;
+
+        [[nodiscard]] bool Consumed() const noexcept
+        {
+            return code == AssetResidencyLeaseConsumeCode::QueuedForClosure ||
+                   code == AssetResidencyLeaseConsumeCode::ReleasedShared;
+        }
+    };
 
     enum class ResourceHotReloadStatus : uint8
     {
@@ -214,7 +276,7 @@ namespace RVX::Resource
 
         void Initialize(const ResourceManagerConfig& config = {});
         void Shutdown();
-        bool IsInitialized() const { return m_initialized; }
+        bool IsInitialized() const;
 
         /**
          * @brief Return the immutable startup correlation context configured
@@ -245,6 +307,10 @@ namespace RVX::Resource
         IResource* LoadResource(const std::string& path);
         IResource* LoadResource(const std::string& path, ResourceType requestedType);
         IResource* LoadResource(ResourceId id);
+
+        /** @brief Retain an exactly typed cached resource without initiating I/O. */
+        template<typename T>
+        [[nodiscard]] ResourceHandle<T> TryAcquireLoaded(ResourceId id);
 
         // =====================================================================
         // Asynchronous Loading
@@ -312,17 +378,58 @@ namespace RVX::Resource
         bool IsLoaded(ResourceId id) const;
 
         // =====================================================================
+        // Runtime Material Instances
+        // =====================================================================
+
+        /** @brief Create and publish a runtime instance of a loaded immutable material. */
+        [[nodiscard]] MaterialInstanceCreateResult CreateMaterialInstance(
+            const ResourceHandle<MaterialResource>& parent,
+            const std::string& runtimeKey);
+
+        /**
+         * @brief Atomically validate and apply legal PBR instance changes.
+         *
+         * The owner/update thread is the sole writer. Texture-dependency
+         * changes reject while the existing closure has an AssetResidencyLease,
+         * pending an explicit lease closure-refresh contract.
+         */
+        [[nodiscard]] MaterialInstanceMutationReceipt UpdateMaterialInstance(
+            const MaterialInstanceHandle& instance,
+            const MaterialInstancePatch& patch);
+
+        // =====================================================================
         // Unloading
         // =====================================================================
 
-        /// Unload a resource by path
-        void Unload(const std::string& path);
+        /// Unload a resource by path.
+        [[nodiscard]] AssetResidencyReleaseResult Unload(const std::string& path);
 
         /** @brief Unload one exact AssetKey variant without affecting siblings. */
-        void Unload(const AssetKey& assetKey);
+        [[nodiscard]] AssetResidencyReleaseResult Unload(const AssetKey& assetKey);
 
-        /// Unload a resource by ID
-        void Unload(ResourceId id);
+        /// Unload a resource by ID. Dependency-closure pins report BlockedByLease.
+        [[nodiscard]] AssetResidencyReleaseResult Unload(ResourceId id);
+
+        /** @brief Evict one exact cached variant while retaining registry metadata. */
+        [[nodiscard]] AssetResidencyReleaseResult Evict(const AssetKey& assetKey);
+
+        /** @brief Acquire a move-only pin for the exact loaded AssetKey closure. */
+        [[nodiscard]] AssetResidencyLease AcquireAssetResidencyLease(
+            const AssetKey& assetKey);
+
+        /**
+         * @brief True only when this exact lease is the sole active consumer.
+         *
+         * Invalid, stale, or concurrently acquiring lease epochs return false
+         * so asset-wide background work is never cancelled on ambiguous
+         * ownership evidence.
+         */
+        [[nodiscard]] bool IsSoleAssetResidencyConsumer(
+            const AssetResidencyLease& lease) const noexcept;
+
+        /** @brief Resolve the exact published variant for an already-loaded resource. */
+        [[nodiscard]] std::optional<AssetKey> FindPublishedAssetKey(
+            ResourceId resourceId) const;
 
         /// Unload unused resources (reference count == 1)
         void UnloadUnused();
@@ -407,13 +514,27 @@ namespace RVX::Resource
                                              std::string error = {});
 
         /** @brief Cancel queued and publication-waiting work for one model. */
-        void CancelModelTextureStreaming(ResourceId modelId);
+        [[nodiscard]] ModelTextureStreamingCancellationResult
+            CancelModelTextureStreaming(ResourceId modelId);
 
         [[nodiscard]] ModelTextureStreamingStats
             GetModelTextureStreamingStats() const;
 
         /** @brief Register the callback drained only by ProcessCompletedLoads. */
         void SetLifecycleEventCallback(ResourceLifecycleEventCallback callback);
+
+        /** @brief Register the sole pre-commit closure-retirement admission callback. */
+        void SetClosureRetirementCallback(
+            ResourceClosureRetirementCallback callback);
+
+        /**
+         * @brief Consume one Scene-owned residency lease into the exact closure path.
+         *
+         * The result is value-only. A failed consumption leaves @p lease valid
+         * and therefore preserves CPU residency for retry evidence.
+         */
+        [[nodiscard]] AssetResidencyLeaseConsumeResult
+            ConsumeSceneAssetResidencyLease(AssetResidencyLease& lease);
 
         // =====================================================================
         // Statistics
@@ -429,6 +550,9 @@ namespace RVX::Resource
         };
 
         Stats GetStats() const;
+
+        /** @brief Return a copyable diagnostic snapshot without publishing work. */
+        [[nodiscard]] ResourceDiagnosticsSnapshot GetDiagnosticsSnapshot() const;
 
         /// Get the last synchronous or async load diagnostic emitted by the manager.
         ResourceLoadDiagnostic GetLastLoadDiagnostic() const;
@@ -451,6 +575,7 @@ namespace RVX::Resource
 
     private:
         bool m_initialized = false;
+        bool m_shuttingDown = false;
         ResourceManagerConfig m_config;
 
         std::unique_ptr<ResourceRegistry> m_registry;
@@ -464,8 +589,12 @@ namespace RVX::Resource
         mutable std::mutex m_lifecycleMutex;
         std::vector<ResourceLifecycleEvent> m_lifecycleEvents;
         ResourceLifecycleEventCallback m_lifecycleEventCallback;
+        ResourceClosureRetirementCallback m_closureRetirementCallback;
 
-        /** Protects loader registration and in-flight operation maps only. Never held during IO/parse/decode. */
+        /**
+         * Protects manager lifecycle/cache lifetime plus loader registration
+         * and in-flight operation maps. Never held during IO/parse/decode.
+         */
         mutable std::recursive_mutex m_loadMutex;
 
         struct PreparedLoadCompletion
@@ -499,8 +628,38 @@ namespace RVX::Resource
         bool m_jobSystemInitializedByManager = false;
         std::atomic<size_t> m_pendingAsyncJobCount{0};
         std::atomic<size_t> m_pendingAsyncCompletionCount{0};
+        std::atomic<uint64> m_cancelledLoadCount{0};
+        std::atomic<uint64> m_closureUnloadRequestCount{0};
+        std::atomic<uint64> m_closureUnloadedResourceCount{0};
+        std::atomic<uint64> m_closureRetainedResourceCount{0};
+        std::atomic<uint64> m_closureUnloadRejectedCount{0};
         std::unique_ptr<ModelTextureStreamingService>
             m_modelTextureStreaming;
+
+        std::shared_ptr<AssetResidencyLeaseControl> m_assetResidencyControl;
+        mutable std::mutex m_pendingLeaseUnloadMutex;
+        std::vector<std::pair<AssetKey, uint64>> m_pendingLeaseUnloads;
+
+        enum class RootOwnershipState : uint8
+        {
+            Active = 0,
+            ReleasePending
+        };
+
+        struct PublishedRootRecord
+        {
+            AssetKey assetKey;
+            RootOwnershipState ownership = RootOwnershipState::Active;
+            uint64 pendingClosureGeneration = 0;
+        };
+
+        // Exact identity persists while an explicitly released root is
+        // physically retained by another graph consumer. The ownership state
+        // lives in the same map entry, so Active <-> ReleasePending changes
+        // never allocate and cannot fail between logical release and retry.
+        std::unordered_map<ResourceId, PublishedRootRecord>
+            m_publishedAssetKeys;
+        uint64 m_nextClosureGeneration = 1;
 
         mutable std::mutex m_diagnosticMutex;
         ResourceLoadDiagnostic m_lastLoadDiagnostic;
@@ -543,6 +702,32 @@ namespace RVX::Resource
                                     ResourceLoadError& outError) const;
         void RemoveInFlightLoad(const AssetKey& assetKey,
                                 ResourceLoadRequestId requestId);
+        struct ClosureUnloadPlan
+        {
+            // Dependents precede their dependencies. This permits every
+            // graph removal to leave a valid remaining graph.
+            std::vector<ResourceId> removalOrder;
+            std::vector<ResourceId> sharedRetainedResourceIds;
+        };
+
+        [[nodiscard]] std::optional<ClosureUnloadPlan> BuildClosureUnloadPlan(
+            ResourceId rootResourceId) const;
+        [[nodiscard]] AssetResidencyReleaseResult UnloadClosureNow(
+            ResourceId rootResourceId);
+        [[nodiscard]] bool IsPublishedRootActive(
+            ResourceId resourceId,
+            const AssetKey& assetKey) const;
+        bool ReactivatePublishedRoot(
+            ResourceId resourceId,
+            const AssetKey& assetKey);
+        [[nodiscard]] AssetResidencyReleaseResult UnloadResourceNow(ResourceId id);
+        [[nodiscard]] AssetResidencyReleaseResult EvictResourceNow(ResourceId id);
+        [[nodiscard]] uint64 AllocateClosureGeneration() noexcept;
+        [[nodiscard]] std::optional<ResourceClosureRetirementOutcome>
+            MakeClosureRetirementOutcome(
+                ResourceId rootResourceId,
+                const ClosureUnloadPlan& plan) const;
+        void ProcessPendingLeaseUnloads();
         bool IsOwnerThread() const;
         void LoadDependencies(IResource* resource);
         void SetLastLoadDiagnostic(const ResourceLoadDiagnostic& diagnostic);
@@ -644,6 +829,18 @@ namespace RVX::Resource
         static_assert(std::is_base_of_v<IResource, T>, "T must derive from IResource");
         IResource* resource = LoadResource(id);
         return ResourceHandle<T>(dynamic_cast<T*>(resource));
+    }
+
+    template<typename T>
+    ResourceHandle<T> ResourceManager::TryAcquireLoaded(ResourceId id)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_loadMutex);
+        if (!m_initialized || m_shuttingDown || !m_cache)
+        {
+            return {};
+        }
+
+        return m_cache->TryAcquireLoaded<T>(id);
     }
 
     template<typename T>

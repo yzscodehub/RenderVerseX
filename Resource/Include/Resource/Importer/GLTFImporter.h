@@ -16,12 +16,16 @@
 #include "Geometry/Asset/Material.h"
 #include "Geometry/Asset/Mesh.h"
 #include "Geometry/Asset/Model.h"
+#include "Animation/Data/AnimationClip.h"
+#include "Animation/Data/Skeleton.h"
 #include "Core/Diagnostics/Trace.h"
 #include "Resource/Loader/TextureReference.h"
+#include "Resource/ResourceContentIdentity.h"
 #include <string>
 #include <vector>
 #include <memory>
 #include <functional>
+#include <map>
 
 // Forward declaration for tinygltf
 namespace tinygltf
@@ -65,12 +69,29 @@ namespace RVX::Resource
         /// These are not loaded yet - the ModelLoader will handle that
         std::vector<TextureReference> textures;
 
+        /// Canonical parent-before-child skeleton imported from the single
+        /// supported glTF skin.  Multiple skins fail the import explicitly.
+        Animation::Skeleton::ConstPtr skeleton;
+
+        /// Named clips in canonical lexical order.  Duplicate source names are
+        /// deterministically disambiguated by their source animation index.
+        std::map<std::string, Animation::AnimationClip::ConstPtr> animationClips;
+
         /// Source features used by cook-time capability validation.
         bool hasSkins = false;
         bool hasAnimations = false;
         bool hasMorphTargets = false;
         std::vector<std::string> extensionsUsed;
         std::vector<std::string> extensionsRequired;
+
+        /**
+         * @brief Identity of the exact source bytes consumed by TinyGLTF.
+         *
+         * This is empty only when parsing failed before a complete identity
+         * could be established. ModelLoader forwards a valid value into its
+         * PreparedResourceBundle for owner-thread verification.
+         */
+        ResourceContentIdentity observedContentIdentity;
 
         /// Clear all data
         void Clear()
@@ -82,11 +103,14 @@ namespace RVX::Resource
             meshes.clear();
             materials.clear();
             textures.clear();
+            skeleton.reset();
+            animationClips.clear();
             hasSkins = false;
             hasAnimations = false;
             hasMorphTargets = false;
             extensionsUsed.clear();
             extensionsRequired.clear();
+            observedContentIdentity = {};
         }
     };
 
@@ -172,28 +196,43 @@ namespace RVX::Resource
                       tinygltf::Model& gltfModel,
                       std::string& error,
                       std::string& warning,
+                      ResourceContentIdentity& outObservedContentIdentity,
                       const Diagnostics::TraceContext& traceContext);
         
-        void ParseMeshes(const tinygltf::Model& gltf, GLTFImportResult& result, const GLTFImportOptions& options);
+        bool ParseMeshes(const tinygltf::Model& gltf,
+                         GLTFImportResult& result,
+                         const GLTFImportOptions& options,
+                         std::string& error);
         void ParseMaterials(const tinygltf::Model& gltf, GLTFImportResult& result);
         void ExtractTextures(tinygltf::Model& gltf, const std::string& basePath, GLTFImportResult& result);
-        void ParseNodes(const tinygltf::Model& gltf, GLTFImportResult& result);
-        void ParseScene(const tinygltf::Model& gltf, GLTFImportResult& result);
+        bool ParseNodes(const tinygltf::Model& gltf,
+                        GLTFImportResult& result,
+                        const GLTFImportOptions& options,
+                        std::string& error);
+        bool ParseScene(const tinygltf::Model& gltf,
+                        GLTFImportResult& result,
+                        std::string& error);
+        bool ParseSkeletalData(const tinygltf::Model& gltf,
+                               GLTFImportResult& result,
+                               const GLTFImportOptions& options,
+                               std::string& error);
 
         // Conversion helpers
-        Mesh::Ptr ConvertPrimitive(const tinygltf::Model& gltf, 
+        Mesh::Ptr ConvertPrimitive(const tinygltf::Model& gltf,
                                     const tinygltf::Primitive& primitive,
                                     const std::string& meshName,
                                     int primitiveIndex,
-                                    const GLTFImportOptions& options);
+                                    const GLTFImportOptions& options,
+                                    std::string& error);
 
         Material::Ptr ConvertMaterial(const tinygltf::Model& gltf, 
                                        const tinygltf::Material& mat,
                                        int materialIndex);
 
-        Node::Ptr ConvertNode(const tinygltf::Model& gltf, 
+        Node::Ptr ConvertNode(const tinygltf::Model& gltf,
                                int nodeIndex,
-                               const std::vector<int>& meshToFirstPrimitiveIndex);
+                               const std::vector<int>& meshToFirstPrimitiveIndex,
+                               const GLTFImportOptions& options);
 
         // Data extraction helpers
         template<typename T>
@@ -211,6 +250,9 @@ namespace RVX::Resource
         ProgressCallback m_progressCallback;
         std::string m_currentFilePath;
         std::vector<Node::Ptr> m_parsedNodes;  // Temporary storage during parsing
+        std::vector<int> m_skinJointRemap;     // Source skin joint -> canonical skeleton bone
+        std::vector<std::string> m_nodeCanonicalPaths;
+        std::vector<bool> m_jointNodes;
     };
 
 } // namespace RVX::Resource

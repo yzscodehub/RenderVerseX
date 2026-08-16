@@ -6,6 +6,7 @@ add_library(RVX_Tools STATIC)
 target_sources(RVX_Tools PRIVATE
     Private/AssetPipeline.cpp
     Private/AssetDatabase.cpp
+    Private/AnimationRootMotionDeriver.cpp
     Private/Importers/AudioImporter.cpp
 )
 
@@ -42,3 +43,13 @@ target_link_libraries(RVXCook PRIVATE
 )
 
 target_compile_features(RVXCook PRIVATE cxx_std_20)
+
+add_executable(RVXAnimationDerive
+    Private/AnimationRootMotionDeriveMain.cpp
+)
+
+target_link_libraries(RVXAnimationDerive PRIVATE
+    RVX::Tools
+)
+
+target_compile_features(RVXAnimationDerive PRIVATE cxx_std_20)

@@ -1,4 +1,5 @@
 #include "Resource/Types/MaterialResource.h"
+#include "Core/Log.h"
 #include "Core/Diagnostics/JsonWriter.h"
 
 #include <fstream>
@@ -59,9 +60,18 @@ namespace
 MaterialResource::MaterialResource() = default;
 MaterialResource::~MaterialResource() = default;
 
-void MaterialResource::SetMaterialData(std::shared_ptr<Material> material)
+bool MaterialResource::SetMaterialData(std::shared_ptr<Material> material)
 {
+    if (!CanModifyPreparedState())
+    {
+        RVX_CORE_ERROR(
+            "Rejected direct material-data mutation for published material resource {}. "
+            "Use a ResourceManager-managed MaterialInstanceResource instead.",
+            GetId());
+        return false;
+    }
     m_material = std::move(material);
+    return true;
 }
 
 const std::string& MaterialResource::GetMaterialName() const
@@ -171,9 +181,19 @@ MaterialSourceData MaterialResource::GetMaterialSourceData() const
     return source;
 }
 
-void MaterialResource::SetTexture(const std::string& slot, ResourceHandle<TextureResource> texture)
+bool MaterialResource::SetTexture(const std::string& slot,
+                                  ResourceHandle<TextureResource> texture)
 {
+    if (!CanModifyPreparedState())
+    {
+        RVX_CORE_ERROR(
+            "Rejected direct texture mutation for published material resource {}. "
+            "Use ResourceManager::UpdateMaterialInstance() instead.",
+            GetId());
+        return false;
+    }
     m_textures[slot] = std::move(texture);
+    return true;
 }
 
 ResourceHandle<TextureResource> MaterialResource::GetTexture(const std::string& slot) const
@@ -187,9 +207,17 @@ const std::unordered_map<std::string, ResourceHandle<TextureResource>>& Material
     return m_textures;
 }
 
-void MaterialResource::SetShader(ResourceHandle<ShaderResource> shader)
+bool MaterialResource::SetShader(ResourceHandle<ShaderResource> shader)
 {
+    if (!CanModifyPreparedState())
+    {
+        RVX_CORE_ERROR(
+            "Rejected direct shader mutation for published material resource {}.",
+            GetId());
+        return false;
+    }
     m_shader = std::move(shader);
+    return true;
 }
 
 ResourceHandle<ShaderResource> MaterialResource::GetShader() const
@@ -316,6 +344,21 @@ std::vector<ResourceId> MaterialResource::GetRequiredDependencies() const
     }
 
     return deps;
+}
+
+void MaterialResource::CommitManagedMaterialState(
+    std::shared_ptr<Material> material,
+    std::unordered_map<std::string, ResourceHandle<TextureResource>> textures,
+    ResourceHandle<ShaderResource> shader)
+{
+    m_material = std::move(material);
+    m_textures = std::move(textures);
+    m_shader = std::move(shader);
+}
+
+bool MaterialResource::CanModifyPreparedState() const noexcept
+{
+    return !IsLoaded() && GetState() != ResourceState::Unloading;
 }
 
 } // namespace RVX::Resource

@@ -14,6 +14,17 @@ bool PreparedResourceBundle::SetRoot(ResourceHandle<IResource> resource)
     return Add(std::move(resource), true);
 }
 
+bool PreparedResourceBundle::SetObservedContentIdentity(ResourceContentIdentity identity)
+{
+    if (m_observedContentIdentity.IsValid() || !identity.IsValid())
+    {
+        return false;
+    }
+
+    m_observedContentIdentity = std::move(identity);
+    return true;
+}
+
 bool PreparedResourceBundle::IsValid() const
 {
     if (!m_root || m_entries.empty())

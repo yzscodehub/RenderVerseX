@@ -43,9 +43,14 @@
  */
 
 #include "Resource/IResource.h"
+#include "Resource/AssetResidencyLease.h"
 #include "Resource/PreparedResourceBundle.h"
+#include "Resource/ResourceDiagnostics.h"
+#include "Resource/ResourceDiagnosticsView.h"
+#include "Resource/ResourceContentIdentity.h"
 #include "Resource/ResourceLoadOperation.h"
 #include "Resource/ResourceHandle.h"
+#include "Resource/ResourcePublicationView.h"
 #include "Resource/ResourceCache.h"
 #include "Resource/ResourceRegistry.h"
 #include "Resource/DependencyGraph.h"
@@ -57,13 +62,16 @@
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "Resource/Types/MaterialResource.h"
+#include "Resource/Types/MaterialInstanceResource.h"
 #include "Resource/Types/AudioResource.h"
+#include "Resource/Types/AnimationResource.h"
 #include "Resource/Types/EnvironmentResource.h"
 
 // Loaders
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/Loader/ModelLoader.h"
 #include "Resource/Loader/AudioLoader.h"
+#include "Resource/Loader/AnimationLoader.h"
 #include "Resource/Loader/HDRTextureLoader.h"
 #include "Resource/Loader/EnvironmentLoader.h"
 

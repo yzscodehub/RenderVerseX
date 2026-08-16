@@ -1,5 +1,7 @@
 #include "Geometry/Asset/Model.h"
 
+#include <unordered_set>
+
 namespace RVX
 {
     std::vector<Node::Ptr> Model::GetAllNodes() const
@@ -21,24 +23,75 @@ namespace RVX
         return nullptr;
     }
 
-    void Model::ComputeBoundingBox()
+    bool Model::ComputeBoundingBox(const std::vector<Mesh::Ptr>& meshes)
     {
-        if (!m_root) return;
-
-        if (auto bounds = m_root->ComputeWorldBoundingBox())
+        m_bbox.Reset();
+        if (!m_root || meshes.empty())
         {
-            m_bbox = *bounds;
+            return false;
         }
-    }
 
-    std::vector<Node::Ptr> Model::GetBoneNodes() const
-    {
-        std::vector<Node::Ptr> boneNodes;
-        if (m_root)
+        BoundingBox result;
+        bool hasBounds = false;
+        bool hasInvalidMeshReference = false;
+        m_root->TraverseDepthFirst(
+            [&](Node* node)
+            {
+                if (node == nullptr || hasInvalidMeshReference)
+                {
+                    return;
+                }
+
+                const auto addMeshBounds = [&](int meshIndex)
+                {
+                    if (meshIndex < 0 ||
+                        static_cast<size_t>(meshIndex) >= meshes.size())
+                    {
+                        hasInvalidMeshReference = true;
+                        return;
+                    }
+
+                    const Mesh::Ptr& mesh = meshes[static_cast<size_t>(meshIndex)];
+                    if (!mesh || !mesh->GetBoundingBox() ||
+                        !mesh->GetBoundingBox()->IsValid())
+                    {
+                        hasInvalidMeshReference = true;
+                        return;
+                    }
+
+                    result.Expand(
+                        mesh->GetBoundingBox()->Transformed(node->GetWorldMatrix()));
+                    hasBounds = true;
+                };
+
+                const std::vector<int>& explicitMeshIndices = node->GetMeshIndices();
+                if (explicitMeshIndices.empty())
+                {
+                    const int meshIndex = node->GetMeshIndex();
+                    if (meshIndex != -1)
+                    {
+                        addMeshBounds(meshIndex);
+                    }
+                    return;
+                }
+
+                std::unordered_set<int> resolvedMeshIndices;
+                for (const int meshIndex : explicitMeshIndices)
+                {
+                    if (resolvedMeshIndices.insert(meshIndex).second)
+                    {
+                        addMeshBounds(meshIndex);
+                    }
+                }
+            });
+
+        if (hasInvalidMeshReference || !hasBounds)
         {
-            CollectBoneNodesRecursive(m_root, boneNodes);
+            return false;
         }
-        return boneNodes;
+
+        m_bbox = result;
+        return true;
     }
 
     void Model::CollectAllNodesRecursive(const Node::Ptr& node, std::vector<Node::Ptr>& outNodes) const
@@ -47,18 +100,6 @@ namespace RVX
         for (const auto& child : node->GetChildren())
         {
             CollectAllNodesRecursive(child, outNodes);
-        }
-    }
-
-    void Model::CollectBoneNodesRecursive(const Node::Ptr& node, std::vector<Node::Ptr>& outNodes) const
-    {
-        if (node->IsBone())
-        {
-            outNodes.push_back(node);
-        }
-        for (const auto& child : node->GetChildren())
-        {
-            CollectBoneNodesRecursive(child, outNodes);
         }
     }
 

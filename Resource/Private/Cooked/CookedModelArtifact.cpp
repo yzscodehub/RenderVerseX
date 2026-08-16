@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace RVX::Resource
 {
@@ -20,6 +21,7 @@ namespace
 
     constexpr std::string_view PayloadBegin = "RVX_MODEL_PAYLOAD_BEGIN\n";
     constexpr std::string_view PayloadEnd = "RVX_MODEL_PAYLOAD_END\n";
+    constexpr uint32 MaxNodePrimitiveMappings = 65536u;
 
     bool IsFiniteBounds(const BoundingBox& bounds)
     {
@@ -328,8 +330,14 @@ bool SerializeCookedModelArtifact(const CookedModelArtifact& artifact,
     payload.imbue(std::locale::classic());
     payload << std::setprecision(std::numeric_limits<float32>::max_digits10);
     payload << "source=" << HexEncode(artifact.sourcePath) << '\n'
-            << "meshArtifact=" << HexEncode(artifact.meshArtifactPath) << '\n'
-            << "boundsValid=1\n";
+            << "meshArtifact=" << HexEncode(artifact.meshArtifactPath) << '\n';
+    const bool wantsSkeletalSchema = !artifact.animationArtifactPath.empty();
+    if (wantsSkeletalSchema)
+    {
+        payload << "animationArtifactPresent=1\n"
+                << "animationArtifact=" << HexEncode(artifact.animationArtifactPath) << '\n';
+    }
+    payload << "boundsValid=1\n";
     WriteVec3(payload, "boundsMin", artifact.bounds.GetMin());
     WriteVec3(payload, "boundsMax", artifact.bounds.GetMax());
 
@@ -409,6 +417,7 @@ bool SerializeCookedModelArtifact(const CookedModelArtifact& artifact,
     std::vector<FlatNode> nodes;
     FlattenNode(artifact.rootNode.get(), -1, nodes);
     payload << "nodeCount=" << nodes.size() << '\n';
+    bool hasSkinnedNode = false;
     for (size_t index = 0; index < nodes.size(); ++index)
     {
         const FlatNode& flat = nodes[index];
@@ -420,6 +429,41 @@ bool SerializeCookedModelArtifact(const CookedModelArtifact& artifact,
         {
             outError = "Cooked model node contains a non-finite transform";
             return false;
+        }
+        if (node.GetSkinIndex() < -1 || node.GetSkinIndex() > 0)
+        {
+            outError = "Cooked model schema v2 supports at most one skin";
+            return false;
+        }
+        hasSkinnedNode = hasSkinnedNode || node.HasSkin();
+        std::vector<int> resolvedMeshIndices;
+        if (wantsSkeletalSchema)
+        {
+            const std::vector<int>& materialIndices = node.GetMaterialIndices();
+            resolvedMeshIndices = node.GetMeshIndices();
+            if (resolvedMeshIndices.empty() && node.GetMeshIndex() >= 0)
+                resolvedMeshIndices.push_back(node.GetMeshIndex());
+            if (resolvedMeshIndices.size() > MaxNodePrimitiveMappings ||
+                (node.GetMeshIndex() < 0 &&
+                 (!resolvedMeshIndices.empty() || !materialIndices.empty())) ||
+                (node.GetMeshIndex() >= 0 &&
+                 (resolvedMeshIndices.empty() || materialIndices.empty() ||
+                  resolvedMeshIndices.front() != node.GetMeshIndex())) ||
+                resolvedMeshIndices.size() != materialIndices.size())
+            {
+                outError = "Cooked model primitive mesh and material mappings are inconsistent";
+                return false;
+            }
+            std::unordered_set<int> uniqueMeshIndices;
+            uniqueMeshIndices.reserve(resolvedMeshIndices.size());
+            for (const int meshIndex : resolvedMeshIndices)
+            {
+                if (meshIndex < 0 || !uniqueMeshIndices.insert(meshIndex).second)
+                {
+                    outError = "Cooked model primitive mesh indices must be unique and valid";
+                    return false;
+                }
+            }
         }
         for (const int materialIndex : node.GetMaterialIndices())
         {
@@ -434,7 +478,20 @@ bool SerializeCookedModelArtifact(const CookedModelArtifact& artifact,
         payload << key << ".name=" << HexEncode(node.GetName()) << '\n'
                 << key << ".parent=" << flat.parent << '\n'
                 << key << ".active=" << (node.IsActive() ? 1 : 0) << '\n'
-                << key << ".meshIndex=" << node.GetMeshIndex() << '\n'
+                << key << ".meshIndex=" << node.GetMeshIndex() << '\n';
+        if (wantsSkeletalSchema)
+        {
+            payload << key << ".skinIndex=" << node.GetSkinIndex() << '\n'
+                    << key << ".meshIndexCount=" << resolvedMeshIndices.size() << '\n';
+            for (size_t meshIndex = 0;
+                 meshIndex < resolvedMeshIndices.size();
+                 ++meshIndex)
+            {
+                payload << key << ".meshIndex." << meshIndex << '='
+                        << resolvedMeshIndices[meshIndex] << '\n';
+            }
+        }
+        payload
                 << key << ".materialCount=" << node.GetMaterialIndices().size() << '\n';
         WriteVec3(payload, key + ".position", transform.GetPosition());
         const Quat& rotation = transform.GetRotation();
@@ -449,14 +506,28 @@ bool SerializeCookedModelArtifact(const CookedModelArtifact& artifact,
                     << node.GetMaterialIndices()[materialIndex] << '\n';
         }
     }
+    if (hasSkinnedNode != wantsSkeletalSchema)
+    {
+        outError = "Cooked model skin nodes and .rvxanim dependency must be published together";
+        return false;
+    }
 
     const std::string payloadText = payload.str();
     const std::string contentHash = HashPayload(payloadText);
     std::ostringstream artifactStream;
     artifactStream.imbue(std::locale::classic());
-    artifactStream << RVX_MODEL_PREBAKE_MAGIC << '\n'
-                   << "schemaVersion=" << RVX_MODEL_PREBAKE_SCHEMA_VERSION << '\n'
-                   << "buildFingerprint=" << RVX_MODEL_PREBAKE_BUILD_FINGERPRINT << '\n'
+    artifactStream << (wantsSkeletalSchema
+                           ? RVX_MODEL_PREBAKE_MAGIC
+                           : RVX_MODEL_PREBAKE_LEGACY_MAGIC)
+                   << '\n'
+                   << "schemaVersion=" << (wantsSkeletalSchema
+                                                ? RVX_MODEL_PREBAKE_SCHEMA_VERSION
+                                                : RVX_MODEL_PREBAKE_LEGACY_SCHEMA_VERSION)
+                   << '\n'
+                   << "buildFingerprint=" << (wantsSkeletalSchema
+                                                   ? RVX_MODEL_PREBAKE_BUILD_FINGERPRINT
+                                                   : RVX_MODEL_PREBAKE_LEGACY_BUILD_FINGERPRINT)
+                   << '\n'
                    << "contentHash=" << contentHash << '\n'
                    << "payloadSize=" << payloadText.size() << '\n'
                    << PayloadBegin << payloadText << PayloadEnd;
@@ -472,12 +543,19 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
     outArtifact = {};
     outError.clear();
     const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    const std::string magicLine = std::string(RVX_MODEL_PREBAKE_MAGIC) + '\n';
-    if (!text.starts_with(magicLine))
+    const std::string currentMagicLine = std::string(RVX_MODEL_PREBAKE_MAGIC) + '\n';
+    const std::string legacyMagicLine =
+        std::string(RVX_MODEL_PREBAKE_LEGACY_MAGIC) + '\n';
+    const bool isCurrentSchema = text.starts_with(currentMagicLine);
+    const bool isLegacySchema = text.starts_with(legacyMagicLine);
+    if (!isCurrentSchema && !isLegacySchema)
     {
-        outError = "Model artifact missing RVX_MODEL_PREBAKE_V1 magic";
+        outError = "Model artifact has an unsupported RVX_MODEL_PREBAKE magic";
         return false;
     }
+    const std::string& magicLine = isCurrentSchema
+        ? currentMagicLine
+        : legacyMagicLine;
 
     const size_t payloadMarker = text.find(PayloadBegin);
     if (payloadMarker == std::string_view::npos)
@@ -493,8 +571,12 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
     if (!ParseInteger(header, "schemaVersion", schemaVersion) ||
         !ParseInteger(header, "payloadSize", payloadSize) ||
         fingerprint == header.end() || expectedHash == header.end() ||
-        schemaVersion != RVX_MODEL_PREBAKE_SCHEMA_VERSION ||
-        fingerprint->second != RVX_MODEL_PREBAKE_BUILD_FINGERPRINT)
+        schemaVersion != (isCurrentSchema
+            ? RVX_MODEL_PREBAKE_SCHEMA_VERSION
+            : RVX_MODEL_PREBAKE_LEGACY_SCHEMA_VERSION) ||
+        fingerprint->second != (isCurrentSchema
+            ? RVX_MODEL_PREBAKE_BUILD_FINGERPRINT
+            : RVX_MODEL_PREBAKE_LEGACY_BUILD_FINGERPRINT))
     {
         outError = "Model artifact header or build fingerprint is incompatible";
         return false;
@@ -520,6 +602,28 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
         !ParseString(fields, "meshArtifact", outArtifact.meshArtifactPath))
     {
         outError = "Model artifact dependency metadata is incomplete";
+        return false;
+    }
+    if (isCurrentSchema)
+    {
+        uint32 animationArtifactPresent = 0;
+        if (!ParseInteger(fields,
+                          "animationArtifactPresent",
+                          animationArtifactPresent) ||
+            animationArtifactPresent != 1 ||
+            !ParseString(fields,
+                         "animationArtifact",
+                         outArtifact.animationArtifactPath) ||
+            outArtifact.animationArtifactPath.empty())
+        {
+            outError = "Model artifact animation dependency metadata is invalid";
+            return false;
+        }
+    }
+    else if (fields.contains("animationArtifactPresent") ||
+             fields.contains("animationArtifact"))
+    {
+        outError = "Legacy model artifact may not contain animation dependency metadata";
         return false;
     }
     uint32 boundsValid = 0;
@@ -683,6 +787,7 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
         int32 parent = -1;
         uint32 active = 0;
         int32 meshIndex = -1;
+        int32 skinIndex = -1;
         uint32 nodeMaterialCount = 0;
         Vec3 position;
         Vec3 scale;
@@ -691,6 +796,8 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
             !ParseInteger(fields, key + ".parent", parent) ||
             !ParseInteger(fields, key + ".active", active) ||
             !ParseInteger(fields, key + ".meshIndex", meshIndex) ||
+            (isCurrentSchema &&
+             !ParseInteger(fields, key + ".skinIndex", skinIndex)) ||
             !ParseInteger(fields, key + ".materialCount", nodeMaterialCount) ||
             !ParseVec3(fields, key + ".position", position) ||
             !ParseFloat(fields, key + ".rotation.w", rotation.w) ||
@@ -698,9 +805,15 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
             !ParseFloat(fields, key + ".rotation.y", rotation.y) ||
             !ParseFloat(fields, key + ".rotation.z", rotation.z) ||
             !ParseVec3(fields, key + ".scale", scale) ||
-            parent >= static_cast<int32>(index) || active > 1)
+            parent >= static_cast<int32>(index) || active > 1 ||
+            skinIndex < -1 || skinIndex > 0)
         {
             outError = "Model artifact node hierarchy is invalid";
+            return false;
+        }
+        if (!isCurrentSchema && fields.contains(key + ".skinIndex"))
+        {
+            outError = "Legacy model artifact may not contain skeletal node metadata";
             return false;
         }
 
@@ -710,6 +823,52 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
         node->GetLocalTransform().SetRotation(rotation);
         node->GetLocalTransform().SetScale(scale);
         node->SetMeshIndex(meshIndex);
+        node->SetSkinIndex(skinIndex);
+        if (isCurrentSchema)
+        {
+            std::vector<int> meshIndices;
+            const auto meshIndexCount = fields.find(key + ".meshIndexCount");
+            if (meshIndexCount != fields.end())
+            {
+                uint32 count = 0;
+                if (!ParseInteger(fields, key + ".meshIndexCount", count) ||
+                    count > MaxNodePrimitiveMappings ||
+                    count != nodeMaterialCount ||
+                    (meshIndex < 0 && count != 0) ||
+                    (meshIndex >= 0 && count == 0))
+                {
+                    outError = "Model artifact primitive mesh index metadata is invalid";
+                    return false;
+                }
+                meshIndices.reserve(count);
+                std::unordered_set<int32> uniqueMeshIndices;
+                uniqueMeshIndices.reserve(count);
+                for (uint32 meshOffset = 0; meshOffset < count; ++meshOffset)
+                {
+                    int32 value = -1;
+                    if (!ParseInteger(fields,
+                                      key + ".meshIndex." +
+                                          std::to_string(meshOffset),
+                                      value) ||
+                        value < 0 ||
+                        !uniqueMeshIndices.insert(value).second)
+                    {
+                        outError = "Model artifact primitive mesh index list is incomplete or non-unique";
+                        return false;
+                    }
+                    meshIndices.push_back(value);
+                }
+                if (meshIndex >= 0 && meshIndices.front() != meshIndex)
+                {
+                    outError = "Model artifact primary mesh index disagrees with primitive mesh indices";
+                    return false;
+                }
+            }
+            // Earlier V2 artifacts stored only the compatibility primary mesh
+            // index.  Keep this list empty so ComponentFactory retains the
+            // historical single-mesh/submesh material behavior.
+            node->SetMeshIndices(std::move(meshIndices));
+        }
         std::vector<int> materialIndices;
         materialIndices.reserve(nodeMaterialCount);
         for (uint32 materialIndex = 0; materialIndex < nodeMaterialCount; ++materialIndex)
@@ -748,6 +907,16 @@ bool DeserializeCookedModelArtifact(std::span<const uint8> bytes,
     if (rootCount != 1)
     {
         outError = "Model artifact must contain exactly one root node";
+        outArtifact = {};
+        return false;
+    }
+    bool hasSkinnedNode = false;
+    for (const Node::Ptr& node : nodes)
+        hasSkinnedNode = hasSkinnedNode || (node && node->HasSkin());
+    if ((isCurrentSchema && !hasSkinnedNode) ||
+        hasSkinnedNode != !outArtifact.animationArtifactPath.empty())
+    {
+        outError = "Model artifact skin nodes and animation dependency are inconsistent";
         outArtifact = {};
         return false;
     }

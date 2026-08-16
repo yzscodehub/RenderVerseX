@@ -2,14 +2,9 @@
 
 /**
  * @file ResourceSceneAdapters.h
- * @brief Scene integration adapters for Resource model instantiation.
+ * @brief Value-only Resource to Scene ECS adapters.
  */
 
-#include "ResourceSceneAdapters/SceneAssetInstantiation.h"
-#include "ResourceSceneAdapters/SceneAssetLoadCoordinator.h"
-
-namespace RVX::ResourceSceneAdapters
-{
-    /** @brief Register Scene component factories used by Resource model instantiation. */
-    void RegisterDefaults();
-}
+#include "ResourceSceneAdapters/ECS/EcsEnvironmentLoadCoordinator.h"
+#include "ResourceSceneAdapters/ECS/EcsSceneAssetLoadCoordinator.h"
+#include "ResourceSceneAdapters/ECS/PreparedModelBatch.h"

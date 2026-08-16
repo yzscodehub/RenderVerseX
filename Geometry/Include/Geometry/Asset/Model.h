@@ -8,6 +8,8 @@
  */
 
 #include "Core/Math/AABB.h"
+#include "Geometry/Asset/Material.h"
+#include "Geometry/Asset/Mesh.h"
 #include "Geometry/Asset/Node.h"
 #include <vector>
 #include <memory>
@@ -60,26 +62,6 @@ namespace RVX
         std::vector<Node::Ptr> GetAllNodes() const;
 
         /**
-         * @brief Collect all nodes that have a specific component type
-         */
-        template<typename T>
-        void CollectNodesWithComponent(std::vector<Node::Ptr>& outNodes) const
-        {
-            if (m_root)
-            {
-                CollectNodesWithComponentRecursive<T>(m_root, outNodes);
-            }
-        }
-
-        /**
-         * @brief Collect all nodes with mesh components
-         */
-        void CollectMeshNodes(std::vector<Node::Ptr>& outNodes) const
-        {
-            CollectNodesWithComponent<MeshComponent>(outNodes);
-        }
-
-        /**
          * @brief Find a node by name
          */
         Node::Ptr GetNodeByName(const std::string& name) const;
@@ -88,7 +70,18 @@ namespace RVX
         // Bounding Box
         // =====================================================================
 
-        void ComputeBoundingBox();
+        /**
+         * @brief Resolve indexed node meshes and compute their world-space union.
+         *
+         * A non-empty explicit mesh-index list is authoritative for a node;
+         * otherwise its singular mesh index is used. Duplicate indices within
+         * one node are resolved once, while repeated indices on separate nodes
+         * remain distinct because each node has its own world transform.
+         *
+         * @return True only when every referenced mesh resolves to valid bounds
+         *         and the model contains at least one indexed mesh bound.
+         */
+        [[nodiscard]] bool ComputeBoundingBox(const std::vector<Mesh::Ptr>& meshes);
         void SetBoundingBox(const BoundingBox& bbox) { m_bbox = bbox; }
         const BoundingBox& GetBoundingBox() const { return m_bbox; }
 
@@ -102,15 +95,6 @@ namespace RVX
         // Legacy skeleton data
         // Note: For full animation support, include Animation module
 
-        // =====================================================================
-        // Bone Queries
-        // =====================================================================
-
-        /**
-         * @brief Get all bone nodes in the scene graph
-         */
-        std::vector<Node::Ptr> GetBoneNodes() const;
-
     private:
         Node::Ptr m_root;
         BoundingBox m_bbox;
@@ -119,20 +103,6 @@ namespace RVX
 
         void CollectAllNodesRecursive(const Node::Ptr& node, std::vector<Node::Ptr>& outNodes) const;
 
-        template<typename T>
-        void CollectNodesWithComponentRecursive(const Node::Ptr& node, std::vector<Node::Ptr>& outNodes) const
-        {
-            if (node->HasComponent<T>())
-            {
-                outNodes.push_back(node);
-            }
-            for (const auto& child : node->GetChildren())
-            {
-                CollectNodesWithComponentRecursive<T>(child, outNodes);
-            }
-        }
-
-        void CollectBoneNodesRecursive(const Node::Ptr& node, std::vector<Node::Ptr>& outNodes) const;
         Node::Ptr FindNodeByNameRecursive(const Node::Ptr& node, const std::string& name) const;
     };
 

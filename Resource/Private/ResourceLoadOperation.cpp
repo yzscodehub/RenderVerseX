@@ -26,7 +26,8 @@ namespace
 
 bool AssetKey::IsValid() const
 {
-    return !canonicalPath.empty() && resourceType != ResourceType::Unknown;
+    return !canonicalPath.empty() && resourceType != ResourceType::Unknown &&
+           (expectedContentIdentity.IsEmpty() || expectedContentIdentity.IsValid());
 }
 
 bool AssetKey::operator==(const AssetKey& other) const
@@ -35,7 +36,8 @@ bool AssetKey::operator==(const AssetKey& other) const
            resourceType == other.resourceType &&
            importOptionsHash == other.importOptionsHash &&
            platformProfileHash == other.platformProfileHash &&
-           loaderSchemaVersion == other.loaderSchemaVersion;
+           loaderSchemaVersion == other.loaderSchemaVersion &&
+           expectedContentIdentity == other.expectedContentIdentity;
 }
 
 size_t AssetKeyHash::operator()(const AssetKey& key) const noexcept
@@ -44,7 +46,28 @@ size_t AssetKeyHash::operator()(const AssetKey& key) const noexcept
     hashValue = CombineHash(hashValue, std::hash<uint32>{}(static_cast<uint32>(key.resourceType)));
     hashValue = CombineHash(hashValue, std::hash<uint64>{}(key.importOptionsHash));
     hashValue = CombineHash(hashValue, std::hash<uint64>{}(key.platformProfileHash));
-    return CombineHash(hashValue, std::hash<uint32>{}(key.loaderSchemaVersion));
+    hashValue = CombineHash(hashValue, std::hash<uint32>{}(key.loaderSchemaVersion));
+    hashValue = CombineHash(
+        hashValue,
+        std::hash<uint32>{}(key.expectedContentIdentity.schemaVersion));
+    hashValue = CombineHash(
+        hashValue,
+        std::hash<uint32>{}(static_cast<uint32>(key.expectedContentIdentity.domain)));
+    hashValue = CombineHash(
+        hashValue,
+        std::hash<uint32>{}(static_cast<uint32>(key.expectedContentIdentity.scope)));
+    hashValue = CombineHash(
+        hashValue,
+        std::hash<uint32>{}(static_cast<uint32>(key.expectedContentIdentity.algorithm)));
+    hashValue = CombineHash(
+        hashValue,
+        std::hash<std::string>{}(key.expectedContentIdentity.digest));
+    hashValue = CombineHash(
+        hashValue,
+        std::hash<uint64>{}(key.expectedContentIdentity.byteCount));
+    return CombineHash(
+        hashValue,
+        std::hash<uint32>{}(key.expectedContentIdentity.fileCount));
 }
 
 std::string CanonicalizeAssetPath(const std::string& path)
@@ -83,7 +106,8 @@ AssetKey MakeAssetKey(const std::string& path,
                       ResourceType resourceType,
                       uint64 importOptionsHash,
                       uint64 platformProfileHash,
-                      uint32 loaderSchemaVersion)
+                      uint32 loaderSchemaVersion,
+                      ResourceContentIdentity expectedContentIdentity)
 {
     AssetKey key;
     key.canonicalPath = CanonicalizeAssetPath(path);
@@ -91,6 +115,7 @@ AssetKey MakeAssetKey(const std::string& path,
     key.importOptionsHash = importOptionsHash;
     key.platformProfileHash = platformProfileHash;
     key.loaderSchemaVersion = loaderSchemaVersion;
+    key.expectedContentIdentity = std::move(expectedContentIdentity);
     return key;
 }
 

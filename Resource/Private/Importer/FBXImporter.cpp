@@ -104,8 +104,15 @@ namespace RVX::Resource
         {
             result.model->path = path;
             result.model->suffix = ".fbx";
-            result.model->ComputeBoundingBox();
             result.model->SetHasAnimation(!result.animations.empty());
+        }
+        if (!result.model || !result.model->ComputeBoundingBox(result.meshes))
+        {
+            result.success = false;
+            result.errorMessage =
+                "FBX indexed model bounds require complete valid mesh references.";
+            ufbx_free_scene(scene);
+            return result;
         }
 
         // Cleanup ufbx scene
