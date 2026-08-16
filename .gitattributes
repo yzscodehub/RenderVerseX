@@ -30,3 +30,20 @@
 *.exe binary
 *.lib binary
 *.pdb binary
+
+# Product sample assets are vendored through Git LFS. Runtime and CI consume
+# these verified bytes offline; network access is reserved for the explicit
+# maintainer asset-update workflow.
+Samples/RenderVerseSamples/Assets/**/*.glb filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.gltf filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.bin filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.png filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.hdr filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.exr filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.zip filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.obj filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.mtl filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.ktx2 filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.rva filter=lfs diff=lfs merge=lfs -text
+Samples/RenderVerseSamples/Assets/**/*.rvxanim filter=lfs diff=lfs merge=lfs -text

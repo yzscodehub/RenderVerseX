@@ -24,6 +24,7 @@ namespace RVX
 
     private:
         LoadedSampleModel m_model;
+        SampleRenderPath m_renderPath = SampleRenderPath::Auto;
         std::string m_modelFailure;
         bool m_skyboxCreated = false;
         bool m_lightCreated = false;

@@ -4,13 +4,10 @@
 
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
-#include "Scene/Components/CameraComponent.h"
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
-#include "Scene/Components/LightComponent.h"
-#include "Scene/Components/SkyboxComponent.h"
-#include "Scene/SceneEntity.h"
-#include "Scene/SceneRuntime.h"
+#include "Samples/SampleRenderPathPolicy.h"
+#include "Scene/ECS/RenderFragments.h"
 
 #include <algorithm>
 
@@ -24,7 +21,50 @@ namespace RVX
             "Loads a model through the production resource and scene pipeline",
             "shadow-plane-caster",
             SampleAssetPolicy::CompatibleOverride,
+            "",
+            SampleEnvironmentPolicy::None,
+            true,
+            SampleRenderPath::Auto,
         };
+
+        [[nodiscard]] SceneECS::Skybox MakeProceduralSky()
+        {
+            return {
+                .mode = SceneECS::SkyboxMode::Procedural,
+                .sunDirection = normalize(Vec3(0.35f, 0.65f, 0.45f)),
+                .sunColor = Vec3(1.0f, 0.94f, 0.84f),
+                .zenithColor = Vec3(0.10f, 0.24f, 0.52f),
+                .horizonColor = Vec3(0.55f, 0.67f, 0.80f),
+                .groundColor = Vec3(0.07f, 0.08f, 0.10f),
+                .scatteringIntensity = 0.65f,
+                .contributesToLighting = false,
+            };
+        }
+
+        [[nodiscard]] SceneECS::Light MakeDirectionalLight()
+        {
+            return {
+                .type = SceneECS::LightType::Directional,
+                .color = Vec3(1.0f, 0.95f, 0.86f),
+                .intensity = 4.0f,
+                .shadowBias = 0.001f,
+                .castsShadows = true,
+            };
+        }
+
+        [[nodiscard]] std::string DescribeModelFailure(
+            const ResourceSceneAdapters::EcsSceneAssetLoadStatus& status)
+        {
+            if (!status.diagnostic.empty())
+            {
+                return status.diagnostic;
+            }
+            if (!status.request.error.message.empty())
+            {
+                return status.request.error.message;
+            }
+            return "Model-rendering ECS model request reached a terminal state.";
+        }
     } // namespace
 
     const SampleInfo& ModelRenderingSample::GetInfo() const noexcept
@@ -35,50 +75,45 @@ namespace RVX
     bool ModelRenderingSample::Setup(SampleContext& context,
                                      std::string& outError)
     {
+        m_renderPath = context.options.renderPath;
+        if (!ApplySampleRenderPathPolicy(
+                m_renderPath, context.renderSettings.gpuCulling, outError))
+        {
+            return false;
+        }
+
         const float32 aspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(std::max(context.options.height, 1u));
-        context.camera.SetPerspective(radians(45.0f), aspect, 0.05f, 250.0f);
-        context.camera.SetPosition(Vec3(0.0f, 2.5f, 5.8f));
-        context.camera.LookAt(Vec3(0.0f, 0.45f, 0.0f));
-
-        ActorSpawnParams skyParams;
-        skyParams.name = "ModelRenderingSky";
-        SceneEntity* skyEntity = context.scene.SpawnActor(skyParams);
-        SkyboxComponent* skybox =
-            skyEntity ? skyEntity->AddComponent<SkyboxComponent>() : nullptr;
-        if (!skybox)
+        if (!context.cameras.SetPerspective(
+                context.camera, radians(45.0f), aspect, 0.05f, 250.0f) ||
+            !context.cameras.SetPose(
+                context.camera, {.position = Vec3(0.0f, 2.5f, 5.8f)}) ||
+            !context.cameras.LookAt(context.camera, Vec3(0.0f, 0.45f, 0.0f)))
         {
-            outError = "Failed to create the model-rendering skybox";
+            outError = "Failed to configure the model-rendering ECS camera";
             return false;
         }
-        skybox->SetSkyboxType(SkyboxType::Procedural);
-        skybox->SetSunDirection(normalize(Vec3(0.35f, 0.65f, 0.45f)));
-        skybox->SetSunColor(Vec3(1.0f, 0.94f, 0.84f));
-        skybox->SetZenithColor(Vec3(0.10f, 0.24f, 0.52f));
-        skybox->SetHorizonColor(Vec3(0.55f, 0.67f, 0.80f));
-        skybox->SetGroundColor(Vec3(0.07f, 0.08f, 0.10f));
-        skybox->SetScatteringIntensity(0.65f);
-        skybox->SetContributesToLighting(false);
+
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                {}, MakeProceduralSky()).IsValid())
+        {
+            outError = "Failed to create the model-rendering ECS skybox";
+            return false;
+        }
         m_skyboxCreated = true;
 
-        ActorSpawnParams lightParams;
-        lightParams.name = "ModelRenderingSun";
-        SceneEntity* lightEntity = context.scene.SpawnActor(lightParams);
-        LightComponent* light =
-            lightEntity ? lightEntity->AddComponent<LightComponent>() : nullptr;
-        if (!light)
+        SceneECS::RuntimeEntityDesc lightDesc;
+        lightDesc.localTransform.rotation =
+            QuatFromEuler(Vec3(radians(-50.0f), radians(25.0f), 0.0f));
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                lightDesc,
+                MakeDirectionalLight(),
+                SceneECS::Visibility{}).IsValid())
         {
-            outError = "Failed to create the model-rendering light";
+            outError = "Failed to create the model-rendering ECS light";
             return false;
         }
-        lightEntity->SetRotation(
-            QuatFromEuler(Vec3(radians(-50.0f), radians(25.0f), 0.0f)));
-        light->SetLightType(LightType::Directional);
-        light->SetColor(Vec3(1.0f, 0.95f, 0.86f));
-        light->SetIntensity(4.0f);
-        light->SetCastsShadow(true);
-        light->SetShadowBias(0.001f);
         m_lightCreated = true;
 
         context.renderSettings.shadows.enabled = true;
@@ -91,24 +126,17 @@ namespace RVX
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
-        return context.models.Request(context.options.modelPath,
-                                      m_model,
-                                      outError);
+        return context.models.RequestByAssetId(context.options.assetId, m_model, outError);
     }
 
     void ModelRenderingSample::Update(SampleContext& context, float deltaTime)
     {
         static_cast<void>(deltaTime);
-        const SceneAssetStatus status =
+        const ResourceSceneAdapters::EcsSceneAssetLoadStatus status =
             context.models.UpdateReadiness(m_model);
-        if (status.IsFailed() ||
-            status.lifecycle == SceneAssetLifecycle::Cancelled)
+        if (status.IsTerminal())
         {
-            m_modelFailure = !status.diagnostic.empty()
-                                 ? status.diagnostic
-                                 : !status.error.message.empty()
-                                       ? status.error.message
-                                       : "Model rendering asset activation was cancelled";
+            m_modelFailure = DescribeModelFailure(status);
         }
     }
 
@@ -120,7 +148,8 @@ namespace RVX
     void ModelRenderingSample::AppendReport(
         SampleFeatureReporter& reporter) const
     {
-        if (m_model.resource.IsLoaded())
+        AppendSampleRenderPathPolicyReport(m_renderPath, reporter);
+        if (m_model.status.modelMetadata.HasPublishedSource())
         {
             reporter.Enable("ModelResourceLoad");
             reporter.Enable("SceneInstantiation");
@@ -128,13 +157,13 @@ namespace RVX
                 "model path=" + m_model.sourcePath.string());
             reporter.ResourceDiagnostic(
                 "model meshes=" +
-                std::to_string(m_model.resource->GetMeshCount()));
+                std::to_string(m_model.status.modelMetadata.meshAssetIds.size()));
             reporter.ResourceDiagnostic(
                 "model materials=" +
-                std::to_string(m_model.resource->GetMaterialCount()));
+                std::to_string(m_model.status.modelMetadata.materialAssetIds.size()));
             reporter.ResourceDiagnostic(
                 "model nodes=" +
-                std::to_string(m_model.resource->GetNodeCount()));
+                std::to_string(m_model.status.modelMetadata.sourceNodeCount));
         }
         if (m_skyboxCreated)
         {
@@ -161,6 +190,11 @@ namespace RVX
             return SampleReadiness::Pending(
                 "Model-rendering sample is waiting for visible geometry");
         }
+        if (!IsSampleRenderPathExecutionQualified(m_renderPath, diagnostics))
+        {
+            return SampleReadiness::Pending(
+                "Model-rendering sample is waiting for its requested render-path execution");
+        }
         return SampleReadiness::Ready();
     }
 
@@ -175,9 +209,15 @@ namespace RVX
 
     void ModelRenderingSample::Shutdown(SampleContext& context)
     {
-        static_cast<void>(context);
-        m_model = {};
-        m_modelFailure.clear();
+        if (m_model.request.IsValid() && !context.models.Cancel(m_model))
+        {
+            m_modelFailure = "Failed to cancel the model-rendering ECS model request.";
+        }
+        if (!m_model.request.IsValid())
+        {
+            m_modelFailure.clear();
+        }
+        m_renderPath = SampleRenderPath::Auto;
         m_skyboxCreated = false;
         m_lightCreated = false;
     }

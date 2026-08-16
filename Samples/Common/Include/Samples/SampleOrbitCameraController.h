@@ -3,10 +3,10 @@
 /** @file SampleOrbitCameraController.h @brief Input adapter for OrbitCameraRig. */
 
 #include "Runtime/Camera/OrbitCameraRig.h"
+#include "World/ECS/WorldEcsCameraService.h"
 
 namespace RVX
 {
-    class CameraComponent;
     class InputSubsystem;
 
     /** @brief Sample-facing alias for the backend-neutral rig configuration. */
@@ -22,7 +22,7 @@ namespace RVX
     };
 
     /**
-     * @brief Keeps sample code to Input -> Intent -> Rig -> CameraComponent.
+     * @brief Keeps sample code to Input -> Intent -> Rig -> ECS camera values.
      *
      * All framing and collision decisions are implemented by OrbitCameraRig;
      * this adapter only observes sample input and writes its resolved pose.
@@ -32,16 +32,24 @@ namespace RVX
     public:
         void Initialize(const SampleOrbitCameraSettings& settings,
                         InputSubsystem* input = nullptr);
-        void Update(InputSubsystem& input, CameraComponent& camera);
-        void ApplyInput(const SampleOrbitCameraInput& input,
-                        CameraComponent& camera);
-        void SetAspectRatio(float aspectRatio, CameraComponent& camera);
-        bool SetFocus(const AABB& bounds,
-                      const Vec3& pivot,
-                      CameraComponent& camera);
-        bool Fit(CameraComponent& camera);
+        [[nodiscard]] bool Update(InputSubsystem& input,
+                                  WorldECS::WorldEcsCameraService& cameras,
+                                  WorldECS::WorldEcsCameraRef camera);
+        [[nodiscard]] bool ApplyInput(const SampleOrbitCameraInput& input,
+                                      WorldECS::WorldEcsCameraService& cameras,
+                                      WorldECS::WorldEcsCameraRef camera);
+        [[nodiscard]] bool SetAspectRatio(float aspectRatio,
+                                          WorldECS::WorldEcsCameraService& cameras,
+                                          WorldECS::WorldEcsCameraRef camera);
+        [[nodiscard]] bool SetFocus(const AABB& bounds,
+                                    const Vec3& pivot,
+                                    WorldECS::WorldEcsCameraService& cameras,
+                                    WorldECS::WorldEcsCameraRef camera);
+        [[nodiscard]] bool Fit(WorldECS::WorldEcsCameraService& cameras,
+                               WorldECS::WorldEcsCameraRef camera);
         void CaptureResetAnchor();
-        void Apply(CameraComponent& camera);
+        [[nodiscard]] bool Apply(WorldECS::WorldEcsCameraService& cameras,
+                                 WorldECS::WorldEcsCameraRef camera);
         void Reset();
 
         [[nodiscard]] const SampleOrbitCameraSettings& GetSettings() const noexcept
@@ -60,6 +68,10 @@ namespace RVX
         }
 
     private:
+        [[nodiscard]] static bool IsUsableCamera(
+            const WorldECS::WorldEcsCameraService& cameras,
+            WorldECS::WorldEcsCameraRef camera);
+
         OrbitCameraRig m_rig;
         float m_lastMouseX = 0.0f;
         float m_lastMouseY = 0.0f;

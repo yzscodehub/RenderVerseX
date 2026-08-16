@@ -6,6 +6,7 @@
 #include "Samples/ModelCameraFraming.h"
 #include "Samples/Sample.h"
 #include "Samples/SampleModelLoader.h"
+#include "Samples/SampleOrbitCameraController.h"
 
 #include <vector>
 
@@ -25,6 +26,9 @@ namespace RVX
         bool Setup(SampleContext& context, std::string& outError) override;
         void Update(SampleContext& context, float deltaTime) override;
         void OnInput(SampleContext& context) override;
+        void OnViewportResize(SampleContext& context,
+                              uint32 width,
+                              uint32 height) override;
         void AppendReport(SampleFeatureReporter& reporter) const override;
         SampleReadiness GetReadiness(
             const SampleRenderDiagnostics& diagnostics) const override;
@@ -34,7 +38,6 @@ namespace RVX
 
     private:
         bool PlaceInstances(SampleContext& context, std::string& outError);
-        void DisableUnplacedInstances(SampleContext& context) const;
         void FailAndCancel(SampleContext& context, std::string reason);
         bool IsGPUDrivenReady(const SampleRenderDiagnostics& diagnostics,
                               std::string& outPendingReason) const;
@@ -44,6 +47,7 @@ namespace RVX
         std::vector<LoadedSampleModel> m_models;
         AABB m_bounds;
         ModelCameraFrame m_cameraFrame;
+        SampleOrbitCameraController m_orbitCamera;
         uint32 m_sceneInstanceCount = 0;
         SampleRenderPath m_renderPath = SampleRenderPath::GPUDriven;
         std::string m_failureReason;

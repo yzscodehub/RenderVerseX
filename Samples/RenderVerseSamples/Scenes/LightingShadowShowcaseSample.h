@@ -24,6 +24,7 @@ namespace RVX
 
     private:
         LoadedSampleModel m_model;
+        SampleRenderPath m_renderPath = SampleRenderPath::Auto;
         std::string m_modelFailure;
         uint32 m_shadowAtlasResolution = 0;
         uint32 m_shadowCascadeCount = 0;

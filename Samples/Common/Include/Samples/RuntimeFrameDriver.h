@@ -14,6 +14,8 @@ namespace RVX
 {
     class Engine;
     class RenderSubsystem;
+    struct EngineRenderRuntimeDiagnostics;
+    struct RuntimeFrameDriverTestAccess;
 
     enum class RuntimeFrameWaitCode : uint8
     {
@@ -27,6 +29,7 @@ namespace RVX
 
     struct RuntimeFrameWaitRequest
     {
+        uint64 minimumPublishedSequence = 0;
         uint64 minimumSubmittedSequence = 0;
         uint64 minimumPresentedSequence = 0;
         uint64 captureRequestId = 0;
@@ -34,6 +37,13 @@ namespace RVX
         float32 deltaTime = 1.0f / 60.0f;
         std::chrono::milliseconds timeout{5000};
         bool advanceEngine = true;
+        /**
+         * @brief Never tick Engine; wake Render only for completion work.
+         *
+         * Used after the final qualification frame so the global retirement
+         * ledger can converge without replacement frames.
+         */
+        bool pumpRenderProgressOnly = false;
     };
 
     struct RuntimeFrameWaitResult
@@ -56,13 +66,28 @@ namespace RVX
         RuntimeFrameDriver(Engine& engine, RenderSubsystem& render) noexcept;
 
         [[nodiscard]] RenderDiagnosticsSnapshot TickOnce(float32 deltaTime);
+        [[nodiscard]] RenderDiagnosticsSnapshot PumpRenderProgressOnce();
         [[nodiscard]] RuntimeFrameWaitResult WaitFor(
             const RuntimeFrameWaitRequest& request);
 
     private:
+        enum class TickAction : uint8
+        {
+            Observe = 0,
+            Full,
+            ProgressPoll
+        };
+
+        [[nodiscard]] static TickAction SelectTickAction(
+            const RuntimeFrameWaitRequest& request,
+            const RenderDiagnosticsSnapshot& diagnostics,
+            const EngineRenderRuntimeDiagnostics&
+                engineDiagnostics) noexcept;
         [[nodiscard]] static bool HasReached(
             const RuntimeFrameWaitRequest& request,
             const RenderDiagnosticsSnapshot& diagnostics) noexcept;
+
+        friend struct RuntimeFrameDriverTestAccess;
 
         Engine& m_engine;
         RenderSubsystem& m_render;

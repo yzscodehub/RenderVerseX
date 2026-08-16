@@ -4,13 +4,12 @@
 
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
-#include "Scene/Components/CameraComponent.h"
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
-#include "Scene/Components/LightComponent.h"
-#include "Scene/Components/SkyboxComponent.h"
-#include "Scene/SceneEntity.h"
-#include "Scene/SceneRuntime.h"
+#include "Samples/SampleRenderPathPolicy.h"
+#include "Scene/ECS/RenderFragments.h"
+
+#include <algorithm>
 
 namespace RVX
 {
@@ -22,6 +21,10 @@ namespace RVX
             "Shows engine-owned directional lighting and cascaded shadow mapping",
             "shadow-plane-caster",
             SampleAssetPolicy::Fixed,
+            "",
+            SampleEnvironmentPolicy::None,
+            true,
+            SampleRenderPath::Auto,
         };
 
         Quat MakeLookRotation(const Vec3& direction, const Vec3& up)
@@ -40,6 +43,45 @@ namespace RVX
             rotation[2] = Vec4(-forward, 0.0f);
             return Mat4ToQuat(rotation);
         }
+
+        [[nodiscard]] SceneECS::Skybox MakeProceduralSky()
+        {
+            return {
+                .mode = SceneECS::SkyboxMode::Procedural,
+                .sunDirection = normalize(Vec3(-0.25f, -0.55f, -0.65f)),
+                .sunColor = Vec3(1.0f, 0.96f, 0.88f),
+                .zenithColor = Vec3(0.10f, 0.20f, 0.42f),
+                .horizonColor = Vec3(0.55f, 0.64f, 0.74f),
+                .groundColor = Vec3(0.06f, 0.07f, 0.08f),
+                .scatteringIntensity = 0.55f,
+                .contributesToLighting = false,
+            };
+        }
+
+        [[nodiscard]] SceneECS::Light MakeDirectionalShadowLight()
+        {
+            return {
+                .type = SceneECS::LightType::Directional,
+                .color = Vec3(1.0f, 0.96f, 0.88f),
+                .intensity = 5.0f,
+                .shadowBias = 0.0008f,
+                .castsShadows = true,
+            };
+        }
+
+        [[nodiscard]] std::string DescribeModelFailure(
+            const ResourceSceneAdapters::EcsSceneAssetLoadStatus& status)
+        {
+            if (!status.diagnostic.empty())
+            {
+                return status.diagnostic;
+            }
+            if (!status.request.error.message.empty())
+            {
+                return status.request.error.message;
+            }
+            return "Lighting-shadow ECS model request reached a terminal state.";
+        }
     } // namespace
 
     const SampleInfo& LightingShadowShowcaseSample::GetInfo() const noexcept
@@ -50,53 +92,46 @@ namespace RVX
     bool LightingShadowShowcaseSample::Setup(SampleContext& context,
                                              std::string& outError)
     {
-        const float32 aspect =
-            static_cast<float32>(context.options.width) /
-            static_cast<float32>(context.options.height);
-        context.camera.SetPerspective(
-            radians(45.0f), aspect, 0.05f, 100.0f);
-        context.camera.SetPosition(Vec3(0.0f, 1.35f, 4.0f));
-        context.camera.LookAt(Vec3(0.0f, 0.35f, 0.0f));
-
-        ActorSpawnParams skyParams;
-        skyParams.name = "LightingShadowSky";
-        SceneEntity* skyEntity = context.scene.SpawnActor(skyParams);
-        SkyboxComponent* skybox =
-            skyEntity ? skyEntity->AddComponent<SkyboxComponent>() : nullptr;
-        if (!skybox)
+        m_renderPath = context.options.renderPath;
+        if (!ApplySampleRenderPathPolicy(
+                m_renderPath, context.renderSettings.gpuCulling, outError))
         {
-            outError = "Failed to create the lighting-shadow skybox";
             return false;
         }
-        skybox->SetSkyboxType(SkyboxType::Procedural);
-        skybox->SetSunDirection(normalize(Vec3(-0.25f, -0.55f, -0.65f)));
-        skybox->SetSunColor(Vec3(1.0f, 0.96f, 0.88f));
-        skybox->SetZenithColor(Vec3(0.10f, 0.20f, 0.42f));
-        skybox->SetHorizonColor(Vec3(0.55f, 0.64f, 0.74f));
-        skybox->SetGroundColor(Vec3(0.06f, 0.07f, 0.08f));
-        skybox->SetScatteringIntensity(0.55f);
-        skybox->SetContributesToLighting(false);
+
+        const float32 aspect = static_cast<float32>(context.options.width) /
+                               static_cast<float32>(std::max(context.options.height, 1u));
+        if (!context.cameras.SetPerspective(
+                context.camera, radians(45.0f), aspect, 0.05f, 100.0f) ||
+            !context.cameras.SetPose(
+                context.camera, {.position = Vec3(0.0f, 1.35f, 4.0f)}) ||
+            !context.cameras.LookAt(context.camera, Vec3(0.0f, 0.35f, 0.0f)))
+        {
+            outError = "Failed to configure the lighting-shadow ECS camera";
+            return false;
+        }
+
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                {}, MakeProceduralSky()).IsValid())
+        {
+            outError = "Failed to create the lighting-shadow ECS skybox";
+            return false;
+        }
         m_skyboxCreated = true;
 
-        ActorSpawnParams lightParams;
-        lightParams.name = "LightingShadowSun";
-        SceneEntity* lightEntity = context.scene.SpawnActor(lightParams);
-        LightComponent* light =
-            lightEntity ? lightEntity->AddComponent<LightComponent>() : nullptr;
-        if (!light)
-        {
-            outError = "Failed to create the shadow-casting directional light";
-            return false;
-        }
         const Vec3 lightDirection =
             normalize(Vec3(-0.25f, -0.55f, -0.65f));
-        lightEntity->SetRotation(
-            MakeLookRotation(lightDirection, Vec3(0.0f, 1.0f, 0.0f)));
-        light->SetLightType(LightType::Directional);
-        light->SetColor(Vec3(1.0f, 0.96f, 0.88f));
-        light->SetIntensity(5.0f);
-        light->SetCastsShadow(true);
-        light->SetShadowBias(0.0008f);
+        SceneECS::RuntimeEntityDesc lightDesc;
+        lightDesc.localTransform.rotation =
+            MakeLookRotation(lightDirection, Vec3(0.0f, 1.0f, 0.0f));
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                lightDesc,
+                MakeDirectionalShadowLight(),
+                SceneECS::Visibility{}).IsValid())
+        {
+            outError = "Failed to create the shadow-casting ECS directional light";
+            return false;
+        }
         m_shadowLightCreated = true;
 
         m_shadowAtlasResolution = context.options.quality == "low"
@@ -121,25 +156,18 @@ namespace RVX
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
-        return context.models.Request(context.options.modelPath,
-                                      m_model,
-                                      outError);
+        return context.models.RequestByAssetId(context.options.assetId, m_model, outError);
     }
 
     void LightingShadowShowcaseSample::Update(SampleContext& context,
                                               float deltaTime)
     {
         static_cast<void>(deltaTime);
-        const SceneAssetStatus status =
+        const ResourceSceneAdapters::EcsSceneAssetLoadStatus status =
             context.models.UpdateReadiness(m_model);
-        if (status.IsFailed() ||
-            status.lifecycle == SceneAssetLifecycle::Cancelled)
+        if (status.IsTerminal())
         {
-            m_modelFailure = !status.diagnostic.empty()
-                                 ? status.diagnostic
-                                 : !status.error.message.empty()
-                                       ? status.error.message
-                                       : "Lighting-shadow asset activation was cancelled";
+            m_modelFailure = DescribeModelFailure(status);
         }
     }
 
@@ -151,7 +179,8 @@ namespace RVX
     void LightingShadowShowcaseSample::AppendReport(
         SampleFeatureReporter& reporter) const
     {
-        if (m_model.resource.IsLoaded())
+        AppendSampleRenderPathPolicyReport(m_renderPath, reporter);
+        if (m_model.status.modelMetadata.HasPublishedSource())
         {
             reporter.Enable("ModelResourceLoad");
             reporter.Enable("SceneInstantiation");
@@ -206,6 +235,11 @@ namespace RVX
             }
             return SampleReadiness::Pending(std::move(reason));
         }
+        if (!IsSampleRenderPathExecutionQualified(m_renderPath, diagnostics))
+        {
+            return SampleReadiness::Pending(
+                "Lighting-shadow showcase is waiting for its requested render-path execution");
+        }
         return SampleReadiness::Ready();
     }
 
@@ -220,11 +254,17 @@ namespace RVX
 
     void LightingShadowShowcaseSample::Shutdown(SampleContext& context)
     {
-        static_cast<void>(context);
-        m_model = {};
-        m_modelFailure.clear();
+        if (m_model.request.IsValid() && !context.models.Cancel(m_model))
+        {
+            m_modelFailure = "Failed to cancel the lighting-shadow ECS model request.";
+        }
+        if (!m_model.request.IsValid())
+        {
+            m_modelFailure.clear();
+        }
         m_shadowAtlasResolution = 0;
         m_shadowCascadeCount = 0;
+        m_renderPath = SampleRenderPath::Auto;
         m_skyboxCreated = false;
         m_shadowLightCreated = false;
     }

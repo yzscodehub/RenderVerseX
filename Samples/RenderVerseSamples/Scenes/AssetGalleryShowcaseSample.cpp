@@ -4,14 +4,10 @@
 
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
-#include "ResourceSceneAdapters/SceneAssetInstantiation.h"
-#include "Scene/Components/CameraComponent.h"
-#include "Scene/Components/LightComponent.h"
-#include "Scene/Components/SkyboxComponent.h"
-#include "Scene/SceneEntity.h"
-#include "Scene/SceneRuntime.h"
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
+#include "Samples/SampleRenderPathPolicy.h"
+#include "Scene/ECS/RenderFragments.h"
 
 #include <algorithm>
 #include <cmath>
@@ -33,10 +29,49 @@ namespace RVX
             SampleAssetPolicy::UserModelOrDefault,
             "",
             SampleEnvironmentPolicy::None,
-            false,
+            true,
             SampleRenderPath::Auto,
             {"shadow-plane-caster", "pbr-material-grid"},
         };
+
+        [[nodiscard]] SceneECS::Skybox MakeProceduralSky()
+        {
+            return {
+                .mode = SceneECS::SkyboxMode::Procedural,
+                .sunDirection = normalize(Vec3(0.30f, 0.65f, 0.45f)),
+                .sunColor = Vec3(1.0f, 0.95f, 0.86f),
+                .zenithColor = Vec3(0.10f, 0.23f, 0.50f),
+                .horizonColor = Vec3(0.55f, 0.66f, 0.79f),
+                .groundColor = Vec3(0.07f, 0.08f, 0.10f),
+                .scatteringIntensity = 0.62f,
+                .contributesToLighting = false,
+            };
+        }
+
+        [[nodiscard]] SceneECS::Light MakeDirectionalLight()
+        {
+            return {
+                .type = SceneECS::LightType::Directional,
+                .color = Vec3(1.0f, 0.95f, 0.86f),
+                .intensity = 4.0f,
+                .shadowBias = 0.001f,
+                .castsShadows = false,
+            };
+        }
+
+        [[nodiscard]] std::string DescribeModelFailure(
+            const ResourceSceneAdapters::EcsSceneAssetLoadStatus& status)
+        {
+            if (!status.diagnostic.empty())
+            {
+                return status.diagnostic;
+            }
+            if (!status.request.error.message.empty())
+            {
+                return status.request.error.message;
+            }
+            return "Asset Gallery ECS model request reached a terminal state.";
+        }
     } // namespace
 
     const SampleInfo& AssetGalleryShowcaseSample::GetInfo() const noexcept
@@ -52,6 +87,7 @@ namespace RVX
         m_galleryBounds.Reset();
         m_cameraFrame = {};
         m_orbitCamera.Reset();
+        m_renderPath = context.options.renderPath;
         m_expectedVisibleObjects = 0;
         m_failureReason.clear();
         m_modelsPlaced = false;
@@ -60,58 +96,50 @@ namespace RVX
         m_skyboxCreated = false;
         m_lightCreated = false;
 
-        if (context.options.modelAssets.empty())
+        if (!ApplySampleRenderPathPolicy(
+                m_renderPath, context.renderSettings.gpuCulling, outError))
         {
-            outError = "Asset Gallery requires at least one host-resolved model";
+            return false;
+        }
+
+        if (context.options.modelAssetIds.empty())
+        {
+            outError = "Asset Gallery requires at least one catalog model id";
             return false;
         }
 
         const float32 aspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(std::max(context.options.height, 1u));
-        context.camera.SetPerspective(AssetGalleryVerticalFov,
-                                      aspect,
-                                      0.05f,
-                                      10000.0f);
-        context.camera.SetPosition(Vec3(0.0f, 2.0f, 6.0f));
-        context.camera.LookAt(Vec3(0.0f));
+        if (!context.cameras.SetPerspective(
+                context.camera, AssetGalleryVerticalFov, aspect, 0.05f, 10000.0f) ||
+            !context.cameras.SetPose(
+                context.camera, {.position = Vec3(0.0f, 2.0f, 6.0f)}) ||
+            !context.cameras.LookAt(context.camera, Vec3(0.0f)))
+        {
+            outError = "Failed to configure the Asset Gallery ECS camera";
+            return false;
+        }
 
-        ActorSpawnParams skyParams;
-        skyParams.name = "AssetGallerySky";
-        SceneEntity* skyEntity = context.scene.SpawnActor(skyParams);
-        SkyboxComponent* skybox =
-            skyEntity ? skyEntity->AddComponent<SkyboxComponent>() : nullptr;
-        if (!skybox)
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                {}, MakeProceduralSky()).IsValid())
         {
             outError = "Failed to create the Asset Gallery skybox";
             return false;
         }
-        skybox->SetSkyboxType(SkyboxType::Procedural);
-        skybox->SetSunDirection(normalize(Vec3(0.30f, 0.65f, 0.45f)));
-        skybox->SetSunColor(Vec3(1.0f, 0.95f, 0.86f));
-        skybox->SetZenithColor(Vec3(0.10f, 0.23f, 0.50f));
-        skybox->SetHorizonColor(Vec3(0.55f, 0.66f, 0.79f));
-        skybox->SetGroundColor(Vec3(0.07f, 0.08f, 0.10f));
-        skybox->SetScatteringIntensity(0.62f);
-        skybox->SetContributesToLighting(false);
         m_skyboxCreated = true;
 
-        ActorSpawnParams lightParams;
-        lightParams.name = "AssetGalleryKeyLight";
-        SceneEntity* lightEntity = context.scene.SpawnActor(lightParams);
-        LightComponent* light =
-            lightEntity ? lightEntity->AddComponent<LightComponent>() : nullptr;
-        if (!light)
+        SceneECS::RuntimeEntityDesc lightDesc;
+        lightDesc.localTransform.rotation =
+            QuatFromEuler(Vec3(radians(-48.0f), radians(28.0f), 0.0f));
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                lightDesc,
+                MakeDirectionalLight(),
+                SceneECS::Visibility{}).IsValid())
         {
             outError = "Failed to create the Asset Gallery light";
             return false;
         }
-        lightEntity->SetRotation(
-            QuatFromEuler(Vec3(radians(-48.0f), radians(28.0f), 0.0f)));
-        light->SetLightType(LightType::Directional);
-        light->SetColor(Vec3(1.0f, 0.95f, 0.86f));
-        light->SetIntensity(4.0f);
-        light->SetCastsShadow(false);
         m_lightCreated = true;
 
         context.renderSettings.shadows.enabled = false;
@@ -121,24 +149,20 @@ namespace RVX
         context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
 
-        m_models.reserve(context.options.modelAssets.size());
-        m_assetIds.reserve(context.options.modelAssets.size());
-        for (const SampleSceneModelAsset& asset : context.options.modelAssets)
+        m_models.reserve(context.options.modelAssetIds.size());
+        m_assetIds.reserve(context.options.modelAssetIds.size());
+        for (const std::string& assetId : context.options.modelAssetIds)
         {
             LoadedSampleModel model;
-            if (!context.models.Request(asset.path,
-                                        model,
-                                        outError,
-                                        false))
+            if (!context.models.RequestByAssetId(assetId, model, outError))
             {
                 for (LoadedSampleModel& requested : m_models)
                     static_cast<void>(context.models.Cancel(requested));
-                outError = "Asset Gallery failed to queue '" + asset.id +
+                outError = "Asset Gallery failed to queue '" + assetId +
                            "': " + outError;
                 return false;
             }
-            m_assetIds.push_back(asset.id.empty() ? asset.path.filename().string()
-                                                  : asset.id);
+            m_assetIds.push_back(assetId);
             m_models.push_back(std::move(model));
         }
         return true;
@@ -154,16 +178,11 @@ namespace RVX
         bool everyModelCPUReady = !m_models.empty();
         for (LoadedSampleModel& model : m_models)
         {
-            const SceneAssetStatus status =
+            const ResourceSceneAdapters::EcsSceneAssetLoadStatus status =
                 context.models.UpdateReadiness(model);
-            if (status.IsFailed() ||
-                status.lifecycle == SceneAssetLifecycle::Cancelled)
+            if (status.IsTerminal())
             {
-                FailAndCancel(
-                    context,
-                    status.diagnostic.empty()
-                        ? "Asset Gallery model request failed"
-                        : status.diagnostic);
+                FailAndCancel(context, DescribeModelFailure(status));
                 return;
             }
             everyModelCPUReady &= model.IsCPUReady();
@@ -176,25 +195,14 @@ namespace RVX
                 everyModelFullyResident &= model.IsFullyResident();
             if (everyModelFullyResident && !m_renderablesActivated)
             {
-                for (const LoadedSampleModel& model : m_models)
-                {
-                    if (!SceneAssetInstantiator::SetRenderablesEnabled(
-                            context.scene,
-                            model.instance,
-                            true))
-                    {
-                        FailAndCancel(
-                            context,
-                            "Asset Gallery could not activate a placed catalog model");
-                        return;
-                    }
-                }
+                // The ECS coordinator performs the only Visibility mutation,
+                // after exact minimum-resident presentation proof.  This is
+                // merely the sample's observed fully-resident state.
                 m_renderablesActivated = true;
             }
             return;
         }
 
-        DisableUnplacedModels(context);
         if (!everyModelCPUReady)
             return;
 
@@ -211,7 +219,10 @@ namespace RVX
     void AssetGalleryShowcaseSample::OnInput(SampleContext& context)
     {
         if (m_modelsPlaced && context.input)
-            m_orbitCamera.Update(*context.input, context.camera);
+        {
+            static_cast<void>(
+                m_orbitCamera.Update(*context.input, context.cameras, context.camera));
+        }
     }
 
     bool AssetGalleryShowcaseSample::PlaceModels(SampleContext& context,
@@ -226,7 +237,8 @@ namespace RVX
 
         struct Placement
         {
-            SceneEntity* root = nullptr;
+            ECS::EntityHandle root = ECS::EntityHandle::Invalid();
+            SceneECS::LocalTransform localTransform;
             float32 scale = 1.0f;
             Vec3 position{0.0f};
         };
@@ -238,21 +250,27 @@ namespace RVX
         for (size_t index = 0; index < m_models.size(); ++index)
         {
             LoadedSampleModel& model = m_models[index];
-            if (!model.resource.IsLoaded())
+            if (!model.IsCPUReady())
             {
-                outError = "Asset Gallery model resource is not CPU-ready: " +
+                outError = "Asset Gallery ECS model is not CPU-ready: " +
                            m_assetIds[index];
                 return false;
             }
-            SceneEntity* root = model.ResolveRoot(context.scene);
-            if (!root)
+            const auto root = model.GetRootEntityRef();
+            if (!root.IsValid() ||
+                root.sceneRuntimeId != context.scene.GetSceneRuntimeId() ||
+                !context.scene.GetEntityRef(root.entity).IsValid())
             {
                 outError = "Asset Gallery model root handle is stale: " +
                            m_assetIds[index];
                 return false;
             }
-            const AABB originalBounds = root->GetWorldBounds();
-            if (!originalBounds.IsValid())
+            const SceneECS::LocalTransform* localTransform =
+                context.scene.GetRegistry().TryGet<SceneECS::LocalTransform>(root.entity);
+            AABB originalBounds;
+            if (localTransform == nullptr ||
+                !TryComputeSampleModelRenderableWorldBounds(
+                    model, context.scene, originalBounds))
             {
                 outError = "Asset Gallery model has invalid bounds: " +
                            m_assetIds[index];
@@ -275,7 +293,8 @@ namespace RVX
                 GalleryItemSpacing;
             const Vec3 center = originalBounds.GetCenter();
             placements.push_back({
-                root,
+                root.entity,
+                *localTransform,
                 scale,
                 Vec3(itemX - center.x * scale,
                      -originalBounds.GetMin().y * scale,
@@ -284,12 +303,20 @@ namespace RVX
 
         AABB galleryBounds;
         galleryBounds.Reset();
-        for (const Placement& placement : placements)
+        for (size_t index = 0; index < placements.size(); ++index)
         {
-            placement.root->SetScale(Vec3(placement.scale));
-            placement.root->SetPosition(placement.position);
-            const AABB placedBounds = placement.root->GetWorldBounds();
-            if (!placedBounds.IsValid())
+            const Placement& placement = placements[index];
+            SceneECS::LocalTransform transform = placement.localTransform;
+            transform.scale = Vec3(placement.scale);
+            transform.translation = placement.position;
+            if (!context.scene.SetLocalTransform(placement.root, transform))
+            {
+                outError = "Asset Gallery could not author a model ECS transform";
+                return false;
+            }
+            AABB placedBounds;
+            if (!TryComputeSampleModelRenderableWorldBounds(
+                    m_models[index], context.scene, placedBounds))
             {
                 outError = "Asset Gallery could not place a catalog model";
                 return false;
@@ -331,7 +358,11 @@ namespace RVX
             outError = "Asset Gallery camera rig initialization failed";
             return false;
         }
-        m_orbitCamera.Apply(context.camera);
+        if (!m_orbitCamera.Apply(context.cameras, context.camera))
+        {
+            outError = "Asset Gallery could not apply its ECS orbit camera pose";
+            return false;
+        }
         const OrbitCameraRigPose orbitPose = m_orbitCamera.GetPose();
         if (!orbitPose.valid)
         {
@@ -349,23 +380,7 @@ namespace RVX
         m_expectedVisibleObjects = static_cast<uint32>(m_models.size());
         m_staticCatalogGallery = m_models.size() > 1;
         m_modelsPlaced = true;
-        DisableUnplacedModels(context);
         return true;
-    }
-
-    void AssetGalleryShowcaseSample::DisableUnplacedModels(
-        SampleContext& context) const
-    {
-        for (const LoadedSampleModel& model : m_models)
-        {
-            if (model.instance.rootActor.IsValid())
-            {
-                static_cast<void>(SceneAssetInstantiator::SetRenderablesEnabled(
-                    context.scene,
-                    model.instance,
-                    false));
-            }
-        }
     }
 
     void AssetGalleryShowcaseSample::FailAndCancel(SampleContext& context,
@@ -375,7 +390,7 @@ namespace RVX
             m_failureReason = std::move(reason);
         for (LoadedSampleModel& model : m_models)
         {
-            if (model.loadHandle.IsValid())
+            if (model.request.IsValid())
                 static_cast<void>(context.models.Cancel(model));
         }
         m_expectedVisibleObjects = 0;
@@ -386,11 +401,12 @@ namespace RVX
     void AssetGalleryShowcaseSample::AppendReport(
         SampleFeatureReporter& reporter) const
     {
+        AppendSampleRenderPathPolicyReport(m_renderPath, reporter);
         if (!m_models.empty())
         {
             reporter.Enable("ModelResourceLoad");
             reporter.Enable("SceneInstantiation");
-            reporter.Enable("ResourceSceneAdapters");
+            reporter.Enable("EcsSceneAssetCoordinator");
             reporter.ResourceDiagnostic(
                 "gallery assets=" + std::to_string(m_models.size()));
             for (size_t index = 0; index < m_models.size(); ++index)
@@ -406,8 +422,6 @@ namespace RVX
         else
             reporter.Enable("CatalogAssetFocus");
         reporter.Unsupported("RuntimeAssetSwitching");
-        reporter.Fallback(
-            "Asset Gallery uses per-run deterministic selection until scene destruction and resource unloading are qualified");
         if (m_cameraFrame.valid)
         {
             reporter.Enable("BoundsCameraFraming");
@@ -444,6 +458,11 @@ namespace RVX
                 std::to_string(diagnostics.visibleObjectCount) +
                 ", expected=" + std::to_string(m_expectedVisibleObjects));
         }
+        if (!IsSampleRenderPathExecutionQualified(m_renderPath, diagnostics))
+        {
+            return SampleReadiness::Pending(
+                "Asset Gallery is waiting for its requested render-path execution");
+        }
         return SampleReadiness::Ready();
     }
 
@@ -460,7 +479,7 @@ namespace RVX
     {
         for (LoadedSampleModel& model : m_models)
         {
-            if (model.loadHandle.IsValid())
+            if (model.request.IsValid())
                 static_cast<void>(context.models.Cancel(model));
         }
         m_models.clear();
@@ -468,6 +487,7 @@ namespace RVX
         m_galleryBounds.Reset();
         m_cameraFrame = {};
         m_orbitCamera.Reset();
+        m_renderPath = SampleRenderPath::Auto;
         m_expectedVisibleObjects = 0;
         m_failureReason.clear();
         m_modelsPlaced = false;

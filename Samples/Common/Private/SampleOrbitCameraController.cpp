@@ -4,7 +4,6 @@
 
 #include "HAL/Input/KeyCodes.h"
 #include "Runtime/Input/InputSubsystem.h"
-#include "Scene/Components/CameraComponent.h"
 
 #include <cmath>
 
@@ -32,12 +31,13 @@ namespace RVX
         }
     }
 
-    void SampleOrbitCameraController::Update(InputSubsystem& input,
-                                             CameraComponent& camera)
+    bool SampleOrbitCameraController::Update(InputSubsystem& input,
+                                             WorldECS::WorldEcsCameraService& cameras,
+                                             WorldECS::WorldEcsCameraRef camera)
     {
-        if (!m_rig.IsInitialized())
+        if (!m_rig.IsInitialized() || !IsUsableCamera(cameras, camera))
         {
-            return;
+            return false;
         }
 
         float mouseX = 0.0f;
@@ -57,59 +57,72 @@ namespace RVX
 
         m_lastMouseX = mouseX;
         m_lastMouseY = mouseY;
-        ApplyInput(cameraInput, camera);
+        return ApplyInput(cameraInput, cameras, camera);
     }
 
-    void SampleOrbitCameraController::ApplyInput(
+    bool SampleOrbitCameraController::ApplyInput(
         const SampleOrbitCameraInput& input,
-        CameraComponent& camera)
+        WorldECS::WorldEcsCameraService& cameras,
+        WorldECS::WorldEcsCameraRef camera)
     {
+        if (!IsUsableCamera(cameras, camera))
+        {
+            return false;
+        }
+
         OrbitCameraIntent intent;
         intent.orbitActive = input.orbitActive;
         intent.orbitDelta = input.pointerDelta;
         intent.zoomDelta = input.scrollDelta;
         intent.reset = input.reset;
         m_rig.ApplyIntent(intent);
-        Apply(camera);
+        return Apply(cameras, camera);
     }
 
-    void SampleOrbitCameraController::SetAspectRatio(
+    bool SampleOrbitCameraController::SetAspectRatio(
         float aspectRatio,
-        CameraComponent& camera)
+        WorldECS::WorldEcsCameraService& cameras,
+        WorldECS::WorldEcsCameraRef camera)
     {
-        if (!std::isfinite(aspectRatio) || aspectRatio <= 0.0f)
+        if (!std::isfinite(aspectRatio) || aspectRatio <= 0.0f ||
+            !IsUsableCamera(cameras, camera))
         {
-            return;
+            return false;
         }
 
         m_pendingAspectRatio = aspectRatio;
         m_hasPendingAspectRatio = true;
         if (m_rig.IsInitialized() && m_rig.SetAspectRatio(aspectRatio))
         {
-            Apply(camera);
+            return Apply(cameras, camera);
         }
+        return true;
     }
 
     bool SampleOrbitCameraController::SetFocus(const AABB& bounds,
                                                 const Vec3& pivot,
-                                                CameraComponent& camera)
+                                                WorldECS::WorldEcsCameraService& cameras,
+                                                WorldECS::WorldEcsCameraRef camera)
     {
-        const bool changed = m_rig.SetFocus(bounds, pivot);
-        if (changed)
+        if (!IsUsableCamera(cameras, camera))
         {
-            Apply(camera);
+            return false;
         }
-        return changed;
+
+        const bool changed = m_rig.SetFocus(bounds, pivot);
+        return changed && Apply(cameras, camera);
     }
 
-    bool SampleOrbitCameraController::Fit(CameraComponent& camera)
+    bool SampleOrbitCameraController::Fit(WorldECS::WorldEcsCameraService& cameras,
+                                           WorldECS::WorldEcsCameraRef camera)
     {
-        const bool changed = m_rig.Fit();
-        if (changed)
+        if (!IsUsableCamera(cameras, camera))
         {
-            Apply(camera);
+            return false;
         }
-        return changed;
+
+        const bool changed = m_rig.Fit();
+        return changed && Apply(cameras, camera);
     }
 
     void SampleOrbitCameraController::CaptureResetAnchor()
@@ -117,28 +130,43 @@ namespace RVX
         m_rig.CaptureResetAnchor();
     }
 
-    void SampleOrbitCameraController::Apply(CameraComponent& camera)
+    bool SampleOrbitCameraController::Apply(WorldECS::WorldEcsCameraService& cameras,
+                                             WorldECS::WorldEcsCameraRef camera)
     {
+        if (!IsUsableCamera(cameras, camera))
+        {
+            return false;
+        }
+
         const OrbitCameraRigPose pose = m_rig.GetPose();
         if (!pose.valid)
         {
-            return;
+            return false;
         }
 
-        camera.SetPerspective(pose.verticalFovRadians,
-                              pose.aspectRatio,
-                              pose.nearPlane,
-                              pose.farPlane);
-        camera.SetPosition(pose.position);
-        camera.LookAt(pose.pivot);
-        if (m_rig.ConsumeDiscontinuity())
+        if (!cameras.SetPerspective(camera,
+                                    pose.verticalFovRadians,
+                                    pose.aspectRatio,
+                                    pose.nearPlane,
+                                    pose.farPlane) ||
+            !cameras.SetPose(camera, {.position = pose.position}) ||
+            !cameras.LookAt(camera, pose.pivot))
         {
-            camera.MarkCut();
+            return false;
         }
+        return !m_rig.ConsumeDiscontinuity() || cameras.MarkCut(camera);
     }
 
     void SampleOrbitCameraController::Reset()
     {
         static_cast<void>(m_rig.Reset());
+    }
+
+    bool SampleOrbitCameraController::IsUsableCamera(
+        const WorldECS::WorldEcsCameraService& cameras,
+        WorldECS::WorldEcsCameraRef camera)
+    {
+        return camera.sceneRuntimeId == cameras.GetSceneRuntimeId() &&
+               cameras.GetCamera(camera).has_value();
     }
 } // namespace RVX

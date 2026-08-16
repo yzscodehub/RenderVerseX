@@ -4,15 +4,10 @@
 
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
-#include "Resource/Types/MaterialResource.h"
-#include "Scene/Components/CameraComponent.h"
+#include "Scene/ECS/RenderFragments.h"
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
-#include "Scene/Components/LightComponent.h"
-#include "Scene/Components/SkyboxComponent.h"
-#include "Scene/Components/StaticMeshComponent.h"
-#include "Scene/SceneEntity.h"
-#include "Scene/SceneRuntime.h"
+#include "Samples/SampleRenderPathPolicy.h"
 
 #include <algorithm>
 #include <array>
@@ -86,18 +81,129 @@ namespace RVX
             SampleAssetPolicy::UserModelOrDefault,
             "pbr-reference-environment",
             SampleEnvironmentPolicy::Required,
+            true,
+            SampleRenderPath::Auto,
         };
 
-        void ConfigureProceduralSky(SkyboxComponent& skybox)
+        [[nodiscard]] SceneECS::Light MakeDirectionalLight()
         {
-            skybox.SetSkyboxType(SkyboxType::Procedural);
-            skybox.SetSunDirection(normalize(Vec3(0.35f, 0.65f, 0.45f)));
-            skybox.SetSunColor(Vec3(1.0f, 0.94f, 0.84f));
-            skybox.SetZenithColor(Vec3(0.10f, 0.24f, 0.52f));
-            skybox.SetHorizonColor(Vec3(0.55f, 0.67f, 0.80f));
-            skybox.SetGroundColor(Vec3(0.07f, 0.08f, 0.10f));
-            skybox.SetScatteringIntensity(0.65f);
-            skybox.SetContributesToLighting(false);
+            return {
+                .type = SceneECS::LightType::Directional,
+                .color = Vec3(1.0f, 0.97f, 0.92f),
+                .intensity = 1.5f,
+                .castsShadows = false,
+            };
+        }
+
+        [[nodiscard]] std::string DescribeModelFailure(
+            const ResourceSceneAdapters::EcsSceneAssetLoadStatus& status)
+        {
+            if (!status.diagnostic.empty())
+                return status.diagnostic;
+            if (!status.request.error.message.empty())
+                return status.request.error.message;
+            return "PBR Materials ECS model request reached a terminal state.";
+        }
+
+        [[nodiscard]] std::string DescribeEnvironmentFailure(
+            const ResourceSceneAdapters::EcsEnvironmentLoadStatus& status)
+        {
+            if (!status.diagnostic.empty())
+                return status.diagnostic;
+            if (!status.request.error.message.empty())
+                return status.request.error.message;
+            return "PBR Materials ECS environment request reached a terminal state.";
+        }
+
+        enum class PbrTextureReceiptValidation : uint8
+        {
+            Pending = 0,
+            Valid,
+            Invalid,
+        };
+
+        [[nodiscard]] PbrTextureReceiptValidation ValidateTextureReceipt(
+            const ResourceSceneAdapters::EcsModelAssetMetadata& metadata,
+            const std::optional<
+                ResourceSceneAdapters::EcsModelFullyResidentTextureReceipt>& receipt,
+            AssetId metallicRoughnessTextureAssetId,
+            uint32& outWidth,
+            uint32& outHeight,
+            std::string& outError)
+        {
+            outWidth = 0;
+            outHeight = 0;
+            if (!receipt.has_value() || !receipt->HasPublishedSource())
+            {
+                return PbrTextureReceiptValidation::Pending;
+            }
+            if (!metadata.HasPublishedSource() ||
+                receipt->sourceModelAssetId != metadata.sourceModelAssetId ||
+                receipt->textures.size() != metadata.textures.size())
+            {
+                outError =
+                    "PBR texture receipt does not match the immutable source texture inventory";
+                return PbrTextureReceiptValidation::Invalid;
+            }
+
+            for (size_t index = 0; index < metadata.textures.size(); ++index)
+            {
+                const auto& sourceTexture = metadata.textures[index];
+                const auto& residentTexture = receipt->textures[index];
+                if (!sourceTexture.textureAssetId.IsValid() ||
+                    residentTexture.textureAssetId != sourceTexture.textureAssetId ||
+                    std::any_of(
+                        metadata.textures.begin(),
+                        metadata.textures.begin() + static_cast<std::ptrdiff_t>(index),
+                        [&sourceTexture](const auto& prior)
+                        {
+                            return prior.textureAssetId == sourceTexture.textureAssetId;
+                        }))
+                {
+                    outError =
+                        "PBR texture receipt changed the source texture identity order";
+                    return PbrTextureReceiptValidation::Invalid;
+                }
+                if (!residentTexture.textureAssetId.IsValid() ||
+                    residentTexture.width == 0 || residentTexture.height == 0 ||
+                    residentTexture.mipLevels == 0 ||
+                    residentTexture.format == Resource::TextureFormat::Unknown ||
+                    residentTexture.isDefaultFallback ||
+                    residentTexture.isStreamingPlaceholder)
+                {
+                    return PbrTextureReceiptValidation::Pending;
+                }
+            }
+
+            const auto metallicRoughnessTexture = std::find_if(
+                receipt->textures.begin(), receipt->textures.end(),
+                [metallicRoughnessTextureAssetId](const auto& texture)
+                {
+                    return texture.textureAssetId == metallicRoughnessTextureAssetId;
+                });
+            if (!metallicRoughnessTextureAssetId.IsValid() ||
+                metallicRoughnessTexture == receipt->textures.end())
+            {
+                outError =
+                    "PBR texture receipt omitted the canonical metallic-roughness texture";
+                return PbrTextureReceiptValidation::Invalid;
+            }
+            if (metallicRoughnessTexture->isDefaultFallback ||
+                metallicRoughnessTexture->isStreamingPlaceholder)
+            {
+                return PbrTextureReceiptValidation::Pending;
+            }
+            if (metallicRoughnessTexture->width != PBRMatrixDimension ||
+                metallicRoughnessTexture->height != PBRMatrixDimension)
+            {
+                outError =
+                    "PBR texture cube requires a fully-resident 5x5 metallic-roughness data texture";
+                return PbrTextureReceiptValidation::Invalid;
+            }
+
+            outWidth = metallicRoughnessTexture->width;
+            outHeight = metallicRoughnessTexture->height;
+            return PbrTextureReceiptValidation::Valid;
         }
     } // namespace
 
@@ -119,6 +225,7 @@ namespace RVX
         m_expectedDrawPacketCount = 0;
         m_metallicRoughnessTextureWidth = 0;
         m_metallicRoughnessTextureHeight = 0;
+        m_metallicRoughnessTextureAssetId = {};
         m_metallicRoughnessTextureLoaded = false;
         m_referenceCubeValidated = false;
         std::array<
@@ -127,28 +234,35 @@ namespace RVX
                 PBRMatrixDimension>,
             PBRMatrixDimension> factorCombinations{};
         std::array<bool, PBRMatrixDimension> textureBaseColors{};
+        AssetId textureWorkflowMetallicRoughnessTexture{};
 
-        for (const auto& material : m_model.resource->GetMaterials())
+        const ResourceSceneAdapters::EcsModelAssetMetadata& metadata =
+            m_model.status.modelMetadata;
+        for (const ResourceSceneAdapters::EcsModelAssetMetadata::Material& material :
+             metadata.materials)
         {
-            if (!material.IsValid() || !material.IsLoaded() ||
-                material->GetWorkflowMode() !=
+            if (!material.materialAssetId.IsValid() ||
+                material.workflow !=
                     Resource::MaterialWorkflowMode::MetallicRoughness)
             {
                 continue;
             }
 
             ++m_pbrMaterialCount;
-            const std::string& materialName = material->GetMaterialName();
-            const Resource::TextureHandle texture =
-                material->GetMetallicRoughnessTexture();
-            if (texture.IsValid() && texture.IsLoaded() &&
-                !texture->IsDefaultFallback())
+            const std::string& materialName = material.sourceName;
+            AssetId metallicRoughnessTexture{};
+            const auto textureSlot = std::find_if(
+                material.textureSlots.begin(), material.textureSlots.end(),
+                [](const ResourceSceneAdapters::EcsModelAssetMetadata::TextureSlot& slot)
+                {
+                    // EcsModelAssetMetadata snapshots the canonical MaterialResource
+                    // binding name, not the source-importer's glTF property spelling.
+                    return slot.slot == "metallic_roughness";
+                });
+            if (textureSlot != material.textureSlots.end())
             {
-                m_metallicRoughnessTextureLoaded = true;
-                m_metallicRoughnessTextureWidth = texture->GetWidth();
-                m_metallicRoughnessTextureHeight = texture->GetHeight();
+                metallicRoughnessTexture = textureSlot->textureAssetId;
             }
-
             if (materialName.rfind("PBRFactor_", 0) == 0)
             {
                 ++m_factorMaterialCount;
@@ -158,13 +272,13 @@ namespace RVX
                 }
 
                 const int32 metallicIndex = FindLevelIndex(
-                    MetallicLevels, material->GetMetallicFactor());
+                    MetallicLevels, material.metallicFactor);
                 const int32 roughnessIndex = FindLevelIndex(
-                    RoughnessLevels, material->GetRoughnessFactor());
+                    RoughnessLevels, material.roughnessFactor);
                 const int32 baseColorIndex =
-                    FindBaseColorIndex(material->GetBaseColor());
+                    FindBaseColorIndex(material.baseColor);
                 if (metallicIndex < 0 || roughnessIndex < 0 ||
-                    baseColorIndex < 0 || texture.IsValid())
+                    baseColorIndex < 0 || metallicRoughnessTexture.IsValid())
                 {
                     outError =
                         "PBR factor cube contains an invalid material combination";
@@ -191,14 +305,25 @@ namespace RVX
                 }
 
                 const int32 baseColorIndex =
-                    FindBaseColorIndex(material->GetBaseColor());
+                    FindBaseColorIndex(material.baseColor);
                 if (baseColorIndex < 0 ||
-                    std::abs(material->GetMetallicFactor() - 1.0f) > 0.001f ||
-                    std::abs(material->GetRoughnessFactor() - 1.0f) > 0.001f ||
-                    !texture.IsValid())
+                    std::abs(material.metallicFactor - 1.0f) > 0.001f ||
+                    std::abs(material.roughnessFactor - 1.0f) > 0.001f ||
+                    !metallicRoughnessTexture.IsValid())
                 {
                     outError =
                         "PBR texture cube contains an invalid material slice";
+                    return false;
+                }
+                if (!textureWorkflowMetallicRoughnessTexture.IsValid())
+                {
+                    textureWorkflowMetallicRoughnessTexture = metallicRoughnessTexture;
+                }
+                else if (textureWorkflowMetallicRoughnessTexture !=
+                         metallicRoughnessTexture)
+                {
+                    outError =
+                        "PBR texture cube must use one canonical metallic-roughness texture";
                     return false;
                 }
                 bool& baseColorSeen =
@@ -244,12 +369,6 @@ namespace RVX
                     "PBR factor cube must contain all 125 material combinations";
                 return false;
             }
-            if (m_metallicRoughnessTextureLoaded)
-            {
-                outError =
-                    "PBR factor cube must not depend on a metallic-roughness texture";
-                return false;
-            }
             m_expectedDrawPacketCount = PBRFactorDrawPacketCount;
             m_referenceCubeValidated = true;
         }
@@ -268,55 +387,71 @@ namespace RVX
                     "PBR texture cube must contain five base-color material slices";
                 return false;
             }
-            if (!m_metallicRoughnessTextureLoaded ||
-                m_metallicRoughnessTextureWidth != PBRMatrixDimension ||
-                m_metallicRoughnessTextureHeight != PBRMatrixDimension)
+            m_expectedDrawPacketCount = PBRTextureDrawPacketCount;
+            m_metallicRoughnessTextureAssetId =
+                textureWorkflowMetallicRoughnessTexture;
+            if (!m_model.IsFullyResident())
             {
-                outError =
-                    "PBR texture cube requires a loaded 5x5 metallic-roughness data texture";
+                return true;
+            }
+
+            const PbrTextureReceiptValidation receiptValidation =
+                ValidateTextureReceipt(
+                    metadata,
+                    m_model.status.fullyResidentTextureReceipt,
+                    m_metallicRoughnessTextureAssetId,
+                    m_metallicRoughnessTextureWidth,
+                    m_metallicRoughnessTextureHeight,
+                    outError);
+            if (receiptValidation == PbrTextureReceiptValidation::Invalid)
+            {
                 return false;
             }
-            m_expectedDrawPacketCount = PBRTextureDrawPacketCount;
+            if (receiptValidation == PbrTextureReceiptValidation::Pending)
+            {
+                return true;
+            }
+            m_metallicRoughnessTextureLoaded = true;
             m_referenceCubeValidated = true;
         }
         return true;
     }
 
     bool PBRMaterialsSample::ApplyFactorMaterialOverrides(
-        Scene& scene,
+        SceneECS::SceneEcsRuntime& scene,
         std::string& outError)
     {
         m_sceneMeshInstanceCount = 0;
         m_uniqueMeshResourceCount = 0;
         m_materialOverrideCount = 0;
-        SceneEntity* root = m_model.ResolveRoot(scene);
-        if (!m_model.resource.IsLoaded() || root == nullptr)
+        const ResourceSceneAdapters::EcsModelAssetMetadata& metadata =
+            m_model.status.modelMetadata;
+        if (!m_model.IsCPUReady() || !m_model.GetRootEntityRef().IsValid())
         {
             outError = "PBR factor cube has no loaded model instance";
             return false;
         }
-        if (m_model.resource->GetMeshCount() != 1)
+        if (metadata.meshAssetIds.size() != 1)
         {
             outError = "PBR factor cube must contain exactly one shared mesh";
             return false;
         }
 
-        std::unordered_map<std::string, Resource::MaterialHandle>
-            materialsByName;
-        for (const Resource::MaterialHandle& material :
-             m_model.resource->GetMaterials())
+        std::unordered_map<std::string, AssetId> materialsByName;
+        for (const ResourceSceneAdapters::EcsModelAssetMetadata::Material& material :
+             metadata.materials)
         {
-            if (!material.IsValid() || !material.IsLoaded())
+            if (!material.materialAssetId.IsValid())
             {
                 outError = "PBR factor cube contains an unavailable material";
                 return false;
             }
-            const std::string& name = material->GetMaterialName();
+            const std::string& name = material.sourceName;
             if (name.rfind("PBRFactor_", 0) != 0)
             {
                 continue;
             }
-            if (!materialsByName.emplace(name, material).second)
+            if (!materialsByName.emplace(name, material.materialAssetId).second)
             {
                 outError = "PBR factor cube contains a duplicate material name";
                 return false;
@@ -328,52 +463,50 @@ namespace RVX
             return false;
         }
 
-        std::unordered_set<ResourceId> uniqueMeshResources;
+        std::unordered_set<uint64> uniqueMeshResources;
         std::unordered_set<std::string> assignedMaterials;
-        std::vector<SceneEntity*> pending{root};
-        while (!pending.empty())
+        const ECS::Registry& registry = scene.GetRegistry();
+        for (const ResourceSceneAdapters::PreparedModelEntityMapping& mapping :
+             m_model.status.entityMappings)
         {
-            SceneEntity* entity = pending.back();
-            pending.pop_back();
-            if (entity == nullptr)
+            if (!mapping.entity.IsValid() || !registry.IsAlive(mapping.entity) ||
+                !scene.GetEntityRef(mapping.entity).IsValid())
             {
-                outError = "PBR factor cube contains a null scene entity";
+                outError = "PBR factor cube contains a stale ECS entity";
                 return false;
             }
-            for (SceneEntity* child : entity->GetChildren())
-            {
-                pending.push_back(child);
-            }
-
-            StaticMeshComponent* primitive =
-                entity->GetComponent<StaticMeshComponent>();
-            if (primitive == nullptr)
+            const SceneECS::Mesh* mesh =
+                registry.TryGet<SceneECS::Mesh>(mapping.entity);
+            const SceneECS::MaterialSlots* currentSlots =
+                registry.TryGet<SceneECS::MaterialSlots>(mapping.entity);
+            if (mesh == nullptr && currentSlots == nullptr)
             {
                 continue;
             }
-            const SceneMeshHandle mesh = primitive->GetMesh();
-            if (!mesh.IsValid() || !mesh.IsLoaded())
+            if (mesh == nullptr || currentSlots == nullptr ||
+                !mesh->meshAssetId.IsValid() || currentSlots->count == 0)
             {
                 outError = "PBR factor cube contains an unavailable mesh instance";
                 return false;
             }
 
-            const auto materialIt = materialsByName.find(entity->GetName());
+            const auto materialIt = materialsByName.find(mapping.sourceName);
             if (materialIt == materialsByName.end() ||
-                !assignedMaterials.insert(entity->GetName()).second)
+                !assignedMaterials.insert(mapping.sourceName).second)
             {
                 outError =
                     "PBR factor cube node/material names are missing or duplicated";
                 return false;
             }
-            primitive->SetMaterial(0, materialIt->second);
-            if (primitive->GetMaterial(0).GetId() != materialIt->second.GetId())
+            SceneECS::MaterialSlots updatedSlots = *currentSlots;
+            updatedSlots.values[0].materialAssetId = materialIt->second;
+            if (!scene.SetFragment(mapping.entity, updatedSlots))
             {
                 outError = "PBR factor cube material override was not retained";
                 return false;
             }
 
-            uniqueMeshResources.insert(mesh.GetId());
+            uniqueMeshResources.insert(mesh->meshAssetId.value);
             ++m_sceneMeshInstanceCount;
             ++m_materialOverrideCount;
         }
@@ -394,13 +527,26 @@ namespace RVX
     bool PBRMaterialsSample::Setup(SampleContext& context,
                                    std::string& outError)
     {
+        m_renderPath = context.options.renderPath;
+        if (!ApplySampleRenderPathPolicy(
+                m_renderPath, context.renderSettings.gpuCulling, outError))
+        {
+            return false;
+        }
+
         const float32 initialAspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(std::max(context.options.height, 1u));
-        context.camera.SetPerspective(
-            PBRMaterialsVerticalFov, initialAspect, 0.05f, 1000.0f);
-        context.camera.SetPosition(Vec3(0.0f, 0.0f, 3.0f));
-        context.camera.LookAt(Vec3(0.0f));
+        if (!context.cameras.SetPerspective(
+                context.camera, PBRMaterialsVerticalFov, initialAspect,
+                0.05f, 1000.0f) ||
+            !context.cameras.SetPose(
+                context.camera, {.position = Vec3(0.0f, 0.0f, 3.0f)}) ||
+            !context.cameras.LookAt(context.camera, Vec3(0.0f)))
+        {
+            outError = "Failed to configure the PBR Materials ECS camera";
+            return false;
+        }
         if (context.options.assetId == "pbr-material-grid")
         {
             m_referenceWorkflow = PBRReferenceWorkflow::Factor;
@@ -414,48 +560,36 @@ namespace RVX
             m_referenceWorkflow = PBRReferenceWorkflow::None;
         }
 
-        ActorSpawnParams skyParams;
-        skyParams.name = "PBRMaterialsSky";
-        SceneEntity* skyEntity = context.scene.SpawnActor(skyParams);
-        SkyboxComponent* skybox =
-            skyEntity ? skyEntity->AddComponent<SkyboxComponent>() : nullptr;
-        if (!skybox)
-        {
-            outError = "Failed to create the PBR material background";
-            return false;
-        }
-        ConfigureProceduralSky(*skybox);
-        m_skyboxCreated = true;
-
         SampleEnvironmentLoadOptions environmentOptions;
         environmentOptions.quality = context.options.quality;
         environmentOptions.smoke = context.options.smoke;
         environmentOptions.exposure = 1.0f;
-        if (!context.environments.Request(context.options.environmentPath,
-                                          environmentOptions,
-                                          *skybox,
-                                          m_environment,
-                                          outError))
+        const bool environmentRequested =
+            !context.options.environmentAssetId.empty()
+                ? context.environments.RequestByAssetId(
+                      context.options.environmentAssetId,
+                      environmentOptions, m_environment, outError)
+                : context.environments.Request(
+                      context.options.environmentPath,
+                      context.options.environmentContentIdentity,
+                      environmentOptions, m_environment, outError);
+        if (!environmentRequested)
         {
             return false;
         }
+        m_skyboxCreated = true;
 
-        ActorSpawnParams lightParams;
-        lightParams.name = "PBRMaterialsKeyLight";
-        SceneEntity* lightEntity = context.scene.SpawnActor(lightParams);
-        LightComponent* light =
-            lightEntity ? lightEntity->AddComponent<LightComponent>() : nullptr;
-        if (!light)
+        SceneECS::RuntimeEntityDesc lightDesc;
+        lightDesc.localTransform.rotation =
+            QuatFromEuler(Vec3(radians(-35.0f), radians(30.0f), 0.0f));
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                lightDesc,
+                MakeDirectionalLight(),
+                SceneECS::Visibility{}).IsValid())
         {
             outError = "Failed to create the PBR material key light";
             return false;
         }
-        lightEntity->SetRotation(
-            QuatFromEuler(Vec3(radians(-35.0f), radians(30.0f), 0.0f)));
-        light->SetLightType(LightType::Directional);
-        light->SetColor(Vec3(1.0f, 0.97f, 0.92f));
-        light->SetIntensity(1.5f);
-        light->SetCastsShadow(false);
         m_lightCreated = true;
 
         context.renderSettings.shadows.enabled = false;
@@ -464,9 +598,8 @@ namespace RVX
         context.renderSettings.postProcess.enableBloom = false;
         context.renderSettings.postProcess.enableSSAO = false;
         context.renderSettings.postProcess.enableSSR = false;
-        return context.models.Request(context.options.modelPath,
-                                      m_model,
-                                      outError);
+        return context.models.RequestByAssetId(
+            context.options.assetId, m_model, outError);
     }
 
     bool PBRMaterialsSample::ActivateModel(SampleContext& context)
@@ -504,13 +637,13 @@ namespace RVX
             return false;
         }
 
-        SceneEntity* modelRoot = m_model.ResolveRoot(context.scene);
-        if (!modelRoot)
+        if (!TryComputeSampleModelRenderableWorldBounds(
+                m_model, context.scene, m_bounds))
         {
-            m_modelActivationError = "PBR material model root handle is stale";
+            m_modelActivationError =
+                "PBR material model has no finite ECS renderable bounds";
             return false;
         }
-        m_bounds = modelRoot->GetWorldBounds();
         const float32 aspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(std::max(context.options.height, 1u));
@@ -548,7 +681,12 @@ namespace RVX
                 "PBR material camera rig initialization failed";
             return false;
         }
-        m_orbitCamera.Apply(context.camera);
+        if (!m_orbitCamera.Apply(context.cameras, context.camera))
+        {
+            m_modelActivationError =
+                "PBR material ECS camera pose application failed";
+            return false;
+        }
         const OrbitCameraRigPose orbitPose = m_orbitCamera.GetPose();
         m_cameraFrame.target = orbitPose.pivot;
         m_cameraFrame.distance = orbitPose.distance;
@@ -562,12 +700,35 @@ namespace RVX
     void PBRMaterialsSample::Update(SampleContext& context, float deltaTime)
     {
         static_cast<void>(deltaTime);
-        static_cast<void>(context.models.UpdateReadiness(m_model));
-        static_cast<void>(context.environments.UpdateReadiness(m_environment));
+        const ResourceSceneAdapters::EcsSceneAssetLoadStatus modelStatus =
+            context.models.UpdateReadiness(m_model);
+        const ResourceSceneAdapters::EcsEnvironmentLoadStatus environmentStatus =
+            context.environments.UpdateReadiness(m_environment);
+        if (modelStatus.IsTerminal() && !m_model.IsFullyResident() &&
+            m_modelActivationError.empty())
+        {
+            m_modelActivationError = DescribeModelFailure(modelStatus);
+        }
+        if (environmentStatus.IsTerminal() && !m_environment.IsValid() &&
+            m_modelActivationError.empty())
+        {
+            m_modelActivationError = DescribeEnvironmentFailure(environmentStatus);
+        }
         if (!m_modelActivationAttempted && m_model.IsCPUReady())
         {
             if (!ActivateModel(context))
                 static_cast<void>(context.models.Cancel(m_model));
+        }
+        if (m_modelActivated &&
+            m_referenceWorkflow == PBRReferenceWorkflow::Texture &&
+            m_model.IsFullyResident() && !m_referenceCubeValidated)
+        {
+            std::string receiptError;
+            if (!InspectMaterials(PBRReferenceWorkflow::Texture, receiptError))
+            {
+                m_modelActivationError = std::move(receiptError);
+                static_cast<void>(context.models.Cancel(m_model));
+            }
         }
     }
 
@@ -575,7 +736,8 @@ namespace RVX
     {
         if (m_modelActivated && m_orbitCamera.IsInitialized() && context.input)
         {
-            m_orbitCamera.Update(*context.input, context.camera);
+            static_cast<void>(m_orbitCamera.Update(
+                *context.input, context.cameras, context.camera));
         }
     }
 
@@ -587,15 +749,18 @@ namespace RVX
             return;
         const float32 aspect =
             static_cast<float32>(width) / static_cast<float32>(height);
-        m_orbitCamera.SetAspectRatio(aspect, context.camera);
+        static_cast<void>(m_orbitCamera.SetAspectRatio(
+            aspect, context.cameras, context.camera));
         if (!m_orbitCamera.IsInitialized())
-            context.camera.SetAspectRatio(aspect);
+            static_cast<void>(context.cameras.SetAspectRatio(
+                context.camera, aspect));
     }
 
     void PBRMaterialsSample::AppendReport(
         SampleFeatureReporter& reporter) const
     {
-        if (m_model.resource.IsLoaded())
+        AppendSampleRenderPathPolicyReport(m_renderPath, reporter);
+        if (m_model.status.modelMetadata.HasPublishedSource())
         {
             reporter.Enable("ModelResourceLoad");
             reporter.Enable("SceneInstantiation");
@@ -604,7 +769,8 @@ namespace RVX
                 "model path=" + m_model.sourcePath.string());
             reporter.ResourceDiagnostic(
                 "model meshes=" +
-                std::to_string(m_model.resource->GetMeshCount()));
+                std::to_string(
+                    m_model.status.modelMetadata.meshAssetIds.size()));
             reporter.ResourceDiagnostic(
                 "pbr materials=" + std::to_string(m_pbrMaterialCount));
             if (m_metallicRoughnessTextureLoaded)
@@ -708,35 +874,33 @@ namespace RVX
         {
             return SampleReadiness::Failed(m_modelActivationError);
         }
-        if (m_model.status.IsFailed() ||
-            m_model.status.lifecycle == SceneAssetLifecycle::Cancelled)
+        if (m_model.status.IsTerminal() && !m_model.IsFullyResident())
         {
             return SampleReadiness::Failed(
-                m_model.status.diagnostic.empty()
-                    ? "PBR Materials model request failed or was cancelled"
-                    : m_model.status.diagnostic);
+                DescribeModelFailure(m_model.status));
         }
-        if (m_environment.status.IsFailed() ||
-            m_environment.status.lifecycle == SceneAssetLifecycle::Cancelled)
+        if (m_environment.status.IsTerminal() && !m_environment.IsValid())
         {
             return SampleReadiness::Failed(
-                m_environment.status.diagnostic.empty()
-                    ? "PBR Materials environment request failed or was cancelled"
-                    : m_environment.status.diagnostic);
+                DescribeEnvironmentFailure(m_environment.status));
         }
         if (!m_modelActivated)
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for CPU-ready model activation");
         }
-        if (!m_model.status.IsFullyResident() ||
-            !m_model.instance.IsRenderReady())
+        if (!m_model.IsFullyResident())
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for all model GPU resources");
         }
-        if (!m_environment.status.IsFullyResident() ||
-            !m_environment.IsValid())
+        if (m_referenceWorkflow == PBRReferenceWorkflow::Texture &&
+            !m_referenceCubeValidated)
+        {
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for an exact fully-resident texture receipt");
+        }
+        if (!m_environment.IsValid())
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for realized texture IBL");
@@ -775,8 +939,20 @@ namespace RVX
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for opaque material binding diagnostics");
         }
+        // Descriptor bindings are submission-scoped. An instanced material
+        // parameter table covers every member material with one Direct draw
+        // binding, so use the physical submission count for coverage. Legacy
+        // diagnostics do not publish either count and retain the per-packet
+        // expectation.
+        const uint32 submittedMaterialBindingCount =
+            diagnostics.opaqueInstancingSubmittedDrawCount +
+            diagnostics.gpuDrivenOpaqueIndirectBatchCount;
+        const uint32 expectedMaterialBindingCount =
+            submittedMaterialBindingCount != 0
+                ? submittedMaterialBindingCount
+                : m_expectedDrawPacketCount;
         if (diagnostics.opaqueMaterialBindingCount <
-            m_expectedDrawPacketCount)
+            expectedMaterialBindingCount)
         {
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for all reference material bindings");
@@ -795,6 +971,11 @@ namespace RVX
             return SampleReadiness::Pending(
                 "PBR Materials is waiting for the metallic-roughness texture binding");
         }
+        if (!IsSampleRenderPathExecutionQualified(m_renderPath, diagnostics))
+        {
+            return SampleReadiness::Pending(
+                "PBR Materials is waiting for its requested render-path execution");
+        }
         return SampleReadiness::Ready();
     }
 
@@ -809,9 +990,23 @@ namespace RVX
 
     void PBRMaterialsSample::Shutdown(SampleContext& context)
     {
-        static_cast<void>(context);
-        m_model = {};
-        m_environment = {};
+        if (m_model.request.IsValid() && !context.models.Cancel(m_model))
+        {
+            m_modelActivationError =
+                "Failed to cancel the PBR Materials ECS model request.";
+        }
+        if (m_environment.request.IsValid() &&
+            !context.environments.Cancel(m_environment))
+        {
+            if (!m_modelActivationError.empty())
+                m_modelActivationError += ' ';
+            m_modelActivationError +=
+                "Failed to cancel the PBR Materials ECS environment request.";
+        }
+        if (!m_model.request.IsValid())
+            m_model = {};
+        if (!m_environment.request.IsValid())
+            m_environment = {};
         m_bounds.Reset();
         m_cameraFrame = {};
         m_pbrMaterialCount = 0;
@@ -823,8 +1018,11 @@ namespace RVX
         m_expectedDrawPacketCount = 0;
         m_metallicRoughnessTextureWidth = 0;
         m_metallicRoughnessTextureHeight = 0;
+        m_metallicRoughnessTextureAssetId = {};
         m_metallicRoughnessTextureLoaded = false;
-        m_modelActivationError.clear();
+        if (!m_model.request.IsValid() && !m_environment.request.IsValid())
+            m_modelActivationError.clear();
+        m_renderPath = SampleRenderPath::Auto;
         m_referenceWorkflow = PBRReferenceWorkflow::None;
         m_referenceCubeValidated = false;
         m_modelActivationAttempted = false;

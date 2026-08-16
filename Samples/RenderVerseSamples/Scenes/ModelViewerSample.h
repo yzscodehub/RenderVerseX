@@ -42,6 +42,7 @@ namespace RVX
         uint32 m_automationFrameCount = 0;
         uint32 m_automationZoomEventCount = 0;
         std::string m_modelActivationError;
+        std::string m_environmentFailure;
         bool m_modelActivationAttempted = false;
         bool m_modelActivated = false;
         bool m_renderablesEnabled = false;

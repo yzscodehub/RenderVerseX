@@ -1,37 +1,544 @@
 {
   "schemaId": "RVX.SampleAssetCatalog",
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "assets": [
     {
-      "id": "r7-triangle",
+      "id": "casual-female",
       "kind": "model",
-      "path": "models/r7-triangle/scene.gltf",
+      "path": "models/casual-female/Casual_Female.gltf",
       "license": {
-        "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
-        "file": "LICENSE.generated-fixtures.txt"
+        "spdxId": "CC0-1.0",
+        "file": "LICENSE.quaternius-cc0.txt",
+        "coverage": "complete-declared-package"
       },
       "source": {
-        "name": "RenderVerseX R7 visual gate fixture",
-        "uri": "repo://Tests/Fixtures/ModelViewer/R7Triangle.gltf",
-        "author": "RenderVerseX contributors"
+        "name": "Quaternius Casual Female",
+        "uri": "https://drive.google.com/file/d/1E79ks2jbMt5iIrI8Ag9lRgA0VRnfU4pk/view",
+        "author": "Quaternius",
+        "version": "Ultimate Animated Character Pack, November 2019"
       },
-      "attribution": "Generated test geometry; no third-party source asset.",
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a",
+        "byteCount": 2058883,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "42dec4e0c8ed81f540f666943f7823e500f53d22c9eccc7a9750cc9c1324dee5",
+        "byteCount": 3595794,
+        "fileCount": 5
+      },
+      "files": [
+        {
+          "path": "cooked/casual-female/CookManifest.rvxmanifest",
+          "purpose": "cook-manifest",
+          "byteCount": 2122,
+          "sha256": "87e1fb3666fce0a75740894ea6124e8cb27e7fa88c4142fe9debe40670132096"
+        },
+        {
+          "path": "cooked/casual-female/models/casual-female/Casual_Female.rva",
+          "purpose": "cooked-artifact",
+          "byteCount": 15841,
+          "sha256": "5761696ced130fec6ec302660cae7e1f9d260b8a7f112b7f3cd93ade65062d39"
+        },
+        {
+          "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/animation.rvxanim",
+          "purpose": "cooked-artifact",
+          "byteCount": 927584,
+          "sha256": "36f4824d1d82aeaae42ce33208b3c774622e09d4547290c89ace8560eeb3ad11"
+        },
+        {
+          "path": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/meshes.rva",
+          "purpose": "cooked-artifact",
+          "byteCount": 591364,
+          "sha256": "2d637a7fff424f3b46d52cc40beb577e9345abda013a993ddba3738d950c61cd"
+        },
+        {
+          "path": "models/casual-female/Casual_Female.gltf",
+          "purpose": "runtime-root",
+          "byteCount": 2058883,
+          "sha256": "87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a"
+        }
+      ],
+      "attribution": "Casual Female from the Quaternius Ultimate Animated Character Pack, CC0 1.0 Universal.",
+      "modificationNotice": "Vendored Casual_Female.gltf bytes are unmodified; cooked artifacts retain the source identity.",
+      "redistributable": true,
+      "cook": {
+        "manifestPath": "cooked/casual-female/CookManifest.rvxmanifest",
+        "cookedRoot": "cooked/casual-female",
+        "selector": {
+          "sourcePath": "models/casual-female/Casual_Female.gltf",
+          "outputPath": "models/casual-female/Casual_Female.rva",
+          "type": "Model"
+        },
+        "sourceContentIdentity": {
+          "schemaVersion": 1,
+          "domain": "source",
+          "scope": "self-contained-artifact",
+          "algorithm": "sha256",
+          "digest": "87327963ab0f37d004c7340d130808727f3d67b724c3d41aad01fd63c7d6fc8a",
+          "byteCount": 2058883,
+          "fileCount": 1
+        },
+        "cookedContentIdentity": {
+          "schemaVersion": 1,
+          "domain": "cooked-artifact",
+          "scope": "dependency-closure",
+          "algorithm": "sha256",
+          "digest": "c91215f2751eb272b6750de1a03829d2599577a13842fa76dc488e621a94ce89",
+          "byteCount": 1534789,
+          "fileCount": 3
+        },
+        "manifestContentIdentity": {
+          "schemaVersion": 1,
+          "domain": "cook-manifest",
+          "scope": "self-contained-artifact",
+          "algorithm": "sha256",
+          "digest": "87e1fb3666fce0a75740894ea6124e8cb27e7fa88c4142fe9debe40670132096",
+          "byteCount": 2122,
+          "fileCount": 1
+        },
+        "cookSettingsHash": "d47a3f3b166ac705cfd06128506f127d776f43ad59eaeaa5cb4d52c1946829fa",
+        "recipeHash": "815ad489b05e8595afec66fa1dadfc39cb1dea900cea4e18bad7e5092f8592c5",
+        "tool": {
+          "name": "RVXCook",
+          "version": "2.0.0"
+        }
+      }
+    },
+    {
+      "id": "casual-female-walk-root-motion",
+      "kind": "animation",
+      "path": "cooked/casual-female-root-motion/casual-female-walk-root-motion.rvxanim",
+      "license": {
+        "spdxId": "CC0-1.0",
+        "file": "LICENSE.quaternius-cc0.txt",
+        "coverage": "complete-declared-package"
+      },
+      "source": {
+        "name": "Casual Female Walk Root Motion (deterministic derivative)",
+        "uri": "https://drive.google.com/file/d/1E79ks2jbMt5iIrI8Ag9lRgA0VRnfU4pk/view",
+        "author": "Quaternius; deterministic derivative by RenderVerseX contributors",
+        "version": "rvx-animation-root-motion-derive-v1"
+      },
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "cooked-artifact",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "8a04a46e8507391e11df7b2102e5ba3260aecea14d822b33c2d5871c9909e1ca",
+        "byteCount": 54462,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "3e32fb4c332021590f3841ddb7fe858e09c8240246bfbf16e67bb8b795413360",
+        "byteCount": 56156,
+        "fileCount": 2
+      },
+      "files": [
+        {
+          "path": "cooked/casual-female-root-motion/CookManifest.rvxmanifest",
+          "purpose": "cook-manifest",
+          "byteCount": 1694,
+          "sha256": "00f59bc67067c1503f148daa77da2093e151cf3910aaed186b27bca93fd93c17"
+        },
+        {
+          "path": "cooked/casual-female-root-motion/casual-female-walk-root-motion.rvxanim",
+          "purpose": "runtime-root",
+          "byteCount": 54462,
+          "sha256": "8a04a46e8507391e11df7b2102e5ba3260aecea14d822b33c2d5871c9909e1ca"
+        }
+      ],
+      "attribution": "Derived from Quaternius Casual Female Walk, CC0 1.0 Universal.",
+      "modificationNotice": "The Walk clip root track is deterministically replaced with +Z translation at 1.0 metre/second; all non-root animation data is retained.",
+      "redistributable": true,
+      "derivedFrom": [
+        "casual-female"
+      ],
+      "generation": {
+        "recipe": "rvx-animation-root-motion-derive-v1",
+        "toolVersion": "1.0.0",
+        "recipeHash": "3f12412b0a93123d4727c06ab91a87c5e86d7c1055b1db511de0f62e9eab21e3"
+      },
+      "cook": {
+        "manifestPath": "cooked/casual-female-root-motion/CookManifest.rvxmanifest",
+        "cookedRoot": "cooked/casual-female-root-motion",
+        "selector": {
+          "sourcePath": "cooked/casual-female/models/casual-female/Casual_Female.rvdeps/animation.rvxanim",
+          "outputPath": "casual-female-walk-root-motion.rvxanim",
+          "type": "Animation"
+        },
+        "sourceContentIdentity": {
+          "schemaVersion": 1,
+          "domain": "source",
+          "scope": "self-contained-artifact",
+          "algorithm": "sha256",
+          "digest": "36f4824d1d82aeaae42ce33208b3c774622e09d4547290c89ace8560eeb3ad11",
+          "byteCount": 927584,
+          "fileCount": 1
+        },
+        "cookedContentIdentity": {
+          "schemaVersion": 1,
+          "domain": "cooked-artifact",
+          "scope": "self-contained-artifact",
+          "algorithm": "sha256",
+          "digest": "b820610acdfb55f6f182d753ddeabdc0d73d635816d0b14d93b8ae899b16acbb",
+          "byteCount": 54462,
+          "fileCount": 1
+        },
+        "manifestContentIdentity": {
+          "schemaVersion": 1,
+          "domain": "cook-manifest",
+          "scope": "self-contained-artifact",
+          "algorithm": "sha256",
+          "digest": "00f59bc67067c1503f148daa77da2093e151cf3910aaed186b27bca93fd93c17",
+          "byteCount": 1694,
+          "fileCount": 1
+        },
+        "cookSettingsHash": "0618f669053ab678745f85251fe13a8db9966f8196a30f955ea1585bc2c81963",
+        "recipeHash": "2984a9d350b89ae24050cbcc3087c4714f66aafca654ea8cef9b7bc5a8dcd709",
+        "tool": {
+          "name": "RVXCook",
+          "version": "2.0.0"
+        }
+      }
+    },
+    {
+      "id": "corset",
+      "kind": "model",
+      "path": "models/corset/Corset.glb",
+      "license": {
+        "spdxId": "CC0-1.0",
+        "file": "LICENSE.khronos-sample-assets-cc0.txt",
+        "coverage": "complete-declared-package"
+      },
+      "source": {
+        "name": "Khronos Corset",
+        "uri": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf/Models/Corset/glTF-Binary/Corset.glb",
+        "author": "Microsoft / Khronos glTF Sample Assets contributors",
+        "version": "2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf"
+      },
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "9582c0dc0dee813be77f60e6ddf7213987c7e11497bf3cc66fd7b18957ae0d26",
+        "byteCount": 13491364,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "d9649a867305e7152ea1dcc5c30f4624fcb17fe7d4f7468da00e9b1997f1bb6c",
+        "byteCount": 13491364,
+        "fileCount": 1
+      },
+      "files": [
+        {
+          "path": "models/corset/Corset.glb",
+          "purpose": "runtime-root",
+          "byteCount": 13491364,
+          "sha256": "9582c0dc0dee813be77f60e6ddf7213987c7e11497bf3cc66fd7b18957ae0d26"
+        }
+      ],
+      "attribution": "Khronos Corset, CC0 1.0 Universal.",
+      "modificationNotice": "Vendored GLB bytes are unmodified.",
       "redistributable": true
     },
     {
-      "id": "shadow-plane-caster",
+      "id": "crytek-sponza",
       "kind": "model",
-      "path": "models/shadow-plane-caster/scene.gltf",
+      "path": "models/crytek-sponza/scene.gltf",
       "license": {
-        "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
-        "file": "LICENSE.generated-fixtures.txt"
+        "spdxId": "CC-BY-3.0",
+        "file": "LICENSE.crytek-sponza-cc-by-3.0.txt",
+        "coverage": "complete-declared-package"
       },
       "source": {
-        "name": "RenderVerseX shadow visual gate fixture",
-        "uri": "repo://Tests/Fixtures/ModelViewer/ShadowPlaneCaster.gltf",
-        "author": "RenderVerseX contributors"
+        "name": "Crytek Sponza via McGuire Computer Graphics Archive",
+        "uri": "https://casual-effects.com/g3d/data10/common/model/crytek_sponza/sponza.zip",
+        "author": "Frank Meinl, Crytek; archive maintenance by Morgan McGuire",
+        "version": "2016-06-28",
+        "archiveSha256": "da005cbee0be2df2abc8513f3ceb61bcb6f69aac112babcd9c00169a27c2770c"
       },
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "dependency-closure",
+        "algorithm": "sha256",
+        "digest": "c7e93451e25a1ee35247d265dbd06c760de904ba339890a97c248648c3170431",
+        "byteCount": 69148006,
+        "fileCount": 26
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "1d7d24ff3eb0f54e30834bf14717c3a303cb179e41fca4829545768e0999d46a",
+        "byteCount": 69148006,
+        "fileCount": 26
+      },
+      "files": [
+        {
+          "path": "models/crytek-sponza/scene.bin",
+          "purpose": "runtime-dependency",
+          "byteCount": 9048196,
+          "sha256": "5e932881bb9f62a8a90b773c760c69095a79a03950839c7deaa43648df834e9a"
+        },
+        {
+          "path": "models/crytek-sponza/scene.gltf",
+          "purpose": "runtime-root",
+          "byteCount": 25536,
+          "sha256": "14644aa40e9f43b8293f4a34faee6c039890fd0218f1dfadb31581a71198f780"
+        },
+        {
+          "path": "models/crytek-sponza/textures/background.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1279899,
+          "sha256": "21f5955648b003a0046ca16054aef2db07901d73662e8b8141e73ba551e06f87"
+        },
+        {
+          "path": "models/crytek-sponza/textures/chain_texture.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 374829,
+          "sha256": "5745cf634538333bcad860e5da4bd57d288166631aadc4b0268fc2103b152242"
+        },
+        {
+          "path": "models/crytek-sponza/textures/lion.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1685074,
+          "sha256": "13c763cb8d01e781121180a2f0c7ddc6c672d0a146ffc1359a5795dba99db5c2"
+        },
+        {
+          "path": "models/crytek-sponza/textures/spnza_bricks_a_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1850821,
+          "sha256": "6653d814e78df5b1d72bff0bc4f055b19f40c60125368c66f706862a77b11e19"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_arch_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1545689,
+          "sha256": "1a2e127ce784d2d4f061eae58a780cdcc8daba6c0f254d06e5494e41d4874ff2"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_ceiling_a_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1748205,
+          "sha256": "6d6ff12242bd2b0680c45b27d0234cb4fc636959a2575f29dd6eb02251348f4c"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_column_a_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1743092,
+          "sha256": "13c3511250c790ad260845ffd5d56f4622bb3760316831403c3cc182bcf40095"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_column_b_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 2127842,
+          "sha256": "e893c9f0a8ca1cb7b649476eaa6ce98ece4d82b447f2a9858dbf0be4ce05c8e1"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_column_c_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 2021589,
+          "sha256": "eaf9050e0cb05bc5184b4fc7108085036e049ca6a3a93c0b11ed8e920831472d"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_curtain_blue_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 9202020,
+          "sha256": "267f19cc7b95d665965f49117e6ef5cabc62ae65b5c921ca86c5f53ab5f55f97"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_curtain_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 8834304,
+          "sha256": "dbe47dc0d50b3b5917d94f92c667a1068de776cf1b1af9f931358671a8e8a677"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_curtain_green_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 8325274,
+          "sha256": "2a1141c908bbbcc66064ef0cd1888d26e4493560ca1a8add94ba96e4413ef0b5"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_details_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1342967,
+          "sha256": "01012e0e81c20b10856dd34476069aadf1270cedd47e13b2760ae7dec341a7ab"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_fabric_blue_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 2097497,
+          "sha256": "b7398d4f96ac101b92a42f8e093754fa239bb80e0038727e49574abed5473c20"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_fabric_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 2208126,
+          "sha256": "1fe1ee45005ddcbcde414096c1018c9296e5dfed528ecc99f9ce7d82862fd963"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_fabric_green_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 2162350,
+          "sha256": "eb009dd943c52da29e3d7dd4d30e12a912769ffc7659e97dba7a2483fa79c6c3"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_flagpole_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1314735,
+          "sha256": "c65b8651f12a05063118a91bd2c1ebb37a403936bb2b79226cf842917ebfbcbe"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_floor_a_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1881715,
+          "sha256": "ec677f8d95abc307a7551a501ed20c9cd79bbc38d41963a7d74a35d096d2f1c4"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_roof_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 2280888,
+          "sha256": "be5c0e86671a709c5d2f87820f92414bf4c069c5041d2fb548f8bf130f7616dd"
+        },
+        {
+          "path": "models/crytek-sponza/textures/sponza_thorn_diff.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 450994,
+          "sha256": "fbe4564dcfbba7f225f6df00caa92365cf653d6bf496bb3da59b164fa1c84aac"
+        },
+        {
+          "path": "models/crytek-sponza/textures/vase_dif.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1739865,
+          "sha256": "141d957726bb80708e3210d481c82d4038016cc31e414c541eea76d61e600bd5"
+        },
+        {
+          "path": "models/crytek-sponza/textures/vase_hanging.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1240906,
+          "sha256": "310b171c5508c7f1df97cc87ebb2139141f4fbf6cd65d6cf1675e92ed64521b6"
+        },
+        {
+          "path": "models/crytek-sponza/textures/vase_plant.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 817124,
+          "sha256": "2e3e7cdcc544beec19338b7e3f33e7814847b1e73294f4bae4c18d3740a7b1e1"
+        },
+        {
+          "path": "models/crytek-sponza/textures/vase_round.png",
+          "purpose": "runtime-dependency",
+          "byteCount": 1798469,
+          "sha256": "5ee2138dc016aff582e50c2725b7749cdf0681537147d3cd9034e0d10414fb7c"
+        }
+      ],
+      "attribution": "Crytek Sponza © 2010 Frank Meinl, Crytek, CC BY 3.0; archive and conversion attribution retained.",
+      "modificationNotice": "Converted from the unmodified OBJ/MTL archive to deterministic glTF 2.0; see the license and source README.",
+      "redistributable": true,
+      "derivedFrom": [
+        "crytek-sponza-archive-2016-06-28"
+      ],
+      "generation": {
+        "recipe": "Scripts/Assets/convert_crytek_sponza.py",
+        "toolVersion": "1.0.0",
+        "recipeHash": "e51b9ea31691b7cf0b1174c6ed7619cfabaf519211187e8aa216a4724b43b849"
+      }
+    },
+    {
+      "id": "interior-rendering-p0a",
+      "kind": "model",
+      "path": "models/interior-rendering-p0a/scene.gltf",
+      "license": {
+        "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
+        "file": "LICENSE.generated-fixtures.txt",
+        "coverage": "complete-declared-package"
+      },
+      "source": {
+        "name": "RenderVerseX deterministic interior fixture",
+        "uri": "repo://Samples/Common/Tools/SampleInteriorFixtureWriter.cpp",
+        "author": "RenderVerseX contributors",
+        "version": "1"
+      },
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "f94c219679ca4b47844ab7e7f9c3012c8195f2f1002a102aed6a1a7f9249737d",
+        "byteCount": 13966,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "62bad1e475a107ac0941a1b19bc6231fee6de5ae5558ed12115da03e12d4af34",
+        "byteCount": 13966,
+        "fileCount": 1
+      },
+      "files": [
+        {
+          "path": "models/interior-rendering-p0a/scene.gltf",
+          "purpose": "runtime-root",
+          "byteCount": 13966,
+          "sha256": "f94c219679ca4b47844ab7e7f9c3012c8195f2f1002a102aed6a1a7f9249737d"
+        }
+      ],
       "attribution": "Generated test geometry; no third-party source asset.",
+      "modificationNotice": "Generated deterministically from repository source; no upstream bytes modified.",
+      "redistributable": true
+    },
+    {
+      "id": "kloofendal-48d-partly-cloudy-pure-sky",
+      "kind": "environment",
+      "path": "environments/kloofendal-48d-partly-cloudy-pure-sky/kloofendal_48d_partly_cloudy_puresky_2k.hdr",
+      "license": {
+        "spdxId": "CC0-1.0",
+        "file": "LICENSE.polyhaven-cc0.txt",
+        "coverage": "complete-declared-package"
+      },
+      "source": {
+        "name": "Kloofendal 48d Partly Cloudy (Pure Sky) 2K HDR",
+        "uri": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/kloofendal_48d_partly_cloudy_puresky_2k.hdr",
+        "author": "Greg Zaal; pure-sky edit by Jarod Guest",
+        "version": "polyhaven-2k-hdr-2026-08-12"
+      },
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "5244534e9cf5b606f2ff513aa00ddb161b0a4826ffd88a0d3bd03ac29247d198",
+        "byteCount": 5451493,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "5976bfa6aee89beecfd51d98b8b47f625965c1df245d0816fd708860d64ab449",
+        "byteCount": 5451493,
+        "fileCount": 1
+      },
+      "files": [
+        {
+          "path": "environments/kloofendal-48d-partly-cloudy-pure-sky/kloofendal_48d_partly_cloudy_puresky_2k.hdr",
+          "purpose": "runtime-root",
+          "byteCount": 5451493,
+          "sha256": "5244534e9cf5b606f2ff513aa00ddb161b0a4826ffd88a0d3bd03ac29247d198"
+        }
+      ],
+      "attribution": "Poly Haven Kloofendal 48d Partly Cloudy Pure Sky, CC0.",
+      "modificationNotice": "Vendored HDR bytes are unmodified; IBL derivatives are produced by the Resource environment loader/cook contract.",
       "redistributable": true
     },
     {
@@ -40,14 +547,41 @@
       "path": "models/pbr-material-grid/scene.gltf",
       "license": {
         "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
-        "file": "LICENSE.generated-fixtures.txt"
+        "file": "LICENSE.generated-fixtures.txt",
+        "coverage": "complete-declared-package"
       },
       "source": {
         "name": "RenderVerseX PBR 5x5x5 factor cube",
         "uri": "repo://Tests/Fixtures/Samples/PBRMaterialGrid.gltf",
-        "author": "RenderVerseX contributors"
+        "author": "RenderVerseX contributors",
+        "version": "1"
       },
-      "attribution": "Generated 5x5x5 factor-driven PBR parameter cube; no third-party source asset.",
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "f773451c60bb4ef138cccbfea66fe7fbf2cb61029a8cdc4e965f59ecf87051d1",
+        "byteCount": 388150,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "f7f8d058a48d8cf8aa06eeef9bf67d2ca2a12eaf679764262165d6c4286d01f7",
+        "byteCount": 388150,
+        "fileCount": 1
+      },
+      "files": [
+        {
+          "path": "models/pbr-material-grid/scene.gltf",
+          "purpose": "runtime-root",
+          "byteCount": 388150,
+          "sha256": "f773451c60bb4ef138cccbfea66fe7fbf2cb61029a8cdc4e965f59ecf87051d1"
+        }
+      ],
+      "attribution": "Generated test geometry; no third-party source asset.",
+      "modificationNotice": "Generated deterministically from repository source; no upstream bytes modified.",
       "redistributable": true
     },
     {
@@ -56,14 +590,41 @@
       "path": "models/pbr-material-texture-cube/scene.gltf",
       "license": {
         "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
-        "file": "LICENSE.generated-fixtures.txt"
+        "file": "LICENSE.generated-fixtures.txt",
+        "coverage": "complete-declared-package"
       },
       "source": {
         "name": "RenderVerseX PBR 5x5x5 texture cube",
         "uri": "repo://Tests/Fixtures/Samples/PBRMaterialTextureCube.gltf",
-        "author": "RenderVerseX contributors"
+        "author": "RenderVerseX contributors",
+        "version": "1"
       },
-      "attribution": "Generated 5x5x5 texture-driven PBR parameter cube; no third-party source asset.",
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "872096457d388aeda68b8625f444770f13b2d8ba0d0b89fa94bb00926959fc41",
+        "byteCount": 332438,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "eb85d5f46da207eb49244b17a27fbb1a2fdcb41efa6e026221976cdb3b91d096",
+        "byteCount": 332438,
+        "fileCount": 1
+      },
+      "files": [
+        {
+          "path": "models/pbr-material-texture-cube/scene.gltf",
+          "purpose": "runtime-root",
+          "byteCount": 332438,
+          "sha256": "872096457d388aeda68b8625f444770f13b2d8ba0d0b89fa94bb00926959fc41"
+        }
+      ],
+      "attribution": "Generated test geometry; no third-party source asset.",
+      "modificationNotice": "Generated deterministically from repository source; no upstream bytes modified.",
       "redistributable": true
     },
     {
@@ -72,14 +633,170 @@
       "path": "environments/pbr-reference/environment.hdr",
       "license": {
         "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
-        "file": "LICENSE.generated-fixtures.txt"
+        "file": "LICENSE.generated-fixtures.txt",
+        "coverage": "complete-declared-package"
       },
       "source": {
         "name": "RenderVerseX hermetic PBR reference environment",
         "uri": "repo://Samples/Common/Tools/SampleHDRFixtureWriter.cpp",
-        "author": "RenderVerseX contributors"
+        "author": "RenderVerseX contributors",
+        "version": "1"
       },
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "8369fd317e553d399d9059ed53733743172a68615153d8072cb7ca067717cd9e",
+        "byteCount": 2095,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "c50366a1e0e88a986489219f1c6c9e13548fdf129d6ccd153d80504a1269abdc",
+        "byteCount": 2095,
+        "fileCount": 1
+      },
+      "files": [
+        {
+          "path": "environments/pbr-reference/environment.hdr",
+          "purpose": "runtime-root",
+          "byteCount": 2095,
+          "sha256": "8369fd317e553d399d9059ed53733743172a68615153d8072cb7ca067717cd9e"
+        }
+      ],
       "attribution": "Deterministically generated HDR fixture; no third-party source asset.",
+      "modificationNotice": "Generated deterministically from repository source.",
+      "redistributable": true
+    },
+    {
+      "id": "r7-triangle",
+      "kind": "model",
+      "path": "models/r7-triangle/scene.gltf",
+      "license": {
+        "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
+        "file": "LICENSE.generated-fixtures.txt",
+        "coverage": "complete-declared-package"
+      },
+      "source": {
+        "name": "RenderVerseX R7 visual gate fixture",
+        "uri": "repo://Tests/Fixtures/ModelViewer/R7Triangle.gltf",
+        "author": "RenderVerseX contributors",
+        "version": "1"
+      },
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "f009e85dae4e41d6d1cc9ba534a5948090c986993523280fd7e513df87c40300",
+        "byteCount": 2045,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "2601207b2fb7baeb0002dab3f24ec0a846a87bcd190af0abb73df7d7fce79daf",
+        "byteCount": 2045,
+        "fileCount": 1
+      },
+      "files": [
+        {
+          "path": "models/r7-triangle/scene.gltf",
+          "purpose": "runtime-root",
+          "byteCount": 2045,
+          "sha256": "f009e85dae4e41d6d1cc9ba534a5948090c986993523280fd7e513df87c40300"
+        }
+      ],
+      "attribution": "Generated test geometry; no third-party source asset.",
+      "modificationNotice": "Generated deterministically from repository source; no upstream bytes modified.",
+      "redistributable": true
+    },
+    {
+      "id": "shadow-plane-caster",
+      "kind": "model",
+      "path": "models/shadow-plane-caster/scene.gltf",
+      "license": {
+        "spdxId": "LicenseRef-RenderVerseX-Generated-Fixture",
+        "file": "LICENSE.generated-fixtures.txt",
+        "coverage": "complete-declared-package"
+      },
+      "source": {
+        "name": "RenderVerseX shadow visual gate fixture",
+        "uri": "repo://Tests/Fixtures/ModelViewer/ShadowPlaneCaster.gltf",
+        "author": "RenderVerseX contributors",
+        "version": "1"
+      },
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "fe67c5944f6af7358e149166a52bfc03091fcc3d1558ee597afc6e00686febab",
+        "byteCount": 3618,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "cf9040e94303cbd0d3fd13b7d9f3c1b53a2ff9837da7875c13cbf04342edc60e",
+        "byteCount": 3618,
+        "fileCount": 1
+      },
+      "files": [
+        {
+          "path": "models/shadow-plane-caster/scene.gltf",
+          "purpose": "runtime-root",
+          "byteCount": 3618,
+          "sha256": "fe67c5944f6af7358e149166a52bfc03091fcc3d1558ee597afc6e00686febab"
+        }
+      ],
+      "attribution": "Generated test geometry; no third-party source asset.",
+      "modificationNotice": "Generated deterministically from repository source; no upstream bytes modified.",
+      "redistributable": true
+    },
+    {
+      "id": "water-bottle",
+      "kind": "model",
+      "path": "models/water-bottle/WaterBottle.glb",
+      "license": {
+        "spdxId": "CC0-1.0",
+        "file": "LICENSE.khronos-sample-assets-cc0.txt",
+        "coverage": "complete-declared-package"
+      },
+      "source": {
+        "name": "Khronos Water Bottle",
+        "uri": "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf/Models/WaterBottle/glTF-Binary/WaterBottle.glb",
+        "author": "Microsoft / Khronos glTF Sample Assets contributors",
+        "version": "2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf"
+      },
+      "contentIdentity": {
+        "schemaVersion": 1,
+        "domain": "source",
+        "scope": "self-contained-artifact",
+        "algorithm": "sha256",
+        "digest": "b337e526fd6a162013c2984aeec163f5fbb4f717252724dfc3f3458bd51df94b",
+        "byteCount": 8966700,
+        "fileCount": 1
+      },
+      "assetContentId": {
+        "schemaVersion": 1,
+        "algorithm": "sha256",
+        "digest": "4df540b802067f192a7aa38aed524dda141dc23d9cb7a7e6272fc021694198ed",
+        "byteCount": 8966700,
+        "fileCount": 1
+      },
+      "files": [
+        {
+          "path": "models/water-bottle/WaterBottle.glb",
+          "purpose": "runtime-root",
+          "byteCount": 8966700,
+          "sha256": "b337e526fd6a162013c2984aeec163f5fbb4f717252724dfc3f3458bd51df94b"
+        }
+      ],
+      "attribution": "Khronos Water Bottle, CC0 1.0 Universal.",
+      "modificationNotice": "Vendored GLB bytes are unmodified.",
       "redistributable": true
     }
   ]

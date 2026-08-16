@@ -1,0 +1,19 @@
+Poly Haven assets
+=================
+
+Kloofendal 48d Partly Cloudy (Pure Sky)
+Original HDRI: Greg Zaal
+Pure-sky edit: Jarod Guest
+https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky
+
+Aerial Ground Rock
+https://polyhaven.com/a/aerial_ground_rock
+
+License: CC0 1.0 Universal.
+https://polyhaven.com/license
+https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+The vendored source texture/HDR bytes are not modified. Derived terrain maps,
+irradiance cubemaps, prefiltered specular cubemaps, and BRDF lookup tables must
+carry a CookManifest v2 record that identifies these source bytes and the exact
+cook recipe.

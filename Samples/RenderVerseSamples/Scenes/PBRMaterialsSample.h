@@ -41,7 +41,7 @@ namespace RVX
         bool ActivateModel(SampleContext& context);
         bool InspectMaterials(PBRReferenceWorkflow referenceWorkflow,
                               std::string& outError);
-        bool ApplyFactorMaterialOverrides(Scene& scene,
+        bool ApplyFactorMaterialOverrides(SceneECS::SceneEcsRuntime& scene,
                                           std::string& outError);
 
         LoadedSampleModel m_model;
@@ -49,6 +49,7 @@ namespace RVX
         AABB m_bounds;
         ModelCameraFrame m_cameraFrame;
         SampleOrbitCameraController m_orbitCamera;
+        SampleRenderPath m_renderPath = SampleRenderPath::Auto;
         size_t m_pbrMaterialCount = 0;
         size_t m_factorMaterialCount = 0;
         size_t m_textureMaterialCount = 0;
@@ -58,6 +59,7 @@ namespace RVX
         uint32 m_expectedDrawPacketCount = 0;
         uint32 m_metallicRoughnessTextureWidth = 0;
         uint32 m_metallicRoughnessTextureHeight = 0;
+        AssetId m_metallicRoughnessTextureAssetId{};
         bool m_metallicRoughnessTextureLoaded = false;
         std::string m_modelActivationError;
         PBRReferenceWorkflow m_referenceWorkflow =

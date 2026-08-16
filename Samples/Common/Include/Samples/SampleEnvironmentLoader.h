@@ -2,28 +2,23 @@
 
 /**
  * @file SampleEnvironmentLoader.h
- * @brief Backend-neutral sample glue for loading and publishing environment IBL.
+ * @brief Value-only sample glue for ECS-owned environment IBL loading.
  */
 
-#include "Core/Types.h"
-#include "Resource/Types/TextureResource.h"
-#include "Resource/Types/EnvironmentResource.h"
-#include "Resource/ResourceHandle.h"
-#include "ResourceSceneAdapters/SceneAssetLoadCoordinator.h"
+#include "ECS/Entity.h"
+#include "Engine/ECS/IWorldEcsRuntimeServices.h"
+#include "Resource/ResourceContentIdentity.h"
+#include "ResourceSceneAdapters/ECS/EcsEnvironmentLoadCoordinator.h"
+#include "Samples/SampleContext.h"
 
 #include <filesystem>
+#include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace RVX
 {
-    class SkyboxComponent;
-
-    namespace Resource
-    {
-        class ResourceManager;
-        class ResourceSubsystem;
-    }
-
     struct SampleEnvironmentLoadOptions
     {
         std::string quality = "default";
@@ -31,52 +26,87 @@ namespace RVX
         float32 exposure = 1.0f;
     };
 
-    /** @brief Strong handles retained for one loaded sample environment. */
+    /** @brief Value-owned status for one environment whose Skybox is ECS-owned. */
     struct LoadedSampleEnvironment
     {
         std::filesystem::path sourcePath;
-        Resource::EnvironmentHandle resource;
-        Resource::TextureHandle environment;
-        Resource::TextureHandle irradiance;
-        Resource::TextureHandle prefiltered;
-        Resource::TextureHandle brdfLUT;
-        SceneAssetLoadHandle loadHandle = InvalidSceneAssetLoadHandle;
-        SceneAssetStatus status;
+        ResourceSceneAdapters::EcsEnvironmentLoadRef request;
+        ResourceSceneAdapters::EcsEnvironmentLoadStatus status;
+        std::optional<Resource::ResourceContentVerificationReceipt>
+            contentVerificationReceipt;
         uint32 environmentResolution = 0;
         uint32 irradianceResolution = 0;
         uint32 prefilteredResolution = 0;
         uint32 prefilteredMipLevels = 0;
         uint32 brdfLUTResolution = 0;
+        float32 exposure = 1.0f;
 
         [[nodiscard]] bool IsValid() const noexcept;
         [[nodiscard]] bool IsCPUReady() const noexcept;
     };
 
     /**
-     * @brief Loads IBL through Resource and publishes it through ResourceSubsystem.
+     * @brief Catalog-gated Environment requests for one exact ECS Scene runtime.
      *
-     * This service does not expose RHI devices, command lists, RenderGraph, or
-     * backend identity to sample scenes.
+     * The coordinator creates, publishes, retires, and recycles its dedicated
+     * Skybox entity. Samples retain only the request identity and immutable
+     * published values; they cannot obtain Resource handles or mutate Skybox
+     * fragments directly.
      */
     class SampleEnvironmentLoader final
     {
     public:
-        explicit SampleEnvironmentLoader(
-            SceneAssetLoadCoordinator& coordinator) noexcept;
+        SampleEnvironmentLoader(IWorldEcsRuntimeServices& runtimeServices,
+                                ECS::SceneRuntimeId sceneRuntimeId) noexcept;
 
+        SampleEnvironmentLoader(IWorldEcsRuntimeServices& runtimeServices,
+                                ECS::SceneRuntimeId sceneRuntimeId,
+                                SampleAssetRegistry assetRegistry);
+
+        /**
+         * @brief Request a runner-validated catalog environment by logical id.
+         *
+         * Unknown and wrong-kind ids return a typed lookup result without
+         * creating an ECS environment request.
+         */
+        bool RequestByAssetId(
+            std::string_view assetId,
+            const SampleEnvironmentLoadOptions& options,
+            LoadedSampleEnvironment& output,
+            std::string& outError,
+            SampleAssetRegistryLookupResult* outLookup = nullptr) const;
+
+        /** @brief Request an HDR/EXR path only when its exact content identity is supplied. */
         bool Request(const std::filesystem::path& path,
+                     const Resource::ResourceContentIdentity& contentIdentity,
                      const SampleEnvironmentLoadOptions& options,
-                     SkyboxComponent& targetSkybox,
                      LoadedSampleEnvironment& output,
                      std::string& outError) const;
 
-        [[nodiscard]] SceneAssetStatus UpdateReadiness(
-            LoadedSampleEnvironment& environment) const;
+        [[nodiscard]] ResourceSceneAdapters::EcsEnvironmentLoadStatus
+        UpdateReadiness(LoadedSampleEnvironment& environment) const;
 
-        [[nodiscard]] bool Cancel(
-            LoadedSampleEnvironment& environment) const;
+        [[nodiscard]] bool Cancel(LoadedSampleEnvironment& environment) const;
+
+        [[nodiscard]] std::optional<Resource::ResourceContentVerificationReceipt>
+        GetContentVerificationReceipt(const std::filesystem::path& path) const;
 
     private:
-        SceneAssetLoadCoordinator& m_coordinator;
+        bool RequestResolved(
+            const std::filesystem::path& path,
+            const Resource::ResourceContentIdentity& expectedContentIdentity,
+            const SampleEnvironmentLoadOptions& options,
+            LoadedSampleEnvironment& output,
+            std::string& outError) const;
+
+        [[nodiscard]] static std::string MakeLogicalPathKey(
+            const std::filesystem::path& path);
+
+        IWorldEcsRuntimeServices& m_runtimeServices;
+        ECS::SceneRuntimeId m_sceneRuntimeId;
+        SampleAssetRegistry m_assetRegistry;
+        mutable std::map<std::string,
+                         Resource::ResourceContentVerificationReceipt,
+                         std::less<>> m_contentVerificationReceipts;
     };
 } // namespace RVX

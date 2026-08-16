@@ -3,7 +3,9 @@
 /** @file Sample.h @brief Backend-neutral sample scene lifecycle contract. */
 
 #include "Core/Types.h"
+#include "Samples/FrameworkAssessment.h"
 #include "Samples/SampleInfo.h"
+#include "Samples/SampleWorldRequirements.h"
 
 #include <string>
 #include <utility>
@@ -60,6 +62,18 @@ namespace RVX
         virtual ~ISample() = default;
 
         [[nodiscard]] virtual const SampleInfo& GetInfo() const noexcept = 0;
+        /** @brief Declare World requirements before Engine creates the World. */
+        [[nodiscard]] virtual SampleWorldRequirements
+            GetWorldRequirements() const
+        {
+            return {};
+        }
+        /** @brief Declare the framework contracts exercised by this sample. */
+        [[nodiscard]] virtual SampleAssessmentContract
+            GetAssessmentContract() const
+        {
+            return MakeDefaultSampleAssessmentContract();
+        }
         virtual bool Setup(SampleContext& context, std::string& outError) = 0;
         virtual void Update(SampleContext& context, float deltaTime) = 0;
         virtual void OnInput(SampleContext& context) = 0;
@@ -85,11 +99,38 @@ namespace RVX
             return true;
         }
         virtual void AppendReport(SampleFeatureReporter& reporter) const = 0;
+        /**
+         * @brief Observe one immutable, backend-neutral completed-frame snapshot.
+         *
+         * Called after Render diagnostics are projected into Sample-facing
+         * values and before readiness is evaluated. Implementations may emit
+         * assessment observations, but must not retain either reference.
+         */
+        virtual void ObserveDiagnostics(
+            const SampleRenderDiagnostics& diagnostics,
+            SampleAssessmentChannel& assessment)
+        {
+            static_cast<void>(diagnostics);
+            static_cast<void>(assessment);
+        }
         virtual SampleReadiness GetReadiness(
             const SampleRenderDiagnostics& diagnostics) const
         {
             static_cast<void>(diagnostics);
             return SampleReadiness::Ready();
+        }
+        /**
+         * @brief Request one final presentation followed by a render-only drain.
+         *
+         * The host calls this only once all non-render terminal conditions are
+         * already presentation-covered. Ordinary samples retain the existing
+         * frame progression because the default is false.
+         */
+        [[nodiscard]] virtual bool ShouldBeginFinalRenderDrain(
+            const SampleRenderDiagnostics& diagnostics) const
+        {
+            static_cast<void>(diagnostics);
+            return false;
         }
         virtual bool ValidateResult(const SampleRenderDiagnostics& diagnostics,
                                     std::string& outError) const

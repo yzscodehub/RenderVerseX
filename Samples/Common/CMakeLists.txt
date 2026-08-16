@@ -4,9 +4,11 @@
 find_package(nlohmann_json CONFIG REQUIRED)
 
 add_library(RVX_SampleCommon STATIC
+    Private/FrameworkAssessment.cpp
     Private/ModelCameraFraming.cpp
     Private/RuntimeFrameDriver.cpp
     Private/SampleAssetCatalog.cpp
+    Private/SampleAnimationLoader.cpp
     Private/SampleCLI.cpp
     Private/SampleEnvironmentLoader.cpp
     Private/SampleLifetimeQualification.cpp
@@ -14,6 +16,7 @@ add_library(RVX_SampleCommon STATIC
     Private/SampleOrbitCameraController.cpp
     Private/SampleRegistry.cpp
     Private/SampleRunner.cpp
+    Private/SampleSceneLifetimeScope.cpp
     Private/SampleScreenshotWriter.cpp
 )
 
@@ -47,3 +50,8 @@ add_executable(RVXSampleHDRFixtureWriter
     Tools/SampleHDRFixtureWriter.cpp
 )
 target_compile_features(RVXSampleHDRFixtureWriter PRIVATE cxx_std_20)
+
+add_executable(RVXSampleInteriorFixtureWriter
+    Tools/SampleInteriorFixtureWriter.cpp
+)
+target_compile_features(RVXSampleInteriorFixtureWriter PRIVATE cxx_std_20)

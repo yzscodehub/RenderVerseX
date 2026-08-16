@@ -4,16 +4,12 @@
 
 #include "Core/MathTypes.h"
 #include "RenderContracts/RenderFrameTypes.h"
-#include "ResourceSceneAdapters/SceneAssetInstantiation.h"
-#include "Scene/Components/CameraComponent.h"
-#include "Scene/Components/LightComponent.h"
-#include "Scene/Components/SkyboxComponent.h"
-#include "Scene/SceneEntity.h"
-#include "Scene/SceneRuntime.h"
 #include "Samples/SampleCLI.h"
 #include "Samples/SampleContext.h"
+#include "Scene/ECS/RenderFragments.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <sstream>
 #include <utility>
@@ -26,13 +22,14 @@ namespace RVX
         constexpr uint32 GPUDrivenGridExtent = 5;
         constexpr uint32 GPUDrivenGridInstanceCount =
             GPUDrivenGridExtent * GPUDrivenGridExtent;
-        constexpr float32 GPUDrivenGridSpacingScale = 1.35f;
+        constexpr float32 GPUDrivenPresentationExtent = 1.15f;
+        constexpr float32 GPUDrivenGridSpacing = 1.60f;
 
         const SampleInfo GPUDrivenShowcaseInfo{
             "gpu-driven",
             "GPU-Driven Rendering",
             "Compares Direct and GPU-driven execution over the same engine scene",
-            "r7-triangle",
+            "water-bottle",
             SampleAssetPolicy::UserModelOrDefault,
             "",
             SampleEnvironmentPolicy::None,
@@ -73,6 +70,45 @@ namespace RVX
                    << diagnostics.gpuDrivenOpaqueFallbackReason;
             return stream.str();
         }
+
+        [[nodiscard]] SceneECS::Skybox MakeProceduralSky()
+        {
+            return {
+                .mode = SceneECS::SkyboxMode::Procedural,
+                .sunDirection = normalize(Vec3(0.35f, 0.65f, 0.45f)),
+                .sunColor = Vec3(1.0f, 0.94f, 0.84f),
+                .zenithColor = Vec3(0.10f, 0.24f, 0.52f),
+                .horizonColor = Vec3(0.55f, 0.67f, 0.80f),
+                .groundColor = Vec3(0.07f, 0.08f, 0.10f),
+                .scatteringIntensity = 0.65f,
+                .contributesToLighting = false,
+            };
+        }
+
+        [[nodiscard]] SceneECS::Light MakeDirectionalLight()
+        {
+            return {
+                .type = SceneECS::LightType::Directional,
+                .color = Vec3(1.0f, 0.95f, 0.86f),
+                .intensity = 4.0f,
+                .shadowBias = 0.001f,
+                .castsShadows = false,
+            };
+        }
+
+        [[nodiscard]] std::string DescribeModelFailure(
+            const ResourceSceneAdapters::EcsSceneAssetLoadStatus& status)
+        {
+            if (!status.diagnostic.empty())
+            {
+                return status.diagnostic;
+            }
+            if (!status.request.error.message.empty())
+            {
+                return status.request.error.message;
+            }
+            return "GPU-driven showcase ECS model request reached a terminal state.";
+        }
     } // namespace
 
     const SampleInfo& GPUDrivenShowcaseSample::GetInfo() const noexcept
@@ -86,6 +122,7 @@ namespace RVX
         m_models.clear();
         m_bounds.Reset();
         m_cameraFrame = {};
+        m_orbitCamera.Reset();
         m_sceneInstanceCount = 0;
         m_failureReason.clear();
         m_instancesPlaced = false;
@@ -124,62 +161,60 @@ namespace RVX
         const float32 aspect =
             static_cast<float32>(context.options.width) /
             static_cast<float32>(std::max(context.options.height, 1u));
-        context.camera.SetPerspective(GPUDrivenVerticalFov,
-                                      aspect,
-                                      0.05f,
-                                      10000.0f);
-        context.camera.SetPosition(Vec3(0.0f, 2.0f, 6.0f));
-        context.camera.LookAt(Vec3(0.0f));
+        if (!context.cameras.SetPerspective(
+                context.camera, GPUDrivenVerticalFov, aspect, 0.05f, 10000.0f) ||
+            !context.cameras.SetPose(
+                context.camera, {.position = Vec3(0.0f, 2.0f, 6.0f)}) ||
+            !context.cameras.LookAt(context.camera, Vec3(0.0f)))
+        {
+            outError = "Failed to configure the GPU-driven showcase ECS camera";
+            return false;
+        }
 
-        ActorSpawnParams skyParams;
-        skyParams.name = "GPUDrivenShowcaseSky";
-        SceneEntity* skyEntity = context.scene.SpawnActor(skyParams);
-        SkyboxComponent* skybox =
-            skyEntity ? skyEntity->AddComponent<SkyboxComponent>() : nullptr;
-        if (!skybox)
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                {}, MakeProceduralSky()).IsValid())
         {
             outError = "Failed to create the GPU-driven showcase skybox";
             return false;
         }
-        skybox->SetSkyboxType(SkyboxType::Procedural);
-        skybox->SetSunDirection(normalize(Vec3(0.35f, 0.65f, 0.45f)));
-        skybox->SetSunColor(Vec3(1.0f, 0.94f, 0.84f));
-        skybox->SetZenithColor(Vec3(0.10f, 0.24f, 0.52f));
-        skybox->SetHorizonColor(Vec3(0.55f, 0.67f, 0.80f));
-        skybox->SetGroundColor(Vec3(0.07f, 0.08f, 0.10f));
-        skybox->SetScatteringIntensity(0.65f);
-        skybox->SetContributesToLighting(false);
         m_skyboxCreated = true;
 
-        ActorSpawnParams lightParams;
-        lightParams.name = "GPUDrivenShowcaseSun";
-        SceneEntity* lightEntity = context.scene.SpawnActor(lightParams);
-        LightComponent* light =
-            lightEntity ? lightEntity->AddComponent<LightComponent>() : nullptr;
-        if (!light)
+        SceneECS::RuntimeEntityDesc lightDesc;
+        lightDesc.localTransform.rotation =
+            QuatFromEuler(Vec3(radians(-50.0f), radians(25.0f), 0.0f));
+        if (!context.sceneLifetime.CreateAndAdoptWithFragments(
+                lightDesc,
+                MakeDirectionalLight(),
+                SceneECS::Visibility{}).IsValid())
         {
             outError = "Failed to create the GPU-driven showcase light";
             return false;
         }
-        lightEntity->SetRotation(
-            QuatFromEuler(Vec3(radians(-50.0f), radians(25.0f), 0.0f)));
-        light->SetLightType(LightType::Directional);
-        light->SetColor(Vec3(1.0f, 0.95f, 0.86f));
-        light->SetIntensity(4.0f);
-        light->SetCastsShadow(false);
         m_lightCreated = true;
 
-        LoadedSampleModel sourceModel;
-        if (!context.models.Request(context.options.modelPath,
-                                    sourceModel,
-                                    outError,
-                                    false))
+        // Queue every instance against the same catalog identity up front.
+        // ResourceManager coalesces the immutable load while each request keeps
+        // its own ECS adoption/visibility/retirement transaction. Waiting for
+        // the first instance before requesting the rest serializes 24 cache-hit
+        // adoptions behind the visual gate's wall-clock budget.
+        m_models.reserve(GPUDrivenGridInstanceCount);
+        for (uint32 index = 0; index < GPUDrivenGridInstanceCount; ++index)
         {
-            outError = "GPU-driven showcase failed to queue its model: " +
-                       outError;
-            return false;
+            LoadedSampleModel instance;
+            if (!context.models.RequestByAssetId(
+                    context.options.assetId, instance, outError))
+            {
+                for (LoadedSampleModel& requested : m_models)
+                {
+                    static_cast<void>(context.models.Cancel(requested));
+                }
+                m_models.clear();
+                outError = "GPU-driven showcase failed to queue shared model instance " +
+                           std::to_string(index) + ": " + outError;
+                return false;
+            }
+            m_models.push_back(std::move(instance));
         }
-        m_models.push_back(std::move(sourceModel));
         return true;
     }
 
@@ -190,20 +225,17 @@ namespace RVX
         if (!m_failureReason.empty())
             return;
 
+        bool everyModelCPUReady = !m_models.empty();
         for (LoadedSampleModel& model : m_models)
         {
-            const SceneAssetStatus status =
+            const ResourceSceneAdapters::EcsSceneAssetLoadStatus status =
                 context.models.UpdateReadiness(model);
-            if (status.IsFailed() ||
-                status.lifecycle == SceneAssetLifecycle::Cancelled)
+            if (status.IsTerminal())
             {
-                FailAndCancel(
-                    context,
-                    status.diagnostic.empty()
-                        ? "GPU-driven showcase model request failed"
-                        : status.diagnostic);
+                FailAndCancel(context, DescribeModelFailure(status));
                 return;
             }
+            everyModelCPUReady &= model.IsCPUReady();
         }
 
         if (m_instancesPlaced)
@@ -214,26 +246,14 @@ namespace RVX
                 everyModelFullyResident &= model.IsFullyResident();
             if (everyModelFullyResident && !m_renderablesActivated)
             {
-                for (const LoadedSampleModel& model : m_models)
-                {
-                    if (!SceneAssetInstantiator::SetRenderablesEnabled(
-                            context.scene,
-                            model.instance,
-                            true))
-                    {
-                        FailAndCancel(
-                            context,
-                            "GPU-driven showcase could not activate a placed model instance");
-                        return;
-                    }
-                }
+                // The coordinator owns ECS Visibility writes and makes them
+                // visible only after the required presentation proof.
                 m_renderablesActivated = true;
             }
             return;
         }
 
-        DisableUnplacedInstances(context);
-        if (m_models.empty() || !m_models.front().IsCPUReady())
+        if (!everyModelCPUReady)
             return;
 
         std::string error;
@@ -249,28 +269,77 @@ namespace RVX
 
     void GPUDrivenShowcaseSample::OnInput(SampleContext& context)
     {
-        static_cast<void>(context);
+        if (!context.options.smoke && m_instancesPlaced && context.input)
+        {
+            static_cast<void>(
+                m_orbitCamera.Update(*context.input, context.cameras, context.camera));
+        }
+    }
+
+    void GPUDrivenShowcaseSample::OnViewportResize(SampleContext& context,
+                                                    uint32 width,
+                                                    uint32 height)
+    {
+        if (width == 0 || height == 0)
+            return;
+        const float32 aspect = static_cast<float32>(width) /
+                               static_cast<float32>(height);
+        static_cast<void>(
+            m_orbitCamera.SetAspectRatio(aspect, context.cameras, context.camera));
     }
 
     bool GPUDrivenShowcaseSample::PlaceInstances(SampleContext& context,
                                                   std::string& outError)
     {
         outError.clear();
-        if (m_models.size() != 1 || !m_models.front().resource.IsLoaded())
+        if (m_models.empty() || !m_models.front().IsCPUReady())
         {
             outError = "GPU-driven showcase source model is not CPU-ready";
             return false;
         }
 
-        LoadedSampleModel& sourceModel = m_models.front();
-        SceneEntity* sourceRoot = sourceModel.ResolveRoot(context.scene);
-        if (!sourceRoot)
+        if (m_models.size() != GPUDrivenGridInstanceCount)
         {
-            outError = "GPU-driven showcase model root handle is stale";
+            outError = "GPU-driven showcase instance request count is invalid";
             return false;
         }
-        const AABB sourceBounds = sourceRoot->GetWorldBounds();
-        if (!sourceBounds.IsValid())
+
+        LoadedSampleModel& sourceModel = m_models.front();
+
+        const AssetId sharedModelAssetId =
+            sourceModel.status.modelMetadata.sourceModelAssetId;
+        if (!sharedModelAssetId.IsValid())
+        {
+            outError = "GPU-driven showcase source lacks ECS model metadata";
+            return false;
+        }
+
+        std::vector<ECS::EntityHandle> roots;
+        roots.reserve(GPUDrivenGridInstanceCount);
+        for (const LoadedSampleModel& model : m_models)
+        {
+            if (!model.IsCPUReady() ||
+                model.status.modelMetadata.sourceModelAssetId != sharedModelAssetId ||
+                model.status.request.assetKey != sourceModel.status.request.assetKey)
+            {
+                outError =
+                    "GPU-driven showcase did not preserve its shared model source";
+                return false;
+            }
+            const auto root = model.GetRootEntityRef();
+            if (!root.IsValid() ||
+                root.sceneRuntimeId != context.scene.GetSceneRuntimeId() ||
+                !context.scene.GetEntityRef(root.entity).IsValid())
+            {
+                outError = "GPU-driven showcase instance root handle is stale";
+                return false;
+            }
+            roots.push_back(root.entity);
+        }
+
+        AABB sourceBounds;
+        if (!TryComputeSampleModelRenderableWorldBounds(
+                sourceModel, context.scene, sourceBounds))
         {
             outError = "GPU-driven showcase model has invalid bounds";
             return false;
@@ -284,53 +353,8 @@ namespace RVX
             return false;
         }
 
-        const auto sharedResource = sourceModel.resource;
-        const std::filesystem::path sharedSourcePath = sourceModel.sourcePath;
-        std::vector<LoadedSampleModel> stagedModels;
-        stagedModels.reserve(GPUDrivenGridInstanceCount - 1u);
-        for (uint32 index = 1; index < GPUDrivenGridInstanceCount; ++index)
-        {
-            LoadedSampleModel instance;
-            if (!context.models.Instantiate(sharedResource,
-                                            sharedSourcePath,
-                                            instance,
-                                            outError,
-                                            false))
-            {
-                for (LoadedSampleModel& staged : stagedModels)
-                    static_cast<void>(context.models.Cancel(staged));
-                return false;
-            }
-            if (instance.resource.Get() != sharedResource.Get() ||
-                !instance.ResolveRoot(context.scene))
-            {
-                static_cast<void>(context.models.Cancel(instance));
-                for (LoadedSampleModel& staged : stagedModels)
-                    static_cast<void>(context.models.Cancel(staged));
-                outError =
-                    "GPU-driven showcase did not preserve one shared model resource";
-                return false;
-            }
-            stagedModels.push_back(std::move(instance));
-        }
-
-        std::vector<SceneEntity*> roots;
-        roots.reserve(GPUDrivenGridInstanceCount);
-        roots.push_back(sourceRoot);
-        for (LoadedSampleModel& staged : stagedModels)
-        {
-            SceneEntity* root = staged.ResolveRoot(context.scene);
-            if (!root)
-            {
-                for (LoadedSampleModel& model : stagedModels)
-                    static_cast<void>(context.models.Cancel(model));
-                outError = "GPU-driven showcase instance root handle is stale";
-                return false;
-            }
-            roots.push_back(root);
-        }
-
-        const float32 spacing = maximumDimension * GPUDrivenGridSpacingScale;
+        const float32 presentationScale =
+            GPUDrivenPresentationExtent / maximumDimension;
         const float32 centerIndex =
             static_cast<float32>(GPUDrivenGridExtent - 1u) * 0.5f;
         AABB placedBounds;
@@ -339,16 +363,55 @@ namespace RVX
         {
             const uint32 row = index / GPUDrivenGridExtent;
             const uint32 column = index % GPUDrivenGridExtent;
-            const Vec3 gridCenter(
-                (static_cast<float32>(column) - centerIndex) * spacing,
-                (centerIndex - static_cast<float32>(row)) * spacing,
-                0.0f);
-            roots[index]->SetPosition(gridCenter - sourceBounds.GetCenter());
-            const AABB instanceBounds = roots[index]->GetWorldBounds();
-            if (!instanceBounds.IsValid())
+            const ECS::EntityHandle root = roots[index];
+            const SceneECS::LocalTransform* authored =
+                context.scene.GetRegistry().TryGet<SceneECS::LocalTransform>(root);
+            if (authored == nullptr)
             {
-                for (LoadedSampleModel& model : stagedModels)
-                    static_cast<void>(context.models.Cancel(model));
+                outError = "GPU-driven showcase instance lacks a local transform";
+                return false;
+            }
+            SceneECS::LocalTransform normalizedTransform = *authored;
+            const Vec3 authoredPosition = normalizedTransform.translation;
+            normalizedTransform.translation = authoredPosition * presentationScale;
+            normalizedTransform.scale *= presentationScale;
+            if (!context.scene.SetLocalTransform(root, normalizedTransform))
+            {
+                outError =
+                    "GPU-driven showcase could not normalize an ECS model transform";
+                return false;
+            }
+            LoadedSampleModel& instanceModel = m_models[index];
+            AABB normalizedBounds;
+            if (!TryComputeSampleModelRenderableWorldBounds(
+                    instanceModel, context.scene, normalizedBounds))
+            {
+                outError =
+                    "GPU-driven showcase could not normalize shared model bounds";
+                return false;
+            }
+            const Vec3 gridCenter(
+                (static_cast<float32>(column) - centerIndex) *
+                    GPUDrivenGridSpacing,
+                0.0f,
+                (static_cast<float32>(row) - centerIndex) *
+                     GPUDrivenGridSpacing);
+            const Vec3 normalizedCenter = normalizedBounds.GetCenter();
+            normalizedTransform.translation =
+                authoredPosition * presentationScale +
+                Vec3(gridCenter.x - normalizedCenter.x,
+                     -normalizedBounds.GetMin().y,
+                     gridCenter.z - normalizedCenter.z);
+            if (!context.scene.SetLocalTransform(root, normalizedTransform))
+            {
+                outError =
+                    "GPU-driven showcase could not place an ECS model instance";
+                return false;
+            }
+            AABB instanceBounds;
+            if (!TryComputeSampleModelRenderableWorldBounds(
+                    instanceModel, context.scene, instanceBounds))
+            {
                 outError =
                     "GPU-driven showcase shared model instance has invalid bounds";
                 return false;
@@ -366,47 +429,42 @@ namespace RVX
             1.15f);
         if (!cameraFrame.valid)
         {
-            for (LoadedSampleModel& model : stagedModels)
-                static_cast<void>(context.models.Cancel(model));
             outError = "GPU-driven showcase model has no finite renderable bounds";
             return false;
         }
 
-        m_models.reserve(GPUDrivenGridInstanceCount);
-        for (LoadedSampleModel& staged : stagedModels)
-            m_models.push_back(std::move(staged));
+        SampleOrbitCameraSettings orbitSettings;
+        orbitSettings.mode = OrbitCameraMode::ExteriorInspect;
+        orbitSettings.bounds = placedBounds;
+        orbitSettings.pivot = cameraFrame.target;
+        orbitSettings.distance = cameraFrame.distance;
+        orbitSettings.yaw = 0.62f;
+        orbitSettings.pitch = 0.48f;
+        orbitSettings.minDistance =
+            std::max(cameraFrame.distance * 0.35f, 0.001f);
+        orbitSettings.maxDistance =
+            std::max(cameraFrame.distance * 4.0f,
+                     orbitSettings.minDistance * 2.0f);
+        orbitSettings.verticalFovRadians = GPUDrivenVerticalFov;
+        orbitSettings.aspectRatio = aspect;
+        orbitSettings.fitMargin = 1.16f;
+        m_orbitCamera.Initialize(orbitSettings, context.input);
+        if (!m_orbitCamera.IsInitialized())
+        {
+            outError = "GPU-driven showcase camera rig initialization failed";
+            return false;
+        }
+
         m_bounds = placedBounds;
         m_cameraFrame = cameraFrame;
         m_sceneInstanceCount = static_cast<uint32>(m_models.size());
-        context.camera.SetPerspective(GPUDrivenVerticalFov,
-                                      aspect,
-                                      m_cameraFrame.nearPlane,
-                                      m_cameraFrame.farPlane);
-        context.camera.SetPosition(
-            m_cameraFrame.target +
-            Vec3(0.0f,
-                 m_cameraFrame.distance * 0.35f,
-                 m_cameraFrame.distance * 0.94f));
-        context.camera.LookAt(m_cameraFrame.target);
-        context.camera.MarkCut();
-        m_instancesPlaced = true;
-        DisableUnplacedInstances(context);
-        return true;
-    }
-
-    void GPUDrivenShowcaseSample::DisableUnplacedInstances(
-        SampleContext& context) const
-    {
-        for (const LoadedSampleModel& model : m_models)
+        if (!m_orbitCamera.Apply(context.cameras, context.camera))
         {
-            if (model.instance.rootActor.IsValid())
-            {
-                static_cast<void>(SceneAssetInstantiator::SetRenderablesEnabled(
-                    context.scene,
-                    model.instance,
-                    false));
-            }
+            outError = "GPU-driven showcase could not apply its ECS orbit camera pose";
+            return false;
         }
+        m_instancesPlaced = true;
+        return true;
     }
 
     void GPUDrivenShowcaseSample::FailAndCancel(SampleContext& context,
@@ -416,7 +474,7 @@ namespace RVX
             m_failureReason = std::move(reason);
         for (LoadedSampleModel& model : m_models)
         {
-            if (model.loadHandle.IsValid())
+            if (model.request.IsValid())
                 static_cast<void>(context.models.Cancel(model));
         }
         m_sceneInstanceCount = 0;
@@ -427,7 +485,52 @@ namespace RVX
     void GPUDrivenShowcaseSample::AppendReport(
         SampleFeatureReporter& reporter) const
     {
-        if (!m_models.empty() && m_models.front().resource.IsLoaded())
+        const uint32 cpuReadyModelCount = static_cast<uint32>(std::count_if(
+            m_models.begin(), m_models.end(),
+            [](const LoadedSampleModel& model) { return model.IsCPUReady(); }));
+        const uint32 fullyResidentModelCount = static_cast<uint32>(std::count_if(
+            m_models.begin(), m_models.end(),
+            [](const LoadedSampleModel& model) { return model.IsFullyResident(); }));
+        constexpr size_t modelStateCount =
+            static_cast<size_t>(ResourceSceneAdapters::EcsSceneAssetLoadState::Recycled) + 1u;
+        std::array<uint32, modelStateCount> modelStates{};
+        uint32 publishedMetadataCount = 0;
+        for (const LoadedSampleModel& model : m_models)
+        {
+            const size_t state = static_cast<size_t>(model.status.state);
+            if (state < modelStates.size())
+            {
+                ++modelStates[state];
+            }
+            publishedMetadataCount +=
+                model.status.modelMetadata.HasPublishedSource() ? 1u : 0u;
+        }
+        std::ostringstream modelStateStream;
+        modelStateStream << "model instance states=";
+        bool firstState = true;
+        for (size_t state = 0; state < modelStates.size(); ++state)
+        {
+            if (modelStates[state] == 0)
+            {
+                continue;
+            }
+            modelStateStream << (firstState ? "" : ",") << state << ":"
+                             << modelStates[state];
+            firstState = false;
+        }
+        reporter.ResourceDiagnostic(
+            "requested model instances=" + std::to_string(m_models.size()));
+        reporter.ResourceDiagnostic(
+            "CPU-ready model instances=" + std::to_string(cpuReadyModelCount));
+        reporter.ResourceDiagnostic(
+            "fully resident model instances=" +
+            std::to_string(fullyResidentModelCount));
+        reporter.ResourceDiagnostic(
+            "published model metadata instances=" +
+            std::to_string(publishedMetadataCount));
+        reporter.ResourceDiagnostic(modelStateStream.str());
+        if (!m_models.empty() &&
+            m_models.front().status.modelMetadata.HasPublishedSource())
         {
             reporter.Enable("ModelResourceLoad");
             reporter.Enable("SceneInstantiation");
@@ -437,7 +540,8 @@ namespace RVX
                 "model path=" + m_models.front().sourcePath.string());
             reporter.ResourceDiagnostic(
                 "model meshes=" +
-                std::to_string(m_models.front().resource->GetMeshCount()));
+                std::to_string(
+                    m_models.front().status.modelMetadata.meshAssetIds.size()));
             reporter.ResourceDiagnostic(
                 "scene model instances=" +
                 std::to_string(m_sceneInstanceCount));
@@ -622,12 +726,13 @@ namespace RVX
     {
         for (LoadedSampleModel& model : m_models)
         {
-            if (model.loadHandle.IsValid())
+            if (model.request.IsValid())
                 static_cast<void>(context.models.Cancel(model));
         }
         m_models.clear();
         m_bounds.Reset();
         m_cameraFrame = {};
+        m_orbitCamera.Reset();
         m_sceneInstanceCount = 0;
         m_renderPath = SampleRenderPath::GPUDriven;
         m_failureReason.clear();

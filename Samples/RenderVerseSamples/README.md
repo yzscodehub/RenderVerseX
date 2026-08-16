@@ -40,6 +40,7 @@ No sample controller branches on DX12, Vulkan, Metal, DX11, or OpenGL.
 | `asset-gallery` | Static multi-model catalog gallery through the production resource path | Three hermetic defaults; `--asset`/`--model` focuses one item |
 | `lighting-shadows` | Directional light and engine-owned cascaded shadow sampling | Fixed caster/receiver fixture |
 | `render-pipeline` | Engine-owned shadow, scene, sky, bloom, and tone-mapping Pass chain | Fixed pipeline fixture |
+| `rendering-stress` | Deterministic retained-scene/GPU-scene stress with fixed object churn profile | `r7-triangle` plus PR workload (`1k` objects, dirty `10`, churn `100`) |
 | `gpu-driven` | Direct/GPU-driven parity over identical scene semantics | Select with `--render-path` |
 
 `asset-gallery` intentionally does not offer in-process model switching yet.

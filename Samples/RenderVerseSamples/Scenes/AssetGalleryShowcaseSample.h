@@ -33,13 +33,13 @@ namespace RVX
 
     private:
         bool PlaceModels(SampleContext& context, std::string& outError);
-        void DisableUnplacedModels(SampleContext& context) const;
         void FailAndCancel(SampleContext& context, std::string reason);
         std::vector<LoadedSampleModel> m_models;
         std::vector<std::string> m_assetIds;
         AABB m_galleryBounds;
         ModelCameraFrame m_cameraFrame;
         SampleOrbitCameraController m_orbitCamera;
+        SampleRenderPath m_renderPath = SampleRenderPath::Auto;
         uint32 m_expectedVisibleObjects = 0;
         std::string m_failureReason;
         bool m_modelsPlaced = false;
