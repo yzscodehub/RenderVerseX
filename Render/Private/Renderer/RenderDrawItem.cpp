@@ -2,8 +2,10 @@
 #include "Render/Renderer/RenderScene.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
+#include <tuple>
 #include <utility>
 
 namespace RVX
@@ -18,6 +20,57 @@ namespace RVX
             value *= 0xc4ceb9fe1a85ec53ULL;
             value ^= value >> 33;
             return value;
+        }
+
+        constexpr uint64 kTransparentOrderHashSeed = 1469598103934665603ULL;
+        constexpr uint64 kTransparentOrderHashPrime = 1099511628211ULL;
+
+        void AppendHash(uint64& hash, uint64 value) noexcept
+        {
+            hash ^= value;
+            hash *= kTransparentOrderHashPrime;
+        }
+
+        [[nodiscard]] std::tuple<uint64,
+                                 uint32,
+                                 uint32,
+                                 uint32,
+                                 uint32,
+                                 uint32,
+                                 uint32,
+                                 uint32>
+        GetTransparentTieBreak(const RenderDrawItem& item) noexcept
+        {
+            // RenderObjectId and RenderResourceHandle both carry the complete
+            // retained identity.  objectIndex is deliberately last: it only
+            // disambiguates malformed duplicate batches without becoming the
+            // primary ordering key.
+            return {item.packet.objectId,
+                    item.submeshIndex,
+                    item.material.slot,
+                    item.material.generation,
+                    item.mesh.slot,
+                    item.mesh.generation,
+                    item.packet.primitiveData,
+                    item.objectIndex};
+        }
+
+        [[nodiscard]] bool IsTransparentBefore(const RenderDrawItem& lhs,
+                                               const RenderDrawItem& rhs) noexcept
+        {
+            // The caller rejects non-finite distances before sorting.  Keep
+            // the explicit finite check here as well so an externally supplied
+            // list can never acquire an unspecified std::sort ordering.
+            if (!std::isfinite(lhs.depthFromCamera) ||
+                !std::isfinite(rhs.depthFromCamera))
+            {
+                return false;
+            }
+            if (lhs.depthFromCamera != rhs.depthFromCamera)
+            {
+                return lhs.depthFromCamera > rhs.depthFromCamera;
+            }
+            return GetTransparentTieBreak(lhs) < GetTransparentTieBreak(rhs);
         }
 
         MaterialRenderMode ResolveMaterialRenderMode(const RenderObject& object,
@@ -89,10 +142,23 @@ namespace RVX
         void AppendToMaterialList(RenderDrawItem item,
                                   std::vector<RenderDrawItem>& opaque,
                                   std::vector<RenderDrawItem>& masked,
-                                  std::vector<RenderDrawItem>& transparent)
+                                  std::vector<RenderDrawItem>& transparent,
+                                  TransparentDrawListDiagnostics*
+                                      transparentDiagnostics)
         {
             if (item.renderMode == MaterialRenderMode::Transparent)
             {
+                if (!std::isfinite(item.depthFromCamera))
+                {
+                    if (transparentDiagnostics != nullptr)
+                    {
+                        ++transparentDiagnostics->rejectedNonFiniteDepthCount;
+                    }
+                    // A transparent blend order with NaN/Inf depth is not
+                    // meaningful. Reject that packet rather than relying on
+                    // implementation-defined comparator behaviour.
+                    return;
+                }
                 item.sortKey = BuildTransparentDrawSortKey(item);
                 transparent.push_back(std::move(item));
             }
@@ -114,11 +180,17 @@ namespace RVX
                                 const Vec3& cameraPosition,
                                 std::vector<RenderDrawItem>& outOpaqueDrawItems,
                                 std::vector<RenderDrawItem>& outMaskedDrawItems,
-                                std::vector<RenderDrawItem>& outTransparentDrawItems)
+                                std::vector<RenderDrawItem>& outTransparentDrawItems,
+                                TransparentDrawListDiagnostics*
+                                    outTransparentDiagnostics)
     {
         outOpaqueDrawItems.clear();
         outMaskedDrawItems.clear();
         outTransparentDrawItems.clear();
+        if (outTransparentDiagnostics != nullptr)
+        {
+            *outTransparentDiagnostics = {};
+        }
 
         for (uint32_t objectIndex : visibleObjectIndices)
         {
@@ -138,7 +210,8 @@ namespace RVX
                                      cameraPosition),
                         outOpaqueDrawItems,
                         outMaskedDrawItems,
-                        outTransparentDrawItems);
+                        outTransparentDrawItems,
+                        outTransparentDiagnostics);
                 }
                 continue;
             }
@@ -153,7 +226,8 @@ namespace RVX
                              cameraPosition),
                 outOpaqueDrawItems,
                 outMaskedDrawItems,
-                outTransparentDrawItems);
+                outTransparentDrawItems,
+                outTransparentDiagnostics);
         }
 
         const auto sortFrontToBack = [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
@@ -164,10 +238,15 @@ namespace RVX
         std::sort(outMaskedDrawItems.begin(), outMaskedDrawItems.end(), sortFrontToBack);
 
         std::sort(outTransparentDrawItems.begin(), outTransparentDrawItems.end(),
-                  [](const RenderDrawItem& lhs, const RenderDrawItem& rhs)
-                  {
-                      return lhs.depthFromCamera > rhs.depthFromCamera;
-                  });
+                  IsTransparentBefore);
+
+        if (outTransparentDiagnostics != nullptr)
+        {
+            outTransparentDiagnostics->orderValid =
+                IsTransparentDrawListStrictlyOrdered(outTransparentDrawItems);
+            outTransparentDiagnostics->orderHash =
+                BuildTransparentDrawOrderHash(outTransparentDrawItems);
+        }
     }
 
     uint64 BuildOpaqueDrawSortKey(const RenderDrawItem& item)
@@ -188,15 +267,58 @@ namespace RVX
 
     uint64 BuildTransparentDrawSortKey(const RenderDrawItem& item)
     {
-        const float safeDepth = std::isfinite(item.depthFromCamera) ? item.depthFromCamera : 0.0f;
-        const float clampedDepth = std::clamp(safeDepth, 0.0f, 1000000.0f);
-        const uint64 depthBits = static_cast<uint64>(clampedDepth * 1000.0f);
-        const uint64 materialIdentity = item.material.IsValid()
-                                            ? (static_cast<uint64>(item.material.slot) << 32U) |
-                                                  item.material.generation
-                                            : 0;
-        return (depthBits << 24) |
-               (MixSortBits(materialIdentity) & 0x00FF'FFFFULL);
+        uint64 hash = kTransparentOrderHashSeed;
+        AppendHash(hash, std::bit_cast<uint32>(item.depthFromCamera));
+        const auto [objectId,
+                    submeshIndex,
+                    materialSlot,
+                    materialGeneration,
+                    meshSlot,
+                    meshGeneration,
+                    primitiveData,
+                    objectIndex] = GetTransparentTieBreak(item);
+        AppendHash(hash, objectId);
+        AppendHash(hash, submeshIndex);
+        AppendHash(hash, materialSlot);
+        AppendHash(hash, materialGeneration);
+        AppendHash(hash, meshSlot);
+        AppendHash(hash, meshGeneration);
+        AppendHash(hash, primitiveData);
+        AppendHash(hash, objectIndex);
+        return MixSortBits(hash);
+    }
+
+    bool IsTransparentDrawListStrictlyOrdered(
+        const std::vector<RenderDrawItem>& drawItems) noexcept
+    {
+        if (std::any_of(drawItems.begin(), drawItems.end(),
+                        [](const RenderDrawItem& item)
+                        {
+                            return !std::isfinite(item.depthFromCamera);
+                        }))
+        {
+            return false;
+        }
+        for (size_t index = 1; index < drawItems.size(); ++index)
+        {
+            if (!IsTransparentBefore(drawItems[index - 1], drawItems[index]))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    uint64 BuildTransparentDrawOrderHash(
+        const std::vector<RenderDrawItem>& drawItems) noexcept
+    {
+        uint64 hash = kTransparentOrderHashSeed;
+        AppendHash(hash, static_cast<uint64>(drawItems.size()));
+        for (const RenderDrawItem& item : drawItems)
+        {
+            AppendHash(hash, BuildTransparentDrawSortKey(item));
+        }
+        return MixSortBits(hash);
     }
 
 } // namespace RVX

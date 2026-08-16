@@ -457,6 +457,20 @@ namespace RVX
     // =============================================================================
     RHIQueryPoolRef MetalDevice::CreateQueryPool(const RHIQueryPoolDesc& desc)
     {
+        const RHIQueryValidationResult validation = ValidateRHIQueryPoolDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("Metal query pool creation rejected: {}", validation.message);
+            return nullptr;
+        }
+
+        if (desc.type == RHIQueryType::Timestamp &&
+            !m_capabilities.supportsTimestampQueries)
+        {
+            RVX_RHI_ERROR("Metal timestamp query creation rejected because verified Graphics timestamp metadata is unavailable");
+            return nullptr;
+        }
+
         auto queryPool = MakeRef<MetalQueryPool>(m_device, desc);
         if (!queryPool->IsSupported())
         {

@@ -9,6 +9,8 @@ namespace RVX
 {
 namespace
 {
+    constexpr std::chrono::milliseconds RVX_RENDER_COMPLETION_WAIT_INTERVAL{2};
+
     [[nodiscard]] bool IsDeclaredExecutorKind(
         RenderExecutorKind kind) noexcept
     {
@@ -303,7 +305,8 @@ namespace
         std::shared_ptr<IRenderFatalPolicy> fatalPolicy,
         std::shared_ptr<IRenderPublicationHook> publicationHook,
         std::shared_ptr<IRenderWaitHook> waitHook,
-        std::shared_ptr<IRenderMonotonicClock> clock)
+        std::shared_ptr<IRenderMonotonicClock> clock,
+        std::shared_ptr<IRenderFrameAcquireHook> frameAcquireHook)
         : m_config(std::move(config)),
           m_initialSurface(surface),
           m_executorKind(IsDeclaredExecutorKind(executorKind)
@@ -316,6 +319,7 @@ namespace
           m_publicationHook(std::move(publicationHook)),
           m_waitHook(std::move(waitHook)),
           m_clock(std::move(clock)),
+          m_frameAcquireHook(std::move(frameAcquireHook)),
           m_currentSurface(surface),
           m_latestResizeGeneration(surface.generation)
     {
@@ -378,7 +382,8 @@ namespace
         std::shared_ptr<IRenderFatalPolicy> fatalPolicy,
         std::shared_ptr<IRenderPublicationHook> publicationHook,
         std::shared_ptr<IRenderWaitHook> waitHook,
-        std::shared_ptr<IRenderMonotonicClock> clock)
+        std::shared_ptr<IRenderMonotonicClock> clock,
+        std::shared_ptr<IRenderFrameAcquireHook> frameAcquireHook)
         : RenderThreadRuntime(std::move(config),
                               surface,
                               executorKind,
@@ -388,7 +393,8 @@ namespace
                               std::move(fatalPolicy),
                               std::move(publicationHook),
                               std::move(waitHook),
-                              std::move(clock))
+                              std::move(clock),
+                              std::move(frameAcquireHook))
     {
         m_factory = std::move(factory);
     }
@@ -916,6 +922,148 @@ namespace
                result.teardownMode == RenderTeardownMode::None;
     }
 
+    bool RenderThreadRuntime::RequestCompletionPump() noexcept
+    {
+        if (!m_completionOnlyDrainActive.load(std::memory_order_acquire))
+        {
+            if (m_publicationHook != nullptr)
+            {
+                m_publicationHook->BeforeSeal();
+            }
+            std::lock_guard lock(m_publicationMutex);
+            if (!m_completionOnlyDrainActive.load(
+                    std::memory_order_relaxed))
+            {
+                if (m_publicationSealed.load(std::memory_order_acquire) ||
+                    m_lifecycle.load(std::memory_order_acquire) !=
+                        RenderLifecycleState::Running)
+                {
+                    return false;
+                }
+                const RenderRuntimeResult result = GetLastRuntimeResult();
+                if (result.lifecycle != RenderLifecycleState::Running ||
+                    result.terminalCause != RenderTerminalCause::None ||
+                    result.teardownMode != RenderTeardownMode::None)
+                {
+                    return false;
+                }
+                m_completionOnlyDrainActive.store(true,
+                                                  std::memory_order_release);
+                SealPublicationLocked();
+            }
+        }
+        else if (m_lifecycle.load(std::memory_order_acquire) !=
+                 RenderLifecycleState::Running)
+        {
+            return false;
+        }
+
+        Wake();
+        return true;
+    }
+
+    bool RenderThreadRuntime::RequestCompletionPoll() noexcept
+    {
+        {
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire) ||
+                m_completionOnlyDrainActive.load(std::memory_order_acquire) ||
+                m_lifecycle.load(std::memory_order_acquire) !=
+                    RenderLifecycleState::Running)
+            {
+                return false;
+            }
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.lifecycle != RenderLifecycleState::Running ||
+                result.terminalCause != RenderTerminalCause::None ||
+                result.teardownMode != RenderTeardownMode::None)
+            {
+                return false;
+            }
+        }
+
+        // The ordinary pump always polls and retires completion after any
+        // queued work.  A wake is therefore sufficient and intentionally
+        // preserves all publication paths for a later ECS removal frame.
+        Wake();
+        return true;
+    }
+
+    bool RenderThreadRuntime::RequestGPUSceneCullingQualificationCapture()
+        noexcept
+    {
+        {
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire) ||
+                m_completionOnlyDrainActive.load(std::memory_order_acquire) ||
+                m_lifecycle.load(std::memory_order_acquire) !=
+                    RenderLifecycleState::Running)
+            {
+                return false;
+            }
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.lifecycle != RenderLifecycleState::Running ||
+                result.terminalCause != RenderTerminalCause::None ||
+                result.teardownMode != RenderTeardownMode::None)
+            {
+                return false;
+            }
+
+            bool expected = false;
+            if (!m_gpuSceneCullingQualificationRequestIssued
+                     .compare_exchange_strong(expected,
+                                              true,
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire))
+            {
+                return false;
+            }
+            m_gpuSceneCullingQualificationRequestPending.store(
+                true, std::memory_order_release);
+        }
+
+        // This explicit request must wake an otherwise idle owner, but does
+        // not alter the normal no-request completion/wait behavior.
+        Wake();
+        return true;
+    }
+
+    bool RenderThreadRuntime::RequestDirectOpaqueRasterReadbackQualificationCapture()
+        noexcept
+    {
+        {
+            std::lock_guard lock(m_publicationMutex);
+            if (m_publicationSealed.load(std::memory_order_acquire) ||
+                m_completionOnlyDrainActive.load(std::memory_order_acquire) ||
+                m_lifecycle.load(std::memory_order_acquire) !=
+                    RenderLifecycleState::Running)
+            {
+                return false;
+            }
+            const RenderRuntimeResult result = GetLastRuntimeResult();
+            if (result.lifecycle != RenderLifecycleState::Running ||
+                result.terminalCause != RenderTerminalCause::None ||
+                result.teardownMode != RenderTeardownMode::None)
+            {
+                return false;
+            }
+
+            bool expected = false;
+            if (!m_directOpaqueRasterReadbackQualificationRequestIssued
+                     .compare_exchange_strong(expected,
+                                              true,
+                                              std::memory_order_acq_rel,
+                                              std::memory_order_acquire))
+            {
+                return false;
+            }
+            m_directOpaqueRasterReadbackQualificationRequestPending.store(
+                true, std::memory_order_release);
+        }
+        Wake();
+        return true;
+    }
+
     RenderResourceReserveResult RenderThreadRuntime::ReserveResource(
         AssetId assetId,
         RenderResourceKind kind) noexcept
@@ -1063,7 +1211,44 @@ namespace
                 return FailOnRenderThread(std::move(health));
             }
 
+            if (m_completionOnlyDrainActive.load(std::memory_order_acquire))
+            {
+                m_consumer->PollCompletion();
+                m_consumer->RetireCompleted();
+                {
+                    std::lock_guard lock(m_stateMutex);
+                    m_consumer->PopulateCompletionDiagnostics(
+                        m_diagnosticsState);
+                }
+                health = QueryConsumerRuntimeStatusOnRenderThread();
+                if (health.code != RenderRuntimeCode::Running)
+                {
+                    return FailOnRenderThread(std::move(health));
+                }
+                PublishDiagnostics();
+                return RenderPumpDecision::Idle;
+            }
+
             bool progressed = false;
+            if (m_gpuSceneCullingQualificationRequestPending.exchange(
+                    false, std::memory_order_acq_rel))
+            {
+                // The consumer owns SceneRenderer and executes this arm on
+                // the Render owner before it can record the next frame's
+                // GPUScene finalize pass. Rejection is intentionally
+                // fail-closed at the explicit qualification caller: no
+                // fallback capture or synchronous readback is attempted.
+                static_cast<void>(
+                    m_consumer->RequestGPUSceneCullingQualificationCapture());
+                progressed = true;
+            }
+            if (m_directOpaqueRasterReadbackQualificationRequestPending.exchange(
+                    false, std::memory_order_acq_rel))
+            {
+                static_cast<void>(m_consumer
+                    ->RequestDirectOpaqueRasterReadbackQualificationCapture());
+                progressed = true;
+            }
             uint64 resizeFrameSequenceCutoff = 0;
             BasicRenderControlBatch<NativeSurfaceDesc, NativeSurfaceDesc>
                 controls;
@@ -1151,8 +1336,45 @@ namespace
                 }
             }
 
-            RenderFrameAcquireResultV5 acquiredFrameV5 =
-                m_frameMailboxV5->AcquireLatest();
+            // The pump-start exchange above is only an opportunistic fast
+            // path. Serialize a second request handoff with frame publication
+            // and AcquireLatest so a request that arrives after that first
+            // exchange, but before this target frame is acquired, still arms
+            // this exact frame rather than leaking into the next one.
+            if (m_frameAcquireHook != nullptr)
+            {
+                m_frameAcquireHook->BeforeFrameAcquire();
+            }
+            bool qualificationRequestBeforeFrameAcquire = false;
+            RenderFrameAcquireResultV5 acquiredFrameV5;
+            {
+                std::lock_guard lock(m_publicationMutex);
+                qualificationRequestBeforeFrameAcquire =
+                    m_gpuSceneCullingQualificationRequestPending.exchange(
+                        false, std::memory_order_acq_rel);
+                acquiredFrameV5 = m_frameMailboxV5->AcquireLatest();
+            }
+            if (qualificationRequestBeforeFrameAcquire)
+            {
+                // The target packet is now owned by this Render pump, and the
+                // consumer arm occurs before it can reach ConsumeFrameV5.
+                static_cast<void>(
+                    m_consumer->RequestGPUSceneCullingQualificationCapture());
+                progressed = true;
+            }
+            bool directReadbackRequestBeforeFrameAcquire = false;
+            {
+                std::lock_guard lock(m_publicationMutex);
+                directReadbackRequestBeforeFrameAcquire =
+                    m_directOpaqueRasterReadbackQualificationRequestPending.exchange(
+                        false, std::memory_order_acq_rel);
+            }
+            if (directReadbackRequestBeforeFrameAcquire)
+            {
+                static_cast<void>(m_consumer
+                    ->RequestDirectOpaqueRasterReadbackQualificationCapture());
+                progressed = true;
+            }
             if (acquiredFrameV5.packet != nullptr)
             {
                 m_frameReplacementCount.fetch_add(
@@ -1228,6 +1450,36 @@ namespace
 
             if (m_pendingFrameV5 != nullptr)
             {
+                // A carry from a previous pump can become consumable without
+                // a new mailbox acquisition. Give the owner one final ordered
+                // handoff before consuming it so a request accepted during
+                // this pump remains attached to this exact carried frame.
+                bool qualificationRequestBeforeFrameConsume = false;
+                {
+                    std::lock_guard lock(m_publicationMutex);
+                    qualificationRequestBeforeFrameConsume =
+                        m_gpuSceneCullingQualificationRequestPending.exchange(
+                            false, std::memory_order_acq_rel);
+                }
+                if (qualificationRequestBeforeFrameConsume)
+                {
+                    static_cast<void>(
+                        m_consumer->RequestGPUSceneCullingQualificationCapture());
+                    progressed = true;
+                }
+                bool directReadbackRequestBeforeFrameConsume = false;
+                {
+                    std::lock_guard lock(m_publicationMutex);
+                    directReadbackRequestBeforeFrameConsume =
+                        m_directOpaqueRasterReadbackQualificationRequestPending.exchange(
+                            false, std::memory_order_acq_rel);
+                }
+                if (directReadbackRequestBeforeFrameConsume)
+                {
+                    static_cast<void>(m_consumer
+                        ->RequestDirectOpaqueRasterReadbackQualificationCapture());
+                    progressed = true;
+                }
                 const uint64 requiredRevision =
                     m_pendingFrameV5->GetHeader().requiredSceneRevision;
                 if (sceneUpdatesValid && !m_sceneCheckpointRequired &&
@@ -1235,22 +1487,81 @@ namespace
                 {
                     const uint64 sequence =
                         m_pendingFrameV5->GetHeader().sequence;
-                    RenderRuntimeResult frameResult = NormalizeRuntimeResult(
+                    const auto consumeStart = std::chrono::steady_clock::now();
+                    RenderRuntimeResult frameResult =
                         m_consumer->ConsumeFrameV5(
                             *m_pendingFrameV5,
-                            m_renderSceneDatabase),
+                            m_renderSceneDatabase);
+                    const auto consumeEnd = std::chrono::steady_clock::now();
+                    frameResult = NormalizeRuntimeResult(
+                        std::move(frameResult),
                         m_executorKind,
                         GetLastRuntimeResult().backend,
                         GetCurrentSurfaceSnapshot().generation);
                     frameResult.frameSequence = sequence;
-                    {
-                        std::lock_guard lock(m_stateMutex);
-                        m_consumer->PopulateDiagnostics(m_diagnosticsState);
-                    }
                     if (frameResult.code == RenderRuntimeCode::Running)
                     {
+                        const uint64 appliedSceneRevision =
+                            m_renderSceneDatabase.GetRevision();
+                        const uint32 objectCount = static_cast<uint32>(
+                            m_renderSceneDatabase.GetPrimitiveCount());
+                        const uint32 lightCount = static_cast<uint32>(
+                            m_renderSceneDatabase.GetLightCount());
                         m_renderSceneDatabase.AcknowledgeChangesThrough(
-                            m_renderSceneDatabase.GetRevision());
+                            appliedSceneRevision);
+                        {
+                            std::lock_guard lock(m_stateMutex);
+                            // Frame-feature diagnostics describe the last
+                            // successfully consumed and presented frame.  A
+                            // rejected attempt is retained by lastFailure and
+                            // must not overwrite that completed-frame value
+                            // snapshot with mixed sequence/provenance.
+                            m_consumer->PopulateDiagnostics(m_diagnosticsState);
+                            RenderCpuFrameTimingDiagnostics& cpuTiming =
+                                m_diagnosticsState.cpuFrameTiming;
+                            if (cpuTiming.phases.IsAvailable())
+                            {
+                                const bool provenanceMatches =
+                                    cpuTiming.sourceFrameSequence == sequence &&
+                                    cpuTiming.requiredSceneRevision ==
+                                        requiredRevision &&
+                                    cpuTiming.appliedSceneRevision ==
+                                        appliedSceneRevision;
+                                if (provenanceMatches)
+                                {
+                                    RenderCpuFramePhaseDurations phases =
+                                        *cpuTiming.phases.GetValue();
+                                    phases.acceptedFrameTotal =
+                                        static_cast<uint64>(
+                                            std::chrono::duration_cast<
+                                                std::chrono::nanoseconds>(
+                                                consumeEnd - consumeStart)
+                                                .count());
+                                    cpuTiming.phases =
+                                        DiagnosticValue<
+                                            RenderCpuFramePhaseDurations>::Available(
+                                            phases);
+                                }
+                                else
+                                {
+                                    cpuTiming = {};
+                                    cpuTiming.phases = DiagnosticValue<
+                                        RenderCpuFramePhaseDurations>::Unavailable(
+                                        "The render consumer returned CPU phase timing with stale frame or scene provenance.");
+                                }
+                            }
+                            m_diagnosticsState.sceneValues =
+                                RenderSceneValueDiagnostics{
+                                    true,
+                                    sequence,
+                                    appliedSceneRevision,
+                                    requiredRevision,
+                                    objectCount,
+                                    lightCount,
+                                    m_renderSceneDatabase.ComputeLightStateHash()};
+                            m_diagnosticsState.frameFeatures.extraction =
+                                m_pendingFrameV5->GetExtractionDiagnostics();
+                        }
                         m_lastAppliedFrameSequence.store(
                             sequence, std::memory_order_release);
                         m_lastSubmittedFrameSequence.store(
@@ -1280,6 +1591,13 @@ namespace
 
             m_consumer->PollCompletion();
             m_consumer->RetireCompleted();
+            {
+                std::lock_guard lock(m_stateMutex);
+                // Completion diagnostics are explicitly delayed data. Do not
+                // call PopulateDiagnostics here: that would project current
+                // frame values onto a previous GPU completion sample.
+                m_consumer->PopulateCompletionDiagnostics(m_diagnosticsState);
+            }
             health = QueryConsumerRuntimeStatusOnRenderThread();
             if (health.code != RenderRuntimeCode::Running)
             {
@@ -1307,7 +1625,9 @@ namespace
         {
         }
         std::unique_lock lock(m_waitMutex);
-        m_waitCv.wait(lock, [this]() {
+        const bool completionPollPending =
+            m_consumer != nullptr && m_consumer->HasPendingCompletionWork();
+        const auto shouldWake = [this]() {
             const bool shouldWake =
                 m_wakePending.load(std::memory_order_acquire) ||
                 m_ownerFatalPending.load(std::memory_order_acquire) ||
@@ -1318,7 +1638,18 @@ namespace
                 m_waitHook->AfterFalseWaitPredicate();
             }
             return shouldWake;
-        });
+        };
+        if (completionPollPending)
+        {
+            // GPU completion has no portable callback path. Bound the wait so
+            // uploads and deferred releases continue to make progress without
+            // turning an otherwise idle owner thread into a busy polling loop.
+            m_waitCv.wait_for(lock,
+                              RVX_RENDER_COMPLETION_WAIT_INTERVAL,
+                              shouldWake);
+            return;
+        }
+        m_waitCv.wait(lock, shouldWake);
     }
 
     void RenderThreadRuntime::Wake() noexcept
@@ -1848,6 +2179,15 @@ namespace
                 result = std::move(health);
             }
         }
+        if (result.code == RenderRuntimeCode::Running)
+        {
+            // Device identity is Render-owned state.  Publish it as part of
+            // the successful startup snapshot so consumers that freeze their
+            // benchmark fingerprint before the first frame do not observe an
+            // empty adapter or driver field.
+            std::lock_guard lock(m_stateMutex);
+            m_consumer->PopulateDiagnostics(m_diagnosticsState);
+        }
         if (m_lifecycleHook != nullptr)
         {
             m_lifecycleHook->BeforeStartupAcknowledgement();
@@ -1950,19 +2290,32 @@ namespace
                 : RenderTeardownMode::NormalDrain;
         SealPublication();
         DiscardPendingWorkOnRenderThread(mode);
-        RenderShutdownResult shutdown = m_consumer != nullptr
-                                            ? NormalizeShutdownResult(
-                                                  m_consumer->Shutdown(mode),
-                                                  runtime.backend,
-                                                  m_lastSubmittedFrameSequence.load(
-                                                      std::memory_order_acquire),
-                                                  currentSurface.generation)
-                                            : MakeShutdownResult(
-                                                  RenderShutdownCode::Completed,
-                                                  runtime.backend,
-                                                  m_lastSubmittedFrameSequence.load(
-                                                      std::memory_order_acquire),
-                                                  currentSurface.generation);
+        RenderShutdownResult shutdown;
+        if (m_consumer != nullptr)
+        {
+            shutdown = NormalizeShutdownResult(
+                m_consumer->Shutdown(mode),
+                runtime.backend,
+                m_lastSubmittedFrameSequence.load(std::memory_order_acquire),
+                currentSurface.generation);
+            if (mode == RenderTeardownMode::NormalDrain)
+            {
+                // Shutdown may resolve the only remaining delayed GPU sample.
+                // Copy that completion-owned data before the consumer destroys
+                // its RenderContext; fatal/device-lost paths intentionally skip
+                // this handoff because they must not map completion data.
+                std::lock_guard lock(m_stateMutex);
+                m_consumer->PopulateCompletionDiagnostics(m_diagnosticsState);
+            }
+        }
+        else
+        {
+            shutdown = MakeShutdownResult(
+                RenderShutdownCode::Completed,
+                runtime.backend,
+                m_lastSubmittedFrameSequence.load(std::memory_order_acquire),
+                currentSurface.generation);
+        }
         m_consumer.reset();
         StoreShutdownResultAndRecordFailure(shutdown);
         if (shutdown.resultClass == RenderResultClass::RuntimeFatal ||

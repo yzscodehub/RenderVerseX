@@ -12,7 +12,8 @@
 namespace RVX
 {
     inline constexpr uint32 RVX_RENDER_FRAME_PACKET_V5_SCHEMA_ID = 0x52564635U;
-    inline constexpr uint32 RVX_RENDER_FRAME_PACKET_V5_SCHEMA_VERSION = 5;
+    // Version 8 adds RenderFrameCaptureRequest's optional pixel-probe value.
+    inline constexpr uint32 RVX_RENDER_FRAME_PACKET_V5_SCHEMA_VERSION = 8;
 
     struct RenderFrameHeaderV5
     {

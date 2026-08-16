@@ -28,8 +28,8 @@ namespace RVX
     private:
         DX12Device* m_device = nullptr;
         ComPtr<ID3D12QueryHeap> m_heap;
-        RHIQueryType m_type;
-        D3D12_QUERY_TYPE m_d3dQueryType;
+        RHIQueryType m_type = RHIQueryType::Timestamp;
+        D3D12_QUERY_TYPE m_d3dQueryType = D3D12_QUERY_TYPE_TIMESTAMP;
         uint32 m_count = 0;
         uint64 m_timestampFrequency = 0;
     };

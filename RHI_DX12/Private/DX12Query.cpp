@@ -4,10 +4,44 @@
 namespace RVX
 {
     DX12QueryPool::DX12QueryPool(DX12Device* device, const RHIQueryPoolDesc& desc)
-        : m_device(device)
+        : RHIQueryPool(
+            desc.queueType,
+            desc.type == RHIQueryType::Timestamp ? 64 : 0)
+        , m_device(device)
         , m_type(desc.type)
         , m_count(desc.count)
     {
+        const RHIQueryValidationResult validation = ValidateRHIQueryPoolDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12: Invalid query pool description: {}", validation.message);
+            return;
+        }
+
+        if (device == nullptr || device->GetD3DDevice() == nullptr)
+        {
+            RVX_RHI_ERROR("DX12: Query pool creation requires a live DX12 device");
+            return;
+        }
+
+        if (desc.type == RHIQueryType::Timestamp)
+        {
+            const RHICapabilities& capabilities = device->GetCapabilities();
+            if (!capabilities.supportsTimestampQueries ||
+                capabilities.timestampFrequency == 0 ||
+                desc.queueType != RHICommandQueueType::Graphics)
+            {
+                RVX_RHI_ERROR(
+                    "DX12: Timestamp query pools require verified Graphics timestamp support");
+                return;
+            }
+
+            // The device verified this exact Graphics-queue frequency before
+            // publishing the capability.  Do not make a second unchecked API
+            // call here, which could silently diverge from the declaration.
+            m_timestampFrequency = capabilities.timestampFrequency;
+        }
+
         if (desc.debugName)
         {
             SetDebugName(desc.debugName);
@@ -60,12 +94,6 @@ namespace RVX
             m_heap->SetName(wname);
         }
 
-        // Get timestamp frequency for timestamp queries
-        if (desc.type == RHIQueryType::Timestamp)
-        {
-            device->GetGraphicsQueue()->GetTimestampFrequency(&m_timestampFrequency);
-        }
-
         RVX_RHI_DEBUG("Created query pool: type={}, count={}", static_cast<int>(desc.type), desc.count);
     }
 
@@ -76,6 +104,30 @@ namespace RVX
 
     RHIQueryPoolRef CreateDX12QueryPool(DX12Device* device, const RHIQueryPoolDesc& desc)
     {
+        const RHIQueryValidationResult validation = ValidateRHIQueryPoolDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12: Query pool creation rejected: {}", validation.message);
+            return nullptr;
+        }
+
+        if (device == nullptr)
+        {
+            RVX_RHI_ERROR("DX12: Query pool creation requires a device");
+            return nullptr;
+        }
+
+        if (desc.type == RHIQueryType::Timestamp)
+        {
+            const RHICapabilities& capabilities = device->GetCapabilities();
+            if (!capabilities.supportsTimestampQueries ||
+                capabilities.timestampFrequency == 0)
+            {
+                RVX_RHI_ERROR("DX12: Timestamp queries are unavailable on the Graphics queue");
+                return nullptr;
+            }
+        }
+
         auto pool = Ref<DX12QueryPool>(new DX12QueryPool(device, desc));
         if (!pool->GetHeap())
         {

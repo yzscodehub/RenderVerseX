@@ -46,6 +46,20 @@ namespace RVX
             GetDiagnosticsSnapshot() const;
         [[nodiscard]] RenderRuntimeResult GetLastRuntimeResult() const;
         [[nodiscard]] RenderShutdownResult GetLastShutdownResult() const;
+        /** @brief Seal publication and enter the terminal GPU-completion drain. */
+        [[nodiscard]] bool RequestCompletionPump() noexcept;
+        /** @brief Wake one completion poll without sealing publication. */
+        [[nodiscard]] bool RequestCompletionPoll() noexcept;
+        /**
+         * @brief Arm one post-fence GPUScene culling qualification capture.
+         *
+         * The request is accepted at most once for this runtime instance and
+         * is consumed on the Render owner before its next frame is recorded.
+         */
+        [[nodiscard]] bool RequestGPUSceneCullingQualificationCapture() noexcept;
+        /** @brief Arm one post-fence Direct Opaque raster-input readback. */
+        [[nodiscard]] bool RequestDirectOpaqueRasterReadbackQualificationCapture()
+            noexcept;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,

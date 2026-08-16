@@ -926,8 +926,7 @@ bool RayTracingSceneManager::EnsureInstanceBuffer(const std::vector<RHIRayTracin
         return false;
 
     std::memcpy(mapped, records.data(), static_cast<size_t>(dataSize));
-    m_instanceBuffer->Unmap();
-    return true;
+    return m_instanceBuffer->CommitMappedWrite();
 }
 
 bool RayTracingSceneManager::EnsureInstanceMaterialMetadataBuffer(
@@ -964,8 +963,7 @@ bool RayTracingSceneManager::EnsureInstanceMaterialMetadataBuffer(
         return false;
 
     std::memcpy(mapped, records.data(), static_cast<size_t>(dataSize));
-    m_instanceMaterialMetadataBuffer->Unmap();
-    return true;
+    return m_instanceMaterialMetadataBuffer->CommitMappedWrite();
 }
 
 bool RayTracingSceneManager::EnsureInstanceAlphaMetadataBuffer(
@@ -1002,8 +1000,7 @@ bool RayTracingSceneManager::EnsureInstanceAlphaMetadataBuffer(
         return false;
 
     std::memcpy(mapped, records.data(), static_cast<size_t>(dataSize));
-    m_instanceAlphaMetadataBuffer->Unmap();
-    return true;
+    return m_instanceAlphaMetadataBuffer->CommitMappedWrite();
 }
 
 bool RayTracingSceneManager::EnsureTopLevelAS(const RHITopLevelASDesc& desc)

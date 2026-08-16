@@ -277,6 +277,27 @@ namespace RVX
         }
     };
 
+    /**
+     * @brief Immutable frame bindings for all cascades of one directional shadow record.
+     *
+     * A single upload page contains one aligned ViewConstants record per
+     * cascade. Each descriptor set fixes binding 0 to a distinct range in that
+     * page, so command recording cannot observe a later cascade overwrite.
+     */
+    struct DirectionalShadowCascadeBindingSnapshot
+    {
+        RHIBufferRef viewConstantPageBuffer;
+        std::vector<RHIDescriptorSetRef> frameDescriptorSets;
+        std::vector<Ref<RefCounted>> retainedResources;
+        uint64 viewConstantStride = 0;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return viewConstantPageBuffer && !frameDescriptorSets.empty() &&
+                   viewConstantStride != 0;
+        }
+    };
+
     /** @brief One page-local object binding captured while a graph is recorded. */
     struct ObjectConstantBinding
     {
@@ -809,6 +830,17 @@ namespace RVX
                                              RasterDrawBindingSnapshot& outSnapshot) const;
 
         /**
+         * @brief Create immutable set-0 bindings for every directional-shadow cascade.
+         *
+         * All cascade constants are copied into one recording-owned page before
+         * descriptors are created. The caller must retain retainedResources in
+         * the RenderGraph execution ownership batch.
+         */
+        bool CreateDirectionalShadowCascadeBindingSnapshot(
+            std::span<const ViewData> cascadeViews,
+            DirectionalShadowCascadeBindingSnapshot& outSnapshot) const;
+
+        /**
          * @brief Create the independent set-1 binding for one sealed GPU-scene raster view.
          *
          * The snapshot supplies its own strong b0/descriptor/table references;
@@ -929,6 +961,43 @@ namespace RVX
         bool IsReverseZ() const { return m_config.reverseZ; }
 
     private:
+        /**
+         * @brief Strong owners for every source referenced by one frame descriptor set.
+         *
+         * RHIDescriptorBinding intentionally contains raw backend handles. This
+         * snapshot keeps those handles live from descriptor creation through the
+         * exact completion token used to retire a replaced frame set.
+         */
+        struct FrameDescriptorBindingOwners final : RefCounted
+        {
+            RHIBufferRef viewConstantBuffer;
+            RHITextureViewRef directionalShadowView;
+            RHISamplerRef directionalShadowSampler;
+            RHIBufferRef lightConstantsBuffer;
+            RHIBufferRef pointLightsBuffer;
+            RHIBufferRef spotLightsBuffer;
+            RHITextureViewRef rayTracedShadowMaskView;
+            RHIBufferRef clusterConstantsBuffer;
+            RHIBufferRef clusterBuffer;
+            RHIBufferRef clusterLightIndexBuffer;
+            RHITextureViewRef environmentIBLIrradianceView;
+            RHITextureViewRef environmentIBLPrefilteredView;
+            RHITextureViewRef environmentIBLBRDFLUTView;
+            RHISamplerRef environmentIBLSampler;
+
+            [[nodiscard]] bool IsComplete() const noexcept
+            {
+                return viewConstantBuffer && directionalShadowView &&
+                       directionalShadowSampler && lightConstantsBuffer &&
+                       pointLightsBuffer && spotLightsBuffer &&
+                       rayTracedShadowMaskView && clusterConstantsBuffer &&
+                       clusterBuffer && clusterLightIndexBuffer &&
+                       environmentIBLIrradianceView &&
+                       environmentIBLPrefilteredView &&
+                       environmentIBLBRDFLUTView && environmentIBLSampler;
+            }
+        };
+
         static uint32 ToRHIConstantDynamicOffset(uint64 offset)
         {
             constexpr uint64 maxDynamicOffset = static_cast<uint64>(std::numeric_limits<uint32>::max());
@@ -1074,6 +1143,9 @@ namespace RVX
         bool EnsureObjectInstanceFallbackBuffer();
         bool UpdateDefaultFrameDescriptorSet();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
+        Ref<FrameDescriptorBindingOwners> CreateFrameDescriptorBindingOwners() const;
+        std::vector<RHIDescriptorBinding> BuildFrameDescriptorBindings(
+            const FrameDescriptorBindingOwners& owners) const;
         RHIDescriptorSetRef CreateObjectDescriptorSet();
         bool CreateRasterDrawBindingSnapshotInternal(
             const ViewData& view,
@@ -1279,6 +1351,7 @@ namespace RVX
         RHIBufferRef m_objectConstantBuffer;
         RHIBufferRef m_objectInstanceFallbackBuffer;
         RHIDescriptorSetRef m_frameDescriptorSet;
+        Ref<FrameDescriptorBindingOwners> m_frameDescriptorBindingOwners;
         RHIDescriptorSetRef m_objectDescriptorSet;
         std::unique_ptr<FrameConstantUploadArena> m_objectConstantUploadArena;
         struct ObjectPageDescriptorKey
@@ -1318,18 +1391,18 @@ namespace RVX
         RHIBufferRef m_fallbackClusterConstantsBuffer;
         RHIBufferRef m_fallbackClusterBuffer;
         RHIBufferRef m_fallbackClusterLightIndexBuffer;
-        RHITextureView* m_currentDirectionalShadowView = nullptr;
-        RHITextureView* m_currentRayTracedShadowMaskView = nullptr;
-        RHISampler* m_currentDirectionalShadowSampler = nullptr;
-        RHITextureView* m_currentEnvironmentIBLIrradianceView = nullptr;
-        RHITextureView* m_currentEnvironmentIBLPrefilteredView = nullptr;
-        RHITextureView* m_currentEnvironmentIBLBRDFLUTView = nullptr;
-        RHIBuffer* m_currentLightConstantsBuffer = nullptr;
-        RHIBuffer* m_currentPointLightsBuffer = nullptr;
-        RHIBuffer* m_currentSpotLightsBuffer = nullptr;
-        RHIBuffer* m_currentClusterConstantsBuffer = nullptr;
-        RHIBuffer* m_currentClusterBuffer = nullptr;
-        RHIBuffer* m_currentClusterLightIndexBuffer = nullptr;
+        RHITextureViewRef m_currentDirectionalShadowView;
+        RHITextureViewRef m_currentRayTracedShadowMaskView;
+        RHISamplerRef m_currentDirectionalShadowSampler;
+        RHITextureViewRef m_currentEnvironmentIBLIrradianceView;
+        RHITextureViewRef m_currentEnvironmentIBLPrefilteredView;
+        RHITextureViewRef m_currentEnvironmentIBLBRDFLUTView;
+        RHIBufferRef m_currentLightConstantsBuffer;
+        RHIBufferRef m_currentPointLightsBuffer;
+        RHIBufferRef m_currentSpotLightsBuffer;
+        RHIBufferRef m_currentClusterConstantsBuffer;
+        RHIBufferRef m_currentClusterBuffer;
+        RHIBufferRef m_currentClusterLightIndexBuffer;
         bool m_frameResourceBindingsDirty = false;
         DirectionalShadowFrameBindingResult m_lastDirectionalShadowFrameBindingResult;
         RayTracedShadowFrameBindingResult m_lastRayTracedShadowFrameBindingResult;

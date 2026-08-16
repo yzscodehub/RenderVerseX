@@ -84,7 +84,8 @@ namespace RVX
         RHIIndexedIndirectExecutionCapabilities indexedIndirectExecution;
         bool supportsConservativeRasterization = false;
 
-        // Query support
+        // Query support. Timestamp fields are a Graphics-queue projection:
+        // implementations must not use them to imply Compute/Copy support.
         bool supportsTimestampQueries = false;
         bool supportsOcclusionQueries = false;
         bool supportsPipelineStatisticsQueries = false;

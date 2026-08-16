@@ -32,6 +32,7 @@ namespace RVX
         // =========================================================================
         void* Map(uint64 offset = 0, uint64 size = RVX_WHOLE_SIZE) override;
         void Unmap() override;
+        bool CommitMappedWrite() override;
         uint64 GetSize() const override { return m_size; }
         RHIBuffer* GetBuffer() const override;
 
@@ -41,6 +42,14 @@ namespace RVX
         ID3D12Resource* GetResource() const { return m_resource.Get(); }
 
     private:
+        [[nodiscard]] bool IsHostAccessReady() const noexcept;
+        void DiscardMappedState() noexcept;
+        void UnmapInternal();
+        void* MapWriteRangeImpl(uint64 offset, uint64 size) override;
+        RHIHostWriteReceipt CommitMappedWriteRangeImpl(
+            uint64 offset, uint64 size) override;
+        bool CancelMappedWriteRangeImpl(uint64 offset, uint64 size) override;
+
         DX12Device* m_device = nullptr;
         ComPtr<ID3D12Resource> m_resource;
         uint64 m_size = 0;

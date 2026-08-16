@@ -168,8 +168,12 @@ namespace RVX
         /** @brief Commit upload and exact-lease realized accesses after graph execution. */
         void CommitRealizedAccess(const RenderGraph& graph) noexcept;
 
-        /** @brief Associate recorded upload resources with the actual submission token. */
-        void NotifySubmission(const GPUCompletionToken& completion) noexcept;
+        /**
+         * @brief Associate recorded upload resources with the actual submission token.
+         * @return False when the token cannot prove ownership of this recording;
+         *         the realized plan remains retained for an exact-token retry.
+         */
+        bool NotifySubmission(const GPUCompletionToken& completion) noexcept;
         /** @brief Discard one recorded-but-never-submitted upload plan. */
         void ReleaseUnsubmittedFrame() noexcept;
 
@@ -186,6 +190,9 @@ namespace RVX
 
         [[nodiscard]] const GPUSceneUploadDiagnostics&
             GetDiagnostics() const noexcept;
+        [[nodiscard]] const GPUSceneUploadMutationTotals&
+            GetMutationTotals() const noexcept;
+        [[nodiscard]] bool IsMutationTotalsSaturated() const noexcept;
 
     private:
         class Impl;

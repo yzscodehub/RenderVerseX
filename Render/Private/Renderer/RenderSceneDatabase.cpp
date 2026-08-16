@@ -1,7 +1,10 @@
 #include "Render/Renderer/RenderSceneDatabase.h"
 
+#include "Core/Diagnostics/ContentHash.h"
+
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -11,6 +14,20 @@ namespace RVX
 namespace
 {
     std::atomic<uint64> g_nextRenderSceneDatabaseInstanceId{1};
+
+    void MixLightFloat(uint64& hash, float32 value)
+    {
+        Diagnostics::MixContentHashValue(
+            hash,
+            static_cast<uint64>(std::bit_cast<uint32>(value)));
+    }
+
+    void MixLightVec3(uint64& hash, const Vec3& value)
+    {
+        MixLightFloat(hash, value.x);
+        MixLightFloat(hash, value.y);
+        MixLightFloat(hash, value.z);
+    }
 
     template<typename Values>
     void SortUnique(Values& values)
@@ -337,7 +354,19 @@ namespace
             left.flags != right.flags || left.layerMask != right.layerMask ||
             left.sortKey != right.sortKey ||
             left.submeshes.size() != right.submeshes.size() ||
-            left.skinMatrices.size() != right.skinMatrices.size())
+            left.skinMatrices.size() != right.skinMatrices.size() ||
+            left.hasSkinningPaletteProvider !=
+                right.hasSkinningPaletteProvider ||
+            left.skinningPalette.providerComponentId !=
+                right.skinningPalette.providerComponentId ||
+            left.skinningPalette.sourceModelResourceId !=
+                right.skinningPalette.sourceModelResourceId ||
+            left.skinningPalette.poseSequence !=
+                right.skinningPalette.poseSequence ||
+            left.skinningPalette.paletteHash !=
+                right.skinningPalette.paletteHash ||
+            left.skinningPalette.paletteCount !=
+                right.skinningPalette.paletteCount)
         {
             return false;
         }
@@ -367,6 +396,7 @@ namespace
                left.innerConeRadians == right.innerConeRadians &&
                left.outerConeRadians == right.outerConeRadians &&
                left.shadowResource == right.shadowResource &&
+               left.layerMask == right.layerMask &&
                left.castsShadows == right.castsShadows;
     }
 
@@ -403,6 +433,40 @@ RenderSceneDatabase::RenderSceneDatabase()
         m_instanceId = g_nextRenderSceneDatabaseInstanceId.fetch_add(
             1, std::memory_order_relaxed);
     }
+}
+
+uint64 RenderSceneDatabase::ComputeLightStateHash() const noexcept
+{
+    uint64 hash = Diagnostics::RVX_DIAGNOSTICS_FNV1A64_OFFSET_BASIS;
+    std::vector<uint64> lightIds;
+    lightIds.reserve(m_lights.size());
+    for (const auto& [lightId, light] : m_lights)
+    {
+        static_cast<void>(light);
+        lightIds.push_back(lightId);
+    }
+    std::sort(lightIds.begin(), lightIds.end());
+
+    Diagnostics::MixContentHashValue(hash, lightIds.size());
+    for (uint64 lightId : lightIds)
+    {
+        const RenderLightSnapshot& light = m_lights.at(lightId);
+        Diagnostics::MixContentHashValue(hash, lightId);
+        Diagnostics::MixContentHashValue(
+            hash, static_cast<uint64>(light.type));
+        MixLightVec3(hash, light.position);
+        MixLightVec3(hash, light.direction);
+        MixLightVec3(hash, light.color);
+        MixLightFloat(hash, light.intensity);
+        MixLightFloat(hash, light.range);
+        MixLightFloat(hash, light.innerConeRadians);
+        MixLightFloat(hash, light.outerConeRadians);
+        Diagnostics::MixContentHashValue(hash, light.shadowResource.slot);
+        Diagnostics::MixContentHashValue(hash, light.shadowResource.generation);
+        Diagnostics::MixContentHashValue(hash, light.layerMask);
+        Diagnostics::MixContentHashValue(hash, light.castsShadows ? 1U : 0U);
+    }
+    return hash;
 }
 
 RenderSceneDatabase::ChangeJournalEntry

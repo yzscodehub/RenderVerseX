@@ -253,8 +253,7 @@ namespace
             return false;
         }
         std::memcpy(mapped, &constants, sizeof(constants));
-        data.constantBuffer->Unmap();
-        return true;
+        return data.constantBuffer->CommitMappedWrite();
     }
 
     [[nodiscard]] bool PrepareRecording(GraphPassData& data,
@@ -273,6 +272,10 @@ namespace
         }
 
         const ViewData& view = data.execution.view;
+        if (!view.AllowsSkybox())
+        {
+            return false;
+        }
         if (!view.colorTarget.IsValid())
         {
             return false;

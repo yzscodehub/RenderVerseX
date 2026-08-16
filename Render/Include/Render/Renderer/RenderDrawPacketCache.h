@@ -43,7 +43,6 @@ namespace RVX
             MeshUploadPrimitiveTopology::Triangles;
         RenderMaterialMode materialMode = RenderMaterialMode::Opaque;
         RenderBatchFlags flags = RenderBatchFlags::None;
-        uint64 objectRevision = 0;
         RenderDrawPacketCacheVersions versions;
 
         [[nodiscard]] bool operator==(
@@ -68,6 +67,8 @@ namespace RVX
         StaticStateChanged = 5,
         ObjectRemoved = 6,
         DynamicBypass = 7,
+        // Legacy compatibility diagnostic. Static packet signatures no longer
+        // include object revisions, so this count should remain zero.
         ObjectRevisionChanged = 8,
         Count = 9
     };

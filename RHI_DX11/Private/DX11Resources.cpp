@@ -1124,7 +1124,10 @@ namespace RVX
     // DX11 Query Pool Implementation
     // =============================================================================
     DX11QueryPool::DX11QueryPool(DX11Device* device, const RHIQueryPoolDesc& desc)
-        : m_device(device)
+        : RHIQueryPool(
+            desc.queueType,
+            desc.type == RHIQueryType::Timestamp ? 64 : 0)
+        , m_device(device)
         , m_type(desc.type)
         , m_count(desc.count)
     {
@@ -1152,15 +1155,20 @@ namespace RVX
                     std::this_thread::yield();
                 }
                 
-                m_timestampFrequency = disjointData.Frequency;
-                RVX_RHI_DEBUG("DX11: GPU timestamp frequency: {} Hz ({:.2f} GHz)", 
-                             m_timestampFrequency, m_timestampFrequency / 1e9);
+                if (disjointData.Frequency != 0)
+                {
+                    m_timestampFrequency = disjointData.Frequency;
+                    RVX_RHI_DEBUG("DX11: GPU timestamp frequency: {} Hz ({:.2f} GHz)",
+                                 m_timestampFrequency, m_timestampFrequency / 1e9);
+                }
+                else
+                {
+                    RVX_RHI_WARN("DX11: Timestamp disjoint query returned a zero frequency");
+                }
             }
             else
             {
-                // Fallback to a reasonable default
-                m_timestampFrequency = 1000000000;  // 1 GHz default
-                RVX_RHI_WARN("DX11: Failed to query timestamp frequency, using 1 GHz default");
+                RVX_RHI_WARN("DX11: Failed to query timestamp frequency");
             }
         }
 

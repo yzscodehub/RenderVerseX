@@ -39,17 +39,21 @@
 #include "Render/PostProcess/Vignette.h"
 #include "Render/RayTracing/RayTracingScene.h"
 #include "Renderer/RenderPassRegistry.h"
+#include "Render/Renderer/RenderSceneDatabase.h"
 #include "Resources/RenderResourceRegistry.h"
 #include "Resources/RenderResourceResolver.h"
 #include "Resources/RenderRetirementQueue.h"
 #include "Resources/RenderSubmissionResourceBatch.h"
 #include "Resources/RenderSubmissionTracker.h"
+#include "RHI/RHIRenderPass.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
+#include <limits>
 #include <new>
 #include <optional>
 #include <utility>
@@ -59,6 +63,191 @@ namespace RVX
 {
 namespace
 {
+    [[nodiscard]] uint64 MixGPUCullingQualificationIdentity(
+        uint64 seed, uint64 value) noexcept
+    {
+        value += 0x9E3779B97F4A7C15ull;
+        value = (value ^ (value >> 30u)) * 0xBF58476D1CE4E5B9ull;
+        value = (value ^ (value >> 27u)) * 0x94D049BB133111EBull;
+        value ^= value >> 31u;
+        seed ^= value + 0x9E3779B97F4A7C15ull + (seed << 6u) +
+            (seed >> 2u);
+        return seed;
+    }
+
+    [[nodiscard]] uint64 HashGPUCullingQualificationPacketReference(
+        const RenderDrawPacketReference& reference) noexcept
+    {
+        const RenderDrawPacketId& id = reference.packetId;
+        uint64 hash = 0xCBF29CE484222325ull;
+        hash = MixGPUCullingQualificationIdentity(hash, id.frameSequence);
+        hash = MixGPUCullingQualificationIdentity(hash, id.viewOrdinal);
+        hash = MixGPUCullingQualificationIdentity(
+            hash, static_cast<uint32>(id.pass));
+        hash = MixGPUCullingQualificationIdentity(hash, id.objectId);
+        hash = MixGPUCullingQualificationIdentity(hash, id.primitiveData);
+        hash = MixGPUCullingQualificationIdentity(hash, id.mesh.slot);
+        hash = MixGPUCullingQualificationIdentity(hash, id.mesh.generation);
+        hash = MixGPUCullingQualificationIdentity(
+            hash, id.logicalSubmeshIndex);
+        hash = MixGPUCullingQualificationIdentity(
+            hash, id.geometrySubmeshIndex);
+        hash = MixGPUCullingQualificationIdentity(hash, id.sourcePacketIndex);
+        return MixGPUCullingQualificationIdentity(hash, id.sourceOrdinal);
+    }
+
+    void SaturatingAdd(uint64& total, uint64 value, bool& saturated) noexcept
+    {
+        const uint64 maximum = std::numeric_limits<uint64>::max();
+        if (saturated || value > maximum - total)
+        {
+            total = maximum;
+            saturated = true;
+            return;
+        }
+        total += value;
+    }
+
+    void AccumulateDirectMutationTotals(
+        DirectRasterMutationTotals& target,
+        const DirectRasterMutationTotals& source,
+        bool& saturated) noexcept
+    {
+        SaturatingAdd(target.instancePatchedRowCount,
+                      source.instancePatchedRowCount,
+                      saturated);
+        SaturatingAdd(target.indexPatchedRowCount,
+                      source.indexPatchedRowCount,
+                      saturated);
+        SaturatingAdd(target.instanceUploadBytes,
+                      source.instanceUploadBytes,
+                      saturated);
+        SaturatingAdd(target.indexUploadBytes,
+                      source.indexUploadBytes,
+                      saturated);
+        SaturatingAdd(target.instanceFullMaterializationCount,
+                      source.instanceFullMaterializationCount,
+                      saturated);
+        SaturatingAdd(target.indexFullMaterializationCount,
+                      source.indexFullMaterializationCount,
+                      saturated);
+    }
+
+    void AccumulateGPUCullingMutationTotals(
+        GPUCullingCanonicalMutationTotals& target,
+        const GPUCullingCanonicalMutationTotals& source,
+        bool& saturated) noexcept
+    {
+        SaturatingAdd(target.instancePatchedRowCount, source.instancePatchedRowCount, saturated);
+        SaturatingAdd(target.candidatePatchedRowCount, source.candidatePatchedRowCount, saturated);
+        SaturatingAdd(target.activeRowPatchedRowCount, source.activeRowPatchedRowCount, saturated);
+        SaturatingAdd(target.instanceUploadedRowCount, source.instanceUploadedRowCount, saturated);
+        SaturatingAdd(target.candidateUploadedRowCount, source.candidateUploadedRowCount, saturated);
+        SaturatingAdd(target.activeRowUploadedRowCount, source.activeRowUploadedRowCount, saturated);
+        SaturatingAdd(target.instanceUploadBytes, source.instanceUploadBytes, saturated);
+        SaturatingAdd(target.candidateUploadBytes, source.candidateUploadBytes, saturated);
+        SaturatingAdd(target.activeRowUploadBytes, source.activeRowUploadBytes, saturated);
+        SaturatingAdd(target.instanceFullMaterializationCount, source.instanceFullMaterializationCount, saturated);
+        SaturatingAdd(target.candidateFullMaterializationCount, source.candidateFullMaterializationCount, saturated);
+        SaturatingAdd(target.activeRowFullMaterializationCount, source.activeRowFullMaterializationCount, saturated);
+        SaturatingAdd(target.continuityFullMaterializationCount, source.continuityFullMaterializationCount, saturated);
+        SaturatingAdd(target.capacityFullMaterializationCount, source.capacityFullMaterializationCount, saturated);
+    }
+
+    bool MutationTotalsDecreased(
+        const RenderSceneMutationTotals& current,
+        const RenderSceneMutationTotals& previous) noexcept
+    {
+        return current.fullRebuildCount < previous.fullRebuildCount ||
+               current.incrementalCommitCount < previous.incrementalCommitCount ||
+               current.rebuiltObjectCount < previous.rebuiltObjectCount ||
+               current.removedObjectCount < previous.removedObjectCount;
+    }
+
+    bool MutationTotalsDecreased(
+        const GPUScenePublicationMutationTotals& current,
+        const GPUScenePublicationMutationTotals& previous) noexcept
+    {
+        return current.fullPublicationCount < previous.fullPublicationCount ||
+               current.incrementalPublicationCount < previous.incrementalPublicationCount ||
+               current.identityOnlyPublicationCount < previous.identityOnlyPublicationCount ||
+               current.materializedObjectCount < previous.materializedObjectCount ||
+               current.addCount < previous.addCount ||
+               current.updateCount < previous.updateCount ||
+               current.removeCount < previous.removeCount ||
+               current.noOpCount < previous.noOpCount;
+    }
+
+    bool MutationTotalsDecreased(
+        const GPUSceneUploadMutationTotals& current,
+        const GPUSceneUploadMutationTotals& previous) noexcept
+    {
+        if (current.submittedUploadCount < previous.submittedUploadCount ||
+               current.uploadBytes < previous.uploadBytes ||
+               current.uploadRangeCount < previous.uploadRangeCount ||
+               current.fullUploadCount < previous.fullUploadCount)
+        {
+            return true;
+        }
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_DIAGNOSTICS_TABLE_COUNT;
+             ++tableIndex)
+        {
+            if (current.submittedUploadedRowCount[tableIndex] <
+                previous.submittedUploadedRowCount[tableIndex])
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool MutationTotalsDecreased(
+        const GPUCullingCanonicalMutationTotals& current,
+        const GPUCullingCanonicalMutationTotals& previous) noexcept
+    {
+        return current.instancePatchedRowCount < previous.instancePatchedRowCount ||
+               current.candidatePatchedRowCount < previous.candidatePatchedRowCount ||
+               current.activeRowPatchedRowCount < previous.activeRowPatchedRowCount ||
+               current.instanceUploadedRowCount < previous.instanceUploadedRowCount ||
+               current.candidateUploadedRowCount < previous.candidateUploadedRowCount ||
+               current.activeRowUploadedRowCount < previous.activeRowUploadedRowCount ||
+               current.instanceUploadBytes < previous.instanceUploadBytes ||
+               current.candidateUploadBytes < previous.candidateUploadBytes ||
+               current.activeRowUploadBytes < previous.activeRowUploadBytes ||
+               current.instanceFullMaterializationCount < previous.instanceFullMaterializationCount ||
+               current.candidateFullMaterializationCount < previous.candidateFullMaterializationCount ||
+               current.activeRowFullMaterializationCount < previous.activeRowFullMaterializationCount ||
+               current.continuityFullMaterializationCount < previous.continuityFullMaterializationCount ||
+               current.capacityFullMaterializationCount < previous.capacityFullMaterializationCount;
+    }
+
+    bool MutationTotalsDecreased(
+        const DirectRasterMutationTotals& current,
+        const DirectRasterMutationTotals& previous) noexcept
+    {
+        return current.instancePatchedRowCount < previous.instancePatchedRowCount ||
+               current.indexPatchedRowCount < previous.indexPatchedRowCount ||
+               current.instanceUploadBytes < previous.instanceUploadBytes ||
+               current.indexUploadBytes < previous.indexUploadBytes ||
+               current.instanceFullMaterializationCount < previous.instanceFullMaterializationCount ||
+               current.indexFullMaterializationCount < previous.indexFullMaterializationCount;
+    }
+
+    bool MutationEvidenceDecreased(
+        const RenderMutationEvidenceDiagnostics& current,
+        const RenderMutationEvidenceDiagnostics& previous) noexcept
+    {
+        return current.gpuCullingOwnerCount < previous.gpuCullingOwnerCount ||
+               current.directRasterOwnerCount < previous.directRasterOwnerCount ||
+               MutationTotalsDecreased(current.scene, previous.scene) ||
+               MutationTotalsDecreased(current.gpuScenePublication,
+                                       previous.gpuScenePublication) ||
+               MutationTotalsDecreased(current.gpuSceneUpload,
+                                       previous.gpuSceneUpload) ||
+               MutationTotalsDecreased(current.gpuCulling, previous.gpuCulling) ||
+               MutationTotalsDecreased(current.directRaster, previous.directRaster);
+    }
     void PopulatePlanMeasurement(RenderPolicyDiagnostics& diagnostics)
     {
         RenderPolicyMeasurement& measurement = diagnostics.measurement;
@@ -118,6 +307,84 @@ namespace
                 measurement.submissionCpuTimingAvailable = true;
             }
         }
+    }
+
+    void AccumulateUploadWork(RenderUploadWorkDiagnostics& target,
+                              const RenderUploadWorkDiagnostics& source)
+    {
+        const bool targetHadCommittedRanges = target.committedRangeCount != 0;
+        const bool sourceHasCommittedRanges = source.committedRangeCount != 0;
+        target.cpuCopiedPayloadBytes += source.cpuCopiedPayloadBytes;
+        target.committedPayloadBytes += source.committedPayloadBytes;
+        target.mappedRangeCount += source.mappedRangeCount;
+        target.committedRangeCount += source.committedRangeCount;
+        target.gpuCopyBytes += source.gpuCopyBytes;
+        target.gpuCopyRangeCount += source.gpuCopyRangeCount;
+        for (uint32 scope = 0;
+             scope < RVX_RENDER_HOST_WRITE_SYNCHRONIZATION_SCOPE_COUNT;
+             ++scope)
+        {
+            target.hostVisibilitySynchronizationScopeRangeCounts[scope] +=
+                source.hostVisibilitySynchronizationScopeRangeCounts[scope];
+            target.hostVisibilitySynchronizationScopeBytes[scope] +=
+                source.hostVisibilitySynchronizationScopeBytes[scope];
+        }
+
+        if (!sourceHasCommittedRanges)
+        {
+            return;
+        }
+        if (!source.hostVisibilitySynchronizedBytes.IsAvailable())
+        {
+            target.hostVisibilitySynchronizedBytes =
+                DiagnosticValue<uint64>::Unavailable(
+                    source.hostVisibilitySynchronizedBytes.GetReason());
+            return;
+        }
+        if (!targetHadCommittedRanges)
+        {
+            target.hostVisibilitySynchronizedBytes =
+                source.hostVisibilitySynchronizedBytes;
+            return;
+        }
+        if (!target.hostVisibilitySynchronizedBytes.IsAvailable())
+        {
+            return;
+        }
+        target.hostVisibilitySynchronizedBytes =
+            DiagnosticValue<uint64>::Available(
+                target.hostVisibilitySynchronizedBytes.GetValue().value_or(0) +
+                source.hostVisibilitySynchronizedBytes.GetValue().value_or(0));
+    }
+
+    bool IsExactPostRecordingGraphicsSubmission(
+        const RenderSubmissionTracker& tracker,
+        uint64 recordingGraphicsBaseline,
+        const GPUCompletionToken& completion) noexcept
+    {
+        GPUCompletionToken normalized;
+        if (!MergeGPUCompletionToken(normalized, completion) ||
+            normalized.count == 0 ||
+            tracker.Query(normalized) == GPUCompletionStatus::Lost)
+        {
+            return false;
+        }
+
+        uint64 graphicsValue = 0;
+        for (uint8 pointIndex = 0; pointIndex < normalized.count; ++pointIndex)
+        {
+            const GPUCompletionPoint point = normalized.points[pointIndex];
+            if (point.value != tracker.GetLastSubmittedValue(point.domain))
+            {
+                return false;
+            }
+            if (point.domain == GPUQueueDomain::Graphics)
+            {
+                graphicsValue = point.value;
+            }
+        }
+        return graphicsValue != 0 &&
+               graphicsValue > recordingGraphicsBaseline;
     }
 
     MeshPassResourceAvailability ResolvePassResourceAvailability(
@@ -182,6 +449,13 @@ namespace
 
         MeshPassProcessorInput input;
         input.packet = packet;
+        if (registry != nullptr)
+        {
+            input.geometryAssetId =
+                registry->GetExactAssetId(packet.geometryKey.mesh);
+            input.materialAssetId =
+                registry->GetExactAssetId(packet.materialKey.material);
+        }
         input.availability.pipeline = MeshPassResourceAvailability::Ready;
         input.availability.geometry = ResolvePassResourceAvailability(
             registry, packet.geometryKey.mesh, geometryReady);
@@ -240,8 +514,13 @@ namespace
         }
         packet.flags = SetRenderDrawFlag(
             packet.flags, RenderDrawFlags::CastsShadow, object.castsShadow);
+        const bool skinned = object.HasSkinningData();
         packet.flags = SetRenderDrawFlag(
-            packet.flags, RenderDrawFlags::Skinned, object.HasSkinningData());
+            packet.flags, RenderDrawFlags::Skinned, skinned);
+        // Shadow packets specialize the pass and shadow flag after reading a
+        // retained template. Keep their pipeline identity synchronized with
+        // the object-level skinning contract as well.
+        packet.pipelineKey.skinned = skinned;
         return packet;
     }
 
@@ -832,6 +1111,7 @@ void SceneRenderer::Initialize(
 void SceneRenderer::Shutdown()
 {
     InvalidateRenderFramePlan();
+    m_environmentIBLRequested = false;
     if (m_gpuSceneUploader)
     {
         m_gpuSceneUploader->ReleaseUnsubmittedFrame();
@@ -934,6 +1214,12 @@ void SceneRenderer::Shutdown()
     m_passRegistry.reset();
     m_rayTracingSceneStats = {};
     m_rayTracingFrameBudgetStats = {};
+    m_completedPresentedMaterialBindingsAvailable = false;
+    m_completedPresentedMaterialBindingsOverflow = false;
+    m_completedPresentedMaterialBindings.clear();
+    m_completedPresentedSkinningPalettesAvailable = false;
+    m_completedPresentedSkinningPalettesOverflow = false;
+    m_completedPresentedSkinningPalettes.clear();
     m_previousViewProjectionMatrix = Mat4Identity();
     m_previousViewProjectionValid = false;
     m_pendingTemporalHistoryReset = false;
@@ -1058,6 +1344,19 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     diagnostics.graphCompiled = graphCompiled;
     diagnostics.graphExecutionSkipped = renderAttempted && !rendered;
     diagnostics.skippedReason = skippedReason ? skippedReason : "";
+    diagnostics.mutationEvidence = m_completedMutationEvidence;
+    diagnostics.presentedMaterialBindingsAvailable =
+        m_completedPresentedMaterialBindingsAvailable;
+    diagnostics.presentedMaterialBindingsOverflow =
+        m_completedPresentedMaterialBindingsOverflow;
+    diagnostics.presentedMaterialBindings =
+        m_completedPresentedMaterialBindings;
+    diagnostics.presentedSkinningPalettesAvailable =
+        m_completedPresentedSkinningPalettesAvailable;
+    diagnostics.presentedSkinningPalettesOverflow =
+        m_completedPresentedSkinningPalettesOverflow;
+    diagnostics.presentedSkinningPalettes =
+        m_completedPresentedSkinningPalettes;
 
     diagnostics.renderSceneObjectCount = m_renderScene.GetObjectCount();
     diagnostics.renderSceneLightCount = m_renderScene.GetLightCount();
@@ -1065,6 +1364,43 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     diagnostics.opaqueDrawItemCount = m_opaqueDrawItems.size();
     diagnostics.maskedDrawItemCount = m_maskedDrawItems.size();
     diagnostics.transparentDrawItemCount = m_transparentDrawItems.size();
+    diagnostics.transparentRejectedNonFiniteDepthCount =
+        m_transparentDrawListDiagnostics.rejectedNonFiniteDepthCount;
+    diagnostics.transparentOrderValid =
+        m_transparentDrawListDiagnostics.orderValid;
+    diagnostics.transparentOrderHash =
+        m_transparentDrawListDiagnostics.orderHash;
+    if (m_activeRenderPassResults != nullptr &&
+        m_activeRenderPassResults->identity == m_activeRenderPassIdentity)
+    {
+        const TransparentPassDrawStats& transparentStats =
+            m_activeRenderPassResults->transparentStats;
+        diagnostics.transparentCandidateDrawItemCount =
+            transparentStats.candidateDrawItemCount;
+        diagnostics.transparentPreparedDrawItemCount =
+            transparentStats.preparedDrawItemCount;
+        diagnostics.transparentExecutedPacketCount =
+            transparentStats.executedPacketCount;
+        diagnostics.transparentExecutedDrawCount =
+            transparentStats.executedDrawCount;
+        diagnostics.transparentSkippedMaterialBindingCount =
+            transparentStats.skippedMaterialBindingCount;
+        diagnostics.transparentSkippedResourceCount =
+            transparentStats.skippedResourceCount;
+        diagnostics.transparentSkippedExecutionDrawCount =
+            transparentStats.skippedExecutionDrawCount;
+        diagnostics.transparentMaterialBindingCount =
+            transparentStats.materialBindingCount;
+        diagnostics.transparentMaterialFallbackBindingCount =
+            transparentStats.materialFallbackBindingCount;
+        diagnostics.transparentMaterialTextureFlags =
+            transparentStats.materialTextureFlags;
+        diagnostics.transparentMaterialFallbackTextureFlags =
+            transparentStats.materialFallbackTextureFlags;
+        diagnostics.transparentNoWork = transparentStats.noWork;
+        diagnostics.transparentPreflightFailed = transparentStats.preflightFailed;
+        diagnostics.transparentExecutionFailed = transparentStats.executionFailed;
+    }
     diagnostics.featureExtractionStats = m_featureExtractionStats;
     diagnostics.pointLightCount = m_localLightingStats.pointLightCount;
     diagnostics.spotLightCount = m_localLightingStats.spotLightCount;
@@ -1085,6 +1421,29 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     diagnostics.localShadowRequestCount = m_localLightingStats.localShadowRequestCount;
     diagnostics.localShadowAtlasReady = m_localLightingStats.localShadowAtlasReady;
     diagnostics.localShadowFallbackReason = m_localLightingStats.localShadowFallbackReason;
+    diagnostics.localLightingAvailable = m_lightManager != nullptr;
+    diagnostics.pointLightRequestedCount =
+        m_localLightingStats.pointLightRequestedCount;
+    diagnostics.pointLightAdmittedCount =
+        m_localLightingStats.pointLightAdmittedCount;
+    diagnostics.pointLightCapacity = m_localLightingStats.pointLightCapacity;
+    diagnostics.pointLightOverflowCount =
+        m_localLightingStats.pointLightOverflowCount;
+    diagnostics.spotLightRequestedCount =
+        m_localLightingStats.spotLightRequestedCount;
+    diagnostics.spotLightAdmittedCount =
+        m_localLightingStats.spotLightAdmittedCount;
+    diagnostics.spotLightCapacity = m_localLightingStats.spotLightCapacity;
+    diagnostics.spotLightOverflowCount =
+        m_localLightingStats.spotLightOverflowCount;
+    diagnostics.pointShadowSupported =
+        m_localLightingStats.pointShadowSupported;
+    diagnostics.pointShadowUnsupportedReason =
+        m_localLightingStats.pointShadowUnsupportedReason;
+    diagnostics.spotShadowSupported =
+        m_localLightingStats.spotShadowSupported;
+    diagnostics.spotShadowUnsupportedReason =
+        m_localLightingStats.spotShadowUnsupportedReason;
     diagnostics.clusteredLightingInitialized = m_clusteredLightingStats.initialized;
     diagnostics.clusteredLightingFrameBegun = m_clusteredLightingStats.frameBegun;
     diagnostics.clusteredLightingLightsAssigned = m_clusteredLightingStats.lightsAssigned;
@@ -1106,11 +1465,302 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     diagnostics.skippedDisabledPassCount = m_passChainStats.skippedDisabledPassCount;
     diagnostics.skippedUnsupportedPassCount = m_passChainStats.skippedUnsupportedPassCount;
     diagnostics.passStatuses = m_passChainStats.passStatuses;
+    const RenderPassStatus* directionalShadowStatus = nullptr;
+    for (const RenderPassStatus& status : diagnostics.passStatuses)
+    {
+        if (status.name == "ShadowPass")
+        {
+            directionalShadowStatus = &status;
+            break;
+        }
+    }
+
+    diagnostics.directionalShadowRequested =
+        directionalShadowStatus != nullptr &&
+        directionalShadowStatus->requestedEnabled;
+    diagnostics.directionalShadowSupported =
+        directionalShadowStatus != nullptr &&
+        directionalShadowStatus->supported;
+
+    const bool hasCurrentDirectionalShadowResults =
+        m_activeRenderPassResults != nullptr &&
+        m_activeRenderPassResults->identity == m_activeRenderPassIdentity;
+    diagnostics.directionalShadowAvailable = hasCurrentDirectionalShadowResults;
+    if (hasCurrentDirectionalShadowResults)
+    {
+        const DirectionalShadowRecordOutput& directionalShadowOutput =
+            m_activeRenderPassResults->directionalShadowOutput;
+        const ShadowPassStats& shadowStats =
+            m_activeRenderPassResults->shadowStats;
+        diagnostics.directionalShadowRequestedCascadeCount =
+            diagnostics.directionalShadowRequested
+                ? m_shadowPassConfig.numCascades
+                : 0u;
+        diagnostics.directionalShadowProducedCascadeCount =
+            static_cast<uint32>(
+                directionalShadowOutput.cascadeViewProjections.size());
+        diagnostics.directionalShadowResolvedCascadeCount =
+            shadowStats.resolvedCascadeViewCount;
+        diagnostics.directionalShadowMapSize =
+            directionalShadowOutput.shadowMapSize;
+        diagnostics.directionalShadowCasterCount =
+            shadowStats.shadowCasterCount;
+        diagnostics.directionalShadowDrawCount = shadowStats.drawCount;
+        diagnostics.directionalShadowOutputReady =
+            directionalShadowOutput.enabled &&
+            directionalShadowOutput.IsCompatibleWith(
+                m_activeRenderPassIdentity);
+        diagnostics.directionalShadowSamplingEnabled =
+            diagnostics.directionalShadowOutputReady &&
+            m_activeRenderPassResults->opaqueShadowStats.frameShadowReady;
+    }
+
+    if (diagnostics.directionalShadowRequested)
+    {
+        if (!diagnostics.directionalShadowSupported)
+        {
+            diagnostics.directionalShadowReason =
+                directionalShadowStatus->unsupportedReason.empty()
+                    ? "directional shadow pass is unsupported"
+                    : directionalShadowStatus->unsupportedReason;
+        }
+        else if (!diagnostics.directionalShadowAvailable)
+        {
+            diagnostics.directionalShadowReason =
+                "directional shadow record results are unavailable for the active graph";
+        }
+        else if (!m_primaryDirectionalLight.IsShadowEligible())
+        {
+            diagnostics.directionalShadowReason =
+                "no shadow-eligible primary directional light is available";
+        }
+        else if (!std::isfinite(m_shadowPassConfig.maxDistance) ||
+                 m_shadowPassConfig.maxDistance <=
+                     std::max(0.001f, m_viewData.nearPlane))
+        {
+            diagnostics.directionalShadowReason =
+                "directional shadow maximum distance does not cover the near clip plane";
+        }
+        else if (!diagnostics.directionalShadowOutputReady)
+        {
+            diagnostics.directionalShadowReason =
+                "directional shadow output is not ready for the active graph";
+        }
+        else if (!diagnostics.directionalShadowSamplingEnabled)
+        {
+            diagnostics.directionalShadowReason =
+                "directional shadow output was not sampled by the opaque pass";
+        }
+    }
     if (m_renderResourceRegistry)
     {
         diagnostics.gpuResourceStats = m_renderResourceRegistry->GetStats();
     }
     diagnostics.gpuDrivenCullingStats = m_gpuDrivenCullingStats;
+    diagnostics.gpuDrivenCullingStats.gpuSceneDepthQualification =
+        m_depthGPUCulling
+            ? m_depthGPUCulling->GetGPUSceneQualificationDiagnostics()
+            : GPUSceneCullingQualificationDiagnostics{};
+    diagnostics.gpuDrivenCullingStats.gpuSceneOpaqueQualification =
+        m_opaqueGPUCulling
+            ? m_opaqueGPUCulling->GetGPUSceneQualificationDiagnostics()
+            : GPUSceneCullingQualificationDiagnostics{};
+    diagnostics.gpuDrivenCullingStats.directOpaqueRasterReadbackQualification =
+        m_directOpaqueRasterReadbackQualification.GetDiagnostics();
+    const auto accumulateCullingUploadBytes =
+        [&diagnostics](const GPUCulling* culling)
+    {
+        if (!culling)
+            return;
+        diagnostics.gpuDrivenCullingStats.instanceUploadBytes +=
+            culling->GetLastInstanceUploadBytes();
+        diagnostics.gpuDrivenCullingStats.gpuSceneCandidateUploadBytes +=
+            culling->GetLastGPUSceneCandidateUploadBytes();
+        const GPUCullingIncrementalDiagnostics& incremental =
+            culling->GetIncrementalDiagnostics();
+        diagnostics.gpuDrivenCullingStats.activeRowUploadBytes +=
+            culling->GetLastActiveRowUploadBytes();
+        diagnostics.gpuDrivenCullingStats.activeRowCount +=
+            incremental.activeRowCount;
+        diagnostics.gpuDrivenCullingStats.activeRowHighWatermark = std::max(
+            diagnostics.gpuDrivenCullingStats.activeRowHighWatermark,
+            incremental.activeRowHighWatermark);
+        diagnostics.gpuDrivenCullingStats.instancePatchedRowCount +=
+            incremental.instancePatchedRowCount;
+        diagnostics.gpuDrivenCullingStats.gpuSceneCandidatePatchedRowCount +=
+            incremental.candidatePatchedRowCount;
+        diagnostics.gpuDrivenCullingStats.activeRowPatchedRowCount +=
+            incremental.activeRowPatchedRowCount;
+        diagnostics.gpuDrivenCullingStats.instanceFullMaterializationCount +=
+            incremental.instanceFullMaterializationCount;
+        diagnostics.gpuDrivenCullingStats.gpuSceneCandidateFullMaterializationCount +=
+            incremental.candidateFullMaterializationCount;
+        diagnostics.gpuDrivenCullingStats.activeRowFullMaterializationCount +=
+            incremental.activeRowFullMaterializationCount;
+        diagnostics.gpuDrivenCullingStats.continuityFullMaterializationCount +=
+            incremental.continuityFullMaterializationCount;
+        diagnostics.gpuDrivenCullingStats.capacityFullMaterializationCount +=
+            incremental.capacityFullMaterializationCount;
+        AccumulateUploadWork(
+            diagnostics.gpuDrivenCullingStats.canonicalInstanceUploadWork,
+            incremental.instanceUploadWork);
+        AccumulateUploadWork(
+            diagnostics.gpuDrivenCullingStats.canonicalCandidateUploadWork,
+            incremental.candidateUploadWork);
+        AccumulateUploadWork(
+            diagnostics.gpuDrivenCullingStats.canonicalActiveRowUploadWork,
+            incremental.activeRowUploadWork);
+    };
+    // Depth and opaque have independent completion-safe input slots. Report
+    // the real sum of both CPU copies rather than one logical object count.
+    diagnostics.gpuDrivenCullingStats.instanceUploadBytes = 0;
+    diagnostics.gpuDrivenCullingStats.gpuSceneCandidateUploadBytes = 0;
+    diagnostics.gpuDrivenCullingStats.activeRowUploadBytes = 0;
+    diagnostics.gpuDrivenCullingStats.activeRowCount = 0;
+    diagnostics.gpuDrivenCullingStats.activeRowHighWatermark = 0;
+    diagnostics.gpuDrivenCullingStats.instancePatchedRowCount = 0;
+    diagnostics.gpuDrivenCullingStats.gpuSceneCandidatePatchedRowCount = 0;
+    diagnostics.gpuDrivenCullingStats.activeRowPatchedRowCount = 0;
+    diagnostics.gpuDrivenCullingStats.instanceFullMaterializationCount = 0;
+    diagnostics.gpuDrivenCullingStats.gpuSceneCandidateFullMaterializationCount = 0;
+    diagnostics.gpuDrivenCullingStats.activeRowFullMaterializationCount = 0;
+    diagnostics.gpuDrivenCullingStats.continuityFullMaterializationCount = 0;
+    diagnostics.gpuDrivenCullingStats.capacityFullMaterializationCount = 0;
+    diagnostics.gpuDrivenCullingStats.canonicalInstanceUploadWork = {};
+    diagnostics.gpuDrivenCullingStats.canonicalCandidateUploadWork = {};
+    diagnostics.gpuDrivenCullingStats.canonicalActiveRowUploadWork = {};
+    accumulateCullingUploadBytes(m_depthGPUCulling.get());
+    accumulateCullingUploadBytes(m_opaqueGPUCulling.get());
+    const auto accumulateDirectRasterDiagnostics =
+        [&diagnostics](uint64 instanceBytes,
+                       uint64 indexBytes,
+                       uint32 instancePatchedRowCount,
+                       uint32 indexPatchedRowCount,
+                       uint32 activeInstanceCount,
+                       uint32 activeInstanceCapacity,
+                       bool instanceFullMaterialization,
+                       bool indexFullMaterialization,
+                       const RenderUploadWorkDiagnostics& instanceUploadWork,
+                       const RenderUploadWorkDiagnostics& indexUploadWork)
+    {
+        diagnostics.gpuDrivenCullingStats.directRasterInstanceUploadBytes +=
+            instanceBytes;
+        diagnostics.gpuDrivenCullingStats
+            .directRasterInstanceIndexUploadBytes += indexBytes;
+        diagnostics.gpuDrivenCullingStats
+            .directRasterInstancePatchedRowCount += instancePatchedRowCount;
+        diagnostics.gpuDrivenCullingStats
+            .directRasterIndexPatchedRowCount += indexPatchedRowCount;
+        diagnostics.gpuDrivenCullingStats.directRasterActiveInstanceCount +=
+            activeInstanceCount;
+        diagnostics.gpuDrivenCullingStats.directRasterActiveInstanceCapacity +=
+            activeInstanceCapacity;
+        diagnostics.gpuDrivenCullingStats
+            .directRasterInstanceFullMaterializationCount +=
+            instanceFullMaterialization ? 1U : 0U;
+        diagnostics.gpuDrivenCullingStats
+            .directRasterIndexFullMaterializationCount +=
+            indexFullMaterialization ? 1U : 0U;
+        AccumulateUploadWork(
+            diagnostics.gpuDrivenCullingStats.directRasterInstanceUploadWork,
+            instanceUploadWork);
+        AccumulateUploadWork(
+            diagnostics.gpuDrivenCullingStats.directRasterIndexUploadWork,
+            indexUploadWork);
+    };
+    diagnostics.gpuDrivenCullingStats.directRasterInstanceUploadBytes = 0;
+    diagnostics.gpuDrivenCullingStats.directRasterInstanceIndexUploadBytes = 0;
+    diagnostics.gpuDrivenCullingStats.directRasterInstancePatchedRowCount = 0;
+    diagnostics.gpuDrivenCullingStats.directRasterIndexPatchedRowCount = 0;
+    diagnostics.gpuDrivenCullingStats.directRasterActiveInstanceCount = 0;
+    diagnostics.gpuDrivenCullingStats.directRasterActiveInstanceCapacity = 0;
+    diagnostics.gpuDrivenCullingStats
+        .directRasterInstanceFullMaterializationCount = 0;
+    diagnostics.gpuDrivenCullingStats
+        .directRasterIndexFullMaterializationCount = 0;
+    diagnostics.gpuDrivenCullingStats.directRasterInstanceUploadWork = {};
+    diagnostics.gpuDrivenCullingStats.directRasterIndexUploadWork = {};
+    // Record results are graph-owned and identity-qualified.  Reading the
+    // pass objects directly here could retain a prior completed frame when the
+    // current graph fails before a pass publishes its new result.  Only a
+    // completed current recording may publish Direct-stream work.
+    const RenderPassRecordResults* const completedPassResults =
+        rendered && m_submissionQualifiedFrameDiagnostics &&
+            m_activeRenderPassResults != nullptr &&
+            m_activeRenderPassResults->identity == m_activeRenderPassIdentity
+        ? m_activeRenderPassResults.get()
+        : nullptr;
+    if (completedPassResults != nullptr)
+    {
+        const DepthPrepassDrawStats& depth = completedPassResults->depthStats;
+        accumulateDirectRasterDiagnostics(
+            depth.directInstanceUploadBytes,
+            depth.directInstanceIndexUploadBytes,
+            depth.directInstancePatchedRowCount,
+            depth.directInstanceIndexPatchedRowCount,
+            depth.directInstanceActiveCount,
+            depth.directInstanceActiveCapacity,
+            depth.directInstanceFullMaterialization,
+            depth.directInstanceIndexFullMaterialization,
+            depth.directInstanceUploadWork,
+            depth.directInstanceIndexUploadWork);
+        const OpaquePassDrawStats& opaque = completedPassResults->opaqueStats;
+        accumulateDirectRasterDiagnostics(
+            opaque.directInstanceUploadBytes,
+            opaque.directInstanceIndexUploadBytes,
+            opaque.directInstancePatchedRowCount,
+            opaque.directInstanceIndexPatchedRowCount,
+            opaque.directInstanceActiveCount,
+            opaque.directInstanceActiveCapacity,
+            opaque.directInstanceFullMaterialization,
+            opaque.directInstanceIndexFullMaterialization,
+            opaque.directInstanceUploadWork,
+            opaque.directInstanceIndexUploadWork);
+        diagnostics.gpuDrivenCullingStats.directOpaqueRasterTranscript =
+            opaque.directRasterTranscript;
+        const ShadowPassStats& shadow = completedPassResults->shadowStats;
+        accumulateDirectRasterDiagnostics(
+            shadow.directInstanceUploadBytes,
+            shadow.directInstanceIndexUploadBytes,
+            shadow.directInstancePatchedRowCount,
+            shadow.directInstanceIndexPatchedRowCount,
+            shadow.directInstanceActiveCount,
+            shadow.directInstanceActiveCapacity,
+            shadow.directInstanceFullMaterialization,
+            shadow.directInstanceIndexFullMaterialization,
+            shadow.directInstanceUploadWork,
+            shadow.directInstanceIndexUploadWork);
+        bool directTotalsSaturated = false;
+        diagnostics.mutationEvidence.directRaster = {};
+        AccumulateDirectMutationTotals(
+            diagnostics.mutationEvidence.directRaster,
+            depth.directMutationTotals,
+            directTotalsSaturated);
+        AccumulateDirectMutationTotals(
+            diagnostics.mutationEvidence.directRaster,
+            opaque.directMutationTotals,
+            directTotalsSaturated);
+        AccumulateDirectMutationTotals(
+            diagnostics.mutationEvidence.directRaster,
+            shadow.directMutationTotals,
+            directTotalsSaturated);
+        directTotalsSaturated = directTotalsSaturated ||
+            depth.directMutationTotalsSaturated ||
+            opaque.directMutationTotalsSaturated ||
+            shadow.directMutationTotalsSaturated;
+        diagnostics.mutationEvidence.directRasterOwnerCount = 3;
+        diagnostics.mutationEvidence.completion.saturated =
+            diagnostics.mutationEvidence.completion.saturated ||
+            directTotalsSaturated;
+    }
+    diagnostics.hzbRequested =
+        m_renderVisibility.diagnostics.occlusionRequested ||
+        diagnostics.gpuDrivenCullingStats.occlusionRequestedButUnavailable;
+    diagnostics.hzbSupported = false;
+    diagnostics.hzbEnabled = false;
+    diagnostics.hzbReason = diagnostics.hzbRequested
+        ? "hierarchical depth buffer occlusion culling is not implemented"
+        : "";
     diagnostics.instancing = m_instancingDiagnostics;
     diagnostics.policy = m_renderPolicyDiagnostics;
     diagnostics.rayTracingSceneStats = m_rayTracingSceneStats;
@@ -1189,6 +1839,228 @@ void SceneRenderer::RefreshFrameDiagnostics(bool renderAttempted,
     }
 }
 
+void SceneRenderer::RefreshSubmissionQualifiedFrameDiagnostics()
+{
+    const bool renderAttempted = m_frameDiagnostics.renderAttempted;
+    const bool rendered = m_frameDiagnostics.rendered;
+    const bool graphBuilt = m_frameDiagnostics.graphBuilt;
+    const bool graphCompiled = m_frameDiagnostics.graphCompiled;
+    const std::string skippedReason = m_frameDiagnostics.skippedReason;
+    const uint64 frameCount = m_frameDiagnostics.frameCount;
+
+    RefreshFrameDiagnostics(renderAttempted,
+                            rendered,
+                            graphBuilt,
+                            graphCompiled,
+                            skippedReason.empty() ? nullptr : skippedReason.c_str());
+
+    // This is a refinement of the recorded frame, not a second render attempt.
+    m_frameDiagnosticsCounter = frameCount;
+    m_frameDiagnostics.frameCount = frameCount;
+    if (m_toolDiagnosticsSnapshot.frameDiagnosticsAvailable)
+    {
+        m_toolDiagnosticsSnapshot.frame = m_frameDiagnostics;
+    }
+}
+
+void SceneRenderer::UpdateLiveMutationEvidence()
+{
+    RenderMutationEvidenceDiagnostics current{};
+    current.scene = m_renderScene.GetMutationTotals();
+    bool saturated = m_renderScene.IsMutationTotalsSaturated();
+
+    if (m_gpuSceneUpdate)
+    {
+        current.gpuScenePublication = m_gpuSceneUpdate->GetMutationTotals();
+        saturated = saturated || m_gpuSceneUpdate->IsMutationTotalsSaturated();
+    }
+    if (m_gpuSceneUploader)
+    {
+        current.gpuSceneUpload = m_gpuSceneUploader->GetMutationTotals();
+        saturated = saturated || m_gpuSceneUploader->IsMutationTotalsSaturated();
+    }
+
+    const auto accumulateCulling = [&current, &saturated](const GPUCulling* culling)
+    {
+        if (culling == nullptr)
+        {
+            return;
+        }
+        ++current.gpuCullingOwnerCount;
+        AccumulateGPUCullingMutationTotals(current.gpuCulling,
+                                           culling->GetMutationTotals(),
+                                           saturated);
+        saturated = saturated || culling->IsMutationTotalsSaturated();
+    };
+    accumulateCulling(m_depthGPUCulling.get());
+    accumulateCulling(m_opaqueGPUCulling.get());
+
+    // Direct stream caches are pass-owned. A graph-owned completed result
+    // supplies their exact persistent totals for the current recording; a
+    // later no-work frame intentionally retains the last observed owner view.
+    const RenderMutationEvidenceDiagnostics& frameEvidence =
+        m_frameDiagnostics.mutationEvidence;
+    if (frameEvidence.directRasterOwnerCount != 0)
+    {
+        current.directRaster = frameEvidence.directRaster;
+        current.directRasterOwnerCount = frameEvidence.directRasterOwnerCount;
+        saturated = saturated || frameEvidence.completion.saturated;
+    }
+    else
+    {
+        current.directRaster = m_liveMutationEvidence.directRaster;
+        current.directRasterOwnerCount =
+            m_liveMutationEvidence.directRasterOwnerCount;
+    }
+
+    if (MutationEvidenceDecreased(current, m_lastObservedMutationEvidence))
+    {
+        ++m_mutationEvidenceEpoch;
+        if (m_mutationEvidenceEpoch == 0)
+        {
+            ++m_mutationEvidenceEpoch;
+        }
+    }
+    current.completion.saturated = saturated;
+    m_lastObservedMutationEvidence = current;
+    m_liveMutationEvidence = current;
+}
+
+void SceneRenderer::FreezeMutationEvidenceForPresentedFrame()
+{
+    UpdateLiveMutationEvidence();
+    m_completedMutationEvidence = m_liveMutationEvidence;
+    SaturatingAdd(m_completedPresentationCount,
+                  1,
+                  m_completedPresentationCountSaturated);
+    RenderMutationCompletionWatermark& completion =
+        m_completedMutationEvidence.completion;
+    completion.available = true;
+    completion.saturated = completion.saturated ||
+                           m_completedPresentationCountSaturated;
+    completion.evidenceEpoch = m_mutationEvidenceEpoch;
+    completion.completedPresentationCount = m_completedPresentationCount;
+    completion.completedFrameSequence =
+        m_renderScene.GetLastRenderedFrameSequence();
+    completion.requiredSceneRevision =
+        m_renderScene.GetAcceptedHeader().requiredSceneRevision;
+    completion.appliedSceneRevision =
+        m_renderScene.GetRetainedStats().appliedSceneRevision;
+
+    // The mutation watermark is the only action evidence that may cross the
+    // latest-only diagnostics transport. Publishing it after Present prevents
+    // unsubmitted, failed, or merely recorded work from replacing it.
+    m_frameDiagnostics.mutationEvidence = m_completedMutationEvidence;
+    if (m_toolDiagnosticsSnapshot.frameDiagnosticsAvailable)
+    {
+        m_toolDiagnosticsSnapshot.frame = m_frameDiagnostics;
+    }
+}
+
+void SceneRenderer::FreezePresentedMaterialBindingsForPresentedFrame()
+{
+    m_completedPresentedMaterialBindingsAvailable = false;
+    m_completedPresentedMaterialBindingsOverflow = false;
+    m_completedPresentedMaterialBindings.clear();
+    m_completedPresentedSkinningPalettesAvailable = false;
+    m_completedPresentedSkinningPalettesOverflow = false;
+    m_completedPresentedSkinningPalettes.clear();
+
+    const uint64 presentationSequence =
+        m_renderScene.GetLastRenderedFrameSequence();
+    const RenderPassRecordResults* const results =
+        m_submissionQualifiedFrameDiagnostics &&
+            m_frameDiagnostics.rendered &&
+            m_frameDiagnostics.graphCompiled &&
+            m_activeRenderPassResults != nullptr &&
+            m_activeRenderPassResults->identity == m_activeRenderPassIdentity &&
+            m_activeRenderPassIdentity.frameSequence == presentationSequence
+        ? m_activeRenderPassResults.get()
+        : nullptr;
+    if (results == nullptr || results->successfulMaterialBindingsOverflow)
+    {
+        m_completedPresentedMaterialBindingsOverflow =
+            results != nullptr && results->successfulMaterialBindingsOverflow;
+    }
+    else
+    {
+        m_completedPresentedMaterialBindings.reserve(
+            results->successfulMaterialBindings.size());
+        bool valid = true;
+        for (const RenderRecordedMaterialBindingReceipt& receipt :
+             results->successfulMaterialBindings)
+        {
+            if (!receipt.IsValid())
+            {
+                m_completedPresentedMaterialBindings.clear();
+                valid = false;
+                break;
+            }
+            m_completedPresentedMaterialBindings.push_back(
+                {receipt.material,
+                 receipt.contentRevision,
+                 receipt.descriptorContentKey,
+                 receipt.descriptorRevision,
+                 receipt.textureEntries,
+                 receipt.fallbackUsed,
+                 m_activeRenderPassIdentity.frameSequence,
+                 presentationSequence});
+        }
+        m_completedPresentedMaterialBindingsAvailable = valid;
+    }
+
+    if (results == nullptr || results->successfulSkinningPalettesOverflow)
+    {
+        m_completedPresentedSkinningPalettesOverflow =
+            results != nullptr && results->successfulSkinningPalettesOverflow;
+    }
+    else
+    {
+        m_completedPresentedSkinningPalettes.reserve(
+            results->successfulSkinningPalettes.size());
+        bool valid = true;
+        for (const RenderRecordedSkinningPaletteReceipt& receipt :
+             results->successfulSkinningPalettes)
+        {
+            if (!receipt.IsValid())
+            {
+                m_completedPresentedSkinningPalettes.clear();
+                valid = false;
+                break;
+            }
+            m_completedPresentedSkinningPalettes.push_back(
+                {receipt.metadata.providerComponentId,
+                 receipt.metadata.sourceModelResourceId,
+                 receipt.metadata.poseSequence,
+                 receipt.metadata.paletteHash,
+                 receipt.metadata.paletteCount,
+                 receipt.lane,
+                 m_activeRenderPassIdentity.frameSequence,
+                 presentationSequence});
+        }
+        m_completedPresentedSkinningPalettesAvailable = valid;
+    }
+
+    // This is a post-Present refinement.  No recorded or merely submitted
+    // material binding may replace the prior completion-qualified receipt.
+    m_frameDiagnostics.presentedMaterialBindingsAvailable =
+        m_completedPresentedMaterialBindingsAvailable;
+    m_frameDiagnostics.presentedMaterialBindingsOverflow =
+        m_completedPresentedMaterialBindingsOverflow;
+    m_frameDiagnostics.presentedMaterialBindings =
+        m_completedPresentedMaterialBindings;
+    m_frameDiagnostics.presentedSkinningPalettesAvailable =
+        m_completedPresentedSkinningPalettesAvailable;
+    m_frameDiagnostics.presentedSkinningPalettesOverflow =
+        m_completedPresentedSkinningPalettesOverflow;
+    m_frameDiagnostics.presentedSkinningPalettes =
+        m_completedPresentedSkinningPalettes;
+    if (m_toolDiagnosticsSnapshot.frameDiagnosticsAvailable)
+    {
+        m_toolDiagnosticsSnapshot.frame = m_frameDiagnostics;
+    }
+}
+
 void SceneRenderer::PrepareFrameApplyResources(
     RenderResourceRegistry& registry)
 {
@@ -1234,8 +2106,22 @@ RenderFrameApplyResult SceneRenderer::ApplyFrameV5(
     RenderResourceRegistry& registry)
 {
     PrepareFrameApplyResources(registry);
-    return FinalizeFrameApply(
-        m_renderScene.ApplyFrameV5(frame, scene, registry), registry);
+    const std::optional<RenderEnvironmentSnapshot> environment =
+        scene.GetEnvironment();
+    const bool environmentIBLRequested = environment.has_value() &&
+        (environment->irradianceTexture.IsValid() ||
+         environment->prefilteredTexture.IsValid() ||
+         environment->brdfLutTexture.IsValid());
+    RenderFrameApplyResult result =
+        m_renderScene.ApplyFrameV5(frame, scene, registry);
+    if (result.IsApplied())
+    {
+        // RenderScene intentionally clears incomplete handles before they can
+        // reach RHI binding. Preserve the accepted scene's request separately
+        // so diagnostics can still distinguish it from no IBL request.
+        m_environmentIBLRequested = environmentIBLRequested;
+    }
+    return FinalizeFrameApply(std::move(result), registry);
 }
 
 RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
@@ -1371,6 +2257,7 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_shadowPassConfig.shadowMapSize =
         frameSettings.shadows.atlasResolution;
     m_shadowPassConfig.numCascades = frameSettings.shadows.cascadeCount;
+    m_shadowPassConfig.maxDistance = frameSettings.shadows.maxDistance;
     m_shadowPassConfig.cascadeSplitLambda =
         frameSettings.shadows.cascadeSplitLambda;
     m_shadowPassConfig.filterRadiusTexels =
@@ -1482,22 +2369,24 @@ RenderFrameApplyResult SceneRenderer::FinalizeFrameApply(
     m_environmentIBLStats.skyboxFound =
         m_renderScene.GetSky().skyTexture.IsValid();
     m_environmentIBLStats.uploadRequested = false;
-    m_environmentIBLStats.textureIBLEnabled = textureIBLReady;
     m_environmentIBLStats.prefilteredMipLevels = 1;
     m_environmentIBLStats.intensity = environment.intensity;
-    m_environmentIBLStats.fallbackReason =
-        textureIBLReady ? std::string{}
-                        : "PacketEnvironmentResourcesUnavailable";
+    UpdateEnvironmentIBLBindingDiagnostics(
+        m_environmentIBLRequested,
+        textureIBLReady,
+        "PacketEnvironmentResourcesUnavailable");
     if (textureIBLReady)
     {
         m_environmentIBLStats.prefilteredMipLevels =
             std::max(1U, prefilteredResource->texture->GetMipLevels());
     }
-    m_viewData.textureIBLEnabled = textureIBLReady ? 1 : 0;
+    m_viewData.textureIBLEnabled =
+        m_environmentIBLStats.textureIBLEnabled ? 1 : 0;
     m_viewData.textureIBLPrefilteredMipLevels =
         m_environmentIBLStats.prefilteredMipLevels;
     m_viewData.textureIBLIntensity = environment.intensity;
-    m_viewData.ambientFloorIntensity = textureIBLReady ? 0.0f : 0.08f;
+    m_viewData.ambientFloorIntensity =
+        m_environmentIBLStats.textureIBLEnabled ? 0.0f : 0.08f;
 
     BuildMaterialDrawLists();
     return result;
@@ -1539,18 +2428,34 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
     RVX_ASSERT_MSG(!m_submissionBatch,
                    "Previous frame submission ownership was not resolved");
     m_submissionBatch = std::make_unique<RenderSubmissionResourceBatch>();
+    m_submissionQualifiedFrameDiagnostics = false;
+    m_hasRecordingSubmissionBoundary = false;
+    m_recordingGraphicsSubmissionBaseline = 0;
+    m_recordingSubmissionTracker = nullptr;
+    m_currentCpuFrameTiming = {};
     result.frameSequence = m_renderScene.GetAcceptedHeader().sequence;
     result.referencedResources = m_renderScene.GetReferencedResources();
+    if (m_toneMappingPostProcess)
+    {
+        const RenderFrameHeaderV5& header = m_renderScene.GetAcceptedHeader();
+        m_toneMappingPostProcess->SetPixelProbeRequest(
+            m_renderScene.GetCaptureRequest(),
+            header.sequence,
+            header.requiredSceneRevision,
+            m_renderContext ? m_renderContext->GetSurface().generation : 0);
+    }
     Render();
     if (HasSubmissionFailure())
     {
         RVX_RENDER_ERROR(
-            "SceneRenderer: rejected recorded frame {} (rendered={}, graphCompileValid={}, executionStatus={})",
+            "SceneRenderer: rejected recorded frame {} (rendered={}, graphCompileValid={}, executionStatus={}, gpuDrivenFailureStage={})",
             result.frameSequence,
             m_frameDiagnostics.rendered,
             m_frameDiagnostics.graphCompileValid,
             GetRenderExecutionStatusName(
-                m_renderPolicyDiagnostics.executionReport.status));
+                m_renderPolicyDiagnostics.executionReport.status),
+            GetGPUDrivenFrameFailureStageName(
+                m_gpuDrivenFrameFailureStage));
         for (const RenderPassExecutionReport& pass :
              m_renderPolicyDiagnostics.executionReport.passes)
         {
@@ -1581,12 +2486,178 @@ RenderFrameExecutionResult SceneRenderer::RenderAcceptedFrame()
         result.code = RenderFrameExecutionCode::SubmissionFailed;
         return result;
     }
+    RenderSubmissionTracker* const tracker = m_renderContext
+        ? RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext)
+        : nullptr;
+    if (tracker == nullptr)
+    {
+        result.code = RenderFrameExecutionCode::SubmissionFailed;
+        return result;
+    }
+    // Capture after graph realization and every submission-owned resource has
+    // been retained.  The next accepted token must advance this exact floor.
+    m_recordingGraphicsSubmissionBaseline =
+        tracker->GetLastSubmittedValue(GPUQueueDomain::Graphics);
+    m_recordingSubmissionTracker = tracker;
+    m_hasRecordingSubmissionBoundary = true;
     result.code = RenderFrameExecutionCode::Rendered;
     return result;
 }
 
-void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
+bool SceneRenderer::CompleteToneMappingPixelProbe(
+    uint64 requestId,
+    uint64 frameSequence,
+    RenderFramePixelProbeResult& outResult)
 {
+    const bool completed =
+        m_toneMappingPostProcess != nullptr &&
+        m_toneMappingPostProcess->CompletePixelProbe(
+            requestId, frameSequence, outResult);
+    return completed;
+}
+
+bool SceneRenderer::ArmGPUSceneCullingQualificationCapture()
+{
+    bool armed = false;
+    if (m_depthGPUCulling)
+    {
+        armed = m_depthGPUCulling->ArmGPUSceneQualificationCapture() || armed;
+    }
+    if (m_opaqueGPUCulling)
+    {
+        armed = m_opaqueGPUCulling->ArmGPUSceneQualificationCapture() || armed;
+    }
+    return armed;
+}
+
+bool SceneRenderer::ArmDirectOpaqueRasterReadbackQualificationCapture()
+{
+    return m_directOpaqueRasterReadbackQualification.Arm();
+}
+
+void SceneRenderer::PollGPUSceneCullingQualificationCompletion(
+    const RenderSubmissionTracker& tracker)
+{
+    if (m_depthGPUCulling)
+    {
+        static_cast<void>(
+            m_depthGPUCulling->PollGPUSceneQualificationCapture(tracker));
+    }
+    if (m_opaqueGPUCulling)
+    {
+        static_cast<void>(
+            m_opaqueGPUCulling->PollGPUSceneQualificationCapture(tracker));
+    }
+    static_cast<void>(
+        m_directOpaqueRasterReadbackQualification.PollCompletion(tracker));
+
+    // Completion can arrive while the runtime is deliberately progressing no
+    // replacement frame.  Project only the post-fence evidence into the
+    // already-published source-frame diagnostics; rebuilding the complete
+    // snapshot here would incorrectly restamp it with mutable current-frame
+    // state.
+    m_frameDiagnostics.gpuDrivenCullingStats.gpuSceneDepthQualification =
+        m_depthGPUCulling
+        ? m_depthGPUCulling->GetGPUSceneQualificationDiagnostics()
+        : GPUSceneCullingQualificationDiagnostics{};
+    m_frameDiagnostics.gpuDrivenCullingStats.gpuSceneOpaqueQualification =
+        m_opaqueGPUCulling
+        ? m_opaqueGPUCulling->GetGPUSceneQualificationDiagnostics()
+        : GPUSceneCullingQualificationDiagnostics{};
+    m_frameDiagnostics.gpuDrivenCullingStats
+        .directOpaqueRasterReadbackQualification =
+        m_directOpaqueRasterReadbackQualification.GetDiagnostics();
+    if (m_toolDiagnosticsSnapshot.frameDiagnosticsAvailable)
+    {
+        m_toolDiagnosticsSnapshot.frame.gpuDrivenCullingStats
+            .gpuSceneDepthQualification =
+            m_frameDiagnostics.gpuDrivenCullingStats
+                .gpuSceneDepthQualification;
+        m_toolDiagnosticsSnapshot.frame.gpuDrivenCullingStats
+            .gpuSceneOpaqueQualification =
+            m_frameDiagnostics.gpuDrivenCullingStats
+                .gpuSceneOpaqueQualification;
+        m_toolDiagnosticsSnapshot.frame.gpuDrivenCullingStats
+            .directOpaqueRasterReadbackQualification =
+            m_frameDiagnostics.gpuDrivenCullingStats
+                .directOpaqueRasterReadbackQualification;
+    }
+}
+
+bool SceneRenderer::HasPendingGPUSceneCullingQualificationCompletion()
+    const noexcept
+{
+    return (m_depthGPUCulling &&
+            m_depthGPUCulling->HasPendingGPUSceneQualificationCapture()) ||
+        (m_opaqueGPUCulling &&
+         m_opaqueGPUCulling->HasPendingGPUSceneQualificationCapture());
+}
+
+bool SceneRenderer::HasPendingDirectOpaqueRasterReadbackQualificationCompletion()
+    const noexcept
+{
+    return m_directOpaqueRasterReadbackQualification.HasPendingCompletion();
+}
+
+bool SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
+{
+    RenderSubmissionTracker* const tracker = m_recordingSubmissionTracker;
+    if (tracker == nullptr || !m_hasRecordingSubmissionBoundary ||
+        !IsExactPostRecordingGraphicsSubmission(
+            *tracker, m_recordingGraphicsSubmissionBaseline, completion))
+    {
+        // Do not mutate any completion-owned component or transfer the batch.
+        // A caller may have supplied P0 after the graph reached the GPU at P1;
+        // keeping the whole recording intact permits the exact P1 retry.
+        return false;
+    }
+
+    if (m_gpuSceneUploader && !m_gpuSceneUploader->NotifySubmission(completion))
+    {
+        return false;
+    }
+    const auto notifyGPUSceneQualification =
+        [&completion, tracker](GPUCulling* owner,
+                                const std::shared_ptr<GPUCullingRecordedState>& recorded)
+    {
+        if (owner == nullptr || !recorded)
+        {
+            return;
+        }
+        if (!recorded->NotifyGPUSceneQualificationSubmission(
+                *owner, completion, *tracker))
+        {
+            // The frame is already submitted and its normal ownership is
+            // valid. Preserve that work; qualification diagnostics fail
+            // closed instead of retroactively releasing in-flight resources.
+            RVX_RENDER_WARN(
+                "SceneRenderer: GPU-scene culling qualification completion evidence was rejected");
+        }
+    };
+    notifyGPUSceneQualification(
+        m_depthGPUCulling.get(), m_depthGPUCullingRecordedState);
+    notifyGPUSceneQualification(
+        m_opaqueGPUCulling.get(), m_opaqueGPUCullingRecordedState);
+    const DirectRasterReadbackRecordingIdentity directQualificationIdentity{
+        m_activeRenderPassIdentity.graphIdentity,
+        m_activeRenderPassIdentity.graphRecordingGeneration,
+        m_activeRenderPassIdentity.frameSequence,
+        m_activeRenderPassIdentity.recordEpoch,
+        m_directOpaqueRasterReadbackSourceFrameSlot};
+    // An armed request which did not reach OpaquePass must be consumed at the
+    // target frame boundary.  It is deliberately not allowed to bleed into a
+    // later frame that happens to have a Direct lane.
+    if (m_directOpaqueRasterReadbackQualification.IsArmed())
+    {
+        m_directOpaqueRasterReadbackQualification.RejectNoDirectLane(
+            directQualificationIdentity);
+    }
+    if (!m_directOpaqueRasterReadbackQualification.NotifySubmission(
+            directQualificationIdentity, completion, *tracker))
+    {
+        RVX_RENDER_WARN(
+            "SceneRenderer: Direct Opaque readback qualification completion evidence was rejected");
+    }
     if (m_pipelineCache && !m_pipelineCache->NotifyObjectConstantSubmission(completion))
     {
         RVX_RENDER_ERROR("SceneRenderer: object constant pages rejected invalid completion evidence");
@@ -1597,7 +2668,6 @@ void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
     }
     if (m_gpuSceneUploader)
     {
-        m_gpuSceneUploader->NotifySubmission(completion);
         ReclaimGPUSceneRetiredRows();
     }
     if (m_rayTracedShadowPass)
@@ -1621,10 +2691,37 @@ void SceneRenderer::NotifySubmission(const GPUCompletionToken& completion)
     // graphics completion point. The provisional RenderGraph access state now
     // describes submitted GPU work and must survive into the next frame.
     ConfirmProvisionalFrameAccessSnapshots();
+    m_submissionQualifiedFrameDiagnostics = true;
+    m_hasRecordingSubmissionBoundary = false;
+    m_recordingGraphicsSubmissionBaseline = 0;
+    m_recordingSubmissionTracker = nullptr;
+    m_directOpaqueRasterReadbackSourceFrameSlot = RVX_INVALID_INDEX;
+    RefreshSubmissionQualifiedFrameDiagnostics();
+    return true;
 }
 
 void SceneRenderer::ReleaseUnsubmittedFrame()
 {
+    const bool hadUnsubmittedRecording = m_submissionBatch != nullptr ||
+        m_hasRecordingSubmissionBoundary;
+    m_submissionQualifiedFrameDiagnostics = false;
+    m_hasRecordingSubmissionBoundary = false;
+    m_recordingGraphicsSubmissionBaseline = 0;
+    m_recordingSubmissionTracker = nullptr;
+    const DirectRasterReadbackRecordingIdentity directQualificationIdentity{
+        m_activeRenderPassIdentity.graphIdentity,
+        m_activeRenderPassIdentity.graphRecordingGeneration,
+        m_activeRenderPassIdentity.frameSequence,
+        m_activeRenderPassIdentity.recordEpoch,
+        m_directOpaqueRasterReadbackSourceFrameSlot};
+    if (m_directOpaqueRasterReadbackQualification.IsArmed())
+    {
+        m_directOpaqueRasterReadbackQualification.RejectNoDirectLane(
+            directQualificationIdentity);
+    }
+    m_directOpaqueRasterReadbackQualification.ReleaseUnsubmitted(
+        directQualificationIdentity);
+    m_directOpaqueRasterReadbackSourceFrameSlot = RVX_INVALID_INDEX;
     // RenderGraph execution may have realized final depth/back-buffer states,
     // but those states are not persistent until EndFrame submits the frame.
     // Restore the import snapshots first so a failed recording or zero
@@ -1667,6 +2764,19 @@ void SceneRenderer::ReleaseUnsubmittedFrame()
                        "Unsubmitted ownership requires retirement queue");
         m_submissionBatch->ReleaseUnsubmitted(*m_retirementQueue);
         m_submissionBatch.reset();
+    }
+    // Pass record results are graph-owned.  Leaving this identity live after a
+    // zero/failed submission would expose direct-stream receipt evidence as a
+    // completed frame and let it bleed into the next diagnostic projection.
+    m_activeRenderPassResults.reset();
+    m_activeRenderPassIdentity = {};
+    if (hadUnsubmittedRecording)
+    {
+        RefreshFrameDiagnostics(true,
+                                false,
+                                m_frameDiagnostics.graphBuilt,
+                                m_frameDiagnostics.graphCompiled,
+                                "Frame recording was not submitted");
     }
 }
 
@@ -1846,6 +2956,8 @@ void SceneRenderer::RetireOwnerSnapshots(
 void SceneRenderer::MarkAcceptedFramePresented()
 {
     m_renderScene.MarkAcceptedFrameRendered();
+    FreezeMutationEvidenceForPresentedFrame();
+    FreezePresentedMaterialBindingsForPresentedFrame();
 }
 
 void SceneRenderer::SetSurfaceCompatibilityKey(uint64 key) noexcept
@@ -1913,18 +3025,22 @@ GPUSceneDiagnostics SceneRenderer::GetGPUSceneDiagnostics() const noexcept
         diagnostics.residentVersion = upload.residentVersion;
         diagnostics.safeReclaimVersion = upload.safeReclaimVersion;
         diagnostics.gpuAllocationBytes = upload.gpuAllocationBytes;
-        diagnostics.frameUploadBytes = upload.frameUploadBytes;
         diagnostics.cumulativeUploadBytes = upload.cumulativeUploadBytes;
         diagnostics.peakFrameUploadBytes = upload.peakFrameUploadBytes;
-        diagnostics.frameUploadRangeCount = upload.frameUploadRangeCount;
         diagnostics.cumulativeUploadRangeCount = upload.cumulativeUploadRangeCount;
         diagnostics.currentBufferSetCount = upload.bufferSetCount;
         diagnostics.peakBufferSetCount = upload.peakBufferSetCount;
         diagnostics.pendingBufferSetCount = upload.pendingSetCount;
         diagnostics.inFlightBufferSetCount = upload.inFlightSetCount;
         diagnostics.unusableBufferSetCount = upload.unusableSetCount;
-        diagnostics.fullUpload = upload.fullUpload;
         diagnostics.uploadFailureReason = upload.failureReason;
+        if (m_submissionQualifiedFrameDiagnostics)
+        {
+            diagnostics.frameUploadBytes = upload.frameUploadBytes;
+            diagnostics.frameUploadRangeCount = upload.frameUploadRangeCount;
+            diagnostics.fullUpload = upload.fullUpload;
+            diagnostics.uploadWork = upload.uploadWork;
+        }
         for (uint32 tableIndex = 0;
              tableIndex < GPU_SCENE_DIAGNOSTICS_TABLE_COUNT;
              ++tableIndex)
@@ -1934,13 +3050,17 @@ GPUSceneDiagnostics SceneRenderer::GetGPUSceneDiagnostics() const noexcept
             target.residentCapacity = source.residentCapacity;
             target.stride = source.stride != 0 ? source.stride : target.stride;
             target.residentBytes = source.residentBytes;
-            target.frameUploadBytes = source.frameUploadBytes;
             target.cumulativeUploadBytes = source.cumulativeUploadBytes;
             target.peakFrameUploadBytes = source.peakFrameUploadBytes;
-            target.frameUploadRangeCount = source.frameUploadRangeCount;
             target.cumulativeUploadRangeCount = source.cumulativeUploadRangeCount;
             target.resident = source.resident;
-            target.fullUpload = source.fullUpload;
+            if (m_submissionQualifiedFrameDiagnostics)
+            {
+                target.frameUploadBytes = source.frameUploadBytes;
+                target.frameUploadRangeCount = source.frameUploadRangeCount;
+                target.fullUpload = source.fullUpload;
+                target.uploadWork = source.uploadWork;
+            }
         }
     }
 
@@ -2035,7 +3155,11 @@ void SceneRenderer::BuildMaterialDrawLists()
         const RenderObject& object = m_renderScene.GetObject(objectIndex);
         RenderVisibilityCandidate candidate;
         candidate.objectIndex = objectIndex;
-        candidate.objectVisible = object.visible;
+        // This is the shared object candidate feed for CPU Direct visibility
+        // and deferred GPU visibility. Layer selection must happen here so no
+        // execution lane can observe a different scene.
+        candidate.objectVisible = object.visible && IsRenderLayerVisible(
+            object.layerMask, m_renderScene.GetView().cullingMask);
         candidate.drawable = object.drawable;
         candidate.worldBounds = object.bounds;
         (void)m_renderCandidates.Add(candidate);
@@ -2069,7 +3193,8 @@ void SceneRenderer::BuildMaterialDrawLists()
                                 m_viewData.cameraPosition,
                                 m_opaqueDrawItems,
                                 m_maskedDrawItems,
-                                m_transparentDrawItems);
+                                m_transparentDrawItems,
+                                &m_transparentDrawListDiagnostics);
 
     std::vector<RenderDrawItem> ignoredTransparentCandidates;
     RVX::BuildMaterialDrawLists(m_renderScene,
@@ -2214,7 +3339,8 @@ void SceneRenderer::PrepareMeshPassPackets()
             candidate.sourceOrdinal = source.sourceOrdinal;
             candidate.objectIndex = packet.primitiveData;
             candidate.pass = pass;
-            candidate.objectVisible = object.visible;
+            candidate.objectVisible = object.visible && IsRenderLayerVisible(
+                object.layerMask, m_renderScene.GetView().cullingMask);
             candidate.drawable = object.drawable;
             candidate.worldBounds = object.bounds;
             (void)m_renderCandidates.Add(candidate);
@@ -2649,6 +3775,58 @@ void SceneRenderer::BuildGPUDrivenVisibilityInputs()
     m_opaqueGPUCullingFramePrepared = false;
     m_gpuDrivenTier1PreparationFailed = false;
     m_gpuDrivenFrameFailure = false;
+    m_gpuDrivenFrameFailureStage = GPUDrivenFrameFailureStage::None;
+    // These values are diagnostics for this render attempt, not the last
+    // prepared GPU lane. Reset both owners before policy, packet, or lane
+    // preflight can return so GPU-to-Direct and lane-count transitions cannot
+    // leak a prior frame's upload bytes into the completed-frame report.
+    if (m_depthGPUCulling)
+    {
+        m_depthGPUCulling->ResetFrameUploadDiagnostics();
+    }
+    if (m_opaqueGPUCulling)
+    {
+        m_opaqueGPUCulling->ResetFrameUploadDiagnostics();
+    }
+    // An explicitly armed capture must drain when its source slot is reused
+    // even if a later policy selects Direct rendering.  This is intentionally
+    // outside GPU-driven preparation; normal frames have no accepted capture
+    // and therefore perform no qualification map or copy work here.
+    const bool depthQualificationPending = m_depthGPUCulling &&
+        m_depthGPUCulling->GetGPUSceneQualificationDiagnostics()
+            .submissionAccepted;
+    const bool opaqueQualificationPending = m_opaqueGPUCulling &&
+        m_opaqueGPUCulling->GetGPUSceneQualificationDiagnostics()
+            .submissionAccepted;
+    if ((depthQualificationPending || opaqueQualificationPending) &&
+        m_renderContext != nullptr)
+    {
+        const uint32 frameSlot = m_renderContext->GetFrameIndex();
+        const bool depthSlotSelected = !depthQualificationPending ||
+            m_depthGPUCulling->SetFrameSlot(frameSlot);
+        const bool opaqueSlotSelected = !opaqueQualificationPending ||
+            m_opaqueGPUCulling->SetFrameSlot(frameSlot);
+        if (depthSlotSelected && opaqueSlotSelected)
+        {
+            if (RenderSubmissionTracker* tracker =
+                    RenderContextInternalAccess::GetSubmissionTracker(
+                        *m_renderContext))
+            {
+                if (depthQualificationPending)
+                {
+                    static_cast<void>(
+                        m_depthGPUCulling->CompleteGPUSceneQualificationCapture(
+                            frameSlot, *tracker));
+                }
+                if (opaqueQualificationPending)
+                {
+                    static_cast<void>(
+                        m_opaqueGPUCulling->CompleteGPUSceneQualificationCapture(
+                            frameSlot, *tracker));
+                }
+            }
+        }
+    }
     m_gpuDrivenCullingStats = {};
     m_instancingDiagnostics = {};
     m_gpuDrivenCullingStats.policyDecisionAvailable = true;
@@ -2837,7 +4015,26 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
     {
         ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
         m_gpuDrivenTier1PreparationFailed = true;
+        MarkGPUDrivenFrameFailure(GPUDrivenFrameFailureStage::Tier1FrameSlot);
         return;
+    }
+    // RenderContext::BeginFrame waited this exact slot before this method is
+    // reached. Query the tracker anyway so a stale, foreign, or lost token
+    // cannot turn an explicitly armed capture into a host mapping.
+    if (RenderSubmissionTracker* tracker = m_renderContext
+            ? RenderContextInternalAccess::GetSubmissionTracker(*m_renderContext)
+            : nullptr)
+    {
+        if (m_depthGPUCulling)
+        {
+            static_cast<void>(m_depthGPUCulling->CompleteGPUSceneQualificationCapture(
+                frameSlot, *tracker));
+        }
+        if (m_opaqueGPUCulling)
+        {
+            static_cast<void>(m_opaqueGPUCulling->CompleteGPUSceneQualificationCapture(
+                frameSlot, *tracker));
+        }
     }
 
     const auto preparePass =
@@ -2869,7 +4066,100 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
             passPlan->gpuEligiblePackets.count > owner->GetConfig().maxInstances)
         {
             ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::Tier1PacketRange);
             return;
+        }
+
+        // The post-fence capture must start from the immutable execution plan,
+        // before this owner starts building its mutable active-row stream.
+        // Record every terminal partition so Direct/Skip work cannot be
+        // mistaken for an owner/candidate omission.
+        if (owner->IsGPUSceneQualificationCaptureArmed())
+        {
+            GPUCullingQualificationInputPlan inputPlan;
+            inputPlan.expectedPacketCount =
+                passPlan->partition.inputPacketCount;
+            inputPlan.expectedGPUInputPacketCount =
+                passPlan->gpuEligiblePackets.count;
+            inputPlan.directPacketCount = passPlan->directPackets.count;
+            inputPlan.skippedPacketCount = passPlan->skippedPackets.count;
+            inputPlan.planPacketIdentityHash = 0xCBF29CE484222325ull;
+            const std::array<DrawPacketRange, 3> ranges = {
+                passPlan->gpuEligiblePackets,
+                passPlan->directPackets,
+                passPlan->skippedPackets};
+            std::vector<bool> seenPacketIndices(
+                inputPlan.expectedPacketCount, false);
+            uint64 terminalPacketCount = 0;
+            bool planCoverageValid = inputPlan.expectedPacketCount != 0;
+            for (uint32 rangeIndex = 0; rangeIndex < ranges.size() &&
+                 planCoverageValid; ++rangeIndex)
+            {
+                const DrawPacketRange range = ranges[rangeIndex];
+                const uint64 rangeEnd =
+                    static_cast<uint64>(range.first) + range.count;
+                if (rangeEnd > framePlan->packetReferences.size())
+                {
+                    planCoverageValid = false;
+                    break;
+                }
+                terminalPacketCount += range.count;
+                for (uint64 referenceIndex = range.first;
+                     referenceIndex < rangeEnd; ++referenceIndex)
+                {
+                    const RenderDrawPacketReference& reference =
+                        framePlan->packetReferences[
+                            static_cast<size_t>(referenceIndex)];
+                    if (reference.pass != pass ||
+                        reference.sourcePacketIndex >= seenPacketIndices.size() ||
+                        seenPacketIndices[reference.sourcePacketIndex] ||
+                        reference.sourcePacketIndex >= stream.packets.size())
+                    {
+                        planCoverageValid = false;
+                        break;
+                    }
+                    seenPacketIndices[reference.sourcePacketIndex] = true;
+                    const uint64 identityHash =
+                        HashGPUCullingQualificationPacketReference(reference);
+                    if (identityHash == 0)
+                    {
+                        planCoverageValid = false;
+                        break;
+                    }
+                    inputPlan.planPacketIdentityHash =
+                        MixGPUCullingQualificationIdentity(
+                            inputPlan.planPacketIdentityHash, identityHash);
+                    if (rangeIndex == 0)
+                    {
+                        inputPlan.expectedGPUInputIdentityHashes.push_back(
+                            identityHash);
+                        // Direct visibility is an independent canonical
+                        // source.  Retain its GPU-eligible subset before the
+                        // mutable owner/candidate stream is collected, then
+                        // require the post-fence GPU visibility result to
+                        // include it.  GPU-conservative extras remain
+                        // diagnostic-only.
+                        if (m_renderVisibility.IsDirectPacketVisible(
+                                pass, reference.sourcePacketIndex))
+                        {
+                            inputPlan.expectedDirectVisibleIdentityHashes
+                                .push_back(identityHash);
+                        }
+                    }
+                }
+            }
+            inputPlan.exactlyOncePartitioned = planCoverageValid &&
+                terminalPacketCount == inputPlan.expectedPacketCount &&
+                std::all_of(seenPacketIndices.begin(), seenPacketIndices.end(),
+                            [](bool seen) { return seen; }) &&
+                passPlan->identityAccounting.IsExactlyOnce();
+            // Qualification is observational only.  A malformed accounting
+            // record is retained as fail-closed evidence by the owner, but it
+            // must not remove a draw packet or alter this frame's renderer
+            // execution.
+            static_cast<void>(
+                owner->BeginGPUSceneQualificationInputCoverage(inputPlan));
         }
 
         // Complete structural preflight occurs before the per-pass owner is
@@ -2895,11 +4185,17 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                 stream.packets[sourcePacketIndex].packet.arguments.indexCount == 0)
             {
                 ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+                MarkGPUDrivenFrameFailure(
+                    GPUDrivenFrameFailureStage::Tier1PacketRange);
                 return;
             }
         }
 
-        owner->BeginFrame();
+        owner->BeginFrame(
+            m_renderScene.GetAcceptedHeader().requiredSceneRevision,
+            m_renderScene.GetGPUSceneChangedObjectIds(),
+            m_renderScene.GetGPUSceneRemovedObjectIds(),
+            m_renderScene.IsFullGPUSceneMutation());
         bool gpuSceneCandidateStreamValid = buildGPUSceneCandidates &&
             requiredResidentVersion != 0 && m_gpuSceneUpdate != nullptr &&
             owner->IsGPUSceneExecutionReady();
@@ -2908,10 +4204,14 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
         {
             const RenderDrawGroupKey& key = group.key;
             if (group.count == 0 ||
-                group.first >= stream.sortedGPUCandidatePacketIndices.size())
+                group.first >= stream.sortedGPUCandidatePacketIndices.size() ||
+                group.count > stream.sortedGPUCandidatePacketIndices.size() -
+                    group.first)
             {
                 ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
                 owner->EndFrame();
+                MarkGPUDrivenFrameFailure(
+                    GPUDrivenFrameFailureStage::Tier1DrawGroup);
                 return;
             }
             const uint32 leaderSourcePacketIndex =
@@ -2920,6 +4220,8 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
             {
                 ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
                 owner->EndFrame();
+                MarkGPUDrivenFrameFailure(
+                    GPUDrivenFrameFailureStage::Tier1DrawGroup);
                 return;
             }
             const RenderDrawPacket& leaderPacket =
@@ -2941,6 +4243,8 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
             {
                 ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
                 owner->EndFrame();
+                MarkGPUDrivenFrameFailure(
+                    GPUDrivenFrameFailureStage::Tier1DrawGroup);
                 return;
             }
 
@@ -2948,6 +4252,23 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
             {
                 const uint32 sourcePacketIndex =
                     stream.sortedGPUCandidatePacketIndices[group.first + offset];
+                const size_t qualificationReferenceIndex = static_cast<size_t>(
+                    passPlan->gpuEligiblePackets.first + plannedOffset);
+                if (qualificationReferenceIndex >=
+                    framePlan->packetReferences.size())
+                {
+                    ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
+                    owner->EndDrawGroup();
+                    owner->EndFrame();
+                    MarkGPUDrivenFrameFailure(
+                        GPUDrivenFrameFailureStage::Tier1PacketRange);
+                    return;
+                }
+                const RenderDrawPacketReference& qualificationReference =
+                    framePlan->packetReferences[qualificationReferenceIndex];
+                const uint64 qualificationIdentityHash =
+                    HashGPUCullingQualificationPacketReference(
+                        qualificationReference);
                 const MeshPassProcessorResult& result =
                     stream.packets[sourcePacketIndex];
                 const RenderVisibilityCandidate* visibilityCandidate =
@@ -2961,13 +4282,16 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                           m_renderScene,
                           *visibilityCandidate,
                           result.packet,
-                          drawDesc)
+                          drawDesc,
+                          m_renderResourceRegistry)
                     : RVX_INVALID_INDEX;
                 if (rasterInstanceIndex == RVX_INVALID_INDEX)
                 {
                     ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
                     owner->EndDrawGroup();
                     owner->EndFrame();
+                    MarkGPUDrivenFrameFailure(
+                        GPUDrivenFrameFailureStage::Tier1Instance);
                     return;
                 }
 
@@ -2975,6 +4299,7 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                 // failed exact lookup must not disturb the authoritative Tier
                 // 1 instance stream, and no ordinal-based reconstruction is
                 // permitted after that failure.
+                bool ownerCandidateMapped = !buildGPUSceneCandidates;
                 if (gpuSceneCandidateStreamValid)
                 {
                     const std::optional<GPUSceneAcceptedDrawLookup> acceptedDraw =
@@ -3017,7 +4342,21 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                             owner->InvalidateGPUSceneCandidates();
                             gpuSceneCandidateStreamValid = false;
                         }
+                        else
+                        {
+                            ownerCandidateMapped = true;
+                        }
                     }
+                }
+                if (owner->IsGPUSceneQualificationCaptureArmed() &&
+                    ownerCandidateMapped)
+                {
+                    // As above, collection evidence is never permitted to
+                    // change rendering behavior.  Failure remains visible in
+                    // the qualification diagnostics and report.
+                    static_cast<void>(
+                        owner->ObserveGPUSceneQualificationInputIdentity(
+                            qualificationIdentityHash));
                 }
                 ++plannedOffset;
             }
@@ -3029,6 +4368,8 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
         {
             ++m_gpuDrivenCullingStats.skippedMissingGpuDataCount;
             owner->EndFrame();
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::Tier1FinalCount);
             return;
         }
         owner->EndFrame();
@@ -3047,8 +4388,64 @@ void SceneRenderer::PrepareGPUDrivenGraphCullInputs()
                 m_opaqueGPUCullingFramePrepared);
 }
 
-void SceneRenderer::MarkGPUDrivenFrameFailure() noexcept
+const char* SceneRenderer::GetGPUDrivenFrameFailureStageName(
+    GPUDrivenFrameFailureStage stage) noexcept
 {
+    switch (stage)
+    {
+    case GPUDrivenFrameFailureStage::None:
+        return "none";
+    case GPUDrivenFrameFailureStage::Tier1FrameSlot:
+        return "tier1-frame-slot";
+    case GPUDrivenFrameFailureStage::Tier1PacketRange:
+        return "tier1-packet-range";
+    case GPUDrivenFrameFailureStage::Tier1DrawGroup:
+        return "tier1-draw-group";
+    case GPUDrivenFrameFailureStage::Tier1Instance:
+        return "tier1-instance";
+    case GPUDrivenFrameFailureStage::Tier1FinalCount:
+        return "tier1-final-count";
+    case GPUDrivenFrameFailureStage::Tier1Seal:
+        return "tier1-seal";
+    case GPUDrivenFrameFailureStage::TierConfirmationMissingTier1:
+        return "tier-confirmation-missing-tier1";
+    case GPUDrivenFrameFailureStage::TierConfirmationNoFallback:
+        return "tier-confirmation-no-fallback";
+    case GPUDrivenFrameFailureStage::TierConfirmationResidentNotReady:
+        return "tier-confirmation-resident-not-ready";
+    case GPUDrivenFrameFailureStage::GPUSceneLeaseAcquire:
+        return "gpu-scene-lease-acquire";
+    case GPUDrivenFrameFailureStage::GPUSceneLeaseSeal:
+        return "gpu-scene-lease-seal";
+    case GPUDrivenFrameFailureStage::GPUSceneRasterBinding:
+        return "gpu-scene-raster-binding";
+    case GPUDrivenFrameFailureStage::PassRegistration:
+        return "pass-registration";
+    case GPUDrivenFrameFailureStage::CullCommandRecording:
+        return "cull-command-recording";
+    case GPUDrivenFrameFailureStage::RasterCommandRecording:
+        return "raster-command-recording";
+    case GPUDrivenFrameFailureStage::AccessSnapshotCommit:
+        return "access-snapshot-commit";
+    case GPUDrivenFrameFailureStage::GraphExecution:
+        return "graph-execution";
+    case GPUDrivenFrameFailureStage::GraphAdoption:
+        return "graph-adoption";
+    }
+    return "unknown";
+}
+
+void SceneRenderer::MarkGPUDrivenFrameFailure(
+    GPUDrivenFrameFailureStage stage) noexcept
+{
+    if (stage == GPUDrivenFrameFailureStage::None)
+    {
+        return;
+    }
+    if (m_gpuDrivenFrameFailureStage == GPUDrivenFrameFailureStage::None)
+    {
+        m_gpuDrivenFrameFailureStage = stage;
+    }
     m_gpuDrivenFrameFailure = true;
     m_gpuDrivenTierExecutionTestProbe.frameFailed = true;
     if (!m_renderPolicyDiagnostics.planAvailable)
@@ -3100,7 +4497,8 @@ void SceneRenderer::ConfirmGPUDrivenActualTier()
     if (m_gpuDrivenTier1PreparationFailed || !depthTier1Complete ||
         !opaqueTier1Complete)
     {
-        MarkGPUDrivenFrameFailure();
+        MarkGPUDrivenFrameFailure(
+            GPUDrivenFrameFailureStage::TierConfirmationMissingTier1);
         return;
     }
     if (m_confirmedGPUDrivenTier != GPUDrivenTier::GPUResidentScene)
@@ -3137,7 +4535,10 @@ void SceneRenderer::ConfirmGPUDrivenActualTier()
     if (framePlan->viewPolicy.immediateFallbackTier !=
         GPUDrivenTier::IndirectGrouped)
     {
-        MarkGPUDrivenFrameFailure();
+        MarkGPUDrivenFrameFailure(
+            (depthCompanionComplete && opaqueCompanionComplete)
+                ? GPUDrivenFrameFailureStage::TierConfirmationResidentNotReady
+                : GPUDrivenFrameFailureStage::TierConfirmationNoFallback);
         return;
     }
     m_confirmedGPUDrivenTier = GPUDrivenTier::IndirectGrouped;
@@ -3541,6 +4942,8 @@ void SceneRenderer::Render()
         return;
     }
 
+    const auto renderPrepareStart = std::chrono::steady_clock::now();
+
     // Begin new frame for transient resource pool and view cache
     if (m_transientResourcePool)
     {
@@ -3571,6 +4974,12 @@ void SceneRenderer::Render()
     }
     RunPreGraphPrepareCallbacks();
     PrepareRayTracingScene();
+    m_currentCpuFrameTiming.renderPrepare =
+        static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - renderPrepareStart)
+                                 .count());
+
+    const auto policyStart = std::chrono::steady_clock::now();
 
     const bool rayTracedReflectionsRequested =
         m_postProcessSettings.enableRayTracedReflections && m_rayTracedReflectionPass != nullptr;
@@ -3693,6 +5102,10 @@ void SceneRenderer::Render()
     // any RenderGraph construction or command-recording decisions occur.
     CompileRenderFramePlan();
     BuildGPUDrivenVisibilityInputs();
+    m_currentCpuFrameTiming.policy =
+        static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - policyStart)
+                                 .count());
     if (m_gpuDrivenFrameFailure)
     {
         m_renderPolicyDiagnostics.reportAvailable =
@@ -3711,7 +5124,12 @@ void SceneRenderer::Render()
     m_renderGraph = std::make_unique<RenderGraph>();
 
     // Build the render graph (creates depth buffer if needed, imports resources)
+    const auto graphBuildStart = std::chrono::steady_clock::now();
     BuildRenderGraph();
+    m_currentCpuFrameTiming.graphBuild =
+        static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - graphBuildStart)
+                                 .count());
     if (m_gpuDrivenFrameFailure)
     {
         m_renderPolicyDiagnostics.reportAvailable =
@@ -3734,8 +5152,13 @@ void SceneRenderer::Render()
         compileOptions.hasCapabilitySnapshot = true;
     }
     RenderGraphCompiler graphCompiler;
+    const auto graphCompileStart = std::chrono::steady_clock::now();
     CompiledRenderGraphPlan compiledPlan =
         graphCompiler.Compile(*m_renderGraph, compileOptions);
+    m_currentCpuFrameTiming.graphCompile =
+        static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - graphCompileStart)
+                                 .count());
     bool graphCompileValid = static_cast<bool>(compiledPlan);
 
     if (RenderSubmissionTracker* tracker =
@@ -3746,6 +5169,7 @@ void SceneRenderer::Render()
 
     // Prepare contexts, realize physical resources exactly once, record the
     // final plan, and transfer every lease/view into one completion owner.
+    const auto graphRealizeRecordStart = std::chrono::steady_clock::now();
     RHICommandContext* ctx = m_renderContext->GetGraphicsContext();
     bool graphExecuted = false;
     const char* executionSkippedReason = nullptr;
@@ -3759,13 +5183,22 @@ void SceneRenderer::Render()
         RenderGraphExecutor graphExecutor;
         RenderGraphExecution execution =
             graphExecutor.Prepare(compiledPlan, executionEnvironment);
-        if (!execution ||
-            !m_renderContext->AdoptRenderGraphExecution(
-                std::move(execution)))
+        if (!execution)
+        {
+            graphCompileValid = false;
+            executionSkippedReason =
+                "RenderGraph execution preparation failed";
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::GraphExecution);
+        }
+        else if (!m_renderContext->AdoptRenderGraphExecution(
+                     std::move(execution)))
         {
             graphCompileValid = false;
             executionSkippedReason =
                 "RenderContext rejected the completion-owned graph execution";
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::GraphAdoption);
         }
         graphExecuted = !m_gpuSceneCullingCommandRecordingFailed &&
             graphCompileValid &&
@@ -3773,9 +5206,26 @@ void SceneRenderer::Render()
              !m_gpuSceneRasterCommandRecordingFailed->load());
         if (!graphExecuted)
         {
-            executionSkippedReason =
-                "GPU-scene command recording failed";
-            MarkGPUDrivenFrameFailure();
+            if (m_gpuSceneCullingCommandRecordingFailed)
+            {
+                executionSkippedReason =
+                    "GPU-scene culling command recording failed";
+                MarkGPUDrivenFrameFailure(
+                    GPUDrivenFrameFailureStage::CullCommandRecording);
+            }
+            else if (m_gpuSceneRasterCommandRecordingFailed &&
+                     m_gpuSceneRasterCommandRecordingFailed->load())
+            {
+                executionSkippedReason =
+                    "GPU-scene raster command recording failed";
+                MarkGPUDrivenFrameFailure(
+                    GPUDrivenFrameFailureStage::RasterCommandRecording);
+            }
+            else
+            {
+                MarkGPUDrivenFrameFailure(
+                    GPUDrivenFrameFailureStage::GraphExecution);
+            }
         }
         if (graphExecuted)
         {
@@ -3814,6 +5264,12 @@ void SceneRenderer::Render()
                 if (m_opaquePass)
                 {
                     m_opaquePass->PublishRecordResults(
+                        m_activeRenderPassResults,
+                        m_activeRenderPassIdentity);
+                }
+                if (m_transparentPass)
+                {
+                    m_transparentPass->PublishRecordResults(
                         m_activeRenderPassResults,
                         m_activeRenderPassIdentity);
                 }
@@ -3913,6 +5369,11 @@ void SceneRenderer::Render()
                                      ? "Graphics command context is unavailable"
                                      : "RenderGraph compile reported validation errors";
     }
+
+    m_currentCpuFrameTiming.graphRealizeRecord =
+        static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - graphRealizeRecordStart)
+                                 .count());
 
     FinalizeRenderExecutionReportStatus(graphExecuted);
 
@@ -4433,7 +5894,8 @@ void SceneRenderer::ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,
 void SceneRenderer::PreparePassesForFrame()
 {
     m_primaryDirectionalLight =
-        SelectPrimaryDirectionalLightRecordInput(m_renderScene);
+        SelectPrimaryDirectionalLightRecordInput(
+            m_renderScene, m_viewData.cullingMask);
     m_viewData.directionalLightDirection = m_primaryDirectionalLight.direction;
     m_viewData.directionalLightIntensity = m_primaryDirectionalLight.intensity;
     m_viewData.directionalLightColor = m_primaryDirectionalLight.color;
@@ -4480,9 +5942,25 @@ void SceneRenderer::PreparePassesForFrame()
 
     if (m_lightManager)
     {
-        m_lightManager->CollectLights(m_renderScene);
+        m_lightManager->CollectLights(m_renderScene, m_viewData.cullingMask);
         m_lightManager->UpdateGPUBuffers();
         m_localLightingStats.frameCount++;
+        m_localLightingStats.pointLightRequestedCount =
+            m_lightManager->GetPointLightRequestedCount();
+        m_localLightingStats.pointLightAdmittedCount =
+            m_lightManager->GetPointLightAdmittedCount();
+        m_localLightingStats.pointLightCapacity =
+            m_lightManager->GetPointLightCapacity();
+        m_localLightingStats.pointLightOverflowCount =
+            m_lightManager->GetPointLightOverflowCount();
+        m_localLightingStats.spotLightRequestedCount =
+            m_lightManager->GetSpotLightRequestedCount();
+        m_localLightingStats.spotLightAdmittedCount =
+            m_lightManager->GetSpotLightAdmittedCount();
+        m_localLightingStats.spotLightCapacity =
+            m_lightManager->GetSpotLightCapacity();
+        m_localLightingStats.spotLightOverflowCount =
+            m_lightManager->GetSpotLightOverflowCount();
         m_localLightingStats.pointLightCount = m_lightManager->GetPointLightCount();
         m_localLightingStats.spotLightCount = m_lightManager->GetSpotLightCount();
         m_localLightingStats.lightConstantsBufferReady = m_lightManager->GetLightConstantsBuffer() != nullptr;
@@ -4495,6 +5973,16 @@ void SceneRenderer::PreparePassesForFrame()
         m_localLightingStats.localShadowFallbackReason =
             m_localLightingStats.localShadowRequestCount > 0
                 ? "local point/spot shadow atlas is not implemented"
+                : "";
+        m_localLightingStats.pointShadowSupported = false;
+        m_localLightingStats.pointShadowUnsupportedReason =
+            m_localLightingStats.pointShadowRequestCount > 0
+                ? "point-light shadow maps are not implemented"
+                : "";
+        m_localLightingStats.spotShadowSupported = false;
+        m_localLightingStats.spotShadowUnsupportedReason =
+            m_localLightingStats.spotShadowRequestCount > 0
+                ? "spot-light shadow maps are not implemented"
                 : "";
     }
 
@@ -4755,7 +6243,8 @@ void SceneRenderer::AddGPUDrivenCullingPass(
         m_viewData.renderFrameExecutionPlan;
     if (frozenPlan == nullptr)
     {
-        MarkGPUDrivenFrameFailure();
+        MarkGPUDrivenFrameFailure(
+            GPUDrivenFrameFailureStage::TierConfirmationMissingTier1);
         return;
     }
 
@@ -4799,7 +6288,8 @@ void SceneRenderer::AddGPUDrivenCullingPass(
     if (requestedGPUSceneTier && !useGPUSceneTier &&
         m_confirmedGPUDrivenTier != GPUDrivenTier::IndirectGrouped)
     {
-        MarkGPUDrivenFrameFailure();
+        MarkGPUDrivenFrameFailure(
+            GPUDrivenFrameFailureStage::TierConfirmationNoFallback);
         return;
     }
     const auto laneIsPlanned = [frozenPlan](RenderPassKind pass)
@@ -4844,13 +6334,15 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             (opaqueLanePlanned && !canUseGPUSceneLease(
                 m_opaqueGPUCulling.get(), m_opaqueGPUCullingFramePrepared)))
         {
-            MarkGPUDrivenFrameFailure();
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::TierConfirmationResidentNotReady);
             return;
         }
         if (m_gpuDrivenGraphFailureInjection ==
             GPUDrivenGraphFailureInjection::Acquire)
         {
-            MarkGPUDrivenFrameFailure();
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::GPUSceneLeaseAcquire);
             return;
         }
         ++m_gpuDrivenTierExecutionTestProbe.gpuSceneLeaseAcquireAttempts;
@@ -4858,7 +6350,8 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             *m_renderGraph, m_submissionBatch.get(), requiredResidentVersion);
         if (!gpuSceneLease)
         {
-            MarkGPUDrivenFrameFailure();
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::GPUSceneLeaseAcquire);
             return;
         }
         m_renderPolicyDiagnostics.gpuSceneLeaseVersion =
@@ -4873,24 +6366,37 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             recordIdentity.frameSequence,
             recordIdentity.viewOrdinal,
             recordIdentity.recordEpoch};
+        GPUDrivenFrameFailureStage preflightFailureStage =
+            GPUDrivenFrameFailureStage::GPUSceneLeaseSeal;
         const auto preflightGPUScenePass =
-            [this, &gpuSceneLease, &cullingIdentity](GPUCulling* owner,
-                                                      GPUScenePassPreflight& out)
+            [this,
+             &gpuSceneLease,
+             &cullingIdentity,
+             &preflightFailureStage](GPUCulling* owner,
+                                      GPUScenePassPreflight& out)
         {
             if (owner == nullptr || !gpuSceneLease)
             {
+                preflightFailureStage =
+                    GPUDrivenFrameFailureStage::GPUSceneLeaseAcquire;
                 return false;
             }
             if (m_gpuDrivenGraphFailureInjection ==
                 GPUDrivenGraphFailureInjection::Seal)
             {
+                preflightFailureStage =
+                    GPUDrivenFrameFailureStage::GPUSceneLeaseSeal;
                 return false;
             }
             ++m_gpuDrivenTierExecutionTestProbe.gpuSceneSealAttempts;
+            owner->PublishGPUSceneQualificationRequiredLane(
+                GPUDrivenTier::GPUResidentScene);
             std::shared_ptr<GPUCullingRecordedState> recordedState =
                 owner->SealForGPUSceneGraph(cullingIdentity, *gpuSceneLease);
             if (!recordedState || !recordedState->IsValid())
             {
+                preflightFailureStage =
+                    GPUDrivenFrameFailureStage::GPUSceneLeaseSeal;
                 return false;
             }
             const GPUSceneRasterResourceSnapshot rasterResources =
@@ -4914,12 +6420,16 @@ void SceneRenderer::AddGPUDrivenCullingPass(
                 binding.primitiveBuffer.Get() != rasterResources.GetPrimitives() ||
                 binding.transformBuffer.Get() != rasterResources.GetTransforms())
             {
+                preflightFailureStage =
+                    GPUDrivenFrameFailureStage::GPUSceneRasterBinding;
                 return false;
             }
             std::shared_ptr<const GPUSceneRasterBindingSnapshot> retainedBinding =
                 std::make_shared<GPUSceneRasterBindingSnapshot>(std::move(binding));
             if (!retainedBinding->RetainSubmissionResources(*m_submissionBatch))
             {
+                preflightFailureStage =
+                    GPUDrivenFrameFailureStage::GPUSceneRasterBinding;
                 return false;
             }
             out.owner = owner;
@@ -4935,7 +6445,7 @@ void SceneRenderer::AddGPUDrivenCullingPass(
         {
             RVX_VERIFY(m_gpuSceneUploader->CancelCurrentGraphLease(),
                        "SceneRenderer: failed to cancel GPU-scene preflight lease");
-            MarkGPUDrivenFrameFailure();
+            MarkGPUDrivenFrameFailure(preflightFailureStage);
             return;
         }
     }
@@ -4991,6 +6501,8 @@ void SceneRenderer::AddGPUDrivenCullingPass(
                 !gpuScenePreflight->recordedState ||
                 !gpuScenePreflight->binding)
             {
+                MarkGPUDrivenFrameFailure(
+                    GPUDrivenFrameFailureStage::GPUSceneLeaseSeal);
                 return false;
             }
             recordedState = gpuScenePreflight->recordedState;
@@ -5006,15 +6518,35 @@ void SceneRenderer::AddGPUDrivenCullingPass(
                 recordIdentity.viewOrdinal,
                 recordIdentity.recordEpoch};
             ++m_gpuDrivenTierExecutionTestProbe.tierOneSealAttempts;
+            owner->PublishGPUSceneQualificationRequiredLane(
+                GPUDrivenTier::IndirectGrouped);
             recordedState = owner->SealForGraph(cullingIdentity);
         }
         if (!recordedState || !recordedState->IsValid())
         {
             RVX_RENDER_WARN("SceneRenderer: failed to seal {} GPU culling inputs", name);
+            MarkGPUDrivenFrameFailure(
+                usesGPUScene
+                    ? GPUDrivenFrameFailureStage::GPUSceneLeaseSeal
+                    : GPUDrivenFrameFailureStage::Tier1Seal);
             return false;
         }
 
         const GPUCulling& recordedCulling = recordedState->GetCulling();
+        if (!usesGPUScene &&
+            recordedCulling.GetExecutionDecision().mode !=
+                GPUCullingExecutionMode::GpuCompute)
+        {
+            // Graph records a slim GPU-only seal. A normal Tier 1 CPU
+            // fallback would need the deliberately unsealed dense payload,
+            // so reject the lane before any graph mutation instead.
+            RVX_RENDER_WARN(
+                "SceneRenderer: {} GPU culling lost compute execution before graph registration",
+                name);
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::Tier1Seal);
+            return false;
+        }
 
         RHIBuffer* constantsBuffer = recordedCulling.GetCullingConstantsBuffer();
         RHIBuffer* instanceBuffer = usesGPUScene
@@ -5034,6 +6566,8 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             (!usesGPUScene && !instanceBuffer) ||
             (usesGPUScene && !gpuSceneCandidateBuffer))
         {
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::PassRegistration);
             return false;
         }
 
@@ -5088,9 +6622,9 @@ void SceneRenderer::AddGPUDrivenCullingPass(
         }
         m_renderGraph->SetExportAccess(
             handles.instanceIndices,
-            MakeRHIAccessSnapshot(RHIResourceState::VertexBuffer,
-                                  RHIShaderStage::Vertex,
-                                  graphicsDomain));
+            MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                  RHIShaderStage::Compute,
+                                  computeExecutionDomain));
         m_renderGraph->SetExportAccess(
             handles.visibility,
             MakeRHIAccessSnapshot(RHIResourceState::UnorderedAccess,
@@ -5139,6 +6673,8 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             m_gpuDrivenGraphFailureInjection ==
                 GPUDrivenGraphFailureInjection::PassRegistration)
         {
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::PassRegistration);
             return false;
         }
         ++m_gpuDrivenTierExecutionTestProbe.graphPassRegistrationAttempts;
@@ -5181,6 +6717,11 @@ void SceneRenderer::AddGPUDrivenCullingPass(
                                               RHIShaderStage::Compute,
                                               computeExecutionDomain));
                 }
+                data.instanceIndices = builder.Read(
+                    data.instanceIndices,
+                    MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                          RHIShaderStage::Compute,
+                                          computeExecutionDomain));
                 const RHIAccessSnapshot unorderedAccess = MakeRHIAccessSnapshot(
                     RHIResourceState::UnorderedAccess,
                     RHIShaderStage::Compute,
@@ -5257,7 +6798,8 @@ void SceneRenderer::AddGPUDrivenCullingPass(
             RVX_VERIFY(m_gpuSceneUploader->CancelCurrentGraphLease(),
                        "SceneRenderer: failed to cancel GPU-scene lease after pass registration failure");
         }
-        MarkGPUDrivenFrameFailure();
+        MarkGPUDrivenFrameFailure(
+            GPUDrivenFrameFailureStage::PassRegistration);
         return;
     }
     m_gpuDrivenCullingStats.graphPassAdded = depthAdded || opaqueAdded;
@@ -5300,7 +6842,8 @@ void SceneRenderer::CommitGPUDrivenAccessSnapshots()
             RVX_RENDER_ERROR(
                 "SceneRenderer: failed to publish GPU-culling access to source frame slot {}",
                 recordedState->GetSourceFrameSlot());
-            MarkGPUDrivenFrameFailure();
+            MarkGPUDrivenFrameFailure(
+                GPUDrivenFrameFailureStage::AccessSnapshotCommit);
         }
     };
     commit(m_depthGPUCulling.get(),
@@ -5311,8 +6854,127 @@ void SceneRenderer::CommitGPUDrivenAccessSnapshots()
            m_opaqueGPUCullingGraphHandles);
 }
 
+namespace
+{
+    /**
+     * @brief Creates the mandatory first writer for a transient post-process
+     * scene-color target.
+     *
+     * Main-chain passes may legitimately fail closed while an asynchronous
+     * scene update is becoming resident.  A skybox and post-process pass can
+     * still be scheduled in that frame, so a newly-created scene color target
+     * cannot rely on OpaquePass being its first producer.
+     */
+    void AddSceneColorInitializationPass(RenderGraph& graph,
+                                         RGTextureHandle sceneColorTarget,
+                                         RHIClearColor clearColor)
+    {
+        struct SceneColorInitializationPassData
+        {
+            RGTextureHandle colorTarget{};
+            RGTextureViewHandle colorTargetView{};
+        };
+
+        graph.AddPass<SceneColorInitializationPassData>(
+            "SceneColorInitializePass",
+            RenderGraphPassType::Graphics,
+            [sceneColorTarget, clearColor](RenderGraphBuilder& builder,
+                                           SceneColorInitializationPassData& data)
+            {
+                if (!sceneColorTarget.IsValid())
+                {
+                    return;
+                }
+
+                const RHITextureDesc* const colorDesc =
+                    builder.GetTextureDesc(sceneColorTarget);
+                if (colorDesc == nullptr)
+                {
+                    return;
+                }
+
+                RHITextureViewDesc colorViewDesc;
+                colorViewDesc.format = colorDesc->format;
+                colorViewDesc.dimension = colorDesc->dimension;
+                colorViewDesc.subresourceRange = RHISubresourceRange::All();
+                colorViewDesc.type = RHITextureViewType::RenderTarget;
+                colorViewDesc.debugName = "SceneColorInitializeRTV";
+
+                data.colorTarget = sceneColorTarget;
+                data.colorTargetView = builder.CreateTextureView(
+                    sceneColorTarget, colorViewDesc);
+                data.colorTargetView = builder.Write(
+                    data.colorTargetView,
+                    MakeRGAccessDesc(
+                        RHIResourceState::RenderTarget,
+                        RHIShaderStage::None));
+                if (!data.colorTargetView.IsValid())
+                {
+                    data.colorTarget = {};
+                }
+            },
+            [clearColor](const SceneColorInitializationPassData& data,
+                         RenderGraphPassContext& context)
+            {
+                if (!data.colorTarget.IsValid() ||
+                    !data.colorTargetView.IsValid())
+                {
+                    return;
+                }
+
+                RHITexture* const colorTexture =
+                    context.GetTexture(data.colorTarget);
+                RHITextureView* const colorView =
+                    context.GetTextureView(data.colorTargetView);
+                if (colorTexture == nullptr || colorView == nullptr)
+                {
+                    return;
+                }
+
+                RHIRenderPassDesc renderPassDesc;
+                renderPassDesc.AddColorAttachment(
+                    colorView,
+                    RHILoadOp::Clear,
+                    RHIStoreOp::Store,
+                    clearColor);
+                renderPassDesc.SetRenderArea(
+                    0, 0, colorTexture->GetWidth(), colorTexture->GetHeight());
+                RHICommandContext& commands = context.Commands();
+                commands.BeginRenderPass(renderPassDesc);
+                commands.EndRenderPass();
+            });
+    }
+} // namespace
+
+void SceneRenderer::UpdateEnvironmentIBLBindingDiagnostics(
+    bool requested,
+    bool textureIBLEnabled,
+    std::string fallbackReason)
+{
+    m_environmentIBLStats.requested = requested;
+    m_environmentIBLStats.textureIBLEnabled =
+        requested && textureIBLEnabled;
+    if (!requested || m_environmentIBLStats.textureIBLEnabled)
+    {
+        m_environmentIBLStats.fallbackReason.clear();
+        return;
+    }
+
+    m_environmentIBLStats.fallbackReason = fallbackReason.empty()
+        ? "PacketEnvironmentResourcesUnavailable"
+        : std::move(fallbackReason);
+}
+
 void SceneRenderer::BuildRenderGraph()
 {
+    // RenderContext's logical frame slot may advance independently from the
+    // physical RHI device slot used by the Direct resident streams. Freeze the
+    // latter before graph recording and retain it through submission closure.
+    IRHIDevice* const directReadbackDevice = m_renderContext
+        ? m_renderContext->GetDevice() : nullptr;
+    m_directOpaqueRasterReadbackSourceFrameSlot = directReadbackDevice
+        ? directReadbackDevice->GetCurrentFrameIndex() : RVX_INVALID_INDEX;
+
     // Store RenderGraph and ViewCache pointers in ViewData so passes can access resources
     m_viewData.velocityTarget = {};
     m_viewData.environmentSkyTexture = {};
@@ -5451,13 +7113,21 @@ void SceneRenderer::BuildRenderGraph()
         environmentBinding.textureIBLSamplingEnabled ? 1 : 0;
     m_viewData.ambientFloorIntensity =
         environmentBinding.textureIBLSamplingEnabled ? 0.0f : 0.08f;
-    m_environmentIBLStats.textureIBLEnabled =
-        environmentBinding.textureIBLSamplingEnabled;
-    m_environmentIBLStats.fallbackReason =
-        environmentBinding.textureIBLSamplingEnabled
-            ? std::string{}
-            : PipelineCache::GetEnvironmentIBLFallbackReasonName(
-                  environmentBinding.fallbackReason);
+    std::string environmentFallbackReason =
+        PipelineCache::GetEnvironmentIBLFallbackReasonName(
+            environmentBinding.fallbackReason);
+    // PipelineCache correctly uses Disabled when no frame binding was supplied,
+    // but a scene can have requested IBL while view construction or retention
+    // left that binding incomplete. Keep that state distinct and actionable.
+    if (environmentBinding.fallbackReason ==
+        EnvironmentIBLFallbackReason::Disabled)
+    {
+        environmentFallbackReason = "PacketEnvironmentResourcesUnavailable";
+    }
+    UpdateEnvironmentIBLBindingDiagnostics(
+        m_environmentIBLRequested,
+        environmentBinding.textureIBLSamplingEnabled,
+        std::move(environmentFallbackReason));
 
     // Record pending GPUScene row uploads before execution passes import the
     // exact resident version. Publication itself does not select a render tier.
@@ -5666,11 +7336,29 @@ void SceneRenderer::BuildRenderGraph()
             RHITextureDesc sceneColorDesc = *backBufferDesc;
             sceneColorDesc.format = m_sceneColorFormatPolicy.actualSceneColorFormat;
             sceneColorDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
-            sceneColorDesc.SetOptimizedClearColor(RVX_SCENE_COLOR_CLEAR_VALUE);
+            const RenderViewClearActions clearActions =
+                ResolveRenderViewClearActions(m_viewData.clearPolicy,
+                                              m_viewData.clearColor);
+            const RHIClearColor transientInitializationColor =
+                clearActions.requiresDeterministicTransientColorInitialization
+                ? RVX_SCENE_COLOR_TRANSIENT_LOAD_FALLBACK_VALUE
+                : clearActions.colorClearValue;
+            sceneColorDesc.SetOptimizedClearColor(transientInitializationColor);
             sceneColorDesc.debugName = "SceneColorPostProcessInput";
 
             sceneColorTarget = m_renderGraph->CreateTexture(sceneColorDesc);
             m_viewData.colorTarget = sceneColorTarget;
+            // This target is transient and may be consumed by SkyboxPass or
+            // post-process even when OpaquePass correctly fails closed. Give
+            // it a concrete first write instead of depending on a conditional
+            // main-chain producer. For DepthOnly/Nothing, this graph cannot
+            // import a previous scene-color image, so the fresh target gets a
+            // deterministic fallback before the later requested Load. This
+            // does not turn the raster policy into SolidColor: Opaque still
+            // loads and Skybox remains disabled.
+            AddSceneColorInitializationPass(*m_renderGraph,
+                                            sceneColorTarget,
+                                            transientInitializationColor);
             m_postProcessStats.sceneColorStagingUsed = true;
             m_postProcessStats.directToBackBuffer = false;
             m_postProcessStats.sceneColorWidth = sceneColorDesc.width;
@@ -5719,6 +7407,10 @@ void SceneRenderer::BuildRenderGraph()
     passRecordContext.opaqueDrawItems = &m_opaqueDrawItems;
     passRecordContext.maskedDrawItems = &m_maskedDrawItems;
     passRecordContext.transparentDrawItems = &m_transparentDrawItems;
+    passRecordContext.directOpaqueRasterReadbackQualification =
+        &m_directOpaqueRasterReadbackQualification;
+    passRecordContext.directOpaqueRasterReadbackSourceFrameSlot =
+        m_directOpaqueRasterReadbackSourceFrameSlot;
     passRecordContext.results = std::make_shared<RenderPassRecordResults>();
     passRecordContext.results->identity = passRecordContext.identity;
     passRecordContext.results->directionalShadowOutput = {};

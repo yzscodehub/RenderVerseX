@@ -15,7 +15,7 @@
 namespace RVX
 {
     inline constexpr uint32 RVX_RENDER_SCENE_UPDATE_SCHEMA_ID = 0x52565355U;
-    inline constexpr uint32 RVX_RENDER_SCENE_UPDATE_SCHEMA_VERSION = 2;
+    inline constexpr uint32 RVX_RENDER_SCENE_UPDATE_SCHEMA_VERSION = 4;
 
     enum class RenderSceneMutationOperation : uint8
     {

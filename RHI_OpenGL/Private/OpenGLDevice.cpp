@@ -333,10 +333,13 @@ namespace RVX
         m_capabilities.supportsMemoryBudgetQuery = false;       // OpenGL doesn't support memory budget
         m_capabilities.supportsPersistentMapping = m_capabilities.opengl.hasBufferStorage;
         m_capabilities.supportsExplicitHeapManagement = false;  // OpenGL backend has no explicit heap API
-        m_capabilities.supportsTimestampQueries = true;
+        // GL_TIMESTAMP exposes no backend-verified conversion frequency or
+        // counter valid-bit width in the current RHI implementation.  Do not
+        // publish guessed nanosecond timing as a portable Graphics contract.
+        m_capabilities.supportsTimestampQueries = false;
         m_capabilities.supportsOcclusionQueries = true;
         m_capabilities.supportsPipelineStatisticsQueries = false; // OpenGL only provides partial primitive counters here
-        m_capabilities.timestampFrequency = 1000000000;          // OpenGL timestamps are nanosecond-based in this backend
+        m_capabilities.timestampFrequency = 0;
         m_capabilities.supportsHostFenceSignal = false;
         m_capabilities.supportsDefaultQueueFenceSignal = true;
         m_capabilities.supportsExplicitQueueFenceSignal = false;
@@ -617,6 +620,13 @@ namespace RVX
         if (!validation)
         {
             RVX_RHI_ERROR("OpenGL query pool creation failed: {}", validation.message);
+            return nullptr;
+        }
+
+        if (desc.type == RHIQueryType::Timestamp &&
+            !m_capabilities.supportsTimestampQueries)
+        {
+            RVX_RHI_ERROR("OpenGL timestamp query creation rejected because verified Graphics timestamp metadata is unavailable");
             return nullptr;
         }
 

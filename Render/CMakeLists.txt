@@ -79,6 +79,7 @@ target_sources(RVX_Render PRIVATE
     Private/PipelineCache.cpp
     # Context
     Private/Context/RenderContext.cpp
+    Private/Context/RenderFrameTimingOwner.cpp
     Private/Context/FrameSynchronizer.cpp
     # Renderer
     Private/Renderer/ViewData.cpp
@@ -102,6 +103,7 @@ target_sources(RVX_Render PRIVATE
     Private/Submission/RenderSubmissionStrategy.cpp
     Private/Submission/RenderInstanceBatchPlan.cpp
     Private/Submission/RasterInstanceStream.cpp
+    Private/Submission/DirectRasterReadbackQualification.cpp
     Private/Resources/FrameConstantUploadArena.cpp
     # Diagnostics
     Private/Diagnostics/RenderFeatureReport.cpp
@@ -187,7 +189,6 @@ target_link_libraries(RVX_Render PUBLIC
     RVX_Core
     RVX::RenderContracts
     RVX_RHI
-    Spatial
     RVX::ShaderCompiler
 )
 

@@ -70,7 +70,115 @@ namespace RVX
             bool depthAvailable = false;
             bool requestedEnabled = false;
             bool contextValid = false;
+            bool recordingPrepared = false;
         };
+
+        enum class DrawPreparationResult : uint8
+        {
+            Prepared = 0,
+            SkippedResource,
+            SkippedMaterial,
+        };
+
+        [[nodiscard]] const RenderPassExecutionPlan* FindTransparentPlan(
+            const RenderFrameExecutionPlan* executionPlan) noexcept
+        {
+            if (executionPlan == nullptr)
+            {
+                return nullptr;
+            }
+            for (const RenderPassExecutionPlan& candidate : executionPlan->passes)
+            {
+                if (candidate.pass == RenderPassKind::Transparent)
+                {
+                    return &candidate;
+                }
+            }
+            return nullptr;
+        }
+
+        [[nodiscard]] RenderPolicyReason GetTransparentSuccessReason(
+            const RenderPassExecutionData& execution) noexcept
+        {
+            const RenderPassExecutionPlan* const passPlan =
+                FindTransparentPlan(execution.GetExecutionPlan());
+            return passPlan != nullptr ? passPlan->reason : RenderPolicyReason::None;
+        }
+
+        void PublishTransparentExecutionReport(
+            const RenderPassExecutionData& execution,
+            const TransparentPassDrawStats& stats,
+            RenderExecutionStatus status,
+            RenderPolicyReason reason)
+        {
+            RenderFrameExecutionReport* const frameReport =
+                execution.GetExecutionReport();
+            if (frameReport == nullptr)
+            {
+                return;
+            }
+
+            const RenderPassExecutionPlan* const passPlan =
+                FindTransparentPlan(execution.GetExecutionPlan());
+            for (RenderPassExecutionReport& report : frameReport->passes)
+            {
+                if (report.pass != RenderPassKind::Transparent)
+                {
+                    continue;
+                }
+
+                report.status = status;
+                report.executedVisibility = passPlan != nullptr
+                    ? passPlan->visibility : RenderVisibilityMode::Cpu;
+                report.reason = reason;
+                report.skippedPacketCount = passPlan != nullptr
+                    ? passPlan->partition.skippedPacketCount : 0;
+                report.materialBindingsAvailable = true;
+                report.materialBindingCount = stats.materialBindingCount;
+                report.materialFallbackBindingCount =
+                    stats.materialFallbackBindingCount;
+                report.materialTextureFlags = stats.materialTextureFlags;
+                report.materialFallbackTextureFlags =
+                    stats.materialFallbackTextureFlags;
+
+                // Transparent rendering is deliberately a canonical Direct
+                // lane. PacketRequiresDirect is an input policy fact, not a
+                // runtime fallback from a GPU-driven lane.
+                report.gpuDrivenLane = {};
+                report.directLane.submission = RenderSubmissionMode::Direct;
+                const bool directLanePlanned = passPlan != nullptr &&
+                    passPlan->partition.directPacketCount != 0;
+                report.directLane.status = directLanePlanned
+                    ? status : RenderExecutionStatus::NotAttempted;
+                report.directLane.reason = directLanePlanned
+                    ? reason : RenderPolicyReason::None;
+                report.directLane.executedCountsAvailable = directLanePlanned;
+                report.directLane.executedPacketCount = directLanePlanned
+                    ? stats.executedPacketCount : 0;
+                report.directLane.executedDrawCount = directLanePlanned
+                    ? stats.executedDrawCount : 0;
+                break;
+            }
+            frameReport->frameSequence = execution.identity.frameSequence;
+            if (status == RenderExecutionStatus::Failed)
+            {
+                frameReport->status = RenderExecutionStatus::Failed;
+            }
+        }
+
+        void MarkTransparentPreflightFailure(GraphPassData& data,
+                                             RenderPolicyReason reason)
+        {
+            if (data.results == nullptr)
+            {
+                return;
+            }
+            TransparentPassDrawStats& stats = data.results->transparentStats;
+            stats.preflightFailed = true;
+            stats.failureReason = reason;
+            PublishTransparentExecutionReport(
+                data.execution, stats, RenderExecutionStatus::Failed, reason);
+        }
 
         [[nodiscard]] bool RetainResource(RenderGraphBuilder& builder,
                                           RefCounted* resource)
@@ -136,13 +244,14 @@ namespace RVX
             return true;
         }
 
-        [[nodiscard]] bool PrepareDrawRecord(GraphPassData& data,
-                                             const RenderDrawItem& item)
+        [[nodiscard]] DrawPreparationResult PrepareDrawRecord(
+            GraphPassData& data,
+            const RenderDrawItem& item)
         {
             const RenderScene& scene = data.frameSnapshot->scene;
             if (item.objectIndex >= scene.GetObjectCount())
             {
-                return false;
+                return DrawPreparationResult::SkippedResource;
             }
 
             const RenderObject& object = scene.GetObject(item.objectIndex);
@@ -152,12 +261,12 @@ namespace RVX
                 !buffers.uvBuffer || !buffers.tangentBuffer ||
                 item.submeshIndex >= buffers.submeshes.size())
             {
-                return false;
+                return DrawPreparationResult::SkippedResource;
             }
             const bool skinned = object.HasSkinningData();
             if (skinned && !buffers.HasSkinningVertexData())
             {
-                return false;
+                return DrawPreparationResult::SkippedResource;
             }
 
             DrawRecord record;
@@ -170,8 +279,17 @@ namespace RVX
                     item.material, nullptr, materialOptions, record.material) ||
                 !record.material.IsDrawable())
             {
-                return false;
+                return DrawPreparationResult::SkippedMaterial;
             }
+            TransparentPassDrawStats& stats = data.results->transparentStats;
+            ++stats.materialBindingCount;
+            if (record.material.binding.usedFallback)
+            {
+                ++stats.materialFallbackBindingCount;
+            }
+            stats.materialTextureFlags |= record.material.binding.textureFlags;
+            stats.materialFallbackTextureFlags |=
+                record.material.binding.fallbackTextureFlags;
 
             const ViewData& view = data.execution.view;
             const bool previousWorldViewProjectionValid =
@@ -189,34 +307,63 @@ namespace RVX
                     object.receivesShadow,
                     ResolveSkinningMatrices(object, buffers)))
             {
-                return false;
+                return DrawPreparationResult::SkippedResource;
             }
             record.objectDynamicOffsets = PipelineCache::BuildSingleDynamicOffset(
                 static_cast<uint64>(objectSlot) * data.bindings.objectConstantStride);
             data.draws.push_back(std::move(record));
-            return true;
+            return DrawPreparationResult::Prepared;
         }
 
         [[nodiscard]] bool PrepareRecording(GraphPassData& data,
                                             RenderGraphBuilder& builder)
         {
+            if (data.results != nullptr)
+            {
+                data.results->transparentStats = {};
+                data.results->transparentStats.requested = data.requestedEnabled;
+                data.results->transparentStats.candidateDrawItemCount =
+                    data.frameSnapshot != nullptr
+                    ? static_cast<uint32>(
+                          data.frameSnapshot->transparentDrawItems.size())
+                    : 0;
+            }
             if (!data.contextValid || !data.results || !data.frameSnapshot ||
                 !data.requestedEnabled || !data.pipelineCache ||
                 !data.materialSystem || !data.resourceRegistry)
             {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::InconsistentFacts);
                 return false;
             }
 
             const ViewData& view = data.execution.view;
-            if (!view.colorTarget.IsValid() ||
-                data.frameSnapshot->transparentDrawItems.empty())
+            if (data.frameSnapshot->transparentDrawItems.empty())
             {
+                TransparentPassDrawStats& stats = data.results->transparentStats;
+                stats.noWork = true;
+                stats.failureReason = RenderPolicyReason::None;
+                PublishTransparentExecutionReport(
+                    data.execution,
+                    stats,
+                    RenderExecutionStatus::Completed,
+                    GetTransparentSuccessReason(data.execution));
+                return false;
+            }
+            if (!IsTransparentDrawListStrictlyOrdered(
+                    data.frameSnapshot->transparentDrawItems) ||
+                !view.colorTarget.IsValid())
+            {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::InconsistentFacts);
                 return false;
             }
             const RHITextureDesc* colorDesc =
                 builder.GetTextureDesc(view.colorTarget);
             if (colorDesc == nullptr)
             {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
             }
             data.colorFormat = colorDesc->format;
@@ -227,6 +374,8 @@ namespace RVX
             if (!data.pipelineCache->CreateTransparentRasterDrawBindingSnapshot(
                     view, candidateCount, data.lightResources, data.bindings))
             {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
             }
             data.skinnedPipeline = RHIPipelineRef(
@@ -241,6 +390,8 @@ namespace RVX
                     DefaultLitDirectVertexInputMode::Rigid));
             if (!data.skinnedPipeline || !data.rigidPipeline)
             {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::PipelineUnavailable);
                 return false;
             }
 
@@ -253,6 +404,8 @@ namespace RVX
                         item.material,
                         *data.results))
                 {
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::ResourcesUnavailable);
                     return false;
                 }
             }
@@ -263,10 +416,22 @@ namespace RVX
             // their relative blend order while invalid entries are skipped.
             for (const RenderDrawItem& item : data.frameSnapshot->transparentDrawItems)
             {
-                (void)PrepareDrawRecord(data, item);
+                const DrawPreparationResult result = PrepareDrawRecord(data, item);
+                if (result == DrawPreparationResult::SkippedMaterial)
+                {
+                    ++data.results->transparentStats.skippedMaterialBindingCount;
+                }
+                else if (result == DrawPreparationResult::SkippedResource)
+                {
+                    ++data.results->transparentStats.skippedResourceCount;
+                }
             }
+            data.results->transparentStats.preparedDrawItemCount =
+                static_cast<uint32>(data.draws.size());
             if (data.draws.empty())
             {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
             }
 
@@ -275,6 +440,8 @@ namespace RVX
             // a genuine no-op instead of a graph-visible write without work.
             if (!RetainDrawResources(builder, data))
             {
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
             }
 
@@ -296,6 +463,8 @@ namespace RVX
                 if (!iblReadsDeclared)
                 {
                     data.draws.clear();
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::ResourcesUnavailable);
                     return false;
                 }
             }
@@ -317,6 +486,8 @@ namespace RVX
             if (!data.colorViewHandle.IsValid())
             {
                 data.draws.clear();
+                MarkTransparentPreflightFailure(
+                    data, RenderPolicyReason::ResourcesUnavailable);
                 return false;
             }
             if (data.depthAvailable)
@@ -328,6 +499,8 @@ namespace RVX
                 {
                     data.draws.clear();
                     data.colorHandle = {};
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::ResourcesUnavailable);
                     return false;
                 }
                 RHITextureViewDesc depthViewDesc;
@@ -345,17 +518,23 @@ namespace RVX
                         RHIResourceState::DepthRead,
                         RHIShaderStage::Vertex | RHIShaderStage::Pixel));
                 if (!data.depthViewHandle.IsValid())
+                {
+                    MarkTransparentPreflightFailure(
+                        data, RenderPolicyReason::ResourcesUnavailable);
                     return false;
+                }
             }
+            data.recordingPrepared = true;
             return true;
         }
 
-        void ExecuteRecording(const GraphPassData& data,
-                              RenderGraphPassContext& context)
+        [[nodiscard]] bool ExecuteRecording(const GraphPassData& data,
+                                            RenderGraphPassContext& context)
         {
             RHICommandContext& ctx = context.Commands();
             if (!data.contextValid || !data.results ||
-                data.results->identity != data.identity || data.draws.empty() ||
+                data.results->identity != data.identity || !data.recordingPrepared ||
+                data.draws.empty() ||
                 !data.skinnedPipeline || !data.rigidPipeline ||
                 !data.bindings.IsValid() ||
                 !data.identity.IsValid() || data.identity.graph == nullptr ||
@@ -370,7 +549,7 @@ namespace RVX
                   data.depthHandle.recordingGeneration !=
                       data.identity.graphRecordingGeneration)))
             {
-                return;
+                return false;
             }
 
             RHITexture* colorTexture = context.GetTexture(data.colorHandle);
@@ -378,7 +557,7 @@ namespace RVX
                 ? context.GetTexture(data.depthHandle) : nullptr;
             if (!colorTexture || (data.depthAvailable && !depthTexture))
             {
-                return;
+                return false;
             }
             RHITextureView* colorView =
                 context.GetTextureView(data.colorViewHandle);
@@ -387,7 +566,7 @@ namespace RVX
             if (!colorView || (data.depthAvailable && !depthView))
             {
                 RVX_CORE_WARN("TransparentPass: failed to resolve graph-owned attachment views");
-                return;
+                return false;
             }
 
             RHIRenderPassDesc renderPassDesc;
@@ -415,11 +594,15 @@ namespace RVX
             ctx.SetScissor(scissor);
 
             RHIPipeline* currentPipeline = nullptr;
+            TransparentPassDrawStats& stats = data.results->transparentStats;
+            bool executionFailed = false;
             for (const DrawRecord& draw : data.draws)
             {
                 if (!draw.buffers.IsValid() || !draw.buffers.positionBuffer ||
                     !draw.buffers.indexBuffer || !draw.material.IsDrawable())
                 {
+                    ++stats.skippedExecutionDrawCount;
+                    executionFailed = true;
                     continue;
                 }
 
@@ -457,8 +640,14 @@ namespace RVX
                                 draw.submesh.indexOffset,
                                 draw.submesh.baseVertex,
                                 0);
+                static_cast<void>(data.results->RecordSuccessfulMaterialBinding(
+                    draw.material.binding));
+                ++stats.executedPacketCount;
+                ++stats.executedDrawCount;
             }
             ctx.EndRenderPass();
+            return !executionFailed &&
+                stats.executedDrawCount == stats.preparedDrawItemCount;
         }
     } // namespace
 
@@ -602,7 +791,31 @@ namespace RVX
             [](const GraphPassData& data,
                RenderGraphPassContext& context)
             {
-                ExecuteRecording(data, context);
+                if (data.results == nullptr || data.results->transparentStats.noWork)
+                {
+                    return;
+                }
+                if (!ExecuteRecording(data, context))
+                {
+                    TransparentPassDrawStats& stats =
+                        data.results->transparentStats;
+                    stats.executionFailed = true;
+                    stats.failureReason =
+                        RenderPolicyReason::UnexpectedRecordingFailure;
+                    PublishTransparentExecutionReport(
+                        data.execution,
+                        stats,
+                        RenderExecutionStatus::Failed,
+                        stats.failureReason);
+                    return;
+                }
+                TransparentPassDrawStats& stats = data.results->transparentStats;
+                stats.failureReason = RenderPolicyReason::None;
+                PublishTransparentExecutionReport(
+                    data.execution,
+                    stats,
+                    RenderExecutionStatus::Completed,
+                    GetTransparentSuccessReason(data.execution));
             });
     }
 

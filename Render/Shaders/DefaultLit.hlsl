@@ -22,9 +22,7 @@
 #include "Include/BRDF.hlsli"
 #include "Include/GPUInstanceData.hlsli"
 #include "Include/Lighting.hlsli"
-#if defined(RVX_GPU_SCENE_RASTER)
 #include "GPUDriven/GPUSceneRaster.hlsli"
-#endif
 
 #define MATERIAL_TEXTURE_BASE_COLOR 0x01
 #define MATERIAL_TEXTURE_NORMAL 0x02
@@ -302,7 +300,8 @@ PSInput VSMainRigid(RigidDirectVSInput input)
 {
     PSInput output;
 
-    float4 worldPos = mul(World, float4(input.Position, 1.0f));
+    const float4 worldPos = RVXTransformRigidAffinePosition(
+        World[0], World[1], World[2], input.Position);
     output.WorldPos = worldPos.xyz;
     output.Position = mul(ViewProjection, worldPos);
     output.WorldNormal = normalize(mul((float3x3)NormalMatrix, input.Normal));
@@ -322,7 +321,11 @@ PSInput VSMainGPUDriven(
 
     PSInput output;
 
-    float4 worldPos = mul(instance.worldMatrix, float4(input.Position, 1.0));
+    const float4 worldPos = RVXTransformRigidAffinePosition(
+        instance.worldMatrix[0],
+        instance.worldMatrix[1],
+        instance.worldMatrix[2],
+        input.Position);
     output.WorldPos = worldPos.xyz;
     output.Position = mul(ViewProjection, worldPos);
     output.WorldNormal = normalize(mul((float3x3)instance.normalMatrix, input.Normal));
@@ -340,7 +343,11 @@ PSInput VSMainInstancedMaterial(
     GPUInstanceData instance = GPUDrivenInstances[input.InstanceIndex];
 
     PSInput output;
-    float4 worldPos = mul(instance.worldMatrix, float4(input.Position, 1.0));
+    const float4 worldPos = RVXTransformRigidAffinePosition(
+        instance.worldMatrix[0],
+        instance.worldMatrix[1],
+        instance.worldMatrix[2],
+        input.Position);
     output.WorldPos = worldPos.xyz;
     output.Position = mul(ViewProjection, worldPos);
     output.WorldNormal = normalize(mul((float3x3)instance.normalMatrix, input.Normal));
@@ -699,13 +706,19 @@ float SampleDirectionalShadow(float3 worldPos, float3 worldNormal)
     }
 
     int cascadeCount = (int)clamp(round(CameraForwardAndShadowCascadeCount.w), 1.0, 4.0);
+    float viewDepth = GetDirectionalShadowViewDepth(worldPos);
+    float lastCascadeSplit = DirectionalShadowCascadeSplits[cascadeCount - 1];
+    if (viewDepth > lastCascadeSplit)
+    {
+        return 1.0;
+    }
+
     int cascadeIndex = SelectDirectionalShadowCascade(worldPos);
     float shadow = SampleDirectionalShadowCascade(worldPos, worldNormal, cascadeIndex);
     int nextCascadeIndex = cascadeIndex + 1;
 
     if (nextCascadeIndex < cascadeCount)
     {
-        float viewDepth = GetDirectionalShadowViewDepth(worldPos);
         float splitDistance = DirectionalShadowCascadeSplits[cascadeIndex];
         float fadeDistance = DirectionalShadowCascadeFadeDistances[cascadeIndex];
         float fadeStart = splitDistance - fadeDistance;

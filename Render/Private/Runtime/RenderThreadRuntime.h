@@ -67,10 +67,49 @@ namespace RenderRuntimeDetail
         virtual RenderRuntimeResult ConsumeFrameV5(
             const RenderFramePacketV5& packet,
             const RenderSceneDatabase& scene) = 0;
+        /**
+         * @brief Arm one owner-side GPUScene culling qualification capture.
+         *
+         * The runtime invokes this only on its Render owner before a later
+         * frame can seal GPUScene culling work. Consumers that do not own the
+         * GPUScene path deliberately reject the request.
+         */
+        [[nodiscard]] virtual bool RequestGPUSceneCullingQualificationCapture()
+        {
+            return false;
+        }
+        /** @brief Arm one owner-side Direct Opaque physical readback capture. */
+        [[nodiscard]] virtual bool
+        RequestDirectOpaqueRasterReadbackQualificationCapture()
+        {
+            return false;
+        }
         virtual void PollCompletion() = 0;
         virtual void RetireCompleted() = 0;
+        /**
+         * @brief Return whether owner-thread completion polling remains necessary.
+         *
+         * The default deliberately reports no pending work so existing test and
+         * specialized consumers retain the normal indefinite idle wait unless
+         * they explicitly own a GPU-completion source.
+         */
+        [[nodiscard]] virtual bool HasPendingCompletionWork() const noexcept
+        {
+            return false;
+        }
         /** @brief Copy Render-owned value diagnostics on the owner thread. */
         virtual void PopulateDiagnostics(
+            RenderDiagnosticsSnapshot&) const
+        {
+        }
+        /**
+         * @brief Copy completion-owned telemetry after non-blocking retirement.
+         *
+         * This deliberately remains separate from frame-value diagnostics so a
+         * delayed completion sample cannot be associated with the frame that
+         * happens to be consumed in the same pump iteration.
+         */
+        virtual void PopulateCompletionDiagnostics(
             RenderDiagnosticsSnapshot&) const
         {
         }
@@ -157,6 +196,15 @@ namespace RenderRuntimeDetail
         virtual void AfterFalseWaitPredicate() noexcept = 0;
     };
 
+    /** @brief Private owner-side latch immediately before frame acquisition. */
+    class IRenderFrameAcquireHook
+    {
+    public:
+        virtual ~IRenderFrameAcquireHook() = default;
+
+        virtual void BeforeFrameAcquire() noexcept = 0;
+    };
+
     class RenderThreadRuntime final : public IRenderExecutorPump,
                                       public IRenderResourceGateway,
                                       public NonMovable
@@ -176,7 +224,9 @@ namespace RenderRuntimeDetail
                             std::shared_ptr<IRenderWaitHook> waitHook =
                                 nullptr,
                             std::shared_ptr<IRenderMonotonicClock> clock =
-                                nullptr);
+                                nullptr,
+                            std::shared_ptr<IRenderFrameAcquireHook>
+                                frameAcquireHook = nullptr);
         RenderThreadRuntime(RenderRuntimeConfig config,
                             NativeSurfaceDesc surface,
                             RenderExecutorKind executorKind,
@@ -191,7 +241,9 @@ namespace RenderRuntimeDetail
                             std::shared_ptr<IRenderWaitHook> waitHook =
                                 nullptr,
                             std::shared_ptr<IRenderMonotonicClock> clock =
-                                nullptr);
+                                nullptr,
+                            std::shared_ptr<IRenderFrameAcquireHook>
+                                frameAcquireHook = nullptr);
         ~RenderThreadRuntime() override;
 
         [[nodiscard]] RenderRuntimeResult Start();
@@ -206,6 +258,34 @@ namespace RenderRuntimeDetail
         [[nodiscard]] RenderRuntimeResult GetLastRuntimeResult() const;
         [[nodiscard]] RenderShutdownResult GetLastShutdownResult() const;
         [[nodiscard]] bool IsReady() const;
+        /**
+         * @brief Enter the terminal completion-only drain and wake its owner.
+         *
+         * The first successful call seals every Update-side publication path.
+         * From then until Stop(), owner wakes only poll/retire completion and
+         * publish immutable diagnostics; they never acquire scene, frame,
+         * upload, release, or resize work.
+         */
+        [[nodiscard]] bool RequestCompletionPump() noexcept;
+        /**
+         * @brief Wake the Render owner for one ordinary completion poll.
+         *
+         * Unlike RequestCompletionPump(), this does not seal publication or
+         * enter the terminal completion-only drain.  Scene/frame/resource
+         * publication remains available after the owner has polled and
+         * retired completed GPU work.
+         */
+        [[nodiscard]] bool RequestCompletionPoll() noexcept;
+        /**
+         * @brief Publish one explicit GPUScene culling qualification request.
+         *
+         * This is a one-shot, publication-safe control path. It does not seal
+         * normal frame publication and it never performs completion polling.
+         */
+        [[nodiscard]] bool RequestGPUSceneCullingQualificationCapture() noexcept;
+        /** @brief Publish one explicit Direct Opaque readback qualification request. */
+        [[nodiscard]] bool RequestDirectOpaqueRasterReadbackQualificationCapture()
+            noexcept;
 
         RenderResourceReserveResult ReserveResource(
             AssetId assetId,
@@ -284,6 +364,7 @@ namespace RenderRuntimeDetail
         std::shared_ptr<IRenderPublicationHook> m_publicationHook;
         std::shared_ptr<IRenderWaitHook> m_waitHook;
         std::shared_ptr<IRenderMonotonicClock> m_clock;
+        std::shared_ptr<IRenderFrameAcquireHook> m_frameAcquireHook;
         std::unique_ptr<RenderFrameMailboxV5> m_frameMailboxV5;
         // Render-thread-only carry retained until its required scene revision
         // has been applied from the reliable update channel.
@@ -304,8 +385,15 @@ namespace RenderRuntimeDetail
         std::atomic<bool> m_started = false;
         std::atomic<bool> m_joined = false;
         std::atomic<bool> m_wakePending = false;
+        std::atomic<bool> m_completionOnlyDrainActive = false;
         std::atomic<bool> m_publicationSealed = false;
         std::atomic<bool> m_ownerFatalPending = false;
+        std::atomic<bool> m_gpuSceneCullingQualificationRequestIssued = false;
+        std::atomic<bool> m_gpuSceneCullingQualificationRequestPending = false;
+        std::atomic<bool> m_directOpaqueRasterReadbackQualificationRequestIssued =
+            false;
+        std::atomic<bool> m_directOpaqueRasterReadbackQualificationRequestPending =
+            false;
 
         mutable std::mutex m_stateMutex;
         std::timed_mutex m_startupArbitrationMutex;

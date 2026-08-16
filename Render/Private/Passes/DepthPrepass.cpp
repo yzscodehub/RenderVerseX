@@ -11,6 +11,7 @@
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/PipelineCache.h"
+#include "Render/Passes/RenderPassClearValues.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
@@ -84,44 +85,72 @@ namespace
         return layout;
     }
 
-    bool ResolveUniqueObject(const RenderScene& scene,
-                             RenderObjectId objectId,
-                             uint32 primitiveData,
-                             RenderObject& outObject) noexcept
+    bool ValidateRetainedObjectIdentityIndex(const RenderScene& scene) noexcept
+    {
+        for (size_t index = 0; index < scene.GetObjectCount(); ++index)
+        {
+            const RenderObject& object = scene.GetObject(index);
+            if (object.entityId == 0 ||
+                scene.FindObject(object.entityId) != &object)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    const RenderObject* ResolveUniqueObject(const RenderScene& scene,
+                                            RenderObjectId objectId,
+                                            uint32 primitiveData) noexcept
     {
         if (objectId == 0 || primitiveData >= scene.GetObjectCount())
         {
-            return false;
+            return nullptr;
         }
 
         const RenderObject& indexedObject = scene.GetObject(primitiveData);
         if (indexedObject.entityId != objectId)
         {
-            return false;
+            return nullptr;
         }
 
-        const RenderObject* uniqueObject = nullptr;
-        for (uint32 index = 0;
-             index < static_cast<uint32>(scene.GetObjectCount());
-             ++index)
-        {
-            const RenderObject& candidate = scene.GetObject(index);
-            if (candidate.entityId != objectId)
-            {
-                continue;
-            }
-            if (uniqueObject != nullptr)
-            {
-                return false;
-            }
-            uniqueObject = &candidate;
-        }
+        const RenderObject* const uniqueObject = scene.FindObject(objectId);
         if (uniqueObject == nullptr || uniqueObject != &indexedObject)
         {
-            return false;
+            return nullptr;
         }
-        outObject = *uniqueObject;
-        return true;
+        return uniqueObject;
+    }
+
+    bool HasMeshBufferSemantic(const RenderMeshResourceData& mesh,
+                               RenderMeshBufferSemantic semantic) noexcept
+    {
+        return std::any_of(mesh.buffers.begin(),
+                           mesh.buffers.end(),
+                           [semantic](const RenderOwnedBuffer& owned)
+                           {
+                               return owned.semantic == semantic &&
+                                   owned.buffer.Get() != nullptr;
+                           });
+    }
+
+    const MeshUploadSubmesh* ResolveMeshSubmesh(
+        const RenderMeshResourceData& mesh,
+        uint32 submeshIndex,
+        MeshUploadSubmesh& syntheticSubmesh) noexcept
+    {
+        if (submeshIndex < mesh.submeshes.size())
+        {
+            return &mesh.submeshes[submeshIndex];
+        }
+        if (submeshIndex == 0 && mesh.submeshes.empty() &&
+            mesh.createInfo.indexCount != 0)
+        {
+            syntheticSubmesh.indexCount =
+                static_cast<uint32>(mesh.createInfo.indexCount);
+            return &syntheticSubmesh;
+        }
+        return nullptr;
     }
 
     const RenderPassExecutionPlan* FindPassExecutionPlan(
@@ -209,7 +238,6 @@ namespace
 struct DepthPrepass::PlannedDepthDraw
 {
     DirectDrawPacket packet;
-    RenderObject object;
     MeshGPUBuffers buffers;
     SubmeshGPUInfo submesh;
     RHIPipeline* pipeline = nullptr;
@@ -246,7 +274,8 @@ void DepthPrepass::InitializeGraphRecorder(
     const std::vector<RenderDrawItem>* maskedDrawItems,
     const GPUCulling* gpuCulling,
     const RenderPassGPUDrivenInputs& gpuInputs,
-    bool gpuDrivenPlanned)
+    bool gpuDrivenPlanned,
+    std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache)
 {
     m_renderScene = scene;
     m_opaqueDrawItems = opaqueDrawItems;
@@ -263,6 +292,7 @@ void DepthPrepass::InitializeGraphRecorder(
     m_gpuSceneRecordingFailure = gpuInputs.gpuSceneRecordingFailure;
     m_gpuDrivenDepthIndirectEnabled = gpuDrivenPlanned;
     m_gpuSceneRasterEnabled = gpuInputs.gpuSceneRasterEnabled;
+    m_directInstanceStreamCache = std::move(directInstanceStreamCache);
 }
 
 void DepthPrepass::AddToGraph(
@@ -273,6 +303,7 @@ void DepthPrepass::AddToGraph(
     {
         RenderPassExecutionData execution{};
         RenderPassGPUDrivenInputs gpuInputs{};
+        std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache;
         std::unique_ptr<DepthPrepass> recorder;
         bool contextValid = false;
     };
@@ -377,6 +408,8 @@ void DepthPrepass::AddToGraph(
     const GPUCulling* const gpuCulling = gpuInputs.recordedState != nullptr
         ? &gpuInputs.recordedState->GetCulling() : nullptr;
     const bool enabled = m_enabled;
+    const std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache =
+        m_directInstanceStreamCache;
     const std::shared_ptr<RenderPassRecordResults> results =
         resultOwnershipValid ? execution.results : nullptr;
 
@@ -395,10 +428,12 @@ void DepthPrepass::AddToGraph(
          gpuCulling,
          gpuPlanned,
          enabled,
+         directInstanceStreamCache,
          results](RenderGraphBuilder& builder, GraphPassData& data)
         {
             data.execution = execution;
             data.gpuInputs = gpuInputs;
+            data.directInstanceStreamCache = directInstanceStreamCache;
             data.contextValid = contextValid;
             if (!data.contextValid || !results)
             {
@@ -418,7 +453,7 @@ void DepthPrepass::AddToGraph(
             data.recorder->SetEnabled(enabled);
             data.recorder->InitializeGraphRecorder(
                 renderScene, opaqueDrawItems, maskedDrawItems, gpuCulling,
-                data.gpuInputs, gpuPlanned);
+                data.gpuInputs, gpuPlanned, data.directInstanceStreamCache);
             if (maskedDrawItems != nullptr)
             {
                 for (const RenderDrawItem& item : *maskedDrawItems)
@@ -472,7 +507,14 @@ void DepthPrepass::Setup(RenderGraphBuilder& builder, const ViewData& view)
     m_directInstanceHandle = {};
     m_directInstanceIndexHandle = {};
     m_directInstancePlan = {};
-    m_directInstanceStream = {};
+    m_directInstanceStream.instanceUploadBytes = 0;
+    m_directInstanceStream.indexUploadBytes = 0;
+    m_directInstanceStream.instancePatchedRowCount = 0;
+    m_directInstanceStream.indexPatchedRowCount = 0;
+    m_directInstanceStream.activeInstanceCount = 0;
+    m_directInstanceStream.activeInstanceCapacity = 0;
+    m_directInstanceStream.instanceFullMaterialization = false;
+    m_directInstanceStream.indexFullMaterialization = false;
     m_directInstancingPreflightFailed = false;
 
     if (!IsEnabled())
@@ -571,22 +613,29 @@ bool DepthPrepass::PrepareDirectInstanceStream(RenderGraphBuilder& builder,
         view.meshPassPreparation->depth,
         view.renderVisibility);
     std::vector<GPUInstanceData> instances;
+    std::vector<RasterInstanceStreamKey> instanceKeys;
+    std::vector<RasterInstanceStreamBatch> instanceBatches;
     if (!direct.succeeded ||
         !BuildRasterInstanceData(m_directInstancePlan,
                                  direct.batch,
                                  *m_renderScene,
-                                 instances))
+                                 instances,
+                                 instanceKeys,
+                                 instanceBatches))
     {
         return false;
     }
     IRHIDevice* device = m_pipelineCache->GetDevice();
     if (device == nullptr ||
+        m_directInstanceStreamCache == nullptr ||
         !CreateRasterInstanceStream(*device,
                                     instances,
+                                    instanceKeys,
+                                    instanceBatches,
                                     "DepthDirectInstancing",
+                                    *m_directInstanceStreamCache,
                                     m_directInstanceStream))
     {
-        m_directInstanceStream = {};
         return false;
     }
     m_directInstanceHandle = builder.ImportBuffer(
@@ -820,6 +869,11 @@ bool DepthPrepass::BuildPlannedDirectBatch(
         built.batch.packets.size() > std::numeric_limits<uint32>::max()
             ? 0
             : static_cast<uint32>(built.batch.packets.size());
+    if (!ValidateRetainedObjectIdentityIndex(*m_renderScene))
+    {
+        m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
+        return false;
+    }
     outPlannedDraws.reserve(built.batch.packets.size());
     for (const DirectDrawPacket& draw : built.batch.packets)
     {
@@ -838,12 +892,9 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             return false;
         }
 
-        RenderObject object;
-        if (!ResolveUniqueObject(*m_renderScene,
-                                 packet.objectId,
-                                 packet.primitiveData,
-                                 object) ||
-            object.mesh != packet.geometryKey.mesh)
+        const RenderObject* const object = ResolveUniqueObject(
+            *m_renderScene, packet.objectId, packet.primitiveData);
+        if (object == nullptr || object->mesh != packet.geometryKey.mesh)
         {
             m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
             outPlannedDraws.clear();
@@ -870,7 +921,7 @@ bool DepthPrepass::BuildPlannedDirectBatch(
         if ((masked && !HasDrawFlag(packet.flags, RenderDrawFlags::Masked)) ||
             (!masked && HasDrawFlag(packet.flags, RenderDrawFlags::Masked)) ||
             packet.pipelineKey.skinned != skinned ||
-            skinned != object.HasSkinningData() ||
+            skinned != object->HasSkinningData() ||
             (masked && packet.materialKey.materialMode != MaterialRenderMode::Masked) ||
             (!masked && packet.materialKey.materialMode != MaterialRenderMode::Opaque) ||
             missingMaterial != HasDrawFlag(packet.flags, RenderDrawFlags::MissingMaterial))
@@ -880,35 +931,46 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             return false;
         }
 
-        const MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
-            m_resourceRegistry, packet.geometryKey.mesh);
-        if (!buffers.IsValid() ||
-            buffers.positionBuffer == nullptr || buffers.indexBuffer == nullptr ||
-            packet.geometryKey.submeshIndex >= buffers.submeshes.size())
+        const RenderMeshResourceData* const mesh =
+            m_resourceRegistry->ResolveMesh(packet.geometryKey.mesh);
+        const bool hasPosition = mesh != nullptr && HasMeshBufferSemantic(
+            *mesh, RenderMeshBufferSemantic::Position);
+        const bool hasIndex = mesh != nullptr && HasMeshBufferSemantic(
+            *mesh, RenderMeshBufferSemantic::Index);
+        const bool hasUV = mesh != nullptr && HasMeshBufferSemantic(
+            *mesh, RenderMeshBufferSemantic::UV);
+        MeshUploadSubmesh syntheticSubmesh;
+        const MeshUploadSubmesh* const submesh = mesh != nullptr
+            ? ResolveMeshSubmesh(*mesh, packet.geometryKey.submeshIndex,
+                                 syntheticSubmesh)
+            : nullptr;
+        if (!hasPosition || !hasIndex || submesh == nullptr)
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
             outPlannedDraws.clear();
             return false;
         }
-        const SubmeshGPUInfo submesh =
-            buffers.submeshes[packet.geometryKey.submeshIndex];
         if (packet.submeshIndex != packet.geometryKey.submeshIndex ||
-            packet.arguments.indexCount != submesh.indexCount ||
-            packet.arguments.firstIndex != submesh.indexOffset ||
-            packet.arguments.vertexOffset != submesh.baseVertex)
+            packet.arguments.indexCount != submesh->indexCount ||
+            packet.arguments.firstIndex != submesh->indexOffset ||
+            packet.arguments.vertexOffset != submesh->baseVertex)
         {
             m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
             outPlannedDraws.clear();
             return false;
         }
         if (skinned &&
-            (!object.HasSkinningData() || !buffers.HasSkinningVertexData()))
+            (!object->HasSkinningData() ||
+             !HasMeshBufferSemantic(*mesh,
+                                    RenderMeshBufferSemantic::BoneIndices) ||
+             !HasMeshBufferSemantic(*mesh,
+                                    RenderMeshBufferSemantic::BoneWeights)))
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
             outPlannedDraws.clear();
             return false;
         }
-        if (masked && (!buffers.uvBuffer || !buffers.hasUVs))
+        if (masked && !hasUV)
         {
             m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
             ++m_drawStats.skippedMissingUVCount;
@@ -930,52 +992,9 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             return false;
         }
 
-        const DefaultLitDirectVertexInputMode inputMode = skinned
-            ? DefaultLitDirectVertexInputMode::Skinned
-            : DefaultLitDirectVertexInputMode::Rigid;
-        RHIPipeline* pipeline = masked
-            ? m_pipelineCache->GetMaskedDepthOnlyPipeline(inputMode)
-            : m_pipelineCache->GetDepthOnlyPipeline(inputMode);
-        if (pipeline == nullptr)
-        {
-            m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
-            outPlannedDraws.clear();
-            return false;
-        }
-
-        MaterialBindingResult materialBinding;
-        if (masked)
-        {
-            MaterialBindingOptions options;
-            options.allowNormalMap = false;
-            materialBinding = m_materialSystem->PrepareMaterialBinding(
-                packet.materialKey.material, nullptr, options);
-            if (!materialBinding.IsDrawable())
-            {
-                m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
-                ++m_drawStats.skippedMaterialBindingCount;
-                outPlannedDraws.clear();
-                return false;
-            }
-            if (!context.RetainSubmissionResource(
-                    Ref<RefCounted>(materialBinding.constantBuffer)) ||
-                !context.RetainSubmissionResource(
-                    Ref<RefCounted>(materialBinding.descriptorSetRef)))
-            {
-                m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
-                outPlannedDraws.clear();
-                return false;
-            }
-        }
-
         PlannedDepthDraw planned;
         planned.packet = draw;
-        planned.object = std::move(object);
-        planned.buffers = buffers;
-        planned.submesh = submesh;
-        planned.pipeline = pipeline;
         planned.frameSet = m_pipelineCache->GetFrameDescriptorSet();
-        planned.materialBinding = std::move(materialBinding);
         planned.masked = masked;
         planned.skinned = skinned;
         if (planned.frameSet == nullptr)
@@ -984,16 +1003,120 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             outPlannedDraws.clear();
             return false;
         }
+        outPlannedDraws.push_back(std::move(planned));
+    }
+
+    ApplyDirectInstancePlan(context, view, outPlannedDraws);
+
+    // Materialize the copying MeshGPUBuffers view only after instancing has
+    // either compacted transactionally or left the source packet vector intact.
+    for (PlannedDepthDraw& planned : outPlannedDraws)
+    {
+        const RenderDrawPacket& packet = planned.packet.packet;
+        const RenderObject* const object = ResolveUniqueObject(
+            *m_renderScene, packet.objectId, packet.primitiveData);
+        MeshGPUBuffers buffers = ResolveRenderMeshBuffers(
+            m_resourceRegistry, packet.geometryKey.mesh);
+        if (object == nullptr || object->mesh != packet.geometryKey.mesh ||
+            planned.skinned != IsSkinnedPacket(packet) ||
+            planned.skinned != object->HasSkinningData() ||
+            !buffers.IsValid() || buffers.positionBuffer == nullptr ||
+            buffers.indexBuffer == nullptr ||
+            packet.geometryKey.submeshIndex >= buffers.submeshes.size() ||
+            (planned.masked && (!buffers.uvBuffer || !buffers.hasUVs)))
+        {
+            m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
+            outPlannedDraws.clear();
+            return false;
+        }
+
+        const SubmeshGPUInfo submesh =
+            buffers.submeshes[packet.geometryKey.submeshIndex];
+        if (packet.submeshIndex != packet.geometryKey.submeshIndex ||
+            packet.arguments.indexCount != submesh.indexCount ||
+            packet.arguments.firstIndex != submesh.indexOffset ||
+            packet.arguments.vertexOffset != submesh.baseVertex ||
+            (planned.skinned && !buffers.HasSkinningVertexData()))
+        {
+            m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
+            outPlannedDraws.clear();
+            return false;
+        }
+
+        planned.submesh = submesh;
+        planned.buffers = std::move(buffers);
+        if (planned.instanced)
+        {
+            if (planned.pipeline == nullptr)
+            {
+                m_drawStats.failureReason =
+                    RenderPolicyReason::UnexpectedRecordingFailure;
+                outPlannedDraws.clear();
+                return false;
+            }
+            continue;
+        }
+
+        const DefaultLitDirectVertexInputMode inputMode = planned.skinned
+            ? DefaultLitDirectVertexInputMode::Skinned
+            : DefaultLitDirectVertexInputMode::Rigid;
+        planned.pipeline = planned.masked
+            ? m_pipelineCache->GetMaskedDepthOnlyPipeline(inputMode)
+            : m_pipelineCache->GetDepthOnlyPipeline(inputMode);
+        if (planned.pipeline == nullptr)
+        {
+            m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
+            outPlannedDraws.clear();
+            return false;
+        }
+    }
+
+    for (PlannedDepthDraw& planned : outPlannedDraws)
+    {
+        if (planned.masked)
+        {
+            MaterialBindingOptions options;
+            options.allowNormalMap = false;
+            planned.materialBinding = m_materialSystem->PrepareMaterialBinding(
+                planned.packet.packet.materialKey.material, nullptr, options);
+            if (!planned.materialBinding.IsDrawable() ||
+                !context.RetainSubmissionResource(
+                    Ref<RefCounted>(planned.materialBinding.constantBuffer)) ||
+                !context.RetainSubmissionResource(
+                    Ref<RefCounted>(planned.materialBinding.descriptorSetRef)))
+            {
+                m_drawStats.failureReason =
+                    RenderPolicyReason::UnexpectedRecordingFailure;
+                ++m_drawStats.skippedMaterialBindingCount;
+                outPlannedDraws.clear();
+                return false;
+            }
+        }
+
+        if (planned.instanced)
+        {
+            continue;
+        }
+        const RenderObject* const object = ResolveUniqueObject(
+            *m_renderScene,
+            planned.packet.packet.objectId,
+            planned.packet.packet.primitiveData);
+        if (object == nullptr)
+        {
+            m_drawStats.failureReason = RenderPolicyReason::InconsistentFacts;
+            outPlannedDraws.clear();
+            return false;
+        }
         if (!m_pipelineCache->CreateObjectConstantBinding(
-                planned.object.worldMatrix,
-                planned.object.normalMatrix,
-                planned.object.previousWorldMatrix,
+                object->worldMatrix,
+                object->normalMatrix,
+                object->previousWorldMatrix,
                 view.previousViewProjectionMatrix,
-                planned.object.previousWorldMatrixValid != 0 &&
+                object->previousWorldMatrixValid != 0 &&
                     view.previousViewProjectionValid != 0 &&
                     !view.resetTemporalHistory,
                 true,
-                ResolveSkinningMatrices(planned.object, planned.buffers),
+                ResolveSkinningMatrices(*object, planned.buffers),
                 nullptr,
                 planned.objectBinding) ||
             !context.RetainSubmissionResource(
@@ -1004,14 +1127,12 @@ bool DepthPrepass::BuildPlannedDirectBatch(
             !context.RetainSubmissionResource(
                 Ref<RefCounted>(planned.objectBinding.descriptorSet)))
         {
-            m_drawStats.failureReason = RenderPolicyReason::UnexpectedRecordingFailure;
+            m_drawStats.failureReason =
+                RenderPolicyReason::UnexpectedRecordingFailure;
             outPlannedDraws.clear();
             return false;
         }
-        outPlannedDraws.push_back(std::move(planned));
     }
-
-    ApplyDirectInstancePlan(context, view, outPlannedDraws);
     return true;
 }
 
@@ -1025,12 +1146,88 @@ void DepthPrepass::ApplyDirectInstancePlan(
     {
         return;
     }
-    if (m_directInstancingPreflightFailed ||
-        !m_directInstanceStream.IsValid() ||
-        m_directInstancePlan.executedPacketCount != plannedDraws.size())
+    const auto fallback = [this]()
     {
         m_drawStats.instancingFallbackBatchCount +=
             m_directInstancePlan.instancedBatchCount;
+    };
+    if (m_directInstancingPreflightFailed ||
+        !m_directInstanceStream.IsValid() ||
+        m_directInstancePlan.pass != RenderPassKind::Depth ||
+        m_directInstancePlan.executedPacketCount != plannedDraws.size() ||
+        m_directInstancePlan.submittedInstanceCount != plannedDraws.size() ||
+        m_directInstancePlan.submittedDrawCount !=
+            m_directInstancePlan.batches.size() ||
+        m_directInstanceStream.batchBindings.size() !=
+            m_directInstancePlan.instancedBatchCount)
+    {
+        fallback();
+        return;
+    }
+
+    std::vector<bool> consumed(plannedDraws.size(), false);
+    uint32 instancedBatchCount = 0;
+    size_t batchBindingIndex = 0;
+    for (const RenderInstanceBatch& batch : m_directInstancePlan.batches)
+    {
+        if (batch.members.empty() ||
+            batch.members.size() > std::numeric_limits<uint32>::max() ||
+            (batch.instanced &&
+             (batch.members.size() < 2 ||
+              batch.reason != RenderInstanceBatchReason::None)) ||
+            (!batch.instanced && batch.members.size() != 1))
+        {
+            fallback();
+            return;
+        }
+
+        for (const RenderInstanceBatchMember& member : batch.members)
+        {
+            if (member.directPacketIndex >= plannedDraws.size() ||
+                consumed[member.directPacketIndex])
+            {
+                fallback();
+                return;
+            }
+
+            const PlannedDepthDraw& planned =
+                plannedDraws[member.directPacketIndex];
+            if (member.packetId != planned.packet.packetId ||
+                MakeRenderInstanceBatchKey(planned.packet.packet,
+                                           planned.packet.layout) != batch.key)
+            {
+                fallback();
+                return;
+            }
+            consumed[member.directPacketIndex] = true;
+        }
+
+        if (!batch.instanced)
+        {
+            continue;
+        }
+        if (batchBindingIndex >= m_directInstanceStream.batchBindings.size())
+        {
+            fallback();
+            return;
+        }
+        const RasterInstanceStreamBatchBinding& streamBinding =
+            m_directInstanceStream.batchBindings[batchBindingIndex++];
+        if (streamBinding.key != batch.key ||
+            streamBinding.firstInstance != batch.firstInstance ||
+            streamBinding.instanceCount != batch.members.size())
+        {
+            fallback();
+            return;
+        }
+        ++instancedBatchCount;
+    }
+    if (!std::all_of(consumed.begin(), consumed.end(),
+                     [](bool value) { return value; }) ||
+        instancedBatchCount != m_directInstancePlan.instancedBatchCount ||
+        batchBindingIndex != m_directInstanceStream.batchBindings.size())
+    {
+        fallback();
         return;
     }
 
@@ -1041,31 +1238,14 @@ void DepthPrepass::ApplyDirectInstancePlan(
         ObjectConstantBinding objectBinding;
     };
     std::vector<InstancedBinding> bindings;
-    bindings.reserve(m_directInstancePlan.instancedBatchCount);
-    std::vector<bool> consumed(plannedDraws.size(), false);
+    bindings.reserve(instancedBatchCount);
     for (const RenderInstanceBatch& batch : m_directInstancePlan.batches)
     {
-        if (batch.members.empty())
-        {
-            m_drawStats.instancingFallbackBatchCount +=
-                m_directInstancePlan.instancedBatchCount;
-            return;
-        }
-        for (const RenderInstanceBatchMember& member : batch.members)
-        {
-            if (member.directPacketIndex >= plannedDraws.size() ||
-                consumed[member.directPacketIndex])
-            {
-                m_drawStats.instancingFallbackBatchCount +=
-                    m_directInstancePlan.instancedBatchCount;
-                return;
-            }
-            consumed[member.directPacketIndex] = true;
-        }
         if (!batch.instanced)
         {
             continue;
         }
+
         const uint32 leaderIndex = batch.members.front().directPacketIndex;
         const PlannedDepthDraw& leader = plannedDraws[leaderIndex];
         RHIPipeline* pipeline = m_pipelineCache->GetGPUDrivenDepthOnlyPipeline();
@@ -1088,22 +1268,16 @@ void DepthPrepass::ApplyDirectInstancePlan(
             !context.RetainSubmissionResource(
                 Ref<RefCounted>(binding.descriptorSet)))
         {
-            m_drawStats.instancingFallbackBatchCount +=
-                m_directInstancePlan.instancedBatchCount;
+            fallback();
             return;
         }
         bindings.push_back({leaderIndex, pipeline, std::move(binding)});
     }
-    if (!std::all_of(consumed.begin(), consumed.end(),
-                     [](bool value) { return value; }))
-    {
-        m_drawStats.instancingFallbackBatchCount +=
-            m_directInstancePlan.instancedBatchCount;
-        return;
-    }
+
     std::vector<PlannedDepthDraw> batched;
     batched.reserve(m_directInstancePlan.batches.size());
     size_t bindingIndex = 0;
+    size_t committedBatchBindingIndex = 0;
     for (const RenderInstanceBatch& batch : m_directInstancePlan.batches)
     {
         const uint32 leaderIndex = batch.members.front().directPacketIndex;
@@ -1112,21 +1286,16 @@ void DepthPrepass::ApplyDirectInstancePlan(
             batched.push_back(std::move(plannedDraws[leaderIndex]));
             continue;
         }
-        if (bindingIndex >= bindings.size() ||
-            bindings[bindingIndex].leaderIndex != leaderIndex)
-        {
-            m_drawStats.instancingFallbackBatchCount +=
-                m_directInstancePlan.instancedBatchCount;
-            return;
-        }
+
         PlannedDepthDraw leader = std::move(plannedDraws[leaderIndex]);
+        const RasterInstanceStreamBatchBinding& streamBinding =
+            m_directInstanceStream.batchBindings[committedBatchBindingIndex++];
         leader.pipeline = bindings[bindingIndex].pipeline;
-        leader.objectBinding =
-            std::move(bindings[bindingIndex].objectBinding);
+        leader.objectBinding = std::move(bindings[bindingIndex].objectBinding);
         leader.instanceIndexBuffer = m_directInstanceStream.instanceIndices;
         leader.packet.packet.arguments.instanceCount =
             static_cast<uint32>(batch.members.size());
-        leader.packet.packet.arguments.firstInstance = batch.firstInstance;
+        leader.packet.packet.arguments.firstInstance = streamBinding.firstInstance;
         leader.representedPacketCount =
             static_cast<uint32>(batch.members.size());
         leader.instanced = true;
@@ -1208,6 +1377,33 @@ void DepthPrepass::Execute(RenderGraphPassContext& context,
 {
     RHICommandContext& ctx = context.Commands();
     m_drawStats = {};
+    m_drawStats.directInstanceUploadBytes =
+        m_directInstanceStream.instanceUploadBytes;
+    m_drawStats.directInstanceIndexUploadBytes =
+        m_directInstanceStream.indexUploadBytes;
+    m_drawStats.directInstancePatchedRowCount =
+        m_directInstanceStream.instancePatchedRowCount;
+    m_drawStats.directInstanceIndexPatchedRowCount =
+        m_directInstanceStream.indexPatchedRowCount;
+    m_drawStats.directInstanceActiveCount =
+        m_directInstanceStream.activeInstanceCount;
+    m_drawStats.directInstanceActiveCapacity =
+        m_directInstanceStream.activeInstanceCapacity;
+    m_drawStats.directInstanceFullMaterialization =
+        m_directInstanceStream.instanceFullMaterialization;
+    m_drawStats.directInstanceIndexFullMaterialization =
+        m_directInstanceStream.indexFullMaterialization;
+    m_drawStats.directInstanceUploadWork =
+        m_directInstanceStream.instanceUploadWork;
+    m_drawStats.directInstanceIndexUploadWork =
+        m_directInstanceStream.indexUploadWork;
+    if (m_directInstanceStreamCache)
+    {
+        m_drawStats.directMutationTotals =
+            m_directInstanceStreamCache->mutationTotals;
+        m_drawStats.directMutationTotalsSaturated =
+            m_directInstanceStreamCache->mutationTotalsSaturated;
+    }
     uint64 gpuLaneSubmissionCpuNanoseconds = 0;
     uint64 directLaneSubmissionCpuNanoseconds = 0;
     bool gpuLaneSubmissionTimingAvailable = false;
@@ -1464,9 +1660,11 @@ void DepthPrepass::Execute(RenderGraphPassContext& context,
         m_drawStats.compiledPacketCount = plannedGPUCount +
             static_cast<uint32>(plannedDraws.size());
 
+        const RenderViewClearActions clearActions =
+            ResolveRenderViewClearActions(view.clearPolicy, view.clearColor);
         RHIRenderPassDesc rpDesc;
         rpDesc.SetDepthStencil(depthTargetView,
-                               RHILoadOp::Clear,
+                               clearActions.depthLoadOp,
                                RHIStoreOp::Store,
                                m_pipelineCache->GetDepthClearValue(),
                                0);

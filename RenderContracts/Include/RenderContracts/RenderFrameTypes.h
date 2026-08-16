@@ -6,11 +6,13 @@
  */
 
 #include "Core/MathTypes.h"
+#include "Core/Diagnostics/SkinningPaletteHash.h"
 #include "Core/Types.h"
 #include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderMaterial.h"
 
+#include <span>
 #include <vector>
 
 namespace RVX
@@ -31,6 +33,28 @@ namespace RVX
         SolidColor = 4
     };
 
+    /** @brief Backend-neutral load/clear policy for one render view. */
+    enum class RenderViewClearPolicy : uint8
+    {
+        Skybox = 0,
+        SolidColor,
+        DepthOnly,
+        Nothing,
+    };
+
+    [[nodiscard]] constexpr bool IsValidRenderViewClearPolicy(
+        RenderViewClearPolicy policy) noexcept
+    {
+        switch (policy)
+        {
+            case RenderViewClearPolicy::Skybox:
+            case RenderViewClearPolicy::SolidColor:
+            case RenderViewClearPolicy::DepthOnly:
+            case RenderViewClearPolicy::Nothing: return true;
+            default: return false;
+        }
+    }
+
     enum class RenderFrameCaptureKind : uint8
     {
         None = 0,
@@ -48,6 +72,19 @@ namespace RVX
         CountMismatch = 4
     };
 
+    /**
+     * @brief Returns whether an object or light layer participates in a view.
+     *
+     * The predicate is deliberately value-only so Direct, GPU-driven, and
+     * shadow/light selection all consume the same camera-layer semantics.
+     */
+    [[nodiscard]] constexpr bool IsRenderLayerVisible(
+        uint32 layerMask,
+        uint32 cullingMask) noexcept
+    {
+        return (layerMask & cullingMask) != 0;
+    }
+
     struct RenderViewSnapshot
     {
         Mat4 viewMatrix{1.0f};
@@ -61,6 +98,12 @@ namespace RVX
         uint32 viewportY = 0;
         uint32 viewportWidth = 0;
         uint32 viewportHeight = 0;
+        /** @brief Object and light layers this view is allowed to consume. */
+        uint32 cullingMask = ~0U;
+        /** @brief Main raster color/depth load semantics for this view. */
+        RenderViewClearPolicy clearPolicy = RenderViewClearPolicy::Skybox;
+        /** @brief Clear color used when clearPolicy requests a color clear. */
+        Vec4 clearColor{0.1f, 0.1f, 0.15f, 1.0f};
         float32 nearPlane = 0.1f;
         float32 farPlane = 1000.0f;
         float32 absoluteTime = 0.0f;
@@ -73,6 +116,37 @@ namespace RVX
         uint32 submeshIndex = 0;
         RenderResourceHandle material;
         RenderMaterialMode materialMode = RenderMaterialMode::Opaque;
+    };
+
+    /**
+     * @brief Source metadata for a complete, canonical skinning palette.
+     *
+     * `providerComponentId` is the packed Scene ComponentHandle, including its
+     * generation. `sourceModelResourceId` intentionally remains the stable
+     * resource identity rather than pretending ResourceId has a generation.
+     */
+    struct RenderSkinningPaletteMetadata
+    {
+        uint64 providerComponentId = 0;
+        uint64 sourceModelResourceId = 0;
+        uint64 poseSequence = 0;
+        uint64 paletteHash = 0;
+        uint32 paletteCount = 0;
+
+        [[nodiscard]] bool IsValidFor(
+            std::span<const Mat4> matrices) const noexcept
+        {
+            if (providerComponentId == 0 || sourceModelResourceId == 0 ||
+                poseSequence == 0 || paletteCount == 0 ||
+                paletteCount != matrices.size())
+            {
+                return false;
+            }
+            const SkinningPaletteHash computed =
+                ComputeSkinningPaletteHash(matrices);
+            return computed.IsValid() && computed.matrixCount == paletteCount &&
+                   computed.value == paletteHash;
+        }
     };
 
     struct RenderPrimitiveSnapshot
@@ -91,6 +165,15 @@ namespace RVX
         uint32 layerMask = 0xFFFFFFFFU;
         uint64 sortKey = 0;
         std::vector<Mat4> skinMatrices;
+        /** True when a Scene provider supplied this palette, even if malformed. */
+        bool hasSkinningPaletteProvider = false;
+        RenderSkinningPaletteMetadata skinningPalette{};
+
+        [[nodiscard]] bool HasValidSkinningPalette() const noexcept
+        {
+            return hasSkinningPaletteProvider &&
+                   skinningPalette.IsValidFor(skinMatrices);
+        }
     };
 
     struct RenderLightSnapshot
@@ -105,6 +188,8 @@ namespace RVX
         float32 innerConeRadians = 0.0f;
         float32 outerConeRadians = 0.0f;
         RenderResourceHandle shadowResource;
+        /** @brief View-layer membership used during lighting/shadow selection. */
+        uint32 layerMask = ~0U;
         bool castsShadows = false;
     };
 
@@ -267,6 +352,10 @@ namespace RVX
         uint32 width = 0;
         uint32 height = 0;
         bool includeAlpha = false;
+        /** @brief Opt-in screenshot-coordinate probe of ToneMapping's HDR input. */
+        bool pixelProbeEnabled = false;
+        uint32 pixelProbeX = 0;
+        uint32 pixelProbeY = 0;
     };
 
     struct RenderExtractionDiagnostics
@@ -275,7 +364,42 @@ namespace RVX
         uint32 skippedPrimitiveCount = 0;
         uint32 skippedLightCount = 0;
         uint32 skippedFeatureProviderCount = 0;
+        /** @brief Number of authoritative complete Scene scans for this extraction. */
+        uint32 fullScanCount = 0;
+        /** @brief Number of retained Scene feed records consumed by this candidate. */
+        uint32 changeFeedChangeCount = 0;
+        /** @brief Number of distinct actors rebuilt from dirty feed records. */
+        uint32 actorRebuildCount = 0;
+        /** @brief Number of render proxy components visited by the bridge. */
+        uint32 proxyVisitCount = 0;
+        /** @brief Number of typed non-proxy Scene components visited. */
+        uint32 componentVisitCount = 0;
+        /** @brief Number of feature providers visited. */
+        uint32 featureProviderVisitCount = 0;
+        /** @brief True when the feed cursor required an authoritative resync. */
+        bool continuityLost = false;
         bool complete = false;
+    };
+
+    /**
+     * @brief Update-owned aggregate of diagnostics from accepted extraction candidates.
+     *
+     * Unlike RenderExtractionDiagnostics, which describes one candidate frame,
+     * this value is retained across accepted publications so mailbox replacement
+     * cannot discard extraction evidence before update-side observers read it.
+     */
+    struct AcceptedExtractionDiagnosticsSnapshot
+    {
+        uint64 acceptedPublicationCount = 0;
+        uint64 lastAcceptedSourceFrameSequence = 0;
+        uint64 lastAcceptedSceneRevision = 0;
+        uint64 cumulativeFullScanCount = 0;
+        uint64 cumulativeChangeFeedChangeCount = 0;
+        uint64 cumulativeActorRebuildCount = 0;
+        uint64 cumulativeProxyVisitCount = 0;
+        uint64 cumulativeComponentVisitCount = 0;
+        uint64 cumulativeFeatureProviderVisitCount = 0;
+        uint64 continuityLossCount = 0;
     };
 
     static_assert(static_cast<uint8>(RenderLightType::Directional) == 0);

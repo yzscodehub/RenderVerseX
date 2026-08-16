@@ -138,9 +138,12 @@ namespace
         }
 
         m_words = std::make_unique<std::atomic<uint64>[]>(capacity);
+        m_contentRevisions =
+            std::make_unique<std::atomic<uint64>[]>(capacity);
         for (uint32 slot = 0; slot < capacity; ++slot)
         {
             m_words[slot].store(0, std::memory_order_relaxed);
+            m_contentRevisions[slot].store(0, std::memory_order_relaxed);
         }
     }
 
@@ -153,11 +156,16 @@ namespace
             return result;
         }
 
+        std::lock_guard lock(m_mutex);
         PackedRenderResourceStatus status;
-        if (!LoadSlot(handle.slot, status))
+        const uint64 word =
+            m_words[handle.slot].load(std::memory_order_acquire);
+        if (!Decode(word, status))
         {
             return result;
         }
+        status.committedContentRevision =
+            m_contentRevisions[handle.slot].load(std::memory_order_acquire);
 
         if (status.generation != handle.generation)
         {
@@ -168,6 +176,7 @@ namespace
         result.code = RenderResourceStatusCode::Current;
         result.state = status.state;
         result.failure = status.failure;
+        result.committedContentRevision = status.committedContentRevision;
         return result;
     }
 
@@ -182,6 +191,7 @@ namespace
             return false;
         }
 
+        std::lock_guard lock(m_mutex);
         PackedRenderResourceStatus observedStatus;
         uint64 observedWord =
             m_words[handle.slot].load(std::memory_order_acquire);
@@ -190,6 +200,8 @@ namespace
         {
             return false;
         }
+        observedStatus.committedContentRevision =
+            m_contentRevisions[handle.slot].load(std::memory_order_acquire);
 
         if (expected.generation != handle.generation ||
             Pack(observedStatus) != Pack(expected) ||
@@ -198,28 +210,27 @@ namespace
             return false;
         }
 
-        const uint64 expectedWord = Pack(expected);
         const uint64 desiredWord = Pack(desired);
-        observedWord = expectedWord;
-        for (;;)
+        if (!m_words[handle.slot].compare_exchange_strong(
+                observedWord,
+                desiredWord,
+                std::memory_order_release,
+                std::memory_order_relaxed))
         {
-            if (m_words[handle.slot].compare_exchange_weak(
-                    observedWord,
-                    desiredWord,
-                    std::memory_order_release,
-                    std::memory_order_relaxed))
-            {
-                return true;
-            }
-
-            if (!Decode(observedWord, observedStatus) ||
-                observedStatus.generation != handle.generation ||
-                Pack(observedStatus) != expectedWord ||
-                !IsValidTransition(expected, desired, writer))
-            {
-                return false;
-            }
+            return false;
         }
+
+        const uint64 contentRevision =
+            desired.generation != observedStatus.generation ||
+                    desired.state == RenderResourcePublicState::Released
+                ? 0
+                : desired.committedContentRevision ==
+                          RVX_RENDER_RESOURCE_CONTENT_REVISION_PRESERVE
+                      ? observedStatus.committedContentRevision
+                      : desired.committedContentRevision;
+        m_contentRevisions[handle.slot].store(contentRevision,
+                                              std::memory_order_release);
+        return true;
     }
 
     uint32 RenderResourceStatusTable::GetCapacity() const noexcept
@@ -236,7 +247,14 @@ namespace
             return false;
         }
 
+        std::lock_guard lock(m_mutex);
         const uint64 word = m_words[slot].load(std::memory_order_acquire);
-        return Decode(word, status);
+        if (!Decode(word, status))
+        {
+            return false;
+        }
+        status.committedContentRevision =
+            m_contentRevisions[slot].load(std::memory_order_acquire);
+        return true;
     }
 } // namespace RVX

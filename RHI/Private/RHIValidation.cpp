@@ -417,6 +417,18 @@ namespace RVX
             fail("async compute support requires compute pipeline support");
         }
 
+        if (capabilities.supportsTimestampQueries &&
+            capabilities.timestampFrequency == 0)
+        {
+            fail("timestamp query support requires a non-zero Graphics timestamp frequency");
+        }
+
+        if (!capabilities.supportsTimestampQueries &&
+            capabilities.timestampFrequency != 0)
+        {
+            fail("Graphics timestamp frequency must be zero when timestamp queries are unsupported");
+        }
+
         const RHIIndexedIndirectExecutionCapabilities& indexedIndirect =
             capabilities.indexedIndirectExecution;
         if (capabilities.supportsIndirectDrawCount != indexedIndirect.supportsCountBuffer)

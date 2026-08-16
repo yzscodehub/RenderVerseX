@@ -36,6 +36,7 @@ namespace RVX
         uint32 GetStride() const override { return m_desc.stride; }
         void* Map() override;
         void Unmap() override;
+        bool CommitMappedWrite() override;
 
         // DX12 Specific
         ID3D12Resource* GetResource() const { return m_resource.Get(); }
@@ -48,6 +49,12 @@ namespace RVX
 
     private:
         void CreateViews();
+        [[nodiscard]] bool IsHostAccessReady() const noexcept;
+        void* BeginMappedAccess();
+        void* MapWriteRangeImpl(uint64 offset, uint64 size) override;
+        RHIHostWriteReceipt CommitMappedWriteRangeImpl(
+            uint64 offset, uint64 size) override;
+        bool CancelMappedWriteRangeImpl(uint64 offset, uint64 size) override;
 
         DX12Device* m_device = nullptr;
         RHIBufferDesc m_desc;
@@ -64,6 +71,7 @@ namespace RVX
         bool m_requiredViewsValid = true;
 
         void* m_mappedData = nullptr;
+        bool m_isMappedForAccess = false;
     };
 
     // =============================================================================

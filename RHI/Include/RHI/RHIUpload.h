@@ -8,6 +8,8 @@
 #include "RHI/RHIResources.h"
 #include "RHI/RHIBuffer.h"
 
+#include <limits>
+
 namespace RVX
 {
     // Forward declarations
@@ -45,10 +47,21 @@ namespace RVX
      * cmdContext->CopyBufferToTexture(staging->GetBuffer(), texture, copyDesc);
      * @endcode
      */
-    class RHIStagingBuffer : public RHIResource
+    class RHIStagingBuffer : public RHIResource,
+                             private RHIMappedWriteTransactionOwner
     {
     public:
-        virtual ~RHIStagingBuffer() = default;
+        RHIStagingBuffer()
+            : m_mappedWriteControl(
+                  std::make_shared<RHIMappedWriteTransactionControl>())
+        {
+            m_mappedWriteControl->owner = this;
+        }
+
+        ~RHIStagingBuffer() override
+        {
+            InvalidateMappedWriteControl();
+        }
 
         /**
          * @brief Map the buffer for writing data
@@ -64,6 +77,113 @@ namespace RVX
         virtual void Unmap() = 0;
 
         /**
+         * @brief Publish writes made through the current Map() access.
+         *
+         * The default keeps existing staging implementations source-compatible:
+         * their legacy Unmap() operation remains the publication boundary and is
+         * assumed to succeed. Backends with an observable host-memory failure
+         * override this method and return false so callers can avoid recording
+         * copies from data that was not safely made GPU-visible.
+         */
+        virtual bool CommitMappedWrite()
+        {
+            Unmap();
+            return true;
+        }
+
+        /**
+         * @brief Begin one range-bound staging write transaction.
+         *
+         * This mirrors RHIBuffer's mapped-write contract while preserving the
+         * legacy Map()/Unmap()/CommitMappedWrite() API for existing upload code.
+         */
+        [[nodiscard]] RHIMappedWriteAccess MapWriteRange(uint64 offset, uint64 size)
+        {
+            const std::shared_ptr<RHIMappedWriteTransactionControl> control =
+                m_mappedWriteControl;
+            if (!control || !control->ownerAlive || control->transactionActive ||
+                !IsValidMappedWriteRange(GetSize(), offset, size) ||
+                offset > std::numeric_limits<size_t>::max() ||
+                size > std::numeric_limits<size_t>::max() ||
+                offset > std::numeric_limits<size_t>::max() - size)
+            {
+                return {};
+            }
+
+            void* mappedData = MapWriteRangeImpl(offset, size);
+            if (!mappedData)
+            {
+                return {};
+            }
+
+            control->transactionActive = true;
+            ++control->nextTransactionId;
+            if (control->nextTransactionId == 0)
+            {
+                ++control->nextTransactionId;
+            }
+            control->activeTransactionId = control->nextTransactionId;
+            return RHIMappedWriteAccess(mappedData,
+                                        offset,
+                                        size,
+                                        control,
+                                        control->activeTransactionId);
+        }
+
+        /** @brief Publish a staging write and report its host-visibility operation. */
+        [[nodiscard]] RHIHostWriteReceipt CommitMappedWriteRange(
+            RHIMappedWriteAccess&& access)
+        {
+            RHIHostWriteReceipt receipt;
+            receipt.cpuWriteOffset = access.m_offset;
+            receipt.cpuWriteSize = access.m_size;
+            if (!IsCurrentMappedWrite(access))
+            {
+                return receipt;
+            }
+
+            receipt = CommitMappedWriteRangeImpl(access.m_offset, access.m_size);
+            receipt.cpuWriteOffset = access.m_offset;
+            receipt.cpuWriteSize = access.m_size;
+            if (receipt.committed)
+            {
+                CompleteMappedWriteTransaction(access.m_control);
+            }
+            else
+            {
+                AbortMappedWriteTransaction(
+                    access.m_control,
+                    access.m_transactionId,
+                    access.m_offset,
+                    access.m_size);
+            }
+            access.Consume();
+            return receipt;
+        }
+
+        /**
+         * @brief Abort staging publication without advancing residency.
+         *
+         * Coherent mapped bytes cannot be rolled back; cancellation only
+         * prevents this transaction from becoming a publication boundary.
+         */
+        bool CancelMappedWriteRange(RHIMappedWriteAccess&& access)
+        {
+            if (!IsCurrentMappedWrite(access))
+            {
+                return false;
+            }
+
+            const bool cancelled = AbortMappedWriteTransaction(
+                access.m_control,
+                access.m_transactionId,
+                access.m_offset,
+                access.m_size);
+            access.Consume();
+            return cancelled;
+        }
+
+        /**
          * @brief Get the buffer size
          */
         virtual uint64 GetSize() const = 0;
@@ -72,6 +192,120 @@ namespace RVX
          * @brief Get the underlying RHI buffer for copy commands
          */
         virtual RHIBuffer* GetBuffer() const = 0;
+
+    protected:
+        [[nodiscard]] bool HasActiveMappedWriteRange() const
+        {
+            return m_mappedWriteControl != nullptr &&
+                   m_mappedWriteControl->ownerAlive &&
+                   m_mappedWriteControl->transactionActive;
+        }
+
+        /**
+         * @brief Compatibility hook for range mapping.
+         *
+         * Backends using this default cannot observe an already-open legacy
+         * mapping, so callers must not overlap legacy and range accesses.
+         * Production backends override it and enforce mutual exclusion in
+         * both directions.
+         */
+        virtual void* MapWriteRangeImpl(uint64 offset, uint64 size)
+        {
+            return Map(offset, size);
+        }
+
+        virtual RHIHostWriteReceipt CommitMappedWriteRangeImpl(uint64, uint64)
+        {
+            RHIHostWriteReceipt receipt;
+            if (CommitMappedWrite())
+            {
+                receipt.committed = true;
+            }
+            return receipt;
+        }
+
+        virtual bool CancelMappedWriteRangeImpl(uint64, uint64)
+        {
+            Unmap();
+            return true;
+        }
+
+    private:
+        void AbortMappedWriteAccess(
+            const std::shared_ptr<RHIMappedWriteTransactionControl>& control,
+            uint64 transactionId,
+            uint64 offset,
+            uint64 size) override
+        {
+            if (!IsCurrentMappedWrite(control, transactionId))
+            {
+                return;
+            }
+            AbortMappedWriteTransaction(control, transactionId, offset, size);
+        }
+
+        [[nodiscard]] bool IsCurrentMappedWrite(
+            const RHIMappedWriteAccess& access) const
+        {
+            return IsCurrentMappedWrite(access.m_control, access.m_transactionId) &&
+                   access.IsValid();
+        }
+
+        [[nodiscard]] bool IsCurrentMappedWrite(
+            const std::shared_ptr<RHIMappedWriteTransactionControl>& control,
+            uint64 transactionId) const
+        {
+            return control != nullptr &&
+                   control == m_mappedWriteControl &&
+                   control->ownerAlive &&
+                   control->transactionActive &&
+                   control->activeTransactionId == transactionId;
+        }
+
+        bool AbortMappedWriteTransaction(
+            const std::shared_ptr<RHIMappedWriteTransactionControl>& control,
+            uint64 transactionId,
+            uint64 offset,
+            uint64 size)
+        {
+            if (!IsCurrentMappedWrite(control, transactionId))
+            {
+                return false;
+            }
+
+            const bool cancelled = CancelMappedWriteRangeImpl(offset, size);
+            if (cancelled)
+            {
+                CompleteMappedWriteTransaction(control);
+            }
+            // Failed cleanup leaves the owner poisoned and blocks every later
+            // range transaction rather than pretending the backend mapping
+            // was released.
+            return cancelled;
+        }
+
+        void CompleteMappedWriteTransaction(
+            const std::shared_ptr<RHIMappedWriteTransactionControl>& control)
+        {
+            if (control == m_mappedWriteControl)
+            {
+                control->transactionActive = false;
+                control->activeTransactionId = 0;
+            }
+        }
+
+        void InvalidateMappedWriteControl()
+        {
+            if (m_mappedWriteControl)
+            {
+                m_mappedWriteControl->ownerAlive = false;
+                m_mappedWriteControl->transactionActive = false;
+                m_mappedWriteControl->activeTransactionId = 0;
+                m_mappedWriteControl->owner = nullptr;
+            }
+        }
+
+        std::shared_ptr<RHIMappedWriteTransactionControl> m_mappedWriteControl;
     };
 
     // =============================================================================

@@ -23,6 +23,18 @@ namespace
     constexpr uint32 PRIMITIVE_RECEIVES_SHADOW = 1U << 2U;
     constexpr uint32 PRIMITIVE_MATERIAL_MODE_SHIFT = 8U;
 
+    void SaturatingAdd(uint64& total, uint64 value, bool& saturated) noexcept
+    {
+        const uint64 maximum = std::numeric_limits<uint64>::max();
+        if (saturated || value > maximum - total)
+        {
+            total = maximum;
+            saturated = true;
+            return;
+        }
+        total += value;
+    }
+
     RenderLight::Type ToRenderLightType(RenderLightType type)
     {
         switch (type)
@@ -71,15 +83,42 @@ namespace
         const std::unordered_map<RenderResourceHandle,
                                  uint64,
                                  RenderResourceHandleHash>& watched,
-        const RenderResourceRegistry& registry)
+        const RenderResourceRegistry& registry,
+        std::vector<std::pair<RenderResourceHandle, uint64>>&
+            contentOnlyTextureRefreshes)
     {
-        return std::all_of(
-            watched.begin(),
-            watched.end(),
-            [&registry](const auto& entry)
+        for (const auto& [handle, watchedRevision] : watched)
+        {
+            const uint64 currentRevision = registry.GetContentRevision(handle);
+            if (currentRevision == watchedRevision)
+                continue;
+
+            // Texture content is resolved by the material/sky binding at draw
+            // time. An exact-generation replacement therefore preserves the
+            // extracted scene and its packet identity, but only if it cannot
+            // have changed a resource topology below the texture itself.
+            // Every other watched change remains a fail-closed rebuild.
+            const std::vector<RenderResourceHandle>* dependencies =
+                registry.GetDependencies(handle);
+            if (registry.GetExactKind(handle) != RenderResourceKind::Texture ||
+                !registry.IsGPUReadyExact(handle) || dependencies == nullptr ||
+                !dependencies->empty())
             {
-                return registry.GetContentRevision(entry.first) == entry.second;
-            });
+                return false;
+            }
+            contentOnlyTextureRefreshes.emplace_back(handle, currentRevision);
+        }
+        return true;
+    }
+
+    void ApplyContentOnlyTextureRefreshes(
+        std::unordered_map<RenderResourceHandle,
+                           uint64,
+                           RenderResourceHandleHash>& watched,
+        const std::vector<std::pair<RenderResourceHandle, uint64>>& refreshes)
+    {
+        for (const auto& [handle, revision] : refreshes)
+            watched.insert_or_assign(handle, revision);
     }
 
     RenderResourceHandle SelectOptional(
@@ -117,20 +156,13 @@ namespace
                    : RenderMaterialMode::Opaque;
     }
 
-    bool IsSkinned(const RenderPrimitiveSnapshot& primitive,
-                   const RenderMeshResourceData& mesh)
+    bool IsSkinned(const RenderPrimitiveSnapshot& primitive) noexcept
     {
-        if (!primitive.skinMatrices.empty())
-        {
-            return true;
-        }
-        return std::any_of(
-            mesh.buffers.begin(), mesh.buffers.end(),
-            [](const RenderOwnedBuffer& buffer)
-            {
-                return buffer.semantic == RenderMeshBufferSemantic::BoneIndices ||
-                       buffer.semantic == RenderMeshBufferSemantic::BoneWeights;
-            });
+        // Vertex bone attributes describe what a mesh can support, not what
+        // this object is actually executing.  The skinned pipeline requires
+        // a per-object palette provider or matrices for this publication.
+        return primitive.hasSkinningPaletteProvider ||
+               !primitive.skinMatrices.empty();
     }
 
     bool MatricesEqual(const Mat4& left, const Mat4& right) noexcept
@@ -206,6 +238,12 @@ namespace
             result.code = RenderFrameApplyCode::StaleRequiredHandle;
             return false;
         }
+        if (primitive.hasSkinningPaletteProvider &&
+            !primitive.HasValidSkinningPalette())
+        {
+            result.code = RenderFrameApplyCode::InvalidPacket;
+            return false;
+        }
 
         object = {};
         object.entityId = primitive.objectId;
@@ -230,6 +268,9 @@ namespace
                                      registry,
                                      result.pendingFallbackCount);
         object.skinningMatrices = primitive.skinMatrices;
+        object.hasSkinningPaletteProvider =
+            primitive.hasSkinningPaletteProvider;
+        object.skinningPalette = primitive.skinningPalette;
         object.sortKey = primitive.sortKey;
         object.layerMask = primitive.layerMask;
         object.flags = primitive.flags;
@@ -342,7 +383,7 @@ namespace
             batchInput.indexType = meshData->createInfo.indexType;
             batchInput.boundsMin = primitive.boundsMin;
             batchInput.boundsMax = primitive.boundsMax;
-            if (IsSkinned(primitive, *meshData))
+            if (IsSkinned(primitive))
                 batchInput.flags |= RenderBatchFlags::Skinned;
             if (object.castsShadow)
                 batchInput.flags |= RenderBatchFlags::CastsShadow;
@@ -403,6 +444,7 @@ namespace
         light.range = snapshot.range;
         light.innerConeAngle = snapshot.innerConeRadians;
         light.outerConeAngle = snapshot.outerConeRadians;
+        light.layerMask = snapshot.layerMask;
         light.castsShadow = snapshot.castsShadows;
         light.shadowResource = snapshot.shadowResource.IsValid() &&
                                        registry.IsGPUReadyExact(
@@ -493,10 +535,14 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         m_surfaceCompatibilityKey != m_lastRenderedSurfaceCompatibilityKey;
     const uint64 resourceContentRevision = registry.GetContentRevision();
     bool watchedResourcesCurrent = true;
+    std::vector<std::pair<RenderResourceHandle, uint64>>
+        contentOnlyTextureRefreshes;
     if (resourceContentRevision != m_observedResourceContentRevision)
     {
         watchedResourcesCurrent = AreWatchedResourcesCurrent(
-            m_watchedResourceRevisions, registry);
+            m_watchedResourceRevisions,
+            registry,
+            contentOnlyTextureRefreshes);
     }
     const bool sameSceneDatabase =
         scene.GetInstanceId() == m_sourceSceneDatabaseId;
@@ -527,6 +573,8 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         m_captureRequest = frame.GetCaptureRequest();
         m_temporalHistoryReset = false;
         m_acceptedSceneMutated = !m_gpuSceneChangedObjectIds.empty();
+        ApplyContentOnlyTextureRefreshes(m_watchedResourceRevisions,
+                                         contentOnlyTextureRefreshes);
         m_observedResourceContentRevision = resourceContentRevision;
         m_retainedStats.lastRebuiltObjectCount = 0;
         m_retainedStats.lastRemovedObjectCount = 0;
@@ -556,6 +604,8 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
         m_fullGPUSceneMutation = false;
         m_gpuSceneChangedObjectIds.clear();
         m_gpuSceneRemovedObjectIds.clear();
+        ApplyContentOnlyTextureRefreshes(m_watchedResourceRevisions,
+                                         contentOnlyTextureRefreshes);
         m_observedResourceContentRevision = resourceContentRevision;
         ++m_retainedStats.staticReuseCount;
         m_retainedStats.lastRebuiltObjectCount = 0;
@@ -581,7 +631,14 @@ RenderFrameApplyResult RenderScene::ApplyFrameV5(
             scene.CollectChangesSince(m_appliedSceneRevision);
         if (changes.available && !changes.fullReset)
         {
-            return ApplyIncrementalFrameState(frame, scene, changes, registry);
+            RenderFrameApplyResult incremental = ApplyIncrementalFrameState(
+                frame, scene, changes, registry);
+            if (incremental.IsApplied())
+            {
+                ApplyContentOnlyTextureRefreshes(m_watchedResourceRevisions,
+                                                 contentOnlyTextureRefreshes);
+            }
+            return incremental;
         }
     }
 
@@ -701,6 +758,12 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
             result.code = RenderFrameApplyCode::StaleRequiredHandle;
             return result;
         }
+        if (primitive.hasSkinningPaletteProvider &&
+            !primitive.HasValidSkinningPalette())
+        {
+            result.code = RenderFrameApplyCode::InvalidPacket;
+            return result;
+        }
 
         RenderObject object;
         object.entityId = primitive.objectId;
@@ -728,6 +791,9 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
                                      registry,
                                      result.pendingFallbackCount);
         object.skinningMatrices = primitive.skinMatrices;
+        object.hasSkinningPaletteProvider =
+            primitive.hasSkinningPaletteProvider;
+        object.skinningPalette = primitive.skinningPalette;
         object.sortKey = primitive.sortKey;
         object.layerMask = primitive.layerMask;
         object.flags = primitive.flags;
@@ -845,7 +911,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
             batchInput.indexType = meshData->createInfo.indexType;
             batchInput.boundsMin = primitive.boundsMin;
             batchInput.boundsMax = primitive.boundsMax;
-            if (IsSkinned(primitive, *meshData))
+            if (IsSkinned(primitive))
             {
                 batchInput.flags |= RenderBatchFlags::Skinned;
             }
@@ -911,6 +977,7 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
         light.range = snapshot.range;
         light.innerConeAngle = snapshot.innerConeRadians;
         light.outerConeAngle = snapshot.outerConeRadians;
+        light.layerMask = snapshot.layerMask;
         light.castsShadow = snapshot.castsShadows;
         light.shadowResource =
             snapshot.shadowResource.IsValid() &&
@@ -1023,6 +1090,10 @@ RenderFrameApplyResult RenderScene::ApplyFrameState(
     m_sourceSceneDatabaseId = retainedScene.GetInstanceId();
     m_observedResourceContentRevision = registry.GetContentRevision();
     ++m_retainedStats.fullRebuildCount;
+    SaturatingAdd(m_mutationTotals.fullRebuildCount, 1, m_mutationTotalsSaturated);
+    SaturatingAdd(m_mutationTotals.rebuiltObjectCount,
+                  static_cast<uint64>(m_objects.size()),
+                  m_mutationTotalsSaturated);
     m_retainedStats.appliedSceneRevision = m_appliedSceneRevision;
     m_retainedStats.lastRebuiltObjectCount =
         static_cast<uint32>(m_objects.size());
@@ -1327,6 +1398,15 @@ RenderFrameApplyResult RenderScene::ApplyIncrementalFrameState(
     m_sourceSceneDatabaseId = retainedScene.GetInstanceId();
     m_observedResourceContentRevision = registry.GetContentRevision();
     ++m_retainedStats.incrementalUpdateCount;
+    SaturatingAdd(m_mutationTotals.incrementalCommitCount,
+                  1,
+                  m_mutationTotalsSaturated);
+    SaturatingAdd(m_mutationTotals.rebuiltObjectCount,
+                  static_cast<uint64>(objectCandidates.size()),
+                  m_mutationTotalsSaturated);
+    SaturatingAdd(m_mutationTotals.removedObjectCount,
+                  static_cast<uint64>(m_gpuSceneRemovedObjectIds.size()),
+                  m_mutationTotalsSaturated);
     m_retainedStats.appliedSceneRevision = m_appliedSceneRevision;
     m_retainedStats.lastRebuiltObjectCount =
         static_cast<uint32>(objectCandidates.size());
@@ -1560,6 +1640,7 @@ void RenderScene::CullAgainstView(
     {
         const RenderObject& object = m_objects[index];
         if (object.visible && object.drawable &&
+            IsRenderLayerVisible(object.layerMask, view.cullingMask) &&
             frustum.IsVisible(object.bounds))
         {
             outVisibleIndices.push_back(index);

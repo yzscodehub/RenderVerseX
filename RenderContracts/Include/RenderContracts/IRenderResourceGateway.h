@@ -101,6 +101,12 @@ namespace RVX
             RenderResourceReplacementState::None;
         /** Zero when no replacement is currently accepted for this handle. */
         uint64 pendingSourceRevision = 0;
+        /**
+         * Content identity of the exact generation currently committed by
+         * Render. This is published with the lifecycle status: queued,
+         * uploading, and failed work therefore retain the last usable value.
+         */
+        uint64 committedContentRevision = 0;
     };
 
     struct RenderResourceReserveResult

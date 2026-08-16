@@ -5,7 +5,8 @@
 namespace RVX
 {
     OpenGLQueryPool::OpenGLQueryPool(OpenGLDevice* device, const RHIQueryPoolDesc& desc)
-        : m_device(device)
+        : RHIQueryPool(desc.queueType, 0)
+        , m_device(device)
         , m_type(desc.type)
         , m_count(desc.count)
     {
@@ -45,17 +46,14 @@ namespace RVX
                 return;
         }
 
-        // Get timestamp frequency (in Hz, typically 1 GHz on modern GPUs)
+        // The device rejects timestamp pools until it can publish both a
+        // verified Graphics frequency and timestamp valid-bit width.  Preserve
+        // the constructor's fail-closed behavior for direct backend callers.
         if (m_type == RHIQueryType::Timestamp)
         {
-            // OpenGL doesn't have a direct way to query timestamp frequency
-            // The standard says timestamps are in nanoseconds on most implementations
-            // We can verify by checking if GL_TIMESTAMP_PERIOD_NV is available (NVIDIA extension)
-            // For portability, assume 1 GHz (1 nanosecond resolution)
-            m_timestampFrequency = 1000000000;  // 1 GHz = 1ns resolution
-            
-            RVX_RHI_DEBUG("OpenGL: Using timestamp frequency {} Hz (assumed 1ns resolution)", 
-                         m_timestampFrequency);
+            RVX_RHI_ERROR("OpenGL: Timestamp query pool creation requires verified timestamp metadata");
+            m_count = 0;
+            return;
         }
 
         // Create query objects

@@ -7,6 +7,7 @@
 
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/PostProcess/ToneMappingTypes.h"
+#include "Render/RenderDiagnostics.h"
 
 
 namespace RVX
@@ -30,6 +31,20 @@ namespace RVX
 
         void Configure(const PostProcessSettings& settings) override;
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
+
+        /** @brief Arm an optional, one-frame raw input probe before graph build. */
+        void SetPixelProbeRequest(const RenderFrameCaptureRequest& request,
+                                  uint64 frameSequence,
+                                  uint64 requiredSceneRevision,
+                                  uint64 runtimeSurfaceGeneration);
+
+        /**
+         * @brief Map the raw probe after the carrying submission has completed.
+         * @warning The caller must establish completion for frameSequence first.
+         */
+        [[nodiscard]] bool CompletePixelProbe(uint64 requestId,
+                                              uint64 frameSequence,
+                                              RenderFramePixelProbeResult& outResult);
 
         /**
          * @brief Provide GPU resources required by the fullscreen ToneMapping path
@@ -56,6 +71,15 @@ namespace RVX
         ToneMappingOutputColorSpace GetOutputColorSpace() const { return m_outputColorSpace; }
 
     private:
+        struct PixelProbeReadback
+        {
+            RenderFramePixelProbeResult result{};
+            RHIBufferRef buffer{};
+            uint32 rowPitch = 0;
+            bool armed = false;
+            bool recorded = false;
+        };
+
         bool EnsureRuntimeResources();
         bool UpdateConstants(uint32 width,
                              uint32 height,
@@ -75,6 +99,7 @@ namespace RVX
         IRHIDevice* m_resourceDevice = nullptr;
         RHIBufferRef m_constantBuffer;
         RHISamplerRef m_sampler;
+        PixelProbeReadback m_pixelProbe{};
     };
 
 } // namespace RVX

@@ -82,18 +82,42 @@ namespace RVX
     DX12StagingBuffer::~DX12StagingBuffer()
     {
         // Unmap if still mapped
-        if (m_isMapped)
+        if (m_isMapped && IsHostAccessReady())
         {
-            Unmap();
+            UnmapInternal();
+        }
+        else
+        {
+            DiscardMappedState();
         }
 
         m_wrapperBuffer = nullptr;
         m_resource = nullptr;
     }
 
+    bool DX12StagingBuffer::IsHostAccessReady() const noexcept
+    {
+        return m_device != nullptr && m_resource != nullptr &&
+               m_device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready;
+    }
+
+    void DX12StagingBuffer::DiscardMappedState() noexcept
+    {
+        m_mappedData = nullptr;
+        m_mappedBegin = 0;
+        m_mappedEnd = 0;
+        m_isMapped = false;
+    }
+
     void* DX12StagingBuffer::Map(uint64 offset, uint64 size)
     {
-        if (!m_resource)
+        if (HasActiveMappedWriteRange())
+        {
+            RVX_RHI_ERROR("DX12: Cannot use legacy staging Map() during an active mapped-write transaction");
+            return nullptr;
+        }
+
+        if (!IsHostAccessReady())
         {
             RVX_RHI_ERROR("DX12: Cannot map invalid staging buffer");
             return nullptr;
@@ -127,6 +151,7 @@ namespace RVX
         {
             RVX_RHI_ERROR("DX12: Failed to map staging buffer, HRESULT: 0x{:08X}",
                          static_cast<uint32>(hr));
+            m_device->QueryRuntimeStatus();
             return nullptr;
         }
 
@@ -136,7 +161,31 @@ namespace RVX
         return static_cast<uint8*>(m_mappedData) + offset;
     }
 
+    void* DX12StagingBuffer::MapWriteRangeImpl(uint64 offset, uint64 size)
+    {
+        if (m_isMapped)
+        {
+            RVX_RHI_ERROR("DX12: Cannot begin a staging range write during a legacy mapped access");
+            return nullptr;
+        }
+        return Map(offset, size);
+    }
+
     void DX12StagingBuffer::Unmap()
+    {
+        if (HasActiveMappedWriteRange())
+        {
+            RVX_RHI_ERROR("DX12: Cannot use legacy staging Unmap() during an active mapped-write transaction");
+            return;
+        }
+
+        if (IsHostAccessReady())
+            UnmapInternal();
+        else
+            DiscardMappedState();
+    }
+
+    void DX12StagingBuffer::UnmapInternal()
     {
         if (!m_isMapped || !m_resource)
         {
@@ -147,10 +196,61 @@ namespace RVX
         const D3D12_RANGE writtenRange = {m_mappedBegin, m_mappedEnd};
         m_resource->Unmap(0, &writtenRange);
 
-        m_mappedData = nullptr;
-        m_mappedBegin = 0;
-        m_mappedEnd = 0;
-        m_isMapped = false;
+        DiscardMappedState();
+    }
+
+    bool DX12StagingBuffer::CommitMappedWrite()
+    {
+        if (HasActiveMappedWriteRange())
+        {
+            RVX_RHI_ERROR("DX12: Cannot use legacy staging CommitMappedWrite() during an active mapped-write transaction");
+            return false;
+        }
+
+        if (!m_isMapped)
+            return true;
+        if (!IsHostAccessReady())
+        {
+            DiscardMappedState();
+            return false;
+        }
+
+        UnmapInternal();
+        return true;
+    }
+
+    RHIHostWriteReceipt DX12StagingBuffer::CommitMappedWriteRangeImpl(
+        uint64,
+        uint64)
+    {
+        RHIHostWriteReceipt receipt;
+        if (!m_isMapped || !m_resource || m_mappedEnd < m_mappedBegin ||
+            !IsHostAccessReady())
+        {
+            return receipt;
+        }
+
+        // Upload heaps are CPU/GPU coherent. D3D12 consumes the written range
+        // supplied to Unmap as a driver hint, not an explicit host-cache sync.
+        receipt.committed = true;
+        receipt.synchronization =
+            RHIHostWriteSynchronization::CoherentNoExplicitSync;
+        UnmapInternal();
+        return receipt;
+    }
+
+    bool DX12StagingBuffer::CancelMappedWriteRangeImpl(uint64, uint64)
+    {
+        if (!m_isMapped || !m_resource)
+        {
+            return false;
+        }
+
+        if (IsHostAccessReady())
+            UnmapInternal();
+        else
+            DiscardMappedState();
+        return true;
     }
 
     RHIBuffer* DX12StagingBuffer::GetBuffer() const
@@ -248,6 +348,7 @@ namespace RVX
         {
             RVX_RHI_ERROR("DX12: Failed to map ring buffer, HRESULT: 0x{:08X}",
                          static_cast<uint32>(hr));
+            m_device->QueryRuntimeStatus();
             return;
         }
 

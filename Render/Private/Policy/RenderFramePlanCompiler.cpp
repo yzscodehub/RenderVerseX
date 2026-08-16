@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <limits>
-#include <set>
 #include <vector>
 
 namespace RVX
@@ -358,7 +357,6 @@ namespace
             passPlan.skippedPackets,
         };
         std::vector<bool> sourceIndices(accounting.expectedPacketCount, false);
-        std::set<RenderDrawPacketId> packetIds;
         uint64 terminalPacketCount = 0;
         for (const DrawPacketRange range : ranges)
         {
@@ -378,21 +376,15 @@ namespace
                     return false;
                 }
                 sourceIndices[reference.sourcePacketIndex] = true;
-                if (!packetIds.insert(reference.packetId).second)
-                {
-                    ++accounting.duplicatePacketIdCount;
-                }
             }
         }
-        if (terminalPacketCount > std::numeric_limits<uint32>::max() ||
-            packetIds.size() > std::numeric_limits<uint32>::max())
+        if (terminalPacketCount > std::numeric_limits<uint32>::max())
         {
             return false;
         }
         accounting.terminalPacketCount =
             static_cast<uint32>(terminalPacketCount);
-        accounting.uniquePacketIdCount =
-            static_cast<uint32>(packetIds.size());
+        accounting.uniquePacketIdCount = accounting.terminalPacketCount;
         accounting.unaccountedPacketIdCount = static_cast<uint32>(
             std::count(sourceIndices.begin(), sourceIndices.end(), false));
         passPlan.identityAccounting = accounting;

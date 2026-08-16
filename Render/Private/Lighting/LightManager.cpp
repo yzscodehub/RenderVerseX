@@ -49,8 +49,7 @@ void LightManager::Shutdown()
     m_lightConstantsBuffer.Reset();
     m_pointLightsBuffer.Reset();
     m_spotLightsBuffer.Reset();
-    m_pointLights.clear();
-    m_spotLights.clear();
+    Clear();
     m_device = nullptr;
 
     RVX_CORE_DEBUG("LightManager: Shutdown");
@@ -94,13 +93,18 @@ void LightManager::EnsureBuffers()
     }
 }
 
-void LightManager::CollectLights(const RenderScene& scene)
+void LightManager::CollectLights(const RenderScene& scene,
+                                 uint32 cullingMask)
 {
     Clear();
 
     for (size_t i = 0; i < scene.GetLightCount(); ++i)
     {
         const RenderLight& light = scene.GetLight(i);
+        if (!IsRenderLayerVisible(light.layerMask, cullingMask))
+        {
+            continue;
+        }
 
         switch (light.type)
         {
@@ -135,8 +139,10 @@ void LightManager::SetMainLight(const Vec3& direction, const Vec3& color, float 
 
 void LightManager::AddPointLight(const Vec3& position, const Vec3& color, float intensity, float range)
 {
+    ++m_pointLightRequestedCount;
     if (m_pointLights.size() >= MaxPointLights)
     {
+        ++m_pointLightOverflowCount;
         RVX_CORE_WARN("LightManager: Max point lights reached");
         return;
     }
@@ -152,8 +158,10 @@ void LightManager::AddPointLight(const Vec3& position, const Vec3& color, float 
 void LightManager::AddSpotLight(const Vec3& position, const Vec3& direction, const Vec3& color,
                                 float intensity, float range, float innerAngle, float outerAngle)
 {
+    ++m_spotLightRequestedCount;
     if (m_spotLights.size() >= MaxSpotLights)
     {
+        ++m_spotLightOverflowCount;
         RVX_CORE_WARN("LightManager: Max spot lights reached");
         return;
     }
@@ -173,6 +181,10 @@ void LightManager::Clear()
 {
     m_pointLights.clear();
     m_spotLights.clear();
+    m_pointLightRequestedCount = 0;
+    m_spotLightRequestedCount = 0;
+    m_pointLightOverflowCount = 0;
+    m_spotLightOverflowCount = 0;
     m_pointShadowRequestCount = 0;
     m_spotShadowRequestCount = 0;
     m_mainLight = GPUDirectionalLight{};

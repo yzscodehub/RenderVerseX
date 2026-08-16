@@ -4,6 +4,7 @@
  */
 
 #include "Render/Context/RenderContext.h"
+#include "Context/RenderFrameTimingOwner.h"
 #include "Core/Assert.h"
 #include "Core/Log.h"
 #include "RHI_BackendFactory/RHIBackendFactory.h"
@@ -13,6 +14,8 @@
 
 namespace RVX
 {
+
+RenderContext::RenderContext() = default;
 
 RenderContext::~RenderContext()
 {
@@ -62,6 +65,12 @@ bool RenderContext::Initialize(const RenderContextConfig& config,
     // Create command contexts
     CreateCommandContexts();
 
+    // Timestamp timing is optional telemetry. Unsupported or failed query
+    // setup must never prevent a functional rendering context from starting.
+    m_frameTiming = std::make_unique<RenderFrameTimingOwner>();
+    static_cast<void>(m_frameTiming->Initialize(
+        m_device.get(), m_frameSynchronizer.GetFrameCount()));
+
     // Check async compute support
     m_supportsAsyncCompute = m_device->GetCapabilities().supportsAsyncCompute;
     RVX_CORE_INFO("RenderContext: Async compute support: {}", m_supportsAsyncCompute ? "yes" : "no");
@@ -96,6 +105,18 @@ void RenderContext::Shutdown(bool waitForIdle)
     if (waitForIdle)
     {
         WaitIdle();
+    }
+
+    if (m_frameTiming)
+    {
+        const bool deviceLost = !waitForIdle || !m_device ||
+            m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready;
+        if (!deviceLost)
+        {
+            PollFrameTiming();
+        }
+        m_frameTiming->Shutdown(deviceLost);
+        m_frameTiming.reset();
     }
 
     for (std::unique_ptr<RenderGraphExecution>& execution :
@@ -264,9 +285,14 @@ bool RenderContext::BeginFrame()
     // Wait for this frame slot to be available
     if (!m_frameSynchronizer.WaitForFrame(m_frameIndex))
     {
+        if (m_frameTiming)
+        {
+            m_frameTiming->DiscardFrame(m_frameIndex, true);
+        }
         RVX_CORE_ERROR("RenderContext: Frame slot {} completion was lost", m_frameIndex);
         return false;
     }
+    PollFrameTiming();
     if (m_inFlightGraphExecutions[m_frameIndex])
     {
         static_cast<void>(
@@ -288,6 +314,10 @@ bool RenderContext::BeginFrame()
     }
     ctx->Reset();
     ctx->Begin();
+    if (m_frameTiming)
+    {
+        m_frameTiming->BeginFrame(m_frameIndex, *ctx);
+    }
 
     m_frameActive = true;
     m_graphicsContextRecording = true;
@@ -463,6 +493,10 @@ GPUCompletionPoint RenderContext::EndFrame()
     RHICommandContext* ctx = GetGraphicsContext();
     if (ctx && m_graphicsContextRecording)
     {
+        if (m_frameTiming)
+        {
+            m_frameTiming->EndFrame(m_frameIndex, *ctx);
+        }
         ctx->End();
         m_graphicsContextRecording = false;
     }
@@ -494,6 +528,10 @@ GPUCompletionPoint RenderContext::EndFrame()
     if (submittedPoint.domain == GPUQueueDomain::Graphics &&
         submittedPoint.value != 0)
     {
+        if (m_frameTiming)
+        {
+            m_frameTiming->MarkSubmitted(m_frameIndex, submittedPoint);
+        }
         m_frameSynchronizer.SignalFrame(m_frameIndex, submittedPoint);
         if (m_pendingGraphExecution)
         {
@@ -526,19 +564,28 @@ GPUCompletionPoint RenderContext::EndFrame()
             }
         }
     }
-    else if (m_pendingGraphExecution)
+    else
     {
-        if (m_device &&
-            m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        if (m_frameTiming)
         {
-            static_cast<void>(m_pendingGraphExecution->MarkDeviceLost());
+            const bool deviceLost = m_device &&
+                m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready;
+            m_frameTiming->DiscardFrame(m_frameIndex, deviceLost);
         }
-        else
+        if (m_pendingGraphExecution)
         {
-            static_cast<void>(
-                m_pendingGraphExecution->AbortUnsubmitted());
+            if (m_device &&
+                m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+            {
+                static_cast<void>(m_pendingGraphExecution->MarkDeviceLost());
+            }
+            else
+            {
+                static_cast<void>(
+                    m_pendingGraphExecution->AbortUnsubmitted());
+            }
+            m_pendingGraphExecution.reset();
         }
-        m_pendingGraphExecution.reset();
     }
 
     // End device frame
@@ -567,6 +614,10 @@ void RenderContext::AbortFrame()
         }
     }
     m_graphicsContextRecording = false;
+    if (m_frameTiming)
+    {
+        m_frameTiming->DiscardFrame(m_frameIndex, false);
+    }
     m_queueSubmissionPending = false;
     m_pendingQueuePlan = {};
     m_pendingQueueContexts.clear();
@@ -605,12 +656,75 @@ void RenderContext::Present()
 
 void RenderContext::WaitIdle()
 {
-    m_frameSynchronizer.WaitForAllFrames();
-    
-    if (m_device)
+    if (!m_frameSynchronizer.WaitForAllFrames())
+    {
+        if (m_frameTiming)
+        {
+            m_frameTiming->MarkAllLost();
+        }
+        return;
+    }
+
+    if (m_device &&
+        m_device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
     {
         m_device->WaitIdle();
     }
+
+    PollFrameTiming();
+}
+
+bool RenderContext::BindSubmittedFrameTiming(
+    GPUCompletionPoint submittedPoint,
+    uint64 sourceFrameSequence) noexcept
+{
+    return m_frameTiming &&
+        m_frameTiming->BindSubmittedFrame(submittedPoint, sourceFrameSequence);
+}
+
+void RenderContext::PollFrameTiming() noexcept
+{
+    if (!m_frameTiming || !m_device)
+    {
+        return;
+    }
+
+    if (m_device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+    {
+        m_frameTiming->MarkAllLost();
+        return;
+    }
+
+    const uint32 frameCount = m_frameSynchronizer.GetFrameCount();
+    for (uint32 frameIndex = 0; frameIndex < frameCount; ++frameIndex)
+    {
+        const GPUCompletionPoint point =
+            m_frameSynchronizer.GetFrameCompletionPoint(frameIndex);
+        if (point.domain == GPUQueueDomain::Graphics && point.value != 0 &&
+            m_frameSynchronizer.IsFrameComplete(frameIndex))
+        {
+            m_frameTiming->DrainCompletedSlot(frameIndex, point);
+        }
+    }
+}
+
+const RenderGpuFrameTimingDiagnostics&
+RenderContext::GetGpuFrameTimingDiagnostics() const noexcept
+{
+    if (m_frameTiming)
+    {
+        return m_frameTiming->GetDiagnostics();
+    }
+
+    static const RenderGpuFrameTimingDiagnostics unavailable = []
+    {
+        RenderGpuFrameTimingDiagnostics diagnostics;
+        diagnostics.terminalCriticalPathMilliseconds =
+            DiagnosticValue<float64>::Unavailable(
+                "RenderContext frame timing has not been initialized.");
+        return diagnostics;
+    }();
+    return unavailable;
 }
 
 RHICommandContext* RenderContext::GetGraphicsContext() const

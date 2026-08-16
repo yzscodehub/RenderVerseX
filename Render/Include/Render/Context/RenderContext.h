@@ -7,13 +7,15 @@
 
 #include "RHI/RHI.h"
 #include "Render/Context/FrameSynchronizer.h"
+#include "Render/Context/RenderFrameTiming.h"
 #include "Render/Graph/RenderGraphExecution.h"
-#include <memory>
 #include <array>
+#include <memory>
 
 namespace RVX
 {
     struct RenderContextInternalAccess;
+    class RenderFrameTimingOwner;
 
     /**
      * @brief Render context configuration
@@ -68,7 +70,7 @@ namespace RVX
     class RenderContext
     {
     public:
-        RenderContext() = default;
+        RenderContext();
         ~RenderContext();
 
         // Non-copyable
@@ -172,6 +174,20 @@ namespace RVX
          */
         void WaitIdle();
 
+        /**
+         * @brief Bind a source frame sequence to the same submitted Graphics
+         * completion point that owns its whole-frame timestamp sample.
+         *
+         * Timing availability never changes frame-submission success. Callers
+         * may retry an exact bind; a mismatched point or sequence is rejected
+         * without changing the pending sample.
+         */
+        bool BindSubmittedFrameTiming(GPUCompletionPoint submittedPoint,
+                                      uint64 sourceFrameSequence) noexcept;
+
+        /** @brief Non-blockingly collect already-completed Graphics timing samples. */
+        void PollFrameTiming() noexcept;
+
         /** @brief Wait only for Graphics work referencing the current surface generation. */
         bool WaitForSurfaceGeneration();
 
@@ -212,6 +228,9 @@ namespace RVX
         /// Get the configuration
         const RenderContextConfig& GetConfig() const { return m_config; }
 
+        /** @brief Latest completion-owned Graphics whole-frame timing snapshot. */
+        const RenderGpuFrameTimingDiagnostics& GetGpuFrameTimingDiagnostics() const noexcept;
+
     private:
         friend struct RenderContextInternalAccess;
 
@@ -240,6 +259,7 @@ namespace RVX
         std::unique_ptr<RenderGraphExecution> m_pendingGraphExecution;
         std::array<std::unique_ptr<RenderGraphExecution>, RVX_MAX_FRAME_COUNT>
             m_inFlightGraphExecutions;
+        std::unique_ptr<RenderFrameTimingOwner> m_frameTiming;
         
         // Frame synchronization
         FrameSynchronizer m_frameSynchronizer;

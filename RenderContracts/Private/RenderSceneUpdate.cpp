@@ -96,7 +96,15 @@ bool AreRenderPrimitiveSnapshotsEqual(
         left.boundsMax != right.boundsMax || left.flags != right.flags ||
         left.layerMask != right.layerMask || left.sortKey != right.sortKey ||
         left.submeshes.size() != right.submeshes.size() ||
-        left.skinMatrices.size() != right.skinMatrices.size())
+        left.skinMatrices.size() != right.skinMatrices.size() ||
+        left.hasSkinningPaletteProvider != right.hasSkinningPaletteProvider ||
+        left.skinningPalette.providerComponentId !=
+            right.skinningPalette.providerComponentId ||
+        left.skinningPalette.sourceModelResourceId !=
+            right.skinningPalette.sourceModelResourceId ||
+        left.skinningPalette.poseSequence != right.skinningPalette.poseSequence ||
+        left.skinningPalette.paletteHash != right.skinningPalette.paletteHash ||
+        left.skinningPalette.paletteCount != right.skinningPalette.paletteCount)
     {
         return false;
     }
@@ -128,6 +136,7 @@ bool AreRenderLightSnapshotsEqual(const RenderLightSnapshot& left,
            left.innerConeRadians == right.innerConeRadians &&
            left.outerConeRadians == right.outerConeRadians &&
            left.shadowResource == right.shadowResource &&
+           left.layerMask == right.layerMask &&
            left.castsShadows == right.castsShadows;
 }
 
@@ -201,6 +210,7 @@ bool AreParticleRenderSnapshotItemsEqual(
 {
     if (left.instanceId != right.instanceId ||
         left.systemId != right.systemId ||
+        left.systemAssetId != right.systemAssetId ||
         left.systemName != right.systemName ||
         !EqualMatrix(left.worldMatrix, right.worldMatrix) ||
         !EqualBounds(left.worldBounds, right.worldBounds) ||
@@ -242,6 +252,8 @@ bool AreWaterRenderSnapshotItemsEqual(
     const WaterRenderSnapshotItem& right) noexcept
 {
     return left.componentId == right.componentId &&
+           left.surfaceAssetId == right.surfaceAssetId &&
+           left.materialAssetId == right.materialAssetId &&
            left.worldPosition == right.worldPosition &&
            EqualBounds(left.worldBounds, right.worldBounds) &&
            left.size == right.size && left.depth == right.depth &&
@@ -275,6 +287,8 @@ bool AreTerrainRenderSnapshotItemsEqual(
     const TerrainRenderSnapshotItem& right) noexcept
 {
     return left.componentId == right.componentId &&
+           left.heightmapAssetId == right.heightmapAssetId &&
+           left.materialAssetId == right.materialAssetId &&
            left.worldPosition == right.worldPosition &&
            EqualBounds(left.worldBounds, right.worldBounds) &&
            left.size == right.size && left.lodBias == right.lodBias &&
@@ -359,7 +373,8 @@ bool RenderSceneUpdateBatch::IsStructurallyValid() const noexcept
     for (const auto& mutation : particles)
     {
         if (mutation.operation == RenderSceneMutationOperation::Upsert &&
-            mutation.state.instanceId != mutation.instanceId)
+            (mutation.state.instanceId != mutation.instanceId ||
+             mutation.state.systemId != mutation.instanceId))
             return false;
     }
     for (const auto& mutation : water)

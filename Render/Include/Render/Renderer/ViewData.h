@@ -62,6 +62,15 @@ namespace RVX
         /// Camera forward direction
         Vec3 cameraForward{0.0f, 0.0f, -1.0f};
 
+        /// Object and light layers this view is allowed to render.
+        uint32 cullingMask = ~0U;
+
+        /// Main raster color/depth policy copied from the immutable frame view.
+        RenderViewClearPolicy clearPolicy = RenderViewClearPolicy::Skybox;
+
+        /// Value-owned clear color copied from the immutable frame view.
+        Vec4 clearColor{0.1f, 0.1f, 0.15f, 1.0f};
+
         /// Near clip plane
         float nearPlane = 0.1f;
 
@@ -243,6 +252,26 @@ namespace RVX
             const Mat4& previousRenderedViewProjection,
             bool previousRenderedViewValid,
             bool resetHistory);
+
+        /** @brief Skybox may contribute only for the explicit Skybox policy. */
+        [[nodiscard]] bool AllowsSkybox() const noexcept
+        {
+            return clearPolicy == RenderViewClearPolicy::Skybox;
+        }
+
+        /**
+         * @brief Whether a transient scene-color target needs deterministic initialization.
+         *
+         * The current single-view post-process graph cannot import a prior
+         * scene-color value for DepthOnly/Nothing.  It initializes a known
+         * target before the later load operation rather than issuing an
+         * undefined load; the raster policy itself remains unchanged.
+         */
+        [[nodiscard]] bool RequiresDeterministicTransientColorInitialization() const noexcept
+        {
+            return clearPolicy == RenderViewClearPolicy::DepthOnly ||
+                   clearPolicy == RenderViewClearPolicy::Nothing;
+        }
 
         /**
          * @brief Create RHI viewport struct

@@ -363,7 +363,8 @@ namespace RVX
             return false;
 
         std::memcpy(mapped, &constants, sizeof(constants));
-        m_constantBuffer->Unmap();
+        if (!m_constantBuffer->CommitMappedWrite())
+            return false;
         m_stats.constantsUploaded = true;
         return true;
     }

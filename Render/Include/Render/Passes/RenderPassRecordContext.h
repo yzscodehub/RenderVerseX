@@ -13,17 +13,22 @@
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
+#include "Render/RenderUploadWorkDiagnostics.h"
+#include "Render/RenderDiagnostics.h"
 #include "Render/Submission/RenderInstanceBatchPlan.h"
 #include "Render/Visibility/RenderVisibility.h"
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
+#include <tuple>
 #include <vector>
 
 namespace RVX
 {
     class GPUCulling;
     class GPUCullingRecordedState;
+    class DirectRasterReadbackQualification;
     class RenderGraph;
 
     struct DepthPrepassDrawStats
@@ -33,6 +38,18 @@ namespace RVX
         uint32 submittedInstanceCount = 0;
         uint32 instancedBatchCount = 0;
         uint32 instancingFallbackBatchCount = 0;
+        uint64 directInstanceUploadBytes = 0;
+        uint64 directInstanceIndexUploadBytes = 0;
+        uint32 directInstancePatchedRowCount = 0;
+        uint32 directInstanceIndexPatchedRowCount = 0;
+        uint32 directInstanceActiveCount = 0;
+        uint32 directInstanceActiveCapacity = 0;
+        bool directInstanceFullMaterialization = false;
+        bool directInstanceIndexFullMaterialization = false;
+        RenderUploadWorkDiagnostics directInstanceUploadWork{};
+        RenderUploadWorkDiagnostics directInstanceIndexUploadWork{};
+        DirectRasterMutationTotals directMutationTotals{};
+        bool directMutationTotalsSaturated = false;
         uint32 gpuDrivenIndirectBatchCount = 0;
         uint32 gpuDrivenIndirectSubmittedDrawUpperBound = 0;
         bool gpuDrivenIndirectExecutedDrawCountAvailable = false;
@@ -61,6 +78,18 @@ namespace RVX
         uint32 submittedInstanceCount = 0;
         uint32 instancedBatchCount = 0;
         uint32 instancingFallbackBatchCount = 0;
+        uint64 directInstanceUploadBytes = 0;
+        uint64 directInstanceIndexUploadBytes = 0;
+        uint32 directInstancePatchedRowCount = 0;
+        uint32 directInstanceIndexPatchedRowCount = 0;
+        uint32 directInstanceActiveCount = 0;
+        uint32 directInstanceActiveCapacity = 0;
+        bool directInstanceFullMaterialization = false;
+        bool directInstanceIndexFullMaterialization = false;
+        RenderUploadWorkDiagnostics directInstanceUploadWork{};
+        RenderUploadWorkDiagnostics directInstanceIndexUploadWork{};
+        DirectRasterMutationTotals directMutationTotals{};
+        bool directMutationTotalsSaturated = false;
     };
 
     struct OpaquePassShadowStats
@@ -173,6 +202,20 @@ namespace RVX
         uint32 submittedInstanceCount = 0;
         uint32 instancedBatchCount = 0;
         uint32 instancingFallbackBatchCount = 0;
+        uint64 directInstanceUploadBytes = 0;
+        uint64 directInstanceIndexUploadBytes = 0;
+        uint32 directInstancePatchedRowCount = 0;
+        uint32 directInstanceIndexPatchedRowCount = 0;
+        uint32 directInstanceActiveCount = 0;
+        uint32 directInstanceActiveCapacity = 0;
+        bool directInstanceFullMaterialization = false;
+        bool directInstanceIndexFullMaterialization = false;
+        RenderUploadWorkDiagnostics directInstanceUploadWork{};
+        RenderUploadWorkDiagnostics directInstanceIndexUploadWork{};
+        DirectRasterMutationTotals directMutationTotals{};
+        bool directMutationTotalsSaturated = false;
+        /** Actual Opaque Direct stream order, reconstructed from resident rows. */
+        RasterTranscriptDigest directRasterTranscript{};
         bool gpuDrivenRequested = false;
         bool gpuDrivenCullingReady = false;
         bool gpuDrivenPipelineReady = false;
@@ -195,6 +238,30 @@ namespace RVX
         uint32 plannedPacketCount = 0;
         uint32 compiledPacketCount = 0;
         uint32 executedPacketCount = 0;
+        RenderPolicyReason failureReason =
+            RenderPolicyReason::ConservativeDefault;
+    };
+
+    /** @brief Graph-owned transparent-pass recording and execution facts. */
+    struct TransparentPassDrawStats
+    {
+        bool requested = false;
+        /** A typed empty transparent list is a successful no-work pass. */
+        bool noWork = false;
+        bool preflightFailed = false;
+        bool executionFailed = false;
+        uint32 candidateDrawItemCount = 0;
+        uint32 preparedDrawItemCount = 0;
+        /** Exact DrawIndexed calls issued by this graph execution. */
+        uint32 executedPacketCount = 0;
+        uint32 executedDrawCount = 0;
+        uint32 skippedMaterialBindingCount = 0;
+        uint32 skippedResourceCount = 0;
+        uint32 skippedExecutionDrawCount = 0;
+        uint32 materialBindingCount = 0;
+        uint32 materialFallbackBindingCount = 0;
+        uint32 materialTextureFlags = 0;
+        uint32 materialFallbackTextureFlags = 0;
         RenderPolicyReason failureReason =
             RenderPolicyReason::ConservativeDefault;
     };
@@ -351,12 +418,15 @@ namespace RVX
      * cannot split DefaultLit and shadow semantics.
      */
     [[nodiscard]] inline PrimaryDirectionalLightRecordInput
-    SelectPrimaryDirectionalLightRecordInput(const RenderScene& scene)
+    SelectPrimaryDirectionalLightRecordInput(
+        const RenderScene& scene,
+        uint32 cullingMask = ~0U)
     {
         for (const RenderLight& light : scene.GetLights())
         {
             if (light.type != RenderLight::Type::Directional ||
-                !(light.intensity > 0.0f))
+                !(light.intensity > 0.0f) ||
+                !IsRenderLayerVisible(light.layerMask, cullingMask))
             {
                 continue;
             }
@@ -469,6 +539,50 @@ namespace RVX
         RGTextureHandle graphTexture{};
     };
 
+    /**
+     * @brief Graph-recording receipt for a material which a raster draw
+     * actually recorded.  Later presentation qualification supplies the
+     * frame/presentation sequence; until then this receipt is not observable
+     * in completed-frame diagnostics.
+     */
+    struct RenderRecordedMaterialBindingReceipt
+    {
+        RenderResourceHandle material{};
+        uint64 contentRevision = 0;
+        uint64 descriptorContentKey = 0;
+        uint64 descriptorRevision = 0;
+        std::vector<MaterialBindingTextureEntry> textureEntries{};
+        bool fallbackUsed = false;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return material.IsValid() && contentRevision != 0 &&
+                   descriptorContentKey != 0 && descriptorRevision != 0 &&
+                   std::all_of(textureEntries.begin(), textureEntries.end(),
+                       [](const MaterialBindingTextureEntry& entry)
+                       {
+                           return entry.IsValid();
+                       });
+        }
+    };
+
+    /** @brief Graph-recording receipt for a complete palette used by a Direct draw. */
+    struct RenderRecordedSkinningPaletteReceipt
+    {
+        RenderSkinningPaletteMetadata metadata{};
+        RenderSkinningPaletteExecutionLane lane =
+            RenderSkinningPaletteExecutionLane::Direct;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return metadata.providerComponentId != 0 &&
+                   metadata.sourceModelResourceId != 0 &&
+                   metadata.poseSequence != 0 && metadata.paletteHash != 0 &&
+                   metadata.paletteCount != 0 &&
+                   lane == RenderSkinningPaletteExecutionLane::Direct;
+        }
+    };
+
     /** @brief Lifetime-owned mutable outputs for one graph recording. */
     struct RenderPassRecordResults
     {
@@ -481,9 +595,114 @@ namespace RVX
         RayTracedShadowPassStats rayTracedShadowStats{};
         OpaquePassDrawStats opaqueStats{};
         OpaquePassShadowStats opaqueShadowStats{};
+        TransparentPassDrawStats transparentStats{};
         ObjectVelocityPassStats objectVelocityStats{};
+        /** Sorted and de-duplicated by exact slot/generation. */
+        std::vector<RenderRecordedMaterialBindingReceipt>
+            successfulMaterialBindings{};
+        bool successfulMaterialBindingsOverflow = false;
+        /** Sorted and de-duplicated by the complete receipt value tuple. */
+        std::vector<RenderRecordedSkinningPaletteReceipt>
+            successfulSkinningPalettes{};
+        bool successfulSkinningPalettesOverflow = false;
         std::vector<RenderGraphExternalTextureAccess>
             externalTextureAccesses{};
+
+        /**
+         * Record an exact successful fallback-or-ready material binding. A
+         * newer descriptor revision/key for the same material generation
+         * supersedes the prior receipt; a different generation remains
+         * deliberately distinct.
+         */
+        [[nodiscard]] bool RecordSuccessfulMaterialBinding(
+            const MaterialBindingResult& binding)
+        {
+            RenderRecordedMaterialBindingReceipt receipt;
+            receipt.material = binding.material;
+            receipt.contentRevision = binding.contentRevision;
+            receipt.descriptorContentKey = binding.descriptorContentKey;
+            receipt.descriptorRevision = binding.descriptorRevision;
+            receipt.textureEntries = binding.textureEntries;
+            receipt.fallbackUsed = binding.usedFallback;
+            if (!binding.IsDrawable() || !receipt.IsValid())
+            {
+                return false;
+            }
+
+            const auto position = std::lower_bound(
+                successfulMaterialBindings.begin(),
+                successfulMaterialBindings.end(),
+                receipt.material,
+                [](const RenderRecordedMaterialBindingReceipt& receipt,
+                   RenderResourceHandle candidate)
+                {
+                    return receipt.material < candidate;
+                });
+            if (position != successfulMaterialBindings.end() &&
+                position->material == receipt.material)
+            {
+                if (receipt.descriptorRevision > position->descriptorRevision ||
+                    (receipt.descriptorRevision == position->descriptorRevision &&
+                     receipt.descriptorContentKey >
+                         position->descriptorContentKey))
+                {
+                    *position = std::move(receipt);
+                }
+                return true;
+            }
+            if (successfulMaterialBindings.size() >=
+                RVX_RENDER_PRESENTED_MATERIAL_RECEIPT_CAPACITY)
+            {
+                successfulMaterialBindingsOverflow = true;
+                return false;
+            }
+            successfulMaterialBindings.insert(
+                position, std::move(receipt));
+            return true;
+        }
+
+        /** Record a palette only after its exact Direct draw was recorded. */
+        [[nodiscard]] bool RecordSuccessfulSkinningPalette(
+            const RenderSkinningPaletteMetadata& metadata,
+            RenderSkinningPaletteExecutionLane lane)
+        {
+            RenderRecordedSkinningPaletteReceipt receipt{metadata, lane};
+            if (!receipt.IsValid())
+            {
+                return false;
+            }
+            const auto tupleFor = [](const RenderRecordedSkinningPaletteReceipt& value)
+            {
+                return std::tie(value.metadata.providerComponentId,
+                                value.metadata.sourceModelResourceId,
+                                value.metadata.poseSequence,
+                                value.metadata.paletteHash,
+                                value.metadata.paletteCount,
+                                value.lane);
+            };
+            const auto position = std::lower_bound(
+                successfulSkinningPalettes.begin(),
+                successfulSkinningPalettes.end(),
+                receipt,
+                [&tupleFor](const RenderRecordedSkinningPaletteReceipt& left,
+                             const RenderRecordedSkinningPaletteReceipt& right)
+                {
+                    return tupleFor(left) < tupleFor(right);
+                });
+            if (position != successfulSkinningPalettes.end() &&
+                tupleFor(*position) == tupleFor(receipt))
+            {
+                return true;
+            }
+            if (successfulSkinningPalettes.size() >=
+                RVX_RENDER_PRESENTED_SKINNING_PALETTE_RECEIPT_CAPACITY)
+            {
+                successfulSkinningPalettesOverflow = true;
+                return false;
+            }
+            successfulSkinningPalettes.insert(position, std::move(receipt));
+            return true;
+        }
     };
 
     /**
@@ -507,6 +726,11 @@ namespace RVX
         const std::vector<RenderDrawItem>* opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* maskedDrawItems = nullptr;
         const std::vector<RenderDrawItem>* transparentDrawItems = nullptr;
+        /** Explicit owner for an optional Direct Opaque post-fence readback. */
+        DirectRasterReadbackQualification* directOpaqueRasterReadbackQualification =
+            nullptr;
+        /** Frozen physical RHI device slot selected for this graph recording. */
+        uint32 directOpaqueRasterReadbackSourceFrameSlot = RVX_INVALID_INDEX;
         RenderPassGPUDrivenInputs depthGPUDriven{};
         RenderPassGPUDrivenInputs opaqueGPUDriven{};
         DirectionalShadowRecordOutput directionalShadow{};

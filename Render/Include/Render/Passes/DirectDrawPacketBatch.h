@@ -18,6 +18,8 @@ namespace RVX
     {
         RenderDrawPacket packet{};
         RenderSubmissionLayout layout{};
+        AssetId geometryAssetId{};
+        AssetId materialAssetId{};
         uint32 sourcePacketIndex = 0;
         uint32 sourceOrdinal = 0;
         RenderDrawPacketId packetId{};

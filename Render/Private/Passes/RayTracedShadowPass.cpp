@@ -771,6 +771,15 @@ namespace RVX
                 data = state;
                 const auto publishRejectedSetup = [&data]()
                 {
+                    if (data && data->reservation)
+                    {
+                        // Setup can fail after history-slot reservation but
+                        // before a command was recorded (for example, when a
+                        // mapped constant write cannot be committed). Keep
+                        // that slot out of both submission and temporal
+                        // promotion paths.
+                        data->reservation->cancelled = true;
+                    }
                     PublishFrameResults(data);
                 };
                 if (!data || !data->reservation || data->reservation->cancelled)
@@ -1563,7 +1572,10 @@ namespace RVX
             return false;
         }
         std::memcpy(mapped, &constants, sizeof(constants));
-        state.constantBuffer->Unmap();
+        if (!state.constantBuffer->CommitMappedWrite())
+        {
+            return false;
+        }
         state.stats.constantsUploaded = true;
         state.stats.temporalAccumulated = useHistory;
         return true;

@@ -77,6 +77,22 @@ namespace RVX
         bool IsRequestedEnabled() const override { return m_enabled; }
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
+        [[nodiscard]] const TransparentPassDrawStats& GetDrawStats() const
+        {
+            return m_publishedRecordResults != nullptr
+                ? m_publishedRecordResults->transparentStats
+                : m_drawStats;
+        }
+        void PublishRecordResults(
+            const std::shared_ptr<RenderPassRecordResults>& results,
+            const RenderPassRecordIdentity& expectedIdentity)
+        {
+            if (results != nullptr && results->identity == expectedIdentity)
+            {
+                m_publishedRecordResults = results;
+            }
+        }
+
     private:
         bool m_enabled = true;
         const RenderResourceRegistry* m_resourceRegistry = nullptr;
@@ -84,6 +100,8 @@ namespace RVX
         MaterialSystem* m_materialSystem = nullptr;
         LightManager* m_lightManager = nullptr;
         ClusteredLighting* m_clusteredLighting = nullptr;
+        TransparentPassDrawStats m_drawStats{};
+        std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
     };
 
 } // namespace RVX

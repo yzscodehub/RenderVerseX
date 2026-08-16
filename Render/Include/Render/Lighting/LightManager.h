@@ -92,7 +92,8 @@ namespace RVX
         /**
          * @brief Collect lights from render scene
          */
-        void CollectLights(const RenderScene& scene);
+        void CollectLights(const RenderScene& scene,
+                           uint32 cullingMask = ~0U);
 
         /**
          * @brief Set the main directional light
@@ -149,6 +150,14 @@ namespace RVX
 
         uint32 GetPointLightCount() const { return static_cast<uint32>(m_pointLights.size()); }
         uint32 GetSpotLightCount() const { return static_cast<uint32>(m_spotLights.size()); }
+        uint32 GetPointLightRequestedCount() const { return m_pointLightRequestedCount; }
+        uint32 GetSpotLightRequestedCount() const { return m_spotLightRequestedCount; }
+        uint32 GetPointLightAdmittedCount() const { return GetPointLightCount(); }
+        uint32 GetSpotLightAdmittedCount() const { return GetSpotLightCount(); }
+        uint32 GetPointLightCapacity() const { return MaxPointLights; }
+        uint32 GetSpotLightCapacity() const { return MaxSpotLights; }
+        uint32 GetPointLightOverflowCount() const { return m_pointLightOverflowCount; }
+        uint32 GetSpotLightOverflowCount() const { return m_spotLightOverflowCount; }
         uint32 GetPointShadowRequestCount() const { return m_pointShadowRequestCount; }
         uint32 GetSpotShadowRequestCount() const { return m_spotShadowRequestCount; }
         uint32 GetLocalShadowRequestCount() const
@@ -168,6 +177,10 @@ namespace RVX
         GPUDirectionalLight m_mainLight;
         std::vector<GPUPointLight> m_pointLights;
         std::vector<GPUSpotLight> m_spotLights;
+        uint32 m_pointLightRequestedCount = 0;
+        uint32 m_spotLightRequestedCount = 0;
+        uint32 m_pointLightOverflowCount = 0;
+        uint32 m_spotLightOverflowCount = 0;
         uint32 m_pointShadowRequestCount = 0;
         uint32 m_spotShadowRequestCount = 0;
 

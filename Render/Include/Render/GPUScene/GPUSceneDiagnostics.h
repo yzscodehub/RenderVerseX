@@ -11,6 +11,7 @@
  */
 
 #include "Core/Types.h"
+#include "Render/RenderUploadWorkDiagnostics.h"
 
 #include <array>
 
@@ -40,6 +41,7 @@ namespace RVX
         BufferCreationFailed,
         StagingCreationFailed,
         StagingMapFailed,
+        StagingCommitFailed,
         SubmissionRetentionFailed,
         InvalidCompletionToken,
         DeviceLost,
@@ -79,6 +81,7 @@ namespace RVX
         uint64 cumulativeUploadRangeCount = 0;
         bool resident = false;
         bool fullUpload = false;
+        RenderUploadWorkDiagnostics uploadWork{};
     };
 
     /** @brief Exact allocator lifecycle totals; all counts exclude sentinel slot zero. */
@@ -160,6 +163,7 @@ namespace RVX
         bool fullUpload = false;
         bool gpuCullingOwnedBytesAvailable = false;
         uint64 gpuCullingOwnedBytes = 0;
+        RenderUploadWorkDiagnostics uploadWork{};
         std::array<GPUSceneTableDiagnostics,
                    GPU_SCENE_DIAGNOSTICS_TABLE_COUNT> tables{};
         GPUSceneSlotLifecycleDiagnostics slots{};

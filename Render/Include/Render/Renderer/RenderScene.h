@@ -8,6 +8,7 @@
 #include "Core/Math/AABB.h"
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
+#include "Render/RenderDiagnostics.h"
 #include "RenderContracts/RenderFramePacketV5.h"
 #include "RenderContracts/RenderMaterial.h"
 #include "Render/Renderer/MeshBatch.h"
@@ -92,6 +93,8 @@ namespace RVX
         RenderResourceHandle fallbackMesh;
         RenderResourceHandle fallbackMaterial;
         std::vector<Mat4> skinningMatrices;
+        bool hasSkinningPaletteProvider = false;
+        RenderSkinningPaletteMetadata skinningPalette{};
         std::vector<RenderResourceHandle> referencedResources;
 
         uint64 entityId = 0;
@@ -110,7 +113,12 @@ namespace RVX
 
         [[nodiscard]] bool HasSkinningData() const
         {
-            return !skinningMatrices.empty();
+            return hasSkinningPaletteProvider || !skinningMatrices.empty();
+        }
+        [[nodiscard]] bool HasValidSkinningPalette() const noexcept
+        {
+            return hasSkinningPaletteProvider &&
+                   skinningPalette.IsValidFor(skinningMatrices);
         }
     };
 
@@ -134,6 +142,7 @@ namespace RVX
         float outerConeAngle = 0.7854f;
         RenderResourceHandle shadowResource;
         std::vector<RenderResourceHandle> referencedResources;
+        uint32 layerMask = ~0U;
         bool castsShadow = false;
     };
 
@@ -167,6 +176,15 @@ namespace RVX
         [[nodiscard]] const RenderSceneRetainedStats& GetRetainedStats() const noexcept
         {
             return m_retainedStats;
+        }
+        [[nodiscard]] const RenderSceneMutationTotals&
+            GetMutationTotals() const noexcept
+        {
+            return m_mutationTotals;
+        }
+        [[nodiscard]] bool IsMutationTotalsSaturated() const noexcept
+        {
+            return m_mutationTotalsSaturated;
         }
         [[nodiscard]] const std::vector<uint64>&
             GetGPUSceneChangedObjectIds() const noexcept
@@ -335,6 +353,8 @@ namespace RVX
         RenderDrawPacketCache m_drawPacketCache;
         RenderDrawPacketCacheVersions m_drawPacketCacheVersions{};
         RenderSceneRetainedStats m_retainedStats{};
+        RenderSceneMutationTotals m_mutationTotals{};
+        bool m_mutationTotalsSaturated = false;
         uint64 m_appliedSceneRevision = 0;
         uint64 m_sourceSceneDatabaseId = 0;
         uint64 m_observedResourceContentRevision = 0;

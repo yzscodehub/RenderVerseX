@@ -9,6 +9,7 @@
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
 #include "RenderContracts/RenderIdentity.h"
+#include "RenderContracts/RenderFrameTypes.h"
 #include "RenderContracts/RenderMaterial.h"
 
 #include <cstddef>
@@ -56,6 +57,8 @@ namespace RVX
         std::vector<RenderMaterialMode> materialModes;
 
         std::vector<Mat4> skinningMatrices;
+        bool hasSkinningPaletteProvider = false;
+        RenderSkinningPaletteMetadata skinningPalette{};
 
         uint64 sortKey = 0;
         uint32 layerMask = ~0u;
@@ -63,7 +66,10 @@ namespace RVX
         bool castsShadow = true;
         bool receivesShadow = true;
 
-        bool HasSkinningData() const { return !skinningMatrices.empty(); }
+        bool HasSkinningData() const
+        {
+            return hasSkinningPaletteProvider || !skinningMatrices.empty();
+        }
     };
 
     struct RenderLightProxy

@@ -333,8 +333,12 @@ namespace
             const Mat4& sourceMatrix = view.directionalShadowCascadeCount > 0
                 ? view.directionalShadowViewProjections[i]
                 : (i == 0 ? view.directionalShadowViewProjection : Mat4Identity());
-            constants.directionalShadowViewProjections[i] =
-                ApplyBackendClipConvention(sourceMatrix, backend);
+            // Shadow rendering applies the backend clip convention through the
+            // cascade viewProjection used by the shadow pass. DefaultLit then
+            // maps this engine-space matrix to top-left texture UVs explicitly;
+            // applying the Vulkan Y flip here as well would mirror the sampled
+            // shadow-map row a second time.
+            constants.directionalShadowViewProjections[i] = sourceMatrix;
         }
         constants.directionalShadowCascadeSplits = Vec4(
             ClampFiniteNonNegative(view.directionalShadowCascadeSplits.x, 0.0f),
@@ -1018,6 +1022,7 @@ void PipelineCache::Shutdown()
     m_uiPipeline.Reset();
     m_pipelineCache.clear();
     m_frameDescriptorSet.Reset();
+    m_frameDescriptorBindingOwners.Reset();
     m_objectDescriptorSet.Reset();
     m_objectPageDescriptorCache.clear();
     if (m_objectConstantUploadArena)
@@ -1841,6 +1846,7 @@ bool PipelineCache::CompileShaders()
     ssaoVsDesc.path = ssaoShaderPath;
     ssaoVsDesc.entryPoint = "VSMain";
     ssaoVsDesc.stage = RHIShaderStage::Vertex;
+    ssaoVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         ssaoVsDesc.targetProfile = "vs_5_0";
@@ -2040,6 +2046,7 @@ bool PipelineCache::CompileShaders()
     reflectionCompositeVsDesc.path = rayTracedReflectionCompositeShaderPath;
     reflectionCompositeVsDesc.entryPoint = "VSMain";
     reflectionCompositeVsDesc.stage = RHIShaderStage::Vertex;
+    reflectionCompositeVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         reflectionCompositeVsDesc.targetProfile = "vs_5_0";
@@ -2089,6 +2096,7 @@ bool PipelineCache::CompileShaders()
     reflectionDenoiseVsDesc.path = rayTracedReflectionDenoiseShaderPath;
     reflectionDenoiseVsDesc.entryPoint = "VSMain";
     reflectionDenoiseVsDesc.stage = RHIShaderStage::Vertex;
+    reflectionDenoiseVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         reflectionDenoiseVsDesc.targetProfile = "vs_5_0";
@@ -2138,6 +2146,7 @@ bool PipelineCache::CompileShaders()
     colorGradingVsDesc.path = colorGradingShaderPath;
     colorGradingVsDesc.entryPoint = "VSMain";
     colorGradingVsDesc.stage = RHIShaderStage::Vertex;
+    colorGradingVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         colorGradingVsDesc.targetProfile = "vs_5_0";
@@ -2185,6 +2194,7 @@ bool PipelineCache::CompileShaders()
     chromaticAberrationVsDesc.path = chromaticAberrationShaderPath;
     chromaticAberrationVsDesc.entryPoint = "VSMain";
     chromaticAberrationVsDesc.stage = RHIShaderStage::Vertex;
+    chromaticAberrationVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         chromaticAberrationVsDesc.targetProfile = "vs_5_0";
@@ -2234,6 +2244,7 @@ bool PipelineCache::CompileShaders()
     filmGrainVsDesc.path = filmGrainShaderPath;
     filmGrainVsDesc.entryPoint = "VSMain";
     filmGrainVsDesc.stage = RHIShaderStage::Vertex;
+    filmGrainVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         filmGrainVsDesc.targetProfile = "vs_5_0";
@@ -2281,6 +2292,7 @@ bool PipelineCache::CompileShaders()
     fxaaVsDesc.path = fxaaShaderPath;
     fxaaVsDesc.entryPoint = "VSMain";
     fxaaVsDesc.stage = RHIShaderStage::Vertex;
+    fxaaVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         fxaaVsDesc.targetProfile = "vs_5_0";
@@ -2326,6 +2338,7 @@ bool PipelineCache::CompileShaders()
     vignetteVsDesc.path = vignetteShaderPath;
     vignetteVsDesc.entryPoint = "VSMain";
     vignetteVsDesc.stage = RHIShaderStage::Vertex;
+    vignetteVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         vignetteVsDesc.targetProfile = "vs_5_0";
@@ -3260,21 +3273,21 @@ void PipelineCache::BeginFrame()
 
 void PipelineCache::ResetFrameResourceBindings()
 {
-    m_currentDirectionalShadowView = m_fallbackDirectionalShadowView.Get();
-    m_currentRayTracedShadowMaskView = m_fallbackRayTracedShadowMaskView.Get();
-    m_currentDirectionalShadowSampler = m_directionalShadowSampler.Get();
+    m_currentDirectionalShadowView = m_fallbackDirectionalShadowView;
+    m_currentRayTracedShadowMaskView = m_fallbackRayTracedShadowMaskView;
+    m_currentDirectionalShadowSampler = m_directionalShadowSampler;
     m_currentEnvironmentIBLIrradianceView =
-        m_fallbackEnvironmentIBLCubemapView.Get();
+        m_fallbackEnvironmentIBLCubemapView;
     m_currentEnvironmentIBLPrefilteredView =
-        m_fallbackEnvironmentIBLCubemapView.Get();
+        m_fallbackEnvironmentIBLCubemapView;
     m_currentEnvironmentIBLBRDFLUTView =
-        m_fallbackEnvironmentIBLBRDFLUTView.Get();
-    m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
-    m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
-    m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
-    m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer.Get();
-    m_currentClusterBuffer = m_fallbackClusterBuffer.Get();
-    m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
+        m_fallbackEnvironmentIBLBRDFLUTView;
+    m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer;
+    m_currentPointLightsBuffer = m_fallbackPointLightsBuffer;
+    m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer;
+    m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer;
+    m_currentClusterBuffer = m_fallbackClusterBuffer;
+    m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer;
     m_lastDirectionalShadowFrameBindingResult = {};
     m_lastRayTracedShadowFrameBindingResult = {};
     m_lastEnvironmentIBLFrameBindingResult = {};
@@ -3340,8 +3353,8 @@ DirectionalShadowFrameBindingResult PipelineCache::UpdateDirectionalShadowFrameR
         return result;
     }
 
-    RHITextureView* textureView = m_fallbackDirectionalShadowView.Get();
-    RHISampler* sampler = m_directionalShadowSampler.Get();
+    RHITextureViewRef textureView = m_fallbackDirectionalShadowView;
+    RHISamplerRef sampler = m_directionalShadowSampler;
 
     if (!sampler)
     {
@@ -3361,7 +3374,7 @@ DirectionalShadowFrameBindingResult PipelineCache::UpdateDirectionalShadowFrameR
     }
     else
     {
-        textureView = resources.shadowMapView;
+        textureView.Reset(resources.shadowMapView);
         result.shadowSamplingEnabled = true;
         result.fallbackReason = DirectionalShadowFallbackReason::None;
     }
@@ -3393,7 +3406,7 @@ RayTracedShadowFrameBindingResult PipelineCache::UpdateRayTracedShadowFrameResou
         return result;
     }
 
-    RHITextureView* textureView = m_fallbackRayTracedShadowMaskView.Get();
+    RHITextureViewRef textureView = m_fallbackRayTracedShadowMaskView;
     if (!resources.enabled)
     {
         result.fallbackReason = RayTracedShadowFallbackReason::Disabled;
@@ -3404,7 +3417,7 @@ RayTracedShadowFrameBindingResult PipelineCache::UpdateRayTracedShadowFrameResou
     }
     else
     {
-        textureView = resources.shadowMaskView;
+        textureView.Reset(resources.shadowMaskView);
         result.shadowMaskSamplingEnabled = true;
         result.fallbackReason = RayTracedShadowFallbackReason::None;
     }
@@ -3434,9 +3447,9 @@ EnvironmentIBLFrameBindingResult PipelineCache::UpdateEnvironmentIBLFrameResourc
         return result;
     }
 
-    RHITextureView* irradianceView = m_fallbackEnvironmentIBLCubemapView.Get();
-    RHITextureView* prefilteredView = m_fallbackEnvironmentIBLCubemapView.Get();
-    RHITextureView* brdfLUTView = m_fallbackEnvironmentIBLBRDFLUTView.Get();
+    RHITextureViewRef irradianceView = m_fallbackEnvironmentIBLCubemapView;
+    RHITextureViewRef prefilteredView = m_fallbackEnvironmentIBLCubemapView;
+    RHITextureViewRef brdfLUTView = m_fallbackEnvironmentIBLBRDFLUTView;
 
     if (!m_environmentIBLSampler)
     {
@@ -3461,9 +3474,9 @@ EnvironmentIBLFrameBindingResult PipelineCache::UpdateEnvironmentIBLFrameResourc
     }
     else
     {
-        irradianceView = resources.irradianceView;
-        prefilteredView = resources.prefilteredEnvironmentView;
-        brdfLUTView = resources.brdfLUTView;
+        irradianceView.Reset(resources.irradianceView);
+        prefilteredView.Reset(resources.prefilteredEnvironmentView);
+        brdfLUTView.Reset(resources.brdfLUTView);
         result.textureIBLSamplingEnabled = true;
         result.fallbackReason = EnvironmentIBLFallbackReason::None;
     }
@@ -3496,22 +3509,22 @@ FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLigh
     }
 
     result.fallbackReason = FrameLightFallbackReason::None;
-    m_currentLightConstantsBuffer = resources.lightConstantsBuffer;
-    m_currentPointLightsBuffer = resources.pointLightsBuffer;
-    m_currentSpotLightsBuffer = resources.spotLightsBuffer;
-    m_currentClusterConstantsBuffer = resources.clusterConstantsBuffer;
-    m_currentClusterBuffer = resources.clusterBuffer;
-    m_currentClusterLightIndexBuffer = resources.clusterLightIndexBuffer;
+    m_currentLightConstantsBuffer.Reset(resources.lightConstantsBuffer);
+    m_currentPointLightsBuffer.Reset(resources.pointLightsBuffer);
+    m_currentSpotLightsBuffer.Reset(resources.spotLightsBuffer);
+    m_currentClusterConstantsBuffer.Reset(resources.clusterConstantsBuffer);
+    m_currentClusterBuffer.Reset(resources.clusterBuffer);
+    m_currentClusterLightIndexBuffer.Reset(resources.clusterLightIndexBuffer);
 
     if (!m_currentLightConstantsBuffer)
     {
-        m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
+        m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer;
         result.fallbackReason = FrameLightFallbackReason::MissingLightConstants;
     }
 
     if (!m_currentPointLightsBuffer)
     {
-        m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
+        m_currentPointLightsBuffer = m_fallbackPointLightsBuffer;
         if (result.fallbackReason == FrameLightFallbackReason::None)
         {
             result.fallbackReason = FrameLightFallbackReason::MissingPointLights;
@@ -3520,7 +3533,7 @@ FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLigh
 
     if (!m_currentSpotLightsBuffer)
     {
-        m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
+        m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer;
         if (result.fallbackReason == FrameLightFallbackReason::None)
         {
             result.fallbackReason = FrameLightFallbackReason::MissingSpotLights;
@@ -3530,13 +3543,13 @@ FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLigh
     result.clusteredFallbackReason = FrameClusteredLightFallbackReason::None;
     if (!m_currentClusterConstantsBuffer)
     {
-        m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer.Get();
+        m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer;
         result.clusteredFallbackReason = FrameClusteredLightFallbackReason::MissingClusterConstants;
     }
 
     if (!m_currentClusterBuffer)
     {
-        m_currentClusterBuffer = m_fallbackClusterBuffer.Get();
+        m_currentClusterBuffer = m_fallbackClusterBuffer;
         if (result.clusteredFallbackReason == FrameClusteredLightFallbackReason::None)
         {
             result.clusteredFallbackReason = FrameClusteredLightFallbackReason::MissingClusterData;
@@ -3545,7 +3558,7 @@ FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLigh
 
     if (!m_currentClusterLightIndexBuffer)
     {
-        m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
+        m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer;
         if (result.clusteredFallbackReason == FrameClusteredLightFallbackReason::None)
         {
             result.clusteredFallbackReason = FrameClusteredLightFallbackReason::MissingClusterLightIndices;
@@ -3795,6 +3808,146 @@ bool PipelineCache::CreateRasterDrawBindingSnapshot(
         view, objectCapacity, nullptr, outSnapshot);
 }
 
+bool PipelineCache::CreateDirectionalShadowCascadeBindingSnapshot(
+    std::span<const ViewData> cascadeViews,
+    DirectionalShadowCascadeBindingSnapshot& outSnapshot) const
+{
+    outSnapshot = {};
+    if (!m_device || !m_initialized || cascadeViews.empty() ||
+        !m_frameDescriptorSet || m_setLayouts.empty() || !m_setLayouts[0] ||
+        !m_frameDescriptorSet->IsReadyForBinding(m_setLayouts[0].Get()))
+    {
+        return false;
+    }
+
+    const uint64 viewConstantStride =
+        AlignConstantBufferSize(sizeof(ViewConstants));
+    if (viewConstantStride == 0 ||
+        cascadeViews.size() >
+            std::numeric_limits<uint64>::max() / viewConstantStride)
+    {
+        return false;
+    }
+
+    RHIBufferDesc pageDesc;
+    pageDesc.size = viewConstantStride * cascadeViews.size();
+    pageDesc.usage = RHIBufferUsage::Constant;
+    pageDesc.memoryType = RHIMemoryType::Upload;
+    pageDesc.debugName = "DirectionalShadowCascadeViewConstants";
+    RHIBufferRef viewConstantPageBuffer = m_device->CreateBuffer(pageDesc);
+    if (!viewConstantPageBuffer)
+    {
+        return false;
+    }
+
+    // Complete the page before any graph command can bind it. Keeping one
+    // immutable copy per cascade avoids the old record-time overwrite of the
+    // cache-global view constant buffer.
+    void* mapped = viewConstantPageBuffer->Map();
+    if (!mapped)
+    {
+        return false;
+    }
+    const RHIBackendType backend = m_device->GetBackendType();
+    for (size_t cascadeIndex = 0; cascadeIndex < cascadeViews.size(); ++cascadeIndex)
+    {
+        const ViewConstants constants = BuildViewConstantsSnapshot(
+            cascadeViews[cascadeIndex], backend, m_config.reverseZ);
+        std::memcpy(static_cast<uint8*>(mapped) +
+                        cascadeIndex * viewConstantStride,
+                    &constants,
+                    sizeof(constants));
+    }
+    viewConstantPageBuffer->Unmap();
+
+    const Ref<FrameDescriptorBindingOwners> baseOwners =
+        m_frameDescriptorBindingOwners;
+    if (!baseOwners || !baseOwners->IsComplete())
+    {
+        return false;
+    }
+    const std::vector<RHIDescriptorBinding> baseBindings =
+        BuildFrameDescriptorBindings(*baseOwners);
+
+    std::vector<RHIDescriptorSetRef> frameDescriptorSets;
+    frameDescriptorSets.reserve(cascadeViews.size());
+    for (size_t cascadeIndex = 0; cascadeIndex < cascadeViews.size(); ++cascadeIndex)
+    {
+        RHIDescriptorSetDesc frameSetDesc;
+        frameSetDesc.layout = m_setLayouts[0].Get();
+        frameSetDesc.bindings = baseBindings;
+        frameSetDesc.debugName = "DirectionalShadowCascadeFrameDescriptorSet";
+
+        bool replacedViewBinding = false;
+        for (RHIDescriptorBinding& binding : frameSetDesc.bindings)
+        {
+            if (binding.binding == 0 && binding.arrayElement == 0)
+            {
+                binding.buffer = viewConstantPageBuffer.Get();
+                binding.offset = cascadeIndex * viewConstantStride;
+                binding.range = viewConstantStride;
+                binding.textureView = nullptr;
+                binding.sampler = nullptr;
+                binding.accelerationStructure = nullptr;
+                replacedViewBinding = true;
+                break;
+            }
+        }
+        if (!replacedViewBinding)
+        {
+            return false;
+        }
+
+        RHIDescriptorSetRef frameSet =
+            m_device->CreateDescriptorSet(frameSetDesc);
+        if (!frameSet ||
+            !frameSet->IsReadyForBinding(m_setLayouts[0].Get()))
+        {
+            return false;
+        }
+        frameDescriptorSets.push_back(std::move(frameSet));
+    }
+
+    std::vector<Ref<RefCounted>> retainedResources;
+    retainedResources.reserve(2 + frameDescriptorSets.size() +
+                              baseBindings.size() * cascadeViews.size());
+    retainedResources.emplace_back(viewConstantPageBuffer.Get());
+    retainedResources.emplace_back(m_setLayouts[0].Get());
+    retainedResources.emplace_back(baseOwners.Get());
+    for (const RHIDescriptorSetRef& frameSet : frameDescriptorSets)
+    {
+        retainedResources.emplace_back(frameSet.Get());
+    }
+    for (const RHIDescriptorBinding& binding : baseBindings)
+    {
+        if (binding.binding == 0 && binding.arrayElement == 0)
+        {
+            continue;
+        }
+        if (binding.buffer)
+            retainedResources.emplace_back(binding.buffer);
+        if (binding.textureView)
+        {
+            retainedResources.emplace_back(binding.textureView);
+            if (RHITexture* texture = binding.textureView->GetTexture())
+            {
+                retainedResources.emplace_back(texture);
+            }
+        }
+        if (binding.sampler)
+            retainedResources.emplace_back(binding.sampler);
+        if (binding.accelerationStructure)
+            retainedResources.emplace_back(binding.accelerationStructure);
+    }
+
+    outSnapshot.viewConstantPageBuffer = std::move(viewConstantPageBuffer);
+    outSnapshot.frameDescriptorSets = std::move(frameDescriptorSets);
+    outSnapshot.retainedResources = std::move(retainedResources);
+    outSnapshot.viewConstantStride = viewConstantStride;
+    return outSnapshot.IsValid() &&
+           outSnapshot.frameDescriptorSets.size() == cascadeViews.size();
+}
+
 bool PipelineCache::CreateGPUSceneRasterBindingSnapshot(
     const GPUSceneRasterResourceSnapshot& resources,
     const ObjectConstants& objectConstants,
@@ -3936,7 +4089,8 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
         return false;
     }
     if (transparentLightResources == nullptr &&
-        (!m_frameDescriptorSet || !m_objectDescriptorSet))
+        (!m_frameDescriptorSet || !m_frameDescriptorBindingOwners ||
+         !m_frameDescriptorBindingOwners->IsComplete() || !m_objectDescriptorSet))
     {
         return false;
     }
@@ -4016,7 +4170,8 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
         : "ObjectVelocityRecordFrameDescriptorSet";
     if (transparentLightResources == nullptr)
     {
-        frameSetDesc.bindings = m_frameDescriptorSet->GetDescriptorSnapshot();
+        frameSetDesc.bindings =
+            BuildFrameDescriptorBindings(*m_frameDescriptorBindingOwners);
         bool replacedFrameBinding = false;
         for (RHIDescriptorBinding& binding : frameSetDesc.bindings)
         {
@@ -4153,17 +4308,17 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
         frameSetDesc.BindTexture(
             10,
             m_currentEnvironmentIBLIrradianceView
-                ? m_currentEnvironmentIBLIrradianceView
+                ? m_currentEnvironmentIBLIrradianceView.Get()
                 : m_fallbackEnvironmentIBLCubemapView.Get());
         frameSetDesc.BindTexture(
             11,
             m_currentEnvironmentIBLPrefilteredView
-                ? m_currentEnvironmentIBLPrefilteredView
+                ? m_currentEnvironmentIBLPrefilteredView.Get()
                 : m_fallbackEnvironmentIBLCubemapView.Get());
         frameSetDesc.BindTexture(
             12,
             m_currentEnvironmentIBLBRDFLUTView
-                ? m_currentEnvironmentIBLBRDFLUTView
+                ? m_currentEnvironmentIBLBRDFLUTView.Get()
                 : m_fallbackEnvironmentIBLBRDFLUTView.Get());
         frameSetDesc.BindSampler(13, m_environmentIBLSampler.Get());
     }
@@ -4271,6 +4426,10 @@ bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
     retainedResources.emplace_back(m_setLayouts[0].Get());
     retainedResources.emplace_back(m_setLayouts[1].Get());
     retainedResources.emplace_back(m_setLayouts[2].Get());
+    if (transparentLightResources == nullptr)
+    {
+        retainedResources.emplace_back(m_frameDescriptorBindingOwners.Get());
+    }
     const auto retainBindingResources = [&retainedResources](
                                             const std::vector<RHIDescriptorBinding>& bindings)
     {
@@ -5256,17 +5415,17 @@ bool PipelineCache::EnsureFrameEnvironmentIBLFallbackResources()
     if (!m_currentEnvironmentIBLIrradianceView)
     {
         m_currentEnvironmentIBLIrradianceView =
-            m_fallbackEnvironmentIBLCubemapView.Get();
+            m_fallbackEnvironmentIBLCubemapView;
     }
     if (!m_currentEnvironmentIBLPrefilteredView)
     {
         m_currentEnvironmentIBLPrefilteredView =
-            m_fallbackEnvironmentIBLCubemapView.Get();
+            m_fallbackEnvironmentIBLCubemapView;
     }
     if (!m_currentEnvironmentIBLBRDFLUTView)
     {
         m_currentEnvironmentIBLBRDFLUTView =
-            m_fallbackEnvironmentIBLBRDFLUTView.Get();
+            m_fallbackEnvironmentIBLBRDFLUTView;
     }
     return true;
 }
@@ -5333,11 +5492,11 @@ bool PipelineCache::EnsureFrameLightFallbackResources()
     m_fallbackSpotLightsBuffer = std::move(spotLights);
 
     if (!m_currentLightConstantsBuffer)
-        m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
+        m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer;
     if (!m_currentPointLightsBuffer)
-        m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
+        m_currentPointLightsBuffer = m_fallbackPointLightsBuffer;
     if (!m_currentSpotLightsBuffer)
-        m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
+        m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer;
 
     return true;
 }
@@ -5404,11 +5563,11 @@ bool PipelineCache::EnsureFrameClusteredLightFallbackResources()
     m_fallbackClusterLightIndexBuffer = std::move(indices);
 
     if (!m_currentClusterConstantsBuffer)
-        m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer.Get();
+        m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer;
     if (!m_currentClusterBuffer)
-        m_currentClusterBuffer = m_fallbackClusterBuffer.Get();
+        m_currentClusterBuffer = m_fallbackClusterBuffer;
     if (!m_currentClusterLightIndexBuffer)
-        m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
+        m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer;
 
     return true;
 }
@@ -5423,70 +5582,16 @@ bool PipelineCache::UpdateDefaultFrameDescriptorSet()
         return false;
     }
 
-    RHITextureView* shadowView = m_currentDirectionalShadowView
-                                     ? m_currentDirectionalShadowView
-                                     : m_fallbackDirectionalShadowView.Get();
-    RHISampler* shadowSampler = m_currentDirectionalShadowSampler
-                                    ? m_currentDirectionalShadowSampler
-                                    : m_directionalShadowSampler.Get();
-    RHIBuffer* lightConstants = m_currentLightConstantsBuffer
-                                    ? m_currentLightConstantsBuffer
-                                    : m_fallbackLightConstantsBuffer.Get();
-    RHIBuffer* pointLights = m_currentPointLightsBuffer
-                                 ? m_currentPointLightsBuffer
-                                 : m_fallbackPointLightsBuffer.Get();
-    RHIBuffer* spotLights = m_currentSpotLightsBuffer
-                                ? m_currentSpotLightsBuffer
-                                : m_fallbackSpotLightsBuffer.Get();
-    RHIBuffer* clusterConstants = m_currentClusterConstantsBuffer
-                                      ? m_currentClusterConstantsBuffer
-                                      : m_fallbackClusterConstantsBuffer.Get();
-    RHIBuffer* clusters = m_currentClusterBuffer
-                              ? m_currentClusterBuffer
-                              : m_fallbackClusterBuffer.Get();
-    RHIBuffer* clusterLightIndices = m_currentClusterLightIndexBuffer
-                                         ? m_currentClusterLightIndexBuffer
-                                         : m_fallbackClusterLightIndexBuffer.Get();
-    RHITextureView* rayTracedShadowMask = m_currentRayTracedShadowMaskView
-                                              ? m_currentRayTracedShadowMaskView
-                                              : m_fallbackRayTracedShadowMaskView.Get();
-    RHITextureView* irradianceView = m_currentEnvironmentIBLIrradianceView
-                                          ? m_currentEnvironmentIBLIrradianceView
-                                          : m_fallbackEnvironmentIBLCubemapView.Get();
-    RHITextureView* prefilteredView = m_currentEnvironmentIBLPrefilteredView
-                                           ? m_currentEnvironmentIBLPrefilteredView
-                                           : m_fallbackEnvironmentIBLCubemapView.Get();
-    RHITextureView* brdfLUTView = m_currentEnvironmentIBLBRDFLUTView
-                                      ? m_currentEnvironmentIBLBRDFLUTView
-                                      : m_fallbackEnvironmentIBLBRDFLUTView.Get();
-
-    if (!shadowView || !shadowSampler || !lightConstants || !pointLights || !spotLights ||
-        !clusterConstants || !clusters || !clusterLightIndices || !rayTracedShadowMask ||
-        !irradianceView || !prefilteredView || !brdfLUTView || !m_environmentIBLSampler)
+    Ref<FrameDescriptorBindingOwners> replacementOwners =
+        CreateFrameDescriptorBindingOwners();
+    if (!replacementOwners)
     {
         return false;
     }
 
-    std::vector<RHIDescriptorBinding> bindings;
-    bindings.reserve(14);
-    bindings.push_back({0, m_viewConstantBuffer.Get(), 0, AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
-    bindings.push_back({1, nullptr, 0, 0, shadowView, nullptr});
-    bindings.push_back({2, nullptr, 0, 0, nullptr, shadowSampler});
-    bindings.push_back({3, lightConstants, 0, AlignConstantBufferSize(sizeof(LightConstants)), nullptr, nullptr});
-    bindings.push_back({4, pointLights, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
-    bindings.push_back({5, spotLights, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
-    bindings.push_back({6, nullptr, 0, 0, rayTracedShadowMask, nullptr});
-    bindings.push_back({7, clusterConstants, 0, AlignConstantBufferSize(sizeof(GPUClusterConstants)), nullptr, nullptr});
-    bindings.push_back({8, clusters, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
-    bindings.push_back({9, clusterLightIndices, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
-    bindings.push_back({10, nullptr, 0, 0, irradianceView, nullptr});
-    bindings.push_back({11, nullptr, 0, 0, prefilteredView, nullptr});
-    bindings.push_back({12, nullptr, 0, 0, brdfLUTView, nullptr});
-    bindings.push_back({13, nullptr, 0, 0, nullptr, m_environmentIBLSampler.Get()});
-
     RHIDescriptorSetDesc desc;
     desc.layout = m_setLayouts[0].Get();
-    desc.bindings = std::move(bindings);
+    desc.bindings = BuildFrameDescriptorBindings(*replacementOwners);
     desc.debugName = "DefaultFrameDescriptorSet";
     RHIDescriptorSetRef replacement = m_device->CreateDescriptorSet(desc);
     if (!replacement)
@@ -5496,9 +5601,73 @@ bool PipelineCache::UpdateDefaultFrameDescriptorSet()
 
     QueueRenderOwnerRetirement(
         m_frameDescriptorSet, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(
+        m_frameDescriptorBindingOwners, m_pendingOwnerRetirements);
     m_frameDescriptorSet = std::move(replacement);
+    m_frameDescriptorBindingOwners = std::move(replacementOwners);
     m_frameResourceBindingsDirty = false;
     return true;
+}
+
+Ref<PipelineCache::FrameDescriptorBindingOwners>
+PipelineCache::CreateFrameDescriptorBindingOwners() const
+{
+    Ref<FrameDescriptorBindingOwners> owners =
+        MakeRef<FrameDescriptorBindingOwners>();
+    owners->viewConstantBuffer = m_viewConstantBuffer;
+    owners->directionalShadowView = m_currentDirectionalShadowView
+        ? m_currentDirectionalShadowView : m_fallbackDirectionalShadowView;
+    owners->directionalShadowSampler = m_currentDirectionalShadowSampler
+        ? m_currentDirectionalShadowSampler : m_directionalShadowSampler;
+    owners->lightConstantsBuffer = m_currentLightConstantsBuffer
+        ? m_currentLightConstantsBuffer : m_fallbackLightConstantsBuffer;
+    owners->pointLightsBuffer = m_currentPointLightsBuffer
+        ? m_currentPointLightsBuffer : m_fallbackPointLightsBuffer;
+    owners->spotLightsBuffer = m_currentSpotLightsBuffer
+        ? m_currentSpotLightsBuffer : m_fallbackSpotLightsBuffer;
+    owners->rayTracedShadowMaskView = m_currentRayTracedShadowMaskView
+        ? m_currentRayTracedShadowMaskView : m_fallbackRayTracedShadowMaskView;
+    owners->clusterConstantsBuffer = m_currentClusterConstantsBuffer
+        ? m_currentClusterConstantsBuffer : m_fallbackClusterConstantsBuffer;
+    owners->clusterBuffer = m_currentClusterBuffer
+        ? m_currentClusterBuffer : m_fallbackClusterBuffer;
+    owners->clusterLightIndexBuffer = m_currentClusterLightIndexBuffer
+        ? m_currentClusterLightIndexBuffer : m_fallbackClusterLightIndexBuffer;
+    owners->environmentIBLIrradianceView = m_currentEnvironmentIBLIrradianceView
+        ? m_currentEnvironmentIBLIrradianceView : m_fallbackEnvironmentIBLCubemapView;
+    owners->environmentIBLPrefilteredView = m_currentEnvironmentIBLPrefilteredView
+        ? m_currentEnvironmentIBLPrefilteredView : m_fallbackEnvironmentIBLCubemapView;
+    owners->environmentIBLBRDFLUTView = m_currentEnvironmentIBLBRDFLUTView
+        ? m_currentEnvironmentIBLBRDFLUTView : m_fallbackEnvironmentIBLBRDFLUTView;
+    owners->environmentIBLSampler = m_environmentIBLSampler;
+    return owners->IsComplete() ? owners : Ref<FrameDescriptorBindingOwners>{};
+}
+
+std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
+    const FrameDescriptorBindingOwners& owners) const
+{
+    RVX_ASSERT(owners.IsComplete());
+
+    std::vector<RHIDescriptorBinding> bindings;
+    bindings.reserve(14);
+    bindings.push_back({0, owners.viewConstantBuffer.Get(), 0,
+                        AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
+    bindings.push_back({1, nullptr, 0, 0, owners.directionalShadowView.Get(), nullptr});
+    bindings.push_back({2, nullptr, 0, 0, nullptr, owners.directionalShadowSampler.Get()});
+    bindings.push_back({3, owners.lightConstantsBuffer.Get(), 0,
+                        AlignConstantBufferSize(sizeof(LightConstants)), nullptr, nullptr});
+    bindings.push_back({4, owners.pointLightsBuffer.Get(), 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({5, owners.spotLightsBuffer.Get(), 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({6, nullptr, 0, 0, owners.rayTracedShadowMaskView.Get(), nullptr});
+    bindings.push_back({7, owners.clusterConstantsBuffer.Get(), 0,
+                        AlignConstantBufferSize(sizeof(GPUClusterConstants)), nullptr, nullptr});
+    bindings.push_back({8, owners.clusterBuffer.Get(), 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({9, owners.clusterLightIndexBuffer.Get(), 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({10, nullptr, 0, 0, owners.environmentIBLIrradianceView.Get(), nullptr});
+    bindings.push_back({11, nullptr, 0, 0, owners.environmentIBLPrefilteredView.Get(), nullptr});
+    bindings.push_back({12, nullptr, 0, 0, owners.environmentIBLBRDFLUTView.Get(), nullptr});
+    bindings.push_back({13, nullptr, 0, 0, nullptr, owners.environmentIBLSampler.Get()});
+    return bindings;
 }
 
 RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
@@ -5509,44 +5678,36 @@ RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
         !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources())
         return {};
 
-    m_currentDirectionalShadowView = m_fallbackDirectionalShadowView.Get();
-    m_currentRayTracedShadowMaskView = m_fallbackRayTracedShadowMaskView.Get();
-    m_currentDirectionalShadowSampler = m_directionalShadowSampler.Get();
-    m_currentEnvironmentIBLIrradianceView = m_fallbackEnvironmentIBLCubemapView.Get();
-    m_currentEnvironmentIBLPrefilteredView = m_fallbackEnvironmentIBLCubemapView.Get();
-    m_currentEnvironmentIBLBRDFLUTView = m_fallbackEnvironmentIBLBRDFLUTView.Get();
-    m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
-    m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
-    m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
-    m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer.Get();
-    m_currentClusterBuffer = m_fallbackClusterBuffer.Get();
-    m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
-    m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer.Get();
-    m_currentClusterBuffer = m_fallbackClusterBuffer.Get();
-    m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
+    m_currentDirectionalShadowView = m_fallbackDirectionalShadowView;
+    m_currentRayTracedShadowMaskView = m_fallbackRayTracedShadowMaskView;
+    m_currentDirectionalShadowSampler = m_directionalShadowSampler;
+    m_currentEnvironmentIBLIrradianceView = m_fallbackEnvironmentIBLCubemapView;
+    m_currentEnvironmentIBLPrefilteredView = m_fallbackEnvironmentIBLCubemapView;
+    m_currentEnvironmentIBLBRDFLUTView = m_fallbackEnvironmentIBLBRDFLUTView;
+    m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer;
+    m_currentPointLightsBuffer = m_fallbackPointLightsBuffer;
+    m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer;
+    m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer;
+    m_currentClusterBuffer = m_fallbackClusterBuffer;
+    m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer;
+
+    Ref<FrameDescriptorBindingOwners> owners =
+        CreateFrameDescriptorBindingOwners();
+    if (!owners)
+    {
+        return {};
+    }
 
     RHIDescriptorSetDesc descSetDesc;
     descSetDesc.layout = m_setLayouts[0].Get();
+    descSetDesc.bindings = BuildFrameDescriptorBindings(*owners);
     descSetDesc.debugName = "DefaultFrameDescriptorSet";
-    descSetDesc.BindBuffer(0, m_viewConstantBuffer.Get(), 0, AlignConstantBufferSize(sizeof(ViewConstants)));
-    descSetDesc.BindTexture(1, m_fallbackDirectionalShadowView.Get());
-    descSetDesc.BindSampler(2, m_directionalShadowSampler.Get());
-    descSetDesc.BindBuffer(3, m_fallbackLightConstantsBuffer.Get(), 0, AlignConstantBufferSize(sizeof(LightConstants)));
-    descSetDesc.BindBuffer(4, m_fallbackPointLightsBuffer.Get());
-    descSetDesc.BindBuffer(5, m_fallbackSpotLightsBuffer.Get());
-    descSetDesc.BindTexture(6, m_fallbackRayTracedShadowMaskView.Get());
-    descSetDesc.BindBuffer(7,
-                           m_fallbackClusterConstantsBuffer.Get(),
-                           0,
-                           AlignConstantBufferSize(sizeof(GPUClusterConstants)));
-    descSetDesc.BindBuffer(8, m_fallbackClusterBuffer.Get());
-    descSetDesc.BindBuffer(9, m_fallbackClusterLightIndexBuffer.Get());
-    descSetDesc.BindTexture(10, m_fallbackEnvironmentIBLCubemapView.Get());
-    descSetDesc.BindTexture(11, m_fallbackEnvironmentIBLCubemapView.Get());
-    descSetDesc.BindTexture(12, m_fallbackEnvironmentIBLBRDFLUTView.Get());
-    descSetDesc.BindSampler(13, m_environmentIBLSampler.Get());
-
-    return m_device->CreateDescriptorSet(descSetDesc);
+    RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descSetDesc);
+    if (descriptorSet)
+    {
+        m_frameDescriptorBindingOwners = std::move(owners);
+    }
+    return descriptorSet;
 }
 
 RHIDescriptorSetRef PipelineCache::CreateObjectDescriptorSet()

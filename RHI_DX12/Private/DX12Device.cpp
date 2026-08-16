@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace RVX
@@ -19,6 +20,21 @@ namespace RVX
     static_assert(sizeof(IndirectDrawIndexedCommand) ==
                       sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
                   "DX12 indexed indirect execution must use the shared command layout.");
+
+    bool IsDX12TerminalDeviceLossReason(HRESULT reason) noexcept
+    {
+        switch (reason)
+        {
+            case DXGI_ERROR_DEVICE_HUNG:
+            case DXGI_ERROR_DEVICE_REMOVED:
+            case DXGI_ERROR_DEVICE_RESET:
+            case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
+            case DXGI_ERROR_INVALID_CALL:
+                return true;
+            default:
+                return false;
+        }
+    }
 
     namespace
     {
@@ -84,6 +100,16 @@ namespace RVX
 
             result = static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(baseAddress64 + offset);
             return result != 0;
+        }
+
+        std::string FormatDX12DriverVersion(const LARGE_INTEGER& version)
+        {
+            const uint32 highPart = static_cast<uint32>(version.HighPart);
+            const uint32 lowPart = version.LowPart;
+            return std::to_string((highPart >> 16U) & 0xFFFFU) + "." +
+                   std::to_string(highPart & 0xFFFFU) + "." +
+                   std::to_string((lowPart >> 16U) & 0xFFFFU) + "." +
+                   std::to_string(lowPart & 0xFFFFU);
         }
 
         D3D12_GPU_VIRTUAL_ADDRESS GetDX12BufferAddress(RHIBuffer* buffer, uint64 offset = 0)
@@ -1153,6 +1179,32 @@ namespace RVX
         m_capabilities.adapterName = name;
         m_capabilities.dedicatedVideoMemory = adapterDesc.DedicatedVideoMemory;
 
+        // CheckInterfaceSupport queries the selected adapter rather than the
+        // process default.  The returned LARGE_INTEGER is the documented
+        // DXGI four-part driver version, not a D3D feature-level value.
+        m_capabilities.driverVersion.clear();
+        LARGE_INTEGER driverVersion = {};
+        const HRESULT driverVersionResult = m_adapter->CheckInterfaceSupport(
+            __uuidof(IDXGIDevice), &driverVersion);
+        if (SUCCEEDED(driverVersionResult) && driverVersion.QuadPart != 0)
+        {
+            m_capabilities.driverVersion =
+                FormatDX12DriverVersion(driverVersion);
+        }
+        else if (FAILED(driverVersionResult))
+        {
+            RVX_RHI_WARN(
+                "DX12 adapter '{}' driver version query failed (HRESULT {:#x}); omitting driver identity",
+                m_capabilities.adapterName,
+                static_cast<uint32>(driverVersionResult));
+        }
+        else
+        {
+            RVX_RHI_WARN(
+                "DX12 adapter '{}' driver version query returned zero; omitting driver identity",
+                m_capabilities.adapterName);
+        }
+
         // This baseline query defines the binding tier used by several reported
         // capabilities. Continuing after a failure would mistake the zeroed
         // structure for an authoritative Tier 0 result, so fail device creation
@@ -1315,13 +1367,46 @@ namespace RVX
         m_capabilities.supportsMemoryBudgetQuery = true;        // DXGI supports memory budget
         m_capabilities.supportsPersistentMapping = true;        // DX12 supports persistent mapping
         m_capabilities.supportsExplicitHeapManagement = true;   // DX12 supports explicit heaps
-        m_capabilities.supportsTimestampQueries = true;
-        m_capabilities.supportsOcclusionQueries = true;
-        m_capabilities.supportsPipelineStatisticsQueries = true;
+        // Timestamp frequency is queue-specific in D3D12.  The public RHI
+        // projection is deliberately Graphics-only, so do not advertise the
+        // feature until the Graphics queue has produced a usable frequency.
+        m_capabilities.supportsTimestampQueries = false;
+        m_capabilities.timestampFrequency = 0;
         if (m_graphicsQueue)
         {
-            m_graphicsQueue->GetTimestampFrequency(&m_capabilities.timestampFrequency);
+            uint64 graphicsTimestampFrequency = 0;
+            const HRESULT timestampFrequencyResult =
+                m_graphicsQueue->GetTimestampFrequency(&graphicsTimestampFrequency);
+            if (SUCCEEDED(timestampFrequencyResult) && graphicsTimestampFrequency != 0)
+            {
+                m_capabilities.supportsTimestampQueries = true;
+                m_capabilities.timestampFrequency = graphicsTimestampFrequency;
+            }
+            else
+            {
+                const HRESULT deviceRemovedReason = GetDeviceRemovedReason();
+                const HRESULT effectiveReason = FAILED(deviceRemovedReason)
+                    ? deviceRemovedReason
+                    : timestampFrequencyResult;
+                if (FAILED(deviceRemovedReason) ||
+                    IsDX12TerminalDeviceLossReason(effectiveReason))
+                {
+                    // Queues, fences, and the owned fault state are fully
+                    // initialized before capability discovery.  Preserve the
+                    // terminal device fault rather than disguising removal as
+                    // an optional timestamp capability gap.
+                    HandleDeviceLost(effectiveReason,
+                                     RHIDeviceFaultOperation::Context);
+                    return false;
+                }
+
+                RVX_RHI_WARN(
+                    "DX12 Graphics timestamp queries unavailable: GetTimestampFrequency failed (0x{:08X}) or returned zero",
+                    static_cast<uint32>(timestampFrequencyResult));
+            }
         }
+        m_capabilities.supportsOcclusionQueries = true;
+        m_capabilities.supportsPipelineStatisticsQueries = true;
         m_capabilities.supportsHostFenceSignal = false;
         m_capabilities.supportsDefaultQueueFenceSignal = true;
         m_capabilities.supportsExplicitQueueFenceSignal = true;
@@ -1703,6 +1788,21 @@ namespace RVX
 
     RHIQueryPoolRef DX12Device::CreateQueryPool(const RHIQueryPoolDesc& desc)
     {
+        const RHIQueryValidationResult validation = ValidateRHIQueryPoolDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12: Query pool creation rejected: {}", validation.message);
+            return nullptr;
+        }
+
+        if (desc.type == RHIQueryType::Timestamp &&
+            (!m_capabilities.supportsTimestampQueries ||
+             m_capabilities.timestampFrequency == 0))
+        {
+            RVX_RHI_ERROR("DX12: Timestamp query creation rejected because Graphics timestamps are unavailable");
+            return nullptr;
+        }
+
         return CreateDX12QueryPool(this, desc);
     }
 

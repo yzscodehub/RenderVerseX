@@ -6,6 +6,7 @@
 #include "Render/Passes/MeshPassProcessor.h"
 
 #include <algorithm>
+#include <numeric>
 #include <tuple>
 #include <utility>
 
@@ -153,6 +154,47 @@ RenderDrawGroupKey MakeRenderInstanceBatchKey(
     key.vertexOffset = packet.arguments.vertexOffset;
     key.flags = packet.flags;
     return key;
+}
+
+CanonicalRasterPacketOrderKey MakeCanonicalRasterPacketOrderKey(
+    const RenderDrawPacket& packet,
+    uint32 sourceOrdinal,
+    uint32 sourcePacketIndex) noexcept
+{
+    return CanonicalRasterPacketOrderKey{
+        packet.objectId,
+        packet.primitiveData,
+        packet.submeshIndex,
+        packet.geometryKey.submeshIndex,
+        sourceOrdinal,
+        sourcePacketIndex};
+}
+
+CanonicalRasterGroupOrderKey MakeCanonicalRasterGroupOrderKey(
+    const RenderDrawGroupKey& key,
+    AssetId geometryAssetId,
+    AssetId materialAssetId) noexcept
+{
+    return CanonicalRasterGroupOrderKey{
+        static_cast<uint8>(key.pass),
+        static_cast<uint8>(key.pipeline.materialVariant),
+        static_cast<uint8>(key.pipeline.topology),
+        static_cast<uint8>(key.pipeline.skinned),
+        geometryAssetId.value,
+        key.geometry.submeshIndex,
+        static_cast<uint8>(key.geometry.indexType),
+        key.usesMaterialParameterTable ? 0U : materialAssetId.value,
+        static_cast<uint8>(key.material.materialMode),
+        key.instanceMaterial.textureBindingHash,
+        static_cast<uint8>(key.instanceMaterial.parameterTableCompatible),
+        static_cast<uint32>(key.layout.vertexStreams),
+        static_cast<uint32>(key.layout.bindings),
+        static_cast<uint8>(key.layout.primitiveDataBinding),
+        key.indexCount,
+        key.firstIndex,
+        key.vertexOffset,
+        static_cast<uint32>(key.flags),
+        static_cast<uint8>(key.usesMaterialParameterTable)};
 }
 
 uint64 GetStableHash(const RenderSubmissionLayout& layout) noexcept
@@ -326,16 +368,10 @@ void BuildDeterministicRenderDrawGroups(
                   {
                       return false;
                   }
-                  return std::tuple{lhs.sourceOrdinal,
-                                    lhs.packet.objectId,
-                                    lhs.packet.primitiveData,
-                                    lhs.packet.submeshIndex,
-                                    lhsIndex} <
-                         std::tuple{rhs.sourceOrdinal,
-                                    rhs.packet.objectId,
-                                    rhs.packet.primitiveData,
-                                    rhs.packet.submeshIndex,
-                                    rhsIndex};
+                  return MakeCanonicalRasterPacketOrderKey(
+                             lhs.packet, lhs.sourceOrdinal, lhsIndex) <
+                         MakeCanonicalRasterPacketOrderKey(
+                             rhs.packet, rhs.sourceOrdinal, rhsIndex);
               });
 
     outSortedCandidates.reserve(outSortedCandidatePacketIndices.size());
@@ -356,13 +392,78 @@ void BuildDeterministicRenderDrawGroups(
         }
         outGroups.push_back(RenderDrawGroupRange{result.groupKey, index, 1});
     }
+
+    std::vector<uint32> groupOrder(outGroups.size());
+    std::iota(groupOrder.begin(), groupOrder.end(), 0U);
+    std::sort(groupOrder.begin(), groupOrder.end(),
+              [&outGroups,
+               &outSortedCandidates,
+               &outSortedCandidatePacketIndices](uint32 lhsIndex,
+                                                   uint32 rhsIndex)
+              {
+                  const RenderDrawGroupRange& lhs = outGroups[lhsIndex];
+                  const RenderDrawGroupRange& rhs = outGroups[rhsIndex];
+                  const MeshPassProcessorResult& lhsFirst =
+                      outSortedCandidates[lhs.first];
+                  const MeshPassProcessorResult& rhsFirst =
+                      outSortedCandidates[rhs.first];
+                  const CanonicalRasterGroupOrderKey lhsKey =
+                      MakeCanonicalRasterGroupOrderKey(
+                          lhs.key,
+                          lhsFirst.geometryAssetId,
+                          lhsFirst.materialAssetId);
+                  const CanonicalRasterGroupOrderKey rhsKey =
+                      MakeCanonicalRasterGroupOrderKey(
+                          rhs.key,
+                          rhsFirst.geometryAssetId,
+                          rhsFirst.materialAssetId);
+                  if (lhsKey != rhsKey)
+                  {
+                      return lhsKey < rhsKey;
+                  }
+                  return MakeCanonicalRasterPacketOrderKey(
+                             lhsFirst.packet,
+                             lhsFirst.sourceOrdinal,
+                             outSortedCandidatePacketIndices[lhs.first]) <
+                         MakeCanonicalRasterPacketOrderKey(
+                             rhsFirst.packet,
+                             rhsFirst.sourceOrdinal,
+                             outSortedCandidatePacketIndices[rhs.first]);
+              });
+
+    std::vector<MeshPassProcessorResult> canonicalCandidates;
+    std::vector<uint32> canonicalSourceIndices;
+    std::vector<RenderDrawGroupRange> canonicalGroups;
+    canonicalCandidates.reserve(outSortedCandidates.size());
+    canonicalSourceIndices.reserve(outSortedCandidatePacketIndices.size());
+    canonicalGroups.reserve(outGroups.size());
+    for (uint32 groupIndex : groupOrder)
+    {
+        const RenderDrawGroupRange& sourceGroup = outGroups[groupIndex];
+        const uint32 first = static_cast<uint32>(canonicalCandidates.size());
+        for (uint32 offset = 0; offset < sourceGroup.count; ++offset)
+        {
+            canonicalCandidates.push_back(
+                outSortedCandidates[sourceGroup.first + offset]);
+            canonicalSourceIndices.push_back(
+                outSortedCandidatePacketIndices[sourceGroup.first + offset]);
+        }
+        canonicalGroups.push_back(
+            RenderDrawGroupRange{sourceGroup.key, first, sourceGroup.count});
+    }
+    outSortedCandidates.swap(canonicalCandidates);
+    outSortedCandidatePacketIndices.swap(canonicalSourceIndices);
+    outGroups.swap(canonicalGroups);
 }
 
 MeshPassProcessorResult MeshPassProcessor::MakeSkipped(
-    const MeshPassProcessorInput& input) noexcept
+    const MeshPassProcessorInput& input) const noexcept
 {
     MeshPassProcessorResult result;
     result.packet = input.packet;
+    result.packet.pass = GetPassKind();
+    result.geometryAssetId = input.geometryAssetId;
+    result.materialAssetId = input.materialAssetId;
     result.sourceOrdinal = input.sourceOrdinal;
     result.viewDepth = input.viewDepth;
     return result;
@@ -378,6 +479,8 @@ MeshPassProcessorResult MeshPassProcessor::MakeRelevant(
     MeshPassProcessorResult result;
     result.packet = input.packet;
     result.packet.pass = pass;
+    result.geometryAssetId = input.geometryAssetId;
+    result.materialAssetId = input.materialAssetId;
     result.sourceOrdinal = input.sourceOrdinal;
     result.viewDepth = input.viewDepth;
 

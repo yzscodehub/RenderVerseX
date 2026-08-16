@@ -2,6 +2,8 @@
 // SSAO.hlsl - depth-only low-tier fullscreen SSAO post-process
 // =============================================================================
 
+#include "../Include/FullscreenTriangle.hlsli"
+
 cbuffer SSAOConstants : register(b0, space0)
 {
     float2 TextureSize;
@@ -30,21 +32,8 @@ struct VSOutput
 VSOutput VSMain(uint vertexID : SV_VertexID)
 {
     VSOutput output;
-
-    float2 positions[3] = {
-        float2(-1.0, -1.0),
-        float2(-1.0,  3.0),
-        float2( 3.0, -1.0)
-    };
-
-    float2 texCoords[3] = {
-        float2(0.0, 1.0),
-        float2(0.0, -1.0),
-        float2(2.0, 1.0)
-    };
-
-    output.Position = float4(positions[vertexID], 0.0, 1.0);
-    output.TexCoord = texCoords[vertexID];
+    output.TexCoord = RVX_GetFullscreenTriangleTexCoord(vertexID);
+    output.Position = RVX_GetFullscreenTrianglePosition(output.TexCoord);
     return output;
 }
 

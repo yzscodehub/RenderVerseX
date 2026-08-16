@@ -8,6 +8,7 @@
 #include "Core/Math/AABB.h"
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
+#include "RenderContracts/RenderIdentity.h"
 
 #include <cstddef>
 #include <string>
@@ -15,7 +16,7 @@
 
 namespace RVX
 {
-    inline constexpr uint32 RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION = 1;
+    inline constexpr uint32 RVX_PARTICLE_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
 
     enum class ParticleRenderSnapshotStatus : uint8
     {
@@ -70,8 +71,12 @@ namespace RVX
 
     struct ParticleRenderSnapshotItem
     {
+        /** @brief Generation-qualified RenderScene object identity. */
         uint64 instanceId = 0;
+        /** @brief Generation-qualified RenderScene system identity. */
         uint64 systemId = 0;
+        /** @brief Stable source asset identity; never replaced by a render identity. */
+        AssetId systemAssetId{};
         std::string systemName;
 
         Mat4 worldMatrix = Mat4Identity();

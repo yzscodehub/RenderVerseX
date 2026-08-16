@@ -17,9 +17,7 @@
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
 
 #include "Include/GPUInstanceData.hlsli"
-#if defined(RVX_GPU_SCENE_RASTER)
 #include "GPUDriven/GPUSceneRaster.hlsli"
-#endif
 
 cbuffer ViewConstants : register(b0, space0)
 {
@@ -145,7 +143,8 @@ VSOutput VSMain(VSInput input)
 VSOutput VSMainRigid(RigidDirectVSInput input)
 {
     VSOutput output;
-    const float4 worldPosition = mul(World, float4(input.Position, 1.0f));
+    const float4 worldPosition = RVXTransformRigidAffinePosition(
+        World[0], World[1], World[2], input.Position);
     output.Position = mul(ViewProjection, worldPosition);
     return output;
 }
@@ -155,8 +154,9 @@ VSOutput VSMainGPUDriven(
     RigidVSInput input)
 {
     VSOutput output;
-    float4x4 world = GPUDrivenInstances[input.InstanceIndex].worldMatrix;
-    float4 worldPosition = mul(world, float4(input.Position, 1.0));
+    const float4x4 world = GPUDrivenInstances[input.InstanceIndex].worldMatrix;
+    const float4 worldPosition = RVXTransformRigidAffinePosition(
+        world[0], world[1], world[2], input.Position);
     output.Position = mul(ViewProjection, worldPosition);
     return output;
 }
@@ -200,7 +200,8 @@ MaskedVSOutput VSMainMasked(MaskedVSInput input)
 MaskedVSOutput VSMainMaskedRigid(MaskedRigidVSInput input)
 {
     MaskedVSOutput output;
-    const float4 worldPosition = mul(World, float4(input.Position, 1.0f));
+    const float4 worldPosition = RVXTransformRigidAffinePosition(
+        World[0], World[1], World[2], input.Position);
     output.Position = mul(ViewProjection, worldPosition);
     output.TexCoord = input.TexCoord;
     return output;

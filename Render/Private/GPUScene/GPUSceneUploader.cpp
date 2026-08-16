@@ -38,8 +38,22 @@ namespace
     constexpr uint32 GPU_SCENE_UPLOAD_TABLE_COUNT =
         static_cast<uint32>(GPUSceneUploadTable::Count);
 
+    void SaturatingAdd(uint64& total, uint64 value, bool& saturated) noexcept
+    {
+        const uint64 maximum = std::numeric_limits<uint64>::max();
+        if (saturated || value > maximum - total)
+        {
+            total = maximum;
+            saturated = true;
+            return;
+        }
+        total += value;
+    }
+
     static_assert(GPU_SCENE_UPLOAD_TABLE_COUNT ==
                   GPU_SCENE_RESIDENT_TABLE_COUNT);
+    static_assert(GPU_SCENE_UPLOAD_TABLE_COUNT ==
+                  GPU_SCENE_DIAGNOSTICS_TABLE_COUNT);
 
     struct TableSource
     {
@@ -104,6 +118,36 @@ namespace
         return true;
     }
 
+    /**
+     * @brief Resolve the physical domain that RenderGraph assigns to a Copy pass.
+     *
+     * GPUScene staging buffers are CPU-written and have no prior GPU owner. The
+     * graph is recorded before its immutable submission plan exists, so mirror
+     * RenderGraph's capability-based Copy-pass routing here. In particular, a
+     * device without queue submission plans must stay on Graphics even if its
+     * topology advertises a distinct Copy mapping.
+     */
+    GPUQueueDomain ResolveCopyPassDomain(const IRHIDevice* device) noexcept
+    {
+        if (!device)
+        {
+            return GPUQueueDomain::Graphics;
+        }
+
+        const RHICapabilities& capabilities = device->GetCapabilities();
+        if (!capabilities.supportsQueueSubmissionPlan)
+        {
+            return GPUQueueDomain::Graphics;
+        }
+
+        GPUQueueDomain domain = GPUQueueDomain::Graphics;
+        return TryGetGPUQueueDomain(capabilities.queueTopology,
+                                    RHICommandQueueType::Copy,
+                                    domain)
+            ? domain
+            : GPUQueueDomain::Graphics;
+    }
+
     bool IsTrackerIssuedCompletionToken(
         const RenderSubmissionTracker& tracker,
         const GPUCompletionToken& token) noexcept
@@ -123,6 +167,52 @@ namespace
             }
         }
         return true;
+    }
+
+    uint64 GetCompletionTokenValue(
+        const GPUCompletionToken& token,
+        GPUQueueDomain domain) noexcept
+    {
+        for (uint8 pointIndex = 0; pointIndex < token.count; ++pointIndex)
+        {
+            if (token.points[pointIndex].domain == domain)
+            {
+                return token.points[pointIndex].value;
+            }
+        }
+        return 0;
+    }
+
+    // A graph recording is owned by the final Graphics gateway.  The gateway
+    // joins every queue batch in the RenderContext DAG, so its exact current
+    // point proves completion for multi-domain upload copies without requiring
+    // callers to manufacture a token for every intermediate queue.  Extra
+    // points remain valid when they are also exact current tracker points.
+    bool IsExactPostRecordingSubmissionToken(
+        const RenderSubmissionTracker& tracker,
+        const GPUCompletionToken& recordingBoundary,
+        const GPUCompletionToken& token) noexcept
+    {
+        if (!IsTrackerIssuedCompletionToken(tracker, token) ||
+            tracker.Query(token) == GPUCompletionStatus::Lost)
+        {
+            return false;
+        }
+
+        for (uint8 pointIndex = 0; pointIndex < token.count; ++pointIndex)
+        {
+            const GPUCompletionPoint point = token.points[pointIndex];
+            if (point.value != tracker.GetLastSubmittedValue(point.domain))
+            {
+                return false;
+            }
+        }
+
+        const uint64 graphicsPoint = GetCompletionTokenValue(
+            token, GPUQueueDomain::Graphics);
+        const uint64 recordingGraphicsPoint = GetCompletionTokenValue(
+            recordingBoundary, GPUQueueDomain::Graphics);
+        return graphicsPoint != 0 && graphicsPoint > recordingGraphicsPoint;
     }
 
     const GPUSceneTableChangeSet& GetTableChangeSet(
@@ -145,6 +235,75 @@ namespace
     bool HasDirtyWork(const GPUSceneTableChangeSet& changes) noexcept
     {
         return changes.fullTableDirty || !changes.dirtyRanges.empty();
+    }
+
+    [[nodiscard]] uint32 GetHostWriteSynchronizationScopeIndex(
+        RHIHostWriteSynchronization synchronization) noexcept
+    {
+        const uint32 scope = static_cast<uint32>(synchronization);
+        return scope < RVX_RENDER_HOST_WRITE_SYNCHRONIZATION_SCOPE_COUNT
+            ? scope
+            : static_cast<uint32>(
+                  RenderHostWriteSynchronizationScope::Unavailable);
+    }
+
+    void RecordMappedUploadRange(RenderUploadWorkDiagnostics& diagnostics,
+                                 uint64 copiedBytes) noexcept
+    {
+        ++diagnostics.mappedRangeCount;
+        diagnostics.cpuCopiedPayloadBytes += copiedBytes;
+    }
+
+    void RecordCommittedUploadRange(
+        RenderUploadWorkDiagnostics& diagnostics,
+        const RHIHostWriteReceipt& receipt,
+        uint64 copiedBytes) noexcept
+    {
+        if (!receipt.IsPublished())
+        {
+            return;
+        }
+
+        const bool hadCommittedRanges = diagnostics.committedRangeCount != 0;
+        ++diagnostics.committedRangeCount;
+        diagnostics.committedPayloadBytes += copiedBytes;
+        const uint32 scope = GetHostWriteSynchronizationScopeIndex(
+            receipt.synchronization);
+        ++diagnostics.hostVisibilitySynchronizationScopeRangeCounts[scope];
+        const bool coherent = receipt.synchronization ==
+            RHIHostWriteSynchronization::CoherentNoExplicitSync;
+        const bool quantitativeEvidence = coherent || receipt.HasSynchronizedRange();
+        const uint64 synchronizedBytes = receipt.HasSynchronizedRange()
+            ? receipt.synchronizedSize
+            : (coherent ? copiedBytes : 0);
+        diagnostics.hostVisibilitySynchronizationScopeBytes[scope] +=
+            synchronizedBytes;
+        if (!quantitativeEvidence || scope == static_cast<uint32>(
+                RenderHostWriteSynchronizationScope::Unavailable))
+        {
+            diagnostics.hostVisibilitySynchronizedBytes =
+                DiagnosticValue<uint64>::Unavailable(
+                    "A committed mapped range did not report quantitative host-visibility evidence");
+            return;
+        }
+        if (hadCommittedRanges &&
+            !diagnostics.hostVisibilitySynchronizedBytes.IsAvailable())
+        {
+            // Receipt aggregation is monotonic: later quantitative evidence
+            // cannot repair an earlier committed range whose visibility was
+            // not quantitatively evidenced.
+            return;
+        }
+        if (diagnostics.hostVisibilitySynchronizationScopeRangeCounts[
+                static_cast<uint32>(RenderHostWriteSynchronizationScope::Unavailable)] != 0)
+        {
+            return;
+        }
+        const uint64 prior = diagnostics.hostVisibilitySynchronizedBytes
+            .GetValue()
+            .value_or(0);
+        diagnostics.hostVisibilitySynchronizedBytes =
+            DiagnosticValue<uint64>::Available(prior + synchronizedBytes);
     }
 
     void CoalesceRanges(std::vector<GPUSceneDirtyRowRange>& ranges) noexcept
@@ -259,6 +418,7 @@ public:
         std::vector<GPUSceneDirtyRowRange> consumedRanges;
         std::vector<CopyRange> copies;
         bool consumedFull = false;
+        RenderUploadWorkDiagnostics uploadWork{};
     };
 
     struct PendingUpload
@@ -268,6 +428,7 @@ public:
         std::vector<TableUploadPlan> tables;
         bool graphExecuted = false;
         bool fullUpload = false;
+        RenderUploadWorkDiagnostics uploadWork{};
     };
 
     IRHIDevice* device = nullptr;
@@ -277,8 +438,15 @@ public:
     uint64 reclaimedThrough = 0;
     std::vector<BufferSet> sets;
     std::optional<PendingUpload> pending;
+    // Captured only after graph access realization.  A later NotifySubmission
+    // must prove a new Graphics gateway submission beyond this boundary; a
+    // prior frame's still-current token is never sufficient.
+    GPUCompletionToken recordingSubmissionBoundary;
+    bool hasRecordingSubmissionBoundary = false;
     bool initialized = false;
     bool deviceLost = false;
+    GPUSceneUploadMutationTotals mutationTotals{};
+    bool mutationTotalsSaturated = false;
 
     [[nodiscard]] bool HasOutstandingFrameReadUse() const noexcept
     {
@@ -367,12 +535,26 @@ const GPUSceneUploadDiagnostics& GPUSceneUploader::GetDiagnostics() const noexce
     return m_diagnostics;
 }
 
+const GPUSceneUploadMutationTotals&
+GPUSceneUploader::GetMutationTotals() const noexcept
+{
+    static const GPUSceneUploadMutationTotals unavailableTotals{};
+    return m_impl ? m_impl->mutationTotals : unavailableTotals;
+}
+
+bool GPUSceneUploader::IsMutationTotalsSaturated() const noexcept
+{
+    return m_impl && m_impl->mutationTotalsSaturated;
+}
+
 void GPUSceneUploader::RefreshDiagnostics() const noexcept
 {
     if (!m_impl)
     {
         return;
     }
+
+    m_diagnostics.mutationTotals = m_impl->mutationTotals;
 
     m_diagnostics.bufferSetCount = static_cast<uint32>(m_impl->sets.size());
     m_diagnostics.peakBufferSetCount = std::max(
@@ -605,17 +787,30 @@ void GPUSceneUploader::BuildRenderGraph(
         return;
     }
 
-    // Frame counters describe only this recording attempt, including early
-    // returns caused by a still-pending upload or a clean resident set.
+    // A rejected completion may refer to an older token even though this graph
+    // has already reached the GPU.  Keep that realized plan and its host-write
+    // attempt evidence intact until the caller provides the exact current
+    // token (or explicitly proves the frame was never submitted).  Starting a
+    // second graph while it is retained must not look like a fresh zero-work
+    // attempt or erase the receipts that explain the pending ownership.
+    if (m_impl->pending)
+    {
+        return;
+    }
+
+    // Frame counters describe this new recording attempt or a clean resident
+    // no-op. A retained pending plan above deliberately keeps its evidence.
     m_diagnostics.frameUploadBytes = 0;
     m_diagnostics.frameUploadRangeCount = 0;
     m_diagnostics.fullUpload = false;
     m_diagnostics.rollbackPending = false;
+    m_diagnostics.uploadWork = {};
     for (GPUSceneTableDiagnostics& table : m_diagnostics.tables)
     {
         table.frameUploadBytes = 0;
         table.frameUploadRangeCount = 0;
         table.fullUpload = false;
+        table.uploadWork = {};
     }
     if (!m_impl->initialized || !m_impl->observedMirror)
     {
@@ -633,11 +828,6 @@ void GPUSceneUploader::BuildRenderGraph(
         m_diagnostics.failureReason = GPUSceneUploadFailureReason::DeviceLost;
         return;
     }
-    if (m_impl->pending)
-    {
-        return;
-    }
-
     const GPUSceneCommittedMirror& mirror = *m_impl->observedMirror;
     if (!HasValidTableSources(mirror))
     {
@@ -784,6 +974,34 @@ void GPUSceneUploader::BuildRenderGraph(
     Impl::PendingUpload pending;
     pending.setIndex = selectedSet;
     pending.version = mirror.version;
+    const auto invalidateSetForFullRetry = [&]() noexcept
+    {
+        // A partial multi-range host transaction must never leave this
+        // physical set eligible as a mixed-generation resident snapshot.
+        set.coveredVersion = 0;
+        set.desiredVersion = mirror.version;
+        set.residentVersion = 0;
+        for (Impl::TableState& table : set.tables)
+        {
+            table.fullDirty = true;
+            table.dirtyRanges.clear();
+        }
+    };
+    const auto failPendingHostTransaction =
+        [&](GPUSceneUploadFailureReason failure) noexcept
+    {
+        if (pending.uploadWork.committedRangeCount != 0)
+        {
+            invalidateSetForFullRetry();
+        }
+        m_diagnostics.uploadWork = pending.uploadWork;
+        for (const Impl::TableUploadPlan& plan : pending.tables)
+        {
+            m_diagnostics.tables[plan.tableIndex].uploadWork =
+                plan.uploadWork;
+        }
+        m_diagnostics.failureReason = failure;
+    };
     try
     {
         for (uint32 tableIndex = 0;
@@ -795,7 +1013,6 @@ void GPUSceneUploader::BuildRenderGraph(
                 mirror, static_cast<GPUSceneUploadTable>(tableIndex));
             std::vector<GPUSceneDirtyRowRange> ranges;
             const bool fullUpload = table.fullDirty;
-            m_diagnostics.tables[tableIndex].fullUpload = fullUpload;
             if (fullUpload)
             {
                 // Initialize the whole allocated capacity, not merely the live
@@ -839,16 +1056,10 @@ void GPUSceneUploader::BuildRenderGraph(
             RHIBufferRef staging = m_impl->device->CreateBuffer(stagingDesc);
             if (!staging)
             {
-                m_diagnostics.failureReason = GPUSceneUploadFailureReason::StagingCreationFailed;
+                failPendingHostTransaction(
+                    GPUSceneUploadFailureReason::StagingCreationFailed);
                 return;
             }
-            void* mapped = staging->Map();
-            if (!mapped)
-            {
-                m_diagnostics.failureReason = GPUSceneUploadFailureReason::StagingMapFailed;
-                return;
-            }
-            std::memset(mapped, 0, static_cast<size_t>(stagingSize));
 
             Impl::TableUploadPlan plan;
             plan.tableIndex = tableIndex;
@@ -861,40 +1072,44 @@ void GPUSceneUploader::BuildRenderGraph(
             for (const GPUSceneDirtyRowRange range : ranges)
             {
                 const uint64 bytes = static_cast<uint64>(range.rowCount) * source.stride;
+                RHIMappedWriteAccess access = staging->MapWriteRange(
+                    stagingOffset, bytes);
+                if (!access.IsValid())
+                {
+                    m_diagnostics.tables[tableIndex].uploadWork =
+                        plan.uploadWork;
+                    failPendingHostTransaction(
+                        GPUSceneUploadFailureReason::StagingMapFailed);
+                    return;
+                }
+                std::memset(access.GetData(), 0, static_cast<size_t>(bytes));
                 if (source.rows != nullptr && range.firstRow < source.rowCount)
                 {
                     const uint32 sourceRows = std::min(
                         range.rowCount, source.rowCount - range.firstRow);
-                    std::memcpy(static_cast<uint8*>(mapped) + stagingOffset,
+                    std::memcpy(access.GetData(),
                                 static_cast<const uint8*>(source.rows) +
                                     static_cast<uint64>(range.firstRow) * source.stride,
                                 static_cast<size_t>(sourceRows) * source.stride);
                 }
+                RecordMappedUploadRange(plan.uploadWork, bytes);
+                RecordMappedUploadRange(pending.uploadWork, bytes);
+                const RHIHostWriteReceipt receipt =
+                    staging->CommitMappedWriteRange(std::move(access));
+                if (!receipt.IsPublished())
+                {
+                    m_diagnostics.tables[tableIndex].uploadWork =
+                        plan.uploadWork;
+                    failPendingHostTransaction(
+                        GPUSceneUploadFailureReason::StagingCommitFailed);
+                    return;
+                }
+                RecordCommittedUploadRange(plan.uploadWork, receipt, bytes);
+                RecordCommittedUploadRange(pending.uploadWork, receipt, bytes);
                 plan.copies.push_back({stagingOffset,
                                        static_cast<uint64>(range.firstRow) * source.stride,
                                        bytes});
                 stagingOffset += bytes;
-                m_diagnostics.frameUploadBytes += bytes;
-                m_diagnostics.cumulativeUploadBytes += bytes;
-                m_diagnostics.tables[tableIndex].frameUploadBytes += bytes;
-                m_diagnostics.tables[tableIndex].cumulativeUploadBytes += bytes;
-                ++m_diagnostics.frameUploadRangeCount;
-                ++m_diagnostics.cumulativeUploadRangeCount;
-                ++m_diagnostics.tables[tableIndex].frameUploadRangeCount;
-                ++m_diagnostics.tables[tableIndex].cumulativeUploadRangeCount;
-            }
-            staging->Unmap();
-
-            const uint64 persistentBufferBytes =
-                static_cast<uint64>(table.capacity) * table.stride;
-            if (!RetainRenderSubmissionResource(submissionBatch, table.buffer,
-                                                persistentBufferBytes) ||
-                !RetainRenderSubmissionResource(submissionBatch, staging,
-                                                stagingSize))
-            {
-                m_diagnostics.failureReason =
-                    GPUSceneUploadFailureReason::SubmissionRetentionFailed;
-                return;
             }
             pending.fullUpload |= fullUpload;
             pending.tables.push_back(std::move(plan));
@@ -902,12 +1117,13 @@ void GPUSceneUploader::BuildRenderGraph(
     }
     catch (const std::bad_alloc&)
     {
-        m_diagnostics.failureReason = GPUSceneUploadFailureReason::StagingCreationFailed;
+        failPendingHostTransaction(
+            GPUSceneUploadFailureReason::StagingCreationFailed);
         return;
     }
     catch (...)
     {
-        m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
+        failPendingHostTransaction(GPUSceneUploadFailureReason::UnexpectedFailure);
         return;
     }
 
@@ -915,6 +1131,30 @@ void GPUSceneUploader::BuildRenderGraph(
     {
         m_diagnostics.residentVersion = set.residentVersion;
         return;
+    }
+
+    // Do not retain any staging allocation until every host write has been
+    // committed. A later commit failure leaves the table set dirty and no
+    // resource from this incomplete transaction is attached to a submission.
+    for (const Impl::TableUploadPlan& plan : pending.tables)
+    {
+        const Impl::TableState& table = set.tables[plan.tableIndex];
+        const uint64 persistentBufferBytes =
+            static_cast<uint64>(table.capacity) * table.stride;
+        uint64 stagingSize = 0;
+        for (const Impl::CopyRange& copy : plan.copies)
+        {
+            stagingSize += copy.size;
+        }
+        if (!RetainRenderSubmissionResource(submissionBatch, plan.target,
+                                            persistentBufferBytes) ||
+            !RetainRenderSubmissionResource(submissionBatch, plan.staging,
+                                            stagingSize))
+        {
+            failPendingHostTransaction(
+                GPUSceneUploadFailureReason::SubmissionRetentionFailed);
+            return;
+        }
     }
 
     try
@@ -925,6 +1165,8 @@ void GPUSceneUploader::BuildRenderGraph(
             std::vector<RGBufferHandle> stagingHandles;
         };
 
+        const GPUQueueDomain stagingDomain = ResolveCopyPassDomain(
+            m_impl->device);
         std::vector<RGBufferHandle> stagingHandles;
         stagingHandles.reserve(pending.tables.size());
         for (Impl::TableUploadPlan& plan : pending.tables)
@@ -936,7 +1178,7 @@ void GPUSceneUploader::BuildRenderGraph(
                 MakeRHIBufferAccessSnapshot(
                     RHIResourceState::CopySource,
                     RHIShaderStage::None,
-                    GPUQueueDomain::Graphics,
+                    stagingDomain,
                     RHIContentValidity::Valid)));
         }
 
@@ -990,22 +1232,25 @@ void GPUSceneUploader::BuildRenderGraph(
     }
     catch (const std::bad_alloc&)
     {
-        m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
+        failPendingHostTransaction(GPUSceneUploadFailureReason::UnexpectedFailure);
         return;
     }
     catch (...)
     {
-        m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
+        failPendingHostTransaction(GPUSceneUploadFailureReason::UnexpectedFailure);
         return;
     }
 
-    m_diagnostics.fullUpload = pending.fullUpload;
-    m_diagnostics.peakFrameUploadBytes = std::max(
-        m_diagnostics.peakFrameUploadBytes, m_diagnostics.frameUploadBytes);
-    for (GPUSceneTableDiagnostics& table : m_diagnostics.tables)
+    // Host receipt evidence describes this recording attempt.  GPU-copy
+    // counters, full-upload state, and all committed frame/cumulative values
+    // remain unpublished until NotifySubmission accepts the exact post-record
+    // completion boundary below.
+    m_diagnostics.uploadWork = pending.uploadWork;
+    for (const Impl::TableUploadPlan& plan : pending.tables)
     {
-        table.peakFrameUploadBytes = std::max(
-            table.peakFrameUploadBytes, table.frameUploadBytes);
+        GPUSceneTableDiagnostics& tableDiagnostics =
+            m_diagnostics.tables[plan.tableIndex];
+        tableDiagnostics.uploadWork = plan.uploadWork;
     }
     // The plan now owns an immutable dirty snapshot. Later Observe calls may
     // append newer deltas directly to the set while this upload is pending.
@@ -1199,6 +1444,7 @@ void GPUSceneUploader::CommitRealizedAccess(const RenderGraph& graph) noexcept
         return;
     }
 
+    bool recordedSubmissionWork = false;
     if (m_impl->pending && m_impl->pending->setIndex < m_impl->sets.size())
     {
         Impl::PendingUpload& pending = *m_impl->pending;
@@ -1208,6 +1454,7 @@ void GPUSceneUploader::CommitRealizedAccess(const RenderGraph& graph) noexcept
             set.tables[plan.tableIndex].access = graph.GetRealizedAccess(plan.targetHandle);
         }
         pending.graphExecuted = true;
+        recordedSubmissionWork = true;
     }
 
     for (Impl::BufferSet& set : m_impl->sets)
@@ -1228,14 +1475,22 @@ void GPUSceneUploader::CommitRealizedAccess(const RenderGraph& graph) noexcept
                 set.frameReadHandles[tableIndex]);
         }
         set.frameReadAccessCommitted = true;
+        recordedSubmissionWork = true;
+    }
+
+    if (recordedSubmissionWork && m_impl->tracker)
+    {
+        m_impl->recordingSubmissionBoundary =
+            m_impl->tracker->CaptureLastSubmittedToken();
+        m_impl->hasRecordingSubmissionBoundary = true;
     }
 }
 
-void GPUSceneUploader::NotifySubmission(const GPUCompletionToken& completion) noexcept
+bool GPUSceneUploader::NotifySubmission(const GPUCompletionToken& completion) noexcept
 {
     if (!m_impl)
     {
-        return;
+        return false;
     }
 
     bool hasFrameReadUse = false;
@@ -1245,14 +1500,18 @@ void GPUSceneUploader::NotifySubmission(const GPUCompletionToken& completion) no
     }
     if (!m_impl->pending && !hasFrameReadUse)
     {
-        return;
+        return true;
     }
 
     GPUCompletionToken normalized;
     const bool validToken = m_impl->tracker &&
                             MergeGPUCompletionToken(normalized, completion) &&
                             normalized.count != 0 &&
-                            IsTrackerIssuedCompletionToken(*m_impl->tracker, normalized);
+                            m_impl->hasRecordingSubmissionBoundary &&
+                            IsExactPostRecordingSubmissionToken(
+                                *m_impl->tracker,
+                                m_impl->recordingSubmissionBoundary,
+                                normalized);
     const bool validPending = !m_impl->pending ||
         (m_impl->pending->graphExecuted &&
          m_impl->pending->setIndex < m_impl->sets.size());
@@ -1263,62 +1522,112 @@ void GPUSceneUploader::NotifySubmission(const GPUCompletionToken& completion) no
     }
     if (!validToken || !validPending || !validReadAccess)
     {
-        if (m_impl->pending &&
-            m_impl->pending->setIndex < m_impl->sets.size())
-        {
-            Impl::BufferSet& set = m_impl->sets[m_impl->pending->setIndex];
-            for (const Impl::TableUploadPlan& plan : m_impl->pending->tables)
-            {
-                set.tables[plan.tableIndex].access = plan.previousAccess;
-                if (plan.consumedFull)
-                {
-                    set.tables[plan.tableIndex].fullDirty = true;
-                    set.tables[plan.tableIndex].dirtyRanges.clear();
-                }
-                else if (!set.tables[plan.tableIndex].fullDirty)
-                {
-                    std::vector<GPUSceneDirtyRowRange>& ranges =
-                        set.tables[plan.tableIndex].dirtyRanges;
-                    ranges.insert(ranges.end(), plan.consumedRanges.begin(),
-                                  plan.consumedRanges.end());
-                    CoalesceRanges(ranges);
-                }
-            }
-            set.unusable = true;
-        }
-        for (Impl::BufferSet& set : m_impl->sets)
-        {
-            if (set.frameReadUse)
-            {
-                if (set.frameReadAccessCommitted)
-                {
-                    for (uint32 tableIndex = 0;
-                         tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
-                         ++tableIndex)
-                    {
-                        set.tables[tableIndex].access =
-                            set.frameReadPreviousAccess[tableIndex];
-                    }
-                }
-                set.frameReadUse = false;
-                set.frameReadAccessCommitted = false;
-                set.frameReadHandles = {};
-                set.unusable = true;
-            }
-        }
+        // Do not roll back or abandon an already-realized graph on rejected
+        // evidence.  The graph may have reached the GPU with a newer point
+        // than the caller supplied; restoring accesses or releasing retained
+        // staging here would turn that ownership mistake into a GPU UAF.
+        // Preserve the immutable pending plan so the caller can retry with
+        // the exact current token, or explicitly ReleaseUnsubmittedFrame()
+        // only when no submission occurred.
         m_diagnostics.failureReason = GPUSceneUploadFailureReason::InvalidCompletionToken;
-        m_diagnostics.rollbackPending = true;
-        m_impl->pending.reset();
-        return;
+        m_diagnostics.rollbackPending = false;
+        return false;
     }
 
     uint32 pendingSetIndex = RVX_INVALID_INDEX;
+    uint64 submittedBytes = 0;
+    uint64 submittedRangeCount = 0;
+    bool submittedFullUpload = false;
     if (m_impl->pending)
     {
         pendingSetIndex = m_impl->pending->setIndex;
         Impl::BufferSet& set = m_impl->sets[pendingSetIndex];
         set.residentVersion = m_impl->pending->version;
+        // A failed multi-range transaction deliberately invalidates the
+        // set's covered generation so it can only be retried as a full
+        // materialization. Once that retry is owned by an exact submission,
+        // restore the covered generation only if Observe has not already
+        // appended a newer delta while this plan was pending.
+        if (set.desiredVersion == m_impl->pending->version)
+        {
+            set.coveredVersion = m_impl->pending->version;
+        }
         m_diagnostics.residentVersion = set.residentVersion;
+        m_diagnostics.fullUpload = m_impl->pending->fullUpload;
+        submittedFullUpload = m_impl->pending->fullUpload;
+        for (const Impl::TableUploadPlan& plan : m_impl->pending->tables)
+        {
+            GPUSceneTableDiagnostics& tableDiagnostics =
+                m_diagnostics.tables[plan.tableIndex];
+            tableDiagnostics.fullUpload = plan.consumedFull;
+            uint64 tableCopyBytes = 0;
+            for (const Impl::CopyRange& copy : plan.copies)
+            {
+                tableCopyBytes += copy.size;
+                submittedBytes += copy.size;
+                ++submittedRangeCount;
+                m_diagnostics.frameUploadBytes += copy.size;
+                m_diagnostics.cumulativeUploadBytes += copy.size;
+                tableDiagnostics.frameUploadBytes += copy.size;
+                tableDiagnostics.cumulativeUploadBytes += copy.size;
+                ++m_diagnostics.frameUploadRangeCount;
+                ++m_diagnostics.cumulativeUploadRangeCount;
+                ++tableDiagnostics.frameUploadRangeCount;
+                ++tableDiagnostics.cumulativeUploadRangeCount;
+                ++tableDiagnostics.uploadWork.gpuCopyRangeCount;
+                ++m_diagnostics.uploadWork.gpuCopyRangeCount;
+            }
+            tableDiagnostics.uploadWork.gpuCopyBytes += tableCopyBytes;
+            m_diagnostics.uploadWork.gpuCopyBytes += tableCopyBytes;
+        }
+        // A pending residency transaction normally has one or more copy
+        // ranges. Keep the cumulative owner evidence strict even if a future
+        // planning path represents a metadata-only pending transaction.
+        if (submittedRangeCount != 0)
+        {
+            SaturatingAdd(m_impl->mutationTotals.submittedUploadCount,
+                          1,
+                          m_impl->mutationTotalsSaturated);
+            SaturatingAdd(m_impl->mutationTotals.uploadBytes,
+                          submittedBytes,
+                          m_impl->mutationTotalsSaturated);
+            SaturatingAdd(m_impl->mutationTotals.uploadRangeCount,
+                          submittedRangeCount,
+                          m_impl->mutationTotalsSaturated);
+            if (submittedFullUpload)
+            {
+                SaturatingAdd(m_impl->mutationTotals.fullUploadCount,
+                              1,
+                              m_impl->mutationTotalsSaturated);
+            }
+            // Copy ranges were materialized from exact row ranges using this
+            // table's fixed resident stride. Count their rows only after the
+            // completion token has accepted the entire pending transaction.
+            for (const Impl::TableUploadPlan& plan : m_impl->pending->tables)
+            {
+                const uint32 stride = set.tables[plan.tableIndex].stride;
+                if (stride == 0)
+                {
+                    continue;
+                }
+                for (const Impl::CopyRange& copy : plan.copies)
+                {
+                    SaturatingAdd(
+                        m_impl->mutationTotals
+                            .submittedUploadedRowCount[plan.tableIndex],
+                        copy.size / stride,
+                        m_impl->mutationTotalsSaturated);
+                }
+            }
+        }
+        m_diagnostics.mutationTotals = m_impl->mutationTotals;
+        m_diagnostics.peakFrameUploadBytes = std::max(
+            m_diagnostics.peakFrameUploadBytes, m_diagnostics.frameUploadBytes);
+        for (GPUSceneTableDiagnostics& table : m_diagnostics.tables)
+        {
+            table.peakFrameUploadBytes = std::max(
+                table.peakFrameUploadBytes, table.frameUploadBytes);
+        }
     }
 
     for (uint32 index = 0; index < m_impl->sets.size(); ++index)
@@ -1343,8 +1652,11 @@ void GPUSceneUploader::NotifySubmission(const GPUCompletionToken& completion) no
     }
 
     m_diagnostics.failureReason = GPUSceneUploadFailureReason::None;
+    m_impl->recordingSubmissionBoundary = {};
+    m_impl->hasRecordingSubmissionBoundary = false;
     m_impl->pending.reset();
     static_cast<void>(PollSafeReclaimVersion());
+    return true;
 }
 
 void GPUSceneUploader::ReleaseUnsubmittedFrame() noexcept
@@ -1396,6 +1708,8 @@ void GPUSceneUploader::ReleaseUnsubmittedFrame() noexcept
         set.frameReadHandles = {};
     }
     m_diagnostics.rollbackPending = true;
+    m_impl->recordingSubmissionBoundary = {};
+    m_impl->hasRecordingSubmissionBoundary = false;
     m_impl->pending.reset();
 }
 

@@ -6,6 +6,7 @@
  */
 
 #include "Core/Types.h"
+#include "Render/RenderDiagnostics.h"
 #include "Render/GPUScene/GPUSceneDiagnostics.h"
 
 namespace RVX
@@ -45,6 +46,8 @@ namespace RVX
         uint32 updateCount = 0;
         uint32 removeCount = 0;
         uint32 noOpCount = 0;
+        /** @brief Persistent committed-work evidence, not an attempt-local value. */
+        GPUScenePublicationMutationTotals mutationTotals{};
         GPUScenePublicationFailureReason failureReason =
             GPUScenePublicationFailureReason::None;
         bool complete = false;
@@ -86,6 +89,9 @@ namespace RVX
         bool deviceLost = false;
         bool rollbackPending = false;
         bool executionEligible = false;
+        RenderUploadWorkDiagnostics uploadWork{};
+        /** @brief Persistent exact-submission upload evidence. */
+        GPUSceneUploadMutationTotals mutationTotals{};
     };
 
     static_assert(static_cast<uint8>(GPUSceneUploadFailureReason::None) == 0);

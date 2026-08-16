@@ -5,12 +5,23 @@
  * @brief Shared validation for update-owned immutable frame values.
  */
 
-#include "RenderContracts/RenderFramePacket.h"
+#include "RenderContracts/RenderFrameTypes.h"
 
 #include <cmath>
 
 namespace RVX
 {
+    /** @brief Validate one backend-neutral view clear policy and value-owned color. */
+    [[nodiscard]] inline bool IsValidRenderViewClearValues(
+        const RenderViewSnapshot& view) noexcept
+    {
+        return IsValidRenderViewClearPolicy(view.clearPolicy) &&
+               std::isfinite(view.clearColor.x) &&
+               std::isfinite(view.clearColor.y) &&
+               std::isfinite(view.clearColor.z) &&
+               std::isfinite(view.clearColor.w);
+    }
+
     /** @brief Validate all cross-thread render settings invariants. */
     [[nodiscard]] inline bool IsValidRenderFrameSettings(
         const RenderFrameSettings& settings) noexcept
@@ -99,12 +110,24 @@ namespace RVX
         if (request.kind == RenderFrameCaptureKind::None)
         {
             return request.requestId == 0 && request.width == 0 &&
-                   request.height == 0 && !request.includeAlpha;
+                   request.height == 0 && !request.includeAlpha &&
+                   !request.pixelProbeEnabled && request.pixelProbeX == 0 &&
+                   request.pixelProbeY == 0;
         }
         const bool declared = request.kind == RenderFrameCaptureKind::Color ||
                               request.kind == RenderFrameCaptureKind::Depth ||
                               request.kind == RenderFrameCaptureKind::ObjectId;
-        return declared && request.requestId != 0 && request.width != 0 &&
-               request.height != 0;
+        if (!declared || request.requestId == 0 || request.width == 0 ||
+            request.height == 0)
+        {
+            return false;
+        }
+        if (!request.pixelProbeEnabled)
+        {
+            return request.pixelProbeX == 0 && request.pixelProbeY == 0;
+        }
+        return request.kind == RenderFrameCaptureKind::Color &&
+               request.pixelProbeX < request.width &&
+               request.pixelProbeY < request.height;
     }
 } // namespace RVX

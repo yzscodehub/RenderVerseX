@@ -36,6 +36,7 @@
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Submission/RenderInstanceBatchPlan.h"
+#include "Render/Submission/DirectRasterReadbackQualification.h"
 #include "Render/Visibility/RenderVisibility.h"
 #include "RenderContracts/FeatureRenderSnapshot.h"
 #include "RenderContracts/RenderProxy.h"
@@ -73,6 +74,7 @@ namespace RVX
     class RenderResourceRegistry;
     class RenderSceneDatabase;
     class RenderSubmissionResourceBatch;
+    class RenderSubmissionTracker;
     class GPUSceneUpdate;
     class GPUSceneUploader;
     class RayTracedReflectionCompositePass;
@@ -225,6 +227,42 @@ namespace RVX
         uint32 gpuDeferredVisibilityCandidateCount = 0;
         bool gpuVisibilityReadbackPerformed = false;
         bool occlusionRequestedButUnavailable = false;
+        uint64 instanceUploadBytes = 0;
+        uint64 gpuSceneCandidateUploadBytes = 0;
+        /** @brief Sum of per-lane active-row indirection bytes copied this frame. */
+        uint64 activeRowUploadBytes = 0;
+        /** @brief Active logical rows across Depth and Opaque owners. */
+        uint32 activeRowCount = 0;
+        /** @brief Highest sparse physical row touched by either owner. */
+        uint32 activeRowHighWatermark = 0;
+        uint32 instancePatchedRowCount = 0;
+        uint32 gpuSceneCandidatePatchedRowCount = 0;
+        uint32 activeRowPatchedRowCount = 0;
+        /** @brief Cumulative explicit full streams, observed as monotonic counters. */
+        uint64 instanceFullMaterializationCount = 0;
+        uint64 gpuSceneCandidateFullMaterializationCount = 0;
+        uint64 activeRowFullMaterializationCount = 0;
+        uint64 continuityFullMaterializationCount = 0;
+        uint64 capacityFullMaterializationCount = 0;
+        uint64 directRasterInstanceUploadBytes = 0;
+        uint64 directRasterInstanceIndexUploadBytes = 0;
+        RenderUploadWorkDiagnostics canonicalInstanceUploadWork{};
+        RenderUploadWorkDiagnostics canonicalCandidateUploadWork{};
+        RenderUploadWorkDiagnostics canonicalActiveRowUploadWork{};
+        RenderUploadWorkDiagnostics directRasterInstanceUploadWork{};
+        RenderUploadWorkDiagnostics directRasterIndexUploadWork{};
+        /** @brief Successfully committed Direct-lane instance rows this frame. */
+        uint32 directRasterInstancePatchedRowCount = 0;
+        /** @brief Successfully committed Direct-lane draw-order rows this frame. */
+        uint32 directRasterIndexPatchedRowCount = 0;
+        /** @brief Sum of active Direct stream rows across raster pass owners. */
+        uint32 directRasterActiveInstanceCount = 0;
+        /** @brief Sum of Direct stream capacities across raster pass owners. */
+        uint32 directRasterActiveInstanceCapacity = 0;
+        /** @brief Direct streams that fully materialized instance rows this frame. */
+        uint32 directRasterInstanceFullMaterializationCount = 0;
+        /** @brief Direct streams that fully materialized draw-order rows this frame. */
+        uint32 directRasterIndexFullMaterializationCount = 0;
         MeshPassProcessorStats opaqueMeshPassProcessorStats;
         uint32 skippedMissingGpuDataCount = 0;
         bool gpuVisibilityCountsAvailable = false;
@@ -245,11 +283,17 @@ namespace RVX
         uint32 opaqueGpuDrivenIndirectDrawCount = 0;
         GPUDrivenDrawFallbackReason opaqueFallbackReason =
             GPUDrivenDrawFallbackReason::Disabled;
+        /** Actual Direct Opaque resident-index raster transcript. */
+        RasterTranscriptDigest directOpaqueRasterTranscript{};
+        DirectRasterReadbackQualificationDiagnostics
+            directOpaqueRasterReadbackQualification{};
+        GPUSceneCullingQualificationDiagnostics gpuSceneDepthQualification{};
+        GPUSceneCullingQualificationDiagnostics gpuSceneOpaqueQualification{};
     };
 
     inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 2;
-    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 6;
-    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 27;
+    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 7;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 28;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION = 24;
     inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION = 25;
 
@@ -314,6 +358,17 @@ namespace RVX
         bool graphCompileValid = true;
         bool graphExecutionSkipped = false;
         std::string skippedReason;
+        /** @brief Completion-qualified cumulative mutation evidence. */
+        RenderMutationEvidenceDiagnostics mutationEvidence{};
+        /** Exact material generations used by the most recently presented frame. */
+        bool presentedMaterialBindingsAvailable = false;
+        bool presentedMaterialBindingsOverflow = false;
+        std::vector<RenderPresentedMaterialBindingReceipt>
+            presentedMaterialBindings{};
+        bool presentedSkinningPalettesAvailable = false;
+        bool presentedSkinningPalettesOverflow = false;
+        std::vector<RenderPresentedSkinningPaletteReceipt>
+            presentedSkinningPalettes{};
 
         uint32 renderGraphTotalPasses = 0;
         uint32 renderGraphCulledPasses = 0;
@@ -330,6 +385,23 @@ namespace RVX
         size_t opaqueDrawItemCount = 0;
         size_t maskedDrawItemCount = 0;
         size_t transparentDrawItemCount = 0;
+        uint32 transparentRejectedNonFiniteDepthCount = 0;
+        bool transparentOrderValid = true;
+        uint64 transparentOrderHash = 0;
+        uint32 transparentCandidateDrawItemCount = 0;
+        uint32 transparentPreparedDrawItemCount = 0;
+        uint32 transparentExecutedPacketCount = 0;
+        uint32 transparentExecutedDrawCount = 0;
+        uint32 transparentSkippedMaterialBindingCount = 0;
+        uint32 transparentSkippedResourceCount = 0;
+        uint32 transparentSkippedExecutionDrawCount = 0;
+        uint32 transparentMaterialBindingCount = 0;
+        uint32 transparentMaterialFallbackBindingCount = 0;
+        uint32 transparentMaterialTextureFlags = 0;
+        uint32 transparentMaterialFallbackTextureFlags = 0;
+        bool transparentNoWork = false;
+        bool transparentPreflightFailed = false;
+        bool transparentExecutionFailed = false;
         SceneFeatureExtractionStats featureExtractionStats;
         uint32 pointLightCount = 0;
         uint32 spotLightCount = 0;
@@ -343,6 +415,35 @@ namespace RVX
         uint32 localShadowRequestCount = 0;
         bool localShadowAtlasReady = false;
         std::string localShadowFallbackReason;
+        bool localLightingAvailable = false;
+        uint32 pointLightRequestedCount = 0;
+        uint32 pointLightAdmittedCount = 0;
+        uint32 pointLightCapacity = 0;
+        uint32 pointLightOverflowCount = 0;
+        uint32 spotLightRequestedCount = 0;
+        uint32 spotLightAdmittedCount = 0;
+        uint32 spotLightCapacity = 0;
+        uint32 spotLightOverflowCount = 0;
+        bool pointShadowSupported = false;
+        std::string pointShadowUnsupportedReason;
+        bool spotShadowSupported = false;
+        std::string spotShadowUnsupportedReason;
+        bool directionalShadowAvailable = false;
+        bool directionalShadowRequested = false;
+        bool directionalShadowSupported = false;
+        bool directionalShadowOutputReady = false;
+        bool directionalShadowSamplingEnabled = false;
+        uint32 directionalShadowRequestedCascadeCount = 0;
+        uint32 directionalShadowProducedCascadeCount = 0;
+        uint32 directionalShadowResolvedCascadeCount = 0;
+        uint32 directionalShadowMapSize = 0;
+        uint32 directionalShadowCasterCount = 0;
+        uint32 directionalShadowDrawCount = 0;
+        std::string directionalShadowReason;
+        bool hzbRequested = false;
+        bool hzbSupported = false;
+        bool hzbEnabled = false;
+        std::string hzbReason;
         bool clusteredLightingInitialized = false;
         bool clusteredLightingFrameBegun = false;
         bool clusteredLightingLightsAssigned = false;
@@ -400,6 +501,22 @@ namespace RVX
         std::string externalTargetFallbackReason;
 
         std::vector<std::string> graphDiagnostics;
+    };
+
+    /**
+     * @brief Render-stage CPU durations from the currently recorded accepted frame.
+     *
+     * This is an owner-thread handoff value only. RenderSubsystem combines it
+     * with frame-slot, submission, and presentation durations after a frame
+     * has completed presentation successfully.
+     */
+    struct SceneRendererCpuFrameTiming
+    {
+        uint64 renderPrepare = 0;
+        uint64 policy = 0;
+        uint64 graphBuild = 0;
+        uint64 graphCompile = 0;
+        uint64 graphRealizeRecord = 0;
     };
 
     struct SceneRendererToolDiagnosticsSnapshot
@@ -610,6 +727,18 @@ namespace RVX
         uint32 localShadowRequestCount = 0;
         bool localShadowAtlasReady = false;
         std::string localShadowFallbackReason;
+        uint32 pointLightRequestedCount = 0;
+        uint32 pointLightAdmittedCount = 0;
+        uint32 pointLightCapacity = 0;
+        uint32 pointLightOverflowCount = 0;
+        uint32 spotLightRequestedCount = 0;
+        uint32 spotLightAdmittedCount = 0;
+        uint32 spotLightCapacity = 0;
+        uint32 spotLightOverflowCount = 0;
+        bool pointShadowSupported = false;
+        std::string pointShadowUnsupportedReason;
+        bool spotShadowSupported = false;
+        std::string spotShadowUnsupportedReason;
     };
 
     struct SceneClusteredLightingStats
@@ -637,6 +766,11 @@ namespace RVX
         uint64 frameCount = 0;
         bool skyboxFound = false;
         bool uploadRequested = false;
+        /**
+         * @brief At least one environment IBL handle was supplied by the
+         * accepted scene. This is independent from binding readiness.
+         */
+        bool requested = false;
         bool textureIBLEnabled = false;
         uint32 prefilteredMipLevels = 1;
         float intensity = 1.0f;
@@ -883,8 +1017,31 @@ namespace RVX
         /** @brief Record the currently accepted packet into the active frame. */
         [[nodiscard]] RenderFrameExecutionResult RenderAcceptedFrame();
 
+        /** @brief Map the optional ToneMapping probe after its exact frame completes. */
+        [[nodiscard]] bool CompleteToneMappingPixelProbe(
+            uint64 requestId,
+            uint64 frameSequence,
+            RenderFramePixelProbeResult& outResult);
+
         /** @brief Seal current recording ownership with the actual submission token. */
-        void NotifySubmission(const GPUCompletionToken& completion);
+        [[nodiscard]] bool NotifySubmission(const GPUCompletionToken& completion);
+
+        /** @brief Arm one post-fence GPU-scene culling qualification capture per lane. */
+        [[nodiscard]] bool ArmGPUSceneCullingQualificationCapture();
+
+        /** @brief Arm one post-fence Direct Opaque physical readback. */
+        [[nodiscard]] bool ArmDirectOpaqueRasterReadbackQualificationCapture();
+
+        /** @brief Poll accepted qualification fences without requiring a new frame. */
+        void PollGPUSceneCullingQualificationCompletion(
+            const RenderSubmissionTracker& tracker);
+
+        /** @brief Whether completion-only owner polling remains required. */
+        [[nodiscard]] bool HasPendingGPUSceneCullingQualificationCompletion()
+            const noexcept;
+
+        [[nodiscard]] bool HasPendingDirectOpaqueRasterReadbackQualificationCompletion()
+            const noexcept;
 
         /** @brief Release current recording ownership when no GPU work was submitted. */
         void ReleaseUnsubmittedFrame();
@@ -905,12 +1062,38 @@ namespace RVX
         [[nodiscard]] const GPUScenePublicationStats&
             GetGPUScenePublicationStats() const noexcept;
 
-        /** @brief Value-only diagnostics for persistent GPUScene residency uploads. */
+        /**
+         * @brief Raw GPUScene uploader-attempt diagnostics.
+         *
+         * Host mapped-write receipt evidence is intentionally visible here
+         * before a submission succeeds.  Consumers that need a completed-frame
+         * view must use GetGPUSceneDiagnostics(), which gates GPU-copy and
+         * direct-frame work on exact submission evidence.
+         */
         [[nodiscard]] const GPUSceneUploadDiagnostics&
             GetGPUSceneUploadDiagnostics() const noexcept;
 
-        /** @brief Backend-neutral, informational GPU-scene frame snapshot. */
+        /**
+         * @brief Backend-neutral, informational completed-frame GPUScene snapshot.
+         *
+         * Per-frame upload/copy receipt values are unavailable until this
+         * renderer has accepted the recording's exact submission token.
+         */
         [[nodiscard]] GPUSceneDiagnostics GetGPUSceneDiagnostics() const noexcept;
+
+        /** @brief Value-only retained-scene work counters for scale probes. */
+        [[nodiscard]] RenderSceneRetainedStats
+            GetRenderSceneRetainedStats() const noexcept
+        {
+            return m_renderScene.GetRetainedStats();
+        }
+
+        /** @brief Value-only draw-packet cache work counters for scale probes. */
+        [[nodiscard]] RenderDrawPacketCacheStats
+            GetRenderDrawPacketCacheStats() const noexcept
+        {
+            return m_renderScene.GetDrawPacketCacheStats();
+        }
 
         /** @brief Explicitly discard CPU publication and resident GPUScene state. */
         void ClearGPUScene();
@@ -1114,6 +1297,13 @@ namespace RVX
         /// Get aggregate frame diagnostics for editor/debug tooling.
         const SceneRendererFrameDiagnostics& GetFrameDiagnostics() const { return m_frameDiagnostics; }
 
+        /** @brief CPU stage timings for the active accepted-frame recording. */
+        [[nodiscard]] const SceneRendererCpuFrameTiming&
+            GetCurrentCpuFrameTiming() const noexcept
+        {
+            return m_currentCpuFrameTiming;
+        }
+
         /// Get the coherent modern-rendering feature capability report from the latest diagnostics refresh.
         const SceneRenderFeatureReport& GetRenderFeatureReport() const { return m_frameDiagnostics.featureReport; }
 
@@ -1298,6 +1488,30 @@ namespace RVX
     private:
         friend class SceneRendererTestAccess;
 
+        /** @brief First irreversible GPU-driven failure observed while recording a frame. */
+        enum class GPUDrivenFrameFailureStage : uint8
+        {
+            None = 0,
+            Tier1FrameSlot,
+            Tier1PacketRange,
+            Tier1DrawGroup,
+            Tier1Instance,
+            Tier1FinalCount,
+            Tier1Seal,
+            TierConfirmationMissingTier1,
+            TierConfirmationNoFallback,
+            TierConfirmationResidentNotReady,
+            GPUSceneLeaseAcquire,
+            GPUSceneLeaseSeal,
+            GPUSceneRasterBinding,
+            PassRegistration,
+            CullCommandRecording,
+            RasterCommandRecording,
+            AccessSnapshotCommit,
+            GraphExecution,
+            GraphAdoption,
+        };
+
         void PrepareFrameApplyResources(RenderResourceRegistry& registry);
         [[nodiscard]] RenderFrameApplyResult FinalizeFrameApply(
             RenderFrameApplyResult result,
@@ -1308,6 +1522,10 @@ namespace RVX
             const RHITextureAccessSnapshot* backBufferAccess) noexcept;
         void ConfirmProvisionalFrameAccessSnapshots() noexcept;
         void RestoreProvisionalFrameAccessSnapshots() noexcept;
+        void UpdateEnvironmentIBLBindingDiagnostics(
+            bool requested,
+            bool textureIBLEnabled,
+            std::string fallbackReason);
         void BuildRenderGraph();
         void SynchronizeGPUSceneUploader() noexcept;
         void ReclaimGPUSceneRetiredRows() noexcept;
@@ -1326,7 +1544,9 @@ namespace RVX
         void ConfirmGPUDrivenActualTier();
         void FinalizeRenderExecutionReportStatus(bool graphExecuted) noexcept;
         [[nodiscard]] bool HasSubmissionFailure() const noexcept;
-        void MarkGPUDrivenFrameFailure() noexcept;
+        void MarkGPUDrivenFrameFailure(GPUDrivenFrameFailureStage stage) noexcept;
+        [[nodiscard]] static const char* GetGPUDrivenFrameFailureStageName(
+            GPUDrivenFrameFailureStage stage) noexcept;
         void ApplyObjectMotionHistory();
         void UpdateObjectMotionHistory();
         void PreparePassesForFrame();
@@ -1350,6 +1570,11 @@ namespace RVX
                                      bool graphBuilt,
                                      bool graphCompiled,
                                      const char* skippedReason);
+        /** Refresh one accepted frame after its exact submission token is verified. */
+        void RefreshSubmissionQualifiedFrameDiagnostics();
+        void UpdateLiveMutationEvidence();
+        void FreezeMutationEvidenceForPresentedFrame();
+        void FreezePresentedMaterialBindingsForPresentedFrame();
         SceneRenderFeatureReport BuildRenderFeatureReport(const SceneRendererFrameDiagnostics& diagnostics) const;
 
         struct PreGraphPrepareCallbackEntry
@@ -1375,6 +1600,7 @@ namespace RVX
         // lifetime are intentionally pass-local.
         std::unique_ptr<GPUCulling> m_depthGPUCulling;
         std::unique_ptr<GPUCulling> m_opaqueGPUCulling;
+        DirectRasterReadbackQualification m_directOpaqueRasterReadbackQualification;
         struct GPUCullingGraphHandles
         {
             RGBufferHandle constants;
@@ -1440,6 +1666,8 @@ namespace RVX
         bool m_gpuSceneCullingCommandRecordingFailed = false;
         bool m_gpuDrivenTier1PreparationFailed = false;
         bool m_gpuDrivenFrameFailure = false;
+        GPUDrivenFrameFailureStage m_gpuDrivenFrameFailureStage =
+            GPUDrivenFrameFailureStage::None;
         GPUDrivenTier m_confirmedGPUDrivenTier = GPUDrivenTier::Direct;
         GPUDrivenGraphFailureInjection m_gpuDrivenGraphFailureInjection =
             GPUDrivenGraphFailureInjection::None;
@@ -1466,6 +1694,21 @@ namespace RVX
         SceneLocalLightingStats m_localLightingStats;
         SceneClusteredLightingStats m_clusteredLightingStats;
         SceneRendererFrameDiagnostics m_frameDiagnostics;
+        RenderMutationEvidenceDiagnostics m_liveMutationEvidence{};
+        RenderMutationEvidenceDiagnostics m_lastObservedMutationEvidence{};
+        RenderMutationEvidenceDiagnostics m_completedMutationEvidence{};
+        bool m_completedPresentedMaterialBindingsAvailable = false;
+        bool m_completedPresentedMaterialBindingsOverflow = false;
+        std::vector<RenderPresentedMaterialBindingReceipt>
+            m_completedPresentedMaterialBindings{};
+        bool m_completedPresentedSkinningPalettesAvailable = false;
+        bool m_completedPresentedSkinningPalettesOverflow = false;
+        std::vector<RenderPresentedSkinningPaletteReceipt>
+            m_completedPresentedSkinningPalettes{};
+        uint64 m_mutationEvidenceEpoch = 1;
+        uint64 m_completedPresentationCount = 0;
+        bool m_completedPresentationCountSaturated = false;
+        SceneRendererCpuFrameTiming m_currentCpuFrameTiming{};
         SceneRendererToolDiagnosticsSnapshot m_toolDiagnosticsSnapshot;
         uint64 m_frameDiagnosticsCounter = 0;
         /// Incremented for every graph recording so a frame-local handle slice
@@ -1473,8 +1716,19 @@ namespace RVX
         uint64 m_renderPassRecordEpoch = 0;
         std::shared_ptr<RenderPassRecordResults> m_activeRenderPassResults;
         RenderPassRecordIdentity m_activeRenderPassIdentity{};
+        /** Frozen physical RHI slot for the active Direct readback recording. */
+        uint32 m_directOpaqueRasterReadbackSourceFrameSlot = RVX_INVALID_INDEX;
+        /** Completion evidence must advance beyond this realized recording boundary. */
+        uint64 m_recordingGraphicsSubmissionBaseline = 0;
+        /** Tracker that issued the boundary; valid only while the recording is pending. */
+        RenderSubmissionTracker* m_recordingSubmissionTracker = nullptr;
+        bool m_hasRecordingSubmissionBoundary = false;
+        /** Only submission-qualified work may appear in completed-frame telemetry. */
+        bool m_submissionQualifiedFrameDiagnostics = false;
         IRHIDevice* m_featureReportDeviceForTesting = nullptr;
         SceneEnvironmentIBLStats m_environmentIBLStats;
+        /** Accepted scene intent retained even when the current binding is incomplete. */
+        bool m_environmentIBLRequested = false;
         SceneGPUDrivenCullingStats m_gpuDrivenCullingStats;
         RenderInstancingDiagnostics m_instancingDiagnostics;
         RayTracingSceneManagerStats m_rayTracingSceneStats;
@@ -1513,6 +1767,7 @@ namespace RVX
         std::vector<RenderDrawItem> m_opaqueDrawItems;
         std::vector<RenderDrawItem> m_maskedDrawItems;
         std::vector<RenderDrawItem> m_transparentDrawItems;
+        TransparentDrawListDiagnostics m_transparentDrawListDiagnostics{};
         std::vector<RenderDrawItem> m_coarseOpaqueDrawItems;
         std::vector<RenderDrawItem> m_coarseMaskedDrawItems;
         SceneMeshPassPreparation m_meshPassPreparation;

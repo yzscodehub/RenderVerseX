@@ -1,15 +1,11 @@
 # =============================================================================
-# RenderExtraction Module - Scene/World to render contract extraction
+# RenderExtraction Module - frozen ECS values to render contracts
 # =============================================================================
 add_library(RVX_RenderExtraction STATIC)
 
 target_sources(RVX_RenderExtraction PRIVATE
-    Private/RenderFrameExtractor.cpp
-    Private/RenderFeatureSceneBridge.cpp
-    Private/RenderProxySceneBridge.cpp
-    Private/SceneEnvironmentIBLBridge.cpp
-    Private/SceneSkyboxPassBridge.cpp
-    Private/WorldCameraBridge.cpp
+    Private/ECS/EcsFrameExtractor.cpp
+    Private/EcsFrozenSceneBridge.cpp
 )
 
 target_include_directories(RVX_RenderExtraction PUBLIC
@@ -17,19 +13,11 @@ target_include_directories(RVX_RenderExtraction PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-target_include_directories(RVX_RenderExtraction PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Resource/Include>
-)
-
 target_link_libraries(RVX_RenderExtraction PUBLIC
     RVX::Core
+    RVX::ECS
     RVX::RenderContracts
-    RVX::Resource
     RVX::Scene
-    RVX::World
-)
-target_link_libraries(RVX_RenderExtraction PRIVATE
-    RVX::Geometry
 )
 
 add_library(RVX::RenderExtraction ALIAS RVX_RenderExtraction)

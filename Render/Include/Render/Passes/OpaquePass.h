@@ -31,10 +31,12 @@ namespace RVX
     class PipelineCache;
     class RenderScene;
     class ShadowPass;
+    class DirectRasterReadbackQualification;
     struct MaterialBindingResult;
     struct ObjectConstantBinding;
     struct GPUCullingDrawGroup;
     struct GPUSceneRasterBindingSnapshot;
+    struct RenderPassRecordResults;
 
     /**
      * @brief Opaque geometry render pass
@@ -101,7 +103,9 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
-        void Execute(RenderGraphPassContext& context, const ViewData& view);
+        void Execute(RenderGraphPassContext& context,
+                     const ViewData& view,
+                     RenderPassRecordResults* results);
         void InitializeGraphRecorder(
             const RenderScene* scene,
             const std::vector<RenderDrawItem>* opaqueDrawItems,
@@ -110,7 +114,11 @@ namespace RVX
             const RenderPassGPUDrivenInputs& gpuInputs,
             bool gpuDrivenPlanned,
             const DirectionalShadowRecordOutput& directionalShadow,
-            const RayTracedShadowRecordOutput& rayTracedShadow);
+            const RayTracedShadowRecordOutput& rayTracedShadow,
+            std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
+            DirectRasterReadbackQualification* directReadbackQualification,
+            const RenderPassRecordIdentity& recordIdentity,
+            uint32 sourceFrameSlot);
 
         RGTextureHandle m_colorTargetHandle;
         RGTextureHandle m_depthTargetHandle;
@@ -133,9 +141,17 @@ namespace RVX
         RGBufferHandle m_directMaterialParameterHandle;
         RGBufferHandle m_gpuMaterialParameterHandle;
         RenderInstanceBatchPlan m_directInstancePlan;
+        std::shared_ptr<RasterInstanceStreamCache> m_directInstanceStreamCache =
+            std::make_shared<RasterInstanceStreamCache>();
+        DirectRasterReadbackQualification* m_directReadbackQualification = nullptr;
+        RenderPassRecordIdentity m_recordIdentity{};
+        uint32 m_directReadbackSourceFrameSlot = RVX_INVALID_INDEX;
         RasterInstanceStream m_directInstanceStream;
         RHIBufferRef m_directMaterialParameterTable;
         RHIBufferRef m_gpuMaterialParameterTable;
+        /** CPU-only resolved table semantics, indexed by material slot. */
+        std::vector<uint64> m_directRasterMaterialSemanticKeysBySlot;
+        std::vector<uint64> m_gpuRasterMaterialSemanticKeysBySlot;
         bool m_directInstancingPreflightFailed = false;
         bool m_gpuMaterialTablePreflightFailed = false;
         std::shared_ptr<const GPUSceneRasterBindingSnapshot> m_gpuSceneRasterBinding;
@@ -154,6 +170,7 @@ namespace RVX
         ClusteredLighting* m_clusteredLighting = nullptr;
         const RenderScene* m_renderScene = nullptr;
         const GPUCulling* m_gpuCulling = nullptr;
+        std::shared_ptr<GPUCullingRecordedState> m_gpuCullingRecordedState;
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
 
@@ -167,11 +184,13 @@ namespace RVX
                                       RHIDescriptorSet* frameSet,
                                       const ObjectConstantBinding* tier1ObjectBinding,
                                       std::span<const PlannedGPUDrivenOpaqueDraw> plannedBatches,
+                                      RenderPassRecordResults* results,
                                       uint32 expectedPacketCount = 0,
                                       uint32 expectedGroupCount = 0);
         bool TryDrawPlannedDirect(
             RHICommandContext& ctx,
-            std::span<const PlannedOpaqueDraw> plannedDraws);
+            std::span<const PlannedOpaqueDraw> plannedDraws,
+            RenderPassRecordResults* results);
         bool BuildPlannedDirectBatch(
             RenderGraphPassContext& context,
             const ViewData& view,
@@ -180,6 +199,11 @@ namespace RVX
             std::vector<PlannedOpaqueDraw>& outPlannedDraws);
         bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
                                          const ViewData& view);
+        [[nodiscard]] bool FinalizeDirectRasterSemanticEvidence(
+            std::span<const PlannedOpaqueDraw> plannedDraws);
+        [[nodiscard]] bool BuildCompleteDirectRasterTranscript(
+            std::span<const PlannedOpaqueDraw> plannedDraws,
+            RasterTranscriptDigest& outDigest) const;
         void ApplyDirectInstancePlan(
             RenderGraphPassContext& context,
             const ViewData& view,

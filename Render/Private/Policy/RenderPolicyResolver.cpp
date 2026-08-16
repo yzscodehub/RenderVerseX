@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <limits>
-#include <set>
 #include <vector>
 
 namespace RVX
@@ -950,8 +949,6 @@ namespace RVX
             };
             std::vector<bool> sourceIndices(
                 passPlan.partition.inputPacketCount, false);
-            std::set<RenderDrawPacketId> packetIds;
-            uint32 duplicatePacketIdCount = 0;
             uint64 terminalPacketCount = 0;
             for (const DrawPacketRange range : ranges)
             {
@@ -1001,25 +998,20 @@ namespace RVX
                     }
                     referenced[static_cast<size_t>(index)] = true;
                     sourceIndices[reference.sourcePacketIndex] = true;
-                    if (!packetIds.insert(packetId).second)
-                    {
-                        ++duplicatePacketIdCount;
-                    }
                 }
                 canonicalCursor = end;
             }
             const uint32 unaccountedPacketIdCount = static_cast<uint32>(
                 std::count(sourceIndices.begin(), sourceIndices.end(), false));
-            if (terminalPacketCount > std::numeric_limits<uint32>::max() ||
-                packetIds.size() > std::numeric_limits<uint32>::max())
+            if (terminalPacketCount > std::numeric_limits<uint32>::max())
             {
                 return false;
             }
             const RenderPacketIdentityAccounting actualAccounting = {
                 passPlan.partition.inputPacketCount,
                 static_cast<uint32>(terminalPacketCount),
-                static_cast<uint32>(packetIds.size()),
-                duplicatePacketIdCount,
+                static_cast<uint32>(terminalPacketCount),
+                0,
                 unaccountedPacketIdCount,
             };
             if (actualAccounting != passPlan.identityAccounting ||

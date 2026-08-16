@@ -105,6 +105,8 @@ namespace RVX
         [[nodiscard]] GPUCompletionStatus PollCompletion();
 
         [[nodiscard]] uint32 GetInFlightCount() const;
+        /** @brief True while an upload or deferred release still awaits GPU completion. */
+        [[nodiscard]] bool HasPendingCompletionWork() const noexcept;
         [[nodiscard]] const RenderUploadProcessorStats& GetStats() const
         {
             return m_stats;
@@ -174,7 +176,8 @@ namespace RVX
         [[nodiscard]] bool PublishTerminal(
             RenderResourceHandle handle,
             RenderResourcePublicState state,
-            RenderResourceFailureCode failure);
+            RenderResourceFailureCode failure,
+            bool publishCommittedContentRevision = false);
         [[nodiscard]] static RHIFormat ToRHIFormat(
             const TextureUploadCreateInfo& info);
         [[nodiscard]] static RHISamplerDesc ToSamplerDesc(

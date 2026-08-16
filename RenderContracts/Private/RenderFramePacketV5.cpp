@@ -22,7 +22,8 @@ std::unique_ptr<const RenderFramePacketV5> RenderFramePacketV5::Create(
     const bool validView = view.viewportWidth != 0 && view.viewportHeight != 0 &&
                            std::isfinite(view.nearPlane) &&
                            std::isfinite(view.farPlane) &&
-                           view.nearPlane > 0.0f && view.farPlane > view.nearPlane;
+                           view.nearPlane > 0.0f && view.farPlane > view.nearPlane &&
+                           IsValidRenderViewClearValues(view);
     const bool complete = diagnostics.complete &&
                           diagnostics.code == RenderExtractionCode::Complete;
     if (!validHeader || !validView || !complete ||

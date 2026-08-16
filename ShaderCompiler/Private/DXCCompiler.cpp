@@ -515,9 +515,10 @@ namespace RVX
             UINT flags = 0;
             if (options.enableDebugInfo)
             {
-                flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+                flags |= D3DCOMPILE_DEBUG;
             }
-            else if (!options.enableOptimization)
+
+            if (ResolveShaderOptimizationMode(options) == ShaderOptimizationMode::Disabled)
             {
                 flags |= D3DCOMPILE_SKIP_OPTIMIZATION;
             }
@@ -610,9 +611,9 @@ namespace RVX
             {
                 args.push_back(L"-Zi");
                 args.push_back(L"-Qembed_debug");
-                args.push_back(L"-Od");
             }
-            else if (options.enableOptimization)
+
+            if (ResolveShaderOptimizationMode(options) == ShaderOptimizationMode::Level3)
             {
                 args.push_back(L"-O3");
             }
@@ -748,7 +749,7 @@ namespace RVX
                 args.push_back(L"-Qembed_debug");
             }
 
-            if (!options.enableOptimization)
+            if (ResolveShaderOptimizationMode(options) == ShaderOptimizationMode::Disabled)
             {
                 args.push_back(L"-Od");
             }

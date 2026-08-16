@@ -392,7 +392,13 @@ namespace RVX
         m_capabilities.supportsMemoryBudgetQuery = false;       // DX11 doesn't support memory budget
         m_capabilities.supportsPersistentMapping = false;       // DX11 doesn't support persistent mapping
         m_capabilities.supportsExplicitHeapManagement = false;  // DX11 backend has no explicit heap API
-        m_capabilities.supportsTimestampQueries = true;
+        // D3D11 exposes the timestamp frequency through a disjoint query that
+        // must execute on the immediate (Graphics) context.  Device startup
+        // cannot publish that observation without submitting work, so retain
+        // the query implementation but do not make a device-wide capability
+        // claim or fabricate a frequency.
+        m_capabilities.supportsTimestampQueries = false;
+        m_capabilities.timestampFrequency = 0;
         m_capabilities.supportsOcclusionQueries = true;
         m_capabilities.supportsPipelineStatisticsQueries = true;
         m_capabilities.supportsHostFenceSignal = false;
@@ -738,6 +744,20 @@ namespace RVX
     // =============================================================================
     RHIQueryPoolRef DX11Device::CreateQueryPool(const RHIQueryPoolDesc& desc)
     {
+        const RHIQueryValidationResult validation = ValidateRHIQueryPoolDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX11 query pool creation rejected: {}", validation.message);
+            return nullptr;
+        }
+
+        if (desc.type == RHIQueryType::Timestamp &&
+            !m_capabilities.supportsTimestampQueries)
+        {
+            RVX_RHI_ERROR("DX11 timestamp query creation rejected because Graphics timestamp support is not published");
+            return nullptr;
+        }
+
         return MakeRef<DX11QueryPool>(this, desc);
     }
 

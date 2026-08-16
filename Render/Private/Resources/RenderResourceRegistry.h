@@ -106,6 +106,22 @@ namespace RVX
             RenderResourceContentOperation operation =
                 RenderResourceContentOperation::Create,
             uint64 sourceRevision = 0);
+        /**
+         * @brief Begin an upload with its stable source asset identity.
+         *
+         * Production uploads must use this overload. The compatibility
+         * overload above remains for legacy Render-private tests that create
+         * synthetic resources without an AssetId; those entries cannot
+         * contribute cross-process raster transcript semantics.
+         */
+        [[nodiscard]] bool BeginPending(
+            RenderResourceHandle handle,
+            RenderResourceKind kind,
+            const std::vector<RenderResourceHandle>& dependencies,
+            AssetId assetId,
+            RenderResourceContentOperation operation =
+                RenderResourceContentOperation::Create,
+            uint64 sourceRevision = 0);
         [[nodiscard]] bool AddPendingMeshBuffer(
             RenderResourceHandle handle,
             RenderMeshBufferSemantic semantic,
@@ -167,6 +183,24 @@ namespace RVX
         [[nodiscard]] GPUCompletionToken GetLastUse(
             RenderResourceHandle handle) const;
         [[nodiscard]] bool HasExactEntry(RenderResourceHandle handle) const;
+        /** @brief Return the exact entry kind, or Invalid for an absent/stale handle. */
+        [[nodiscard]] RenderResourceKind GetExactKind(
+            RenderResourceHandle handle) const noexcept;
+        /** @brief Render-private AssetId for one exact resource generation. */
+        [[nodiscard]] AssetId GetExactAssetId(
+            RenderResourceHandle handle) const noexcept;
+        /**
+         * @brief Combine a ready exact mesh AssetId with post-resolution
+         * material evidence from MaterialSystem.
+         *
+         * This intentionally cannot inspect a material handle: source data
+         * does not reveal the descriptor/table fallback outcome actually used
+         * by the draw. A zero material key remains unavailable evidence.
+         */
+        [[nodiscard]] std::optional<uint64>
+            CombineRasterMeshAndMaterialSemanticIdentity(
+                RenderResourceHandle mesh,
+                uint64 rasterMaterialSemanticKey) const noexcept;
         [[nodiscard]] bool IsGPUReadyExact(RenderResourceHandle handle) const;
         /** @brief Query the public lifecycle state for an exact generation. */
         [[nodiscard]] RenderResourceStatus QueryStatus(
@@ -193,6 +227,7 @@ namespace RVX
         struct Entry
         {
             uint32 generation = 0;
+            AssetId assetId{};
             uint64 contentRevision = 0;
             RenderResourceKind kind = RenderResourceKind::Invalid;
             std::vector<RenderResourceHandle> dependencies;

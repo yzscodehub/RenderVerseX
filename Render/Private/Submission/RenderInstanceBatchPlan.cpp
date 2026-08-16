@@ -58,10 +58,23 @@ namespace
         return RenderInstanceBatchReason::None;
     }
 
-    [[nodiscard]] bool MemberLess(const RenderInstanceBatchMember& lhs,
-                                  const RenderInstanceBatchMember& rhs) noexcept
+    [[nodiscard]] bool MemberLess(
+        const RenderInstanceBatchMember& lhs,
+        const RenderInstanceBatchMember& rhs,
+        const DirectDrawPacketBatch& directBatch) noexcept
     {
-        return lhs.packetId < rhs.packetId;
+        const DirectDrawPacket& lhsPacket =
+            directBatch.packets[lhs.directPacketIndex];
+        const DirectDrawPacket& rhsPacket =
+            directBatch.packets[rhs.directPacketIndex];
+        return MakeCanonicalRasterPacketOrderKey(
+                   lhsPacket.packet,
+                   lhsPacket.sourceOrdinal,
+                   lhsPacket.sourcePacketIndex) <
+               MakeCanonicalRasterPacketOrderKey(
+                   rhsPacket.packet,
+                   rhsPacket.sourceOrdinal,
+                   rhsPacket.sourcePacketIndex);
     }
 } // namespace
 
@@ -98,7 +111,7 @@ RenderInstanceBatchPlan BuildRenderInstanceBatchPlan(
 
     const RenderDrawGroupKeyLess keyLess;
     std::sort(candidates.begin(), candidates.end(),
-        [&keyLess](const Candidate& lhs, const Candidate& rhs)
+        [&keyLess, &directBatch](const Candidate& lhs, const Candidate& rhs)
         {
             if (keyLess(lhs.key, rhs.key))
             {
@@ -113,7 +126,7 @@ RenderInstanceBatchPlan BuildRenderInstanceBatchPlan(
                 return static_cast<uint8>(lhs.reason) <
                        static_cast<uint8>(rhs.reason);
             }
-            return MemberLess(lhs.member, rhs.member);
+            return MemberLess(lhs.member, rhs.member, directBatch);
         });
 
     for (const Candidate& candidate : candidates)
@@ -134,10 +147,47 @@ RenderInstanceBatchPlan BuildRenderInstanceBatchPlan(
         plan.batches.push_back(std::move(batch));
     }
 
+    std::sort(plan.batches.begin(), plan.batches.end(),
+        [&directBatch](const RenderInstanceBatch& lhs,
+                       const RenderInstanceBatch& rhs)
+        {
+            const DirectDrawPacket& lhsFirst =
+                directBatch.packets[lhs.members.front().directPacketIndex];
+            const DirectDrawPacket& rhsFirst =
+                directBatch.packets[rhs.members.front().directPacketIndex];
+            const CanonicalRasterGroupOrderKey lhsKey =
+                MakeCanonicalRasterGroupOrderKey(
+                    lhs.key,
+                    lhsFirst.geometryAssetId,
+                    lhsFirst.materialAssetId);
+            const CanonicalRasterGroupOrderKey rhsKey =
+                MakeCanonicalRasterGroupOrderKey(
+                    rhs.key,
+                    rhsFirst.geometryAssetId,
+                    rhsFirst.materialAssetId);
+            if (lhsKey != rhsKey)
+            {
+                return lhsKey < rhsKey;
+            }
+            return MakeCanonicalRasterPacketOrderKey(
+                       lhsFirst.packet,
+                       lhsFirst.sourceOrdinal,
+                       lhsFirst.sourcePacketIndex) <
+                   MakeCanonicalRasterPacketOrderKey(
+                       rhsFirst.packet,
+                       rhsFirst.sourceOrdinal,
+                       rhsFirst.sourcePacketIndex);
+        });
+
     uint32 nextInstance = 0;
     for (RenderInstanceBatch& batch : plan.batches)
     {
-        std::sort(batch.members.begin(), batch.members.end(), MemberLess);
+        std::sort(batch.members.begin(), batch.members.end(),
+                  [&directBatch](const RenderInstanceBatchMember& lhs,
+                                 const RenderInstanceBatchMember& rhs)
+                  {
+                      return MemberLess(lhs, rhs, directBatch);
+                  });
         if (batch.reason == RenderInstanceBatchReason::None &&
             batch.members.size() > 1)
         {

@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <unordered_set>
 #include <utility>
 
@@ -21,6 +22,18 @@ namespace RVX
 namespace
 {
     constexpr float32 RVX_GPU_SCENE_AFFINE_EPSILON = 0.0001F;
+
+    void SaturatingAdd(uint64& total, uint64 value, bool& saturated) noexcept
+    {
+        const uint64 maximum = std::numeric_limits<uint64>::max();
+        if (saturated || value > maximum - total)
+        {
+            total = maximum;
+            saturated = true;
+            return;
+        }
+        total += value;
+    }
 
     [[nodiscard]] bool IsLiveSchemaHeader(
         const GPUSceneRowHeader& header,
@@ -373,6 +386,61 @@ void GPUSceneUpdate::PopulateCommittedIdentity(
     stats.committedSourceSequence = m_committedSourceSequence;
     stats.publishedObjectCount = m_database.GetObjectCount();
     stats.publishedDrawCount = GetPublishedDrawCount();
+    PopulateMutationTotals(stats);
+}
+
+void GPUSceneUpdate::PopulateMutationTotals(
+    GPUScenePublicationStats& stats) const noexcept
+{
+    stats.mutationTotals = m_mutationTotals;
+}
+
+void GPUSceneUpdate::RecordCommittedMutation(
+    GPUScenePublicationStats& stats,
+    bool fullPublication) noexcept
+{
+    if (fullPublication)
+    {
+        SaturatingAdd(m_mutationTotals.fullPublicationCount,
+                      1,
+                      m_mutationTotalsSaturated);
+    }
+    else
+    {
+        SaturatingAdd(m_mutationTotals.incrementalPublicationCount,
+                      1,
+                      m_mutationTotalsSaturated);
+    }
+
+    const uint64 actionCount = static_cast<uint64>(stats.addCount) +
+                               static_cast<uint64>(stats.updateCount) +
+                               static_cast<uint64>(stats.removeCount) +
+                               static_cast<uint64>(stats.noOpCount);
+    if (actionCount == 0)
+    {
+        SaturatingAdd(m_mutationTotals.identityOnlyPublicationCount,
+                      1,
+                      m_mutationTotalsSaturated);
+    }
+    else
+    {
+        SaturatingAdd(m_mutationTotals.materializedObjectCount,
+                      static_cast<uint64>(stats.candidateObjectCount),
+                      m_mutationTotalsSaturated);
+        SaturatingAdd(m_mutationTotals.addCount,
+                      static_cast<uint64>(stats.addCount),
+                      m_mutationTotalsSaturated);
+        SaturatingAdd(m_mutationTotals.updateCount,
+                      static_cast<uint64>(stats.updateCount),
+                      m_mutationTotalsSaturated);
+        SaturatingAdd(m_mutationTotals.removeCount,
+                      static_cast<uint64>(stats.removeCount),
+                      m_mutationTotalsSaturated);
+        SaturatingAdd(m_mutationTotals.noOpCount,
+                      static_cast<uint64>(stats.noOpCount),
+                      m_mutationTotalsSaturated);
+    }
+    PopulateMutationTotals(stats);
 }
 
 uint32 GPUSceneUpdate::GetPublishedDrawCount() const noexcept
@@ -902,6 +970,7 @@ GPUScenePublicationStats GPUSceneUpdate::PublishImpl(
     m_publishedObjects.swap(candidateObjects);
     m_committedSourceSequence = stats.sourceSequence;
     PopulateCommittedIdentity(stats);
+    RecordCommittedMutation(stats, true);
     stats.complete = stats.excludedObjectCount == 0 &&
                      stats.excludedDrawCount == 0;
     stats.executionEligible = false;
@@ -1065,6 +1134,7 @@ GPUScenePublicationStats GPUSceneUpdate::PublishIncrementalImpl(
     }
     m_committedSourceSequence = stats.sourceSequence;
     PopulateCommittedIdentity(stats);
+    RecordCommittedMutation(stats, false);
     stats.complete = stats.excludedObjectCount == 0 &&
                      stats.excludedDrawCount == 0 &&
                      stats.publishedObjectCount == stats.attemptedObjectCount &&

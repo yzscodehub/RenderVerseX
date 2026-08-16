@@ -15,22 +15,36 @@ cbuffer CullingConstants : register(b0, space0)
     float4 FrustumPlanes[6];
     float4 CameraPosition;
     float4 Params;
-    uint4 Counts; // x=candidateCount, y=drawGroupCount
+    uint4 Counts; // x=denseActiveCount, y=drawGroupCount, z=compactDispatchWidth
     uint4 GPUSceneTableCounts0; // primitive, bounds, transform, material
     uint4 GPUSceneTableCounts1; // geometry, draw, reserved, reserved
 };
 
 StructuredBuffer<GPUSceneCullingCandidate> gCandidates : register(t1, space0);
-RWStructuredBuffer<uint> gVisibility : register(u2, space0);
-RWStructuredBuffer<uint> gVisibleInstanceIndices : register(u3, space0);
-RWStructuredBuffer<IndirectDrawIndexedCommand> gIndirectDraws : register(u4, space0);
-RWStructuredBuffer<uint> gDrawCount : register(u5, space0);
-StructuredBuffer<GPUScenePrimitiveRow> gPrimitives : register(t6, space0);
-StructuredBuffer<GPUSceneBoundsRow> gBounds : register(t7, space0);
-StructuredBuffer<GPUSceneTransformRow> gTransforms : register(t8, space0);
-StructuredBuffer<GPUSceneMaterialRow> gMaterials : register(t9, space0);
-StructuredBuffer<GPUSceneGeometryRow> gGeometries : register(t10, space0);
-StructuredBuffer<GPUSceneDrawMetadataRow> gDrawMetadata : register(t11, space0);
+StructuredBuffer<GPUCullingActiveRow> gActiveRows : register(t2, space0);
+RWStructuredBuffer<uint> gVisibility : register(u3, space0);
+RWStructuredBuffer<uint> gVisibleInstanceIndices : register(u4, space0);
+RWStructuredBuffer<IndirectDrawIndexedCommand> gIndirectDraws : register(u5, space0);
+RWStructuredBuffer<uint> gDrawCount : register(u6, space0);
+StructuredBuffer<GPUScenePrimitiveRow> gPrimitives : register(t7, space0);
+StructuredBuffer<GPUSceneBoundsRow> gBounds : register(t8, space0);
+StructuredBuffer<GPUSceneTransformRow> gTransforms : register(t9, space0);
+StructuredBuffer<GPUSceneMaterialRow> gMaterials : register(t10, space0);
+StructuredBuffer<GPUSceneGeometryRow> gGeometries : register(t11, space0);
+StructuredBuffer<GPUSceneDrawMetadataRow> gDrawMetadata : register(t12, space0);
+
+// Direct rendering owns the canonical frustum decision. Retain candidates
+// within the same scale-relative margin as the non-resident GPU culling path
+// so backend fused dot products cannot create GPU-only false negatives.
+static const float RVX_FRUSTUM_REJECT_RELATIVE_TOLERANCE =
+    16.0f * 1.1920928955078125e-7f;
+
+float ConservativeFrustumRejectTolerance(float signedDistance,
+                                         float projectedRadius)
+{
+    return RVX_FRUSTUM_REJECT_RELATIVE_TOLERANCE *
+        max(1.0f, abs(signedDistance) + abs(projectedRadius));
+}
 
 bool AABBInsideFrustum(float3 center, float3 extent)
 {
@@ -42,8 +56,11 @@ bool AABBInsideFrustum(float3 center, float3 extent)
         {
             continue;
         }
-        if (dot(plane.xyz, center) + plane.w <
-            -dot(abs(plane.xyz), extent))
+        const float signedDistance = dot(plane.xyz, center) + plane.w;
+        const float projectedRadius = dot(abs(plane.xyz), extent);
+        if (signedDistance < -projectedRadius -
+            ConservativeFrustumRejectTolerance(
+                signedDistance, projectedRadius))
         {
             return false;
         }
@@ -52,13 +69,20 @@ bool AABBInsideFrustum(float3 center, float3 extent)
 }
 
 bool LoadValidatedCandidate(
-    uint candidateIndex,
+    uint activeIndex,
+    out GPUCullingActiveRow active,
     out GPUSceneCullingCandidate candidate,
     out GPUSceneBoundsRow bounds,
     out GPUSceneDrawMetadataRow draw)
 {
-    candidate = gCandidates[candidateIndex];
-    if (candidate.rasterInstanceIndex != candidateIndex ||
+    active = gActiveRows[activeIndex];
+    if (active.residentRow == 0xFFFFFFFFu ||
+        active.drawGroupIndex >= Counts.y)
+    {
+        return false;
+    }
+    candidate = gCandidates[active.residentRow];
+    if (candidate.rasterInstanceIndex != active.residentRow ||
         !GPUSceneCandidateSlotsInRange(
             candidate,
             GPUSceneTableCounts0.x,
@@ -102,24 +126,24 @@ bool LoadValidatedCandidate(
 [numthreads(64, 1, 1)]
 void CSGPUSceneFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    const uint candidateIndex = dispatchThreadId.x;
+    const uint activeIndex = dispatchThreadId.x;
     const uint candidateCount = Counts.x;
     const uint drawGroupCount = Counts.y;
-    if (candidateIndex <= drawGroupCount)
+    if (activeIndex <= drawGroupCount)
     {
-        gDrawCount[candidateIndex] = 0u;
+        gDrawCount[activeIndex] = 0u;
     }
-    if (candidateIndex >= candidateCount)
+    if (activeIndex >= candidateCount)
     {
         return;
     }
 
-    gVisibility[candidateIndex] = 0u;
+    gVisibility[activeIndex] = 0u;
+    GPUCullingActiveRow active;
     GPUSceneCullingCandidate candidate;
     GPUSceneBoundsRow bounds;
     GPUSceneDrawMetadataRow draw;
-    if (!LoadValidatedCandidate(candidateIndex, candidate, bounds, draw) ||
-        candidate.drawGroupIndex >= drawGroupCount)
+    if (!LoadValidatedCandidate(activeIndex, active, candidate, bounds, draw))
     {
         return;
     }
@@ -135,42 +159,92 @@ void CSGPUSceneFrustumCull(uint3 dispatchThreadId : SV_DispatchThreadID)
         visible = (length(bounds.sphere.xyz - CameraPosition.xyz) -
                    max(bounds.sphere.w, 0.0f)) <= Params.x;
     }
-    gVisibility[candidateIndex] = visible ? 1u : 0u;
+    gVisibility[activeIndex] = visible ? 1u : 0u;
 }
 
+groupshared uint gGPUSceneCompactScan[64];
+groupshared uint gGPUSceneCompactVisibleBase;
+
 [numthreads(64, 1, 1)]
-void CSGPUSceneCompactDraws(uint3 dispatchThreadId : SV_DispatchThreadID)
+void CSGPUSceneCompactDraws(uint3 groupId : SV_GroupID,
+                            uint groupThreadIndex : SV_GroupIndex)
 {
-    const uint candidateIndex = dispatchThreadId.x;
-    if (candidateIndex >= Counts.x || gVisibility[candidateIndex] == 0u)
+    const uint drawGroupIndex = groupId.x + groupId.y * Counts.z;
+    if (drawGroupIndex >= Counts.y)
     {
         return;
     }
 
-    GPUSceneCullingCandidate candidate;
-    GPUSceneBoundsRow bounds;
-    GPUSceneDrawMetadataRow draw;
-    if (!LoadValidatedCandidate(candidateIndex, candidate, bounds, draw) ||
-        candidate.drawGroupIndex >= Counts.y)
+    // firstInstance and the pre-finalize instanceCount are the current dense
+    // dispatch range. The resident candidate lookup remains deliberately
+    // sparse through GPUCullingActiveRow.residentRow.
+    const IndirectDrawIndexedCommand command =
+        gIndirectDraws[drawGroupIndex];
+    const uint activeRangeStart = min(command.firstInstance, Counts.x);
+    const uint activeRangeCount = min(
+        command.instanceCount, Counts.x - activeRangeStart);
+    if (groupThreadIndex == 0u)
     {
-        return;
+        gGPUSceneCompactVisibleBase = 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint blockStart = 0u;
+         blockStart < activeRangeCount;
+         blockStart += 64u)
+    {
+        const uint activeIndex =
+            activeRangeStart + blockStart + groupThreadIndex;
+        uint visible = 0u;
+        uint residentRow = 0xFFFFFFFFu;
+        if (groupThreadIndex < activeRangeCount - blockStart &&
+            gVisibility[activeIndex] != 0u)
+        {
+            GPUCullingActiveRow active;
+            GPUSceneCullingCandidate candidate;
+            GPUSceneBoundsRow bounds;
+            GPUSceneDrawMetadataRow draw;
+            if (LoadValidatedCandidate(
+                    activeIndex, active, candidate, bounds, draw) &&
+                active.drawGroupIndex == drawGroupIndex)
+            {
+                visible = 1u;
+                residentRow = active.residentRow;
+            }
+        }
+
+        gGPUSceneCompactScan[groupThreadIndex] = visible;
+        GroupMemoryBarrierWithGroupSync();
+        [unroll]
+        for (uint stride = 1u; stride < 64u; stride <<= 1u)
+        {
+            const uint prior = groupThreadIndex >= stride
+                ? gGPUSceneCompactScan[groupThreadIndex - stride]
+                : 0u;
+            GroupMemoryBarrierWithGroupSync();
+            gGPUSceneCompactScan[groupThreadIndex] += prior;
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        if (visible != 0u)
+        {
+            const uint exclusiveIndex =
+                gGPUSceneCompactScan[groupThreadIndex] - 1u;
+            gVisibleInstanceIndices[
+                command.firstInstance + gGPUSceneCompactVisibleBase +
+                    exclusiveIndex] = residentRow;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (groupThreadIndex == 0u)
+        {
+            gGPUSceneCompactVisibleBase += gGPUSceneCompactScan[63];
+        }
+        GroupMemoryBarrierWithGroupSync();
     }
 
-    uint groupVisibleIndex = 0u;
-    InterlockedAdd(
-        gDrawCount[candidate.drawGroupIndex + 1u], 1u, groupVisibleIndex);
-    gVisibleInstanceIndices[
-        candidate.drawGroupVisibleOffset + groupVisibleIndex] =
-            candidate.rasterInstanceIndex;
-    if (groupVisibleIndex == 0u)
+    if (groupThreadIndex == 0u)
     {
-        IndirectDrawIndexedCommand command;
-        command.indexCount = draw.indexCount;
-        command.instanceCount = 0u;
-        command.firstIndex = draw.firstIndex;
-        command.vertexOffset = draw.vertexOffset;
-        command.firstInstance = candidate.drawGroupVisibleOffset;
-        gIndirectDraws[candidate.drawGroupIndex] = command;
+        gDrawCount[drawGroupIndex + 1u] = gGPUSceneCompactVisibleBase;
     }
 }
 

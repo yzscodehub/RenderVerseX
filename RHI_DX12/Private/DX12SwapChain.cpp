@@ -23,6 +23,20 @@ namespace RVX
         }
         HWND hwnd = reinterpret_cast<HWND>(desc.surface.nativeWindow);
 
+        ComPtr<IDXGIFactory5> factory5;
+        if (SUCCEEDED(device->GetDXGIFactory()->QueryInterface(
+                IID_PPV_ARGS(&factory5))))
+        {
+            BOOL allowTearing = FALSE;
+            if (SUCCEEDED(factory5->CheckFeatureSupport(
+                    DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                    &allowTearing,
+                    sizeof(allowTearing))))
+            {
+                m_tearingSupported = allowTearing == TRUE;
+            }
+        }
+
         DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
         swapChainDesc.Width = desc.surface.width;
         swapChainDesc.Height = desc.surface.height;
@@ -35,7 +49,8 @@ namespace RVX
         swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
         swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-        swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        swapChainDesc.Flags = ResolveCreationFlags(
+            m_vsync, m_tearingSupported);
 
         ComPtr<IDXGISwapChain1> swapChain1;
         HRESULT hr = device->GetDXGIFactory()->CreateSwapChainForHwnd(
@@ -138,27 +153,32 @@ namespace RVX
         return m_backBufferViews[m_currentBackBufferIndex].Get();
     }
 
+    UINT DX12SwapChain::ResolveCreationFlags(
+        bool vsync,
+        bool tearingSupported) noexcept
+    {
+        UINT flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        if (!vsync && tearingSupported)
+        {
+            flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        }
+        return flags;
+    }
+
+    UINT DX12SwapChain::ResolvePresentFlags(
+        bool vsync,
+        bool tearingSupported) noexcept
+    {
+        return !vsync && tearingSupported
+            ? DXGI_PRESENT_ALLOW_TEARING
+            : 0U;
+    }
+
     void DX12SwapChain::Present()
     {
         UINT syncInterval = m_vsync ? 1 : 0;
-        UINT presentFlags = 0;
-
-        if (!m_vsync)
-        {
-            // Allow tearing for variable refresh rate displays
-            ComPtr<IDXGIFactory5> factory5;
-            if (SUCCEEDED(m_device->GetDXGIFactory()->QueryInterface(IID_PPV_ARGS(&factory5))))
-            {
-                BOOL allowTearing = FALSE;
-                if (SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing))))
-                {
-                    if (allowTearing)
-                    {
-                        presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
-                    }
-                }
-            }
-        }
+        const UINT presentFlags = ResolvePresentFlags(
+            m_vsync, m_tearingSupported);
 
         HRESULT hr = m_swapChain->Present(syncInterval, presentFlags);
 

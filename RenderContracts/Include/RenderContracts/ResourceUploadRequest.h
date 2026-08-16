@@ -19,57 +19,10 @@
 namespace RVX
 {
     inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_ID = 0x52565855U;
-    // Schema v2 adds transactional content replacement and shared immutable
-    // upload storage. Existing source builders remain compatible by using the
-    // default Create operation and the current schema constant.
+    // Schema v2 adds transactional content replacement. Existing source
+    // builders remain compatible by using the default Create operation and
+    // the current schema constant.
     inline constexpr uint32 RVX_RESOURCE_UPLOAD_REQUEST_SCHEMA_VERSION = 2;
-
-    /**
-     * @brief Immutable byte storage shared between a prepared resource and an
-     * upload request. New producers should provide this storage directly so
-     * the upload transport does not take a second ownership copy.
-     */
-    class UploadByteStorage final
-    {
-    public:
-        static std::shared_ptr<const UploadByteStorage> Create(
-            std::vector<uint8> bytes)
-        {
-            return std::shared_ptr<const UploadByteStorage>(
-                new UploadByteStorage(
-                    std::make_shared<const std::vector<uint8>>(
-                        std::move(bytes))));
-        }
-
-        static std::shared_ptr<const UploadByteStorage> CreateShared(
-            std::shared_ptr<const std::vector<uint8>> bytes)
-        {
-            if (!bytes)
-                return {};
-            return std::shared_ptr<const UploadByteStorage>(
-                new UploadByteStorage(std::move(bytes)));
-        }
-
-        UploadByteStorage(const UploadByteStorage&) = delete;
-        UploadByteStorage& operator=(const UploadByteStorage&) = delete;
-        UploadByteStorage(UploadByteStorage&&) = delete;
-        UploadByteStorage& operator=(UploadByteStorage&&) = delete;
-
-        [[nodiscard]] std::span<const uint8> GetBytes() const noexcept
-        {
-            return *m_bytes;
-        }
-
-    private:
-        explicit UploadByteStorage(
-            std::shared_ptr<const std::vector<uint8>> bytes)
-            : m_bytes(std::move(bytes))
-        {
-        }
-
-        const std::shared_ptr<const std::vector<uint8>> m_bytes;
-    };
-    using UploadByteStorageRef = std::shared_ptr<const UploadByteStorage>;
 
     enum class RenderResourceContentOperation : uint8
     {
@@ -170,10 +123,8 @@ namespace RVX
     struct MeshUploadPayload
     {
         MeshUploadCreateInfo createInfo;
-        /** @deprecated Compatibility storage for existing request builders. */
+        /** @brief Value-owned bytes retained by the immutable request. */
         std::vector<uint8> bytes;
-        /** @brief Preferred immutable byte storage for new producers. */
-        UploadByteStorageRef byteStorage;
         UploadByteRange indexRange;
         UploadByteRange positionRange;
         UploadByteRange normalRange;
@@ -209,10 +160,8 @@ namespace RVX
     struct TextureUploadPayload
     {
         TextureUploadCreateInfo createInfo;
-        /** @deprecated Compatibility storage for existing request builders. */
+        /** @brief Value-owned bytes retained by the immutable request. */
         std::vector<uint8> bytes;
-        /** @brief Preferred immutable byte storage for new producers. */
-        UploadByteStorageRef byteStorage;
         std::vector<TextureUploadSubresource> subresources;
     };
 
@@ -244,9 +193,8 @@ namespace RVX
         MaterialUploadPayload>;
 
     /**
-     * @brief Resolve the sole immutable byte source for an upload payload.
-     * A payload must select either compatibility bytes or shared storage, not
-     * both; ResourceUploadRequest::Create validates that invariant.
+     * @brief Return the immutable request-owned byte source for an upload
+     * payload.
      */
     [[nodiscard]] std::span<const uint8> GetUploadPayloadBytes(
         const MeshUploadPayload& payload) noexcept;
@@ -302,7 +250,8 @@ namespace RVX
         SelfDependency = 13,
         InvalidContentOperation = 14,
         InvalidSourceRevision = 15,
-        ConflictingByteStorage = 16,
+        /** @brief Reserved to retain the removed shared-storage wire value. */
+        Reserved = 16,
         ConflictingSourceRevision = 17
     };
 
@@ -426,6 +375,6 @@ namespace RVX
     static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::SelfDependency) == 13);
     static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::InvalidContentOperation) == 14);
     static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::InvalidSourceRevision) == 15);
-    static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::ConflictingByteStorage) == 16);
+    static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::Reserved) == 16);
     static_assert(static_cast<uint8>(ResourceUploadRequestCreateCode::ConflictingSourceRevision) == 17);
 } // namespace RVX

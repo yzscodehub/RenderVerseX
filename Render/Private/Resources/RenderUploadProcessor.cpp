@@ -253,9 +253,12 @@ namespace
             GPUUploadFailureReason reason)
         {
             ++stats.failedUploadCount;
-            RVX_CORE_WARN(
-                "RenderUploadProcessor legacy buffer upload failed: {}",
-                static_cast<uint32>(reason));
+            if (const auto& logger = Log::GetCoreLogger())
+            {
+                logger->warn(
+                    "RenderUploadProcessor legacy buffer upload failed: {}",
+                    static_cast<uint32>(reason));
+            }
             GPUUploadBufferResult result;
             result.failureReason = reason;
             return result;
@@ -265,9 +268,12 @@ namespace
             GPUUploadFailureReason reason)
         {
             ++stats.failedUploadCount;
-            RVX_CORE_WARN(
-                "RenderUploadProcessor legacy texture upload failed: {}",
-                static_cast<uint32>(reason));
+            if (const auto& logger = Log::GetCoreLogger())
+            {
+                logger->warn(
+                    "RenderUploadProcessor legacy texture upload failed: {}",
+                    static_cast<uint32>(reason));
+            }
             GPUUploadTextureResult result;
             result.failureReason = reason;
             return result;
@@ -296,7 +302,10 @@ namespace
                 return MakeBufferFailure(GPUUploadFailureReason::MapFailed);
             }
             std::memcpy(mapped, data, static_cast<size_t>(dataSize));
-            buffer->Unmap();
+            if (!buffer->CommitMappedWrite())
+            {
+                return MakeBufferFailure(GPUUploadFailureReason::CopyFailed);
+            }
             ++stats.bufferUploadCount;
             ++stats.immediateUploadCount;
             stats.uploadedBytes += dataSize;
@@ -364,7 +373,10 @@ namespace
                 return result;
             }
             std::memcpy(mapped, data, static_cast<size_t>(dataSize));
-            staging->Unmap();
+            if (!staging->CommitMappedWrite())
+            {
+                return MakeBufferFailure(GPUUploadFailureReason::CopyFailed);
+            }
             context->CopyBuffer(staging->GetBuffer(),
                                 buffer.Get(),
                                 0,
@@ -553,7 +565,10 @@ namespace
                         static_cast<size_t>(layout.sourceRowPitch));
                 }
             }
-            staging->Unmap();
+            if (!staging->CommitMappedWrite())
+            {
+                return MakeTextureFailure(GPUUploadFailureReason::CopyFailed);
+            }
             context->TextureBarrier(texture.Get(),
                                     RHIResourceState::Undefined,
                                     RHIResourceState::CopyDest);
@@ -1008,6 +1023,7 @@ namespace
         if (!m_registry->BeginPending(handle,
                                       request->GetKind(),
                                       request->GetDependencies(),
+                                      request->GetAssetId(),
                                       request->GetOperation(),
                                       request->GetSourceRevision()))
         {
@@ -1241,6 +1257,11 @@ namespace
     uint32 RenderUploadProcessor::GetInFlightCount() const
     {
         return static_cast<uint32>(m_inFlight.size());
+    }
+
+    bool RenderUploadProcessor::HasPendingCompletionWork() const noexcept
+    {
+        return !m_inFlight.empty() || !m_pendingReleases.empty();
     }
 
     bool RenderUploadProcessor::ValidateDependencies(
@@ -1545,7 +1566,10 @@ namespace
                 }
             }
         }
-        staging->Unmap();
+        if (!staging->CommitMappedWrite())
+        {
+            return false;
+        }
 
         context.TextureBarrier(texture.Get(),
                                RHIResourceState::Undefined,
@@ -1667,7 +1691,10 @@ namespace
         std::memcpy(mapped,
                     bytes.data() + static_cast<size_t>(range.offset),
                     static_cast<size_t>(range.size));
-        staging->Unmap();
+        if (!staging->CommitMappedWrite())
+        {
+            return false;
+        }
         context.CopyBuffer(staging->GetBuffer(),
                            buffer.Get(),
                            0,
@@ -1725,7 +1752,10 @@ namespace
             return false;
         }
         std::memcpy(mapped, &sourceData, sizeof(MaterialSourceData));
-        staging->Unmap();
+        if (!staging->CommitMappedWrite())
+        {
+            return false;
+        }
         context.CopyBuffer(staging->GetBuffer(),
                            buffer.Get(),
                            0,
@@ -1805,6 +1835,7 @@ namespace
             RenderResourcePublicState::Failed;
         RenderResourceFailureCode failure =
             RenderResourceFailureCode::RuntimeFailure;
+        bool publishCommittedContentRevision = false;
         if (cancelled)
         {
             RVX_ASSERT_MSG(m_registry->RetirePending(handle),
@@ -1830,6 +1861,7 @@ namespace
         {
             terminalState = RenderResourcePublicState::GPUReady;
             failure = RenderResourceFailureCode::None;
+            publishCommittedContentRevision = true;
             ++m_stats.completed;
         }
         else
@@ -1850,7 +1882,10 @@ namespace
             m_inFlight[index] = std::move(m_inFlight.back());
         }
         m_inFlight.pop_back();
-        static_cast<void>(PublishTerminal(handle, terminalState, failure));
+        static_cast<void>(PublishTerminal(handle,
+                                          terminalState,
+                                          failure,
+                                          publishCommittedContentRevision));
     }
 
     void RenderUploadProcessor::CompleteRelease(
@@ -1878,12 +1913,22 @@ namespace
     bool RenderUploadProcessor::PublishTerminal(
         RenderResourceHandle handle,
         RenderResourcePublicState state,
-        RenderResourceFailureCode failure)
+        RenderResourceFailureCode failure,
+        bool publishCommittedContentRevision)
     {
         const RenderResourceStatus observed = m_statusTable->Query(handle);
         if (observed.code != RenderResourceStatusCode::Current)
         {
             return false;
+        }
+        uint64 contentRevision = observed.committedContentRevision;
+        if (publishCommittedContentRevision)
+        {
+            contentRevision = m_registry->GetContentRevision(handle);
+            if (contentRevision == 0)
+            {
+                return false;
+            }
         }
         if ((state == RenderResourcePublicState::Released &&
              observed.state != RenderResourcePublicState::Evicting) ||
@@ -1899,7 +1944,10 @@ namespace
             PackedRenderResourceStatus{handle.generation,
                                        observed.state,
                                        observed.failure},
-            PackedRenderResourceStatus{handle.generation, state, failure},
+            PackedRenderResourceStatus{handle.generation,
+                                       state,
+                                       failure,
+                                       contentRevision},
             RenderStatusWriter::Render);
     }
 

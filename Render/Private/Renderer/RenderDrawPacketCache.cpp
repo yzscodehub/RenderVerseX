@@ -179,7 +179,6 @@ RenderDrawPacketStaticSignature RenderDrawPacketCache::MakeSignature(
     signature.topology = batch.geometry.topology;
     signature.materialMode = batch.materialMode;
     signature.flags = batch.flags;
-    signature.objectRevision = batch.objectRevision;
     signature.versions = versions;
     return signature;
 }
@@ -241,10 +240,6 @@ RenderDrawPacketCache::ClassifyMismatch(
         existing.material.generation != requested.material.generation)
     {
         return RenderDrawPacketCacheInvalidationReason::MaterialGenerationChanged;
-    }
-    if (existing.objectRevision != requested.objectRevision)
-    {
-        return RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged;
     }
     return RenderDrawPacketCacheInvalidationReason::StaticStateChanged;
 }

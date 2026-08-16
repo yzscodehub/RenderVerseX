@@ -4,7 +4,8 @@
 namespace RVX
 {
     MetalQueryPool::MetalQueryPool(id<MTLDevice> device, const RHIQueryPoolDesc& desc)
-        : m_device(device)
+        : RHIQueryPool(desc.queueType, 0)
+        , m_device(device)
         , m_type(desc.type)
         , m_count(desc.count)
     {
@@ -18,69 +19,9 @@ namespace RVX
         {
             case RHIQueryType::Timestamp:
             {
-                // Timestamp queries require counter sampling support (macOS 10.15+ / iOS 14+)
-                if (@available(macOS 10.15, iOS 14.0, *))
-                {
-                    // Check if the device supports timestamp counters
-                    if (![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])
-                    {
-                        RVX_RHI_WARN("Metal: Device does not support timestamp queries");
-                        m_supported = false;
-                        return;
-                    }
-
-                    // Get the timestamp counter set
-                    id<MTLCounterSet> timestampCounterSet = nil;
-                    for (id<MTLCounterSet> set in device.counterSets)
-                    {
-                        if ([set.name isEqualToString:MTLCommonCounterSetTimestamp])
-                        {
-                            timestampCounterSet = set;
-                            break;
-                        }
-                    }
-
-                    if (!timestampCounterSet)
-                    {
-                        RVX_RHI_WARN("Metal: Timestamp counter set not available");
-                        m_supported = false;
-                        return;
-                    }
-
-                    // Create counter sample buffer descriptor
-                    MTLCounterSampleBufferDescriptor* counterDesc = [[MTLCounterSampleBufferDescriptor alloc] init];
-                    counterDesc.counterSet = timestampCounterSet;
-                    counterDesc.sampleCount = m_count;
-                    counterDesc.storageMode = MTLStorageModePrivate;
-                    counterDesc.label = desc.debugName ? 
-                        [NSString stringWithUTF8String:desc.debugName] : @"TimestampQueryPool";
-
-                    NSError* error = nil;
-                    m_counterSampleBuffer = [device newCounterSampleBufferWithDescriptor:counterDesc 
-                                                                                   error:&error];
-                    
-                    if (error || !m_counterSampleBuffer)
-                    {
-                        RVX_RHI_ERROR("Metal: Failed to create counter sample buffer: {}", 
-                                     error ? [[error localizedDescription] UTF8String] : "unknown");
-                        m_supported = false;
-                        return;
-                    }
-
-                    // Get timestamp frequency (GPU ticks per second)
-                    // Metal timestamps are in nanoseconds, so frequency is 1 GHz
-                    m_timestampFrequency = 1000000000;
-                    
-                    m_supported = true;
-                    RVX_RHI_DEBUG("Metal: Created timestamp query pool with {} queries", m_count);
-                }
-                else
-                {
-                    RVX_RHI_WARN("Metal: Timestamp queries require macOS 10.15+ or iOS 14+");
-                    m_supported = false;
-                    return;
-                }
-                break;
+                RVX_RHI_WARN("Metal: Timestamp queries are unavailable until the backend publishes verified Graphics timestamp metadata");
+                m_supported = false;
+                return;
             }
 
             case RHIQueryType::Occlusion:

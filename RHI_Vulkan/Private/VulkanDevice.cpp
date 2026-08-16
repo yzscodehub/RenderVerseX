@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <set>
 #include <sstream>
+#include <string>
 
 namespace RVX
 {
@@ -1130,8 +1131,13 @@ namespace RVX
     // =============================================================================
     void VulkanDevice::QueryDeviceCapabilities()
     {
-        VkPhysicalDeviceProperties props;
-        vkGetPhysicalDeviceProperties(m_physicalDevice, &props);
+        VkPhysicalDeviceDriverProperties driverProperties = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 properties2 = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        properties2.pNext = &driverProperties;
+        vkGetPhysicalDeviceProperties2(m_physicalDevice, &properties2);
+        const VkPhysicalDeviceProperties& props = properties2.properties;
 
         VkPhysicalDeviceMemoryProperties memProps;
         vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProps);
@@ -1139,6 +1145,45 @@ namespace RVX
         // Basic info
         m_capabilities.backendType = RHIBackendType::Vulkan;
         m_capabilities.adapterName = props.deviceName;
+        m_capabilities.driverVersion.clear();
+        const auto appendDriverEvidence = [this](const char* label,
+                                                 const std::string& value)
+        {
+            if (value.empty())
+            {
+                return;
+            }
+
+            if (!m_capabilities.driverVersion.empty())
+            {
+                m_capabilities.driverVersion += "; ";
+            }
+            m_capabilities.driverVersion += label;
+            m_capabilities.driverVersion += "=";
+            m_capabilities.driverVersion += value;
+        };
+
+        // VK_VERSION_* only describes the core API version.  Vulkan defines
+        // VkPhysicalDeviceProperties::driverVersion as vendor-specific, so
+        // keep the raw value instead of decoding it with the generic macros.
+        appendDriverEvidence("driverName", driverProperties.driverName);
+        appendDriverEvidence("driverInfo", driverProperties.driverInfo);
+        if (props.driverVersion != 0)
+        {
+            std::array<char, 11> rawDriverVersion = {};
+            std::snprintf(rawDriverVersion.data(),
+                          rawDriverVersion.size(),
+                          "0x%08x",
+                          static_cast<unsigned int>(props.driverVersion));
+            appendDriverEvidence("rawDriverVersion",
+                                 rawDriverVersion.data());
+        }
+        if (m_capabilities.driverVersion.empty())
+        {
+            RVX_RHI_WARN(
+                "Vulkan physical device '{}' returned no driverName, driverInfo, or raw driverVersion; omitting driver identity",
+                m_capabilities.adapterName);
+        }
 
         // Calculate VRAM
         for (uint32 i = 0; i < memProps.memoryHeapCount; ++i)

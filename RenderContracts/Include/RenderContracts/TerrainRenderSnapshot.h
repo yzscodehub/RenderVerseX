@@ -8,6 +8,7 @@
 #include "Core/Math/AABB.h"
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
+#include "RenderContracts/RenderIdentity.h"
 
 #include <cstddef>
 #include <string>
@@ -15,7 +16,7 @@
 
 namespace RVX
 {
-    inline constexpr uint32 RVX_TERRAIN_RENDER_SNAPSHOT_SCHEMA_VERSION = 1;
+    inline constexpr uint32 RVX_TERRAIN_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
 
     enum class TerrainRenderSnapshotStatus : uint8
     {
@@ -26,7 +27,12 @@ namespace RVX
 
     struct TerrainRenderSnapshotItem
     {
+        /** @brief Generation-qualified RenderScene object identity. */
         uint64 componentId = 0;
+        /** @brief Stable authored terrain-heightmap source asset. */
+        AssetId heightmapAssetId{};
+        /** @brief Stable authored terrain-material source asset. */
+        AssetId materialAssetId{};
         Vec3 worldPosition{0.0f, 0.0f, 0.0f};
         AABB worldBounds;
 

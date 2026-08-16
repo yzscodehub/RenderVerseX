@@ -10,6 +10,7 @@
 #include "Render/Material/MaterialGPUData.h"
 #include "RenderContracts/RenderIdentity.h"
 #include "RenderContracts/RenderMaterial.h"
+#include "RenderContracts/ResourceUploadRequest.h"
 #include "RHI/RHI.h"
 
 #include <array>
@@ -40,9 +41,51 @@ namespace RVX
         Error
     };
 
+    /** @brief Value-only sampler semantics included in descriptor evidence. */
+    struct MaterialBindingSamplerPolicy
+    {
+        MaterialUploadWrapMode wrapS = MaterialUploadWrapMode::Repeat;
+        MaterialUploadWrapMode wrapT = MaterialUploadWrapMode::Repeat;
+        MaterialUploadFilterMode minFilter =
+            MaterialUploadFilterMode::LinearMipmapLinear;
+        MaterialUploadFilterMode magFilter = MaterialUploadFilterMode::Linear;
+
+        [[nodiscard]] bool operator==(
+            const MaterialBindingSamplerPolicy&) const = default;
+    };
+
+    /**
+     * @brief Exact texture generation selected for one material descriptor slot.
+     *
+     * This is deliberately independent of descriptor heap pages, RHI views,
+     * and native sampler objects so it can be retained as presentation proof.
+     */
+    struct MaterialBindingTextureEntry
+    {
+        MaterialUploadTextureSlot slot = MaterialUploadTextureSlot::BaseColor;
+        RenderResourceHandle texture{};
+        uint64 contentRevision = 0;
+        bool fallbackUsed = false;
+        MaterialBindingSamplerPolicy sampler{};
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return texture.IsValid() && contentRevision != 0;
+        }
+    };
+
     struct MaterialBindingResult
     {
         MaterialBindingStatus status = MaterialBindingStatus::None;
+        /** Exact committed Render material identity selected by this draw. */
+        RenderResourceHandle material{};
+        uint64 contentRevision = 0;
+        /** Deterministic value key for the material + exact texture semantics. */
+        uint64 descriptorContentKey = 0;
+        /** Owner-monotonic revision advanced only when that semantic key changes. */
+        uint64 descriptorRevision = 0;
+        /** Sorted by MaterialUploadTextureSlot. */
+        std::vector<MaterialBindingTextureEntry> textureEntries{};
         RHIDescriptorSet* descriptorSet = nullptr;
         // Keep the exact page resources alive through planned-draw ownership.
         RHIBufferRef constantBuffer;
@@ -90,6 +133,11 @@ namespace RVX
         RHIBufferRef buffer;
         uint32 slotCount = 0;
         uint32 materialCount = 0;
+        /**
+         * CPU-only resolved material evidence, indexed by the exact stable
+         * shader material slot. Published only after the table write commits.
+         */
+        std::vector<uint64> rasterMaterialSemanticKeysBySlot;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
@@ -226,6 +274,7 @@ namespace RVX
             uint32 fallbackTextureFlags = 0;
             uint64 viewGeneration = 0;
             uint64 pageIdentity = 0;
+            std::vector<MaterialBindingTextureEntry> textureEntries;
             bool usedFallback = false;
             bool normalMapDisabled = false;
         };
@@ -296,9 +345,20 @@ namespace RVX
                                                         ResourceViewCache* viewCache,
                                                         MaterialBindingOptions options) const;
         MaterialBindingResult PrepareResolvedMaterialBinding(
+            RenderResourceHandle material,
+            uint64 contentRevision,
             MaterialSourceData source,
             const ResolvedMaterialTextures& textures,
             std::string materialName);
+        void FinalizeSemanticDescriptorEvidence(
+            MaterialBindingResult& result,
+            RenderResourceHandle requestedMaterial,
+            const MaterialGPUConstants& constants,
+            const ResolvedMaterialTextures& textures);
+        [[nodiscard]] uint64 BuildSemanticDescriptorContentKey(
+            RenderResourceHandle requestedMaterial,
+            const MaterialGPUConstants& constants,
+            const std::vector<MaterialBindingTextureEntry>& textureEntries) const noexcept;
         MaterialSetResolveResult GetOrCreateMaterialSetForResolved(
             const ResolvedMaterialTextures& textures,
             const RHIBufferRef& constantBuffer);
@@ -335,6 +395,15 @@ namespace RVX
             m_materialDescriptorCache;
         std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
         uint64 m_materialDescriptorCacheGeneration = ~uint64{0};
+        struct SemanticDescriptorState
+        {
+            uint64 contentKey = 0;
+            uint64 revision = 0;
+        };
+        std::unordered_map<RenderResourceHandle,
+                           SemanticDescriptorState,
+                           RenderResourceHandleHash>
+            m_semanticDescriptorStates;
         MaterialBindingResult m_lastBindingResult;
     };
 

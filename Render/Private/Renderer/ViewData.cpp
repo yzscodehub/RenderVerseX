@@ -23,6 +23,11 @@ void ViewData::SetupFromCamera(const Camera& camera, uint32_t width, uint32_t he
     cameraPosition = camera.GetPosition();
     // Extract forward from view matrix (inverted Z column)
     cameraForward = -Vec3(inverseViewMatrix[2]);
+    // Core::Camera has no layer-selection state. Do not retain a mask from a
+    // previous snapshot-backed setup.
+    cullingMask = ~0U;
+    clearPolicy = RenderViewClearPolicy::Skybox;
+    clearColor = {0.1f, 0.1f, 0.15f, 1.0f};
     
     // Viewport
     viewportWidth = width;
@@ -45,6 +50,9 @@ void ViewData::SetupFromSnapshot(
     inverseProjectionMatrix = inverse(projectionMatrix);
     cameraPosition = snapshot.cameraPosition;
     cameraForward = snapshot.cameraDirection;
+    cullingMask = snapshot.cullingMask;
+    clearPolicy = snapshot.clearPolicy;
+    clearColor = snapshot.clearColor;
     nearPlane = snapshot.nearPlane;
     farPlane = snapshot.farPlane;
     viewportX = static_cast<int32>(snapshot.viewportX);

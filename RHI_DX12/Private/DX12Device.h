@@ -23,6 +23,9 @@ namespace RVX
     class DX12CommandContext;
     class DX12Fence;
 
+    /** @brief Whether an HRESULT denotes a terminal DX12 device-loss condition. */
+    [[nodiscard]] bool IsDX12TerminalDeviceLossReason(HRESULT reason) noexcept;
+
     struct DX12IndirectCommandLayoutHash
     {
         size_t operator()(const RHIIndirectCommandLayout& layout) const noexcept
@@ -154,6 +157,7 @@ namespace RVX
         // =========================================================================
         ID3D12Device* GetD3DDevice() const { return m_device.Get(); }
         IDXGIFactory6* GetDXGIFactory() const { return m_factory.Get(); }
+        IDXGIAdapter4* GetDXGIAdapter() const { return m_adapter.Get(); }
         ID3D12CommandQueue* GetGraphicsQueue() const { return m_graphicsQueue.Get(); }
         ID3D12CommandQueue* GetComputeQueue() const { return m_computeQueue.Get(); }
         ID3D12CommandQueue* GetCopyQueue() const { return m_copyQueue.Get(); }

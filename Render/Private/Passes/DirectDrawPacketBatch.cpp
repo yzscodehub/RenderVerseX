@@ -218,6 +218,8 @@ DirectDrawPacketBatchBuildResult BuildDirectDrawPacketBatch(
             batch.packets.push_back(DirectDrawPacket{
                 source.packet,
                 source.directLayout,
+                source.geometryAssetId,
+                source.materialAssetId,
                 reference.sourcePacketIndex,
                 reference.sourceOrdinal,
                 reference.packetId,

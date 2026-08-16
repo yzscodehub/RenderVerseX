@@ -79,6 +79,15 @@ namespace RVX
         {
             return m_stats;
         }
+        [[nodiscard]] const GPUScenePublicationMutationTotals&
+            GetMutationTotals() const noexcept
+        {
+            return m_mutationTotals;
+        }
+        [[nodiscard]] bool IsMutationTotalsSaturated() const noexcept
+        {
+            return m_mutationTotalsSaturated;
+        }
 
         /** @brief Value-only CPU mirror and allocator lifecycle snapshot. */
         [[nodiscard]] GPUSceneDiagnostics GetDiagnostics() const noexcept
@@ -136,6 +145,10 @@ namespace RVX
             std::span<const uint64> removedObjectIds,
             const RenderResourceRegistry& registry);
         void PopulateCommittedIdentity(GPUScenePublicationStats& stats) const noexcept;
+        void PopulateMutationTotals(GPUScenePublicationStats& stats) const noexcept;
+        void RecordCommittedMutation(
+            GPUScenePublicationStats& stats,
+            bool fullPublication) noexcept;
         [[nodiscard]] uint32 GetPublishedDrawCount() const noexcept;
         [[nodiscard]] bool IsEquivalent(
             const PublishedObject& lhs,
@@ -148,7 +161,9 @@ namespace RVX
         GPUSceneDatabase m_database;
         std::unordered_map<uint64, PublishedObject> m_publishedObjects;
         GPUScenePublicationStats m_stats;
+        GPUScenePublicationMutationTotals m_mutationTotals{};
         uint64 m_committedSourceSequence = 0;
+        bool m_mutationTotalsSaturated = false;
         bool m_throwOnPublishForTesting = false;
     };
 } // namespace RVX

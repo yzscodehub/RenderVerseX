@@ -42,6 +42,28 @@ namespace RVX
         bool enableOptimization = true;
     };
 
+    /** @brief Backend-neutral optimization policy selected for a shader compile. */
+    enum class ShaderOptimizationMode : uint8
+    {
+        Disabled = 0,
+        Level3,
+    };
+
+    /**
+     * @brief Resolve optimization independently from debug-information emission.
+     *
+     * Debug information must not silently change optimization semantics. Every
+     * backend consumes this policy so identical compile options select the same
+     * optimization level for DXIL, SPIR-V, and compatibility bytecode.
+     */
+    [[nodiscard]] constexpr ShaderOptimizationMode ResolveShaderOptimizationMode(
+        const ShaderCompileOptions& options) noexcept
+    {
+        return options.enableOptimization
+            ? ShaderOptimizationMode::Level3
+            : ShaderOptimizationMode::Disabled;
+    }
+
     // =============================================================================
     // Shader Compile Result
     // =============================================================================

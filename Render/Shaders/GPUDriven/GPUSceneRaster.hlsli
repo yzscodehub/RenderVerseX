@@ -1,10 +1,28 @@
 #ifndef RVX_GPU_SCENE_RASTER_HLSLI
 #define RVX_GPU_SCENE_RASTER_HLSLI
 
-// Raster-only GPU-scene bindings.  This include is selected only by the
-// VSMainGPUScene permutations, so the normal Direct/Tier1 object set remains
-// byte-for-byte independent at b0/t1.
+// Shared rigid-transform math plus GPU-scene raster bindings. The helper is
+// available to every rigid vertex permutation; the GPU-scene descriptors below
+// remain selected only by RVX_GPU_SCENE_RASTER, so Direct/Tier1 b0/t1 stay
+// byte-for-byte independent.
 #include "GPUSceneCulling.hlsli"
+
+// Rigid object transforms are evaluated from their explicit affine rows in
+// every raster path. Keeping this operation sequence shared with Direct/Tier1
+// prevents a matrix lowering choice from moving a depth edge by one pixel.
+float4 RVXTransformRigidAffinePosition(
+    float4 worldFromLocalRow0,
+    float4 worldFromLocalRow1,
+    float4 worldFromLocalRow2,
+    float3 position)
+{
+    const float4 localPosition = float4(position, 1.0f);
+    return float4(
+        dot(worldFromLocalRow0, localPosition),
+        dot(worldFromLocalRow1, localPosition),
+        dot(worldFromLocalRow2, localPosition),
+        1.0f);
+}
 
 #if defined(RVX_GPU_SCENE_RASTER)
 
@@ -85,12 +103,11 @@ bool GPUSceneResolveRasterTransform(
 // storage convention.
 float4 GPUSceneTransformPosition(GPUSceneTransformRow transform, float3 position)
 {
-    const float4 localPosition = float4(position, 1.0f);
-    return float4(
-        dot(transform.worldFromLocal[0], localPosition),
-        dot(transform.worldFromLocal[1], localPosition),
-        dot(transform.worldFromLocal[2], localPosition),
-        1.0f);
+    return RVXTransformRigidAffinePosition(
+        transform.worldFromLocal[0],
+        transform.worldFromLocal[1],
+        transform.worldFromLocal[2],
+        position);
 }
 
 float3 GPUSceneTransformNormal(GPUSceneTransformRow transform, float3 normal)

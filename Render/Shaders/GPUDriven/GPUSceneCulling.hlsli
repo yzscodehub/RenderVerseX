@@ -29,6 +29,16 @@ struct GPUSceneCullingCandidate
     uint padding0;
 };
 
+// Mirrors RVX::GPUCullingActiveRow. This is a frame-slot-owned dispatch
+// indirection, not part of the persistent GPU-scene table ABI.
+struct GPUCullingActiveRow
+{
+    uint residentRow;
+    uint drawGroupIndex;
+    uint drawGroupVisibleOffset;
+    uint padding0;
+};
+
 // 32 bytes.
 struct GPUSceneRowHeader
 {

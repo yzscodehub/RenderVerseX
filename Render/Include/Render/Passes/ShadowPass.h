@@ -4,9 +4,9 @@
  * @file ShadowPass.h
  * @brief Shadow map generation pass with CSM support
  * 
- * ShadowPass renders scene geometry to shadow maps for directional,
- * point, and spot lights. Supports Cascaded Shadow Maps (CSM) for
- * directional lights.
+ * ShadowPass renders scene geometry to directional-light shadow maps using
+ * Cascaded Shadow Maps (CSM). Point- and spot-light shadow maps are not
+ * currently supported.
  */
 
 #include "Core/MathTypes.h"
@@ -25,6 +25,7 @@ namespace RVX
     class RenderResourceRegistry;
     class RenderScene;
     class PipelineCache;
+    struct DirectionalShadowCascadeBindingSnapshot;
     struct ObjectConstantBinding;
 
     /**
@@ -46,6 +47,7 @@ namespace RVX
     {
         uint32_t shadowMapSize = 2048;       // Shadow map resolution
         uint32_t numCascades = 4;            // Number of CSM cascades
+        float maxDistance = 200.0f;          // Maximum camera distance covered by CSM
         float cascadeSplitLambda = 0.95f;    // PSSM split scheme parameter
         float shadowBias = 0.005f;           // Depth bias to reduce shadow acne
         float normalBias = 0.02f;            // Normal offset bias
@@ -140,7 +142,9 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
-        void InitializeGraphRecorder(const RenderScene* scene);
+        void InitializeGraphRecorder(
+            const RenderScene* scene,
+            std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache);
         void CalculateCascades(const ViewData& view,
                                const PrimaryDirectionalLightRecordInput& primaryLight);
         void Setup(RenderGraphBuilder& builder,
@@ -155,6 +159,10 @@ namespace RVX
                            const PrimaryDirectionalLightRecordInput& primaryLight);
         bool BuildPlannedShadowDraws(RenderGraphBuilder& builder,
                                      const ViewData& view);
+        bool BuildCascadeFrameBindings(
+            RenderGraphBuilder& builder,
+            const ViewData& view,
+            const PrimaryDirectionalLightRecordInput& primaryLight);
         bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
                                          const ViewData& view);
         void ApplyDirectInstancePlan(RenderGraphBuilder& builder,
@@ -175,9 +183,13 @@ namespace RVX
         std::vector<RGTextureHandle> m_cascadeTextureHandles;
         std::vector<RGTextureViewHandle> m_cascadeViewHandles;
         std::vector<PlannedShadowDraw> m_plannedShadowDraws;
+        std::unique_ptr<DirectionalShadowCascadeBindingSnapshot>
+            m_cascadeFrameBindings;
         RGBufferHandle m_directInstanceHandle;
         RGBufferHandle m_directInstanceIndexHandle;
         RenderInstanceBatchPlan m_directInstancePlan;
+        std::shared_ptr<RasterInstanceStreamCache> m_directInstanceStreamCache =
+            std::make_shared<RasterInstanceStreamCache>();
         RasterInstanceStream m_directInstanceStream;
         bool m_directInstancingPreflightFailed = false;
         bool m_shadowDrawPreflightValid = false;

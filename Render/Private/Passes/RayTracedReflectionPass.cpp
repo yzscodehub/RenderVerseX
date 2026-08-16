@@ -1158,7 +1158,8 @@ namespace RVX
             return false;
 
         std::memcpy(mapped, &constants, sizeof(constants));
-        m_constantBuffer->Unmap();
+        if (!m_constantBuffer->CommitMappedWrite())
+            return false;
         m_pendingHistoryViewProjection = view.viewProjectionMatrix;
         m_pendingHistoryViewValid = true;
         m_temporalAccumulatedThisFrame = useHistory;

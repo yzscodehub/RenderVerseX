@@ -199,7 +199,17 @@ bool FrameConstantUploadArena::Allocate(const void* source,
     }
     std::memset(static_cast<uint8*>(mapped) + offset, 0, static_cast<size_t>(m_stride));
     std::memcpy(static_cast<uint8*>(mapped) + offset, source, static_cast<size_t>(sourceSize));
-    page->buffer->Unmap();
+    if (!page->buffer->CommitMappedWrite())
+    {
+        // A failed host-write commit gives us no trustworthy contents for this
+        // page.  In particular, it may have left an earlier successful slot
+        // resident while the current slot is not visible to the GPU.  Do not
+        // advance the cursor or expose an allocation that aliases that state;
+        // retire the page from further recording and let the next request use
+        // a newly created page.
+        page->state = PageState::Unusable;
+        return false;
+    }
 
     outAllocation.buffer = page->buffer;
     outAllocation.pageIdentity = page->identity;

@@ -113,7 +113,8 @@ namespace RVX
             const std::vector<RenderDrawItem>* maskedDrawItems,
             const GPUCulling* gpuCulling,
             const RenderPassGPUDrivenInputs& gpuInputs,
-            bool gpuDrivenPlanned);
+            bool gpuDrivenPlanned,
+            std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache);
 
         bool AreGPUDrivenDepthGroupsDrawable(
             uint32 expectedPacketCount,
@@ -161,6 +162,8 @@ namespace RVX
         RGBufferHandle m_directInstanceHandle;
         RGBufferHandle m_directInstanceIndexHandle;
         RenderInstanceBatchPlan m_directInstancePlan;
+        std::shared_ptr<RasterInstanceStreamCache> m_directInstanceStreamCache =
+            std::make_shared<RasterInstanceStreamCache>();
         RasterInstanceStream m_directInstanceStream;
         bool m_directInstancingPreflightFailed = false;
         std::shared_ptr<const GPUSceneRasterBindingSnapshot> m_gpuSceneRasterBinding;

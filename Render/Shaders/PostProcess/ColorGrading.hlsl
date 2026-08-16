@@ -1,5 +1,7 @@
 // ColorGrading.hlsl - LDR fullscreen color-grading post-process
 
+#include "../Include/FullscreenTriangle.hlsli"
+
 cbuffer ColorGradingConstants : register(b0, space0)
 {
     float2 TextureSize;
@@ -42,8 +44,8 @@ struct VSOutput
 VSOutput VSMain(uint vertexId : SV_VertexID)
 {
     VSOutput output;
-    output.uv = float2((vertexId << 1) & 2, vertexId & 2);
-    output.position = float4(output.uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+    output.uv = RVX_GetFullscreenTriangleTexCoord(vertexId);
+    output.position = RVX_GetFullscreenTrianglePosition(output.uv);
     return output;
 }
 

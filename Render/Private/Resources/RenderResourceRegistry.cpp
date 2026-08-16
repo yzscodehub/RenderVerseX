@@ -6,9 +6,40 @@
 #include "RHI/RHICommandContext.h"
 
 #include <algorithm>
+#include <type_traits>
 
 namespace RVX
 {
+namespace
+{
+    constexpr uint64 RASTER_RESOURCE_SEMANTIC_FNV_OFFSET =
+        0xCBF29CE484222325ull;
+    constexpr uint64 RASTER_RESOURCE_SEMANTIC_FNV_PRIME =
+        0x100000001B3ull;
+    constexpr uint64 RASTER_MESH_MATERIAL_SEMANTIC_DOMAIN =
+        0x5256584D4553484Bull; // "RVXMESHK"
+
+    void HashRasterResourceSemanticByte(uint64& hash, uint8 value) noexcept
+    {
+        hash ^= value;
+        hash *= RASTER_RESOURCE_SEMANTIC_FNV_PRIME;
+    }
+
+    template <typename TUnsigned>
+    void HashRasterResourceSemanticUnsigned(uint64& hash,
+                                            TUnsigned value) noexcept
+    {
+        static_assert(std::is_unsigned_v<TUnsigned>);
+        for (uint32 byteIndex = 0; byteIndex < sizeof(TUnsigned); ++byteIndex)
+        {
+            HashRasterResourceSemanticByte(
+                hash,
+                static_cast<uint8>(value >> (byteIndex * 8U)));
+        }
+    }
+
+} // namespace
+
     RenderResourceRegistry::~RenderResourceRegistry()
     {
         RVX_ASSERT_MSG(m_entries.empty(),
@@ -48,6 +79,22 @@ namespace RVX
         RenderResourceContentOperation operation,
         uint64 sourceRevision)
     {
+        return BeginPending(handle,
+                            kind,
+                            dependencies,
+                            AssetId{},
+                            operation,
+                            sourceRevision);
+    }
+
+    bool RenderResourceRegistry::BeginPending(
+        RenderResourceHandle handle,
+        RenderResourceKind kind,
+        const std::vector<RenderResourceHandle>& dependencies,
+        AssetId assetId,
+        RenderResourceContentOperation operation,
+        uint64 sourceRevision)
+    {
         if (m_statusTable == nullptr || m_retirementQueue == nullptr ||
             !handle.IsValid() || kind == RenderResourceKind::Invalid ||
             (operation != RenderResourceContentOperation::Create &&
@@ -83,6 +130,7 @@ namespace RVX
         else if (existing == m_entries.end() ||
                  existing->second.generation != handle.generation ||
                  existing->second.kind != kind ||
+                 existing->second.assetId != assetId ||
                  existing->second.pending.has_value() ||
                  !existing->second.committed.has_value() ||
                  sourceRevision <= existing->second.lastAcceptedSourceRevision)
@@ -124,6 +172,7 @@ namespace RVX
 
         Entry entry;
         entry.generation = handle.generation;
+        entry.assetId = assetId;
         entry.kind = kind;
         entry.pendingDependencies = dependencies;
         entry.pending = std::move(pending);
@@ -583,6 +632,43 @@ namespace RVX
         RenderResourceHandle handle) const
     {
         return FindExact(handle) != nullptr;
+    }
+
+    RenderResourceKind RenderResourceRegistry::GetExactKind(
+        RenderResourceHandle handle) const noexcept
+    {
+        const Entry* entry = FindExact(handle);
+        return entry != nullptr ? entry->kind : RenderResourceKind::Invalid;
+    }
+
+    AssetId RenderResourceRegistry::GetExactAssetId(
+        RenderResourceHandle handle) const noexcept
+    {
+        const Entry* entry = FindExact(handle);
+        return entry != nullptr ? entry->assetId : AssetId{};
+    }
+
+    std::optional<uint64>
+        RenderResourceRegistry::CombineRasterMeshAndMaterialSemanticIdentity(
+            RenderResourceHandle mesh,
+            uint64 rasterMaterialSemanticKey) const noexcept
+    {
+        const Entry* const meshEntry = FindExact(mesh);
+        if (meshEntry == nullptr || meshEntry->kind != RenderResourceKind::Mesh ||
+            !meshEntry->assetId.IsValid() ||
+            !IsReady(mesh, RenderResourceKind::Mesh) ||
+            rasterMaterialSemanticKey == 0)
+        {
+            return std::nullopt;
+        }
+
+        uint64 hash = RASTER_RESOURCE_SEMANTIC_FNV_OFFSET;
+        HashRasterResourceSemanticUnsigned(
+            hash, RASTER_MESH_MATERIAL_SEMANTIC_DOMAIN);
+        HashRasterResourceSemanticUnsigned(hash, meshEntry->assetId.value);
+        HashRasterResourceSemanticUnsigned(hash, rasterMaterialSemanticKey);
+        return hash != 0 ? std::optional<uint64>(hash)
+                         : std::optional<uint64>(uint64{1});
     }
 
     bool RenderResourceRegistry::IsGPUReadyExact(

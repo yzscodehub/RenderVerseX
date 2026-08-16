@@ -12,20 +12,12 @@ namespace RVX
     std::span<const uint8> GetUploadPayloadBytes(
         const MeshUploadPayload& payload) noexcept
     {
-        if (payload.byteStorage)
-        {
-            return payload.byteStorage->GetBytes();
-        }
         return std::span<const uint8>(payload.bytes);
     }
 
     std::span<const uint8> GetUploadPayloadBytes(
         const TextureUploadPayload& payload) noexcept
     {
-        if (payload.byteStorage)
-        {
-            return payload.byteStorage->GetBytes();
-        }
         return std::span<const uint8>(payload.bytes);
     }
 
@@ -199,13 +191,9 @@ namespace
     }
 
     template<typename TPayload>
-    ResourceUploadRequestCreateCode ValidateByteStorage(
+    ResourceUploadRequestCreateCode ValidateBytes(
         const TPayload& payload)
     {
-        if (payload.byteStorage && !payload.bytes.empty())
-        {
-            return ResourceUploadRequestCreateCode::ConflictingByteStorage;
-        }
         if (GetUploadPayloadBytes(payload).empty())
         {
             return ResourceUploadRequestCreateCode::InvalidPayload;
@@ -256,11 +244,11 @@ namespace
         const MeshUploadPayload& payload)
     {
         const MeshUploadCreateInfo& createInfo = payload.createInfo;
-        const ResourceUploadRequestCreateCode storageCode =
-            ValidateByteStorage(payload);
-        if (storageCode != ResourceUploadRequestCreateCode::Created)
+        const ResourceUploadRequestCreateCode bytesCode =
+            ValidateBytes(payload);
+        if (bytesCode != ResourceUploadRequestCreateCode::Created)
         {
-            return storageCode;
+            return bytesCode;
         }
         if (!IsDeclared(createInfo.indexType) ||
             !IsDeclared(createInfo.topology) ||
@@ -383,11 +371,11 @@ namespace
         const TextureUploadPayload& payload)
     {
         const TextureUploadCreateInfo& createInfo = payload.createInfo;
-        const ResourceUploadRequestCreateCode storageCode =
-            ValidateByteStorage(payload);
-        if (storageCode != ResourceUploadRequestCreateCode::Created)
+        const ResourceUploadRequestCreateCode bytesCode =
+            ValidateBytes(payload);
+        if (bytesCode != ResourceUploadRequestCreateCode::Created)
         {
-            return storageCode;
+            return bytesCode;
         }
         if (createInfo.width == 0 || createInfo.height == 0 ||
             createInfo.depth == 0 || createInfo.mipLevels == 0 ||

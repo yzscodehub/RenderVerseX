@@ -98,6 +98,8 @@ namespace RVX
         {
             return m_lights.size();
         }
+        /** @brief Deterministic value hash of every retained light snapshot. */
+        [[nodiscard]] uint64 ComputeLightStateHash() const noexcept;
         [[nodiscard]] size_t GetDecalCount() const noexcept
         {
             return m_decals.size();

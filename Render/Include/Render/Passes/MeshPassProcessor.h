@@ -9,6 +9,7 @@
 #include "Render/Renderer/RenderDrawPacket.h"
 
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <span>
 #include <vector>
@@ -221,6 +222,57 @@ namespace RVX
         const RenderDrawPacket& packet,
         RenderSubmissionLayout layout) noexcept;
 
+    /** @brief Resource-handle-independent packet order shared by Direct and GPU raster. */
+    struct CanonicalRasterPacketOrderKey
+    {
+        uint64 objectId = 0;
+        uint32 primitiveData = 0;
+        uint32 logicalSubmeshIndex = 0;
+        uint32 geometrySubmeshIndex = 0;
+        uint32 sourceOrdinal = 0;
+        uint32 sourcePacketIndex = 0;
+
+        auto operator<=>(const CanonicalRasterPacketOrderKey&) const = default;
+    };
+
+    [[nodiscard]] CanonicalRasterPacketOrderKey
+        MakeCanonicalRasterPacketOrderKey(
+            const RenderDrawPacket& packet,
+            uint32 sourceOrdinal,
+            uint32 sourcePacketIndex) noexcept;
+
+    /** @brief Resource-generation-independent group order shared by Direct/GPU raster. */
+    struct CanonicalRasterGroupOrderKey
+    {
+        uint8 pass = 0;
+        uint8 pipelineVariant = 0;
+        uint8 topology = 0;
+        uint8 skinned = 0;
+        uint64 geometryAssetId = 0;
+        uint32 geometrySubmeshIndex = 0;
+        uint8 geometryIndexType = 0;
+        uint64 materialAssetId = 0;
+        uint8 materialMode = 0;
+        uint64 textureBindingHash = 0;
+        uint8 parameterTableCompatible = 0;
+        uint32 vertexStreams = 0;
+        uint32 bindings = 0;
+        uint8 primitiveDataBinding = 0;
+        uint32 indexCount = 0;
+        uint32 firstIndex = 0;
+        int32 vertexOffset = 0;
+        uint32 flags = 0;
+        uint8 usesMaterialParameterTable = 0;
+
+        auto operator<=>(const CanonicalRasterGroupOrderKey&) const = default;
+    };
+
+    [[nodiscard]] CanonicalRasterGroupOrderKey
+        MakeCanonicalRasterGroupOrderKey(
+            const RenderDrawGroupKey& key,
+            AssetId geometryAssetId,
+            AssetId materialAssetId) noexcept;
+
     struct MeshPassAvailabilityFacts
     {
         MeshPassResourceAvailability pipeline =
@@ -236,6 +288,8 @@ namespace RVX
     {
         RenderDrawPacket packet;
         MeshPassAvailabilityFacts availability;
+        AssetId geometryAssetId{};
+        AssetId materialAssetId{};
         uint32 sourceOrdinal = 0;
         float32 viewDepth = 0.0f;
     };
@@ -251,6 +305,8 @@ namespace RVX
         /// are appended to a candidate.  This remains valid when a Task5
         /// whole-pass fallback selects a candidate for Direct submission.
         RenderSubmissionLayout directLayout;
+        AssetId geometryAssetId{};
+        AssetId materialAssetId{};
         uint32 sourceOrdinal = 0;
         float32 viewDepth = 0.0f;
 
@@ -343,8 +399,8 @@ namespace RVX
             const MeshPassProcessorInput& input) const noexcept = 0;
 
     protected:
-        [[nodiscard]] static MeshPassProcessorResult MakeSkipped(
-            const MeshPassProcessorInput& input) noexcept;
+        [[nodiscard]] MeshPassProcessorResult MakeSkipped(
+            const MeshPassProcessorInput& input) const noexcept;
         [[nodiscard]] static MeshPassProcessorResult MakeRelevant(
             const MeshPassProcessorInput& input,
             RenderPassKind pass,

@@ -14,7 +14,7 @@
 
 namespace RVX
 {
-    inline constexpr uint32 RVX_RENDER_FEATURE_SNAPSHOT_SCHEMA_VERSION = 1;
+    inline constexpr uint32 RVX_RENDER_FEATURE_SNAPSHOT_SCHEMA_VERSION = 2;
 
     enum class RenderFeatureSnapshotStatus : uint8
     {

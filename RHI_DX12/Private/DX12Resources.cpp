@@ -145,6 +145,7 @@ namespace RVX
             if (FAILED(hr))
             {
                 RVX_RHI_ERROR("Failed to persistently map upload buffer: 0x{:08X}", static_cast<uint32>(hr));
+                m_device->QueryRuntimeStatus();
                 m_mappedData = nullptr;
             }
         }
@@ -182,6 +183,7 @@ namespace RVX
             if (FAILED(hr))
             {
                 RVX_RHI_ERROR("Failed to persistently map placed upload buffer: 0x{:08X}", static_cast<uint32>(hr));
+                m_device->QueryRuntimeStatus();
                 m_mappedData = nullptr;
             }
         }
@@ -191,7 +193,8 @@ namespace RVX
     DX12Buffer::~DX12Buffer()
     {
         // Unmap persistently mapped buffers
-        if (m_mappedData && m_desc.memoryType == RHIMemoryType::Upload)
+        if (m_mappedData && m_desc.memoryType == RHIMemoryType::Upload &&
+            IsHostAccessReady())
         {
             D3D12_RANGE writtenRange = {0, m_desc.size};
             m_resource->Unmap(0, &writtenRange);
@@ -199,7 +202,10 @@ namespace RVX
         }
         else if (m_mappedData)
         {
-            Unmap();
+            if (m_isMappedForAccess && IsHostAccessReady())
+                Unmap();
+            m_mappedData = nullptr;
+            m_isMappedForAccess = false;
         }
 
         auto& heapManager = m_device->GetDescriptorHeapManager();
@@ -342,11 +348,27 @@ namespace RVX
         }
     }
 
-    void* DX12Buffer::Map()
+    bool DX12Buffer::IsHostAccessReady() const noexcept
     {
-        // For upload buffers, return persistent mapping
-        if (m_mappedData)
+        return m_device != nullptr && m_resource != nullptr &&
+               m_device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready;
+    }
+
+    void* DX12Buffer::BeginMappedAccess()
+    {
+        if (!IsHostAccessReady())
+        {
+            RVX_RHI_ERROR("Cannot map an unavailable DX12 buffer");
+            return nullptr;
+        }
+
+        // Upload memory owns a persistent native mapping. Track the logical
+        // access independently so legacy and range transactions cannot overlap.
+        if (m_desc.memoryType == RHIMemoryType::Upload)
+        {
+            m_isMappedForAccess = m_mappedData != nullptr;
             return m_mappedData;
+        }
 
         if (m_desc.memoryType == RHIMemoryType::Default)
         {
@@ -354,34 +376,137 @@ namespace RVX
             return nullptr;
         }
 
-        // For readback buffers, map on demand
-        if (m_desc.memoryType == RHIMemoryType::Readback)
+        D3D12_RANGE readRange = {0, m_desc.size};
+        const HRESULT hr = m_resource->Map(0, &readRange, &m_mappedData);
+        if (FAILED(hr))
         {
-            D3D12_RANGE readRange = {0, m_desc.size};
-            HRESULT hr = m_resource->Map(0, &readRange, &m_mappedData);
-            if (FAILED(hr))
-            {
-                RVX_RHI_ERROR("Failed to map readback buffer: 0x{:08X}", static_cast<uint32>(hr));
-                return nullptr;
-            }
+            RVX_RHI_ERROR("Failed to map readback buffer: 0x{:08X}",
+                          static_cast<uint32>(hr));
+            m_device->QueryRuntimeStatus();
+            m_mappedData = nullptr;
+            return nullptr;
         }
 
+        m_isMappedForAccess = true;
         return m_mappedData;
+    }
+
+    void* DX12Buffer::Map()
+    {
+        if (HasActiveMappedWriteRange())
+        {
+            RVX_RHI_ERROR("Cannot use legacy Map() during an active DX12 mapped-write transaction");
+            return nullptr;
+        }
+        if (m_isMappedForAccess)
+        {
+            RVX_RHI_ERROR("Cannot overlap DX12 legacy mapped accesses");
+            return nullptr;
+        }
+
+        return BeginMappedAccess();
+    }
+
+    void* DX12Buffer::MapWriteRangeImpl(uint64 offset, uint64)
+    {
+        // A mapped write is only valid for upload memory. Legacy Map() keeps
+        // readback support for CPU reads, but a readback mapping must not be
+        // presented as publishable CPU-to-GPU data.
+        if (m_desc.memoryType != RHIMemoryType::Upload)
+        {
+            RVX_RHI_ERROR("Cannot begin a mapped write on a non-upload DX12 buffer");
+            return nullptr;
+        }
+
+        if (m_isMappedForAccess)
+        {
+            RVX_RHI_ERROR("Cannot begin a DX12 range write during a legacy mapped access");
+            return nullptr;
+        }
+
+        void* mappedData = BeginMappedAccess();
+        if (!mappedData)
+        {
+            return nullptr;
+        }
+        return static_cast<uint8*>(mappedData) + static_cast<size_t>(offset);
+    }
+
+    RHIHostWriteReceipt DX12Buffer::CommitMappedWriteRangeImpl(uint64, uint64)
+    {
+        RHIHostWriteReceipt receipt;
+        if (m_desc.memoryType != RHIMemoryType::Upload ||
+            !m_isMappedForAccess || !m_mappedData || !IsHostAccessReady())
+        {
+            return receipt;
+        }
+
+        // D3D12 upload heaps are CPU/GPU coherent and stay persistently
+        // mapped. There is no per-write cache flush or Unmap range to report.
+        receipt.committed = true;
+        receipt.synchronization =
+            RHIHostWriteSynchronization::CoherentNoExplicitSync;
+        m_isMappedForAccess = false;
+        return receipt;
+    }
+
+    bool DX12Buffer::CancelMappedWriteRangeImpl(uint64, uint64)
+    {
+        // Persistent upload mappings do not need an API operation to discard
+        // unpublished bytes. The transaction is invalidated by RHIBuffer.
+        if (m_desc.memoryType != RHIMemoryType::Upload ||
+            !m_isMappedForAccess || m_mappedData == nullptr)
+        {
+            return false;
+        }
+
+        // Persistent upload mappings need no native abort operation. Clearing
+        // the logical access is safe even after device loss.
+        m_isMappedForAccess = false;
+        return true;
     }
 
     void DX12Buffer::Unmap()
     {
-        if (!m_mappedData)
+        if (HasActiveMappedWriteRange())
+        {
+            RVX_RHI_ERROR("Cannot use legacy Unmap() during an active DX12 mapped-write transaction");
+            return;
+        }
+
+        if (!m_isMappedForAccess)
             return;
 
         // Upload buffers stay persistently mapped, only unmap readback buffers
-        if (m_desc.memoryType == RHIMemoryType::Readback)
+        if (m_desc.memoryType == RHIMemoryType::Readback && IsHostAccessReady())
         {
             D3D12_RANGE writtenRange = {0, 0};  // CPU doesn't write to readback
             m_resource->Unmap(0, &writtenRange);
             m_mappedData = nullptr;
         }
-        // Upload buffers: no-op, stay mapped
+        // Upload buffers stay persistently mapped. Device-lost readback state
+        // is discarded without issuing another native host operation.
+        m_isMappedForAccess = false;
+    }
+
+    bool DX12Buffer::CommitMappedWrite()
+    {
+        if (HasActiveMappedWriteRange())
+        {
+            RVX_RHI_ERROR("Cannot use legacy CommitMappedWrite() during an active DX12 mapped-write transaction");
+            return false;
+        }
+
+        if (!m_isMappedForAccess)
+            return true;
+        if (!IsHostAccessReady())
+        {
+            m_isMappedForAccess = false;
+            return false;
+        }
+
+        Unmap();
+        return true;
     }
 
     // =============================================================================

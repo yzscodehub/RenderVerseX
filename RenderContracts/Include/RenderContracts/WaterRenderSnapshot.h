@@ -8,6 +8,7 @@
 #include "Core/Math/AABB.h"
 #include "Core/MathTypes.h"
 #include "Core/Types.h"
+#include "RenderContracts/RenderIdentity.h"
 
 #include <cstddef>
 #include <string>
@@ -15,7 +16,7 @@
 
 namespace RVX
 {
-    inline constexpr uint32 RVX_WATER_RENDER_SNAPSHOT_SCHEMA_VERSION = 1;
+    inline constexpr uint32 RVX_WATER_RENDER_SNAPSHOT_SCHEMA_VERSION = 2;
 
     enum class WaterRenderSnapshotStatus : uint8
     {
@@ -41,7 +42,12 @@ namespace RVX
 
     struct WaterRenderSnapshotItem
     {
+        /** @brief Generation-qualified RenderScene object identity. */
         uint64 componentId = 0;
+        /** @brief Stable authored water-surface source asset. */
+        AssetId surfaceAssetId{};
+        /** @brief Stable authored water-material source asset. */
+        AssetId materialAssetId{};
         Vec3 worldPosition{0.0f, 0.0f, 0.0f};
         AABB worldBounds;
 
