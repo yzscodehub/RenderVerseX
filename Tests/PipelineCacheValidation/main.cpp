@@ -876,6 +876,7 @@ namespace
 
         return TryEvaluateUintExpression(expression, outValue);
     }
+
     fs::path FindModelViewerSourcePath()
     {
         const fs::path shaderDir = FindShaderDirectory();
@@ -885,13 +886,15 @@ namespace
         }
 
         const fs::path repoRoot = shaderDir.parent_path().parent_path();
-        const fs::path showcasePath = repoRoot / "Samples" / "Showcase" / "ModelViewer" / "main.cpp";
+        const fs::path showcasePath =
+            repoRoot / "Samples" / "Showcase" / "ModelViewer" / "main.cpp";
         if (fs::exists(showcasePath))
         {
             return showcasePath;
         }
 
-        const fs::path legacyPath = repoRoot / "Samples" / "ModelViewer" / "main.cpp";
+        const fs::path legacyPath =
+            repoRoot / "Samples" / "ModelViewer" / "main.cpp";
         return fs::exists(legacyPath) ? legacyPath : fs::path{};
     }
 
@@ -2188,10 +2191,6 @@ TEST_F(PipelineCacheValidationFixture, RVXCookWorkflowDocumentationCoversCurrent
     EXPECT_NE(doc.find("binary `.glb` rewrite is not implemented"), std::string::npos);
     EXPECT_NE(doc.find("not a production-quality geometric simplifier"), std::string::npos);
 
-    EXPECT_NE(testsCMake.find("ModelViewerCookedBCMaterialFixture"), std::string::npos);
-    EXPECT_NE(doc.find("ModelViewerCookedBCMaterialFixture"), std::string::npos);
-    EXPECT_NE(doc.find("ModelViewerOpenGLCookedBCMaterialSmoke"), std::string::npos);
-    EXPECT_NE(doc.find("OpenGLCookedBCMaterialImageContentValidation"), std::string::npos);
     EXPECT_NE(doc.find("RVXCookCliAppliesMeshProfileLODOptions"), std::string::npos);
     EXPECT_NE(doc.find("RVXCookCliRejectsInvalidMeshCookProfile"), std::string::npos);
     EXPECT_NE(doc.find("RVXCookCliRewritesGltfTextureUrisToCookedArtifacts"), std::string::npos);

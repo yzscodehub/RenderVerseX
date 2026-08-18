@@ -35,8 +35,8 @@ namespace
             "TickWithoutRender",
         };
         constexpr std::array<const char*, 2> samples = {
-            "Samples/Showcase/ModelViewer/main.cpp",
-            "Samples/Showcase/RenderingShowcase/main.cpp",
+            "Samples/RenderVerseSamples/Scenes/ModelViewerSample.cpp",
+            "Samples/RenderVerseSamples/Scenes/GPUDrivenShowcaseSample.cpp",
         };
 
         for (const char* sample : samples)

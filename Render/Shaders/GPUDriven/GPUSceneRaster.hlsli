@@ -5,7 +5,7 @@
 // available to every rigid vertex permutation; the GPU-scene descriptors below
 // remain selected only by RVX_GPU_SCENE_RASTER, so Direct/Tier1 b0/t1 stay
 // byte-for-byte independent.
-#include "GPUSceneCulling.hlsli"
+#include "GPUDriven/GPUSceneCulling.hlsli"
 
 // Rigid object transforms are evaluated from their explicit affine rows in
 // every raster path. Keeping this operation sequence shared with Direct/Tier1

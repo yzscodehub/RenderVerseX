@@ -225,7 +225,7 @@ namespace RVX
             "Samples/RenderVerseSamples/Scenes/RenderingStressSample.cpp");
         ASSERT_FALSE(source.empty());
         const size_t setupFarDistance = source.find(
-            "gpuCulling.maxDrawDistance =\n"
+            "context.renderSettings.gpuCulling.maxDrawDistance =\n"
             "            GetWorkloadFarDistance(m_workload.objectCount);");
         EXPECT_NE(setupFarDistance, std::string::npos);
         EXPECT_NE(source.find("gpuCulling.enableDistanceCulling = true;"),

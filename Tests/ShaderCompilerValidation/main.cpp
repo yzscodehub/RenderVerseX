@@ -1012,7 +1012,7 @@ TEST_F(ShaderCompilerValidationFixture,
        DX11DefaultLitPixelReflectionPreservesDescriptorSets)
 {
     const fs::path shaderPath =
-        fs::current_path() / "Render" / "Shaders" / "DefaultLit.hlsl";
+        fs::path(RVX_SOURCE_DIR) / "Render" / "Shaders" / "DefaultLit.hlsl";
     std::ifstream shaderFile(shaderPath, std::ios::binary);
     ASSERT_TRUE(shaderFile.is_open()) << shaderPath.string();
     const std::string source{
@@ -1061,7 +1061,7 @@ TEST_F(ShaderCompilerValidationFixture,
 TEST_F(ShaderCompilerValidationFixture,
        OpenGLToneMappingPixelCompileSupportsPortableCBufferLayout)
 {
-    const fs::path shaderPath = fs::current_path() / "Render" / "Shaders" /
+    const fs::path shaderPath = fs::path(RVX_SOURCE_DIR) / "Render" / "Shaders" /
                                 "PostProcess" / "ToneMapping.hlsl";
     std::ifstream shaderFile(shaderPath, std::ios::binary);
     ASSERT_TRUE(shaderFile.is_open()) << shaderPath.string();

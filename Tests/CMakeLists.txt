@@ -1230,6 +1230,7 @@ rvx_add_gtest(
     INCLUDES
         ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
         ${CMAKE_SOURCE_DIR}/RHI/Include
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     LABELS unit
     TIMEOUT 120
 )
