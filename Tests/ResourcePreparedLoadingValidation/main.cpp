@@ -276,7 +276,8 @@ namespace
     };
 
     ResourceContentIdentity MakeContentIdentity(
-        std::string digest = "f009e85dae4e41d6d1cc9ba534a5948090c986993523280fd7e513df87c40300")
+        std::string digest = "f009e85dae4e41d6d1cc9ba534a5948090c986993523280fd7e513df87c40300",
+        uint64 byteCount = 2045)
     {
         ResourceContentIdentity identity;
         identity.schemaVersion = RVX_RESOURCE_CONTENT_IDENTITY_SCHEMA_VERSION;
@@ -284,7 +285,7 @@ namespace
         identity.scope = ResourceContentIdentityScope::SelfContainedArtifact;
         identity.algorithm = ResourceContentHashAlgorithm::SHA256;
         identity.digest = std::move(digest);
-        identity.byteCount = 2045;
+        identity.byteCount = byteCount;
         identity.fileCount = 1;
         return identity;
     }
@@ -574,7 +575,9 @@ TEST(ResourcePreparedLoadingValidation, ModelPreparedLoadVerifiesR7TriangleConsu
 
     ManagerGuard guard(0);
     ResourceLoadOptions options;
-    options.expectedContentIdentity = MakeContentIdentity();
+    options.expectedContentIdentity = MakeContentIdentity(
+        "f41b11c0403cc68c8da3988a954391c8b2e4f5b46a9d800f82c9d4256b395aab",
+        1939);
     auto request = ResourceManager::Get().RequestAsync<ModelResource>(fixture.string(), options);
     ASSERT_TRUE(request);
     ResourceManager::Get().ProcessCompletedLoads();
@@ -583,8 +586,8 @@ TEST(ResourcePreparedLoadingValidation, ModelPreparedLoadVerifiesR7TriangleConsu
     const ResourceContentVerificationReceipt& receipt = model->GetContentVerificationReceipt();
     EXPECT_EQ(receipt.status, ResourceContentVerificationStatus::Verified);
     EXPECT_EQ(receipt.observed.digest,
-              "f009e85dae4e41d6d1cc9ba534a5948090c986993523280fd7e513df87c40300");
-    EXPECT_EQ(receipt.observed.byteCount, 2045u);
+              "f41b11c0403cc68c8da3988a954391c8b2e4f5b46a9d800f82c9d4256b395aab");
+    EXPECT_EQ(receipt.observed.byteCount, 1939u);
     EXPECT_EQ(receipt.observed.fileCount, 1u);
     EXPECT_EQ(receipt.observed.scope,
               ResourceContentIdentityScope::SelfContainedArtifact);

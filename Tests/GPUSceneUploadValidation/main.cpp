@@ -255,7 +255,10 @@ namespace
                     --m_failUploadCommitAfter;
                 }
             }
-            m_buffers.push_back(static_cast<FakeBuffer*>(result.Get()));
+            // Retain every created fake buffer because allocation-history
+            // assertions and Find() intentionally inspect objects after the
+            // production owner releases transient staging references.
+            m_buffers.push_back(result);
             return result;
         }
         RHITextureRef CreateTexture(const RHITextureDesc&) override { return {}; }
@@ -314,8 +317,9 @@ namespace
         FakeBuffer* Find(const char* name,
                          RHIMemoryType memoryType = RHIMemoryType::Default) const
         {
-            for (FakeBuffer* buffer : m_buffers)
+            for (const RHIBufferRef& bufferOwner : m_buffers)
             {
+                auto* buffer = static_cast<FakeBuffer*>(bufferOwner.Get());
                 if (buffer && buffer->GetDebugName() == name &&
                     buffer->GetMemoryType() == memoryType)
                 {
@@ -331,8 +335,9 @@ namespace
         uint32 DefaultBufferCount() const
         {
             uint32 count = 0;
-            for (FakeBuffer* buffer : m_buffers)
+            for (const RHIBufferRef& bufferOwner : m_buffers)
             {
+                const auto* buffer = static_cast<const FakeBuffer*>(bufferOwner.Get());
                 count += buffer && buffer->GetMemoryType() == RHIMemoryType::Default;
             }
             return count;
@@ -368,7 +373,7 @@ namespace
 
     private:
         RHICapabilities m_capabilities;
-        std::vector<FakeBuffer*> m_buffers;
+        std::vector<RHIBufferRef> m_buffers;
         std::vector<RHIFenceRef> m_fences;
         int32 m_createFailureCountdown = -1;
         int32 m_failUploadCommitAfter = -1;

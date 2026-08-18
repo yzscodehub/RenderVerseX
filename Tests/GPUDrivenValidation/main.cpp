@@ -944,7 +944,7 @@ namespace
 
         void EnableTimelineRetirement()
         {
-            capabilities.backendType = RHIBackendType::DX12;
+            capabilities.backendType = backendType;
             capabilities.adapterName = "GPUDrivenLifetimeFake";
             capabilities.driverVersion = "1";
             capabilities.supportsComputePipeline = true;
@@ -982,8 +982,10 @@ namespace
         RHICapabilities capabilities;
 #if defined(__APPLE__)
         RHIBackendType backendType = RHIBackendType::Metal;
-#else
+#elif defined(_WIN32)
         RHIBackendType backendType = RHIBackendType::DX12;
+#else
+        RHIBackendType backendType = RHIBackendType::Vulkan;
 #endif
         std::vector<FakeBuffer*> createdBuffers;
         std::vector<RHIBufferRef> failedTransientUploadBuffers;

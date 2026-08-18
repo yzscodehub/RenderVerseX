@@ -17,7 +17,7 @@
 *.exr binary
 *.fbx binary
 *.glb binary
-*.gltf -diff
+*.gltf -text -diff
 *.wav binary
 *.mp3 binary
 *.ogg binary

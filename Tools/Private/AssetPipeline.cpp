@@ -2684,21 +2684,42 @@ namespace
             return false;
         }
 
-        if (IsPathContainedByRoot(absoluteManifest, outPaths.finalOutputRoot))
+        std::error_code requestedOutputError;
+        const fs::path absoluteRequestedOutput =
+            fs::absolute(requestedOutputRoot, requestedOutputError).lexically_normal();
+        if (requestedOutputError || absoluteRequestedOutput.empty())
+        {
+            outError = "Cook output root could not be made absolute while resolving its manifest: " +
+                       requestedOutputRoot.string();
+            return false;
+        }
+
+        const fs::path* containedRoot = nullptr;
+        if (IsPathContainedByRoot(absoluteManifest, absoluteRequestedOutput))
+        {
+            containedRoot = &absoluteRequestedOutput;
+        }
+        else if (IsPathContainedByRoot(absoluteManifest, outPaths.finalOutputRoot))
+        {
+            containedRoot = &outPaths.finalOutputRoot;
+        }
+
+        if (containedRoot)
         {
             // The final package root may not exist yet.  Containment was
-            // established above from normalized absolute paths, so keep this
-            // purely lexical and avoid filesystem::relative(), which attempts
-            // to canonicalize the future manifest path on Windows.
+            // established above from normalized absolute paths. Use the
+            // caller's lexical output root when it names a canonical parent
+            // through an OS alias (for example macOS /var -> /private/var),
+            // then publish through the already-canonical final output root.
             const fs::path relativeManifest =
-                absoluteManifest.lexically_relative(outPaths.finalOutputRoot).lexically_normal();
+                absoluteManifest.lexically_relative(*containedRoot).lexically_normal();
             if (!IsCanonicalRelativePath(relativeManifest.generic_string()))
             {
                 outError = "Cook manifest path inside the output package is not canonical";
                 return false;
             }
             outPaths.manifestInsideOutput = true;
-            outPaths.manifestPath = absoluteManifest;
+            outPaths.manifestPath = outPaths.finalOutputRoot / relativeManifest;
             outPaths.stagingManifestPath = outPaths.stagingOutputRoot / relativeManifest;
             outError.clear();
             return true;
