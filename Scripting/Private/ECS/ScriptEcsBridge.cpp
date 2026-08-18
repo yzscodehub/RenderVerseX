@@ -31,7 +31,7 @@ namespace
     [[nodiscard]] bool CallOptional(sol::table& instance, const char* name, Args&&... args)
     {
         sol::object object = instance[name];
-        if (!object.valid() || object.get_type() == sol::type::nil)
+        if (!object.valid() || object.get_type() == sol::type::lua_nil)
         {
             return true;
         }
