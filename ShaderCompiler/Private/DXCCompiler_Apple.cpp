@@ -7,6 +7,9 @@
 #include <glslang/SPIRV/GlslangToSpv.h>
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include <vector>
 
 namespace RVX
@@ -46,6 +49,176 @@ namespace RVX
             static GlslangInitializer init;
             return init;
         }
+
+        class ShaderFileIncluder final : public glslang::TShader::Includer
+        {
+        public:
+            explicit ShaderFileIncluder(const char* sourcePath)
+            {
+                if (!sourcePath || !sourcePath[0])
+                {
+                    return;
+                }
+
+                std::error_code ec;
+                const std::filesystem::path requestedPath(sourcePath);
+                if (!std::filesystem::exists(requestedPath, ec) || ec)
+                {
+                    return;
+                }
+
+                m_sourcePath = std::filesystem::weakly_canonical(requestedPath, ec);
+                if (ec)
+                {
+                    m_sourcePath.clear();
+                    return;
+                }
+
+                m_includeRoot = m_sourcePath.parent_path();
+                for (std::filesystem::path candidate = m_includeRoot;
+                     !candidate.empty();
+                     candidate = candidate.parent_path())
+                {
+                    if (candidate.filename() == "Shaders")
+                    {
+                        m_includeRoot = candidate;
+                        break;
+                    }
+
+                    if (candidate == candidate.root_path())
+                    {
+                        break;
+                    }
+                }
+            }
+
+            IncludeResult* includeLocal(
+                const char* headerName,
+                const char* includerName,
+                size_t) override
+            {
+                if (!headerName || !headerName[0] || m_includeRoot.empty())
+                {
+                    return nullptr;
+                }
+
+                if (includerName && includerName[0])
+                {
+                    const std::filesystem::path includerPath(includerName);
+                    if (IncludeResult* result = ReadFile(
+                            includerPath.parent_path() / headerName))
+                    {
+                        return result;
+                    }
+                }
+
+                return ReadFile(m_includeRoot / headerName);
+            }
+
+            IncludeResult* includeSystem(
+                const char* headerName,
+                const char*,
+                size_t) override
+            {
+                if (!headerName || !headerName[0] || m_includeRoot.empty())
+                {
+                    return nullptr;
+                }
+
+                return ReadFile(m_includeRoot / headerName);
+            }
+
+            void releaseInclude(IncludeResult* result) override
+            {
+                if (!result)
+                {
+                    return;
+                }
+
+                auto* contents = static_cast<IncludeContents*>(result->userData);
+                delete result;
+                delete contents;
+            }
+
+            const std::filesystem::path& GetSourcePath() const
+            {
+                return m_sourcePath;
+            }
+
+        private:
+            struct IncludeContents
+            {
+                std::string text;
+            };
+
+            bool IsInsideIncludeRoot(
+                const std::filesystem::path& candidate) const
+            {
+                std::error_code ec;
+                const std::filesystem::path relative =
+                    std::filesystem::relative(candidate, m_includeRoot, ec);
+                if (ec || relative.empty())
+                {
+                    return false;
+                }
+
+                for (const auto& component : relative)
+                {
+                    if (component == "..")
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            IncludeResult* ReadFile(const std::filesystem::path& requestedPath)
+            {
+                std::error_code ec;
+                const std::filesystem::path resolvedPath =
+                    std::filesystem::weakly_canonical(requestedPath, ec);
+                if (ec || !IsInsideIncludeRoot(resolvedPath) ||
+                    !std::filesystem::is_regular_file(resolvedPath, ec) || ec)
+                {
+                    return nullptr;
+                }
+
+                std::ifstream file(
+                    resolvedPath,
+                    std::ios::binary | std::ios::ate);
+                if (!file)
+                {
+                    return nullptr;
+                }
+
+                const std::streamoff length = file.tellg();
+                if (length < 0)
+                {
+                    return nullptr;
+                }
+
+                auto* contents = new IncludeContents();
+                contents->text.resize(static_cast<size_t>(length));
+                file.seekg(0, std::ios::beg);
+                if (length > 0 &&
+                    !file.read(
+                        contents->text.data(),
+                        static_cast<std::streamsize>(length)))
+                {
+                    delete contents;
+                    return nullptr;
+                }
+
+                return new IncludeResult(
+                    resolvedPath.generic_string(),
+                    contents->text.data(),
+                    contents->text.size(),
+                    contents);
+            }
+
+            std::filesystem::path m_sourcePath;
+            std::filesystem::path m_includeRoot;
+        };
     }
 
     // =============================================================================
@@ -175,7 +348,11 @@ namespace RVX
             // Set source
             const char* sourceStrings[] = { options.sourceCode };
             const int sourceLengths[] = { static_cast<int>(strlen(options.sourceCode)) };
-            const char* sourceNames[] = { options.sourcePath ? options.sourcePath : "shader" };
+            ShaderFileIncluder includer(options.sourcePath);
+            const std::string sourceName = includer.GetSourcePath().empty()
+                ? (options.sourcePath ? options.sourcePath : "shader")
+                : includer.GetSourcePath().generic_string();
+            const char* sourceNames[] = { sourceName.c_str() };
 
             shader.setStringsWithLengthsAndNames(sourceStrings, sourceLengths, sourceNames, 1);
 
@@ -202,7 +379,7 @@ namespace RVX
             EShMessages messages = static_cast<EShMessages>(
                 EShMsgSpvRules | EShMsgVulkanRules | EShMsgReadHlsl);
 
-            if (!shader.parse(&resources, 100, false, messages))
+            if (!shader.parse(&resources, 100, false, messages, includer))
             {
                 outError = "HLSL parse error: ";
                 outError += shader.getInfoLog();

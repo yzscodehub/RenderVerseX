@@ -980,7 +980,11 @@ namespace
         }
 
         RHICapabilities capabilities;
+#if defined(__APPLE__)
+        RHIBackendType backendType = RHIBackendType::Metal;
+#else
         RHIBackendType backendType = RHIBackendType::DX12;
+#endif
         std::vector<FakeBuffer*> createdBuffers;
         std::vector<RHIBufferRef> failedTransientUploadBuffers;
         std::vector<RHIFenceRef> fences;
