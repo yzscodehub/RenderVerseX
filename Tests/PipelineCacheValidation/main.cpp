@@ -898,6 +898,20 @@ namespace
         return fs::exists(legacyPath) ? legacyPath : fs::path{};
     }
 
+    fs::path FindRenderVerseSceneSourcePath(const char* fileName)
+    {
+        const fs::path shaderDir = FindShaderDirectory();
+        if (shaderDir.empty())
+        {
+            return {};
+        }
+
+        const fs::path repoRoot = shaderDir.parent_path().parent_path();
+        const fs::path scenePath = repoRoot / "Samples" / "RenderVerseSamples" /
+                                   "Scenes" / fileName;
+        return fs::exists(scenePath) ? scenePath : fs::path{};
+    }
+
     fs::path FindTestsCMakePath()
     {
         const fs::path shaderDir = FindShaderDirectory();
@@ -6887,6 +6901,27 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesShadowQualityPresets)
     }
 
     const fs::path modelViewerPath = FindModelViewerSourcePath();
+    if (modelViewerPath.empty())
+    {
+        const fs::path samplePath =
+            FindRenderVerseSceneSourcePath("ModelViewerSample.cpp");
+        ASSERT_FALSE(samplePath.empty());
+        const std::string currentSource = ReadTextFile(samplePath);
+        EXPECT_NE(currentSource.find("context.renderSettings.shadows.enabled = true;"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find("context.renderSettings.shadows.atlasResolution ="),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find("context.renderSettings.shadows.cascadeCount ="),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "context.options.quality == \"low\" ? 1024u : 2048u"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find("MakeDirectionalLight("), std::string::npos);
+        EXPECT_EQ(currentSource.find("engine.SetRenderFrameSettings("),
+                  std::string::npos);
+        EXPECT_EQ(currentSource.find("GetSceneRenderer("), std::string::npos);
+        return;
+    }
     ASSERT_FALSE(modelViewerPath.empty());
     const std::string source = ReadTextFile(modelViewerPath);
 
@@ -6916,6 +6951,33 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
     }
 
     const fs::path modelViewerPath = FindModelViewerSourcePath();
+    if (modelViewerPath.empty())
+    {
+        const fs::path samplePath =
+            FindRenderVerseSceneSourcePath("RenderPipelineShowcaseSample.cpp");
+        ASSERT_FALSE(samplePath.empty());
+        const std::string currentSource = ReadTextFile(samplePath);
+        EXPECT_NE(currentSource.find(
+                      "context.renderSettings.postProcess.toneMappingOperator ="),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find("RenderToneMappingOperator::ACES"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "context.renderSettings.postProcess.exposure = 1.0f;"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "context.renderSettings.postProcess.gamma = 2.2f;"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "context.renderSettings.postProcess.enableBloom = true;"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "reporter.Enable(\"ACESToneMappingRequested\")"),
+                  std::string::npos);
+        EXPECT_EQ(currentSource.find("GetPostProcessSettings("), std::string::npos);
+        EXPECT_EQ(currentSource.find("ApplyPostProcessSettings("), std::string::npos);
+        return;
+    }
     ASSERT_FALSE(modelViewerPath.empty());
     const std::string source = ReadTextFile(modelViewerPath);
 
@@ -7041,6 +7103,48 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
     }
 
     const fs::path modelViewerPath = FindModelViewerSourcePath();
+    if (modelViewerPath.empty())
+    {
+        const fs::path shaderDir = FindShaderDirectory();
+        ASSERT_FALSE(shaderDir.empty());
+        const fs::path repoRoot = shaderDir.parent_path().parent_path();
+        const std::string frameTypes = ReadTextFile(
+            repoRoot / "RenderContracts" / "Include" / "RenderContracts" /
+            "RenderFrameTypes.h");
+        EXPECT_NE(frameTypes.find("struct RenderRayTracingSettings"),
+                  std::string::npos);
+        EXPECT_NE(frameTypes.find("RenderRayTracingSettings rayTracing;"),
+                  std::string::npos);
+
+        const fs::path sceneRoot = repoRoot / "Samples" / "RenderVerseSamples" /
+                                   "Scenes";
+        ASSERT_TRUE(fs::is_directory(sceneRoot));
+        constexpr std::array<const char*, 4> forbidden = {
+            "RayTracingScene",
+            "RayTracedShadowPass",
+            "RayTracedReflectionPass",
+            "GetSceneRenderer(",
+        };
+        size_t sourceCount = 0;
+        for (const fs::directory_entry& entry :
+             fs::recursive_directory_iterator(sceneRoot))
+        {
+            if (!entry.is_regular_file() || entry.path().extension() != ".cpp")
+            {
+                continue;
+            }
+            ++sourceCount;
+            const std::string currentSource = ReadTextFile(entry.path());
+            for (const char* token : forbidden)
+            {
+                EXPECT_EQ(currentSource.find(token), std::string::npos)
+                    << entry.path().string()
+                    << " owns engine Render policy via " << token;
+            }
+        }
+        EXPECT_GE(sourceCount, 13u);
+        return;
+    }
     ASSERT_FALSE(modelViewerPath.empty());
     const std::string source = ReadTextFile(modelViewerPath);
 
