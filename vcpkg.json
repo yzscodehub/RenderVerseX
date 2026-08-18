@@ -72,7 +72,7 @@
     },
     {
       "name": "glslang",
-      "platform": "osx"
+      "platform": "osx | linux"
     },
     {
       "name": "glad",

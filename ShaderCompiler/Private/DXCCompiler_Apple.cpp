@@ -222,30 +222,33 @@ namespace RVX
     }
 
     // =============================================================================
-    // Apple Shader Compiler using glslang
-    // Uses glslang for HLSL -> SPIR-V, then SPIRV-Cross for SPIR-V -> MSL
+    // Portable non-Windows shader compiler using glslang. It emits SPIR-V directly for
+    // Vulkan and, on Apple platforms, translates SPIR-V to MSL.
     // =============================================================================
-    class AppleGlslangShaderCompiler final : public IShaderCompiler
+    class GlslangShaderCompiler final : public IShaderCompiler
     {
     public:
-        AppleGlslangShaderCompiler()
+        GlslangShaderCompiler()
         {
             // Ensure glslang is initialized
             GetGlslangInit();
-            RVX_CORE_INFO("Apple glslang Shader Compiler initialized");
+            RVX_CORE_INFO("glslang shader compiler initialized");
         }
 
-        ~AppleGlslangShaderCompiler() = default;
+        ~GlslangShaderCompiler() = default;
 
         ShaderCompileSupport QuerySupport(
             const ShaderCompileOptions& options) const override
         {
-            if (options.targetBackend != RHIBackendType::Vulkan &&
-                options.targetBackend != RHIBackendType::Metal)
+            if (options.targetBackend != RHIBackendType::Vulkan
+#if defined(__APPLE__)
+                && options.targetBackend != RHIBackendType::Metal
+#endif
+                )
             {
                 return {
                     ShaderCompileSupportCode::BackendUnsupported,
-                    "Apple glslang shader compiler supports Vulkan and Metal targets only"};
+                    "glslang shader compiler does not support the requested backend"};
             }
 
             switch (options.stage)
@@ -261,7 +264,7 @@ namespace RVX
                 default:
                     return {
                         ShaderCompileSupportCode::StageUnsupported,
-                        "Apple glslang shader compiler does not support the requested shader stage"};
+                        "glslang shader compiler does not support the requested shader stage"};
             }
         }
 
@@ -297,12 +300,22 @@ namespace RVX
             // For Vulkan backend, return SPIR-V directly
             if (options.targetBackend == RHIBackendType::Vulkan)
             {
+                SPIRVCrossTranslator translator;
+                result.reflection = translator.ReflectSPIRV(
+                    spirvBytecode,
+                    options.stage);
+                if (!result.reflection.valid)
+                {
+                    result.errorMessage = "SPIR-V reflection failed";
+                    return result;
+                }
                 result.success = true;
                 result.bytecode = std::move(spirvBytecode);
                 return result;
             }
 
-            // Step 2: For Metal backend, translate SPIR-V to MSL
+            // Step 2: For Metal backend, translate SPIR-V to MSL.
+#if defined(__APPLE__)
             if (options.targetBackend == RHIBackendType::Metal)
             {
                 SPIRVCrossTranslator translator;
@@ -332,8 +345,9 @@ namespace RVX
                 result.reflection = std::move(mslResult.reflection);
                 return result;
             }
+#endif
 
-            result.errorMessage = "Unsupported target backend for Apple platform";
+            result.errorMessage = "Unsupported target backend for glslang compiler";
             return result;
         }
 
@@ -424,7 +438,7 @@ namespace RVX
 
     std::unique_ptr<IShaderCompiler> CreateDXCShaderCompiler()
     {
-        return std::make_unique<AppleGlslangShaderCompiler>();
+        return std::make_unique<GlslangShaderCompiler>();
     }
 
 } // namespace RVX

@@ -86,8 +86,9 @@ if(RVX_ENABLE_VULKAN)
     find_package(unofficial-spirv-reflect CONFIG REQUIRED)
 endif()
 
-# SPIRV-Cross is needed for Metal/OpenGL shader translation (SPIR-V -> MSL/GLSL)
-if(RVX_ENABLE_METAL OR RVX_ENABLE_OPENGL)
+# SPIRV-Cross is needed for Metal/OpenGL translation and for portable SPIR-V
+# reflection when non-Windows platforms compile Vulkan shaders with glslang.
+if(RVX_ENABLE_METAL OR RVX_ENABLE_OPENGL OR (RVX_ENABLE_VULKAN AND NOT WIN32))
     # Note: Order matters - glsl must be found before msl due to dependencies
     find_package(spirv_cross_core CONFIG REQUIRED)
     find_package(spirv_cross_glsl CONFIG REQUIRED)
@@ -146,8 +147,9 @@ if(WIN32)
     endif()
 endif()
 
-# macOS: Use glslang for HLSL -> SPIR-V compilation (DXC not available via vcpkg)
-if(APPLE)
+# Non-Windows: Use glslang for HLSL -> SPIR-V compilation (DXC is not
+# available through the supported vcpkg toolchains).
+if(NOT WIN32)
     find_package(glslang CONFIG REQUIRED)
 endif()
 
