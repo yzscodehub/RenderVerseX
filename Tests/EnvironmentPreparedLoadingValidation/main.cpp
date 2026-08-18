@@ -414,6 +414,10 @@ TEST(EnvironmentPreparedLoadingValidation, ResourceManagerRoutesTypedEnvironment
     const AssetKey environmentKey = request.GetSnapshot().assetKey;
     const std::vector<ResourceId> dependencyIds = environment->GetRequiredDependencies();
     ASSERT_EQ(dependencyIds.size(), 4u);
+    for (ResourceId dependencyId : dependencyIds)
+    {
+        ASSERT_TRUE(ResourceManager::Get().GetCache().Contains(dependencyId));
+    }
     request.Cancel();
     environment.Reset();
     synchronous.Reset();
@@ -421,7 +425,7 @@ TEST(EnvironmentPreparedLoadingValidation, ResourceManagerRoutesTypedEnvironment
     EXPECT_FALSE(ResourceManager::Get().IsLoaded(rootId));
     for (ResourceId dependencyId : dependencyIds)
     {
-        ASSERT_TRUE(ResourceManager::Get().GetCache().Contains(dependencyId));
+        ASSERT_FALSE(ResourceManager::Get().GetCache().Contains(dependencyId));
     }
 
     auto reload =

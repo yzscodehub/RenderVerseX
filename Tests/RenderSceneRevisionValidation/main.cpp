@@ -293,6 +293,8 @@ TEST(RenderSceneRevisionValidation, ExposesAuthoritativeSceneAndV5FrameState)
 
     RVX::ParticleRenderSnapshotItem particle;
     particle.instanceId = 31;
+    particle.systemId = particle.instanceId;
+    particle.systemAssetId = {.value = 8};
     particle.aliveParticleCount = 8;
     ASSERT_TRUE(reset.UpsertParticle(particle, true));
 

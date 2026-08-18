@@ -598,12 +598,39 @@ TEST(ResourcePreparedLoadingValidation, GLTFDependencyClosureTracksActualExterna
     const std::filesystem::path gltfPath = directory / "closure.gltf";
     const std::filesystem::path payloadPath = directory / "payload.bin";
     std::filesystem::create_directories(directory);
+
+    const auto writeGltf = [&gltfPath](const std::string& payloadUri)
     {
         std::ofstream gltf(gltfPath, std::ios::binary);
-        gltf << "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\"payload.bin\",\"byteLength\":4}]}";
-        std::ofstream payload(payloadPath, std::ios::binary);
-        payload.write("ABCD", 4);
-    }
+        gltf
+            << "{\"asset\":{\"version\":\"2.0\"},"
+               "\"buffers\":[{\"uri\":\""
+            << payloadUri
+            << "\",\"byteLength\":42}],"
+               "\"bufferViews\":["
+               "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+               "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
+               "\"accessors\":["
+               "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+               "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
+               "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],"
+               "\"nodes\":[{\"mesh\":0}],\"scenes\":[{\"nodes\":[0]}],\"scene\":0}";
+    };
+    const auto writePayload = [](const std::filesystem::path& path, float firstX)
+    {
+        const float positions[9] = {
+            firstX, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+        };
+        const uint16 indices[3] = {0, 1, 2};
+        std::ofstream payload(path, std::ios::binary | std::ios::trunc);
+        payload.write(reinterpret_cast<const char*>(positions), sizeof(positions));
+        payload.write(reinterpret_cast<const char*>(indices), sizeof(indices));
+    };
+
+    writeGltf("payload.bin");
+    writePayload(payloadPath, 0.0f);
 
     GLTFImporter importer;
     const GLTFImportResult first = importer.Import(gltfPath.string());
@@ -613,10 +640,7 @@ TEST(ResourcePreparedLoadingValidation, GLTFDependencyClosureTracksActualExterna
               ResourceContentIdentityScope::DependencyClosure);
     EXPECT_EQ(first.observedContentIdentity.fileCount, 2u);
 
-    {
-        std::ofstream payload(payloadPath, std::ios::binary | std::ios::trunc);
-        payload.write("WXYZ", 4);
-    }
+    writePayload(payloadPath, 0.25f);
     const GLTFImportResult second = importer.Import(gltfPath.string());
     ASSERT_TRUE(second.success) << second.errorMessage;
     EXPECT_EQ(second.observedContentIdentity.scope,
@@ -627,10 +651,8 @@ TEST(ResourcePreparedLoadingValidation, GLTFDependencyClosureTracksActualExterna
     const std::string outsideName = "outside-" + directory.filename().string() + ".bin";
     const std::filesystem::path outsidePayload = directory.parent_path() / outsideName;
     {
-        std::ofstream gltf(gltfPath, std::ios::binary | std::ios::trunc);
-        gltf << "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\"../" << outsideName << "\",\"byteLength\":4}]}";
-        std::ofstream payload(outsidePayload, std::ios::binary | std::ios::trunc);
-        payload.write("NOPE", 4);
+        writeGltf("../" + outsideName);
+        writePayload(outsidePayload, 0.0f);
     }
     const GLTFImportResult escaped = importer.Import(gltfPath.string());
     std::filesystem::remove_all(directory);

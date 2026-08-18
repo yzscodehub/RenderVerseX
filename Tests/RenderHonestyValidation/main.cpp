@@ -877,6 +877,7 @@ TEST_F(RenderHonestyValidationFixture, CookDirectoryWritesManifestForCookedOutpu
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     const fs::path source = sourceRoot / "Textures" / "Albedo.tga";
     const std::vector<uint8_t> rgba = {
         255, 0, 0, 255, 0, 255, 0, 255,
@@ -960,6 +961,7 @@ TEST_F(RenderHonestyValidationFixture, CookDirectoryManifestRejectsSuccessWithou
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     WriteTextFile(sourceRoot / "Textures" / "Bad.png", "not actually a png");
 
     RVX::Tools::AssetPipeline pipeline;
@@ -1141,6 +1143,7 @@ TEST_F(RenderHonestyValidationFixture, CookManifestV2IsContentHashStableAcrossEq
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     WriteTextFile(sourceRoot / "Textures" / "Stable.png", "abc");
 
     RVX::Tools::AssetPipeline pipeline;
@@ -1194,6 +1197,7 @@ TEST_F(RenderHonestyValidationFixture,
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     const fs::path modelPath = sourceRoot / "Models" / "Quad.gltf";
     const fs::path imagePath = sourceRoot / "Models" / "Textures" / "Albedo.tga";
 
@@ -1264,19 +1268,29 @@ TEST_F(RenderHonestyValidationFixture,
     EXPECT_NE(secondModel->recipeHash, firstRecipe);
 
     const fs::path remoteRoot = dir / "RemoteSource";
+    const fs::path remoteOutputRoot = dir / "RemoteCooked";
+    fs::create_directories(remoteOutputRoot);
     WriteTextFile(remoteRoot / "Models" / "Remote.gltf",
                   "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\"https://example.invalid/model.bin\",\"byteLength\":1}]}\n");
     const RVX::Tools::CookManifest remote = pipeline.CookDirectory(
-        remoteRoot, dir / "RemoteCooked", true, dir / "RemoteCooked" / "CookManifest.rvxmanifest");
+        remoteRoot,
+        remoteOutputRoot,
+        true,
+        remoteOutputRoot / "CookManifest.rvxmanifest");
     ASSERT_EQ(remote.entries.size(), 1u);
     EXPECT_FALSE(remote.manifestWritten);
     EXPECT_FALSE(remote.entries.front().success);
 
     const fs::path escapeRoot = dir / "EscapeSource";
+    const fs::path escapeOutputRoot = dir / "EscapeCooked";
+    fs::create_directories(escapeOutputRoot);
     WriteTextFile(escapeRoot / "Models" / "Escape.gltf",
                   "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\"../outside.bin\",\"byteLength\":1}]}\n");
     const RVX::Tools::CookManifest escape = pipeline.CookDirectory(
-        escapeRoot, dir / "EscapeCooked", true, dir / "EscapeCooked" / "CookManifest.rvxmanifest");
+        escapeRoot,
+        escapeOutputRoot,
+        true,
+        escapeOutputRoot / "CookManifest.rvxmanifest");
     ASSERT_EQ(escape.entries.size(), 1u);
     EXPECT_FALSE(escape.manifestWritten);
     EXPECT_FALSE(escape.entries.front().success);
@@ -1290,6 +1304,7 @@ TEST_F(RenderHonestyValidationFixture, CookManifestV2ChangesRecipeWhenSourceCont
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     const fs::path source = sourceRoot / "Textures" / "Drift.tga";
     WriteRgbaTga(source, 2, 2, {
         1, 2, 3, 255, 4, 5, 6, 255,
@@ -1324,6 +1339,7 @@ TEST_F(RenderHonestyValidationFixture, CookManifestV2ChangesRecipeWhenCookSettin
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     WriteRgbaTga(sourceRoot / "Textures" / "Settings.tga", 2, 2, {
         32, 64, 128, 255, 64, 128, 32, 255,
         128, 32, 64, 255, 255, 255, 255, 255
@@ -1364,6 +1380,7 @@ TEST_F(RenderHonestyValidationFixture, CookManifestV2RejectsTamperedOrMissingArt
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     const fs::path output = outputRoot / "Textures" / "Artifact.rva";
     WriteRgbaTga(sourceRoot / "Textures" / "Artifact.tga", 2, 2, {
         16, 32, 48, 255, 64, 80, 96, 255,
@@ -1400,6 +1417,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliWritesManifestForTextureDirecto
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     const std::vector<uint8_t> rgba = {
         255, 32, 16, 255, 32, 255, 16, 255,
         32, 16, 255, 255, 255, 255, 255, 255
@@ -1447,6 +1465,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliAppliesTextureCompressionProfil
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     const fs::path profilePath = dir / "CookProfile.rvxprofile";
 
     const std::vector<uint8_t> opaqueRgba = {
@@ -1520,6 +1539,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliAppliesMeshProfileLODOptions)
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     const fs::path profilePath = dir / "CookProfile.rvxprofile";
     const fs::path meshSource = sourceRoot / "Meshes" / "Quad.gltf";
 
@@ -1586,6 +1606,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliWritesBC7TextureArtifact)
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
 
     const std::vector<uint8_t> rgba = {
         24, 48, 192, 255, 64, 96, 224, 255,
@@ -1654,6 +1675,7 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliRewritesGltfTextureUrisToCooked
     const fs::path sourceRoot = dir / "Source";
     const fs::path outputRoot = dir / "Cooked";
     const fs::path manifestPath = outputRoot / "CookManifest.rvxmanifest";
+    fs::create_directories(outputRoot);
     const fs::path sourceTexture = sourceRoot / "Models" / "Textures" / "Albedo.tga";
     const fs::path sourceModel = sourceRoot / "Models" / "CookedTextureMaterial.gltf";
     const fs::path rewrittenModel = outputRoot / "Models" / "CookedTextureMaterial.gltf";
