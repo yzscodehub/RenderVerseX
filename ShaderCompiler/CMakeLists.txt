@@ -78,6 +78,12 @@ endif()
 # SPIR-V to MSL through SPIRV-Cross.
 if(NOT WIN32)
     # Link glslang for HLSL compilation (HLSL support is built into main library)
+    # glslang guards its HLSL-specific consumer API with the same feature
+    # define used by the library build. This module exclusively feeds HLSL to
+    # that frontend, so expose the matching declarations to our translation
+    # unit as well.
+    target_compile_definitions(RVX_ShaderCompiler PRIVATE ENABLE_HLSL)
+
     target_link_libraries(RVX_ShaderCompiler PRIVATE
         glslang::glslang
         glslang::glslang-default-resource-limits

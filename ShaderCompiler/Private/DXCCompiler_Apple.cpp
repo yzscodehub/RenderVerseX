@@ -373,15 +373,15 @@ namespace RVX
             // Set entry point and source type
             shader.setEntryPoint(options.entryPoint);
             shader.setSourceEntryPoint(options.entryPoint);
-            // Auto mappings preserve register assignments and provide Vulkan
-            // locations for HLSL interfaces without vk::location attributes.
-            // setHlslIoMapping is hidden behind glslang's private ENABLE_HLSL
-            // consumer define, so only use the stable public mapping API here.
+            // Preserve HLSL register/semantic identity and provide Vulkan
+            // locations for interfaces without vk::location attributes.
+            shader.setHlslIoMapping(true);
             shader.setAutoMapBindings(true);
             shader.setAutoMapLocations(true);
             shader.setEnvInput(glslang::EShSourceHlsl, stage, glslang::EShClientVulkan, 100);
             shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_2);
             shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_5);
+            shader.setEnvTargetHlslFunctionality1();
 
             // Set up preamble with defines
             std::string preamble;
@@ -413,6 +413,13 @@ namespace RVX
             if (!program.link(messages))
             {
                 outError = "HLSL link error: ";
+                outError += program.getInfoLog();
+                return false;
+            }
+
+            if (!program.mapIO())
+            {
+                outError = "HLSL IO mapping error: ";
                 outError += program.getInfoLog();
                 return false;
             }
