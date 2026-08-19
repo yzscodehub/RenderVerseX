@@ -19,6 +19,7 @@ IGNORED_ROOTS = {
     ".git",
     ".github",
     ".claude",
+    ".codex-validation",
     "build",
     "Docs",
     "Scripts",

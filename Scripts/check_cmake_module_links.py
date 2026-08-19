@@ -64,7 +64,7 @@ def load_config(root: Path, config_path: str) -> dict:
 
 
 def iter_cmake_files(root: Path):
-    excluded_dirs = {".git", ".claude", "build"}
+    excluded_dirs = {".git", ".claude", ".codex-validation", "build"}
     for path in root.rglob("CMakeLists.txt"):
         rel = path.relative_to(root)
         if any(part in excluded_dirs for part in rel.parts):

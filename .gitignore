@@ -61,6 +61,7 @@ Thumbs.db
 
 # Local agent/tool state
 .codex
+.codex-validation/
 .superpowers/
 .claude/settings.local.json
 .claude/worktrees/
