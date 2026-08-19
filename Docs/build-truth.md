@@ -6,8 +6,9 @@ inventory, rejects unavailable CTest executables, runs the focused architecture
 baseline and unit/lint preset, checks branch and working-tree whitespace, and
 writes machine-readable evidence below the build directory.
 
-The authoritative Runtime presets set `RVX_BUILD_EDITOR=OFF`. Editor remains an
-optional separate build product and is not a Runtime correctness dependency.
+The authoritative Runtime presets set `RVX_BUILD_EDITOR=OFF`. Editor remains
+explicitly deferred during the pure Runtime ECS migration and is neither
+available nor a Runtime correctness dependency.
 
 Windows Debug from an empty build directory:
 
@@ -43,9 +44,9 @@ cmake --build --preset linux_x64_tsan --target RenderConcurrencyTSAN
 ctest --preset linux_x64_tsan --output-on-failure
 ```
 
-Editor compatibility is compiled once with
-`win_x64_debug_editor_compile`; Editor tests are not part of Runtime Build
-Truth.
+Editor compatibility is not compiled by this gate. It will return as a
+separate product gate after the Editor has been redesigned against the Runtime
+ECS contracts.
 
 Successful execution produces:
 

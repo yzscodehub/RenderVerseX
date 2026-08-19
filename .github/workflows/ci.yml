@@ -51,28 +51,6 @@ jobs:
           -RequiredNativeBackend DX12
           -Fresh
 
-      - name: Configure Editor compile-only
-        shell: pwsh
-        run: cmake --preset win_x64_debug_editor_compile
-
-      - name: Build Editor compile-only
-        shell: pwsh
-        run: cmake --build --preset win_x64_debug_editor_compile --target RVXEditor
-
-      - name: Record Editor compile evidence
-        shell: pwsh
-        run: |
-          $reportDir = "build/win_x64_debug/BuildTruth"
-          New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-          [ordered]@{
-            schema = "RVX.M1.EditorCompile"
-            schemaVersion = 1
-            sourceCommit = (git rev-parse HEAD).Trim()
-            configurePreset = "win_x64_debug_editor_compile"
-            target = "RVXEditor"
-            status = "passed"
-          } | ConvertTo-Json | Set-Content "$reportDir/EditorCompile.json" -Encoding utf8
-
       - name: Upload build-truth evidence
         if: always()
         uses: actions/upload-artifact@v4

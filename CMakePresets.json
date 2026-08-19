@@ -102,18 +102,6 @@
       }
     },
     {
-      "name": "win_x64_debug_editor_compile",
-      "displayName": "Windows x64 Debug Editor Compile",
-      "inherits": "win_x64_base",
-      "binaryDir": "${sourceDir}/build/win_x64_debug_editor_compile",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "RVX_BUILD_EDITOR": "ON",
-        "RVX_BUILD_SAMPLES": "OFF",
-        "RVX_BUILD_TESTS": "OFF"
-      }
-    },
-    {
       "name": "linux_x64_debug",
       "displayName": "Linux x64 Debug",
       "inherits": "linux_x64_base",
@@ -173,11 +161,6 @@
       "name": "win_x64_release",
       "configurePreset": "win_x64_release",
       "configuration": "Release"
-    },
-    {
-      "name": "win_x64_debug_editor_compile",
-      "configurePreset": "win_x64_debug_editor_compile",
-      "configuration": "Debug"
     },
     {
       "name": "linux_x64_debug",
