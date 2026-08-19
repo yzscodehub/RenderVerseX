@@ -31,6 +31,13 @@ function(_rvx_validation_require_lane lane context)
     endif()
 endfunction()
 
+function(_rvx_validation_require_explicit_lane_if_strict lane context)
+    if(NOT lane AND NOT RVX_VALIDATION_ENABLE_LEGACY_LANE_INFERENCE)
+        message(FATAL_ERROR
+            "${context} requires an explicit LANE when legacy lane inference is disabled")
+    endif()
+endfunction()
+
 function(_rvx_validation_append_unique_global property_name)
     get_property(_rvx_validation_current GLOBAL PROPERTY "${property_name}")
     foreach(_rvx_validation_value IN LISTS ARGN)
@@ -101,6 +108,22 @@ function(_rvx_validation_validate_metadata lane labels tags suite context)
             message(FATAL_ERROR "${context} SUITE must be a single suite identifier")
         endif()
     endif()
+
+    if(NOT RVX_VALIDATION_ENABLE_LEGACY_LANE_INFERENCE)
+        if(labels)
+            message(FATAL_ERROR
+                "${context} may not use legacy LABELS when legacy lane inference is disabled; "
+                "use LANE, TAGS and SUITE")
+        endif()
+        foreach(_rvx_validation_tag IN LISTS tags)
+            if(NOT _rvx_validation_tag MATCHES
+               "^(product|subsystem|platform|backend|trait|suite)\\.[A-Za-z0-9][A-Za-z0-9_.-]*$")
+                message(FATAL_ERROR
+                    "${context} TAGS entry '${_rvx_validation_tag}' must use an approved "
+                    "product.*, subsystem.*, platform.*, backend.*, trait.* or suite.* namespace")
+            endif()
+        endforeach()
+    endif()
 endfunction()
 
 function(_rvx_validation_compose_labels out_labels lane labels tags suite)
@@ -153,6 +176,10 @@ function(rvx_add_gtest)
     if(RVX_GTEST_LANE)
         _rvx_validation_require_lane("${RVX_GTEST_LANE}" "rvx_add_gtest(${RVX_GTEST_NAME})")
     endif()
+    _rvx_validation_require_explicit_lane_if_strict(
+        "${RVX_GTEST_LANE}"
+        "rvx_add_gtest(${RVX_GTEST_NAME})"
+    )
     _rvx_validation_validate_metadata(
         "${RVX_GTEST_LANE}"
         "${RVX_GTEST_LABELS}"
@@ -193,6 +220,11 @@ function(rvx_add_gtest)
         "${RVX_GTEST_TAGS}"
         "${RVX_GTEST_SUITE}"
     )
+    # gtest_discover_tests stores PROPERTIES as a flat key/value list.  An
+    # unescaped CMake list would therefore turn every label after the first
+    # into a bogus property name instead of keeping it in LABELS.
+    string(REPLACE ";" "\\;" _rvx_validation_discovery_labels
+        "${_rvx_validation_labels}")
 
     # PRE_TEST intentionally matches the pre-C01 helper.  It keeps test
     # discovery out of the build and does not change existing CTest behavior.
@@ -202,7 +234,7 @@ function(rvx_add_gtest)
             DISCOVERY_MODE PRE_TEST
             DISCOVERY_TIMEOUT 30
             PROPERTIES
-                LABELS "${_rvx_validation_labels}"
+                LABELS "${_rvx_validation_discovery_labels}"
                 TIMEOUT ${RVX_GTEST_TIMEOUT}
         )
     else()
@@ -210,7 +242,7 @@ function(rvx_add_gtest)
             DISCOVERY_MODE PRE_TEST
             DISCOVERY_TIMEOUT 30
             PROPERTIES
-                LABELS "${_rvx_validation_labels}"
+                LABELS "${_rvx_validation_discovery_labels}"
                 TIMEOUT ${RVX_GTEST_TIMEOUT}
         )
     endif()
@@ -261,6 +293,10 @@ function(rvx_add_validation_test)
     if(RVX_TEST_LANE)
         _rvx_validation_require_lane("${RVX_TEST_LANE}" "rvx_add_validation_test(${RVX_TEST_NAME})")
     endif()
+    _rvx_validation_require_explicit_lane_if_strict(
+        "${RVX_TEST_LANE}"
+        "rvx_add_validation_test(${RVX_TEST_NAME})"
+    )
     _rvx_validation_validate_metadata(
         "${RVX_TEST_LANE}"
         "${RVX_TEST_LABELS}"

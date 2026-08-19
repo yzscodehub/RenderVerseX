@@ -1,0 +1,191 @@
+# Source- and policy-level architecture gates only.  Behavioural RHI coverage
+# remains in RHIContractValidation and RHIPipelineValidation's unit lane.
+rvx_add_gtest(
+    NAME RHIArchitectureValidation
+    LANE architecture
+    SOURCES RHIArchitectureValidation/main.cpp
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TAGS subsystem.rhi suite.contracts
+    TIMEOUT 60
+)
+
+rvx_add_gtest(
+    NAME GPUSceneShaderSchemaArchitectureValidation
+    LANE architecture
+    SOURCES GPUSceneShaderSchemaArchitectureValidation/main.cpp
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TAGS subsystem.render suite.shader-schema
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME RHIPipelineArchitectureValidation
+    LANE architecture
+    SOURCES RHIPipelineArchitectureValidation/main.cpp
+    DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TAGS subsystem.rhi suite.pipeline-contract
+    TIMEOUT 30
+)
+
+rvx_add_gtest(
+    NAME RenderCallerBoundaryValidation
+    LANE architecture
+    SOURCES RenderCallerBoundaryValidation/main.cpp
+    TAGS subsystem.render suite.caller-boundary
+    TIMEOUT 30
+)
+target_compile_definitions(RenderCallerBoundaryValidation PRIVATE
+    RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+add_executable(RHIBackendFactoryLinkClosureValidation
+    RHIBackendFactoryLinkClosureValidation/main.cpp
+)
+target_link_libraries(RHIBackendFactoryLinkClosureValidation PRIVATE
+    RVX::RHI_BackendFactory
+)
+target_compile_features(RHIBackendFactoryLinkClosureValidation PRIVATE cxx_std_20)
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.RHIBackendFactoryLinkClosure
+    COMMAND RHIBackendFactoryLinkClosureValidation
+    BUILD_TARGETS RHIBackendFactoryLinkClosureValidation
+    TIMEOUT 30
+)
+
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.GateInputsFailClosed
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_architecture_gate_inputs.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.RenderContractFieldChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_render_contract_field_checker.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.ModuleBoundaryManifestChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_module_boundary_manifest.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.RHIOwnershipInventoryChecker
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/test_rhi_ownership_inventory_checker.py
+        -v
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.RHIOwnershipInventory
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_rhi_ownership_inventory.py
+        --root ${CMAKE_SOURCE_DIR}
+        --phase final
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.ModuleBoundaries
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_module_boundaries.py
+        --root ${CMAKE_SOURCE_DIR}
+        --config ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.ModuleBoundaryManifest
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_module_boundary_manifest.py
+        --root ${CMAKE_SOURCE_DIR}
+        --config ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.CMakeModuleVisibility
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_cmake_module_visibility.py
+        --root ${CMAKE_SOURCE_DIR}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.CMakeModuleIncludeEdges
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_cmake_module_include_edges.py
+        --root ${CMAKE_SOURCE_DIR}
+        --config ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.CMakeModuleLinks
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_cmake_module_links.py
+        --root ${CMAKE_SOURCE_DIR}
+        --config ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.PublicHeaderLinkage
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_public_header_linkage.py
+        --root ${CMAKE_SOURCE_DIR}
+        --config ${CMAKE_SOURCE_DIR}/Docs/module-boundaries.json
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.EditorRuntimeBoundary
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_editor_runtime_boundary.py
+        --root ${CMAKE_SOURCE_DIR}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+rvx_add_validation_test(
+    LANE architecture
+    NAME Architecture.PureEcsRuntime
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/Scripts/check_pure_ecs_runtime.py
+        --root ${CMAKE_SOURCE_DIR}
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)

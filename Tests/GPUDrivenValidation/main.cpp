@@ -6573,7 +6573,8 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     const std::string gpuDrivenSample = ReadTextFile(
         root / "Samples" / "RenderVerseSamples" / "Scenes" /
         "GPUDrivenShowcaseSample.cpp");
-    const std::string testsCMake = ReadTextFile(root / "Tests" / "CMakeLists.txt");
+    const std::string qualificationTestsCMake =
+        ReadTextFile(root / "Tests" / "CMake" / "QualificationTests.cmake");
     ASSERT_FALSE(defaultLit.empty());
     ASSERT_FALSE(depthOnly.empty());
     ASSERT_FALSE(cullingShader.empty());
@@ -6585,7 +6586,7 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
     ASSERT_FALSE(opaqueHeader.empty());
     ASSERT_FALSE(opaqueSource.empty());
     ASSERT_FALSE(gpuDrivenSample.empty());
-    ASSERT_FALSE(testsCMake.empty());
+    ASSERT_FALSE(qualificationTestsCMake.empty());
 
     EXPECT_EQ(opaqueSource.find("EnsureIndirectDrawCapacity"),
               std::string::npos);
@@ -6689,17 +6690,17 @@ TEST_F(GPUDrivenValidationFixture, OpaquePassDeclaresGPUDrivenDefaultLitIndirect
               std::string::npos);
     EXPECT_EQ(gpuDrivenSample.find("GPUCulling"), std::string::npos);
     EXPECT_EQ(gpuDrivenSample.find("RenderGraph"), std::string::npos);
-    EXPECT_NE(testsCMake.find("rvx_add_renderverse_gpu_driven_parity"),
+    EXPECT_NE(qualificationTestsCMake.find("rvx_add_renderverse_gpu_driven_parity"),
               std::string::npos);
-    EXPECT_NE(testsCMake.find("--sample gpu-driven"), std::string::npos);
-    EXPECT_NE(testsCMake.find("--require-gpu-driven-execution"),
+    EXPECT_NE(qualificationTestsCMake.find("--sample gpu-driven"), std::string::npos);
+    EXPECT_NE(qualificationTestsCMake.find("--require-gpu-driven-execution"),
               std::string::npos);
-    EXPECT_NE(testsCMake.find("--require-direct-execution"),
+    EXPECT_NE(qualificationTestsCMake.find("--require-direct-execution"),
               std::string::npos);
-    EXPECT_NE(testsCMake.find("GPUDrivenPathRequested"), std::string::npos);
-    EXPECT_NE(testsCMake.find("DirectPathRequested"), std::string::npos);
-    EXPECT_NE(testsCMake.find("--tolerance 0.0"), std::string::npos);
-    EXPECT_NE(testsCMake.find("--max-different-pixels 0"), std::string::npos);
+    EXPECT_NE(qualificationTestsCMake.find("GPUDrivenPathRequested"), std::string::npos);
+    EXPECT_NE(qualificationTestsCMake.find("DirectPathRequested"), std::string::npos);
+    EXPECT_NE(qualificationTestsCMake.find("--tolerance 0.0"), std::string::npos);
+    EXPECT_NE(qualificationTestsCMake.find("--max-different-pixels 0"), std::string::npos);
 }
 
 TEST_F(GPUDrivenValidationFixture, GPUCullingComputeShaderEntriesCompileForDX12)

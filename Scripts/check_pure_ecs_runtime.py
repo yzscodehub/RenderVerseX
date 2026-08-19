@@ -218,12 +218,18 @@ def check_build_contract(root: Path, findings: list[Finding]) -> None:
             Finding(root_cmake.relative_to(root), 1, "RVX_BUILD_EDITOR=ON must fail explicitly")
         )
 
-    tests_cmake = root / "Tests/CMakeLists.txt"
-    tests_text = read_text(tests_cmake)
+    tests_root = root / "Tests"
+    tests_cmake_paths = [tests_root / "CMakeLists.txt"]
+    tests_cmake_paths.extend(sorted((tests_root / "CMake").glob("*.cmake")))
+    tests_text = "\n".join(read_text(path) for path in tests_cmake_paths)
     for target in REQUIRED_TEST_TARGETS:
         if not re.search(rf"\bNAME\s+{re.escape(target)}\b", tests_text):
             findings.append(
-                Finding(tests_cmake.relative_to(root), 1, f"required ECS validation target is missing: {target}")
+                Finding(
+                    (tests_root / "CMake").relative_to(root),
+                    1,
+                    f"required ECS validation target is missing: {target}",
+                )
             )
 
     sample_cmake = root / "Samples/CMakeLists.txt"
