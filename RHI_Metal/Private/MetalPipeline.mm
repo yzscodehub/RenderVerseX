@@ -51,25 +51,20 @@ namespace RVX
                 const auto& elem =
                     desc.inputLayout.elements[attribute.elementIndex];
 
-                // Use high buffer index for vertex buffers to avoid conflict with constant buffers
-                // Constant buffers use indices 0-29, vertex buffers use 30+
-                constexpr uint32 kVertexBufferIndexBase = 30;
-
                 vertexDesc.attributes[attribute.location].format =
                     ToMTLVertexFormat(elem.format);
                 vertexDesc.attributes[attribute.location].offset =
                     attribute.alignedByteOffset;
                 vertexDesc.attributes[attribute.location].bufferIndex =
-                    kVertexBufferIndexBase + attribute.inputSlot;
+                    MetalVertexBufferIndex(attribute.inputSlot);
             }
 
             // Setup vertex buffer layouts (using offset indices to match attributes)
-            constexpr uint32 kLayoutBufferIndexBase = 30;
             for (const RHIVertexInputBindingTranslation& binding :
                  vertexInputTranslation.bindings)
             {
                 const uint32 bufferIndex =
-                    kLayoutBufferIndexBase + binding.inputSlot;
+                    MetalVertexBufferIndex(binding.inputSlot);
                 vertexDesc.layouts[bufferIndex].stride =
                     binding.stride;
                 vertexDesc.layouts[bufferIndex].stepRate =

@@ -421,12 +421,9 @@ namespace RVX
         if (m_renderEncoder && buffer)
         {
             auto* metalBuffer = static_cast<MetalBuffer*>(buffer);
-            // Use high index for vertex buffers to avoid conflict with constant buffers
-            // Constant buffers use indices 0-9, vertex buffers use 30+
-            constexpr uint32 kVertexBufferIndexBase = 30;
             [m_renderEncoder setVertexBuffer:metalBuffer->GetMTLBuffer()
                                       offset:offset
-                                     atIndex:kVertexBufferIndexBase + slot];
+                                     atIndex:MetalVertexBufferIndex(slot)];
         }
     }
 
