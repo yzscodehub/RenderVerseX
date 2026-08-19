@@ -4,6 +4,7 @@
 
 find_package(GTest CONFIG REQUIRED)
 include(GoogleTest)
+include(${CMAKE_SOURCE_DIR}/cmake/RVXValidation.cmake)
 
 option(RVX_ENABLE_EXTERNAL_ASSET_TESTS
     "Register opt-in rendering tests backed by a developer or CI asset library"
@@ -114,73 +115,6 @@ target_link_libraries(RVX_RenderTestSupport PUBLIC
     RVX::RHI
     RVX_RenderRuntimeCore
 )
-
-function(rvx_add_gtest)
-    set(options "")
-    set(oneValueArgs NAME TIMEOUT LABELS WORKING_DIRECTORY)
-    set(multiValueArgs SOURCES LIBS INCLUDES DEFINES)
-    cmake_parse_arguments(RVX_GTEST
-        "${options}"
-        "${oneValueArgs}"
-        "${multiValueArgs}"
-        ${ARGN}
-    )
-
-    if(NOT RVX_GTEST_NAME)
-        message(FATAL_ERROR "rvx_add_gtest requires NAME")
-    endif()
-
-    if(NOT RVX_GTEST_SOURCES)
-        message(FATAL_ERROR "rvx_add_gtest(${RVX_GTEST_NAME}) requires SOURCES")
-    endif()
-
-    if(NOT RVX_GTEST_TIMEOUT)
-        set(RVX_GTEST_TIMEOUT 120)
-    endif()
-
-    add_executable(${RVX_GTEST_NAME}
-        ${RVX_GTEST_SOURCES}
-    )
-    set_property(GLOBAL APPEND PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
-        ${RVX_GTEST_NAME}
-    )
-    target_link_libraries(${RVX_GTEST_NAME} PRIVATE
-        GTest::gtest_main
-        ${RVX_GTEST_LIBS}
-    )
-    target_compile_features(${RVX_GTEST_NAME} PRIVATE cxx_std_20)
-
-    if(RVX_GTEST_INCLUDES)
-        target_include_directories(${RVX_GTEST_NAME} PRIVATE
-            ${RVX_GTEST_INCLUDES}
-        )
-    endif()
-
-    if(RVX_GTEST_DEFINES)
-        target_compile_definitions(${RVX_GTEST_NAME} PRIVATE
-            ${RVX_GTEST_DEFINES}
-        )
-    endif()
-
-    if(RVX_GTEST_WORKING_DIRECTORY)
-        gtest_discover_tests(${RVX_GTEST_NAME}
-            WORKING_DIRECTORY "${RVX_GTEST_WORKING_DIRECTORY}"
-            DISCOVERY_MODE PRE_TEST
-            DISCOVERY_TIMEOUT 30
-            PROPERTIES
-                LABELS "${RVX_GTEST_LABELS}"
-                TIMEOUT ${RVX_GTEST_TIMEOUT}
-        )
-    else()
-        gtest_discover_tests(${RVX_GTEST_NAME}
-            DISCOVERY_MODE PRE_TEST
-            DISCOVERY_TIMEOUT 30
-            PROPERTIES
-                LABELS "${RVX_GTEST_LABELS}"
-                TIMEOUT ${RVX_GTEST_TIMEOUT}
-        )
-    endif()
-endfunction()
 
 # Pure Runtime ECS kernel invariants. These remain small deterministic gates;
 # product integration is qualified separately through RenderVerseSamples.
@@ -4584,22 +4518,17 @@ foreach(SHADER ${TEST_SHADERS})
     configure_file(${SHADER} ${CMAKE_CURRENT_BINARY_DIR}/Shaders/${SHADER_NAME} COPYONLY)
 endforeach()
 
-get_property(RVX_VALIDATION_EXECUTABLE_TARGETS GLOBAL
-    PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS
-)
-
+set(RVX_VALIDATION_EXTERNAL_TARGETS "")
 foreach(RVX_EXTERNAL_TEST_TARGET IN ITEMS
     RVXCook
 )
     if(TARGET ${RVX_EXTERNAL_TEST_TARGET})
-        list(APPEND RVX_VALIDATION_EXECUTABLE_TARGETS
+        list(APPEND RVX_VALIDATION_EXTERNAL_TARGETS
             ${RVX_EXTERNAL_TEST_TARGET}
         )
     endif()
 endforeach()
 
-list(REMOVE_DUPLICATES RVX_VALIDATION_EXECUTABLE_TARGETS)
-
-add_custom_target(RVXValidationInventory
-    DEPENDS ${RVX_VALIDATION_EXECUTABLE_TARGETS}
+rvx_finalize_validation(
+    EXTRA_TARGETS ${RVX_VALIDATION_EXTERNAL_TARGETS}
 )
