@@ -18,6 +18,7 @@
 *.fbx binary
 *.glb binary
 *.gltf -text -diff
+*.rvxmanifest -text -diff
 *.wav binary
 *.mp3 binary
 *.ogg binary

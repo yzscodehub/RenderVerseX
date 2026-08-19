@@ -9,6 +9,7 @@
 #include <spirv_cross/spirv_cross.hpp>
 #include <algorithm>
 #include <cctype>
+#include <unordered_set>
 
 namespace RVX
 {
@@ -165,10 +166,23 @@ namespace RVX
 
         void ExtractReflection(spirv_cross::Compiler& compiler, ShaderReflection& reflection)
         {
+            // SPIR-V modules can retain declarations shared by several HLSL
+            // entry points. Reflection describes the selected entry point, so
+            // exclude globals and interfaces that it does not statically use.
+            const std::unordered_set<spirv_cross::VariableID>
+                activeVariables = compiler.get_active_interface_variables();
+            const auto isActive = [&activeVariables](
+                const spirv_cross::Resource& resource)
+            {
+                return activeVariables.contains(resource.id);
+            };
+
             // Extract uniform buffers
             auto uniformBuffers = compiler.get_shader_resources().uniform_buffers;
             for (const auto& ub : uniformBuffers)
             {
+                if (!isActive(ub))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(ub.id);
                 if (binding.name.empty())
@@ -184,6 +198,8 @@ namespace RVX
             auto storageBuffers = compiler.get_shader_resources().storage_buffers;
             for (const auto& sb : storageBuffers)
             {
+                if (!isActive(sb))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(sb.id);
                 if (binding.name.empty())
@@ -203,6 +219,8 @@ namespace RVX
             auto sampledImages = compiler.get_shader_resources().sampled_images;
             for (const auto& si : sampledImages)
             {
+                if (!isActive(si))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(si.id);
                 if (binding.name.empty())
@@ -218,6 +236,8 @@ namespace RVX
             auto separateImages = compiler.get_shader_resources().separate_images;
             for (const auto& img : separateImages)
             {
+                if (!isActive(img))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(img.id);
                 if (binding.name.empty())
@@ -233,6 +253,8 @@ namespace RVX
             auto separateSamplers = compiler.get_shader_resources().separate_samplers;
             for (const auto& smp : separateSamplers)
             {
+                if (!isActive(smp))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(smp.id);
                 if (binding.name.empty())
@@ -248,6 +270,8 @@ namespace RVX
             auto storageImages = compiler.get_shader_resources().storage_images;
             for (const auto& si : storageImages)
             {
+                if (!isActive(si))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(si.id);
                 if (binding.name.empty())
@@ -263,6 +287,8 @@ namespace RVX
             auto pushConstants = compiler.get_shader_resources().push_constant_buffers;
             for (const auto& pc : pushConstants)
             {
+                if (!isActive(pc))
+                    continue;
                 const auto& type = compiler.get_type(pc.base_type_id);
                 ShaderReflection::PushConstantRange range;
                 range.offset = 0;
@@ -274,6 +300,8 @@ namespace RVX
             auto stageInputs = compiler.get_shader_resources().stage_inputs;
             for (const auto& input : stageInputs)
             {
+                if (!isActive(input))
+                    continue;
                 ShaderReflection::InputAttribute attr;
                 PopulateInterfaceAttribute(
                     compiler,
@@ -286,6 +314,8 @@ namespace RVX
                 compiler.get_shader_resources().stage_outputs;
             for (const auto& output : stageOutputs)
             {
+                if (!isActive(output))
+                    continue;
                 ShaderReflection::InputAttribute attr;
                 PopulateInterfaceAttribute(
                     compiler,

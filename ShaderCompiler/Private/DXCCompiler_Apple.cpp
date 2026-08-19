@@ -373,6 +373,12 @@ namespace RVX
             // Set entry point and source type
             shader.setEntryPoint(options.entryPoint);
             shader.setSourceEntryPoint(options.entryPoint);
+            // Preserve HLSL register/semantic identity in SPIR-V decorations.
+            // Auto locations are required for Vulkan vertex interfaces that
+            // use HLSL semantics without explicit vk::location attributes.
+            shader.setHlslIoMapping(true);
+            shader.setAutoMapBindings(true);
+            shader.setAutoMapLocations(true);
             shader.setEnvInput(glslang::EShSourceHlsl, stage, glslang::EShClientVulkan, 100);
             shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_2);
             shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_5);

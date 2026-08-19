@@ -954,14 +954,26 @@ namespace
             capabilities.supportsExplicitResourceBarriers = true;
             capabilities.supportsDefaultQueueFenceSignal = true;
             capabilities.supportsExplicitQueueFenceSignal = true;
-            capabilities.supportsAsyncCompute = true;
             capabilities.dx12.resourceBindingTier = 2;
             capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+#if defined(__APPLE__)
+            capabilities.supportsAsyncCompute = false;
+            capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Graphics};
+            capabilities.queueTopology.activeDomainCount = 1;
+#else
+            capabilities.supportsAsyncCompute = true;
             capabilities.queueTopology.logicalQueueDomains = {
                 GPUQueueDomain::Graphics,
                 GPUQueueDomain::Compute,
                 GPUQueueDomain::Copy};
             capabilities.queueTopology.activeDomainCount = 3;
+#endif
+#if !defined(__APPLE__) && !defined(_WIN32)
+            capabilities.vulkan.apiVersion = 1;
+#endif
         }
 
         void EnableGPUScenePipelineObjects()
