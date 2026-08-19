@@ -3,12 +3,107 @@
 #include "VulkanResources.h"
 #include "VulkanPipeline.h"
 #include "VulkanSwapChain.h"
+#include "RHI/RHIIndirectExecution.h"
 #include "RHI/RHITexture.h"
 
 #include <utility>
 
 namespace RVX
 {
+    namespace
+    {
+        bool RequiresScopedBarrier(bool hasScopedAccess,
+                                   RHIDependencyKind dependencyKind)
+        {
+            return hasScopedAccess && dependencyKind != RHIDependencyKind::None;
+        }
+
+        uint32 GetQueueFamilyIndex(VulkanDevice* device, GPUQueueDomain domain)
+        {
+            switch (domain)
+            {
+                case GPUQueueDomain::Compute: return device->GetComputeQueueFamily();
+                case GPUQueueDomain::Copy: return device->GetTransferQueueFamily();
+                case GPUQueueDomain::Graphics:
+                default: return device->GetGraphicsQueueFamily();
+            }
+        }
+
+        bool RequiresPairedQueueFamilyTransfer(VulkanDevice* device,
+                                               const RHIAccessSnapshot& before,
+                                               const RHIAccessSnapshot& after,
+                                               RHIDependencyKind dependencyKind)
+        {
+            return HasDependencyKind(dependencyKind, RHIDependencyKind::Ownership) &&
+                   GetQueueFamilyIndex(device, before.domain) !=
+                       GetQueueFamilyIndex(device, after.domain);
+        }
+
+        uint32 GetContextQueueFamilyIndex(VulkanDevice* device,
+                                          RHICommandQueueType queueType)
+        {
+            switch (queueType)
+            {
+                case RHICommandQueueType::Compute:
+                    return device->GetComputeQueueFamily();
+                case RHICommandQueueType::Copy:
+                    return device->GetTransferQueueFamily();
+                case RHICommandQueueType::Graphics:
+                default:
+                    return device->GetGraphicsQueueFamily();
+            }
+        }
+
+        GPUQueueDomain GetContextQueueDomain(VulkanDevice* device,
+                                             RHICommandQueueType queueType)
+        {
+            GPUQueueDomain domain = GPUQueueDomain::Graphics;
+            static_cast<void>(TryGetGPUQueueDomain(
+                device->GetCapabilities().queueTopology,
+                queueType,
+                domain));
+            return domain;
+        }
+
+        enum class QueueFamilyTransferRole : uint8
+        {
+            None = 0,
+            Release,
+            Acquire,
+            Invalid,
+        };
+
+        QueueFamilyTransferRole GetQueueFamilyTransferRole(
+            VulkanDevice* device,
+            RHICommandQueueType queueType,
+            const RHIAccessSnapshot& before,
+            const RHIAccessSnapshot& after,
+            RHIDependencyKind dependencyKind)
+        {
+            if (!RequiresPairedQueueFamilyTransfer(
+                    device, before, after, dependencyKind))
+            {
+                return QueueFamilyTransferRole::None;
+            }
+
+            const uint32 currentFamily =
+                GetContextQueueFamilyIndex(device, queueType);
+            const uint32 sourceFamily =
+                GetQueueFamilyIndex(device, before.domain);
+            const uint32 destinationFamily =
+                GetQueueFamilyIndex(device, after.domain);
+            if (currentFamily == sourceFamily)
+            {
+                return QueueFamilyTransferRole::Release;
+            }
+            if (currentFamily == destinationFamily)
+            {
+                return QueueFamilyTransferRole::Acquire;
+            }
+            return QueueFamilyTransferRole::Invalid;
+        }
+    } // namespace
+
     VulkanCommandContext::VulkanCommandContext(VulkanDevice* device, RHICommandQueueType type)
         : m_device(device)
         , m_queueType(type)
@@ -111,7 +206,9 @@ namespace RVX
 
     void VulkanCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
-        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        if (!barrier.buffer ||
+            (barrier.stateBefore == barrier.stateAfter &&
+             !RequiresScopedBarrier(barrier.hasScopedAccess, barrier.dependencyKind)))
         {
             return;
         }
@@ -122,13 +219,81 @@ namespace RVX
             return;
         }
 
+        if (barrier.hasScopedAccess &&
+            barrier.accessBefore.domain != barrier.accessAfter.domain &&
+            GetQueueFamilyIndex(m_device, barrier.accessBefore.domain) ==
+                GetQueueFamilyIndex(m_device, barrier.accessAfter.domain))
+        {
+            const GPUQueueDomain contextDomain =
+                GetContextQueueDomain(m_device, m_queueType);
+            if (contextDomain == barrier.accessBefore.domain)
+            {
+                // Same-family transfers need one transition after the queue
+                // dependency, not duplicate release/acquire barriers.
+                return;
+            }
+            if (contextDomain != barrier.accessAfter.domain)
+            {
+                RVX_RHI_ERROR(
+                    "Vulkan same-family buffer transfer was recorded on an unrelated queue");
+                return;
+            }
+        }
+
+        const VulkanPipelineStageSupport enabledStages =
+            m_device->GetEnabledPipelineStageSupport();
         VkBufferMemoryBarrier2 bufferBarrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-        bufferBarrier.srcStageMask = ToVkPipelineStageFlags(barrier.stateBefore);
-        bufferBarrier.srcAccessMask = ToVkAccessFlags(barrier.stateBefore);
-        bufferBarrier.dstStageMask = ToVkPipelineStageFlags(barrier.stateAfter);
-        bufferBarrier.dstAccessMask = ToVkAccessFlags(barrier.stateAfter);
-        bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufferBarrier.srcStageMask = barrier.hasScopedAccess
+            ? ToVkPipelineStageFlags2(
+                barrier.accessBefore.executionScope,
+                enabledStages)
+            : ToVkPipelineStageFlags(barrier.stateBefore);
+        bufferBarrier.srcAccessMask = barrier.hasScopedAccess
+            ? ToVkAccessFlags2(barrier.accessBefore.memoryAccess)
+            : ToVkAccessFlags(barrier.stateBefore);
+        bufferBarrier.dstStageMask = barrier.hasScopedAccess
+            ? ToVkPipelineStageFlags2(
+                barrier.accessAfter.executionScope,
+                enabledStages)
+            : ToVkPipelineStageFlags(barrier.stateAfter);
+        bufferBarrier.dstAccessMask = barrier.hasScopedAccess
+            ? ToVkAccessFlags2(barrier.accessAfter.memoryAccess)
+            : ToVkAccessFlags(barrier.stateAfter);
+        const QueueFamilyTransferRole transferRole = barrier.hasScopedAccess
+            ? GetQueueFamilyTransferRole(m_device,
+                                         m_queueType,
+                                         barrier.accessBefore,
+                                         barrier.accessAfter,
+                                         barrier.dependencyKind)
+            : QueueFamilyTransferRole::None;
+        if (transferRole == QueueFamilyTransferRole::Invalid)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan cross-family buffer barrier was recorded on an unrelated queue family");
+            return;
+        }
+        if (transferRole != QueueFamilyTransferRole::None)
+        {
+            bufferBarrier.srcQueueFamilyIndex =
+                GetQueueFamilyIndex(m_device, barrier.accessBefore.domain);
+            bufferBarrier.dstQueueFamilyIndex =
+                GetQueueFamilyIndex(m_device, barrier.accessAfter.domain);
+            if (transferRole == QueueFamilyTransferRole::Release)
+            {
+                bufferBarrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+                bufferBarrier.dstAccessMask = VK_ACCESS_2_NONE;
+            }
+            else
+            {
+                bufferBarrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+                bufferBarrier.srcAccessMask = VK_ACCESS_2_NONE;
+            }
+        }
+        else
+        {
+            bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        }
         bufferBarrier.buffer = vkBuffer->GetBuffer();
         bufferBarrier.offset = barrier.offset;
         bufferBarrier.size = barrier.size == RVX_WHOLE_SIZE ? VK_WHOLE_SIZE : barrier.size;
@@ -139,7 +304,9 @@ namespace RVX
 
     void VulkanCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
-        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        if (!barrier.texture ||
+            (barrier.stateBefore == barrier.stateAfter &&
+             !RequiresScopedBarrier(barrier.hasScopedAccess, barrier.dependencyKind)))
         {
             return;
         }
@@ -150,15 +317,85 @@ namespace RVX
             return;
         }
 
+        if (barrier.hasScopedAccess &&
+            barrier.accessBefore.domain != barrier.accessAfter.domain &&
+            GetQueueFamilyIndex(m_device, barrier.accessBefore.domain) ==
+                GetQueueFamilyIndex(m_device, barrier.accessAfter.domain))
+        {
+            const GPUQueueDomain contextDomain =
+                GetContextQueueDomain(m_device, m_queueType);
+            if (contextDomain == barrier.accessBefore.domain)
+            {
+                return;
+            }
+            if (contextDomain != barrier.accessAfter.domain)
+            {
+                RVX_RHI_ERROR(
+                    "Vulkan same-family texture transfer was recorded on an unrelated queue");
+                return;
+            }
+        }
+
+        const VulkanPipelineStageSupport enabledStages =
+            m_device->GetEnabledPipelineStageSupport();
         VkImageMemoryBarrier2 imageBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-        imageBarrier.srcStageMask = ToVkPipelineStageFlags(barrier.stateBefore);
-        imageBarrier.srcAccessMask = ToVkAccessFlags(barrier.stateBefore);
-        imageBarrier.dstStageMask = ToVkPipelineStageFlags(barrier.stateAfter);
-        imageBarrier.dstAccessMask = ToVkAccessFlags(barrier.stateAfter);
-        imageBarrier.oldLayout = ToVkImageLayout(barrier.stateBefore);
-        imageBarrier.newLayout = ToVkImageLayout(barrier.stateAfter);
-        imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        imageBarrier.srcStageMask = barrier.hasScopedAccess
+            ? ToVkPipelineStageFlags2(
+                barrier.accessBefore.executionScope,
+                enabledStages)
+            : ToVkPipelineStageFlags(barrier.stateBefore);
+        imageBarrier.srcAccessMask = barrier.hasScopedAccess
+            ? ToVkAccessFlags2(barrier.accessBefore.memoryAccess)
+            : ToVkAccessFlags(barrier.stateBefore);
+        imageBarrier.dstStageMask = barrier.hasScopedAccess
+            ? ToVkPipelineStageFlags2(
+                barrier.accessAfter.executionScope,
+                enabledStages)
+            : ToVkPipelineStageFlags(barrier.stateAfter);
+        imageBarrier.dstAccessMask = barrier.hasScopedAccess
+            ? ToVkAccessFlags2(barrier.accessAfter.memoryAccess)
+            : ToVkAccessFlags(barrier.stateAfter);
+        imageBarrier.oldLayout = barrier.hasScopedAccess
+            ? ToVkImageLayout(barrier.accessBefore.layout)
+            : ToVkImageLayout(barrier.stateBefore);
+        imageBarrier.newLayout = barrier.hasScopedAccess
+            ? ToVkImageLayout(barrier.accessAfter.layout)
+            : ToVkImageLayout(barrier.stateAfter);
+        const QueueFamilyTransferRole transferRole = barrier.hasScopedAccess
+            ? GetQueueFamilyTransferRole(m_device,
+                                         m_queueType,
+                                         barrier.accessBefore,
+                                         barrier.accessAfter,
+                                         barrier.dependencyKind)
+            : QueueFamilyTransferRole::None;
+        if (transferRole == QueueFamilyTransferRole::Invalid)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan cross-family texture barrier was recorded on an unrelated queue family");
+            return;
+        }
+        if (transferRole != QueueFamilyTransferRole::None)
+        {
+            imageBarrier.srcQueueFamilyIndex =
+                GetQueueFamilyIndex(m_device, barrier.accessBefore.domain);
+            imageBarrier.dstQueueFamilyIndex =
+                GetQueueFamilyIndex(m_device, barrier.accessAfter.domain);
+            if (transferRole == QueueFamilyTransferRole::Release)
+            {
+                imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+                imageBarrier.dstAccessMask = VK_ACCESS_2_NONE;
+            }
+            else
+            {
+                imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+                imageBarrier.srcAccessMask = VK_ACCESS_2_NONE;
+            }
+        }
+        else
+        {
+            imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        }
         imageBarrier.image = vkTexture->GetImage();
 
         // Subresource range
@@ -227,14 +464,25 @@ namespace RVX
         if (m_inRenderPass)
             return;
 
-        FlushBarriers();  // Ensure layout transitions are applied before rendering
-
         // Use dynamic rendering (Vulkan 1.3)
         std::vector<VkRenderingAttachmentInfo> colorAttachments;
+        std::vector<VkExtent2D> attachmentExtents;
         for (uint32 i = 0; i < desc.colorAttachmentCount; ++i)
         {
             const auto& attach = desc.colorAttachments[i];
+            if (attach.view == nullptr)
+            {
+                RVX_RHI_ERROR("Vulkan dynamic rendering rejected null color attachment {}", i);
+                return;
+            }
             auto* vkView = static_cast<VulkanTextureView*>(attach.view);
+            VulkanTexture* texture = vkView->GetVulkanTexture();
+            if (texture == nullptr)
+            {
+                RVX_RHI_ERROR("Vulkan dynamic rendering rejected color attachment {} without a texture", i);
+                return;
+            }
+            attachmentExtents.push_back({texture->GetWidth(), texture->GetHeight()});
 
             VkRenderingAttachmentInfo attachInfo = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
             attachInfo.imageView = vkView->GetImageView();
@@ -259,24 +507,18 @@ namespace RVX
             colorAttachments.push_back(attachInfo);
         }
 
-        VkRenderingInfo renderingInfo = {VK_STRUCTURE_TYPE_RENDERING_INFO};
-
-        // Get render area from first color attachment
-        if (desc.colorAttachmentCount > 0 && desc.colorAttachments[0].view)
-        {
-            auto* view = static_cast<VulkanTextureView*>(desc.colorAttachments[0].view);
-            renderingInfo.renderArea.extent.width = view->GetVulkanTexture()->GetWidth();
-            renderingInfo.renderArea.extent.height = view->GetVulkanTexture()->GetHeight();
-        }
-        renderingInfo.layerCount = 1;
-        renderingInfo.colorAttachmentCount = static_cast<uint32>(colorAttachments.size());
-        renderingInfo.pColorAttachments = colorAttachments.data();
-
         // Depth attachment
         VkRenderingAttachmentInfo depthAttachInfo = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         if (desc.depthStencilAttachment.view)
         {
             auto* vkView = static_cast<VulkanTextureView*>(desc.depthStencilAttachment.view);
+            VulkanTexture* texture = vkView->GetVulkanTexture();
+            if (texture == nullptr)
+            {
+                RVX_RHI_ERROR("Vulkan dynamic rendering rejected depth attachment without a texture");
+                return;
+            }
+            attachmentExtents.push_back({texture->GetWidth(), texture->GetHeight()});
 
             depthAttachInfo.imageView = vkView->GetImageView();
             depthAttachInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -296,9 +538,64 @@ namespace RVX
 
             depthAttachInfo.clearValue.depthStencil = {desc.depthStencilAttachment.clearValue.depth,
                                                         desc.depthStencilAttachment.clearValue.stencil};
-
-            renderingInfo.pDepthAttachment = &depthAttachInfo;
         }
+
+        if (attachmentExtents.empty())
+        {
+            RVX_RHI_ERROR("Vulkan dynamic rendering rejected a render pass without attachments");
+            return;
+        }
+
+        VkRect2D renderArea{};
+        if (desc.renderArea.width == 0 || desc.renderArea.height == 0)
+        {
+            // The RHI contract defines a zero extent as the full attachment extent.
+            renderArea.extent = attachmentExtents.front();
+        }
+        else
+        {
+            renderArea.offset = {desc.renderArea.x, desc.renderArea.y};
+            renderArea.extent = {desc.renderArea.width, desc.renderArea.height};
+        }
+
+        const bool validOffsets = renderArea.offset.x >= 0 && renderArea.offset.y >= 0;
+        const uint64 renderAreaRight = validOffsets
+            ? static_cast<uint64>(renderArea.offset.x) + renderArea.extent.width
+            : 0;
+        const uint64 renderAreaBottom = validOffsets
+            ? static_cast<uint64>(renderArea.offset.y) + renderArea.extent.height
+            : 0;
+        for (const VkExtent2D attachmentExtent : attachmentExtents)
+        {
+            if (!validOffsets || renderArea.extent.width == 0 || renderArea.extent.height == 0 ||
+                renderAreaRight > attachmentExtent.width ||
+                renderAreaBottom > attachmentExtent.height)
+            {
+                RVX_RHI_ERROR(
+                    "Vulkan dynamic rendering rejected render area offset=({}, {}), extent={}x{} "
+                    "outside attachment extent {}x{}",
+                    renderArea.offset.x,
+                    renderArea.offset.y,
+                    renderArea.extent.width,
+                    renderArea.extent.height,
+                    attachmentExtent.width,
+                    attachmentExtent.height);
+                return;
+            }
+        }
+
+        FlushBarriers();  // Ensure layout transitions are applied before rendering
+
+        VkRenderingInfo renderingInfo = {VK_STRUCTURE_TYPE_RENDERING_INFO};
+        renderingInfo.renderArea = renderArea;
+        renderingInfo.layerCount = 1;
+        renderingInfo.colorAttachmentCount = static_cast<uint32>(colorAttachments.size());
+        renderingInfo.pColorAttachments = colorAttachments.empty()
+            ? nullptr
+            : colorAttachments.data();
+        renderingInfo.pDepthAttachment = desc.depthStencilAttachment.view
+            ? &depthAttachInfo
+            : nullptr;
 
         vkCmdBeginRendering(m_commandBuffer, &renderingInfo);
         m_inRenderPass = true;
@@ -361,6 +658,44 @@ namespace RVX
             return;
 
         auto* vkSet = static_cast<VulkanDescriptorSet*>(set);
+        VulkanPipelineLayout* pipelineLayout = m_currentPipeline->GetDescriptorPipelineLayout();
+        if (!pipelineLayout)
+        {
+            RVX_RHI_ERROR("VulkanCommandContext: descriptor binding requires a pipeline layout");
+            return;
+        }
+        const auto& expectedLayouts = pipelineLayout->GetDescriptorSetLayouts();
+        const RHIDescriptorSetLayout* const expectedLayout =
+            slot < expectedLayouts.size() ? expectedLayouts[slot] : nullptr;
+        VulkanDescriptorSetLayout* const actualLayout = vkSet->GetLayout();
+        const bool layoutMatches = actualLayout != nullptr &&
+            actualLayout == expectedLayout;
+        const bool readyForBinding = expectedLayout != nullptr &&
+            vkSet->IsReadyForBinding(expectedLayout);
+        if (!layoutMatches || !readyForBinding)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: descriptor set layout does not match pipeline '{}' slot {} "
+                "(actual='{}' {}, expected='{}' {}, ready={})",
+                m_currentPipeline->GetDebugName(),
+                slot,
+                actualLayout ? actualLayout->GetDebugName() : "<null>",
+                static_cast<const void*>(actualLayout),
+                expectedLayout ? expectedLayout->GetDebugName() : "<null>",
+                static_cast<const void*>(expectedLayout),
+                readyForBinding);
+            return;
+        }
+
+        if (dynamicOffsets.size() != vkSet->GetRequiredDynamicOffsetCount())
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: descriptor set {} requires {} dynamic offsets, received {}",
+                slot,
+                vkSet->GetRequiredDynamicOffsetCount(),
+                dynamicOffsets.size());
+            return;
+        }
         VkDescriptorSet descriptorSet = vkSet->GetDescriptorSet();
 
         VkPipelineBindPoint bindPoint = m_currentPipeline->IsCompute() ?
@@ -369,6 +704,7 @@ namespace RVX
         vkCmdBindDescriptorSets(m_commandBuffer, bindPoint, m_currentPipeline->GetPipelineLayout(),
             slot, 1, &descriptorSet,
             static_cast<uint32>(dynamicOffsets.size()), dynamicOffsets.data());
+        vkSet->MarkBound();
     }
 
     void VulkanCommandContext::SetPushConstants(const void* data, uint32 size, uint32 offset)
@@ -453,9 +789,145 @@ namespace RVX
 
     void VulkanCommandContext::DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride)
     {
+        if (drawCount == 0)
+        {
+            return;
+        }
+
+        const RHICapabilities& capabilities = m_device->GetCapabilities();
+        RHIIndexedIndirectExecutionDesc execution;
+        execution.mode = RHIIndirectExecutionMode::FixedCount;
+        execution.argumentBuffer = buffer;
+        execution.argumentOffset = offset;
+        execution.commandStride = stride;
+        execution.maxDrawCount = drawCount;
+        execution.argumentState =
+            capabilities.indexedIndirectExecution.requiredArgumentState;
+        const RHIIndexedIndirectExecutionValidationResult validation =
+            ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DrawIndexedIndirect rejected by the RHI contract: {}",
+                validation.message);
+            return;
+        }
+
+        auto* vkBuffer = dynamic_cast<VulkanBuffer*>(buffer);
+        if (vkBuffer == nullptr || vkBuffer->GetBuffer() == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DrawIndexedIndirect rejected because the argument buffer is not a live Vulkan buffer");
+            return;
+        }
+
         FlushBarriers();
-        auto* vkBuffer = static_cast<VulkanBuffer*>(buffer);
         vkCmdDrawIndexedIndirect(m_commandBuffer, vkBuffer->GetBuffer(), offset, drawCount, stride);
+    }
+
+    void VulkanCommandContext::DrawIndexedIndirectCount(
+        RHIBuffer* buffer,
+        uint64 offset,
+        RHIBuffer* countBuffer,
+        uint64 countOffset,
+        uint32 maxDrawCount,
+        uint32 stride)
+    {
+        if (maxDrawCount == 0)
+        {
+            return;
+        }
+
+        const RHICapabilities& capabilities = m_device->GetCapabilities();
+        RHIIndexedIndirectExecutionDesc execution;
+        execution.mode = RHIIndirectExecutionMode::CountBuffer;
+        execution.argumentBuffer = buffer;
+        execution.argumentOffset = offset;
+        execution.commandStride = stride;
+        execution.maxDrawCount = maxDrawCount;
+        execution.argumentState =
+            capabilities.indexedIndirectExecution.requiredArgumentState;
+        execution.countBuffer = countBuffer;
+        execution.countOffset = countOffset;
+        execution.countState =
+            capabilities.indexedIndirectExecution.requiredCountState;
+        const RHIIndexedIndirectExecutionValidationResult validation =
+            ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DrawIndexedIndirectCount rejected by the RHI contract: {}",
+                validation.message);
+            return;
+        }
+
+        const VulkanIndexedIndirectCountDispatch dispatch =
+            m_device->GetIndexedIndirectCountDispatch();
+        if (dispatch == VulkanIndexedIndirectCountDispatch::None)
+        {
+            RVX_RHI_ERROR(
+                "Vulkan indexed indirect-count was requested without an enabled native command path");
+            return;
+        }
+
+        auto* vkBuffer = dynamic_cast<VulkanBuffer*>(buffer);
+        auto* vkCountBuffer = dynamic_cast<VulkanBuffer*>(countBuffer);
+        if (vkBuffer == nullptr || vkBuffer->GetBuffer() == VK_NULL_HANDLE ||
+            vkCountBuffer == nullptr || vkCountBuffer->GetBuffer() == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR(
+                "VulkanCommandContext: DrawIndexedIndirectCount rejected because a buffer is not a live Vulkan buffer");
+            return;
+        }
+
+        FlushBarriers();
+
+        switch (dispatch)
+        {
+            case VulkanIndexedIndirectCountDispatch::Core12:
+            {
+                const PFN_vkCmdDrawIndexedIndirectCount command =
+                    m_device->GetCmdDrawIndexedIndirectCount();
+                if (!command)
+                {
+                    RVX_RHI_ERROR(
+                        "Vulkan indexed indirect-count core entry point is unavailable");
+                    return;
+                }
+                command(m_commandBuffer,
+                        vkBuffer->GetBuffer(),
+                        offset,
+                        vkCountBuffer->GetBuffer(),
+                        countOffset,
+                        maxDrawCount,
+                        stride);
+                return;
+            }
+            case VulkanIndexedIndirectCountDispatch::KHR:
+            {
+                const PFN_vkCmdDrawIndexedIndirectCountKHR command =
+                    m_device->GetCmdDrawIndexedIndirectCountKHR();
+                if (!command)
+                {
+                    RVX_RHI_ERROR(
+                        "Vulkan indexed indirect-count KHR entry point is unavailable");
+                    return;
+                }
+                command(m_commandBuffer,
+                        vkBuffer->GetBuffer(),
+                        offset,
+                        vkCountBuffer->GetBuffer(),
+                        countOffset,
+                        maxDrawCount,
+                        stride);
+                return;
+            }
+            case VulkanIndexedIndirectCountDispatch::None:
+            default:
+                RVX_RHI_ERROR(
+                    "Vulkan indexed indirect-count dispatch is invalid");
+                return;
+        }
     }
 
     void VulkanCommandContext::Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ)
@@ -650,7 +1122,7 @@ namespace RVX
 
         auto* vkContext = static_cast<VulkanCommandContext*>(context);
 
-        std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
+        std::lock_guard<std::mutex> lock(device->GetGraphicsQueueMutex());
 
         VkQueue queue = GetQueueForType(device, vkContext->GetQueueType());
         VkCommandBuffer cmdBuffer = vkContext->GetCommandBuffer();
@@ -665,17 +1137,26 @@ namespace RVX
 
         VkFence fence = VK_NULL_HANDLE;
 
-        // Graphics queue needs swapchain synchronization
+        // Swapchain semaphores and the per-frame fence are valid only after an
+        // image has been acquired. Graphics setup work submitted before the
+        // first frame must not wait on an unsignaled acquire semaphore.
         if (vkContext->GetQueueType() == RHICommandQueueType::Graphics)
         {
-            waitSemaphores.push_back(device->GetImageAvailableSemaphore());
-            waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-            waitValues.push_back(0);  // Binary semaphore
+            VulkanSwapChain* swapChain = device->GetPrimarySwapChain();
+            if (swapChain && swapChain->HasAcquiredImage())
+            {
+                waitSemaphores.push_back(device->GetImageAvailableSemaphore());
+                waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                waitValues.push_back(0);  // Binary semaphore
 
-            signalSemaphores.push_back(device->GetRenderFinishedSemaphore());
-            signalValues.push_back(0);  // Binary semaphore
+                signalSemaphores.push_back(device->GetRenderFinishedSemaphore());
+                signalValues.push_back(0);  // Binary semaphore
+            }
 
-            fence = device->GetCurrentFrameFence();
+            // The frame fence is owned exclusively by a BeginFrame/EndFrame
+            // lifecycle. Raw submissions must never receive a fence that has
+            // not first been reset and armed for this frame.
+            fence = device->GetArmedFrameFenceForSubmission();
         }
 
         // Handle timeline semaphore for signalFence
@@ -705,7 +1186,20 @@ namespace RVX
         submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
         submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
 
-        VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, fence));
+        const VkResult submitResult =
+            vkQueueSubmit(queue, 1, &submitInfo, fence);
+        if (submitResult != VK_SUCCESS)
+        {
+            device->ReportRuntimeFailure(
+                submitResult,
+                RHIDeviceFaultOperation::CommandSubmission,
+                "Vulkan command submission failed");
+            return 0;
+        }
+        if (fence != VK_NULL_HANDLE)
+        {
+            device->MarkArmedFrameFenceSubmitted(fence);
+        }
         return signalFenceValue;
     }
 
@@ -715,7 +1209,7 @@ namespace RVX
         if (!device || contexts.empty())
             return 0;
 
-        std::lock_guard<std::mutex> lock(device->GetSubmitMutex());
+        std::lock_guard<std::mutex> lock(device->GetGraphicsQueueMutex());
 
         // Group contexts by queue type for batch submission
         std::vector<VkCommandBuffer> graphicsCmdBuffers;
@@ -754,26 +1248,109 @@ namespace RVX
 
         VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
-        // Determine if we need cross-queue sync
-        bool needCopyToComputeSync = !copyCmdBuffers.empty() && !computeCmdBuffers.empty();
-        bool needCopyToGraphicsSync = !copyCmdBuffers.empty() && !graphicsCmdBuffers.empty() && computeCmdBuffers.empty();
-        bool needComputeToGraphicsSync = !computeCmdBuffers.empty() && !graphicsCmdBuffers.empty();
+        // Same-queue submissions are ordered by Vulkan and need no binary
+        // semaphore. Compute and Copy currently alias Graphics, so keep the
+        // cross-queue lifetime path dormant until distinct queues are enabled.
+        const VkQueue copyQueue = device->GetTransferQueue();
+        const VkQueue computeQueue = device->GetComputeQueue();
+        const VkQueue graphicsQueue = device->GetGraphicsQueue();
+        const bool needCopyToComputeSync =
+            !copyCmdBuffers.empty() && !computeCmdBuffers.empty() &&
+            copyQueue != computeQueue;
+        const bool needCopyToGraphicsSync =
+            !copyCmdBuffers.empty() && !graphicsCmdBuffers.empty() &&
+            computeCmdBuffers.empty() && copyQueue != graphicsQueue;
+        const bool needComputeToGraphicsSync =
+            !computeCmdBuffers.empty() && !graphicsCmdBuffers.empty() &&
+            computeQueue != graphicsQueue;
 
         VulkanFence* vkSignalFence = signalFence ? static_cast<VulkanFence*>(signalFence) : nullptr;
         const uint64 signalFenceValue = vkSignalFence ? vkSignalFence->AllocateSignalValue() : 0;
 
+        const auto createSemaphore =
+            [device, &semaphoreInfo](VkSemaphore& semaphore) -> bool
+        {
+            const VkResult result = vkCreateSemaphore(
+                device->GetDevice(), &semaphoreInfo, nullptr, &semaphore);
+            if (result == VK_SUCCESS)
+            {
+                return true;
+            }
+            device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::CommandSubmission,
+                "Vulkan cross-queue semaphore creation failed");
+            return false;
+        };
+
+        const auto submit =
+            [device](VkQueue queue,
+                     const VkSubmitInfo& info,
+                     VkFence fence,
+                     const char* message) -> bool
+        {
+            const VkResult result = vkQueueSubmit(queue, 1, &info, fence);
+            if (result == VK_SUCCESS)
+            {
+                return true;
+            }
+            device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::CommandSubmission,
+                message);
+            return false;
+        };
+
+        bool submittedAnyBatch = false;
+        VkQueue lastSubmittedQueue = VK_NULL_HANDLE;
+        const auto retireCrossQueueSemaphores = [&]()
+        {
+            std::vector<VkSemaphore> semaphores;
+            if (copyToComputeSemaphore != VK_NULL_HANDLE)
+                semaphores.push_back(copyToComputeSemaphore);
+            if (copyToGraphicsSemaphore != VK_NULL_HANDLE)
+                semaphores.push_back(copyToGraphicsSemaphore);
+            if (computeToGraphicsSemaphore != VK_NULL_HANDLE)
+                semaphores.push_back(computeToGraphicsSemaphore);
+            if (submittedAnyBatch)
+            {
+                device->EnqueueDeferredSemaphoreDestroy(
+                    std::move(semaphores), lastSubmittedQueue);
+            }
+            else
+            {
+                for (VkSemaphore semaphore : semaphores)
+                {
+                    vkDestroySemaphore(device->GetDevice(),
+                                       semaphore, nullptr);
+                }
+            }
+            copyToComputeSemaphore = VK_NULL_HANDLE;
+            copyToGraphicsSemaphore = VK_NULL_HANDLE;
+            computeToGraphicsSemaphore = VK_NULL_HANDLE;
+        };
+
         // Create synchronization semaphores as needed
         if (needCopyToComputeSync)
         {
-            vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &copyToComputeSemaphore);
+            if (!createSemaphore(copyToComputeSemaphore))
+                return 0;
         }
         if (needCopyToGraphicsSync)
         {
-            vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &copyToGraphicsSemaphore);
+            if (!createSemaphore(copyToGraphicsSemaphore))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
         }
         if (needComputeToGraphicsSync)
         {
-            vkCreateSemaphore(device->GetDevice(), &semaphoreInfo, nullptr, &computeToGraphicsSemaphore);
+            if (!createSemaphore(computeToGraphicsSemaphore))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
         }
 
         // Submit copy commands first
@@ -807,7 +1384,15 @@ namespace RVX
             submitInfo.pCommandBuffers = copyCmdBuffers.data();
             submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
             submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
-            VK_CHECK(vkQueueSubmit(device->GetTransferQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+            if (!submit(device->GetTransferQueue(), submitInfo,
+                        VK_NULL_HANDLE,
+                        "Vulkan copy batch submission failed"))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
+            submittedAnyBatch = true;
+            lastSubmittedQueue = device->GetTransferQueue();
         }
 
         // Submit compute commands (wait for copy if needed)
@@ -851,20 +1436,34 @@ namespace RVX
             submitInfo.pCommandBuffers = computeCmdBuffers.data();
             submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
             submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
-            VK_CHECK(vkQueueSubmit(device->GetComputeQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+            if (!submit(device->GetComputeQueue(), submitInfo,
+                        VK_NULL_HANDLE,
+                        "Vulkan compute batch submission failed"))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
+            submittedAnyBatch = true;
+            lastSubmittedQueue = device->GetComputeQueue();
         }
 
-        // Submit graphics commands with swapchain sync
+        // Submit graphics commands. Swapchain synchronization is attached only
+        // when the caller acquired an image for this frame.
         if (!graphicsCmdBuffers.empty())
         {
             std::vector<VkSemaphore> waitSemaphores;
             std::vector<VkPipelineStageFlags> waitStages;
             std::vector<uint64> waitValues;
+            VulkanSwapChain* swapChain = device->GetPrimarySwapChain();
+            const bool hasAcquiredImage =
+                swapChain && swapChain->HasAcquiredImage();
 
-            // Wait for swapchain image
-            waitSemaphores.push_back(device->GetImageAvailableSemaphore());
-            waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-            waitValues.push_back(0);  // Binary semaphore
+            if (hasAcquiredImage)
+            {
+                waitSemaphores.push_back(device->GetImageAvailableSemaphore());
+                waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                waitValues.push_back(0);  // Binary semaphore
+            }
 
             // Wait for compute if needed
             if (computeToGraphicsSemaphore != VK_NULL_HANDLE)
@@ -882,8 +1481,13 @@ namespace RVX
                 waitValues.push_back(0);  // Binary semaphore
             }
 
-            std::vector<VkSemaphore> signalSemaphores = {device->GetRenderFinishedSemaphore()};
-            std::vector<uint64> signalValues = {0};  // Binary semaphore
+            std::vector<VkSemaphore> signalSemaphores;
+            std::vector<uint64> signalValues;
+            if (hasAcquiredImage)
+            {
+                signalSemaphores.push_back(device->GetRenderFinishedSemaphore());
+                signalValues.push_back(0);  // Binary semaphore
+            }
 
             if (vkSignalFence)
             {
@@ -900,14 +1504,28 @@ namespace RVX
             VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
             submitInfo.pNext = vkSignalFence ? &timelineInfo : nullptr;
             submitInfo.waitSemaphoreCount = static_cast<uint32>(waitSemaphores.size());
-            submitInfo.pWaitSemaphores = waitSemaphores.data();
-            submitInfo.pWaitDstStageMask = waitStages.data();
+            submitInfo.pWaitSemaphores = waitSemaphores.empty() ? nullptr : waitSemaphores.data();
+            submitInfo.pWaitDstStageMask = waitStages.empty() ? nullptr : waitStages.data();
             submitInfo.commandBufferCount = static_cast<uint32>(graphicsCmdBuffers.size());
             submitInfo.pCommandBuffers = graphicsCmdBuffers.data();
             submitInfo.signalSemaphoreCount = static_cast<uint32>(signalSemaphores.size());
-            submitInfo.pSignalSemaphores = signalSemaphores.data();
+            submitInfo.pSignalSemaphores = signalSemaphores.empty() ? nullptr : signalSemaphores.data();
 
-            VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, device->GetCurrentFrameFence()));
+            const VkFence frameFence = device->GetArmedFrameFenceForSubmission();
+            if (!submit(device->GetGraphicsQueue(),
+                        submitInfo,
+                        frameFence,
+                        "Vulkan graphics batch submission failed"))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
+            if (frameFence != VK_NULL_HANDLE)
+            {
+                device->MarkArmedFrameFenceSubmitted(frameFence);
+            }
+            submittedAnyBatch = true;
+            lastSubmittedQueue = device->GetGraphicsQueue();
         }
         else if (vkSignalFence && copyCmdBuffers.empty() && computeCmdBuffers.empty())
         {
@@ -924,7 +1542,15 @@ namespace RVX
             submitInfo.signalSemaphoreCount = 1;
             submitInfo.pSignalSemaphores = &signalSemaphore;
 
-            VK_CHECK(vkQueueSubmit(device->GetGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE));
+            if (!submit(device->GetGraphicsQueue(), submitInfo,
+                        VK_NULL_HANDLE,
+                        "Vulkan empty timeline submission failed"))
+            {
+                retireCrossQueueSemaphores();
+                return 0;
+            }
+            submittedAnyBatch = true;
+            lastSubmittedQueue = device->GetGraphicsQueue();
         }
 
         if (copyToComputeSemaphore != VK_NULL_HANDLE ||
@@ -948,6 +1574,280 @@ namespace RVX
             device->EnqueueDeferredSemaphoreDestroy(std::move(semaphoresToDestroy), finalQueue);
         }
         return signalFenceValue;
+    }
+
+    uint64 SubmitVulkanQueuePlan(VulkanDevice* device,
+                                 const RHIQueueSubmissionPlan& plan,
+                                 RHIFence* terminalFence)
+    {
+        if (!device)
+        {
+            return 0;
+        }
+
+        const RHIQueueSubmissionPlanValidationResult validation =
+            ValidateRHIQueueSubmissionPlan(plan);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("SubmitVulkanQueuePlan rejected invalid plan: {}",
+                          validation.message);
+            return 0;
+        }
+
+        std::lock_guard<std::mutex> lock(device->GetGraphicsQueueMutex());
+
+        struct BatchState
+        {
+            VkQueue queue = VK_NULL_HANDLE;
+            std::vector<VkCommandBufferSubmitInfo> commandBuffers;
+            VkSemaphore completionSemaphore = VK_NULL_HANDLE;
+        };
+
+        std::vector<BatchState> batches(plan.batches.size());
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(plan.batches.size());
+             ++batchIndex)
+        {
+            const RHIQueueSubmissionBatch& source = plan.batches[batchIndex];
+            BatchState& batch = batches[batchIndex];
+            batch.queue = GetQueueForType(device, source.queueType);
+            if (batch.queue == VK_NULL_HANDLE)
+            {
+                RVX_RHI_ERROR("SubmitVulkanQueuePlan encountered an unavailable queue");
+                return 0;
+            }
+            batch.commandBuffers.reserve(source.contexts.size());
+            for (RHICommandContext* context : source.contexts)
+            {
+                auto* vkContext = static_cast<VulkanCommandContext*>(context);
+                VkCommandBufferSubmitInfo commandInfo = {
+                    VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+                commandInfo.commandBuffer = vkContext->GetCommandBuffer();
+                commandInfo.deviceMask = 0;
+                batch.commandBuffers.push_back(commandInfo);
+            }
+        }
+
+        std::vector<uint8> needsCrossQueueSignal(plan.batches.size(), 0);
+        for (uint32 targetIndex = 0;
+             targetIndex < static_cast<uint32>(plan.batches.size());
+             ++targetIndex)
+        {
+            for (uint32 sourceIndex :
+                 plan.batches[targetIndex].prerequisiteBatchIndices)
+            {
+                if (batches[sourceIndex].queue != batches[targetIndex].queue)
+                {
+                    needsCrossQueueSignal[sourceIndex] = 1;
+                }
+            }
+        }
+
+        const auto destroySemaphores = [device, &batches]()
+        {
+            for (BatchState& batch : batches)
+            {
+                if (batch.completionSemaphore != VK_NULL_HANDLE)
+                {
+                    vkDestroySemaphore(device->GetDevice(),
+                                       batch.completionSemaphore,
+                                       nullptr);
+                    batch.completionSemaphore = VK_NULL_HANDLE;
+                }
+            }
+        };
+
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(batches.size());
+             ++batchIndex)
+        {
+            if (needsCrossQueueSignal[batchIndex] == 0)
+            {
+                continue;
+            }
+
+            VkSemaphoreTypeCreateInfo timelineInfo = {
+                VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+            timelineInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+            timelineInfo.initialValue = 0;
+
+            VkSemaphoreCreateInfo semaphoreInfo = {
+                VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            semaphoreInfo.pNext = &timelineInfo;
+            const VkResult createResult = vkCreateSemaphore(
+                device->GetDevice(),
+                &semaphoreInfo,
+                nullptr,
+                &batches[batchIndex].completionSemaphore);
+            if (createResult != VK_SUCCESS)
+            {
+                device->ReportRuntimeFailure(
+                    createResult,
+                    RHIDeviceFaultOperation::CommandSubmission,
+                    "Vulkan queue-plan timeline semaphore creation failed");
+                destroySemaphores();
+                return 0;
+            }
+        }
+
+        VulkanSwapChain* swapChain = device->GetPrimarySwapChain();
+        const bool hasAcquiredImage =
+            swapChain && swapChain->HasAcquiredImage();
+        uint32 firstGraphicsBatchIndex = RVX_INVALID_INDEX;
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(plan.batches.size());
+             ++batchIndex)
+        {
+            if (plan.batches[batchIndex].queueType ==
+                RHICommandQueueType::Graphics)
+            {
+                firstGraphicsBatchIndex = batchIndex;
+                break;
+            }
+        }
+
+        auto* vkTerminalFence = terminalFence
+            ? static_cast<VulkanFence*>(terminalFence)
+            : nullptr;
+        const uint64 terminalFenceValue = vkTerminalFence
+            ? vkTerminalFence->AllocateSignalValue()
+            : 0;
+        bool submittedAnyBatch = false;
+
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(plan.batches.size());
+             ++batchIndex)
+        {
+            const RHIQueueSubmissionBatch& source = plan.batches[batchIndex];
+            BatchState& batch = batches[batchIndex];
+            std::vector<VkSemaphoreSubmitInfo> waits;
+            std::vector<VkSemaphoreSubmitInfo> signals;
+
+            for (uint32 prerequisiteIndex : source.prerequisiteBatchIndices)
+            {
+                const BatchState& prerequisite = batches[prerequisiteIndex];
+                if (prerequisite.queue == batch.queue)
+                {
+                    continue;
+                }
+                if (prerequisite.completionSemaphore == VK_NULL_HANDLE)
+                {
+                    RVX_RHI_ERROR(
+                        "SubmitVulkanQueuePlan found a cross-queue dependency without a source signal");
+                    if (submittedAnyBatch &&
+                        device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
+                    {
+                        static_cast<void>(vkDeviceWaitIdle(device->GetDevice()));
+                    }
+                    destroySemaphores();
+                    return 0;
+                }
+
+                VkSemaphoreSubmitInfo waitInfo = {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+                waitInfo.semaphore = prerequisite.completionSemaphore;
+                waitInfo.value = 1;
+                waitInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                waitInfo.deviceIndex = 0;
+                waits.push_back(waitInfo);
+            }
+
+            if (hasAcquiredImage && batchIndex == firstGraphicsBatchIndex)
+            {
+                VkSemaphoreSubmitInfo waitInfo = {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+                waitInfo.semaphore = device->GetImageAvailableSemaphore();
+                waitInfo.value = 0;
+                waitInfo.stageMask =
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                waitInfo.deviceIndex = 0;
+                waits.push_back(waitInfo);
+            }
+
+            if (batch.completionSemaphore != VK_NULL_HANDLE)
+            {
+                VkSemaphoreSubmitInfo signalInfo = {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+                signalInfo.semaphore = batch.completionSemaphore;
+                signalInfo.value = 1;
+                signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                signalInfo.deviceIndex = 0;
+                signals.push_back(signalInfo);
+            }
+
+            const bool isTerminal =
+                batchIndex == plan.terminalGraphicsBatchIndex;
+            if (isTerminal && hasAcquiredImage)
+            {
+                VkSemaphoreSubmitInfo signalInfo = {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+                signalInfo.semaphore = device->GetRenderFinishedSemaphore();
+                signalInfo.value = 0;
+                signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                signalInfo.deviceIndex = 0;
+                signals.push_back(signalInfo);
+            }
+            if (isTerminal && vkTerminalFence)
+            {
+                VkSemaphoreSubmitInfo signalInfo = {
+                    VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+                signalInfo.semaphore = vkTerminalFence->GetSemaphore();
+                signalInfo.value = terminalFenceValue;
+                signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                signalInfo.deviceIndex = 0;
+                signals.push_back(signalInfo);
+            }
+
+            VkSubmitInfo2 submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+            submitInfo.waitSemaphoreInfoCount = static_cast<uint32>(waits.size());
+            submitInfo.pWaitSemaphoreInfos = waits.empty() ? nullptr : waits.data();
+            submitInfo.commandBufferInfoCount =
+                static_cast<uint32>(batch.commandBuffers.size());
+            submitInfo.pCommandBufferInfos = batch.commandBuffers.data();
+            submitInfo.signalSemaphoreInfoCount =
+                static_cast<uint32>(signals.size());
+            submitInfo.pSignalSemaphoreInfos =
+                signals.empty() ? nullptr : signals.data();
+
+            const VkFence frameFence = isTerminal
+                ? device->GetArmedFrameFenceForSubmission()
+                : VK_NULL_HANDLE;
+            const VkResult submitResult = vkQueueSubmit2(
+                batch.queue, 1, &submitInfo, frameFence);
+            if (submitResult != VK_SUCCESS)
+            {
+                device->ReportRuntimeFailure(
+                    submitResult,
+                    RHIDeviceFaultOperation::CommandSubmission,
+                    "Vulkan queue-plan batch submission failed");
+                if (submittedAnyBatch &&
+                    device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
+                {
+                    static_cast<void>(vkDeviceWaitIdle(device->GetDevice()));
+                }
+                destroySemaphores();
+                return 0;
+            }
+            submittedAnyBatch = true;
+            if (frameFence != VK_NULL_HANDLE)
+            {
+                device->MarkArmedFrameFenceSubmitted(frameFence);
+            }
+        }
+
+        std::vector<VkSemaphore> semaphoresToDestroy;
+        for (BatchState& batch : batches)
+        {
+            if (batch.completionSemaphore != VK_NULL_HANDLE)
+            {
+                semaphoresToDestroy.push_back(batch.completionSemaphore);
+                batch.completionSemaphore = VK_NULL_HANDLE;
+            }
+        }
+        device->EnqueueDeferredSemaphoreDestroy(
+            std::move(semaphoresToDestroy),
+            batches[plan.terminalGraphicsBatchIndex].queue);
+        return terminalFenceValue;
     }
 
     // =============================================================================

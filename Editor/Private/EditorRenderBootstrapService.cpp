@@ -116,8 +116,14 @@ EditorRenderBootstrapService::Bootstrap(
     config.frameBuffering = desc.frameBuffering;
     config.appName = desc.appName ? desc.appName : "RenderVerseX Editor";
 
+    const NativeSurfaceDesc initialSurface =
+        desc.mainSwapChainService->CaptureSurface(
+            desc.window,
+            backend,
+            RHIFormat::BGRA8_UNORM,
+            desc.vsync);
     *desc.renderContext = std::make_unique<RenderContext>();
-    if (!(*desc.renderContext)->Initialize(config))
+    if (!(*desc.renderContext)->Initialize(config, initialSurface))
     {
         RVX_CORE_ERROR("Editor failed to initialize RenderContext for backend {}",
                        ToString(backend));
@@ -160,15 +166,10 @@ EditorRenderBootstrapService::Bootstrap(
     }
     result.editorUIRendererReady = desc.editorUIRenderer->get() != nullptr;
 
-    *desc.sceneRenderer = std::make_unique<SceneRenderer>();
-    (*desc.sceneRenderer)->Initialize(desc.renderContext->get());
-    if (!(*desc.sceneRenderer)->IsInitialized())
-    {
-        RVX_CORE_WARN("Editor SceneRenderer initialization failed; "
-                      "viewport will use fallback clear pass");
-        desc.sceneRenderer->reset();
-    }
-    result.sceneRendererReady = desc.sceneRenderer->get() != nullptr;
+    desc.sceneRenderer->reset();
+    result.sceneRendererReady = false;
+    RVX_CORE_INFO("Editor SceneRenderer publication integration is deferred; "
+                  "viewport uses the explicit fallback clear path");
 
     RVX_CORE_INFO("Editor RenderContext initialized for viewport targets: {}",
                   ToString((*desc.renderContext)

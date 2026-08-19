@@ -318,7 +318,7 @@ namespace RVX
     // MetalTextureView
     // =============================================================================
     MetalTextureView::MetalTextureView(MetalTexture* texture, const RHITextureViewDesc& desc)
-        : m_sourceTexture(texture)
+        : RHITextureView(RHITextureRef(texture))
         , m_format(desc.format != RHIFormat::Unknown ? desc.format : texture->GetFormat())
         , m_subresourceRange(desc.subresourceRange)
     {
@@ -378,7 +378,8 @@ namespace RVX
     // MetalShader
     // =============================================================================
     MetalShader::MetalShader(id<MTLDevice> device, const RHIShaderDesc& desc)
-        : m_stage(desc.stage)
+        : RHIShader(desc)
+        , m_stage(desc.stage)
         , m_entryPoint(desc.entryPoint ? desc.entryPoint : "main")
     {
         // The shader bytecode should be MSL source code (as string)
@@ -474,66 +475,80 @@ namespace RVX
     // MetalDescriptorSet
     // =============================================================================
     MetalDescriptorSet::MetalDescriptorSet(const RHIDescriptorSetDesc& desc)
-        : m_desc(desc)
+        : RHIDescriptorSet(desc)
     {
-        // Pre-allocate binding slots based on layout
-        if (desc.layout)
+        if (!IsReadyForBinding() || !InitializeNativeSnapshot())
         {
-            auto* layout = static_cast<MetalDescriptorSetLayout*>(desc.layout);
-            m_bindings.resize(layout->GetDesc().entries.size());
-        }
-
-        // Apply initial bindings from desc
-        if (!desc.bindings.empty())
-        {
-            Update(desc.bindings);
+            InvalidateDescriptorSnapshot();
         }
     }
 
-    bool MetalDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool MetalDescriptorSet::InitializeNativeSnapshot()
     {
-        if (!m_desc.layout)
+        auto* layout = static_cast<MetalDescriptorSetLayout*>(GetLayoutIdentity());
+        if (!layout)
         {
-            RVX_RHI_ERROR("MetalDescriptorSet::Update failed: descriptor set has no layout");
+            RVX_RHI_ERROR("MetalDescriptorSet initialization failed: descriptor set has no layout");
             return false;
         }
 
-        auto validation = ValidateRHIDescriptorBindings(*m_desc.layout, bindings);
-        if (!validation)
+        std::vector<BindingData> nativeBindings;
+        nativeBindings.reserve(GetDescriptorSnapshot().size());
+        for (const RHIDescriptorBinding& snapshotBinding : GetDescriptorSnapshot())
         {
-            RVX_RHI_ERROR("MetalDescriptorSet::Update failed: {} (binding {})",
-                          validation.message,
-                          validation.binding);
-            return false;
+            const RHIBindingLayoutEntry* layoutEntry = FindRHIBindingLayoutEntry(
+                *layout,
+                snapshotBinding.binding);
+            if (!layoutEntry)
+            {
+                return false;
+            }
+
+            BindingData binding;
+            binding.binding = snapshotBinding.binding;
+            binding.arrayElement = snapshotBinding.arrayElement;
+            binding.type = layoutEntry->type;
+            binding.isDynamic = layoutEntry->isDynamic;
+
+            if (snapshotBinding.buffer)
+            {
+                binding.buffer = static_cast<MetalBuffer*>(snapshotBinding.buffer)->GetMTLBuffer();
+                if (!binding.buffer)
+                {
+                    RVX_RHI_ERROR("MetalDescriptorSet: buffer binding {} has no native buffer", snapshotBinding.binding);
+                    return false;
+                }
+                binding.offset = snapshotBinding.offset;
+            }
+            if (snapshotBinding.textureView)
+            {
+                binding.texture = static_cast<MetalTextureView*>(snapshotBinding.textureView)->GetMTLTexture();
+                if (!binding.texture)
+                {
+                    RVX_RHI_ERROR("MetalDescriptorSet: texture binding {} has no native texture", snapshotBinding.binding);
+                    return false;
+                }
+            }
+            if (snapshotBinding.sampler)
+            {
+                binding.sampler = static_cast<MetalSampler*>(snapshotBinding.sampler)->GetMTLSampler();
+                if (!binding.sampler)
+                {
+                    RVX_RHI_ERROR("MetalDescriptorSet: sampler binding {} has no native sampler", snapshotBinding.binding);
+                    return false;
+                }
+            }
+            if (snapshotBinding.accelerationStructure)
+            {
+                RVX_RHI_ERROR(
+                    "MetalDescriptorSet: acceleration-structure binding {} requires the Task 27 native translation",
+                    snapshotBinding.binding);
+                return false;
+            }
+            nativeBindings.push_back(binding);
         }
 
-        auto updatedBindings = m_bindings;
-        for (const auto& updateDesc : bindings)
-        {
-            const uint32 slot = updateDesc.binding + updateDesc.arrayElement;
-            if (slot >= updatedBindings.size())
-            {
-                updatedBindings.resize(slot + 1);
-            }
-
-            BindingData& binding = updatedBindings[slot];
-
-            if (updateDesc.buffer)
-            {
-                binding.buffer = static_cast<MetalBuffer*>(updateDesc.buffer)->GetMTLBuffer();
-                binding.offset = updateDesc.offset;
-            }
-            if (updateDesc.textureView)
-            {
-                binding.texture = static_cast<MetalTextureView*>(updateDesc.textureView)->GetMTLTexture();
-            }
-            if (updateDesc.sampler)
-            {
-                binding.sampler = static_cast<MetalSampler*>(updateDesc.sampler)->GetMTLSampler();
-            }
-        }
-
-        m_bindings = std::move(updatedBindings);
+        m_bindings = std::move(nativeBindings);
         return true;
     }
 

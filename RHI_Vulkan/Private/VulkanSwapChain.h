@@ -3,6 +3,8 @@
 #include "VulkanCommon.h"
 #include "RHI/RHISwapChain.h"
 
+struct GLFWwindow;
+
 namespace RVX
 {
     class VulkanDevice;
@@ -31,13 +33,20 @@ namespace RVX
         RHITextureView* GetCurrentBackBufferView() override;
 
         VkSwapchainKHR GetSwapchain() const { return m_swapchain; }
+        bool IsValid() const
+        {
+            return m_surface != VK_NULL_HANDLE &&
+                   m_swapchain != VK_NULL_HANDLE &&
+                   !m_backBuffers.empty();
+        }
         bool AcquireNextImage();
+        bool HasAcquiredImage() const { return m_hasAcquiredImage; }
         VkSemaphore GetCurrentRenderFinishedSemaphore() const;
 
     private:
         void CreateSwapchain();
         void CreateImageViews();
-        void CleanupSwapchain();
+        bool CleanupSwapchain();
 
         VkSurfaceFormatKHR ChooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats);
         VkPresentModeKHR ChoosePresentMode(const std::vector<VkPresentModeKHR>& modes);
@@ -60,7 +69,7 @@ namespace RVX
 
         bool m_hasAcquiredImage = false;
 
-        void* m_windowHandle = nullptr;
+        GLFWwindow* m_backendWindow = nullptr;
     };
 
     // Factory

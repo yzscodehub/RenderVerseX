@@ -24,8 +24,18 @@ option(RVX_ENABLE_DX12 "Enable DirectX 12 backend" ON)
 option(RVX_ENABLE_VULKAN "Enable Vulkan backend" ON)
 option(RVX_ENABLE_METAL "Enable Metal backend (macOS/iOS)" OFF)
 option(RVX_ENABLE_OPENGL "Enable OpenGL backend" OFF)
+option(RVX_BUILD_EDITOR "Build the Editor application and Editor-only validation" OFF)
 option(RVX_BUILD_SAMPLES "Build sample applications" ON)
 option(RVX_BUILD_TESTS "Build validation tests" ON)
+option(RVX_ENABLE_TSAN "Enable ThreadSanitizer instrumentation" OFF)
+option(RVX_ENABLE_GPU_VALIDATION_TESTS
+    "Register bounded GPU-based validation tests (dedicated/nightly only)"
+    OFF)
+
+if(RVX_BUILD_EDITOR)
+    message(FATAL_ERROR
+        "RVX_BUILD_EDITOR is unavailable during the pure Runtime ECS migration; configure with RVX_BUILD_EDITOR=OFF")
+endif()
 
 # =============================================================================
 # Platform Detection
@@ -76,8 +86,9 @@ if(RVX_ENABLE_VULKAN)
     find_package(unofficial-spirv-reflect CONFIG REQUIRED)
 endif()
 
-# SPIRV-Cross is needed for Metal/OpenGL shader translation (SPIR-V -> MSL/GLSL)
-if(RVX_ENABLE_METAL OR RVX_ENABLE_OPENGL)
+# SPIRV-Cross is needed for Metal/OpenGL translation and for portable SPIR-V
+# reflection when non-Windows platforms compile Vulkan shaders with glslang.
+if(RVX_ENABLE_METAL OR RVX_ENABLE_OPENGL OR (RVX_ENABLE_VULKAN AND NOT WIN32))
     # Note: Order matters - glsl must be found before msl due to dependencies
     find_package(spirv_cross_core CONFIG REQUIRED)
     find_package(spirv_cross_glsl CONFIG REQUIRED)
@@ -136,8 +147,9 @@ if(WIN32)
     endif()
 endif()
 
-# macOS: Use glslang for HLSL -> SPIR-V compilation (DXC not available via vcpkg)
-if(APPLE)
+# Non-Windows: Use glslang for HLSL -> SPIR-V compilation (DXC is not
+# available through the supported vcpkg toolchains).
+if(NOT WIN32)
     find_package(glslang CONFIG REQUIRED)
 endif()
 
@@ -152,21 +164,33 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+if(RVX_ENABLE_TSAN)
+    if(MSVC)
+        message(FATAL_ERROR "RVX_ENABLE_TSAN requires Clang or GCC on a supported Unix platform")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        message(FATAL_ERROR "RVX_ENABLE_TSAN requires Clang or GCC")
+    endif()
+    target_compile_options(RVX_Options INTERFACE
+        -fsanitize=thread
+        -fno-omit-frame-pointer
+    )
+    target_link_options(RVX_Options INTERFACE
+        -fsanitize=thread
+    )
+endif()
+
 # =============================================================================
 # Subdirectories
 # =============================================================================
 add_subdirectory(Core)
+add_subdirectory(RenderContracts) # Render-only extraction data contracts
 add_subdirectory(Geometry)     # Geometry module (primitives, queries, algorithms)
 add_subdirectory(HAL)          # Hardware Abstraction Layer (Window, Input)
-add_subdirectory(Spatial)
-add_subdirectory(Physics)    # Physics subsystem
-add_subdirectory(Animation)
-add_subdirectory(Audio)      # Audio subsystem
+add_subdirectory(ECS)          # Runtime sparse-set entity/fragment kernel
 add_subdirectory(Scene)
+add_subdirectory(Animation)
 add_subdirectory(Runtime)      # Runtime subsystems (includes Camera)
-add_subdirectory(Picking)
-add_subdirectory(World)      # World module (integrates Scene, Spatial, Physics, Picking)
-add_subdirectory(Engine)
 add_subdirectory(RHI)
 add_subdirectory(ShaderCompiler)
 
@@ -190,8 +214,21 @@ if(RVX_ENABLE_OPENGL)
     add_subdirectory(RHI_OpenGL)
 endif()
 
-add_subdirectory(Render)       # Render module (includes RenderGraph)
+add_subdirectory(RHI_BackendFactory) # Enabled RHI backend composition
+
 add_subdirectory(Resource)   # Resource module (canonical resource management)
+add_subdirectory(ResourceSceneAdapters) # Resource data to pure ECS scene adapters
+add_subdirectory(Physics)    # Physics subsystem
+add_subdirectory(PhysicsSceneAdapters) # Pure ECS to Built-in Physics composition
+add_subdirectory(AnimationSceneAdapters) # Animation runtime to Scene ECS adapters
+add_subdirectory(Audio)      # Audio subsystem
+add_subdirectory(World)      # World owns the single Scene ECS runtime
+target_link_libraries(RVX_World
+    PUBLIC RVX::ResourceSceneAdapters
+    PRIVATE RVX::AnimationSceneAdapters)
+add_subdirectory(RenderExtraction) # Frozen ECS values to render contracts
+add_subdirectory(Render)       # Render module (includes RenderGraph)
+add_subdirectory(Engine)
 add_subdirectory(Particle)   # GPU-driven particle system
 add_subdirectory(AI)         # AI module (Navigation, BehaviorTree, Perception)
 add_subdirectory(Networking) # Network communication and replication
@@ -201,7 +238,10 @@ add_subdirectory(Tools)      # Asset pipeline and tools
 add_subdirectory(UI)         # UI framework
 add_subdirectory(Terrain)    # Terrain module (heightmap terrain rendering)
 add_subdirectory(Water)      # Water module (water surface and effects)
-add_subdirectory(Editor)     # Editor application with ImGui
+
+if(RVX_BUILD_EDITOR)
+    add_subdirectory(Editor)
+endif()
 
 if(RVX_BUILD_SAMPLES)
     add_subdirectory(Samples)
@@ -225,6 +265,8 @@ message(STATUS "  DX12 Backend: ${RVX_ENABLE_DX12}")
 message(STATUS "  Vulkan:       ${RVX_ENABLE_VULKAN}")
 message(STATUS "  Metal:        ${RVX_ENABLE_METAL}")
 message(STATUS "  OpenGL:       ${RVX_ENABLE_OPENGL}")
+message(STATUS "  Editor:       ${RVX_BUILD_EDITOR}")
 message(STATUS "  Samples:      ${RVX_BUILD_SAMPLES}")
 message(STATUS "  Tests:        ${RVX_BUILD_TESTS}")
+message(STATUS "  TSAN:         ${RVX_ENABLE_TSAN}")
 message(STATUS "")

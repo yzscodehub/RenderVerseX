@@ -6,7 +6,9 @@
 
 // Basic Types
 #include "Core/Types.h"
+#include "Core/App/AppMode.h"
 #include "Core/Assert.h"
+#include "Core/Camera/Camera.h"
 #include "Core/Handle.h"
 #include "Core/Log.h"
 #include "Core/PathUtils.h"

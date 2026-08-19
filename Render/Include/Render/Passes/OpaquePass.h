@@ -6,53 +6,37 @@
  */
 
 #include "Render/Graph/RenderGraph.h"
+#include "Render/GPUDriven/GPUDrivenDiagnostics.h"
 #include "Render/Passes/IRenderPass.h"
 #include "Render/Renderer/RenderDrawItem.h"
+#include "Render/Submission/RasterInstanceStream.h"
+#include "Render/Submission/RenderInstanceBatchPlan.h"
 #include "RHI/RHICommandContext.h"
+
+#include <array>
+#include <atomic>
 #include <cstdint>
+#include <memory>
+#include <span>
 #include <vector>
 
 namespace RVX
 {
+    class RenderResourceRegistry;
     // Forward declarations
     class ClusteredLighting;
     class GPUCulling;
-    class GPUResourceManager;
     class LightManager;
     class MaterialSystem;
     class PipelineCache;
-    class RayTracedShadowPass;
     class RenderScene;
     class ShadowPass;
+    class DirectRasterReadbackQualification;
+    struct MaterialBindingResult;
+    struct ObjectConstantBinding;
     struct GPUCullingDrawGroup;
-
-    struct OpaquePassShadowStats
-    {
-        bool requested = false;
-        bool renderGraphReadDeclared = false;
-        bool frameShadowReady = false;
-        bool rayTracedRequested = false;
-        bool rayTracedRenderGraphReadDeclared = false;
-        bool rayTracedFrameMaskReady = false;
-        uint32 receiverCandidateDrawItemCount = 0;
-        uint32 shadowReceivingDrawItemCount = 0;
-        uint32 shadowReceiverOptOutDrawItemCount = 0;
-    };
-
-    struct OpaquePassDrawStats
-    {
-        uint32 directDrawCount = 0;
-        uint32 indirectBatchCount = 0;
-        uint32 indirectDrawCount = 0;
-        bool gpuDrivenRequested = false;
-        bool gpuDrivenEligible = false;
-        uint32 gpuDrivenIndirectBatchCount = 0;
-        uint32 gpuDrivenIndirectDrawCount = 0;
-        uint32 skippedInvalidObjectCount = 0;
-        uint32 skippedMissingMeshCount = 0;
-        uint32 skippedInvalidSubmeshCount = 0;
-        uint32 skippedMaterialBindingCount = 0;
-    };
+    struct GPUSceneRasterBindingSnapshot;
+    struct RenderPassRecordResults;
 
     /**
      * @brief Opaque geometry render pass
@@ -77,100 +61,154 @@ namespace RVX
         void OnAdd(IRHIDevice* device) override;
         void OnRemove() override;
 
-        void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
-        void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
 
         // =====================================================================
         // Resource Dependencies
         // =====================================================================
 
-        /**
-         * @brief Set resource dependencies before rendering
-         * @param gpuMgr GPU resource manager for mesh buffers
-         * @param pipelines Pipeline cache for shaders and pipelines
-         */
-        void SetResources(GPUResourceManager* gpuMgr,
-                          PipelineCache* pipelines,
+        /** @brief Set render-owned resource dependencies before rendering. */
+        void SetResources(PipelineCache* pipelines,
                           MaterialSystem* materialSystem,
                           LightManager* lightManager = nullptr,
                           ClusteredLighting* clusteredLighting = nullptr);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
 
-        /**
-         * @brief Set render scene data for this frame
-         * @param scene The render scene containing objects
-         * @param opaqueDrawItems Opaque submesh draw items
-         * @param maskedDrawItems Alpha-masked submesh draw items
-         */
-        void SetRenderScene(const RenderScene* scene,
-                            const std::vector<RenderDrawItem>* opaqueDrawItems,
-                            const std::vector<RenderDrawItem>* maskedDrawItems);
-
-        void SetDirectionalShadowSource(const ShadowPass* shadowPass);
-        void SetRayTracedShadowSource(const RayTracedShadowPass* shadowPass);
-        void SetGPUDrivenCullingSource(const GPUCulling* gpuCulling);
-        void SetGPUDrivenRenderGraphResources(RGBufferHandle instanceBuffer,
-                                              RGBufferHandle indirectDrawBuffer,
-                                              RGBufferHandle drawCountBuffer);
-        const OpaquePassShadowStats& GetShadowStats() const { return m_shadowStats; }
-        const OpaquePassDrawStats& GetDrawStats() const { return m_drawStats; }
-        void SetIndirectBatchingEnabled(bool enabled) { m_indirectBatchingEnabled = enabled; }
-        void SetGPUDrivenOpaqueIndirectEnabled(bool enabled) { m_gpuDrivenOpaqueIndirectEnabled = enabled; }
-
-        // =====================================================================
-        // Render Targets
-        // =====================================================================
-
-        /**
-         * @brief Set render target views for this pass
-         */
-        void SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView);
-
+        const OpaquePassShadowStats& GetShadowStats() const
+        {
+            return m_publishedRecordResults
+                ? m_publishedRecordResults->opaqueShadowStats : m_shadowStats;
+        }
+        const OpaquePassDrawStats& GetDrawStats() const
+        {
+            return m_publishedRecordResults
+                ? m_publishedRecordResults->opaqueStats : m_drawStats;
+        }
+        void PublishRecordResults(
+            const std::shared_ptr<RenderPassRecordResults>& results,
+            const RenderPassRecordIdentity& expectedIdentity)
+        {
+            if (results != nullptr && results->identity == expectedIdentity)
+            {
+                m_publishedRecordResults = results;
+            }
+        }
     private:
+        struct PlannedOpaqueDraw;
+        struct PlannedGPUDrivenOpaqueDraw;
+
+        void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
+        void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void Execute(RenderGraphPassContext& context,
+                     const ViewData& view,
+                     RenderPassRecordResults* results);
+        void InitializeGraphRecorder(
+            const RenderScene* scene,
+            const std::vector<RenderDrawItem>* opaqueDrawItems,
+            const std::vector<RenderDrawItem>* maskedDrawItems,
+            const GPUCulling* gpuCulling,
+            const RenderPassGPUDrivenInputs& gpuInputs,
+            bool gpuDrivenPlanned,
+            const DirectionalShadowRecordOutput& directionalShadow,
+            const RayTracedShadowRecordOutput& rayTracedShadow,
+            std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache,
+            DirectRasterReadbackQualification* directReadbackQualification,
+            const RenderPassRecordIdentity& recordIdentity,
+            uint32 sourceFrameSlot);
+
         RGTextureHandle m_colorTargetHandle;
         RGTextureHandle m_depthTargetHandle;
         RGTextureHandle m_directionalShadowReadHandle;
         RGTextureHandle m_rayTracedShadowMaskReadHandle;
+        RGTextureViewHandle m_colorTargetViewHandle;
+        RGTextureViewHandle m_depthTargetViewHandle;
+        RGTextureViewHandle m_directionalShadowViewHandle;
+        RGTextureViewHandle m_rayTracedShadowMaskViewHandle;
+        RHIFormat m_colorTargetFormat = RHIFormat::Unknown;
         RGBufferHandle m_gpuDrivenInstanceHandle;
+        RGBufferHandle m_gpuSceneCandidateHandle;
+        RGBufferHandle m_gpuScenePrimitiveHandle;
+        RGBufferHandle m_gpuSceneTransformHandle;
+        RGBufferHandle m_gpuDrivenInstanceIndexHandle;
         RGBufferHandle m_gpuDrivenIndirectHandle;
         RGBufferHandle m_gpuDrivenDrawCountHandle;
+        RGBufferHandle m_directInstanceHandle;
+        RGBufferHandle m_directInstanceIndexHandle;
+        RGBufferHandle m_directMaterialParameterHandle;
+        RGBufferHandle m_gpuMaterialParameterHandle;
+        RenderInstanceBatchPlan m_directInstancePlan;
+        std::shared_ptr<RasterInstanceStreamCache> m_directInstanceStreamCache =
+            std::make_shared<RasterInstanceStreamCache>();
+        DirectRasterReadbackQualification* m_directReadbackQualification = nullptr;
+        RenderPassRecordIdentity m_recordIdentity{};
+        uint32 m_directReadbackSourceFrameSlot = RVX_INVALID_INDEX;
+        RasterInstanceStream m_directInstanceStream;
+        RHIBufferRef m_directMaterialParameterTable;
+        RHIBufferRef m_gpuMaterialParameterTable;
+        /** CPU-only resolved table semantics, indexed by material slot. */
+        std::vector<uint64> m_directRasterMaterialSemanticKeysBySlot;
+        std::vector<uint64> m_gpuRasterMaterialSemanticKeysBySlot;
+        bool m_directInstancingPreflightFailed = false;
+        bool m_gpuMaterialTablePreflightFailed = false;
+        std::shared_ptr<const GPUSceneRasterBindingSnapshot> m_gpuSceneRasterBinding;
+        std::shared_ptr<std::atomic_bool> m_gpuSceneRecordingFailure;
         OpaquePassShadowStats m_shadowStats;
         OpaquePassDrawStats m_drawStats;
+        DirectionalShadowRecordOutput m_directionalShadowInputs;
+        RayTracedShadowRecordOutput m_rayTracedShadowInputs;
+        std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
 
         // Resource dependencies
-        GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         MaterialSystem* m_materialSystem = nullptr;
         LightManager* m_lightManager = nullptr;
         ClusteredLighting* m_clusteredLighting = nullptr;
         const RenderScene* m_renderScene = nullptr;
-        const ShadowPass* m_shadowPass = nullptr;
-        const RayTracedShadowPass* m_rayTracedShadowPass = nullptr;
         const GPUCulling* m_gpuCulling = nullptr;
+        std::shared_ptr<GPUCullingRecordedState> m_gpuCullingRecordedState;
         const std::vector<RenderDrawItem>* m_opaqueDrawItems = nullptr;
         const std::vector<RenderDrawItem>* m_maskedDrawItems = nullptr;
 
-        // Render target views
-        RHITextureView* m_colorTargetView = nullptr;
-        RHITextureView* m_depthTargetView = nullptr;
-
-        // Device reference
-        IRHIDevice* m_device = nullptr;
-
-        bool m_indirectBatchingEnabled = true;
-        bool m_gpuDrivenOpaqueIndirectEnabled = true;
-        RHIBufferRef m_indirectDrawBuffer;
-        uint32 m_indirectDrawBufferCapacity = 0;
-        std::vector<IndirectDrawIndexedCommand> m_indirectDrawCommands;
-
-        uint32 FindIndirectBatchLength(const std::vector<RenderDrawItem>& drawItems,
-                                       size_t startIndex) const;
-        bool EnsureIndirectDrawCapacity(uint32 commandCount);
-        const RenderDrawItem* FindGPUDrivenGroupRepresentative(const GPUCullingDrawGroup& group) const;
-        bool AreGPUDrivenOpaqueGroupsDrawable(uint32& outDrawItemCount) const;
+        bool m_gpuDrivenOpaqueIndirectEnabled = false;
+        bool m_gpuSceneRasterEnabled = false;
+        bool AreGPUDrivenOpaqueGroupsDrawable(
+            uint32 expectedPacketCount,
+            uint32 expectedGroupCount,
+            uint32& outDrawItemCount) const;
         bool TryDrawGPUDrivenIndirect(RHICommandContext& ctx,
-                                      const ViewData& view,
-                                      RHIFormat colorTargetFormat,
-                                      RHIDescriptorSet* frameSet);
+                                      RHIDescriptorSet* frameSet,
+                                      const ObjectConstantBinding* tier1ObjectBinding,
+                                      std::span<const PlannedGPUDrivenOpaqueDraw> plannedBatches,
+                                      RenderPassRecordResults* results,
+                                      uint32 expectedPacketCount = 0,
+                                      uint32 expectedGroupCount = 0);
+        bool TryDrawPlannedDirect(
+            RHICommandContext& ctx,
+            std::span<const PlannedOpaqueDraw> plannedDraws,
+            RenderPassRecordResults* results);
+        bool BuildPlannedDirectBatch(
+            RenderGraphPassContext& context,
+            const ViewData& view,
+            RHIFormat colorTargetFormat,
+            RHIDescriptorSet* frameSet,
+            std::vector<PlannedOpaqueDraw>& outPlannedDraws);
+        bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
+                                         const ViewData& view);
+        [[nodiscard]] bool FinalizeDirectRasterSemanticEvidence(
+            std::span<const PlannedOpaqueDraw> plannedDraws);
+        [[nodiscard]] bool BuildCompleteDirectRasterTranscript(
+            std::span<const PlannedOpaqueDraw> plannedDraws,
+            RasterTranscriptDigest& outDigest) const;
+        void ApplyDirectInstancePlan(
+            RenderGraphPassContext& context,
+            const ViewData& view,
+            RHIFormat colorTargetFormat,
+            std::vector<PlannedOpaqueDraw>& plannedDraws);
 
     };
 

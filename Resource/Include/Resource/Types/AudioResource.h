@@ -95,6 +95,8 @@ namespace RVX::Resource
     class AudioResource : public IResource
     {
     public:
+        static constexpr ResourceType StaticResourceType = ResourceType::Audio;
+
         AudioResource();
         ~AudioResource() override;
 

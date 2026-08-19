@@ -4,7 +4,7 @@
  * @file Particle.h
  * @brief Main header for the Particle module
  * 
- * Include this header to access all particle system functionality.
+ * Include this header to access runtime-facing particle system functionality.
  */
 
 // Core types
@@ -12,9 +12,9 @@
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleSystemInstance.h"
 #include "Particle/ParticleSubsystem.h"
-#include "Particle/ParticleComponent.h"
 #include "Particle/ParticleLOD.h"
 #include "Particle/ParticlePool.h"
+#include "Particle/ParticleRenderStats.h"
 
 // Curves
 #include "Particle/Curves/AnimationCurve.h"
@@ -47,18 +47,6 @@
 // Events
 #include "Particle/Events/ParticleEvent.h"
 #include "Particle/Events/ParticleEventHandler.h"
-
-// GPU
-#include "Particle/GPU/IParticleSimulator.h"
-#include "Particle/GPU/GPUParticleSimulator.h"
-#include "Particle/GPU/CPUParticleSimulator.h"
-#include "Particle/GPU/ParticleSorter.h"
-
-// Rendering
-#include "Particle/Rendering/SoftParticleConfig.h"
-#include "Particle/Rendering/ParticleRenderer.h"
-#include "Particle/Rendering/TrailRenderer.h"
-#include "Particle/Rendering/ParticlePass.h"
 
 // Resource
 #include "Particle/ParticleSystemLoader.h"

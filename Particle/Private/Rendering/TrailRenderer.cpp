@@ -9,30 +9,14 @@ TrailRenderer::~TrailRenderer()
     Shutdown();
 }
 
-void TrailRenderer::Initialize(IRHIDevice* device, uint32 maxTrailVertices)
+void TrailRenderer::Initialize(uint32 maxTrailVertices)
 {
-    m_device = device;
     m_maxVertices = maxTrailVertices;
 
     m_vertices.reserve(maxTrailVertices);
     m_indices.reserve(maxTrailVertices * 6);
 
-    // Create GPU buffers
-    RHIBufferDesc vbDesc;
-    vbDesc.size = sizeof(TrailVertex) * maxTrailVertices;
-    vbDesc.usage = RHIBufferUsage::Vertex;
-    vbDesc.memoryType = RHIMemoryType::Upload;
-    vbDesc.debugName = "TrailVertexBuffer";
-    m_vertexBuffer = m_device->CreateBuffer(vbDesc);
-
-    RHIBufferDesc ibDesc;
-    ibDesc.size = sizeof(uint32) * maxTrailVertices * 6;
-    ibDesc.usage = RHIBufferUsage::Index;
-    ibDesc.memoryType = RHIMemoryType::Upload;
-    ibDesc.debugName = "TrailIndexBuffer";
-    m_indexBuffer = m_device->CreateBuffer(ibDesc);
-
-    RVX_CORE_INFO("TrailRenderer: Initialized with {} max vertices", maxTrailVertices);
+    RVX_CORE_INFO("TrailRenderer: Initialized CPU mesh builder with {} max vertices", maxTrailVertices);
 }
 
 void TrailRenderer::Shutdown()
@@ -40,9 +24,7 @@ void TrailRenderer::Shutdown()
     m_trailHistories.clear();
     m_vertices.clear();
     m_indices.clear();
-    m_vertexBuffer.Reset();
-    m_indexBuffer.Reset();
-    m_device = nullptr;
+    m_indexCount = 0;
 }
 
 void TrailRenderer::BeginFrame()
@@ -113,10 +95,11 @@ void TrailRenderer::UpdateTrailHistory(uint32 particleId, const TrailVertex& ver
     }
 
     // Update UV coordinates
-    for (size_t i = 0; i < history.points.size(); ++i)
+    const size_t pointCount = history.points.size();
+    const float denominator = pointCount > 1 ? static_cast<float>(pointCount - 1) : 1.0f;
+    for (size_t i = 0; i < pointCount; ++i)
     {
-        history.points[i].texCoordU = static_cast<float>(i) / 
-                                      static_cast<float>(history.points.size() - 1);
+        history.points[i].texCoordU = static_cast<float>(i) / denominator;
     }
 }
 
@@ -129,11 +112,9 @@ void TrailRenderer::MarkTrailDead(uint32 particleId)
     }
 }
 
-void TrailRenderer::EndFrame(RHICommandContext& ctx)
+void TrailRenderer::EndFrame()
 {
-    (void)ctx;
     BuildTrailMesh();
-    UploadToGPU();
 }
 
 void TrailRenderer::BuildTrailMesh()
@@ -216,27 +197,6 @@ void TrailRenderer::BuildTrailMesh()
     }
 
     m_indexCount = static_cast<uint32>(m_indices.size());
-}
-
-void TrailRenderer::UploadToGPU()
-{
-    if (m_vertices.empty())
-        return;
-
-    m_vertexBuffer->Upload(m_vertices.data(), m_vertices.size());
-    m_indexBuffer->Upload(m_indices.data(), m_indices.size());
-}
-
-void TrailRenderer::Draw(RHICommandContext& ctx, const ViewData& view)
-{
-    (void)view;
-    
-    if (m_indexCount == 0)
-        return;
-
-    ctx.SetVertexBuffer(0, m_vertexBuffer.Get());
-    ctx.SetIndexBuffer(m_indexBuffer.Get(), RHIFormat::R16_UINT, 0);
-    ctx.DrawIndexed(m_indexCount, 1, 0, 0, 0);
 }
 
 } // namespace RVX::Particle

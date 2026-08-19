@@ -9,15 +9,16 @@
 #include "Render/Passes/IRenderPass.h"
 
 #include <array>
-#include <deque>
 #include <vector>
 
 namespace RVX
 {
-    class GPUResourceManager;
     class PipelineCache;
     class RayTracingSceneManager;
+    class RenderRetirementQueue;
     class ResourceViewCache;
+    class RenderResourceRegistry;
+    struct GPUCompletionToken;
 
     struct RayTracedReflectionPassStats
     {
@@ -123,6 +124,10 @@ namespace RVX
         void OnRemove() override;
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void Execute(RenderGraphPassContext& context,
+                     const ViewData& view) override;
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion,
+                                  RenderRetirementQueue& retirement);
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
         bool IsRequestedEnabled() const override { return m_enabled; }
@@ -130,9 +135,12 @@ namespace RVX
         const std::string& GetUnsupportedReason() const override { return m_unsupportedReason; }
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
-        void SetResources(GPUResourceManager* gpuResources,
-                          PipelineCache* pipelineCache,
+        void SetResources(PipelineCache* pipelineCache,
                           ResourceViewCache* viewCache);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
         void SetRayTracingScene(RayTracingSceneManager* sceneManager) { m_sceneManager = sceneManager; }
         void SetConfig(const RayTracedReflectionPassConfig& config) { m_config = config; }
         const RayTracedReflectionPassConfig& GetConfig() const { return m_config; }
@@ -144,7 +152,7 @@ namespace RVX
 
     private:
         IRHIDevice* m_device = nullptr;
-        GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         ResourceViewCache* m_viewCache = nullptr;
         RayTracingSceneManager* m_sceneManager = nullptr;
@@ -163,6 +171,15 @@ namespace RVX
         RGTextureHandle m_historyDepthWriteHandle;
         RGTextureHandle m_historyNormalReadHandle;
         RGTextureHandle m_historyNormalWriteHandle;
+        RGTextureViewHandle m_reflectionViewHandle;
+        RGTextureViewHandle m_sceneColorViewHandle;
+        RGTextureViewHandle m_depthViewHandle;
+        RGTextureViewHandle m_velocityViewHandle;
+        RGTextureViewHandle m_historyViewHandle;
+        RGTextureViewHandle m_historyDepthReadViewHandle;
+        RGTextureViewHandle m_historyDepthWriteViewHandle;
+        RGTextureViewHandle m_historyNormalReadViewHandle;
+        RGTextureViewHandle m_historyNormalWriteViewHandle;
         RHITextureRef m_reflectionTexture;
         RHITextureRef m_fallbackVelocityTexture;
         RHIQueryPoolRef m_timingQueryPool;
@@ -184,7 +201,7 @@ namespace RVX
             RHIResourceState::Common
         };
         RHIBufferRef m_constantBuffer;
-        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
+        std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
         RayTracedReflectionPassStats m_stats;
         uint32 m_outputWidth = 0;
         uint32 m_outputHeight = 0;

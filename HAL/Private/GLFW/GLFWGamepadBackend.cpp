@@ -145,6 +145,11 @@ bool GLFWGamepadBackend::SupportsVibration() const
 #endif
 }
 
+void GLFWGamepadBackend::Tick(float deltaTime)
+{
+    UpdateVibration(deltaTime);
+}
+
 void GLFWGamepadBackend::SetVibration(int gamepadIndex, const GamepadVibration& vibration)
 {
     if (gamepadIndex < 0 || gamepadIndex >= static_cast<int>(MAX_GAMEPADS))

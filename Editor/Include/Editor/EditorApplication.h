@@ -32,6 +32,7 @@
 #include "Editor/EditorOperationService.h"
 #include "Editor/EditorRenderBootstrapService.h"
 #include "Editor/EditorRenderFrameService.h"
+#include "Editor/EditorRenderRuntimeAdapter.h"
 #include "Editor/EditorRenderShutdownService.h"
 #include "Editor/EditorRunLoopService.h"
 #include "Editor/EditorScreenshotRequestService.h"
@@ -206,6 +207,19 @@ public:
         return m_nativeUIRenderStats;
     }
 
+    /** @brief Get the value-only dedicated render runtime diagnostics. */
+    [[nodiscard]] RenderDiagnosticsSnapshot GetRenderDiagnostics() const
+    {
+        return m_renderRuntimeAdapter.GetDiagnostics();
+    }
+
+    /** @brief Query whether an Editor render feature is adapted in M1. */
+    [[nodiscard]] EditorRenderFeatureStatus GetRenderFeatureStatus(
+        EditorRenderFeature feature) const noexcept
+    {
+        return m_renderRuntimeAdapter.GetFeatureStatus(feature);
+    }
+
     /**
      * @brief Get the typed editor service registry.
      */
@@ -309,6 +323,7 @@ private:
     std::string m_windowTitle = "RenderVerseX Editor";
 
     // RHI
+    EditorRenderRuntimeAdapter m_renderRuntimeAdapter;
     std::unique_ptr<RenderContext> m_renderContext;
     std::unique_ptr<SceneRenderer> m_sceneRenderer;
     std::unique_ptr<UI::UIRenderer> m_runtimeUIRenderer;

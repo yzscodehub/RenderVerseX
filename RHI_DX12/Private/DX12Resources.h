@@ -36,6 +36,7 @@ namespace RVX
         uint32 GetStride() const override { return m_desc.stride; }
         void* Map() override;
         void Unmap() override;
+        bool CommitMappedWrite() override;
 
         // DX12 Specific
         ID3D12Resource* GetResource() const { return m_resource.Get(); }
@@ -44,9 +45,16 @@ namespace RVX
         const DX12DescriptorHandle& GetCBVHandle() const { return m_cbvHandle; }
         const DX12DescriptorHandle& GetSRVHandle() const { return m_srvHandle; }
         const DX12DescriptorHandle& GetUAVHandle() const { return m_uavHandle; }
+        bool AreRequiredViewsValid() const { return m_requiredViewsValid; }
 
     private:
         void CreateViews();
+        [[nodiscard]] bool IsHostAccessReady() const noexcept;
+        void* BeginMappedAccess();
+        void* MapWriteRangeImpl(uint64 offset, uint64 size) override;
+        RHIHostWriteReceipt CommitMappedWriteRangeImpl(
+            uint64 offset, uint64 size) override;
+        bool CancelMappedWriteRangeImpl(uint64 offset, uint64 size) override;
 
         DX12Device* m_device = nullptr;
         RHIBufferDesc m_desc;
@@ -60,8 +68,10 @@ namespace RVX
         DX12DescriptorHandle m_cbvHandle;
         DX12DescriptorHandle m_srvHandle;
         DX12DescriptorHandle m_uavHandle;
+        bool m_requiredViewsValid = true;
 
         void* m_mappedData = nullptr;
+        bool m_isMappedForAccess = false;
     };
 
     // =============================================================================
@@ -72,7 +82,7 @@ namespace RVX
     public:
         DX12Texture(DX12Device* device, const RHITextureDesc& desc);
         DX12Texture(DX12Device* device, ComPtr<ID3D12Resource> resource, const RHITextureDesc& desc); // For swap chain
-        ~DX12Texture() override;
+        ~DX12Texture() override = default;
 
         // RHITexture interface
         uint32 GetWidth() const override { return m_desc.width; }
@@ -88,16 +98,9 @@ namespace RVX
         // DX12 Specific
         ID3D12Resource* GetResource() const { return m_resource.Get(); }
         DXGI_FORMAT GetDXGIFormat() const { return m_dxgiFormat; }
-
-        const DX12DescriptorHandle& GetSRVHandle() const { return m_srvHandle; }
-        const DX12DescriptorHandle& GetUAVHandle() const { return m_uavHandle; }
-        const DX12DescriptorHandle& GetRTVHandle(uint32 index = 0) const { return m_rtvHandles[index]; }
-        const DX12DescriptorHandle& GetDSVHandle() const { return m_dsvHandle; }
+        const RHITextureDesc& GetDesc() const { return m_desc; }
 
     private:
-        void CreateViews();
-
-        DX12Device* m_device = nullptr;
         RHITextureDesc m_desc;
         DXGI_FORMAT m_dxgiFormat = DXGI_FORMAT_UNKNOWN;
 
@@ -105,12 +108,6 @@ namespace RVX
         #ifdef RVX_USE_D3D12MA
         ComPtr<D3D12MA::Allocation> m_allocation;
         #endif
-        bool m_ownsResource = true;  // false for swap chain textures
-
-        DX12DescriptorHandle m_srvHandle;
-        DX12DescriptorHandle m_uavHandle;
-        std::vector<DX12DescriptorHandle> m_rtvHandles;
-        DX12DescriptorHandle m_dsvHandle;
     };
 
     // =============================================================================
@@ -123,7 +120,6 @@ namespace RVX
         ~DX12TextureView() override;
 
         // RHITextureView interface
-        RHITexture* GetTexture() const override { return m_texture; }
         RHIFormat GetFormat() const override { return m_format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_subresourceRange; }
 
@@ -135,8 +131,6 @@ namespace RVX
 
     private:
         DX12Device* m_device = nullptr;
-        RHITextureRef m_textureRef;
-        RHITexture* m_texture = nullptr;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_subresourceRange;
 
@@ -156,6 +150,7 @@ namespace RVX
         ~DX12Sampler() override;
 
         const DX12DescriptorHandle& GetHandle() const { return m_handle; }
+        bool IsValid() const { return m_handle.IsValid(); }
 
     private:
         DX12Device* m_device = nullptr;

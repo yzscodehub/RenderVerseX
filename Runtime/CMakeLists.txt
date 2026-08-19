@@ -22,8 +22,8 @@ target_sources(RVX_Runtime PRIVATE
     Private/Time/Time.cpp
     Private/Time/TimeSubsystem.cpp
     # Camera
-    Private/Camera/Camera.cpp
     Private/Camera/FPSController.cpp
+    Private/Camera/OrbitCameraRig.cpp
     Private/Camera/OrbitController.cpp
     Private/Camera/CameraRegistry.cpp
 )
@@ -36,6 +36,7 @@ target_include_directories(RVX_Runtime PUBLIC
 target_link_libraries(RVX_Runtime PUBLIC
     RVX_Core
     RVX_HAL
+    RVX::RHI
 )
 
 # Windows-specific: Link XInput for gamepad vibration

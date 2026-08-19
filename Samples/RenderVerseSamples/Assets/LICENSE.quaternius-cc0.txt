@@ -1,0 +1,17 @@
+Quaternius Ultimate Animated Character Pack
+============================================
+
+Creator: Quaternius (laulhet@gmail.com)
+Release: November 2019
+Source: https://quaternius.com/packs/ultimatedanimatedcharacter.html
+Pinned download file ID: 1E79ks2jbMt5iIrI8Ag9lRgA0VRnfU4pk
+
+The pack is released under CC0 1.0 Universal and may be used for personal and
+commercial projects. The authoritative license declaration is retained on the
+upstream asset page. The CC0 legal code is available at:
+
+https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+The vendored Casual_Female.gltf bytes are unmodified. Engine-cooked model and
+animation artifacts are deterministic derivatives whose manifests retain this
+source identity and license coverage.

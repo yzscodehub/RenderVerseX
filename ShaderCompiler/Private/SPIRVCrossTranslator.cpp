@@ -8,6 +8,8 @@
 #include <spirv_cross/spirv_glsl.hpp>
 #include <spirv_cross/spirv_cross.hpp>
 #include <algorithm>
+#include <cctype>
+#include <unordered_set>
 
 namespace RVX
 {
@@ -101,12 +103,86 @@ namespace RVX
             return RHIFormat::Unknown;
         }
 
+        void PopulateInterfaceAttribute(
+            spirv_cross::Compiler& compiler,
+            const spirv_cross::Resource& resource,
+            ShaderReflection::InputAttribute& attribute)
+        {
+            if (compiler.has_decoration(
+                    resource.id,
+                    spv::DecorationHlslSemanticGOOGLE))
+            {
+                attribute.semantic = compiler.get_decoration_string(
+                    resource.id,
+                    spv::DecorationHlslSemanticGOOGLE);
+            }
+            if (attribute.semantic.empty())
+            {
+                attribute.semantic = compiler.get_name(resource.id);
+            }
+            if (attribute.semantic.empty())
+            {
+                attribute.semantic =
+                    compiler.get_fallback_name(resource.id);
+            }
+
+            size_t suffixBegin = attribute.semantic.size();
+            while (suffixBegin > 0 &&
+                   std::isdigit(static_cast<unsigned char>(
+                       attribute.semantic[suffixBegin - 1])))
+            {
+                --suffixBegin;
+            }
+            if (suffixBegin < attribute.semantic.size())
+            {
+                uint64 parsedIndex = 0;
+                for (size_t i = suffixBegin;
+                     i < attribute.semantic.size();
+                     ++i)
+                {
+                    parsedIndex =
+                        parsedIndex * 10 +
+                        static_cast<uint64>(
+                            attribute.semantic[i] - '0');
+                    if (parsedIndex > UINT32_MAX)
+                    {
+                        parsedIndex = 0;
+                        suffixBegin = attribute.semantic.size();
+                        break;
+                    }
+                }
+                attribute.semanticIndex =
+                    static_cast<uint32>(parsedIndex);
+                attribute.semantic.resize(suffixBegin);
+            }
+
+            attribute.location = compiler.get_decoration(
+                resource.id,
+                spv::DecorationLocation);
+            const auto& type = compiler.get_type(resource.type_id);
+            attribute.format =
+                ToRHIFormat(type.basetype, type.vecsize);
+        }
+
         void ExtractReflection(spirv_cross::Compiler& compiler, ShaderReflection& reflection)
         {
+            // SPIR-V modules can retain declarations shared by several HLSL
+            // entry points. Reflection describes the selected entry point, so
+            // exclude globals and interfaces that it does not statically use.
+            const std::unordered_set<spirv_cross::VariableID>
+                activeVariables = compiler.get_active_interface_variables();
+            const auto isActive = [&activeVariables](
+                const spirv_cross::Resource& resource)
+            {
+                return activeVariables.contains(resource.id);
+            };
+
             // Extract uniform buffers
             auto uniformBuffers = compiler.get_shader_resources().uniform_buffers;
             for (const auto& ub : uniformBuffers)
             {
+                if (!isActive(ub))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(ub.id);
                 if (binding.name.empty())
@@ -122,13 +198,19 @@ namespace RVX
             auto storageBuffers = compiler.get_shader_resources().storage_buffers;
             for (const auto& sb : storageBuffers)
             {
+                if (!isActive(sb))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(sb.id);
                 if (binding.name.empty())
                     binding.name = compiler.get_fallback_name(sb.id);
                 binding.set = compiler.get_decoration(sb.id, spv::DecorationDescriptorSet);
                 binding.binding = compiler.get_decoration(sb.id, spv::DecorationBinding);
-                binding.type = RHIBindingType::StorageBuffer;
+                binding.type =
+                    compiler.get_buffer_block_flags(sb.id).get(
+                        spv::DecorationNonWritable)
+                        ? RHIBindingType::ShaderResourceBuffer
+                        : RHIBindingType::StorageBuffer;
                 binding.count = 1;
                 reflection.resources.push_back(binding);
             }
@@ -137,6 +219,8 @@ namespace RVX
             auto sampledImages = compiler.get_shader_resources().sampled_images;
             for (const auto& si : sampledImages)
             {
+                if (!isActive(si))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(si.id);
                 if (binding.name.empty())
@@ -152,6 +236,8 @@ namespace RVX
             auto separateImages = compiler.get_shader_resources().separate_images;
             for (const auto& img : separateImages)
             {
+                if (!isActive(img))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(img.id);
                 if (binding.name.empty())
@@ -167,6 +253,8 @@ namespace RVX
             auto separateSamplers = compiler.get_shader_resources().separate_samplers;
             for (const auto& smp : separateSamplers)
             {
+                if (!isActive(smp))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(smp.id);
                 if (binding.name.empty())
@@ -182,6 +270,8 @@ namespace RVX
             auto storageImages = compiler.get_shader_resources().storage_images;
             for (const auto& si : storageImages)
             {
+                if (!isActive(si))
+                    continue;
                 ShaderReflection::ResourceBinding binding;
                 binding.name = compiler.get_name(si.id);
                 if (binding.name.empty())
@@ -197,6 +287,8 @@ namespace RVX
             auto pushConstants = compiler.get_shader_resources().push_constant_buffers;
             for (const auto& pc : pushConstants)
             {
+                if (!isActive(pc))
+                    continue;
                 const auto& type = compiler.get_type(pc.base_type_id);
                 ShaderReflection::PushConstantRange range;
                 range.offset = 0;
@@ -208,17 +300,30 @@ namespace RVX
             auto stageInputs = compiler.get_shader_resources().stage_inputs;
             for (const auto& input : stageInputs)
             {
+                if (!isActive(input))
+                    continue;
                 ShaderReflection::InputAttribute attr;
-                attr.semantic = compiler.get_name(input.id);
-                if (attr.semantic.empty())
-                    attr.semantic = compiler.get_fallback_name(input.id);
-                attr.location = compiler.get_decoration(input.id, spv::DecorationLocation);
-
-                const auto& type = compiler.get_type(input.type_id);
-                attr.format = ToRHIFormat(type.basetype, type.vecsize);
-
+                PopulateInterfaceAttribute(
+                    compiler,
+                    input,
+                    attr);
                 reflection.inputs.push_back(attr);
             }
+
+            auto stageOutputs =
+                compiler.get_shader_resources().stage_outputs;
+            for (const auto& output : stageOutputs)
+            {
+                if (!isActive(output))
+                    continue;
+                ShaderReflection::InputAttribute attr;
+                PopulateInterfaceAttribute(
+                    compiler,
+                    output,
+                    attr);
+                reflection.outputs.push_back(attr);
+            }
+            reflection.valid = true;
         }
     }
 
@@ -470,13 +575,18 @@ namespace RVX
                 std::string name = glslCompiler.get_name(ssbo.id);
                 if (name.empty()) name = glslCompiler.get_fallback_name(ssbo.id);
 
+                const RHIBindingType bindingType =
+                    glslCompiler.get_buffer_block_flags(ssbo.id).get(
+                        spv::DecorationNonWritable)
+                        ? RHIBindingType::ShaderResourceBuffer
+                        : RHIBindingType::StorageBuffer;
                 const uint32_t glBinding =
-                    GLSLBindingABI::FlattenBinding(RHIBindingType::StorageBuffer, set, binding);
+                    GLSLBindingABI::FlattenBinding(bindingType, set, binding);
                 glslCompiler.set_decoration(ssbo.id, spv::DecorationBinding, glBinding);
                 glslCompiler.unset_decoration(ssbo.id, spv::DecorationDescriptorSet);
 
                 result.bindingRemaps.push_back({
-                    name, set, binding, glBinding, RHIBindingType::StorageBuffer
+                    name, set, binding, glBinding, bindingType
                 });
             }
 

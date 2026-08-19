@@ -3,12 +3,15 @@
 #include "DX12Common.h"
 #include "DX12DescriptorHeap.h"
 #include "RHI/RHICommandContext.h"
+#include <array>
 
 namespace RVX
 {
     class DX12DescriptorSetLayout;
     class DX12Device;
     class DX12Pipeline;
+    class DX12AccelerationStructure;
+    struct RHIQueueSubmissionPlan;
 
     // =============================================================================
     // DX12 Command Context Implementation
@@ -41,6 +44,8 @@ namespace RVX
         void Barriers(
             std::span<const RHIBufferBarrier> bufferBarriers,
             std::span<const RHITextureBarrier> textureBarriers) override;
+        void AliasingBarriers(
+            std::span<const RHIResourceAliasingBarrier> barriers) override;
 
         // Split Barriers
         void BeginBarrier(const RHIBufferBarrier& barrier) override;
@@ -155,11 +160,17 @@ namespace RVX
         // DX12 Specific
         // =========================================================================
         ID3D12GraphicsCommandList* GetCommandList() const { return m_commandList.Get(); }
-        RHICommandQueueType GetQueueType() const { return m_queueType; }
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
         D3D12_COMMAND_LIST_TYPE GetD3DListType() const { return m_listType; }
         ComPtr<ID3D12CommandAllocator> DetachCommandAllocator();
 
     private:
+        bool UsesEnhancedBarriers() const;
+        void InsertAccelerationStructureBarrier(
+            DX12AccelerationStructure* accelerationStructure);
+        void QueueEnhancedBarrier(const D3D12_BUFFER_BARRIER& barrier);
+        void QueueEnhancedBarrier(const D3D12_TEXTURE_BARRIER& barrier);
+        void QueueEnhancedBarrier(const D3D12_GLOBAL_BARRIER& barrier);
         void FlushBarriers();
 
         DX12Device* m_device = nullptr;
@@ -168,20 +179,31 @@ namespace RVX
 
         ComPtr<ID3D12CommandAllocator> m_commandAllocator;
         ComPtr<ID3D12GraphicsCommandList> m_commandList;
+        ComPtr<ID3D12GraphicsCommandList7> m_enhancedCommandList;
 
         // Current state
         DX12Pipeline* m_currentPipeline = nullptr;
         std::vector<DX12DescriptorSetLayout*> m_boundRayTracingDescriptorSetLayouts;
+        std::array<RHIFormat, RVX_MAX_RENDER_TARGETS> m_renderPassColorFormats{};
+        uint32 m_renderPassColorAttachmentCount = 0;
+        RHIFormat m_renderPassDepthFormat = RHIFormat::Unknown;
+        RHISampleCount m_renderPassSampleCount = RHISampleCount::Count1;
+        bool m_renderPassAttachmentSnapshotValid = false;
         bool m_isRecording = false;
         bool m_inRenderPass = false;
 
-        // Pending barriers (batched for efficiency)
-        std::vector<D3D12_RESOURCE_BARRIER> m_pendingBarriers;
+        // Pending barriers (batched for efficiency). A device uses exactly one
+        // barrier dialect for a command list lifetime.
+        std::vector<D3D12_RESOURCE_BARRIER> m_pendingLegacyBarriers;
+        std::vector<D3D12_BUFFER_BARRIER> m_pendingBufferBarriers;
+        std::vector<D3D12_TEXTURE_BARRIER> m_pendingTextureBarriers;
+        std::vector<D3D12_GLOBAL_BARRIER> m_pendingGlobalBarriers;
     };
 
     // Factory functions
     RHICommandContextRef CreateDX12CommandContext(DX12Device* device, RHICommandQueueType type);
     uint64 SubmitDX12CommandContext(DX12Device* device, RHICommandContext* context, RHIFence* signalFence);
     uint64 SubmitDX12CommandContexts(DX12Device* device, std::span<RHICommandContext* const> contexts, RHIFence* signalFence);
+    uint64 SubmitDX12QueuePlan(DX12Device* device, const RHIQueueSubmissionPlan& plan, RHIFence* terminalFence);
 
 } // namespace RVX

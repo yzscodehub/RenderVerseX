@@ -4,14 +4,27 @@
 
 namespace RVX::Resource
 {
-
 TextureResource::TextureResource() = default;
 TextureResource::~TextureResource() = default;
 
 void TextureResource::SetData(std::vector<uint8_t> data, const TextureMetadata& metadata)
 {
-    m_data = std::move(data);
+    m_data = std::make_shared<const std::vector<uint8_t>>(std::move(data));
     m_metadata = metadata;
+}
+
+void TextureResource::SetDataStorage(
+    std::shared_ptr<const std::vector<uint8_t>> data,
+    const TextureMetadata& metadata)
+{
+    m_data = data ? std::move(data)
+                  : std::make_shared<const std::vector<uint8_t>>();
+    m_metadata = metadata;
+}
+
+void TextureResource::ReleaseCPUData() noexcept
+{
+    m_data = std::make_shared<const std::vector<uint8_t>>();
 }
 
 void TextureResource::MarkDefaultFallback(std::string reason)
@@ -22,7 +35,8 @@ void TextureResource::MarkDefaultFallback(std::string reason)
 
 size_t TextureResource::GetMemoryUsage() const
 {
-    return sizeof(*this) + m_data.size();
+    return sizeof(*this) + m_data->size() +
+           (m_encodedSource ? m_encodedSource->size() : 0u);
 }
 
 size_t TextureResource::GetGPUMemoryUsage() const

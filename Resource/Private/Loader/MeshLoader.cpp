@@ -1,4 +1,5 @@
 #include "Resource/Loader/MeshLoader.h"
+#include "Resource/Cooked/CookedMeshArtifactReader.h"
 
 #include "Core/Log.h"
 
@@ -501,23 +502,24 @@ namespace
         return mesh;
     }
 
-    std::unique_ptr<MeshResource> ParseCookedMeshArtifact(const std::vector<uint8_t>& fileData,
-                                                          const std::string& path,
-                                                          std::string& outError)
+    bool ParseCookedMeshRecords(const std::vector<uint8_t>& fileData,
+                                std::vector<CookedMeshRecord>& outMeshes,
+                                std::string& outError)
     {
+        outMeshes.clear();
         constexpr const char* magic = "RVX_MESH_PREBAKE_V1\n";
         const std::string_view bytes(reinterpret_cast<const char*>(fileData.data()), fileData.size());
         if (!bytes.starts_with(magic))
         {
             outError = "Mesh artifact missing RVX_MESH_PREBAKE_V1 magic";
-            return nullptr;
+            return false;
         }
 
         const size_t firstMeshOffset = bytes.find("RVX_MESH_0_BEGIN\n");
         if (firstMeshOffset == std::string_view::npos)
         {
             outError = "Mesh artifact contains no mesh payload";
-            return nullptr;
+            return false;
         }
 
         const FieldMap globalFields = ParseFields(bytes.substr(std::strlen(magic),
@@ -526,42 +528,90 @@ namespace
         if (!meshCount)
         {
             outError = "Mesh artifact missing meshCount";
-            return nullptr;
+            return false;
         }
-        if (*meshCount != 1)
+        if (*meshCount == 0)
         {
-            outError = "MeshLoader currently supports single-mesh artifacts only";
-            return nullptr;
-        }
-
-        uint32_t writtenLodCount = 1;
-        size_t cursor = firstMeshOffset;
-        std::shared_ptr<Mesh> baseMesh = ParseBaseMesh(bytes, 0, writtenLodCount, cursor, outError);
-        if (!baseMesh)
-        {
-            return nullptr;
+            outError = "Mesh artifact contains no mesh records";
+            return false;
         }
 
-        std::vector<std::shared_ptr<Mesh>> lodMeshes;
-        lodMeshes.push_back(baseMesh);
-        for (uint32_t lodLevel = 1; lodLevel < writtenLodCount; ++lodLevel)
+        outMeshes.reserve(*meshCount);
+        for (uint32 meshIndex = 0; meshIndex < *meshCount; ++meshIndex)
         {
-            std::shared_ptr<Mesh> lodMesh = ParseLodMesh(bytes, cursor, 0, lodLevel, baseMesh->name, outError);
-            if (!lodMesh)
+            uint32_t writtenLodCount = 1;
+            size_t cursor = firstMeshOffset;
+            std::shared_ptr<Mesh> baseMesh =
+                ParseBaseMesh(bytes, meshIndex, writtenLodCount, cursor, outError);
+            if (!baseMesh)
             {
-                return nullptr;
+                outMeshes.clear();
+                return false;
             }
-            lodMeshes.push_back(lodMesh);
+
+            CookedMeshRecord record;
+            record.lodMeshes.push_back(baseMesh);
+            for (uint32_t lodLevel = 1; lodLevel < writtenLodCount; ++lodLevel)
+            {
+                std::shared_ptr<Mesh> lodMesh =
+                    ParseLodMesh(bytes,
+                                 cursor,
+                                 meshIndex,
+                                 lodLevel,
+                                 baseMesh->name,
+                                 outError);
+                if (!lodMesh)
+                {
+                    outMeshes.clear();
+                    return false;
+                }
+                record.lodMeshes.push_back(std::move(lodMesh));
+            }
+            outMeshes.push_back(std::move(record));
+        }
+
+        outError.clear();
+        return true;
+    }
+
+    std::unique_ptr<MeshResource> ParseCookedMeshArtifact(const std::vector<uint8_t>& fileData,
+                                                          const std::string& path,
+                                                          std::string& outError)
+    {
+        std::vector<CookedMeshRecord> records;
+        if (!ParseCookedMeshRecords(fileData, records, outError))
+            return nullptr;
+        if (records.size() != 1)
+        {
+            outError = "MeshLoader accepts only single-mesh artifacts; use CookedMeshArtifactReader for model products";
+            return nullptr;
         }
 
         auto resource = std::make_unique<MeshResource>();
         resource->SetPath(path);
         resource->SetName(std::filesystem::path(path).stem().string());
         resource->SetId(GenerateResourceId(path));
-        resource->SetLODMeshes(std::move(lodMeshes));
+        resource->SetLODMeshes(std::move(records.front().lodMeshes));
         return resource;
     }
 } // namespace
+
+bool CookedMeshArtifactReader::ReadFile(
+    const std::string& path,
+    std::vector<CookedMeshRecord>& outMeshes,
+    std::string& outError)
+{
+    std::vector<uint8_t> bytes = ReadFileBytes(path, outError);
+    return !bytes.empty() && ReadBytes(bytes, outMeshes, outError);
+}
+
+bool CookedMeshArtifactReader::ReadBytes(
+    const std::vector<uint8>& bytes,
+    std::vector<CookedMeshRecord>& outMeshes,
+    std::string& outError)
+{
+    return ParseCookedMeshRecords(bytes, outMeshes, outError);
+}
 
 MeshLoader::MeshLoader(ResourceManager* manager)
     : m_manager(manager)

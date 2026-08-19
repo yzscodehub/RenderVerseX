@@ -344,15 +344,26 @@ namespace RVX
 
     void DX11CommandContext::SetDescriptorSet(uint32 slot, RHIDescriptorSet* set, std::span<const uint32> dynamicOffsets)
     {
-        if (slot < m_descriptorSets.size())
+        auto* dx11Set = static_cast<DX11DescriptorSet*>(set);
+        if (!m_currentPipelineLayout)
         {
-            m_descriptorSets[slot] = static_cast<DX11DescriptorSet*>(set);
-            
-            // Store dynamic offsets for this set
-            m_dynamicOffsets[slot].assign(dynamicOffsets.begin(), dynamicOffsets.end());
-            
-            m_descriptorSetsDirty = true;
+            RVX_RHI_ERROR("DX11: descriptor binding requires a pipeline layout");
+            return;
         }
+        const auto& expectedLayouts = m_currentPipelineLayout->GetDescriptorSetLayouts();
+        if (!dx11Set || slot >= m_descriptorSets.size() ||
+            slot >= expectedLayouts.size() ||
+            !dx11Set->IsReadyForBinding(expectedLayouts[slot]) ||
+            dynamicOffsets.size() != dx11Set->GetRequiredDynamicOffsetCount())
+        {
+            RVX_RHI_ERROR("DX11: descriptor set {} is incomplete or incompatible with the pipeline layout", slot);
+            return;
+        }
+
+        m_descriptorSets[slot] = dx11Set;
+        m_dynamicOffsets[slot].assign(dynamicOffsets.begin(), dynamicOffsets.end());
+        m_descriptorSetsDirty = true;
+        dx11Set->MarkBound();
     }
 
     void DX11CommandContext::SetPushConstants(const void* data, uint32 size, uint32 offset)

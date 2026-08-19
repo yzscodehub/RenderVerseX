@@ -22,19 +22,36 @@ namespace RVX
         // RHIStagingBuffer interface
         void* Map(uint64 offset = 0, uint64 size = RVX_WHOLE_SIZE) override;
         void Unmap() override;
+        bool CommitMappedWrite() override;
         uint64 GetSize() const override { return m_size; }
         RHIBuffer* GetBuffer() const override;
+
+        [[nodiscard]] bool IsValid() const
+        {
+            return m_device != nullptr && m_device->GetDevice() != VK_NULL_HANDLE &&
+                   m_device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready &&
+                   m_buffer != VK_NULL_HANDLE &&
+                   m_memory != VK_NULL_HANDLE &&
+                   (m_memoryProperties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0 &&
+                   (m_memoryProperties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+        }
 
         // Vulkan specific
         VkBuffer GetVKBuffer() const { return m_buffer; }
 
     private:
+        void DiscardMappedState() noexcept;
+        RHIHostWriteReceipt CommitMappedWriteRangeImpl(
+            uint64 offset, uint64 size) override;
+        bool CancelMappedWriteRangeImpl(uint64 offset, uint64 size) override;
+
         VulkanDevice* m_device = nullptr;
         VkBuffer m_buffer = VK_NULL_HANDLE;
         VkDeviceMemory m_memory = VK_NULL_HANDLE;
         uint64 m_size = 0;
         void* m_mappedData = nullptr;
         bool m_isMapped = false;
+        VkMemoryPropertyFlags m_memoryProperties = 0;
         mutable RHIBufferRef m_wrapperBuffer;
     };
 

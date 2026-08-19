@@ -1,0 +1,33 @@
+Crytek Sponza
+==============
+
+The Atrium Sponza Palace in Dubrovnik, re-modeled by Frank Meinl at
+Crytek, based on Marko Dabrovic's original scene.
+
+Copyright 2010 Frank Meinl, Crytek.
+License: Creative Commons Attribution 3.0 Unported (CC BY 3.0).
+https://creativecommons.org/licenses/by/3.0/legalcode
+
+Archive source and attribution
+==============================
+
+Morgan McGuire, Computer Graphics Archive, July 2017.
+https://casual-effects.com/data
+https://casual-effects.com/g3d/data10/index.html
+
+Pinned archive update: 2016-06-28
+Pinned archive SHA-256:
+da005cbee0be2df2abc8513f3ceb61bcb6f69aac112babcd9c00169a27c2770c
+
+Modifications
+=============
+
+The vendored ZIP and extracted source bytes are unmodified. RenderVerseX
+converts the OBJ/MTL source to glTF 2.0 using
+Scripts/Assets/convert_crytek_sponza.py. The conversion triangulates OBJ
+polygons, normalizes texture paths, converts Phong material factors to a
+deterministic metallic-roughness approximation, preserves diffuse textures,
+and places the source centimeter-scale scene under a 0.01 root scale.
+
+The attribution and license in the original archive's copyright.txt are also
+retained beside the source data.

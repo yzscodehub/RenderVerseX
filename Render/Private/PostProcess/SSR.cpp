@@ -1,13 +1,32 @@
 /**
  * @file SSR.cpp
- * @brief SSR implementation
+ * @brief SSR diagnostics implementation
  */
 
 #include "Render/PostProcess/SSR.h"
 #include "Core/Log.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace RVX
 {
+
+namespace
+{
+    constexpr const char* RVX_SSR_UNSUPPORTED_REASON =
+        "SSR HiZ, ray march, resolve, and temporal pipelines are not implemented";
+} // namespace
+
+const char* GetSSRImplementationTierName(SSRImplementationTier tier)
+{
+    switch (tier)
+    {
+        case SSRImplementationTier::Unsupported: return "Unsupported";
+        case SSRImplementationTier::HiZRayMarch: return "HiZRayMarch";
+    }
+    return "Unknown";
+}
 
 SSR::~SSR()
 {
@@ -19,11 +38,14 @@ void SSR::Initialize(IRHIDevice* device, uint32 width, uint32 height)
     if (!device)
     {
         RVX_CORE_ERROR("SSR: Cannot initialize without an RHI device");
+        m_supported = false;
         m_unsupportedReason = "No RHI device";
         return;
     }
 
     m_device = device;
+    m_supported = false;
+    m_unsupportedReason = RVX_SSR_UNSUPPORTED_REASON;
     m_width = width;
     m_height = height;
 
@@ -44,6 +66,8 @@ void SSR::Shutdown()
     m_temporalPipeline.Reset();
     m_constantBuffer.Reset();
     m_device = nullptr;
+    m_supported = false;
+    m_lastComputeStats = {};
 }
 
 void SSR::Resize(uint32 width, uint32 height)
@@ -62,8 +86,8 @@ void SSR::CreateResources(uint32 width, uint32 height)
 {
     if (!m_device) return;
 
-    uint32 ssrWidth = m_config.halfResolution ? width / 2 : width;
-    uint32 ssrHeight = m_config.halfResolution ? height / 2 : height;
+    uint32 ssrWidth = m_config.halfResolution ? std::max<uint32>(1u, width / 2u) : width;
+    uint32 ssrHeight = m_config.halfResolution ? std::max<uint32>(1u, height / 2u) : height;
 
     // Reflection result
     RHITextureDesc desc;
@@ -88,10 +112,10 @@ void SSR::CreateResources(uint32 width, uint32 height)
         m_history = m_device->CreateTexture(desc);
     }
 
-    // HiZ pyramid for accelerated ray marching
-    uint32 hiZWidth = width;
-    uint32 hiZHeight = height;
-    int mipLevels = static_cast<int>(std::floor(std::log2(std::max(width, height)))) + 1;
+    // HiZ pyramid storage is allocated for diagnostics/resource planning only.
+    uint32 hiZWidth = std::max<uint32>(1u, width);
+    uint32 hiZHeight = std::max<uint32>(1u, height);
+    int mipLevels = static_cast<int>(std::floor(std::log2(std::max(hiZWidth, hiZHeight)))) + 1;
 
     desc.width = hiZWidth;
     desc.height = hiZHeight;
@@ -115,8 +139,48 @@ void SSR::Compute(RHICommandContext& ctx,
                   const Mat4& viewMatrix,
                   const Mat4& projMatrix)
 {
-    if (!IsEnabled() || !m_device)
+    (void)ctx;
+    (void)viewMatrix;
+    (void)projMatrix;
+
+    m_lastComputeStats = {};
+    m_lastComputeStats.requested = IsRequestedEnabled();
+    m_lastComputeStats.supported = IsSupported();
+    m_lastComputeStats.scheduled = false;
+    m_lastComputeStats.executed = false;
+    m_lastComputeStats.colorAvailable = colorTexture != nullptr;
+    m_lastComputeStats.depthAvailable = depthTexture != nullptr;
+    m_lastComputeStats.normalAvailable = normalTexture != nullptr;
+    m_lastComputeStats.roughnessAvailable = roughnessTexture != nullptr;
+    m_lastComputeStats.temporalHistoryRequired = m_config.temporalFilter;
+    m_lastComputeStats.implementationTier = SSRImplementationTier::Unsupported;
+
+    if (!colorTexture || !depthTexture || !normalTexture || !roughnessTexture)
     {
+        m_lastComputeStats.missingInputReason =
+            "SSR skipped because color, depth, normal, or roughness input is unavailable";
+        m_lastComputeStats.fallbackReason = m_lastComputeStats.missingInputReason;
+        if (IsRequestedEnabled())
+        {
+            RVX_CORE_WARN("SSR: {}", m_lastComputeStats.fallbackReason);
+        }
+        return;
+    }
+
+    if (!m_device)
+    {
+        m_lastComputeStats.fallbackReason = "SSR skipped because no RHI device is available";
+        if (IsRequestedEnabled())
+        {
+            RVX_CORE_WARN("SSR: {}", m_lastComputeStats.fallbackReason);
+        }
+        return;
+    }
+
+    if (!IsEnabled())
+    {
+        m_lastComputeStats.fallbackReason = IsSupported() ?
+            "SSR disabled by configuration" : GetUnsupportedReason();
         if (IsRequestedEnabled() && !IsSupported())
         {
             RVX_CORE_WARN("SSR: unsupported compute skipped: {}", GetUnsupportedReason());
@@ -124,51 +188,38 @@ void SSR::Compute(RHICommandContext& ctx,
         return;
     }
 
-    // Build HiZ pyramid from depth
-    BuildHiZPyramid(ctx, depthTexture);
-
-    // Ray march to find reflection hits
-    RayMarch(ctx);
-
-    // Resolve ray hits to color
-    Resolve(ctx, colorTexture);
-
-    // Apply temporal filtering
-    if (m_config.temporalFilter)
-    {
-        TemporalFilter(ctx);
-    }
+    m_lastComputeStats.fallbackReason = RVX_SSR_UNSUPPORTED_REASON;
+    RVX_CORE_WARN("SSR: compute path requested but {}", m_lastComputeStats.fallbackReason);
 }
 
 void SSR::BuildHiZPyramid(RHICommandContext& ctx, RHITexture* depth)
 {
-    // TODO: Dispatch HiZ pyramid generation
-    // - Copy depth to mip 0
-    // - For each subsequent mip: take min of 2x2 region
+    (void)ctx;
+    (void)depth;
+
+    // Reserved for the future HiZ implementation. The public Compute path is capability-gated.
 }
 
 void SSR::RayMarch(RHICommandContext& ctx)
 {
-    // TODO: Dispatch ray marching compute shader
-    // - For each pixel: reflect view direction around normal
-    // - March ray through HiZ pyramid
-    // - Binary search refinement on hit
-    // - Store hit UV and mask
+    (void)ctx;
+
+    // Reserved for the future ray-march implementation. The public Compute path is capability-gated.
 }
 
 void SSR::Resolve(RHICommandContext& ctx, RHITexture* color)
 {
-    // TODO: Sample color at hit UVs
-    // - Apply edge fade
-    // - Handle misses (use environment map fallback)
+    (void)ctx;
+    (void)color;
+
+    // Reserved for the future resolve implementation. The public Compute path is capability-gated.
 }
 
 void SSR::TemporalFilter(RHICommandContext& ctx)
 {
-    // TODO: Blend with history
-    // - Reproject using motion vectors
-    // - Apply neighborhood clamping
-    // - Update history buffer
+    (void)ctx;
+
+    // Reserved for the future temporal filter implementation. The public Compute path is capability-gated.
 }
 
 } // namespace RVX

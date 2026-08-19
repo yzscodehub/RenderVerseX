@@ -2,6 +2,8 @@
 // ToneMapping.hlsl - Tone mapping and gamma correction
 // =============================================================================
 
+#include "../Include/FullscreenTriangle.hlsli"
+
 // =============================================================================
 // Constant Buffer
 // =============================================================================
@@ -15,7 +17,12 @@ cbuffer ToneMappingConstants : register(b0, space0)
     float2 TextureSize;
     float2 InvTextureSize;
     uint OutputColorSpace; // 0=Linear, 1=sRGB
-    float3 ToneMappingPadding;
+    // Keep padding as scalar members so the 48-byte HLSL cbuffer layout is
+    // also representable by GLSL std140. A float3 here starts at byte 36 in
+    // HLSL but requires 16-byte alignment in std140.
+    float ToneMappingPadding0;
+    float ToneMappingPadding1;
+    float ToneMappingPadding2;
 };
 
 #define TONE_MAPPING_OUTPUT_LINEAR 0
@@ -122,11 +129,9 @@ struct VSOutput
 VSOutput VSMain(uint vertexID : SV_VertexID)
 {
     VSOutput output;
-    
-    // Generate fullscreen triangle
-    // Vertex 0: (-1, -1), Vertex 1: (3, -1), Vertex 2: (-1, 3)
-    output.TexCoord = float2((vertexID << 1) & 2, vertexID & 2);
-    output.Position = float4(output.TexCoord * 2.0 - 1.0, 0.0, 1.0);
+
+    output.TexCoord = RVX_GetFullscreenTriangleTexCoord(vertexID);
+    output.Position = RVX_GetFullscreenTrianglePosition(output.TexCoord);
     return output;
 }
 

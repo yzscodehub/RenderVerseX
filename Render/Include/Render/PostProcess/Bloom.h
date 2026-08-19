@@ -7,7 +7,6 @@
 
 #include "Render/PostProcess/PostProcessStack.h"
 
-#include <deque>
 
 namespace RVX
 {
@@ -74,13 +73,13 @@ namespace RVX
                                float intensity,
                                float radius);
         bool EnsureRuntimeResources();
-        bool UpdateConstants(uint32 width,
-                             uint32 height,
-                             float threshold,
-                             float intensity,
-                             float radius,
-                             float softKnee,
-                             PassMode mode);
+        RHIBufferRef CreatePassConstants(uint32 width,
+                                         uint32 height,
+                                         float threshold,
+                                         float intensity,
+                                         float radius,
+                                         float softKnee,
+                                         PassMode mode) const;
 
         float m_threshold = 1.0f;
         float m_intensity = 1.0f;
@@ -89,9 +88,7 @@ namespace RVX
         PipelineCache* m_pipelineCache = nullptr;
         ResourceViewCache* m_viewCache = nullptr;
         IRHIDevice* m_resourceDevice = nullptr;
-        RHIBufferRef m_constantBuffer;
         RHISamplerRef m_sampler;
-        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
     };
 
 } // namespace RVX

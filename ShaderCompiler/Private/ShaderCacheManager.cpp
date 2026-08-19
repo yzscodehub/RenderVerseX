@@ -502,12 +502,15 @@ namespace RVX
     void ShaderCacheManager::SerializeReflection(const ShaderReflection& reflection, std::vector<uint8>& out) const
     {
         // Simple serialization format:
+        // [valid: uint32]
         // [resourceCount: uint32]
         // [resources...]
         // [pushConstantCount: uint32]
         // [pushConstants...]
         // [inputCount: uint32]
         // [inputs...]
+        // [outputCount: uint32]
+        // [outputs...]
 
         auto writeU32 = [&out](uint32 value)
         {
@@ -528,6 +531,8 @@ namespace RVX
             }
         };
 
+        writeU32(reflection.valid ? 1u : 0u);
+
         // Resources
         writeU32(static_cast<uint32>(reflection.resources.size()));
         for (const auto& res : reflection.resources)
@@ -547,14 +552,23 @@ namespace RVX
             writeU32(pc.size);
         }
 
-        // Inputs
-        writeU32(static_cast<uint32>(reflection.inputs.size()));
-        for (const auto& input : reflection.inputs)
+        auto writeAttributes =
+            [&writeU32, &writeString](
+                const std::vector<ShaderReflection::InputAttribute>&
+                    attributes)
         {
-            writeString(input.semantic);
-            writeU32(input.location);
-            writeU32(static_cast<uint32>(input.format));
-        }
+            writeU32(static_cast<uint32>(attributes.size()));
+            for (const auto& attribute : attributes)
+            {
+                writeString(attribute.semantic);
+                writeU32(attribute.semanticIndex);
+                writeU32(attribute.location);
+                writeU32(static_cast<uint32>(attribute.format));
+                writeU32(attribute.systemValue ? 1u : 0u);
+            }
+        };
+        writeAttributes(reflection.inputs);
+        writeAttributes(reflection.outputs);
     }
 
     ShaderReflection ShaderCacheManager::DeserializeReflection(const uint8* data, size_t size) const
@@ -589,6 +603,8 @@ namespace RVX
             return result;
         };
 
+        reflection.valid = readU32() != 0;
+
         // Resources
         uint32 resourceCount = readU32();
         reflection.resources.reserve(resourceCount);
@@ -614,17 +630,27 @@ namespace RVX
             reflection.pushConstants.push_back(pc);
         }
 
-        // Inputs
-        uint32 inputCount = readU32();
-        reflection.inputs.reserve(inputCount);
-        for (uint32 i = 0; i < inputCount; ++i)
+        auto readAttributes =
+            [&readU32, &readString](
+                std::vector<ShaderReflection::InputAttribute>&
+                    attributes)
         {
-            ShaderReflection::InputAttribute input;
-            input.semantic = readString();
-            input.location = readU32();
-            input.format = static_cast<RHIFormat>(readU32());
-            reflection.inputs.push_back(input);
-        }
+            const uint32 attributeCount = readU32();
+            attributes.reserve(attributeCount);
+            for (uint32 i = 0; i < attributeCount; ++i)
+            {
+                ShaderReflection::InputAttribute attribute;
+                attribute.semantic = readString();
+                attribute.semanticIndex = readU32();
+                attribute.location = readU32();
+                attribute.format =
+                    static_cast<RHIFormat>(readU32());
+                attribute.systemValue = readU32() != 0;
+                attributes.push_back(std::move(attribute));
+            }
+        };
+        readAttributes(reflection.inputs);
+        readAttributes(reflection.outputs);
 
         return reflection;
     }

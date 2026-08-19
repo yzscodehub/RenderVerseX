@@ -5,28 +5,42 @@ namespace RVX
 {
     DX12SwapChain::DX12SwapChain(DX12Device* device, const RHISwapChainDesc& desc)
         : m_device(device)
-        , m_width(desc.width)
-        , m_height(desc.height)
-        , m_format(desc.format)
+        , m_width(desc.surface.width)
+        , m_height(desc.surface.height)
+        , m_format(desc.surface.preferredFormat)
         , m_bufferCount(desc.bufferCount)
-        , m_vsync(desc.vsync)
+        , m_vsync(desc.surface.vsync)
     {
         if (desc.debugName)
         {
             SetDebugName(desc.debugName);
         }
 
-        HWND hwnd = static_cast<HWND>(desc.windowHandle);
-        if (!hwnd)
+        if (!desc.surface.IsValidFor(RHIBackendType::DX12))
         {
-            RVX_RHI_ERROR("Invalid window handle for swap chain");
+            RVX_RHI_ERROR("Invalid Win32 surface for DX12 swap chain");
             return;
+        }
+        HWND hwnd = reinterpret_cast<HWND>(desc.surface.nativeWindow);
+
+        ComPtr<IDXGIFactory5> factory5;
+        if (SUCCEEDED(device->GetDXGIFactory()->QueryInterface(
+                IID_PPV_ARGS(&factory5))))
+        {
+            BOOL allowTearing = FALSE;
+            if (SUCCEEDED(factory5->CheckFeatureSupport(
+                    DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                    &allowTearing,
+                    sizeof(allowTearing))))
+            {
+                m_tearingSupported = allowTearing == TRUE;
+            }
         }
 
         DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-        swapChainDesc.Width = desc.width;
-        swapChainDesc.Height = desc.height;
-        swapChainDesc.Format = ToDXGIFormat(desc.format);
+        swapChainDesc.Width = desc.surface.width;
+        swapChainDesc.Height = desc.surface.height;
+        swapChainDesc.Format = ToDXGIFormat(desc.surface.preferredFormat);
         swapChainDesc.Stereo = FALSE;
         swapChainDesc.SampleDesc.Count = 1;
         swapChainDesc.SampleDesc.Quality = 0;
@@ -35,7 +49,8 @@ namespace RVX
         swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
         swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-        swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        swapChainDesc.Flags = ResolveCreationFlags(
+            m_vsync, m_tearingSupported);
 
         ComPtr<IDXGISwapChain1> swapChain1;
         HRESULT hr = device->GetDXGIFactory()->CreateSwapChainForHwnd(
@@ -48,7 +63,7 @@ namespace RVX
         if (FAILED(hr))
         {
             // Some drivers reject sRGB swapchains; fall back to UNORM.
-            if (desc.format == RHIFormat::BGRA8_UNORM_SRGB)
+            if (desc.surface.preferredFormat == RHIFormat::BGRA8_UNORM_SRGB)
             {
                 RVX_RHI_WARN("DX12 swapchain sRGB not supported (0x{:08X}), falling back to UNORM",
                     static_cast<uint32>(hr));
@@ -78,7 +93,8 @@ namespace RVX
         CreateBackBufferResources();
 
         RVX_RHI_INFO("DX12 SwapChain created: {}x{}, {} buffers, format {}",
-            desc.width, desc.height, desc.bufferCount, static_cast<int>(desc.format));
+            desc.surface.width, desc.surface.height, desc.bufferCount,
+            static_cast<int>(desc.surface.preferredFormat));
     }
 
     DX12SwapChain::~DX12SwapChain()
@@ -137,27 +153,32 @@ namespace RVX
         return m_backBufferViews[m_currentBackBufferIndex].Get();
     }
 
+    UINT DX12SwapChain::ResolveCreationFlags(
+        bool vsync,
+        bool tearingSupported) noexcept
+    {
+        UINT flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        if (!vsync && tearingSupported)
+        {
+            flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        }
+        return flags;
+    }
+
+    UINT DX12SwapChain::ResolvePresentFlags(
+        bool vsync,
+        bool tearingSupported) noexcept
+    {
+        return !vsync && tearingSupported
+            ? DXGI_PRESENT_ALLOW_TEARING
+            : 0U;
+    }
+
     void DX12SwapChain::Present()
     {
         UINT syncInterval = m_vsync ? 1 : 0;
-        UINT presentFlags = 0;
-
-        if (!m_vsync)
-        {
-            // Allow tearing for variable refresh rate displays
-            ComPtr<IDXGIFactory5> factory5;
-            if (SUCCEEDED(m_device->GetDXGIFactory()->QueryInterface(IID_PPV_ARGS(&factory5))))
-            {
-                BOOL allowTearing = FALSE;
-                if (SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing))))
-                {
-                    if (allowTearing)
-                    {
-                        presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
-                    }
-                }
-            }
-        }
+        const UINT presentFlags = ResolvePresentFlags(
+            m_vsync, m_tearingSupported);
 
         HRESULT hr = m_swapChain->Present(syncInterval, presentFlags);
 
@@ -183,10 +204,7 @@ namespace RVX
 
         RVX_RHI_DEBUG("Resizing swap chain: {}x{} -> {}x{}", m_width, m_height, width, height);
 
-        // Wait for GPU to finish using the buffers
-        m_device->WaitIdle();
-
-        // Release old resources
+        // RenderContext has already resolved the old surface-generation token.
         ReleaseBackBufferResources();
 
         // Resize buffers
@@ -213,7 +231,12 @@ namespace RVX
     // =============================================================================
     RHISwapChainRef CreateDX12SwapChain(DX12Device* device, const RHISwapChainDesc& desc)
     {
-        return Ref<DX12SwapChain>(new DX12SwapChain(device, desc));
+        Ref<DX12SwapChain> swapChain(new DX12SwapChain(device, desc));
+        if (!swapChain->IsValid())
+        {
+            return nullptr;
+        }
+        return swapChain;
     }
 
 } // namespace RVX

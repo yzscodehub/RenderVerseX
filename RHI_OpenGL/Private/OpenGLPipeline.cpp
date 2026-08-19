@@ -150,7 +150,8 @@ namespace RVX
     // =============================================================================
 
     OpenGLPipelineLayout::OpenGLPipelineLayout(OpenGLDevice* device, const RHIPipelineLayoutDesc& desc)
-        : m_device(device)
+        : RHIPipelineLayout(desc)
+        , m_device(device)
         , m_desc(desc)
     {
         for (auto* layout : desc.setLayouts)
@@ -263,6 +264,7 @@ namespace RVX
             const auto& elem = m_inputLayout.elements[i];
             hashCombine(m_inputLayoutHash, std::hash<std::string>{}(elem.semanticName ? elem.semanticName : ""));
             hashCombine(m_inputLayoutHash, elem.semanticIndex);
+            hashCombine(m_inputLayoutHash, elem.location);
             hashCombine(m_inputLayoutHash, static_cast<uint64>(elem.format));
             hashCombine(m_inputLayoutHash, elem.inputSlot);
             hashCombine(m_inputLayoutHash, elem.alignedByteOffset);

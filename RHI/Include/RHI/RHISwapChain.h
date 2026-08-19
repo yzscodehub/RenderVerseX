@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RHI/RHINativeSurface.h"
 #include "RHI/RHIResources.h"
 
 namespace RVX
@@ -9,12 +10,8 @@ namespace RVX
     // =============================================================================
     struct RHISwapChainDesc
     {
-        void* windowHandle = nullptr;  // HWND on Windows
-        uint32 width = 0;
-        uint32 height = 0;
-        RHIFormat format = RHIFormat::BGRA8_UNORM;
+        NativeSurfaceDesc surface;
         uint32 bufferCount = 3;
-        bool vsync = true;
         const char* debugName = nullptr;
     };
 

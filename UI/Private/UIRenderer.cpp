@@ -420,15 +420,41 @@ namespace
         return glyph->advance * GetAtlasGlyphScale(*atlas, fontSize);
     }
 
+    float GetTextKerningAdvance(const UIFontFallbackChain& font,
+                                const UIFontAtlas* atlas,
+                                uint32 previousCodepoint,
+                                uint32 codepoint,
+                                float fontSize)
+    {
+        if (atlas &&
+            atlas->HasLayoutMetrics() &&
+            atlas->HasGlyph(previousCodepoint) &&
+            atlas->HasGlyph(codepoint))
+        {
+            return atlas->GetKerningAdvance(
+                previousCodepoint, codepoint, fontSize);
+        }
+        return font.GetKerningAdvance(
+            previousCodepoint, codepoint, fontSize);
+    }
+
     UITextMetrics MeasureTextForAtlas(const UIFontFallbackChain& font,
                                       const UIFontAtlas* atlas,
                                       const std::string& text,
                                       float fontSize)
     {
         UITextMetrics metrics;
-        metrics.ascent = font.GetAscent(fontSize);
-        metrics.descent = font.GetDescent(fontSize);
-        metrics.lineGap = font.GetLineGap(fontSize);
+        const bool useAtlasMetrics =
+            atlas && atlas->HasLayoutMetrics();
+        metrics.ascent = useAtlasMetrics
+                             ? atlas->GetAscent(fontSize)
+                             : font.GetAscent(fontSize);
+        metrics.descent = useAtlasMetrics
+                              ? atlas->GetDescent(fontSize)
+                              : font.GetDescent(fontSize);
+        metrics.lineGap = useAtlasMetrics
+                              ? atlas->GetLineGap(fontSize)
+                              : font.GetLineGap(fontSize);
         metrics.lineCount = text.empty() ? 0u : 1u;
 
         float currentLineWidth = 0.0f;
@@ -455,8 +481,12 @@ namespace
 
             if (hasPreviousCodepoint)
             {
-                currentLineWidth +=
-                    font.GetKerningAdvance(previousCodepoint, codepoint, fontSize);
+                currentLineWidth += GetTextKerningAdvance(
+                    font,
+                    atlas,
+                    previousCodepoint,
+                    codepoint,
+                    fontSize);
             }
 
             const float atlasAdvance = GetAtlasGlyphAdvance(atlas, codepoint, fontSize);
@@ -510,6 +540,7 @@ void UIFontAtlas::Reset()
     m_desc = {};
     m_pixels.clear();
     m_glyphs.clear();
+    m_layoutFonts.reset();
 }
 
 const UIFontAtlasGlyph* UIFontAtlas::FindGlyph(uint32 codepoint) const
@@ -520,6 +551,31 @@ const UIFontAtlasGlyph* UIFontAtlas::FindGlyph(uint32 codepoint) const
                                      return glyph.valid && glyph.codepoint == codepoint;
                                  });
     return it != m_glyphs.end() ? &(*it) : nullptr;
+}
+
+float UIFontAtlas::GetKerningAdvance(uint32 previousCodepoint,
+                                     uint32 codepoint,
+                                     float fontSize) const
+{
+    return m_layoutFonts
+               ? m_layoutFonts->GetKerningAdvance(
+                     previousCodepoint, codepoint, fontSize)
+               : 0.0f;
+}
+
+float UIFontAtlas::GetAscent(float fontSize) const
+{
+    return m_layoutFonts ? m_layoutFonts->GetAscent(fontSize) : 0.0f;
+}
+
+float UIFontAtlas::GetDescent(float fontSize) const
+{
+    return m_layoutFonts ? m_layoutFonts->GetDescent(fontSize) : 0.0f;
+}
+
+float UIFontAtlas::GetLineGap(float fontSize) const
+{
+    return m_layoutFonts ? m_layoutFonts->GetLineGap(fontSize) : 0.0f;
 }
 
 const UIFontMetrics& UIFontMetrics::Default()
@@ -730,6 +786,13 @@ bool UIFontMetrics::BuildAtlas(UIFontAtlas& atlas, const UIFontAtlasDesc& desc) 
         atlas.m_glyphs.push_back(glyph);
     }
 
+    auto layoutFonts = std::make_shared<UIFontFallbackChain>();
+    if (!layoutFonts->AddFont(*this))
+    {
+        atlas.Reset();
+        return false;
+    }
+    atlas.m_layoutFonts = std::move(layoutFonts);
     atlas.m_built = true;
     return true;
 }
@@ -1244,6 +1307,8 @@ bool UIFontFallbackChain::BuildAtlas(UIFontAtlas& atlas,
         }
     }
 
+    atlas.m_layoutFonts =
+        std::make_shared<UIFontFallbackChain>(*this);
     atlas.m_built = true;
     return true;
 }
@@ -1726,7 +1791,7 @@ void UIRenderer::DrawText(const std::string& text,
 
     float penX = originX;
     float lineTop = originY;
-    float baselineY = lineTop + font.GetAscent(fontSize);
+    float baselineY = lineTop + textMetrics.ascent;
     uint32 previousCodepoint = 0u;
     bool hasPreviousCodepoint = false;
     size_t index = 0;
@@ -1741,8 +1806,10 @@ void UIRenderer::DrawText(const std::string& text,
         if (codepoint == '\n')
         {
             penX = originX;
-            lineTop += font.GetLineHeight(fontSize);
-            baselineY = lineTop + font.GetAscent(fontSize);
+            lineTop += textMetrics.ascent +
+                       textMetrics.descent +
+                       textMetrics.lineGap;
+            baselineY = lineTop + textMetrics.ascent;
             previousCodepoint = 0u;
             hasPreviousCodepoint = false;
             continue;
@@ -1750,7 +1817,12 @@ void UIRenderer::DrawText(const std::string& text,
 
         if (hasPreviousCodepoint)
         {
-            penX += font.GetKerningAdvance(previousCodepoint, codepoint, fontSize);
+            penX += GetTextKerningAdvance(
+                font,
+                m_fontAtlas,
+                previousCodepoint,
+                codepoint,
+                fontSize);
         }
         const UIGlyphMetrics glyphMetrics = font.GetCodepointMetrics(codepoint, fontSize);
         float glyphAdvance = glyphMetrics.advance;
@@ -2162,7 +2234,14 @@ bool UIRenderer::EnsureTextureDescriptorResources()
     {
         RHIDescriptorSetLayoutDesc layoutDesc;
         layoutDesc.debugName = "UI.TextureSetLayout";
-        layoutDesc.AddBinding(0, RHIBindingType::CombinedTextureSampler, RHIShaderStage::Pixel);
+        layoutDesc.AddBinding(
+            0,
+            RHIBindingType::SampledTexture,
+            RHIShaderStage::Pixel);
+        layoutDesc.AddBinding(
+            1,
+            RHIBindingType::Sampler,
+            RHIShaderStage::Pixel);
         m_textureSetLayout = m_device->CreateDescriptorSetLayout(layoutDesc);
     }
 
@@ -2234,7 +2313,8 @@ bool UIRenderer::EnsureWhiteTexture(RHICommandContext& context)
     RHIDescriptorSetDesc descriptorDesc;
     descriptorDesc.debugName = "UI.WhiteTextureSet";
     descriptorDesc.SetLayout(textureSetLayout)
-                  .BindCombined(0, m_whiteTextureView.Get(), m_textureSampler.Get());
+                  .BindTexture(0, m_whiteTextureView.Get())
+                  .BindSampler(1, m_textureSampler.Get());
     m_whiteDescriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
     if (!m_whiteDescriptorSet)
     {
@@ -2322,7 +2402,8 @@ bool UIRenderer::EnsureFontAtlasTexture(RHICommandContext& context)
     RHIDescriptorSetDesc descriptorDesc;
     descriptorDesc.debugName = "UI.FontAtlasTextureSet";
     descriptorDesc.SetLayout(textureSetLayout)
-                  .BindCombined(0, m_fontAtlasTextureView.Get(), m_fontSampler.Get());
+                  .BindTexture(0, m_fontAtlasTextureView.Get())
+                  .BindSampler(1, m_fontSampler.Get());
     m_fontAtlasDescriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
     if (!m_fontAtlasDescriptorSet)
     {
@@ -2356,7 +2437,8 @@ RHIDescriptorSet* UIRenderer::GetOrCreateTextureDescriptor(RHITextureView* textu
     RHIDescriptorSetDesc descriptorDesc;
     descriptorDesc.debugName = "UI.ImageTextureSet";
     descriptorDesc.SetLayout(textureSetLayout)
-                  .BindCombined(0, textureView, m_textureSampler.Get());
+                  .BindTexture(0, textureView)
+                  .BindSampler(1, m_textureSampler.Get());
     RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
     if (!descriptorSet)
     {

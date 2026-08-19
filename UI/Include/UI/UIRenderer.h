@@ -133,6 +133,13 @@ public:
 
     const UIFontAtlasGlyph* FindGlyph(uint32 codepoint) const;
     bool HasGlyph(uint32 codepoint) const { return FindGlyph(codepoint) != nullptr; }
+    bool HasLayoutMetrics() const { return m_layoutFonts != nullptr; }
+    float GetKerningAdvance(uint32 previousCodepoint,
+                            uint32 codepoint,
+                            float fontSize) const;
+    float GetAscent(float fontSize) const;
+    float GetDescent(float fontSize) const;
+    float GetLineGap(float fontSize) const;
 
 private:
     friend class UIFontMetrics;
@@ -145,6 +152,7 @@ private:
     UIFontAtlasDesc m_desc;
     std::vector<uint8> m_pixels;
     std::vector<UIFontAtlasGlyph> m_glyphs;
+    std::shared_ptr<const UIFontFallbackChain> m_layoutFonts;
 };
 
 class UIFontMetrics

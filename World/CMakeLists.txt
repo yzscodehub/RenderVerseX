@@ -1,18 +1,14 @@
 # =============================================================================
-# World Module - World container, spatial subsystem, and picking
+# World Module - pure Scene ECS runtime ownership and camera authoring
 # =============================================================================
-# Integrates:
-# - Scene module (SceneManager, SceneEntity, etc.)
-# - Spatial module (BVH, spatial queries)
-# - Picking functionality
+# Engine owns execution composition, fixed-step policy, and rendering.  World
+# owns only SceneEcsRuntime, WorldEcsCameraService, and its value config.
 # =============================================================================
 add_library(RVX_World STATIC)
 
 target_sources(RVX_World PRIVATE
+    Private/ECS/WorldEcsCameraService.cpp
     Private/World.cpp
-    Private/PhysicsSubsystem.cpp
-    Private/SpatialSubsystem.cpp
-    Private/PickingService.cpp
 )
 
 target_include_directories(RVX_World PUBLIC
@@ -24,9 +20,6 @@ target_link_libraries(RVX_World PUBLIC
     RVX_Core
     RVX::Physics
     RVX_Scene
-    RVX_Resource
-    Spatial
-    RVX_Runtime
 )
 
 add_library(RVX::World ALIAS RVX_World)

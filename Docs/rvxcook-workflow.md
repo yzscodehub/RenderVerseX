@@ -92,11 +92,6 @@ Current regression gates for this workflow:
 - `RenderHonestyValidationFixture.RVXCookCliRejectsInvalidMeshCookProfile`
 - `RenderHonestyValidationFixture.ResourceManagerLoadsCookedMeshArtifactWithLOD`
 - `GPUResourceManagerValidation.BC7TextureDataUploadsWithBlockLayout`
-- `ModelViewerCookedBCMaterialFixture`
-- `ModelViewerOpenGLCookedBCMaterialSmoke`
-- `OpenGLCookedBCMaterialImageContentValidation`
-
-The cooked BC ModelViewer fixture is intentionally generated from authored `.tga` image URIs and a cook profile. It then runs `RVXCook --rewrite-gltf-texture-uris`; the ModelViewer smoke test consumes the rewritten runtime glTF and renders BC7/BC3/BC5/BC1 material textures through OpenGL.
 
 ## Known Limits
 

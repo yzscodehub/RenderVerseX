@@ -1,15 +1,53 @@
 #include "Core/Core.h"
 #include "Render/Graph/RenderGraph.h"
+#include "Render/Graph/RenderGraphCompiler.h"
+#include "Render/Graph/RenderGraphExecutor.h"
 #include "Render/Graph/TransientResourcePool.h"
+#include "../Common/RenderGraphValidationAccess.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 using namespace RVX;
 
+namespace RVX
+{
+    struct RenderGraphExecutionTestAccess
+    {
+        static bool MarkAdopted(RenderGraphExecution& execution)
+        {
+            return execution.MarkAdopted();
+        }
+
+        static bool Commit(RenderGraphExecution& execution,
+                           const GPUCompletionToken& completion)
+        {
+            return execution.Commit(completion);
+        }
+    };
+} // namespace RVX
+
 namespace
 {
+    std::string ReadTextFile(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    }
+
     class FakeTexture final : public RHITexture
     {
     public:
@@ -32,6 +70,29 @@ namespace
         RHITextureDesc m_desc;
     };
 
+    class FakeTextureView final : public RHITextureView
+    {
+    public:
+        FakeTextureView(RHITexture* texture, const RHITextureViewDesc& desc)
+            : RHITextureView(RHITextureRef(texture))
+            , m_format(desc.format == RHIFormat::Unknown
+                           ? texture->GetFormat()
+                           : desc.format)
+            , m_range(desc.subresourceRange)
+        {
+        }
+
+        RHIFormat GetFormat() const override { return m_format; }
+        const RHISubresourceRange& GetSubresourceRange() const override
+        {
+            return m_range;
+        }
+
+    private:
+        RHIFormat m_format = RHIFormat::Unknown;
+        RHISubresourceRange m_range;
+    };
+
     class FakeBuffer final : public RHIBuffer
     {
     public:
@@ -51,13 +112,42 @@ namespace
         RHIBufferDesc m_desc;
     };
 
+    class FakeHeap final : public RHIHeap
+    {
+    public:
+        explicit FakeHeap(const RHIHeapDesc& desc)
+            : m_desc(desc)
+        {
+        }
+
+        uint64 GetSize() const override { return m_desc.size; }
+        RHIHeapType GetType() const override { return m_desc.type; }
+        RHIHeapFlags GetFlags() const override { return m_desc.flags; }
+
+    private:
+        RHIHeapDesc m_desc;
+    };
+
     class FakeCommandContext final : public RHICommandContext
     {
     public:
+        explicit FakeCommandContext(
+            RHICommandQueueType queueType = RHICommandQueueType::Graphics)
+            : m_queueType(queueType)
+        {
+        }
+
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
         void Begin() override {}
         void End() override {}
         void Reset() override {}
-        void BeginEvent(const char*, uint32 = 0) override {}
+        void BeginEvent(const char* name, uint32 = 0) override
+        {
+            if (name)
+            {
+                events.push_back(name);
+            }
+        }
         void EndEvent() override {}
         void SetMarker(const char*, uint32 = 0) override {}
         void BufferBarrier(const RHIBufferBarrier& barrier) override { bufferBarriers.push_back(barrier); }
@@ -66,6 +156,13 @@ namespace
         {
             bufferBarriers.insert(bufferBarriers.end(), buffers.begin(), buffers.end());
             textureBarriers.insert(textureBarriers.end(), textures.begin(), textures.end());
+        }
+        void AliasingBarriers(
+            std::span<const RHIResourceAliasingBarrier> barriers) override
+        {
+            aliasingBarriers.insert(aliasingBarriers.end(),
+                                    barriers.begin(),
+                                    barriers.end());
         }
         void BeginBarrier(const RHIBufferBarrier&) override {}
         void BeginBarrier(const RHITextureBarrier&) override {}
@@ -104,11 +201,18 @@ namespace
         void SetDepthBounds(float, float) override {}
         void SetStencilReferenceSeparate(uint32, uint32) override {}
         void SetLineWidth(float) override {}
-        void SignalFence(RHIFence*, uint64) override {}
-        void WaitFence(RHIFence*, uint64) override {}
+        void SignalFence(RHIFence*, uint64 value) override { signaledFenceValues.push_back(value); }
+        void WaitFence(RHIFence*, uint64 value) override { waitedFenceValues.push_back(value); }
 
+        std::vector<std::string> events;
         std::vector<RHIBufferBarrier> bufferBarriers;
         std::vector<RHITextureBarrier> textureBarriers;
+        std::vector<RHIResourceAliasingBarrier> aliasingBarriers;
+        std::vector<uint64> signaledFenceValues;
+        std::vector<uint64> waitedFenceValues;
+
+    private:
+        RHICommandQueueType m_queueType = RHICommandQueueType::Graphics;
     };
 
     class FakeFence final : public RHIFence
@@ -131,6 +235,15 @@ namespace
     class FakeDevice final : public IRHIDevice
     {
     public:
+        FakeDevice()
+        {
+            m_capabilities.supportsExplicitResourceBarriers = true;
+            m_capabilities.supportsBufferRangeBarriers = true;
+            m_capabilities.queueTopology.logicalQueueDomains[
+                static_cast<uint8>(RHICommandQueueType::Compute)] =
+                GPUQueueDomain::Compute;
+        }
+
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
         {
             ++createBufferCount;
@@ -139,27 +252,93 @@ namespace
 
         RHITextureRef CreateTexture(const RHITextureDesc& desc) override
         {
+            ++textureCreateAttemptCount;
+            if (createTextureCount >= failTextureCreationAfter)
+            {
+                return {};
+            }
             ++createTextureCount;
             return RHITextureRef(new FakeTexture(desc));
         }
 
-        RHITextureViewRef CreateTextureView(RHITexture*, const RHITextureViewDesc& = {}) override { return {}; }
+        RHITextureViewRef CreateTextureView(
+            RHITexture* texture,
+            const RHITextureViewDesc& desc = {}) override
+        {
+            ++textureViewCreateAttemptCount;
+            if (!texture || createTextureViewCount >= failTextureViewCreationAfter)
+                return {};
+            ++createTextureViewCount;
+            return RHITextureViewRef(new FakeTextureView(texture, desc));
+        }
         RHISamplerRef CreateSampler(const RHISamplerDesc&) override { return {}; }
         RHIShaderRef CreateShader(const RHIShaderDesc&) override { return {}; }
-        RHIHeapRef CreateHeap(const RHIHeapDesc&) override { return {}; }
-        RHITextureRef CreatePlacedTexture(RHIHeap*, uint64, const RHITextureDesc&) override { return {}; }
-        RHIBufferRef CreatePlacedBuffer(RHIHeap*, uint64, const RHIBufferDesc&) override { return {}; }
-        MemoryRequirements GetTextureMemoryRequirements(const RHITextureDesc&) override { return {}; }
-        MemoryRequirements GetBufferMemoryRequirements(const RHIBufferDesc&) override { return {}; }
+        RHIHeapRef CreateHeap(const RHIHeapDesc& desc) override
+        {
+            return m_capabilities.supportsExplicitAliasingBarriers
+                ? RHIHeapRef(new FakeHeap(desc))
+                : RHIHeapRef{};
+        }
+        RHITextureRef CreatePlacedTexture(
+            RHIHeap*, uint64, const RHITextureDesc& desc) override
+        {
+            if (!m_capabilities.supportsExplicitAliasingBarriers)
+            {
+                return {};
+            }
+            ++createPlacedTextureCount;
+            return RHITextureRef(new FakeTexture(desc));
+        }
+        RHIBufferRef CreatePlacedBuffer(
+            RHIHeap*, uint64, const RHIBufferDesc& desc) override
+        {
+            if (!m_capabilities.supportsExplicitAliasingBarriers)
+            {
+                return {};
+            }
+            ++createPlacedBufferCount;
+            return RHIBufferRef(new FakeBuffer(desc));
+        }
+        MemoryRequirements GetTextureMemoryRequirements(const RHITextureDesc&) override
+        {
+            ++textureMemoryRequirementQueryCount;
+            return m_capabilities.supportsExplicitAliasingBarriers
+                ? MemoryRequirements{65536, 65536}
+                : MemoryRequirements{};
+        }
+        MemoryRequirements GetBufferMemoryRequirements(const RHIBufferDesc&) override
+        {
+            ++bufferMemoryRequirementQueryCount;
+            return m_capabilities.supportsExplicitAliasingBarriers
+                ? MemoryRequirements{65536, 256}
+                : MemoryRequirements{};
+        }
         RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc&) override { return {}; }
         RHIPipelineLayoutRef CreatePipelineLayout(const RHIPipelineLayoutDesc&) override { return {}; }
         RHIPipelineRef CreateGraphicsPipeline(const RHIGraphicsPipelineDesc&) override { return {}; }
         RHIPipelineRef CreateComputePipeline(const RHIComputePipelineDesc&) override { return {}; }
         RHIDescriptorSetRef CreateDescriptorSet(const RHIDescriptorSetDesc&) override { return {}; }
         RHIQueryPoolRef CreateQueryPool(const RHIQueryPoolDesc&) override { return {}; }
-        RHICommandContextRef CreateCommandContext(RHICommandQueueType) override { return {}; }
-        uint64 SubmitCommandContext(RHICommandContext*, RHIFence*) override { return 0; }
+        RHICommandContextRef CreateCommandContext(RHICommandQueueType type) override
+        {
+            return RHICommandContextRef(new FakeCommandContext(type));
+        }
+        uint64 SubmitCommandContext(
+            RHICommandContext*, RHIFence* signalFence) override
+        {
+            if (!m_timelineSubmissionEnabled || !signalFence)
+                return 0;
+            const uint64 value = ++m_lastTimelineSubmissionValue;
+            signalFence->Signal(value);
+            return value;
+        }
         uint64 SubmitCommandContexts(std::span<RHICommandContext* const>, RHIFence*) override { return 0; }
+        uint64 SubmitQueuePlan(const RHIQueueSubmissionPlan& plan,
+                               RHIFence*) override
+        {
+            lastSubmittedQueuePlan = plan;
+            return ++lastQueuePlanFenceValue;
+        }
         RHISwapChainRef CreateSwapChain(const RHISwapChainDesc&) override { return {}; }
         RHIFenceRef CreateFence(uint64 initialValue = 0) override { return RHIFenceRef(new FakeFence(initialValue)); }
         void WaitForFence(RHIFence*, uint64) override {}
@@ -172,14 +351,61 @@ namespace
         RHIMemoryStats GetMemoryStats() const override { return {}; }
         void BeginResourceGroup(const char*) override {}
         void EndResourceGroup() override {}
-        const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
+        const RHICapabilities& GetCapabilities() const override
+        {
+            ++capabilityQueryCount;
+            return m_capabilities;
+        }
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX12; }
+
+        RHICapabilities& MutableCapabilities() { return m_capabilities; }
+
+        void EnableTimelineRetirement()
+        {
+            m_timelineSubmissionEnabled = true;
+            m_capabilities.backendType = RHIBackendType::DX12;
+            m_capabilities.adapterName = "RenderGraphLifetimeFake";
+            m_capabilities.driverVersion = "1";
+            m_capabilities.supportsComputePipeline = true;
+            m_capabilities.supportsDescriptorSets = true;
+            m_capabilities.supportsDynamicDescriptorOffsets = true;
+            m_capabilities.maxDescriptorSets = 4;
+            m_capabilities.supportsExplicitResourceBarriers = true;
+            m_capabilities.supportsBufferRangeBarriers = false;
+            m_capabilities.supportsDefaultQueueFenceSignal = true;
+            m_capabilities.supportsExplicitQueueFenceSignal = true;
+            m_capabilities.supportsAsyncCompute = true;
+            m_capabilities.dx12.resourceBindingTier = 2;
+            m_capabilities.queueTopology.completionMode =
+                RHIQueueCompletionMode::NativeTimeline;
+            m_capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy};
+            m_capabilities.queueTopology.activeDomainCount = 3;
+        }
 
         uint32 createTextureCount = 0;
         uint32 createBufferCount = 0;
+        uint32 createPlacedTextureCount = 0;
+        uint32 createPlacedBufferCount = 0;
+        uint32 createTextureViewCount = 0;
+        uint32 textureViewCreateAttemptCount = 0;
+        uint32 textureCreateAttemptCount = 0;
+        uint32 failTextureCreationAfter =
+            std::numeric_limits<uint32>::max();
+        uint32 failTextureViewCreationAfter =
+            std::numeric_limits<uint32>::max();
+        uint32 textureMemoryRequirementQueryCount = 0;
+        uint32 bufferMemoryRequirementQueryCount = 0;
+        mutable uint32 capabilityQueryCount = 0;
+        RHIQueueSubmissionPlan lastSubmittedQueuePlan;
+        uint64 lastQueuePlanFenceValue = 0;
 
     private:
         RHICapabilities m_capabilities;
+        bool m_timelineSubmissionEnabled = false;
+        uint64 m_lastTimelineSubmissionValue = 0;
     };
 
     class LogEnvironment final : public ::testing::Environment
@@ -198,6 +424,31 @@ namespace
 
     [[maybe_unused]] ::testing::Environment* const g_logEnvironment =
         ::testing::AddGlobalTestEnvironment(new LogEnvironment());
+
+    class ScopedJobSystem final
+    {
+    public:
+        explicit ScopedJobSystem(size_t workerCount)
+            : m_restoreInitialized(JobSystem::Get().IsInitialized()),
+              m_restoreWorkerCount(m_restoreInitialized
+                                       ? JobSystem::Get().GetWorkerCount()
+                                       : 0U)
+        {
+            JobSystem::Get().Shutdown();
+            JobSystem::Get().Initialize(workerCount);
+        }
+
+        ~ScopedJobSystem()
+        {
+            JobSystem::Get().Shutdown();
+            if (m_restoreInitialized)
+                JobSystem::Get().Initialize(m_restoreWorkerCount);
+        }
+
+    private:
+        bool m_restoreInitialized = false;
+        size_t m_restoreWorkerCount = 0;
+    };
 } // namespace
 
 // =============================================================================
@@ -222,15 +473,384 @@ TEST(RenderGraphValidation, TextureResourceCreation)
     EXPECT_TRUE(texture.IsValid());
 }
 
-TEST(RenderGraphValidation, TransientResourcePoolReusesTexturesAcrossClear)
+TEST(RenderGraphValidation, ExplicitTextureViewIsDeclaredThenRealizedOnce)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetTransientResourcePool(graph, &pool);
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+        128, 128, RHIFormat::D32_FLOAT);
+    depthDesc.arraySize = 4;
+    const RGTextureHandle depth = graph.CreateTexture(depthDesc);
+
+    struct PassData
+    {
+        RGTextureViewHandle cascadeView;
+        RGTextureHandle depth;
+    };
+    bool executed = false;
+    graph.AddPass<PassData>(
+        "ExplicitCascadeView",
+        RenderGraphPassType::Graphics,
+        [depth](RenderGraphBuilder& builder, PassData& data)
+        {
+            RHITextureViewDesc desc;
+            desc.format = RHIFormat::D32_FLOAT;
+            desc.dimension = RHITextureDimension::Texture2D;
+            desc.subresourceRange = {
+                0, 1, 2, 1, RHITextureAspect::Depth};
+            desc.type = RHITextureViewType::DepthStencil;
+            desc.debugName = "ExplicitCascadeLayer2";
+            data.cascadeView = builder.CreateTextureView(depth, desc);
+            data.cascadeView = builder.Write(
+                data.cascadeView,
+                MakeRGAccessDesc(
+                    RHIResourceState::DepthWrite,
+                    RHIShaderStage::None,
+                    RHIDiscardIntent::Discard));
+            data.depth = depth;
+        },
+        [&executed](const PassData& data, RenderGraphPassContext& context)
+        {
+            RHITextureView* view =
+                context.GetTextureView(data.cascadeView);
+            ASSERT_NE(view, nullptr);
+            EXPECT_EQ(view->GetTexture(), context.GetTexture(data.depth));
+            EXPECT_EQ(view->GetSubresourceRange().baseArrayLayer, 2u);
+            EXPECT_EQ(view->GetSubresourceRange().arrayLayerCount, 1u);
+            executed = true;
+        });
+    graph.SetExportState(depth, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(device.createTextureCount, 0u);
+    EXPECT_EQ(device.createTextureViewCount, 0u);
+
+    FakeCommandContext commandContext;
+    RenderGraphValidationAccess::Execute(graph, commandContext);
+    EXPECT_TRUE(executed);
+    EXPECT_EQ(device.createTextureCount, 1u);
+    EXPECT_EQ(device.createTextureViewCount, 1u);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 1u);
+
+    RenderGraphExecution execution = RenderGraphValidationAccess::TakeExecution(graph);
+    ASSERT_TRUE(execution);
+    EXPECT_TRUE(execution.AbortUnsubmitted());
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    RenderGraphValidationAccess::Reset(graph);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TextureViewRealizationFailureRollsBackTextureLease)
+{
+    FakeDevice device;
+    device.failTextureViewCreationAfter = 0u;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetTransientResourcePool(graph, &pool);
+    const RGTextureHandle color = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    struct PassData
+    {
+        RGTextureViewHandle target;
+    };
+    graph.AddPass<PassData>(
+        "FailViewRealization",
+        RenderGraphPassType::Graphics,
+        [color](RenderGraphBuilder& builder, PassData& data)
+        {
+            RHITextureViewDesc desc;
+            desc.format = RHIFormat::RGBA8_UNORM;
+            desc.dimension = RHITextureDimension::Texture2D;
+            desc.subresourceRange = RHISubresourceRange::All();
+            desc.type = RHITextureViewType::RenderTarget;
+            data.target = builder.CreateTextureView(color, desc);
+            data.target = builder.Write(
+                data.target,
+                MakeRGAccessDesc(RHIResourceState::RenderTarget));
+        },
+        [](const PassData&, RenderGraphPassContext&) {});
+    graph.SetExportState(color, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    FakeCommandContext commandContext;
+    RenderGraphValidationAccess::Execute(graph, commandContext);
+    EXPECT_EQ(device.textureViewCreateAttemptCount, 1u);
+    EXPECT_EQ(device.createTextureViewCount, 0u);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    EXPECT_EQ(pool.GetStats().leaseAbortCount, 1u);
+    EXPECT_EQ(graph.GetCompileStats().partialRealizationRollbackCount, 1u);
+    EXPECT_FALSE(RenderGraphValidationAccess::TakeExecution(graph));
+
+    RenderGraphValidationAccess::Reset(graph);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientTextureViewsFollowPhysicalPoolSlotReuse)
 {
     FakeDevice device;
     TransientResourcePool pool;
     pool.Initialize(&device);
 
     RenderGraph graph;
-    graph.SetDevice(&device);
-    graph.SetTransientResourcePool(&pool);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetTransientResourcePool(graph, &pool);
+
+    const auto recordFrame = [&]()
+    {
+        RenderGraphValidationAccess::Reset(graph);
+        const RGTextureHandle color = graph.CreateTexture(
+            RHITextureDesc::RenderTarget(
+                64, 64, RHIFormat::RGBA8_UNORM));
+        struct PassData
+        {
+            RGTextureViewHandle target;
+        };
+        graph.AddPass<PassData>(
+            "PooledExplicitView",
+            RenderGraphPassType::Graphics,
+            [color](RenderGraphBuilder& builder, PassData& data)
+            {
+                RHITextureViewDesc desc;
+                desc.format = RHIFormat::RGBA8_UNORM;
+                desc.dimension = RHITextureDimension::Texture2D;
+                desc.subresourceRange = RHISubresourceRange::All();
+                desc.type = RHITextureViewType::RenderTarget;
+                data.target = builder.Write(
+                    builder.CreateTextureView(color, desc),
+                    MakeRGAccessDesc(RHIResourceState::RenderTarget));
+            },
+            [](const PassData& data, RenderGraphPassContext& context)
+            {
+                ASSERT_NE(context.GetTextureView(data.target), nullptr);
+            });
+        graph.SetExportState(color, RHIResourceState::ShaderResource);
+        RenderGraphValidationAccess::Compile(graph);
+        ASSERT_TRUE(graph.GetCompileStats().compileValid);
+        FakeCommandContext commandContext;
+        RenderGraphValidationAccess::Execute(graph, commandContext);
+        RenderGraphExecution execution = RenderGraphValidationAccess::TakeExecution(graph);
+        ASSERT_TRUE(execution);
+        ASSERT_TRUE(execution.AbortUnsubmitted());
+    };
+
+    pool.BeginFrame();
+    recordFrame();
+    pool.EndFrame();
+    EXPECT_EQ(device.createTextureCount, 1u);
+    EXPECT_EQ(device.createTextureViewCount, 1u);
+    EXPECT_EQ(pool.GetStats().textureViewMisses, 1u);
+    EXPECT_EQ(pool.GetStats().textureViewHits, 0u);
+    EXPECT_EQ(pool.GetStats().textureViewCount, 1u);
+
+    pool.BeginFrame();
+    recordFrame();
+    pool.EndFrame();
+    EXPECT_EQ(device.createTextureCount, 1u);
+    EXPECT_EQ(device.createTextureViewCount, 1u);
+    EXPECT_EQ(pool.GetStats().textureViewMisses, 0u);
+    EXPECT_EQ(pool.GetStats().textureViewHits, 1u);
+    EXPECT_EQ(pool.GetStats().textureViewCount, 1u);
+
+    RenderGraphValidationAccess::Reset(graph);
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, CompileIsIdempotentAndAllocationFree)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsQueueSubmissionPlan = true;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
+
+    const RGTextureHandle texture = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    struct PassData
+    {
+        RGTextureHandle colorTarget;
+    };
+    graph.AddPass<PassData>(
+        "AllocationFreeCompile",
+        RenderGraphPassType::Graphics,
+        [texture](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.colorTarget = builder.Write(
+                texture,
+                MakeRGAccessDesc(
+                    RHIResourceState::RenderTarget,
+                    RHIShaderStage::None,
+                    RHIDiscardIntent::Discard));
+        },
+        [](const PassData&, RHICommandContext&) {});
+    graph.SetExportState(texture, RHIResourceState::ShaderResource);
+    const uint32 capabilityQueriesBeforeCompile =
+        device.capabilityQueryCount;
+
+    RenderGraphCompileOptions compileOptions;
+    compileOptions.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+    compileOptions.capabilities = device.MutableCapabilities();
+    compileOptions.hasCapabilitySnapshot = true;
+
+    RenderGraphValidationAccess::Compile(graph, compileOptions);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    const RenderGraph::SubmissionPlan firstPlan = graph.GetSubmissionPlan();
+    const uint64 firstPlanHash = graph.GetCompileStats().planHash;
+    EXPECT_NE(firstPlanHash, 0u);
+    EXPECT_EQ(device.createTextureCount, 0u);
+    EXPECT_EQ(device.createPlacedTextureCount, 0u);
+    EXPECT_EQ(device.textureMemoryRequirementQueryCount, 0u);
+    EXPECT_EQ(device.bufferMemoryRequirementQueryCount, 0u);
+    EXPECT_EQ(device.capabilityQueryCount,
+              capabilityQueriesBeforeCompile);
+    EXPECT_EQ(graph.GetQueueExecutionMode(),
+              RenderGraph::QueueExecutionMode::GraphicsOnly);
+    ASSERT_EQ(firstPlan.queueBatches.size(), 1u);
+    EXPECT_EQ(firstPlan.computeBatchCount, 0u);
+    EXPECT_EQ(firstPlan.copyBatchCount, 0u);
+
+    RenderGraphValidationAccess::Compile(graph, compileOptions);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    const RenderGraph::SubmissionPlan secondPlan = graph.GetSubmissionPlan();
+    EXPECT_EQ(graph.GetCompileStats().planHash, firstPlanHash);
+    EXPECT_EQ(device.createTextureCount, 0u);
+    EXPECT_EQ(device.createPlacedTextureCount, 0u);
+    EXPECT_EQ(device.textureMemoryRequirementQueryCount, 0u);
+    EXPECT_EQ(device.bufferMemoryRequirementQueryCount, 0u);
+    EXPECT_EQ(device.capabilityQueryCount,
+              capabilityQueriesBeforeCompile);
+    EXPECT_EQ(firstPlan.queueBatchCount, secondPlan.queueBatchCount);
+    EXPECT_EQ(firstPlan.queueSyncCount, secondPlan.queueSyncCount);
+
+    FakeCommandContext context;
+    RenderGraphValidationAccess::Execute(graph, context);
+    EXPECT_EQ(device.createTextureCount, 1u);
+}
+
+TEST(RenderGraphValidation, PublicPlanIsOneShotAndFreezesDefinition)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+
+    RenderGraph graph;
+    const RGTextureHandle texture = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA8_UNORM));
+    struct PassData
+    {
+        RGTextureHandle target;
+    };
+    graph.AddPass<PassData>(
+        "OneShotPublicPlan",
+        RenderGraphPassType::Graphics,
+        [texture](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.target = builder.Write(texture, RHIResourceState::RenderTarget);
+        },
+        [](const PassData&, RHICommandContext&) {});
+    graph.SetExportState(texture, RHIResourceState::ShaderResource);
+
+    RenderGraphCompileOptions options;
+    options.capabilities = device.MutableCapabilities();
+    options.hasCapabilitySnapshot = true;
+    RenderGraphCompiler compiler;
+    CompiledRenderGraphPlan plan = compiler.Compile(graph, options);
+    ASSERT_TRUE(plan);
+    EXPECT_EQ(device.createTextureCount, 0u);
+
+    EXPECT_FALSE(graph.CreateTexture(
+        RHITextureDesc::RenderTarget(8, 8, RHIFormat::RGBA8_UNORM)).IsValid());
+    EXPECT_FALSE(graph.CreateBuffer(RHIBufferDesc{}).IsValid());
+
+    FakeCommandContext context;
+    RenderGraphExecutionEnvironment environment;
+    environment.device = &device;
+    environment.transientResourcePool = &pool;
+    environment.graphicsContext = &context;
+    RenderGraphExecutor executor;
+    RenderGraphExecution execution = executor.Prepare(plan, environment);
+    ASSERT_TRUE(execution);
+    EXPECT_FALSE(plan);
+    EXPECT_EQ(device.createTextureCount, 1u);
+    EXPECT_EQ(graph.GetCompileStats().physicalRealizationCount, 1u);
+
+    RenderGraphExecution replay = executor.Prepare(plan, environment);
+    EXPECT_FALSE(replay);
+    ASSERT_TRUE(execution.AbortUnsubmitted());
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, ExecuteDiagnosticsRecordsGraphicsQueueTimeline)
+{
+    RenderGraph graph;
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+
+    RGBufferHandle imported = RenderGraphValidationAccess::ImportBuffer(graph, &buffer, RHIResourceState::Common);
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "GraphicsTimeline",
+        RenderGraphPassType::Graphics,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(imported, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    FakeCommandContext ctx;
+    RenderGraphValidationAccess::Execute(graph, ctx);
+
+    const auto& stats = graph.GetCompileStats();
+    EXPECT_EQ(stats.lastExecutedPassCount, 1u);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.passes.size(), 1u);
+    EXPECT_TRUE(diagnostics.passes[0].executedLastRun);
+    EXPECT_EQ(diagnostics.passes[0].executionQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.passes[0].executionSerial, 0u);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("Last execution: passes=1"), std::string::npos);
+    EXPECT_NE(dump.find("GraphicsTimeline type=Graphics culled=false executed=true queue=Graphics serial=0"), std::string::npos);
+}
+
+TEST(RenderGraphValidation, UnsubmittedExecutionAbortReusesTextureWithoutPublishingFinalAccess)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetTransientResourcePool(graph, &pool);
 
     RHITextureDesc texDesc =
         RHITextureDesc::RenderTarget(128, 64, RHIFormat::RGBA8_UNORM);
@@ -250,15 +870,20 @@ TEST(RenderGraphValidation, TransientResourcePoolReusesTexturesAcrossClear)
                 data.output = builder.Write(texture);
             },
             [](const PassData&, RHICommandContext&) {});
-        graph.SetExportState(texture, RHIResourceState::ShaderResource);
-        graph.Compile();
+        const RHIAccessSnapshot shaderReadAccess = MakeRHIAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Pixel,
+            GPUQueueDomain::Graphics);
+        graph.SetExportAccess(texture, shaderReadAccess);
+        RenderGraphValidationAccess::Compile(graph);
         FakeCommandContext ctx;
-        graph.Execute(ctx);
+        RenderGraphValidationAccess::Execute(graph, ctx);
+        return ctx.textureBarriers;
     };
 
     pool.BeginFrame();
-    graph.Clear();
-    buildFrame();
+    RenderGraphValidationAccess::Reset(graph);
+    const auto firstFrameBarriers = buildFrame();
     pool.EndFrame();
 
     EXPECT_EQ(1u, device.createTextureCount);
@@ -266,16 +891,559 @@ TEST(RenderGraphValidation, TransientResourcePoolReusesTexturesAcrossClear)
     EXPECT_EQ(0u, pool.GetStats().textureHits);
 
     pool.BeginFrame();
-    graph.Clear();
-    buildFrame();
+    RenderGraphValidationAccess::Reset(graph);
+    const auto secondFrameBarriers = buildFrame();
     pool.EndFrame();
 
     EXPECT_EQ(1u, device.createTextureCount);
     EXPECT_EQ(1u, pool.GetStats().textureHits);
     EXPECT_EQ(0u, pool.GetStats().textureMisses);
+    ASSERT_FALSE(firstFrameBarriers.empty());
+    ASSERT_FALSE(secondFrameBarriers.empty());
+    EXPECT_EQ(firstFrameBarriers.front().accessBefore.layout,
+              RHIResourceLayout::Undefined);
+    EXPECT_EQ(secondFrameBarriers.front().accessBefore.layout,
+              RHIResourceLayout::Undefined);
+    EXPECT_EQ(secondFrameBarriers.front().accessBefore.contentValidity,
+              RHIContentValidity::Invalid);
 
-    graph.Clear();
+    RenderGraphValidationAccess::Reset(graph);
     pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientBufferLeasePreservesRangeSnapshot)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+
+    RHIBufferDesc desc;
+    desc.size = 4096;
+    desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+
+    pool.BeginFrame();
+    TransientBufferLease first = pool.AcquireBufferLease(desc);
+    ASSERT_TRUE(first);
+    EXPECT_FALSE(first.reused);
+
+    RHIBufferAccessSnapshot finalAccess = MakeRHIBufferAccessSnapshot(
+        RHIResourceState::ShaderResource,
+        RHIShaderStage::Compute,
+        GPUQueueDomain::Compute,
+        RHIContentValidity::Valid);
+    finalAccess.rangeOverrides.push_back({
+        1024,
+        1024,
+        MakeRHIAccessSnapshot(RHIResourceState::UnorderedAccess,
+                              RHIShaderStage::Compute,
+                              GPUQueueDomain::Compute,
+                              RHIContentValidity::Valid)});
+    pool.ReleaseBuffer(first.buffer, finalAccess);
+    pool.EndFrame();
+
+    pool.BeginFrame();
+    TransientBufferLease second = pool.AcquireBufferLease(desc);
+    ASSERT_TRUE(second);
+    EXPECT_TRUE(second.reused);
+    EXPECT_EQ(second.buffer, first.buffer);
+    EXPECT_EQ(second.accessSnapshot, finalAccess);
+    pool.ReleaseBuffer(second.buffer, second.accessSnapshot);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientTexturePoolSeparatesOptimizedClearIdentity)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+
+    RHITextureDesc firstDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    firstDesc.SetOptimizedClearColor({0.1f, 0.1f, 0.15f, 1.0f});
+    RHITextureDesc secondDesc = firstDesc;
+    secondDesc.SetOptimizedClearColor({0.0f, 0.0f, 0.0f, 1.0f});
+
+    pool.BeginFrame();
+    TransientTextureLease first = pool.AcquireTextureLease(firstDesc);
+    ASSERT_TRUE(first);
+    EXPECT_FALSE(first.reused);
+    pool.ReleaseTexture(first.texture, first.accessSnapshot);
+
+    TransientTextureLease second = pool.AcquireTextureLease(secondDesc);
+    ASSERT_TRUE(second);
+    EXPECT_FALSE(second.reused);
+    EXPECT_NE(second.texture, first.texture);
+    EXPECT_EQ(device.createTextureCount, 2u);
+    pool.ReleaseTexture(second.texture, second.accessSnapshot);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientLeaseIsMoveOnlyGenerationSafeAndAbortable)
+{
+    static_assert(!std::is_copy_constructible_v<TransientTextureLease>);
+    static_assert(!std::is_copy_assignable_v<TransientTextureLease>);
+    static_assert(!std::is_copy_constructible_v<TransientBufferLease>);
+    static_assert(!std::is_copy_assignable_v<TransientBufferLease>);
+
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    const RHITextureDesc desc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA8_UNORM);
+    TransientTextureLease first = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(first);
+    const uint64 firstSlot = first.GetSlotId();
+    const uint32 firstGeneration = first.GetGeneration();
+    RHITexture* firstTexture = first.texture;
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 1u);
+
+    TransientTextureLease moved = std::move(first);
+    EXPECT_FALSE(first);
+    ASSERT_TRUE(moved);
+    EXPECT_TRUE(moved.AbortUnsubmitted());
+    EXPECT_FALSE(moved.AbortUnsubmitted());
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    EXPECT_EQ(pool.GetStats().leaseAbortCount, 1u);
+
+    TransientTextureLease reused = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(reused);
+    EXPECT_TRUE(reused.reused);
+    EXPECT_EQ(reused.texture, firstTexture);
+    EXPECT_EQ(reused.GetSlotId(), firstSlot);
+    EXPECT_NE(reused.GetGeneration(), firstGeneration);
+    EXPECT_TRUE(reused.AbortUnsubmitted());
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientBufferLeaseIsGenerationSafeAndAbortable)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RHIBufferDesc desc;
+    desc.size = 4096;
+    desc.usage = RHIBufferUsage::Structured |
+                 RHIBufferUsage::UnorderedAccess;
+    TransientBufferLease first = pool.AcquireBufferLease(desc);
+    ASSERT_TRUE(first);
+    const uint64 firstSlot = first.GetSlotId();
+    const uint32 firstGeneration = first.GetGeneration();
+    RHIBuffer* firstBuffer = first.buffer;
+    EXPECT_TRUE(first.AbortUnsubmitted());
+    EXPECT_FALSE(first.AbortUnsubmitted());
+
+    TransientBufferLease reused = pool.AcquireBufferLease(desc);
+    ASSERT_TRUE(reused);
+    EXPECT_TRUE(reused.reused);
+    EXPECT_EQ(reused.buffer, firstBuffer);
+    EXPECT_EQ(reused.GetSlotId(), firstSlot);
+    EXPECT_NE(reused.GetGeneration(), firstGeneration);
+    EXPECT_TRUE(reused.AbortUnsubmitted());
+    EXPECT_EQ(pool.GetStats().recordingBufferLeases, 0u);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, DeviceLostLeaseNeverReturnsToFreePool)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    const RHITextureDesc desc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA8_UNORM);
+    TransientTextureLease lost = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(lost);
+    RHITexture* lostTexture = lost.texture;
+    EXPECT_TRUE(lost.MarkDeviceLost());
+    EXPECT_EQ(pool.GetStats().leaseDeviceLostCount, 1u);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+
+    TransientTextureLease replacement = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(replacement);
+    EXPECT_FALSE(replacement.reused);
+    EXPECT_NE(replacement.texture, lostTexture);
+    EXPECT_EQ(device.createTextureCount, 2u);
+    EXPECT_TRUE(replacement.AbortUnsubmitted());
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, TransientLeaseRequiresExactCompletionBeforeReuse)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    const RHITextureDesc desc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA8_UNORM);
+    TransientTextureLease first = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(first);
+
+    const GPUCompletionToken emptyCompletion;
+    EXPECT_FALSE(first.CanCommit(emptyCompletion));
+    EXPECT_FALSE(first.Commit(emptyCompletion, first.accessSnapshot));
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 1u);
+
+    GPUCompletionToken completion;
+    ASSERT_TRUE(InsertGPUCompletionPoint(
+        completion, {GPUQueueDomain::Graphics, 7u}));
+    ASSERT_TRUE(first.CanCommit(completion));
+    const RHITextureAccessSnapshot finalAccess =
+        MakeRHITextureAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Pixel,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid);
+    EXPECT_TRUE(first.Commit(completion, finalAccess));
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    EXPECT_EQ(pool.GetStats().inFlightTextureLeases, 1u);
+    EXPECT_EQ(pool.GetStats().leaseCommitCount, 1u);
+
+    // No tracker can prove token 7 complete, so the in-flight slot is not
+    // reusable and a distinct physical texture must be allocated.
+    TransientTextureLease second = pool.AcquireTextureLease(desc);
+    ASSERT_TRUE(second);
+    EXPECT_FALSE(second.reused);
+    EXPECT_EQ(device.createTextureCount, 2u);
+    EXPECT_TRUE(second.AbortUnsubmitted());
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, RenderGraphExecutionAbortReturnsEveryLease)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetTransientResourcePool(graph, &pool);
+    const RGTextureHandle texture = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    struct PassData
+    {
+        RGTextureHandle output;
+    };
+    graph.AddPass<PassData>(
+        "AbortExecution",
+        RenderGraphPassType::Graphics,
+        [texture](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.output = builder.Write(texture);
+        },
+        [](const PassData&, RHICommandContext&) {});
+    graph.SetExportState(texture, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    FakeCommandContext context;
+    RenderGraphValidationAccess::Execute(graph, context);
+    RHITexture* physicalTexture = RenderGraphValidationAccess::GetTexture(graph, texture);
+    ASSERT_NE(physicalTexture, nullptr);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 1u);
+
+    RenderGraphExecution execution = RenderGraphValidationAccess::TakeExecution(graph);
+    ASSERT_TRUE(execution);
+    EXPECT_EQ(execution.GetState(), RenderGraphExecutionState::Recorded);
+    EXPECT_TRUE(execution.AbortUnsubmitted());
+    EXPECT_EQ(execution.GetState(),
+              RenderGraphExecutionState::AbortUnsubmitted);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+
+    TransientTextureLease reused = pool.AcquireTextureLease(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(reused);
+    EXPECT_TRUE(reused.reused);
+    EXPECT_EQ(reused.texture, physicalTexture);
+    EXPECT_EQ(reused.accessSnapshot.uniformAccess.layout,
+              RHIResourceLayout::Undefined);
+    EXPECT_TRUE(reused.AbortUnsubmitted());
+
+    RenderGraphValidationAccess::Reset(graph);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, PartialPhysicalRealizationRollsBackAllLeases)
+{
+    FakeDevice device;
+    device.failTextureCreationAfter = 1u;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetTransientResourcePool(graph, &pool);
+    const RGTextureHandle first = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    const RGTextureHandle second = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            128, 128, RHIFormat::RGBA8_UNORM));
+    struct PassData
+    {
+        RGTextureHandle first;
+        RGTextureHandle second;
+    };
+    graph.AddPass<PassData>(
+        "FailSecondRealization",
+        RenderGraphPassType::Graphics,
+        [first, second](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.first = builder.Write(first);
+            data.second = builder.Write(second);
+        },
+        [](const PassData&, RHICommandContext&) {});
+    graph.SetExportState(first, RHIResourceState::ShaderResource);
+    graph.SetExportState(second, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    FakeCommandContext context;
+    RenderGraphValidationAccess::Execute(graph, context);
+
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    EXPECT_EQ(pool.GetStats().texturesInUse, 0u);
+    EXPECT_EQ(graph.GetCompileStats().partialRealizationRollbackCount, 1u);
+    EXPECT_FALSE(RenderGraphValidationAccess::TakeExecution(graph));
+    RenderGraphValidationAccess::Reset(graph);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, PassRecordingFailureRollsBackEveryRealizedLease)
+{
+    FakeDevice device;
+    TransientResourcePool pool;
+    pool.Initialize(&device);
+    pool.BeginFrame();
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetTransientResourcePool(graph, &pool);
+    const RGTextureHandle texture = graph.CreateTexture(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 4096;
+    bufferDesc.usage = RHIBufferUsage::Structured |
+                       RHIBufferUsage::UnorderedAccess;
+    const RGBufferHandle buffer = graph.CreateBuffer(bufferDesc);
+
+    struct PassData
+    {
+        RGTextureHandle texture;
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<PassData>(
+        "ThrowDuringRecording",
+        RenderGraphPassType::Graphics,
+        [texture, buffer](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.texture = builder.Write(texture);
+            data.buffer = builder.Write(buffer);
+        },
+        [](const PassData&, RHICommandContext&)
+        {
+            throw std::runtime_error("injected recording failure");
+        });
+    graph.SetExportState(texture, RHIResourceState::ShaderResource);
+    graph.SetExportState(buffer, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    FakeCommandContext context;
+    RenderGraphValidationAccess::Execute(graph, context);
+    EXPECT_EQ(pool.GetStats().recordingTextureLeases, 0u);
+    EXPECT_EQ(pool.GetStats().recordingBufferLeases, 0u);
+    EXPECT_EQ(pool.GetStats().leaseAbortCount, 2u);
+    EXPECT_EQ(graph.GetCompileStats().partialRealizationRollbackCount, 1u);
+    EXPECT_FALSE(RenderGraphValidationAccess::TakeExecution(graph));
+
+    TransientTextureLease reusedTexture = pool.AcquireTextureLease(
+        RHITextureDesc::RenderTarget(
+            64, 64, RHIFormat::RGBA8_UNORM));
+    ASSERT_TRUE(reusedTexture);
+    EXPECT_TRUE(reusedTexture.reused);
+    EXPECT_TRUE(reusedTexture.AbortUnsubmitted());
+    TransientBufferLease reusedBuffer = pool.AcquireBufferLease(bufferDesc);
+    ASSERT_TRUE(reusedBuffer);
+    EXPECT_TRUE(reusedBuffer.reused);
+    EXPECT_TRUE(reusedBuffer.AbortUnsubmitted());
+
+    RenderGraphValidationAccess::Reset(graph);
+    pool.EndFrame();
+    pool.Shutdown();
+}
+
+TEST(RenderGraphValidation, ScopedSameLayoutWriteDependenciesArePreserved)
+{
+    FakeDevice device;
+    device.MutableCapabilities().queueTopology.logicalQueueDomains[
+        static_cast<uint8>(RHICommandQueueType::Compute)] = GPUQueueDomain::Compute;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHIBufferDesc desc;
+    desc.size = 1024;
+    desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(desc);
+
+    const RHIAccessSnapshot unorderedAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::UnorderedAccess,
+        RHIShaderStage::Compute,
+        GPUQueueDomain::Graphics,
+        RHIContentValidity::Valid);
+    RGBufferHandle handle = RenderGraphValidationAccess::ImportBuffer(graph,
+        &buffer,
+        RHIBufferAccessSnapshot{unorderedAccess, {}});
+
+    struct PassData { RGBufferHandle buffer; };
+    graph.AddPass<PassData>(
+        "WriteA",
+        RenderGraphPassType::Compute,
+        [handle, unorderedAccess](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.buffer = builder.Write(handle, unorderedAccess);
+        },
+        [](const PassData&, RHICommandContext&) {});
+    graph.AddPass<PassData>(
+        "WriteB",
+        RenderGraphPassType::Compute,
+        [handle, unorderedAccess](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.buffer = builder.Write(handle, unorderedAccess);
+        },
+        [](const PassData&, RHICommandContext&) {});
+    RHIAccessSnapshot generalShaderRead = unorderedAccess;
+    generalShaderRead.memoryAccess = RHIMemoryAccess::ShaderRead;
+    graph.AddPass<PassData>(
+        "ReadGeneral",
+        RenderGraphPassType::Compute,
+        [handle, generalShaderRead](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.buffer = builder.Read(handle, generalShaderRead);
+        },
+        [](const PassData&, RHICommandContext&) {});
+    graph.SetExportAccess(handle, generalShaderRead);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    FakeCommandContext ctx;
+    RenderGraphValidationAccess::Execute(graph, ctx);
+    ASSERT_GE(ctx.bufferBarriers.size(), 2u);
+    for (const RHIBufferBarrier& barrier : ctx.bufferBarriers)
+    {
+        EXPECT_TRUE(barrier.hasScopedAccess);
+        EXPECT_EQ(barrier.stateBefore, barrier.stateAfter);
+        EXPECT_TRUE(HasDependencyKind(
+            barrier.dependencyKind,
+            RHIDependencyKind::Memory));
+    }
+}
+
+TEST(RenderGraphValidation, DiscardIntentKeepsActualBeforeSnapshot)
+{
+    FakeDevice device;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHITextureDesc desc = RHITextureDesc::RenderTarget(
+        32, 32, RHIFormat::RGBA8_UNORM);
+    RGTextureHandle texture = graph.CreateTexture(desc);
+    const RHIAccessSnapshot renderTargetAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::RenderTarget,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics,
+        RHIContentValidity::Valid);
+
+    struct PassData { RGTextureHandle texture; };
+    graph.AddPass<PassData>(
+        "DiscardWrite",
+        RenderGraphPassType::Graphics,
+        [texture, renderTargetAccess](RenderGraphBuilder& builder, PassData& data)
+        {
+            data.texture = builder.Write(
+                texture,
+                renderTargetAccess,
+                RHIDiscardIntent::Discard);
+        },
+        [](const PassData&, RHICommandContext&) {});
+    graph.SetExportAccess(texture, renderTargetAccess);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    FakeCommandContext ctx;
+    RenderGraphValidationAccess::Execute(graph, ctx);
+    ASSERT_FALSE(ctx.textureBarriers.empty());
+    const RHITextureBarrier& barrier = ctx.textureBarriers.front();
+    EXPECT_EQ(barrier.accessBefore.layout, RHIResourceLayout::Undefined);
+    EXPECT_EQ(barrier.accessBefore.contentValidity, RHIContentValidity::Invalid);
+    EXPECT_EQ(barrier.discardIntent, RHIDiscardIntent::Discard);
+    EXPECT_TRUE(HasDependencyKind(
+        barrier.dependencyKind,
+        RHIDependencyKind::Discard));
+}
+
+TEST(RenderGraphValidation, FullExportAggregatesSubresourceContentValidity)
+{
+    FakeDevice device;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHITextureDesc desc = RHITextureDesc::RenderTarget(
+        32, 32, RHIFormat::RGBA8_UNORM);
+    desc.mipLevels = 2;
+    RGTextureHandle texture = graph.CreateTexture(desc);
+    const RHIAccessSnapshot renderTargetAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::RenderTarget,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics,
+        RHIContentValidity::Valid);
+
+    struct PassData { RGTextureHandle texture; };
+    for (uint32 mip = 0; mip < desc.mipLevels; ++mip)
+    {
+        RGTextureHandle mipHandle = texture.Subresource(mip, 0);
+        graph.AddPass<PassData>(
+            mip == 0 ? "WriteMip0" : "WriteMip1",
+            RenderGraphPassType::Graphics,
+            [mipHandle, renderTargetAccess](RenderGraphBuilder& builder, PassData& data)
+            {
+                data.texture = builder.Write(
+                    mipHandle,
+                    renderTargetAccess,
+                    RHIDiscardIntent::Discard);
+            },
+            [](const PassData&, RHICommandContext&) {});
+    }
+
+    graph.SetExportAccess(
+        texture,
+        MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                              RHIShaderStage::Pixel,
+                              GPUQueueDomain::Graphics));
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    FakeCommandContext ctx;
+    RenderGraphValidationAccess::Execute(graph, ctx);
+    EXPECT_EQ(graph.GetRealizedAccess(texture).uniformAccess.contentValidity,
+              RHIContentValidity::Valid);
 }
 
 TEST(RenderGraphValidation, BufferResourceCreation)
@@ -341,14 +1509,14 @@ TEST(RenderGraphValidation, SinglePass)
         });
 
     graph.SetExportState(texture, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 }
 
 TEST(RenderGraphValidation, DepthTextureArrayLayerWritesFullReadAndExportUseDepthAspect)
 {
     FakeDevice device;
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureDesc shadowDesc = RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
     shadowDesc.arraySize = 2;
@@ -411,19 +1579,160 @@ TEST(RenderGraphValidation, DepthTextureArrayLayerWritesFullReadAndExportUseDept
         });
 
     graph.SetExportState(shadowArray, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
 
     FakeCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     ASSERT_FALSE(ctx.textureBarriers.empty());
     for (const RHITextureBarrier& barrier : ctx.textureBarriers)
     {
         EXPECT_EQ(barrier.subresourceRange.aspect, RHITextureAspect::Depth);
     }
+}
+
+TEST(RenderGraphValidation,
+     ReusedDepthArrayResolvesLeaseAccessForEveryFirstUseLayer)
+{
+    FakeDevice device;
+    device.EnableTimelineRetirement();
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+
+    TransientResourcePool pool;
+    pool.Initialize(&device, &tracker);
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetTransientResourcePool(graph, &pool);
+
+    RHITextureDesc shadowDesc =
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT);
+    shadowDesc.arraySize = 2;
+    shadowDesc.debugName = "RenderGraphValidation.ReusedDepthArray";
+
+    const auto recordFrame = [&](FakeCommandContext& context)
+    {
+        RenderGraphValidationAccess::Reset(graph);
+        const RGTextureHandle shadowArray = graph.CreateTexture(shadowDesc);
+
+        const auto makeDepthLayer = [shadowArray](uint32 layer)
+        {
+            RGTextureHandle handle = shadowArray;
+            handle.hasSubresourceRange = true;
+            handle.subresourceRange = {
+                0, 1, layer, 1, RHITextureAspect::Depth};
+            return handle;
+        };
+
+        struct DepthLayerPassData
+        {
+            RGTextureHandle layer;
+        };
+        struct DepthReadPassData
+        {
+            RGTextureHandle shadowArray;
+        };
+
+        graph.AddPass<DepthLayerPassData>(
+            "WriteReusedDepthLayer0",
+            RenderGraphPassType::Graphics,
+            [&](RenderGraphBuilder& builder, DepthLayerPassData& data)
+            {
+                data.layer = makeDepthLayer(0);
+                builder.SetDepthStencil(data.layer, true, false);
+            },
+            [](const DepthLayerPassData&, RHICommandContext&) {});
+        graph.AddPass<DepthLayerPassData>(
+            "WriteReusedDepthLayer1",
+            RenderGraphPassType::Graphics,
+            [&](RenderGraphBuilder& builder, DepthLayerPassData& data)
+            {
+                data.layer = makeDepthLayer(1);
+                builder.SetDepthStencil(data.layer, true, false);
+            },
+            [](const DepthLayerPassData&, RHICommandContext&) {});
+        graph.AddPass<DepthReadPassData>(
+            "ReadReusedDepthArray",
+            RenderGraphPassType::Graphics,
+            [&](RenderGraphBuilder& builder, DepthReadPassData& data)
+            {
+                data.shadowArray = shadowArray;
+                data.shadowArray.hasSubresourceRange = true;
+                data.shadowArray.subresourceRange = {
+                    0,
+                    RVX_ALL_MIPS,
+                    0,
+                    RVX_ALL_LAYERS,
+                    RHITextureAspect::Depth};
+                builder.Read(data.shadowArray, RHIShaderStage::Pixel);
+            },
+            [](const DepthReadPassData&, RHICommandContext&) {});
+
+        graph.SetExportAccess(
+            shadowArray,
+            MakeRHIAccessSnapshot(
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Pixel,
+                GPUQueueDomain::Graphics,
+                RHIContentValidity::Valid));
+        RenderGraphValidationAccess::Compile(graph);
+        EXPECT_TRUE(graph.GetCompileStats().compileValid);
+        RenderGraphValidationAccess::Execute(graph, context);
+        return RenderGraphValidationAccess::TakeExecution(graph);
+    };
+
+    pool.BeginFrame();
+    FakeCommandContext firstContext;
+    RenderGraphExecution firstExecution = recordFrame(firstContext);
+    ASSERT_TRUE(firstExecution);
+    GPUCompletionToken firstCompletion;
+    ASSERT_TRUE(InsertGPUCompletionPoint(
+        firstCompletion, tracker.Submit(&firstContext)));
+    ASSERT_TRUE(RenderGraphExecutionTestAccess::MarkAdopted(firstExecution));
+    ASSERT_TRUE(RenderGraphExecutionTestAccess::Commit(
+        firstExecution, firstCompletion));
+    ASSERT_TRUE(firstExecution.Retire());
+    pool.EndFrame();
+
+    pool.BeginFrame();
+    FakeCommandContext secondContext;
+    RenderGraphExecution secondExecution = recordFrame(secondContext);
+    ASSERT_TRUE(secondExecution);
+    EXPECT_EQ(1u, device.createTextureCount);
+    EXPECT_EQ(1u, pool.GetStats().textureHits);
+
+    std::array<bool, 2> sawLayer = {false, false};
+    for (const RHITextureBarrier& barrier : secondContext.textureBarriers)
+    {
+        if (barrier.accessAfter.layout !=
+                RHIResourceLayout::DepthStencilWrite ||
+            barrier.subresourceRange.mipLevelCount != 1 ||
+            barrier.subresourceRange.arrayLayerCount != 1 ||
+            barrier.subresourceRange.baseArrayLayer >= sawLayer.size())
+        {
+            continue;
+        }
+
+        const uint32 layer = barrier.subresourceRange.baseArrayLayer;
+        sawLayer[layer] = true;
+        EXPECT_EQ(RHIResourceLayout::ShaderReadOnly,
+                  barrier.accessBefore.layout)
+            << "Layer " << layer
+            << " did not resolve its first-use state from the pooled lease";
+    }
+    EXPECT_TRUE(sawLayer[0]);
+    EXPECT_TRUE(sawLayer[1]);
+
+    ASSERT_TRUE(secondExecution.AbortUnsubmitted());
+    pool.EndFrame();
+    RenderGraphValidationAccess::Reset(graph);
+    pool.Shutdown();
+    tracker.Shutdown();
 }
 
 struct MultiPassData
@@ -481,7 +1790,174 @@ TEST(RenderGraphValidation, PassChain)
         [](const LightingPassData&, RHICommandContext&) {});
 
     graph.SetExportState(final, RHIResourceState::Present);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
+}
+
+TEST(RenderGraphValidation, DiagnosticsSnapshotReportsPassResourcesLifetimesAndMemory)
+{
+    RenderGraph graph;
+
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
+    colorDesc.debugName = "DiagnosticColor";
+    RGTextureHandle color = graph.CreateTexture(colorDesc);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    bufferDesc.debugName = "DiagnosticBuffer";
+    RGBufferHandle buffer = graph.CreateBuffer(bufferDesc);
+
+    struct ProduceColorData
+    {
+        RGTextureHandle output;
+    };
+
+    graph.AddPass<ProduceColorData>(
+        "ProduceColor",
+        RenderGraphPassType::Graphics,
+        [color](RenderGraphBuilder& builder, ProduceColorData& data)
+        {
+            data.output = builder.Write(color, RHIResourceState::RenderTarget);
+        },
+        [](const ProduceColorData&, RHICommandContext&)
+        {
+        });
+
+    struct ConsumeColorData
+    {
+        RGTextureHandle input;
+        RGBufferHandle output;
+    };
+
+    graph.AddPass<ConsumeColorData>(
+        "ConsumeColor",
+        RenderGraphPassType::Compute,
+        [color, buffer](RenderGraphBuilder& builder, ConsumeColorData& data)
+        {
+            data.input = builder.Read(color, RHIResourceState::ShaderResource, RHIShaderStage::Compute);
+            data.output = builder.Write(buffer, RHIResourceState::UnorderedAccess);
+        },
+        [](const ConsumeColorData&, RHICommandContext&)
+        {
+        });
+
+    graph.SetExportState(buffer, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+
+    auto diagnostics = graph.GetDiagnostics();
+    EXPECT_STREQ(diagnostics.schemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+    EXPECT_EQ(diagnostics.schemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+    ASSERT_TRUE(diagnostics.compileStats.compileValid);
+    ASSERT_EQ(diagnostics.passes.size(), 2u);
+    ASSERT_EQ(diagnostics.resources.size(), 2u);
+    ASSERT_EQ(diagnostics.executionOrder.size(), 2u);
+
+    EXPECT_EQ(diagnostics.passes[0].name, "ProduceColor");
+    EXPECT_EQ(diagnostics.passes[0].type, RenderGraphPassType::Graphics);
+    EXPECT_FALSE(diagnostics.passes[0].culled);
+    ASSERT_EQ(diagnostics.passes[0].usages.size(), 1u);
+    EXPECT_EQ(diagnostics.passes[0].usages[0].access, RenderGraph::DiagnosticAccessType::Write);
+    EXPECT_EQ(diagnostics.passes[0].usages[0].type, RenderGraph::DiagnosticResourceType::Texture);
+
+    EXPECT_EQ(diagnostics.passes[1].name, "ConsumeColor");
+    EXPECT_EQ(diagnostics.passes[1].type, RenderGraphPassType::Compute);
+    ASSERT_EQ(diagnostics.passes[1].usages.size(), 2u);
+    EXPECT_EQ(diagnostics.passes[1].usages[0].access, RenderGraph::DiagnosticAccessType::Read);
+    EXPECT_EQ(diagnostics.passes[1].usages[0].stages, RHIShaderStage::Compute);
+    EXPECT_EQ(diagnostics.passes[1].usages[1].access, RenderGraph::DiagnosticAccessType::Write);
+
+    auto textureIt = std::find_if(
+        diagnostics.resources.begin(),
+        diagnostics.resources.end(),
+        [](const RenderGraph::ResourceDiagnostic& resource)
+        {
+            return resource.type == RenderGraph::DiagnosticResourceType::Texture;
+        });
+    ASSERT_NE(textureIt, diagnostics.resources.end());
+    EXPECT_EQ(textureIt->name, "DiagnosticColor");
+    EXPECT_TRUE(textureIt->used);
+    EXPECT_EQ(textureIt->firstUsePass, 0u);
+    EXPECT_EQ(textureIt->lastUsePass, 1u);
+    EXPECT_EQ(textureIt->width, 64u);
+    EXPECT_EQ(textureIt->height, 64u);
+    EXPECT_GE(textureIt->estimatedMemoryBytes, 64u * 64u * 4u);
+
+    auto bufferIt = std::find_if(
+        diagnostics.resources.begin(),
+        diagnostics.resources.end(),
+        [](const RenderGraph::ResourceDiagnostic& resource)
+        {
+            return resource.type == RenderGraph::DiagnosticResourceType::Buffer;
+        });
+    ASSERT_NE(bufferIt, diagnostics.resources.end());
+    EXPECT_EQ(bufferIt->name, "DiagnosticBuffer");
+    EXPECT_TRUE(bufferIt->used);
+    EXPECT_TRUE(bufferIt->hasExportState);
+    EXPECT_EQ(bufferIt->exportState, RHIResourceState::ShaderResource);
+    EXPECT_EQ(bufferIt->bufferSize, 1024u);
+    EXPECT_GE(bufferIt->estimatedMemoryBytes, 1024u);
+
+    EXPECT_GE(diagnostics.estimatedTransientMemoryBytes,
+              textureIt->estimatedMemoryBytes + bufferIt->estimatedMemoryBytes);
+    EXPECT_EQ(diagnostics.estimatedUsedTransientMemoryBytes,
+              diagnostics.estimatedTransientMemoryBytes);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("RenderGraph Diagnostics"), std::string::npos);
+    EXPECT_NE(dump.find("Schema: 7"), std::string::npos);
+    EXPECT_NE(dump.find(RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID), std::string::npos);
+    EXPECT_NE(dump.find("ProduceColor"), std::string::npos);
+    EXPECT_NE(dump.find("DiagnosticColor"), std::string::npos);
+    EXPECT_NE(dump.find("Estimated transient memory"), std::string::npos);
+    EXPECT_NE(dump.find("Buffer range barriers: supported"),
+              std::string::npos);
+
+    std::string json = graph.ExportDiagnosticsJson();
+    EXPECT_NE(json.find("\"schemaVersion\": 7"), std::string::npos);
+    EXPECT_NE(json.find("\"schemaId\": \"RVX.RenderGraph.Diagnostics\""), std::string::npos);
+    EXPECT_NE(json.find("\"id\": \"renderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(json.find("\"kind\": \"RenderGraphDiagnosticsJson\""), std::string::npos);
+    EXPECT_NE(json.find("\"contentType\": \"application/json\""), std::string::npos);
+    EXPECT_NE(json.find("\"contentHash\": \"\""), std::string::npos);
+    EXPECT_NE(json.find("\"relativePath\": \"\""), std::string::npos);
+    EXPECT_NE(json.find("\"compile\": {"), std::string::npos);
+    EXPECT_NE(json.find("\"bufferRangeBarriersSupported\": true"),
+              std::string::npos);
+    EXPECT_NE(json.find("\"bufferRangeBarrierCollapseCount\": 0"),
+              std::string::npos);
+    EXPECT_NE(json.find("\"execution\": {"), std::string::npos);
+    EXPECT_NE(json.find("\"memory\": {"), std::string::npos);
+    EXPECT_NE(json.find("\"schedule\": {"), std::string::npos);
+    EXPECT_NE(json.find("\"executionOrder\": [0, 1]"), std::string::npos);
+    EXPECT_NE(json.find("\"passes\": ["), std::string::npos);
+    EXPECT_NE(json.find("\"name\": \"ProduceColor\""), std::string::npos);
+    EXPECT_NE(json.find("\"type\": \"Compute\""), std::string::npos);
+    EXPECT_NE(json.find("\"usages\": ["), std::string::npos);
+    EXPECT_NE(json.find("\"resources\": ["), std::string::npos);
+    EXPECT_NE(json.find("\"name\": \"DiagnosticColor\""), std::string::npos);
+    EXPECT_NE(json.find("\"plannedQueueBatches\": ["), std::string::npos);
+    EXPECT_NE(json.find("\"queueSyncs\": ["), std::string::npos);
+    EXPECT_FALSE(graph.SaveDiagnosticsJson(nullptr));
+    EXPECT_FALSE(graph.SaveDiagnosticsJson(""));
+
+    const std::string suffix =
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    const std::filesystem::path jsonPath =
+        std::filesystem::temp_directory_path() / ("RVX_RenderGraphDiagnostics_" + suffix + ".json");
+    const std::string jsonPathString = jsonPath.string();
+    ASSERT_TRUE(graph.SaveDiagnosticsJson(jsonPathString.c_str()));
+    EXPECT_EQ(ReadTextFile(jsonPath), json);
+    std::error_code removeError;
+    std::filesystem::remove(jsonPath, removeError);
+
+    RenderGraphValidationAccess::Reset(graph);
+    diagnostics = graph.GetDiagnostics();
+    EXPECT_STREQ(diagnostics.schemaId, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID);
+    EXPECT_EQ(diagnostics.schemaVersion, RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION);
+    EXPECT_TRUE(diagnostics.passes.empty());
+    EXPECT_TRUE(diagnostics.resources.empty());
+    EXPECT_TRUE(diagnostics.executionOrder.empty());
+    EXPECT_EQ(diagnostics.estimatedTransientMemoryBytes, 0u);
 }
 
 TEST(RenderGraphValidation, PassCulling)
@@ -514,7 +1990,7 @@ TEST(RenderGraphValidation, PassCulling)
 
     // Only export usedTexture
     graph.SetExportState(usedTexture, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     // Check that unused pass was culled
     const auto& stats = graph.GetCompileStats();
@@ -524,7 +2000,7 @@ TEST(RenderGraphValidation, PassCulling)
 TEST(RenderGraphValidation, MemoryAliasing)
 {
     RenderGraph graph;
-    graph.SetMemoryAliasingEnabled(true);
+    RenderGraphValidationAccess::SetMemoryAliasingEnabled(graph, true);
 
     RHITextureDesc texDesc = RHITextureDesc::RenderTarget(1024, 1024, RHIFormat::RGBA16_FLOAT);
 
@@ -584,7 +2060,7 @@ TEST(RenderGraphValidation, MemoryAliasing)
         [](const TwoTexturePass&, RHICommandContext&) {});
 
     graph.SetExportState(final, RHIResourceState::Present);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
 
@@ -594,6 +2070,152 @@ TEST(RenderGraphValidation, MemoryAliasing)
     EXPECT_FALSE(stats.explicitAliasingBarriersSupported);
     EXPECT_EQ(stats.aliasedTextureCount, 0u);
     EXPECT_EQ(stats.aliasedBufferCount, 0u);
+}
+
+TEST(RenderGraphValidation, ExplicitAliasingReusesMemoryAndEmitsOwnershipBarrier)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsExplicitResourceBarriers = true;
+    device.MutableCapabilities().supportsExplicitAliasingBarriers = true;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetMemoryAliasingEnabled(graph, true);
+
+    const RHITextureDesc textureDesc =
+        RHITextureDesc::RenderTarget(128, 128, RHIFormat::RGBA16_FLOAT);
+    const RGTextureHandle first = graph.CreateTexture(textureDesc);
+    const RGTextureHandle bridge = graph.CreateTexture(textureDesc);
+    const RGTextureHandle reused = graph.CreateTexture(textureDesc);
+
+    struct TwoTexturePass
+    {
+        RGTextureHandle input;
+        RGTextureHandle output;
+    };
+
+    graph.AddPass<SimplePassData>(
+        "ProduceFirst",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(
+                first,
+                RHIResourceState::RenderTarget);
+        },
+        [](const SimplePassData&, RHICommandContext&) {});
+    graph.AddPass<TwoTexturePass>(
+        "BridgeLifetime",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, TwoTexturePass& data)
+        {
+            data.input = builder.Read(first);
+            data.output = builder.Write(
+                bridge,
+                RHIResourceState::RenderTarget);
+        },
+        [](const TwoTexturePass&, RHICommandContext&) {});
+    graph.AddPass<TwoTexturePass>(
+        "ReuseFirstAllocation",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, TwoTexturePass& data)
+        {
+            data.input = builder.Read(bridge);
+            data.output = builder.Write(
+                reused,
+                RHIResourceState::RenderTarget);
+        },
+        [](const TwoTexturePass&, RHICommandContext&) {});
+
+    graph.SetExportState(reused, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+
+    const RenderGraph::CompileStats& stats = graph.GetCompileStats();
+    EXPECT_TRUE(graph.IsMemoryAliasingEnabled());
+    EXPECT_TRUE(stats.memoryAliasingEnabled);
+    EXPECT_FALSE(stats.memoryAliasingUnsupportedRequested);
+    EXPECT_TRUE(stats.explicitAliasingBarriersSupported);
+    EXPECT_EQ(stats.aliasedTextureCount, 2u);
+    EXPECT_EQ(stats.aliasedBufferCount, 0u);
+    // Compilation is allocation-free even when aliasing is enabled. Physical
+    // heaps and placed resources are realized only by execution.
+    EXPECT_EQ(device.createPlacedTextureCount, 0u);
+    EXPECT_LT(stats.memoryWithAliasing, stats.memoryWithoutAliasing);
+
+    FakeCommandContext context;
+    RenderGraphValidationAccess::Execute(graph, context);
+
+    EXPECT_EQ(device.createPlacedTextureCount, 3u);
+
+    ASSERT_EQ(context.aliasingBarriers.size(), 1u);
+    EXPECT_NE(context.aliasingBarriers[0].resourceBefore, nullptr);
+    EXPECT_NE(context.aliasingBarriers[0].resourceAfter, nullptr);
+    EXPECT_NE(context.aliasingBarriers[0].resourceBefore,
+              context.aliasingBarriers[0].resourceAfter);
+}
+
+TEST(RenderGraphValidation, AliasingNeverOverlapsAStillLiveReplacement)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsExplicitResourceBarriers = true;
+    device.MutableCapabilities().supportsExplicitAliasingBarriers = true;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    RenderGraphValidationAccess::SetMemoryAliasingEnabled(graph, true);
+
+    const RHITextureDesc textureDesc =
+        RHITextureDesc::RenderTarget(128, 128, RHIFormat::RGBA16_FLOAT);
+    const RGTextureHandle first = graph.CreateTexture(textureDesc);
+    const RGTextureHandle liveReplacement = graph.CreateTexture(textureDesc);
+    const RGTextureHandle concurrent = graph.CreateTexture(textureDesc);
+
+    graph.AddPass<SimplePassData>(
+        "ProduceFirst",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(first);
+        },
+        [](const SimplePassData&, RHICommandContext&) {});
+    graph.AddPass<SimplePassData>(
+        "ReuseFirstAllocation",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, SimplePassData& data)
+        {
+            data.colorTarget = builder.Write(liveReplacement);
+        },
+        [](const SimplePassData&, RHICommandContext&) {});
+
+    struct ReadWritePass
+    {
+        RGTextureHandle input;
+        RGTextureHandle output;
+    };
+    graph.AddPass<ReadWritePass>(
+        "KeepReplacementLive",
+        RenderGraphPassType::Graphics,
+        [&](RenderGraphBuilder& builder, ReadWritePass& data)
+        {
+            data.input = builder.Read(liveReplacement);
+            data.output = builder.Write(concurrent);
+        },
+        [](const ReadWritePass&, RHICommandContext&) {});
+
+    graph.SetExportState(first, RHIResourceState::ShaderResource);
+    graph.SetExportState(concurrent, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+
+    const RenderGraph::CompileStats& stats = graph.GetCompileStats();
+    ASSERT_GT(stats.memoryWithoutAliasing, 0u);
+    EXPECT_EQ(stats.memoryWithoutAliasing % 3u, 0u);
+    EXPECT_EQ(stats.memoryWithAliasing * 3u,
+              stats.memoryWithoutAliasing * 2u);
+    EXPECT_EQ(stats.aliasedTextureCount, 2u);
+
+    FakeCommandContext context;
+    RenderGraphValidationAccess::Execute(graph, context);
+    EXPECT_EQ(context.aliasingBarriers.size(), 1u);
 }
 
 TEST(RenderGraphValidation, ComputePass)
@@ -620,7 +2242,7 @@ TEST(RenderGraphValidation, ComputePass)
         [](const ComputePassData&, RHICommandContext&) {});
 
     graph.SetExportState(buffer, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 }
 
 TEST(RenderGraphValidation, MixedPasses)
@@ -671,7 +2293,7 @@ TEST(RenderGraphValidation, MixedPasses)
         [](const PostData&, RHICommandContext&) {});
 
     graph.SetExportState(texture, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 3u);
@@ -715,7 +2337,7 @@ TEST(RenderGraphValidation, SubresourceTracking)
         [](const MipCopyData&, RHICommandContext&) {});
 
     graph.SetExportState(texture, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 }
 
 TEST(RenderGraphValidation, BufferRanges)
@@ -726,7 +2348,7 @@ TEST(RenderGraphValidation, BufferRanges)
     bufDesc.size = 1024 * 1024;  // 1 MB
     bufDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
     FakeBuffer backingBuffer(bufDesc);
-    auto buffer = graph.ImportBuffer(&backingBuffer, RHIResourceState::ShaderResource);
+    auto buffer = RenderGraphValidationAccess::ImportBuffer(graph, &backingBuffer, RHIResourceState::ShaderResource);
 
     struct RangePassData { RGBufferHandle range; };
 
@@ -751,7 +2373,7 @@ TEST(RenderGraphValidation, BufferRanges)
         [](const RangePassData&, RHICommandContext&) {});
 
     graph.SetExportState(buffer, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 }
 
 TEST(RenderGraphValidation, CrossPassSubresourceBarriersAreNotDropped)
@@ -766,7 +2388,7 @@ TEST(RenderGraphValidation, CrossPassSubresourceBarriersAreNotDropped)
     texDesc.usage = RHITextureUsage::RenderTarget | RHITextureUsage::ShaderResource;
     FakeTexture texture(texDesc);
 
-    auto imported = graph.ImportTexture(&texture, RHIResourceState::Common);
+    auto imported = RenderGraphValidationAccess::ImportTexture(graph, &texture, RHIResourceState::Common);
 
     struct MipPassData
     {
@@ -791,7 +2413,7 @@ TEST(RenderGraphValidation, CrossPassSubresourceBarriersAreNotDropped)
         },
         [](const MipPassData&, RHICommandContext&) {});
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 2u);
@@ -808,7 +2430,7 @@ TEST(RenderGraphValidation, CrossPassBufferRangeBarriersAreNotDropped)
     bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
     FakeBuffer buffer(bufferDesc);
 
-    auto imported = graph.ImportBuffer(&buffer, RHIResourceState::Common);
+    auto imported = RenderGraphValidationAccess::ImportBuffer(graph, &buffer, RHIResourceState::Common);
 
     struct RangePassData
     {
@@ -833,7 +2455,7 @@ TEST(RenderGraphValidation, CrossPassBufferRangeBarriersAreNotDropped)
         },
         [](const RangePassData&, RHICommandContext&) {});
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 2u);
@@ -853,9 +2475,9 @@ TEST(RenderGraphValidation, ReadBeforeWriteHazardPreservesExecutionOrder)
     FakeTexture textureB(texDesc);
     FakeTexture textureC(texDesc);
 
-    auto a = graph.ImportTexture(&textureA, RHIResourceState::ShaderResource);
-    auto b = graph.ImportTexture(&textureB, RHIResourceState::Common);
-    auto c = graph.ImportTexture(&textureC, RHIResourceState::Common);
+    auto a = RenderGraphValidationAccess::ImportTexture(graph, &textureA, RHIResourceState::ShaderResource);
+    auto b = RenderGraphValidationAccess::ImportTexture(graph, &textureB, RHIResourceState::Common);
+    auto c = RenderGraphValidationAccess::ImportTexture(graph, &textureC, RHIResourceState::Common);
 
     std::vector<std::string> executed;
 
@@ -906,7 +2528,7 @@ TEST(RenderGraphValidation, ReadBeforeWriteHazardPreservesExecutionOrder)
 
     graph.SetExportState(c, RHIResourceState::ShaderResource);
     graph.SetExportState(a, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -914,7 +2536,7 @@ TEST(RenderGraphValidation, ReadBeforeWriteHazardPreservesExecutionOrder)
     EXPECT_EQ(stats.uninitializedExportCount, 0u);
 
     FakeCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
 
     EXPECT_EQ(executed.size(), static_cast<size_t>(3));
     EXPECT_EQ(executed[0], std::string("ProduceB"));
@@ -951,7 +2573,7 @@ TEST(RenderGraphValidation, TransientTextureReadBeforeWriteFailsCompileAndDoesNo
         });
 
     graph.SetExportState(output, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_FALSE(stats.compileValid);
@@ -961,7 +2583,7 @@ TEST(RenderGraphValidation, TransientTextureReadBeforeWriteFailsCompileAndDoesNo
     EXPECT_FALSE(stats.executionOrderFallbackUsed);
 
     FakeCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
     EXPECT_FALSE(executed);
 }
 
@@ -996,7 +2618,7 @@ TEST(RenderGraphValidation, TransientBufferReadBeforeWriteFailsCompile)
         });
 
     graph.SetExportState(output, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_FALSE(stats.compileValid);
@@ -1005,7 +2627,7 @@ TEST(RenderGraphValidation, TransientBufferReadBeforeWriteFailsCompile)
     EXPECT_EQ(stats.validationErrorCount, 1u);
 
     FakeCommandContext ctx;
-    graph.Execute(ctx);
+    RenderGraphValidationAccess::Execute(graph, ctx);
     EXPECT_FALSE(executed);
 }
 
@@ -1051,7 +2673,7 @@ TEST(RenderGraphValidation, TransientReadWriteBeforeInitializationFailsCompile)
 
     graph.SetExportState(texture, RHIResourceState::ShaderResource);
     graph.SetExportState(buffer, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_FALSE(stats.compileValid);
@@ -1074,7 +2696,7 @@ TEST(RenderGraphValidation, TransientExportWithoutProducerFailsCompile)
 
     graph.SetExportState(texture, RHIResourceState::ShaderResource);
     graph.SetExportState(buffer, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_FALSE(stats.compileValid);
@@ -1118,7 +2740,7 @@ TEST(RenderGraphValidation, CulledTransientReadBeforeWriteDoesNotInvalidateGraph
         [](const SimplePassData&, RHICommandContext&) {});
 
     graph.SetExportState(finalOutput, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -1135,12 +2757,12 @@ TEST(RenderGraphValidation, LifetimeHazardStatsResetAfterClear)
     RHITextureDesc texDesc = RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM);
     auto unwritten = graph.CreateTexture(texDesc);
     graph.SetExportState(unwritten, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     EXPECT_FALSE(graph.GetCompileStats().compileValid);
     EXPECT_EQ(graph.GetCompileStats().uninitializedExportCount, 1u);
 
-    graph.Clear();
+    RenderGraphValidationAccess::Reset(graph);
     auto written = graph.CreateTexture(texDesc);
     graph.AddPass<SimplePassData>(
         "ProduceWrittenTexture",
@@ -1152,7 +2774,7 @@ TEST(RenderGraphValidation, LifetimeHazardStatsResetAfterClear)
         [](const SimplePassData&, RHICommandContext&) {});
 
     graph.SetExportState(written, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -1161,50 +2783,1241 @@ TEST(RenderGraphValidation, LifetimeHazardStatsResetAfterClear)
     EXPECT_EQ(stats.validationErrorCount, 0u);
 }
 
-TEST(RenderGraphValidation, ExecuteAsyncFallsBackToGraphicsUntilQueueSchedulerExists)
+TEST(RenderGraphValidation, GraphicsOnlyModeKeepsComputePassAccessOnGraphicsDomain)
 {
+    FakeDevice device;
+    device.MutableCapabilities().supportsAsyncCompute = true;
+    device.MutableCapabilities().supportsExplicitQueueFenceSignal = true;
+    device.MutableCapabilities().supportsQueueFenceWait = true;
+
     RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    EXPECT_EQ(graph.GetQueueExecutionMode(),
+              RenderGraph::QueueExecutionMode::GraphicsOnly);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured |
+        RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+    const RGBufferHandle imported = RenderGraphValidationAccess::ImportBuffer(graph,
+        &buffer, RHIResourceState::Common);
+
+    struct ComputeData
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<ComputeData>(
+        "GraphicsOnlyCompute",
+        RenderGraphPassType::Compute,
+        [imported](RenderGraphBuilder& builder, ComputeData& data)
+        {
+            data.buffer = builder.Write(
+                imported, RHIResourceState::UnorderedAccess);
+        },
+        [](const ComputeData&, RHICommandContext&) {});
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+
+    const RenderGraph::Diagnostics planned = graph.GetDiagnostics();
+    ASSERT_EQ(planned.passes.size(), 1u);
+    EXPECT_EQ(planned.passes[0].plannedExecutionQueue,
+              RenderGraph::DiagnosticExecutionQueue::Graphics);
+    ASSERT_EQ(planned.passes[0].usages.size(), 1u);
+    EXPECT_EQ(planned.passes[0].usages[0].desiredAccess.domain,
+              GPUQueueDomain::Graphics);
+    EXPECT_EQ(planned.plannedComputeBatchCount, 0u);
+
+    FakeCommandContext graphicsCtx;
+    RenderGraphValidationAccess::Execute(graph, graphicsCtx);
+    EXPECT_EQ(graph.GetCompileStats().executionQueueMismatchCount, 0u);
+    EXPECT_EQ(graph.GetCompileStats().lastExecutedPassCount, 1u);
+}
+
+
+
+
+
+TEST(RenderGraphValidation, DiagnosticsReportsReadyListPlannedQueueBatches)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
+
+    RHIBufferDesc graphicsBufferDesc;
+    graphicsBufferDesc.size = 1024;
+    graphicsBufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer graphicsBuffer(graphicsBufferDesc);
+
+    RHIBufferDesc computeBufferDesc;
+    computeBufferDesc.size = 1024;
+    computeBufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer computeBuffer(computeBufferDesc);
+
+    RGBufferHandle graphicsResource = RenderGraphValidationAccess::ImportBuffer(graph, &graphicsBuffer, RHIResourceState::Common);
+    RGBufferHandle computeResource = RenderGraphValidationAccess::ImportBuffer(graph,
+        &computeBuffer,
+        MakeRHIBufferAccessSnapshot(
+            RHIResourceState::Common,
+            RHIShaderStage::None,
+            GPUQueueDomain::Compute,
+            RHIContentValidity::Valid));
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "PlanGraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(graphicsResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlanComputeIndependent",
+        RenderGraphPassType::Compute,
+        [computeResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(computeResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlanGraphicsConsume",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(graphicsResource);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(graphicsResource, RHIResourceState::ShaderResource);
+    graph.SetExportState(computeResource, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.plannedQueueBatches.size(), 4u);
+    EXPECT_EQ(diagnostics.plannedQueueBatchCount, 4u);
+    EXPECT_EQ(diagnostics.plannedDependencyLevelCount, 3u);
+    EXPECT_EQ(diagnostics.plannedComputeBatchCount, 1u);
+    EXPECT_EQ(diagnostics.plannedAsyncOverlapCandidateLevelCount, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncCount, 1u);
+    EXPECT_EQ(diagnostics.plannedCrossQueueSyncCount, 0u);
+    ASSERT_EQ(diagnostics.plannedQueueSyncs.size(), 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].reason,
+              RenderGraph::DiagnosticSyncReason::FinalQueueJoin);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].dependencyLevel, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].queue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].passIndices, std::vector<uint32>({0u}));
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].dependencyLevel, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].queue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].passIndices, std::vector<uint32>({1u}));
+    EXPECT_EQ(diagnostics.plannedQueueBatches[2].dependencyLevel, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[2].queue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[2].passIndices, std::vector<uint32>({2u}));
+    EXPECT_TRUE(diagnostics.plannedQueueBatches[3].syntheticTerminal);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[3].queue,
+              RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_TRUE(diagnostics.plannedQueueBatches[3].passIndices.empty());
+
+    EXPECT_TRUE(diagnostics.queueBatches.empty());
+    EXPECT_TRUE(diagnostics.queueSyncs.empty());
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("Planned Queue Batches"), std::string::npos);
+    EXPECT_NE(dump.find("plannedBatches=4"), std::string::npos);
+    EXPECT_NE(dump.find("plannedOverlapLevels=1"), std::string::npos);
+    EXPECT_NE(dump.find("plannedSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("[0] level=0 queue=Graphics passes=[0]"), std::string::npos);
+    EXPECT_NE(dump.find("[1] level=0 queue=Compute passes=[1]"), std::string::npos);
+    EXPECT_NE(dump.find("[2] level=1 queue=Graphics passes=[2]"), std::string::npos);
+}
+
+TEST(RenderGraphValidation, DiagnosticsReportsPlannedSubmissionSyncGraph)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
 
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
     bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
     FakeBuffer buffer(bufferDesc);
 
-    auto imported = graph.ImportBuffer(&buffer, RHIResourceState::Common);
+    RGBufferHandle imported = RenderGraphValidationAccess::ImportBuffer(graph, &buffer, RHIResourceState::Common);
 
-    FakeCommandContext graphicsCtx;
-    FakeCommandContext computeCtx;
-    FakeFence computeFence;
-    bool ranOnGraphicsContext = false;
-    bool ranOnComputeContext = false;
-
-    struct ComputeData
+    struct BufferPassData
     {
         RGBufferHandle buffer;
     };
 
-    graph.AddPass<ComputeData>(
-        "ComputeWork",
-        RenderGraphPassType::Compute,
-        [&](RenderGraphBuilder& builder, ComputeData& data)
+    graph.AddPass<BufferPassData>(
+        "PlannedSyncGraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
         {
             data.buffer = builder.Write(imported, RHIResourceState::UnorderedAccess);
         },
-        [&](const ComputeData&, RHICommandContext& ctx)
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlannedSyncComputeConsume",
+        RenderGraphPassType::Compute,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
         {
-            ranOnGraphicsContext = (&ctx == &graphicsCtx);
-            ranOnComputeContext = (&ctx == &computeCtx);
-        });
+            data.buffer = builder.ReadWrite(imported);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
 
     graph.SetExportState(imported, RHIResourceState::ShaderResource);
-    graph.Compile();
-    graph.ExecuteAsync(graphicsCtx, &computeCtx, &computeFence, 1);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
 
-    const auto& stats = graph.GetCompileStats();
-    EXPECT_FALSE(stats.asyncComputeSupported);
-    EXPECT_TRUE(stats.asyncFallbackUsed);
-    EXPECT_TRUE(ranOnGraphicsContext);
-    EXPECT_FALSE(ranOnComputeContext);
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.plannedQueueBatches.size(), 3u);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].queue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].passIndices, std::vector<uint32>({0u}));
+    EXPECT_TRUE(diagnostics.plannedQueueBatches[0].prerequisiteSyncIndices.empty());
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].queue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].passIndices, std::vector<uint32>({1u}));
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].prerequisiteSyncIndices, std::vector<uint32>({0u}));
+    EXPECT_TRUE(diagnostics.plannedQueueBatches[2].syntheticTerminal);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[2].prerequisiteSyncIndices,
+              std::vector<uint32>({1u}));
+
+    ASSERT_EQ(diagnostics.plannedQueueSyncs.size(), 2u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncCount, 2u);
+    EXPECT_EQ(diagnostics.plannedCrossQueueSyncCount, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncCoveredCount, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncUncoveredCount, 2u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].syncIndex, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].sourceBatchIndex, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].targetBatchIndex, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].sourceQueue, RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].targetQueue, RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].reason, RenderGraph::DiagnosticSyncReason::CrossQueueDependency);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].sourcePassIndex, 0u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].targetPassIndex, 1u);
+    EXPECT_FALSE(diagnostics.plannedQueueSyncs[0].coveredByActualSync);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].actualSyncIndex, RVX_INVALID_INDEX);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[1].reason,
+              RenderGraph::DiagnosticSyncReason::FinalQueueJoin);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[1].sourceBatchIndex, 1u);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[1].targetBatchIndex, 2u);
+    EXPECT_EQ(diagnostics.actualQueueSyncCount, 0u);
+
+    std::string dump = graph.ExportDiagnosticsText();
+    EXPECT_NE(dump.find("Planned Queue Syncs"), std::string::npos);
+    EXPECT_NE(dump.find("plannedSyncs=2"), std::string::npos);
+    EXPECT_NE(dump.find("plannedCrossQueueSyncs=1"), std::string::npos);
+    EXPECT_NE(dump.find("plannedUncoveredSyncs=2"), std::string::npos);
+    EXPECT_NE(dump.find("[1] level=1 queue=Compute passes=[1] prerequisites=[0]"), std::string::npos);
+    EXPECT_NE(dump.find("batch0 Graphics -> batch1 Compute reason=CrossQueueDependency"), std::string::npos);
+}
+
+TEST(RenderGraphValidation, SubmissionPlanExposesReusableReadyListPlan)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 1024;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(bufferDesc);
+
+    RGBufferHandle imported = RenderGraphValidationAccess::ImportBuffer(graph, &buffer, RHIResourceState::Common);
+
+    struct BufferPassData
+    {
+        RGBufferHandle buffer;
+    };
+
+    graph.AddPass<BufferPassData>(
+        "PlanApiGraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.Write(imported, RHIResourceState::UnorderedAccess);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.AddPass<BufferPassData>(
+        "PlanApiComputeConsume",
+        RenderGraphPassType::Compute,
+        [imported](RenderGraphBuilder& builder, BufferPassData& data)
+        {
+            data.buffer = builder.ReadWrite(imported);
+        },
+        [](const BufferPassData&, RHICommandContext&) {});
+
+    graph.SetExportState(imported, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    ASSERT_EQ(plan.queueBatches.size(), 3u);
+    EXPECT_EQ(plan.queueBatchCount, 3u);
+    EXPECT_EQ(plan.dependencyLevelCount, 3u);
+    EXPECT_EQ(plan.computeBatchCount, 1u);
+    EXPECT_EQ(plan.asyncOverlapCandidateLevelCount, 0u);
+    ASSERT_EQ(plan.queueSyncs.size(), 2u);
+    EXPECT_EQ(plan.queueSyncCount, 2u);
+    EXPECT_EQ(plan.crossQueueSyncCount, 1u);
+    EXPECT_EQ(plan.queueBatches[1].prerequisiteSyncIndices, std::vector<uint32>({0u}));
+    EXPECT_EQ(plan.queueSyncs[0].sourceBatchIndex, 0u);
+    EXPECT_EQ(plan.queueSyncs[0].targetBatchIndex, 1u);
+    EXPECT_EQ(plan.queueSyncs[0].sourcePassIndex, 0u);
+    EXPECT_EQ(plan.queueSyncs[0].targetPassIndex, 1u);
+    EXPECT_EQ(plan.terminalGraphicsBatchIndex, 2u);
+    EXPECT_TRUE(plan.queueBatches[2].syntheticTerminal);
+    EXPECT_EQ(plan.queueBatches[2].prerequisiteBatchIndices,
+              std::vector<uint32>({1u}));
+
+    RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    EXPECT_EQ(diagnostics.plannedQueueBatchCount, plan.queueBatchCount);
+    EXPECT_EQ(diagnostics.plannedDependencyLevelCount, plan.dependencyLevelCount);
+    EXPECT_EQ(diagnostics.plannedComputeBatchCount, plan.computeBatchCount);
+    EXPECT_EQ(diagnostics.plannedQueueSyncCount, plan.queueSyncCount);
+    EXPECT_EQ(diagnostics.plannedCrossQueueSyncCount, plan.crossQueueSyncCount);
+    ASSERT_EQ(diagnostics.plannedQueueBatches.size(), plan.queueBatches.size());
+    ASSERT_EQ(diagnostics.plannedQueueSyncs.size(), plan.queueSyncs.size());
+    EXPECT_EQ(diagnostics.plannedQueueBatches[0].passIndices, plan.queueBatches[0].passIndices);
+    EXPECT_EQ(diagnostics.plannedQueueBatches[1].prerequisiteSyncIndices,
+              plan.queueBatches[1].prerequisiteSyncIndices);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].sourceBatchIndex, plan.queueSyncs[0].sourceBatchIndex);
+    EXPECT_EQ(diagnostics.plannedQueueSyncs[0].targetBatchIndex, plan.queueSyncs[0].targetBatchIndex);
+}
+
+
+
+
+
+TEST(RenderGraphValidation, MultiQueueRecordsDistinctContextsForGraphicsComputeGraphics)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
+    RHIBufferDesc desc;
+    desc.size = 1024;
+    desc.usage = RHIBufferUsage::Structured |
+                 RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource = RenderGraphValidationAccess::ImportBuffer(graph,
+        &buffer, RHIResourceState::Common);
+    struct Data { RGBufferHandle buffer; };
+    graph.AddPass<Data>(
+        "QueuePlanGraphicsProduce",
+        RenderGraphPassType::Graphics,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                resource, RHIResourceState::UnorderedAccess);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.AddPass<Data>(
+        "QueuePlanComputeTransform",
+        RenderGraphPassType::Compute,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.ReadWrite(resource);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.AddPass<Data>(
+        "QueuePlanGraphicsConsume",
+        RenderGraphPassType::Graphics,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.ReadWrite(resource);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportState(resource, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(graph, recorded));
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
+    ASSERT_EQ(recorded.plan.batches.size(), 4u);
+    ASSERT_EQ(recorded.ownedContexts.size(), 4u);
+    EXPECT_EQ(recorded.plan.terminalGraphicsBatchIndex, 3u);
+    EXPECT_EQ(recorded.plan.batches[0].queueType,
+              RHICommandQueueType::Graphics);
+    EXPECT_EQ(recorded.plan.batches[1].queueType,
+              RHICommandQueueType::Compute);
+    EXPECT_EQ(recorded.plan.batches[2].queueType,
+              RHICommandQueueType::Graphics);
+    EXPECT_EQ(recorded.plan.batches[3].queueType,
+              RHICommandQueueType::Graphics);
+    EXPECT_NE(recorded.ownedContexts[0].Get(),
+              recorded.ownedContexts[2].Get());
+
+    const auto hasOwnership = [](const FakeCommandContext& context,
+                                 GPUQueueDomain before,
+                                 GPUQueueDomain after)
+    {
+        return std::any_of(
+            context.bufferBarriers.begin(),
+            context.bufferBarriers.end(),
+            [before, after](const RHIBufferBarrier& barrier)
+            {
+                return barrier.hasScopedAccess &&
+                       barrier.accessBefore.domain == before &&
+                       barrier.accessAfter.domain == after &&
+                       HasDependencyKind(
+                           barrier.dependencyKind,
+                           RHIDependencyKind::Ownership);
+            });
+    };
+    const auto& graphicsProduce = *static_cast<FakeCommandContext*>(
+        recorded.ownedContexts[0].Get());
+    const auto& computeTransform = *static_cast<FakeCommandContext*>(
+        recorded.ownedContexts[1].Get());
+    const auto& graphicsConsume = *static_cast<FakeCommandContext*>(
+        recorded.ownedContexts[2].Get());
+    EXPECT_TRUE(hasOwnership(graphicsProduce,
+                             GPUQueueDomain::Graphics,
+                             GPUQueueDomain::Compute));
+    EXPECT_TRUE(hasOwnership(computeTransform,
+                             GPUQueueDomain::Graphics,
+                             GPUQueueDomain::Compute));
+    EXPECT_TRUE(hasOwnership(computeTransform,
+                             GPUQueueDomain::Compute,
+                             GPUQueueDomain::Graphics));
+    EXPECT_TRUE(hasOwnership(graphicsConsume,
+                             GPUQueueDomain::Compute,
+                             GPUQueueDomain::Graphics));
+}
+
+TEST(RenderGraphValidation,
+     ParallelRecordingRunsIndependentDependencyLevelBatchesConcurrently)
+{
+    ScopedJobSystem jobs(2);
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
+    RenderGraphValidationAccess::SetParallelRecordingEnabled(graph, true);
+    ASSERT_TRUE(graph.IsParallelRecordingEnabled());
+
+    RHIBufferDesc desc;
+    desc.size = 256;
+    desc.usage = RHIBufferUsage::Structured |
+                 RHIBufferUsage::UnorderedAccess;
+    FakeBuffer graphicsBuffer(desc);
+    FakeBuffer computeBuffer(desc);
+    const RGBufferHandle graphicsResource = RenderGraphValidationAccess::ImportBuffer(graph,
+        &graphicsBuffer, RHIResourceState::Common);
+    const RGBufferHandle computeResource = RenderGraphValidationAccess::ImportBuffer(graph,
+        &computeBuffer, RHIResourceState::Common);
+
+    std::mutex rendezvousMutex;
+    std::condition_variable rendezvousCv;
+    uint32 arrived = 0;
+    std::atomic<uint32> successfulRendezvous = 0;
+    const auto rendezvous = [&]()
+    {
+        std::unique_lock lock(rendezvousMutex);
+        ++arrived;
+        rendezvousCv.notify_all();
+        if (rendezvousCv.wait_for(
+                lock,
+                std::chrono::seconds(2),
+                [&arrived]() { return arrived == 2U; }))
+        {
+            successfulRendezvous.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    struct Data
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<Data>(
+        "ParallelGraphics",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                graphicsResource, RHIResourceState::UnorderedAccess);
+        },
+        [&rendezvous](const Data&, RHICommandContext&) { rendezvous(); });
+    graph.AddPass<Data>(
+        "ParallelCompute",
+        RenderGraphPassType::Compute,
+        [computeResource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                computeResource, RHIResourceState::UnorderedAccess);
+        },
+        [&rendezvous](const Data&, RHICommandContext&) { rendezvous(); });
+    graph.SetExportState(graphicsResource, RHIResourceState::ShaderResource);
+    graph.SetExportState(computeResource, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    const RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    ASSERT_GE(plan.queueBatches.size(), 3U);
+    ASSERT_GE(plan.asyncOverlapCandidateLevelCount, 1U);
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(graph, recorded));
+    EXPECT_EQ(successfulRendezvous.load(std::memory_order_relaxed), 2U);
+    const RenderGraph::CompileStats& stats = graph.GetCompileStats();
+    EXPECT_TRUE(stats.parallelRecordingEnabled);
+    EXPECT_TRUE(stats.parallelRecordingUsed);
+    EXPECT_EQ(stats.lastParallelRecordingLevelCount, 1U);
+    EXPECT_EQ(stats.lastParallelRecordingBatchCount, 2U);
+    EXPECT_EQ(stats.lastExecutedPassCount, 2U);
+
+    const RenderGraph::Diagnostics diagnostics = graph.GetDiagnostics();
+    ASSERT_EQ(diagnostics.passes.size(), 2U);
+    EXPECT_EQ(diagnostics.passes[0].executionSerial, 0U);
+    EXPECT_EQ(diagnostics.passes[1].executionSerial, 1U);
+    const std::string json = graph.ExportDiagnosticsJson();
+    EXPECT_NE(json.find("\"parallelRecordingUsed\": true"),
+              std::string::npos);
+}
+
+TEST(RenderGraphValidation, MultiQueuePlansCopyComputeGraphicsAndTerminalJoin)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
+    RHIBufferDesc desc;
+    desc.size = 2048;
+    desc.usage = RHIBufferUsage::CopyDst |
+                 RHIBufferUsage::Structured |
+                 RHIBufferUsage::UnorderedAccess;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource = RenderGraphValidationAccess::ImportBuffer(graph,
+        &buffer, RHIResourceState::Common);
+    struct Data { RGBufferHandle buffer; };
+    graph.AddPass<Data>(
+        "QueuePlanCopy",
+        RenderGraphPassType::Copy,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(resource, RHIResourceState::CopyDest);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.AddPass<Data>(
+        "QueuePlanCompute",
+        RenderGraphPassType::Compute,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.ReadWrite(resource);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.AddPass<Data>(
+        "QueuePlanGraphics",
+        RenderGraphPassType::Graphics,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.ReadWrite(resource);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportState(resource, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    const RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    ASSERT_EQ(plan.queueBatches.size(), 5u);
+    EXPECT_EQ(plan.copyBatchCount, 1u);
+    EXPECT_EQ(plan.computeBatchCount, 1u);
+    EXPECT_EQ(plan.queueBatches[0].queue,
+              RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_TRUE(plan.queueBatches[0].syntheticInitialRelease);
+    EXPECT_EQ(plan.queueBatches[1].queue,
+              RenderGraph::DiagnosticExecutionQueue::Copy);
+    EXPECT_EQ(plan.queueBatches[2].queue,
+              RenderGraph::DiagnosticExecutionQueue::Compute);
+    EXPECT_EQ(plan.queueBatches[3].queue,
+              RenderGraph::DiagnosticExecutionQueue::Graphics);
+    EXPECT_TRUE(plan.queueBatches[4].syntheticTerminal);
+    EXPECT_EQ(plan.queueBatches[1].prerequisiteBatchIndices,
+              std::vector<uint32>({0u}));
+    EXPECT_EQ(plan.queueBatches[2].prerequisiteBatchIndices,
+              std::vector<uint32>({1u}));
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(graph, recorded));
+    EXPECT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
+    ASSERT_EQ(recorded.ownedContexts.size(), 5u);
+    const auto& initialRelease = *static_cast<FakeCommandContext*>(
+        recorded.ownedContexts[0].Get());
+    ASSERT_FALSE(initialRelease.bufferBarriers.empty());
+    EXPECT_TRUE(std::any_of(
+        initialRelease.bufferBarriers.begin(),
+        initialRelease.bufferBarriers.end(),
+        [](const RHIBufferBarrier& barrier)
+        {
+            return barrier.hasScopedAccess &&
+                   barrier.accessBefore.domain == GPUQueueDomain::Graphics &&
+                   barrier.accessAfter.domain == GPUQueueDomain::Copy &&
+                   HasDependencyKind(barrier.dependencyKind,
+                                     RHIDependencyKind::Ownership);
+        }));
+}
+
+TEST(RenderGraphValidation,
+     MultiQueueExportReleasesUntouchedExternalRangesToTerminal)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
+
+    constexpr uint64 bufferSize = 384;
+    constexpr uint64 dirtyOffset = 96;
+    constexpr uint64 dirtySize = 192;
+    RHIBufferDesc desc;
+    desc.size = bufferSize;
+    desc.usage = RHIBufferUsage::CopyDst |
+                 RHIBufferUsage::Structured;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource = RenderGraphValidationAccess::ImportBuffer(graph,
+        &buffer,
+        MakeRHIBufferAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Compute,
+            GPUQueueDomain::Compute,
+            RHIContentValidity::Valid));
+
+    struct Data
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<Data>(
+        "PartialCopyUpdate",
+        RenderGraphPassType::Copy,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                resource.Range(dirtyOffset, dirtySize),
+                RHIResourceState::CopyDest);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportAccess(
+        resource,
+        MakeRHIAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::AllGraphics,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid));
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+
+    const RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    const auto initialRelease = std::find_if(
+        plan.queueBatches.begin(),
+        plan.queueBatches.end(),
+        [](const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+        {
+            return batch.syntheticInitialRelease &&
+                   batch.queue ==
+                       RenderGraph::DiagnosticExecutionQueue::Compute;
+        });
+    ASSERT_NE(initialRelease, plan.queueBatches.end());
+    ASSERT_NE(plan.terminalGraphicsBatchIndex, RVX_INVALID_INDEX);
+    ASSERT_LT(plan.terminalGraphicsBatchIndex, plan.queueBatches.size());
+    const auto& terminal =
+        plan.queueBatches[plan.terminalGraphicsBatchIndex];
+    EXPECT_NE(std::find(terminal.prerequisiteBatchIndices.begin(),
+                        terminal.prerequisiteBatchIndices.end(),
+                        initialRelease->batchIndex),
+              terminal.prerequisiteBatchIndices.end());
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(graph, recorded));
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
+    ASSERT_EQ(recorded.ownedContexts.size(), plan.queueBatches.size());
+
+    const auto& releaseContext = *static_cast<FakeCommandContext*>(
+        recorded.ownedContexts[initialRelease->batchIndex].Get());
+    const auto& terminalContext = *static_cast<FakeCommandContext*>(
+        recorded.ownedContexts[plan.terminalGraphicsBatchIndex].Get());
+    const auto hasOwnershipRange = [](
+        const FakeCommandContext& context,
+        GPUQueueDomain before,
+        GPUQueueDomain after,
+        uint64 offset,
+        uint64 size)
+    {
+        return std::any_of(
+            context.bufferBarriers.begin(),
+            context.bufferBarriers.end(),
+            [before, after, offset, size](const RHIBufferBarrier& barrier)
+            {
+                return barrier.hasScopedAccess &&
+                       barrier.accessBefore.domain == before &&
+                       barrier.accessAfter.domain == after &&
+                       barrier.offset == offset &&
+                       barrier.size == size &&
+                       HasDependencyKind(
+                           barrier.dependencyKind,
+                           RHIDependencyKind::Ownership);
+            });
+    };
+
+    EXPECT_TRUE(hasOwnershipRange(
+        releaseContext,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy,
+        dirtyOffset,
+        dirtySize));
+    EXPECT_TRUE(hasOwnershipRange(
+        releaseContext,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Graphics,
+        0,
+        dirtyOffset));
+    EXPECT_TRUE(hasOwnershipRange(
+        releaseContext,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Graphics,
+        dirtyOffset + dirtySize,
+        bufferSize - dirtyOffset - dirtySize));
+    EXPECT_TRUE(hasOwnershipRange(
+        terminalContext,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Graphics,
+        0,
+        dirtyOffset));
+    EXPECT_TRUE(hasOwnershipRange(
+        terminalContext,
+        GPUQueueDomain::Copy,
+        GPUQueueDomain::Graphics,
+        dirtyOffset,
+        dirtySize));
+    EXPECT_TRUE(hasOwnershipRange(
+        terminalContext,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Graphics,
+        dirtyOffset + dirtySize,
+        bufferSize - dirtyOffset - dirtySize));
+}
+
+TEST(RenderGraphValidation,
+     BufferRangesCollapseToOnePhysicalStateWhenTheRhiCannotTrackThem)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsBufferRangeBarriers = false;
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(
+        graph, RenderGraph::QueueExecutionMode::MultiQueue));
+
+    constexpr uint64 bufferSize = 384;
+    constexpr uint64 dirtyOffset = 96;
+    constexpr uint64 dirtySize = 192;
+    RHIBufferDesc desc;
+    desc.size = bufferSize;
+    desc.usage = RHIBufferUsage::CopyDst |
+                 RHIBufferUsage::Structured;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource =
+        RenderGraphValidationAccess::ImportBuffer(
+            graph,
+            &buffer,
+            MakeRHIBufferAccessSnapshot(
+                RHIResourceState::ShaderResource,
+                RHIShaderStage::Compute,
+                GPUQueueDomain::Compute,
+                RHIContentValidity::Valid));
+
+    struct Data
+    {
+        RGBufferHandle buffer;
+    };
+    graph.AddPass<Data>(
+        "PartialCopyUpdateWithoutRangeBarriers",
+        RenderGraphPassType::Copy,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                resource.Range(dirtyOffset, dirtySize),
+                RHIResourceState::CopyDest);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportAccess(
+        resource,
+        MakeRHIAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::AllGraphics,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid));
+    RenderGraphValidationAccess::Compile(graph);
+
+    const RenderGraph::CompileStats& stats = graph.GetCompileStats();
+    ASSERT_TRUE(stats.compileValid);
+    EXPECT_FALSE(stats.bufferRangeBarriersSupported);
+    EXPECT_EQ(stats.bufferRangeBarrierCollapseCount, 1u);
+
+    const RenderGraph::SubmissionPlan plan = graph.GetSubmissionPlan();
+    ASSERT_NE(plan.terminalGraphicsBatchIndex, RVX_INVALID_INDEX);
+    ASSERT_LT(plan.terminalGraphicsBatchIndex, plan.queueBatches.size());
+
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(
+        graph, recorded));
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
+    ASSERT_EQ(recorded.ownedContexts.size(), plan.queueBatches.size());
+
+    uint32 terminalCopyToGraphicsAcquireCount = 0;
+    for (uint32 contextIndex = 0;
+         contextIndex < recorded.ownedContexts.size();
+         ++contextIndex)
+    {
+        const auto& context = *static_cast<FakeCommandContext*>(
+            recorded.ownedContexts[contextIndex].Get());
+        for (const RHIBufferBarrier& barrier : context.bufferBarriers)
+        {
+            EXPECT_EQ(barrier.offset, 0u);
+            EXPECT_EQ(barrier.size, RVX_WHOLE_SIZE);
+            if (contextIndex == plan.terminalGraphicsBatchIndex &&
+                barrier.hasScopedAccess &&
+                barrier.accessBefore.domain == GPUQueueDomain::Copy &&
+                barrier.accessAfter.domain == GPUQueueDomain::Graphics &&
+                HasDependencyKind(
+                    barrier.dependencyKind,
+                    RHIDependencyKind::Ownership))
+            {
+                ++terminalCopyToGraphicsAcquireCount;
+            }
+        }
+    }
+    EXPECT_EQ(terminalCopyToGraphicsAcquireCount, 1u);
+
+    const RHIBufferAccessSnapshot finalAccess =
+        graph.GetRealizedAccess(resource);
+    EXPECT_EQ(finalAccess.uniformAccess.domain,
+              GPUQueueDomain::Graphics);
+    EXPECT_EQ(finalAccess.uniformAccess.layout,
+              RHIResourceLayout::ShaderReadOnly);
+    EXPECT_TRUE(finalAccess.rangeOverrides.empty());
+}
+
+TEST(RenderGraphValidation,
+     NonUniformInitialBufferAccessFailsWithoutRangeBarrierSupport)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsBufferRangeBarriers = false;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHIBufferDesc desc;
+    desc.size = 384;
+    desc.usage = RHIBufferUsage::Structured;
+    FakeBuffer buffer(desc);
+    RHIBufferAccessSnapshot initialAccess =
+        MakeRHIBufferAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::Compute,
+            GPUQueueDomain::Compute,
+            RHIContentValidity::Valid);
+    initialAccess.rangeOverrides.push_back({
+        96,
+        192,
+        MakeRHIAccessSnapshot(
+            RHIResourceState::CopyDest,
+            RHIShaderStage::None,
+            GPUQueueDomain::Copy,
+            RHIContentValidity::Valid)});
+    RenderGraphValidationAccess::ImportBuffer(
+        graph, &buffer, initialAccess);
+
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_FALSE(graph.GetCompileStats().compileValid);
+    EXPECT_GT(graph.GetCompileStats().validationErrorCount, 0u);
+    const auto& diagnostics = graph.GetCompileDiagnostics();
+    EXPECT_TRUE(std::any_of(
+        diagnostics.begin(),
+        diagnostics.end(),
+        [](const std::string& diagnostic)
+        {
+            return diagnostic.find(
+                       "does not support buffer range barriers") !=
+                   std::string::npos;
+        }));
+}
+
+TEST(RenderGraphValidation,
+     ConflictingPassBufferRangesFailWithoutRangeBarrierSupport)
+{
+    FakeDevice device;
+    device.MutableCapabilities().supportsBufferRangeBarriers = false;
+
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+
+    RHIBufferDesc desc;
+    desc.size = 384;
+    desc.usage = RHIBufferUsage::CopySrc | RHIBufferUsage::CopyDst;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource =
+        RenderGraphValidationAccess::ImportBuffer(
+            graph,
+            &buffer,
+            MakeRHIBufferAccessSnapshot(
+                RHIResourceState::Common,
+                RHIShaderStage::None,
+                GPUQueueDomain::Graphics,
+                RHIContentValidity::Valid));
+
+    struct Data
+    {
+        RGBufferHandle source;
+        RGBufferHandle destination;
+    };
+    graph.AddPass<Data>(
+        "InPlaceRangeCopy",
+        RenderGraphPassType::Copy,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.source = builder.Read(
+                resource.Range(0, 192),
+                RHIResourceState::CopySource);
+            data.destination = builder.Write(
+                resource.Range(192, 192),
+                RHIResourceState::CopyDest);
+        },
+        [](const Data&, RHICommandContext&) {});
+
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_FALSE(graph.GetCompileStats().compileValid);
+    EXPECT_GT(graph.GetCompileStats().validationErrorCount, 0u);
+    const auto& diagnostics = graph.GetCompileDiagnostics();
+    EXPECT_TRUE(std::any_of(
+        diagnostics.begin(),
+        diagnostics.end(),
+        [](const std::string& diagnostic)
+        {
+            return diagnostic.find(
+                       "supports only whole-resource buffer barriers") !=
+                   std::string::npos;
+        }));
+}
+
+TEST(RenderGraphValidation, MultiQueueTerminalJoinsIndependentBranchesAndFoldsAliases)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsAsyncCompute = true;
+    capabilities.supportsDefaultQueueFenceSignal = true;
+    capabilities.supportsQueueSubmissionPlan = true;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Graphics};
+    capabilities.queueTopology.activeDomainCount = 2;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
+    RHIBufferDesc desc;
+    desc.size = 512;
+    desc.usage = RHIBufferUsage::Structured |
+                 RHIBufferUsage::UnorderedAccess;
+    FakeBuffer graphicsBuffer(desc);
+    FakeBuffer computeBuffer(desc);
+    const RGBufferHandle graphicsResource = RenderGraphValidationAccess::ImportBuffer(graph,
+        &graphicsBuffer, RHIResourceState::Common);
+    const RGBufferHandle computeResource = RenderGraphValidationAccess::ImportBuffer(graph,
+        &computeBuffer, RHIResourceState::Common);
+    struct Data { RGBufferHandle buffer; };
+    graph.AddPass<Data>(
+        "IndependentGraphics",
+        RenderGraphPassType::Graphics,
+        [graphicsResource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                graphicsResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.AddPass<Data>(
+        "IndependentCompute",
+        RenderGraphPassType::Compute,
+        [computeResource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                computeResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportState(graphicsResource, RHIResourceState::ShaderResource);
+    graph.SetExportState(computeResource, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(graph);
+    ASSERT_TRUE(graph.GetCompileStats().compileValid);
+    RenderGraph::RecordedQueueSubmission recorded;
+    ASSERT_TRUE(RenderGraphValidationAccess::RecordQueueSubmission(graph, recorded));
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(recorded.plan));
+    const auto& terminal = recorded.plan.batches[
+        recorded.plan.terminalGraphicsBatchIndex];
+    EXPECT_EQ(terminal.prerequisiteBatchIndices.size(), 2u);
+
+    capabilities.queueTopology.logicalQueueDomains[1] =
+        GPUQueueDomain::Graphics;
+    capabilities.queueTopology.activeDomainCount = 1;
+    RenderGraph aliasedGraph;
+    RenderGraphValidationAccess::SetDevice(aliasedGraph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(aliasedGraph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
+    FakeBuffer aliasedBuffer(desc);
+    const RGBufferHandle aliasedResource = RenderGraphValidationAccess::ImportBuffer(aliasedGraph,
+        &aliasedBuffer, RHIResourceState::Common);
+    aliasedGraph.AddPass<Data>(
+        "AliasedCompute",
+        RenderGraphPassType::Compute,
+        [aliasedResource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                aliasedResource, RHIResourceState::UnorderedAccess);
+        },
+        [](const Data&, RHICommandContext&) {});
+    aliasedGraph.SetExportState(
+        aliasedResource, RHIResourceState::ShaderResource);
+    RenderGraphValidationAccess::Compile(aliasedGraph);
+    const RenderGraph::SubmissionPlan aliasedPlan =
+        aliasedGraph.GetSubmissionPlan();
+    EXPECT_EQ(aliasedPlan.computeBatchCount, 0u);
+    EXPECT_EQ(aliasedPlan.queueSyncCount, 0u);
+    EXPECT_TRUE(std::all_of(
+        aliasedPlan.queueBatches.begin(),
+        aliasedPlan.queueBatches.end(),
+        [](const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+        {
+            return batch.queue ==
+                RenderGraph::DiagnosticExecutionQueue::Graphics;
+        }));
+}
+
+TEST(RenderGraphValidation, GraphicsOnlyFallbackRejectsExternalNonGraphicsOwnership)
+{
+    FakeDevice device;
+    RenderGraph graph;
+    RenderGraphValidationAccess::SetDevice(graph, &device);
+    ASSERT_TRUE(RenderGraphValidationAccess::SetQueueExecutionMode(graph,
+        RenderGraph::QueueExecutionMode::MultiQueue));
+
+    RHIBufferDesc desc;
+    desc.size = 256;
+    desc.usage = RHIBufferUsage::CopyDst |
+                 RHIBufferUsage::Structured;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource = RenderGraphValidationAccess::ImportBuffer(graph,
+        &buffer,
+        MakeRHIBufferAccessSnapshot(
+            RHIResourceState::CopySource,
+            RHIShaderStage::None,
+            GPUQueueDomain::Copy,
+            RHIContentValidity::Valid));
+    struct Data { RGBufferHandle buffer; };
+    graph.AddPass<Data>(
+        "CopyOwnedInput",
+        RenderGraphPassType::Copy,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                resource, RHIResourceState::CopyDest);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportAccess(
+        resource,
+        MakeRHIAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::All,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid));
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_FALSE(graph.GetCompileStats().compileValid);
+    EXPECT_GT(graph.GetCompileStats().validationErrorCount, 0u);
+}
+
+TEST(RenderGraphValidation, CompileFinalizesGraphicsOnlyFallbackBeforeRealization)
+{
+    FakeDevice device;
+    auto& capabilities = device.MutableCapabilities();
+    capabilities.supportsDefaultQueueFenceSignal = false;
+    capabilities.supportsQueueSubmissionPlan = false;
+    capabilities.queueTopology.logicalQueueDomains = {
+        GPUQueueDomain::Graphics,
+        GPUQueueDomain::Compute,
+        GPUQueueDomain::Copy};
+    capabilities.queueTopology.activeDomainCount = 3;
+
+    RenderGraph graph;
+    RHIBufferDesc desc;
+    desc.size = 256;
+    desc.usage = RHIBufferUsage::CopyDst |
+                 RHIBufferUsage::Structured;
+    FakeBuffer buffer(desc);
+    const RGBufferHandle resource = RenderGraphValidationAccess::ImportBuffer(graph,
+        &buffer,
+        MakeRHIBufferAccessSnapshot(
+            RHIResourceState::Common,
+            RHIShaderStage::None,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid));
+    struct Data { RGBufferHandle buffer; };
+    graph.AddPass<Data>(
+        "FallbackCopy",
+        RenderGraphPassType::Copy,
+        [resource](RenderGraphBuilder& builder, Data& data)
+        {
+            data.buffer = builder.Write(
+                resource, RHIResourceState::CopyDest);
+        },
+        [](const Data&, RHICommandContext&) {});
+    graph.SetExportAccess(
+        resource,
+        MakeRHIAccessSnapshot(
+            RHIResourceState::ShaderResource,
+            RHIShaderStage::All,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Valid));
+    RenderGraphCompileOptions options;
+    options.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+    options.capabilities = capabilities;
+    options.hasCapabilitySnapshot = true;
+    RenderGraphCompiler compiler;
+    CompiledRenderGraphPlan plan = compiler.Compile(graph, options);
+    ASSERT_TRUE(plan);
+    EXPECT_EQ(graph.GetQueueExecutionMode(),
+              RenderGraph::QueueExecutionMode::GraphicsOnly);
+    EXPECT_EQ(graph.GetCompileStats().requestedQueuePolicy,
+              RGQueuePolicy::PreferMultiQueue);
+    EXPECT_EQ(graph.GetCompileStats().finalQueuePolicy,
+              RGQueuePolicy::GraphicsOnly);
+    EXPECT_FALSE(graph.GetCompileStats().queueFallbackReason.empty());
+    const RenderGraph::SubmissionPlan fallbackPlan =
+        graph.GetSubmissionPlan();
+    EXPECT_EQ(fallbackPlan.computeBatchCount, 0u);
+    EXPECT_EQ(fallbackPlan.copyBatchCount, 0u);
+    EXPECT_TRUE(std::all_of(
+        fallbackPlan.queueBatches.begin(),
+        fallbackPlan.queueBatches.end(),
+        [](const RenderGraph::PlannedQueueBatchDiagnostic& batch)
+        {
+            return batch.queue ==
+                RenderGraph::DiagnosticExecutionQueue::Graphics;
+        }));
+
+    FakeCommandContext graphicsContext;
+    RenderGraphExecutionEnvironment environment;
+    environment.device = &device;
+    environment.graphicsContext = &graphicsContext;
+    RenderGraphExecutor executor;
+    RenderGraphExecution execution = executor.Prepare(plan, environment);
+    ASSERT_TRUE(execution);
+    EXPECT_EQ(graph.GetCompileStats().executionQueueMismatchCount, 0u);
+    EXPECT_TRUE(std::all_of(
+        graphicsContext.bufferBarriers.begin(),
+        graphicsContext.bufferBarriers.end(),
+        [](const RHIBufferBarrier& barrier)
+        {
+            return barrier.accessBefore.domain ==
+                       GPUQueueDomain::Graphics &&
+                   barrier.accessAfter.domain ==
+                       GPUQueueDomain::Graphics &&
+                   !HasDependencyKind(
+                       barrier.dependencyKind,
+                       RHIDependencyKind::Ownership);
+        }));
 }
 
 TEST(RenderGraphValidation, ClearAndRecompile)
@@ -1225,10 +4038,10 @@ TEST(RenderGraphValidation, ClearAndRecompile)
         [](const SimplePassData&, RHICommandContext&) {});
 
     graph.SetExportState(tex1, RHIResourceState::Present);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     // Clear for next frame
-    graph.Clear();
+    RenderGraphValidationAccess::Reset(graph);
 
     // Second frame - different setup
     auto tex2 = graph.CreateTexture(texDesc);
@@ -1255,7 +4068,7 @@ TEST(RenderGraphValidation, ClearAndRecompile)
         [](const TwoPassData&, RHICommandContext&) {});
 
     graph.SetExportState(tex3, RHIResourceState::Present);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 2u);
@@ -1264,17 +4077,21 @@ TEST(RenderGraphValidation, ClearAndRecompile)
 TEST(RenderGraphValidation, InvalidTextureUsageIsReported)
 {
     RenderGraph graph;
+    RGTextureHandle invalidTexture;
+    invalidTexture.index = 777;
+    invalidTexture.graphIdentity = graph.GetGraphIdentity();
+    invalidTexture.recordingGeneration = graph.GetRecordingGeneration();
 
     graph.AddPass<SimplePassData>(
         "InvalidTextureUsage",
         RenderGraphPassType::Graphics,
-        [](RenderGraphBuilder& builder, SimplePassData& data)
+        [invalidTexture](RenderGraphBuilder& builder, SimplePassData& data)
         {
-            data.colorTarget = builder.Write(RGTextureHandle{777}, RHIResourceState::RenderTarget);
+            data.colorTarget = builder.Write(invalidTexture, RHIResourceState::RenderTarget);
         },
         [](const SimplePassData&, RHICommandContext&) {});
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 1u);
@@ -1284,9 +4101,233 @@ TEST(RenderGraphValidation, InvalidTextureUsageIsReported)
     EXPECT_FALSE(stats.executionOrderFallbackUsed);
 }
 
+TEST(RenderGraphValidation, ForeignHandlesAreRejectedBeforePassUsageRecording)
+{
+    RenderGraph sourceGraph;
+    RenderGraph destinationGraph;
+    EXPECT_NE(sourceGraph.GetGraphIdentity(), 0u);
+    EXPECT_NE(destinationGraph.GetGraphIdentity(), 0u);
+    EXPECT_NE(sourceGraph.GetGraphIdentity(), destinationGraph.GetGraphIdentity());
+    EXPECT_EQ(sourceGraph.GetRecordingGeneration(), 1u);
+    EXPECT_EQ(destinationGraph.GetRecordingGeneration(), 1u);
+
+    const RHITextureDesc textureDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT);
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 64;
+    bufferDesc.usage = RHIBufferUsage::ShaderResource;
+
+    const RGTextureHandle foreignTexture = sourceGraph.CreateTexture(textureDesc);
+    const RGBufferHandle foreignBuffer = sourceGraph.CreateBuffer(bufferDesc);
+    const RGTextureHandle localTexture = destinationGraph.CreateTexture(textureDesc);
+    const RGBufferHandle localBuffer = destinationGraph.CreateBuffer(bufferDesc);
+    bool foreignTextureRejected = false;
+    bool foreignBufferRejected = false;
+    bool localTextureAccepted = false;
+    bool localBufferAccepted = false;
+
+    struct ProvenancePassData
+    {
+        RGTextureHandle foreignTexture;
+        RGBufferHandle foreignBuffer;
+        RGTextureHandle localTexture;
+        RGBufferHandle localBuffer;
+    };
+    destinationGraph.AddPass<ProvenancePassData>(
+        "RejectForeignProvenance",
+        RenderGraphPassType::Graphics,
+        [foreignTexture,
+         foreignBuffer,
+         localTexture,
+         localBuffer,
+         &foreignTextureRejected,
+         &foreignBufferRejected,
+         &localTextureAccepted,
+         &localBufferAccepted](
+            RenderGraphBuilder& builder,
+            ProvenancePassData& data)
+        {
+            data.foreignTexture = builder.Write(
+                foreignTexture, RHIResourceState::RenderTarget);
+            data.foreignBuffer = builder.Read(
+                foreignBuffer, RHIShaderStage::Vertex);
+            builder.SetDepthStencil(foreignTexture);
+            builder.Read(RGTextureHandle{});
+            builder.Write(RGBufferHandle{});
+            data.localTexture = builder.Write(
+                localTexture, RHIResourceState::RenderTarget);
+            data.localBuffer = builder.Write(
+                localBuffer, RHIResourceState::UnorderedAccess);
+            foreignTextureRejected = !data.foreignTexture.IsValid();
+            foreignBufferRejected = !data.foreignBuffer.IsValid();
+            localTextureAccepted = data.localTexture.IsValid();
+            localBufferAccepted = data.localBuffer.IsValid();
+        },
+        [](const ProvenancePassData&, RHICommandContext&) {});
+
+    EXPECT_TRUE(foreignTextureRejected);
+    EXPECT_TRUE(foreignBufferRejected);
+    EXPECT_TRUE(localTextureAccepted);
+    EXPECT_TRUE(localBufferAccepted);
+
+    EXPECT_EQ(destinationGraph.GetTextureDesc(foreignTexture), nullptr);
+    EXPECT_EQ(destinationGraph.GetBufferDesc(foreignBuffer), nullptr);
+    EXPECT_EQ(destinationGraph.GetRealizedAccess(foreignTexture).uniformAccess.layout,
+              RHIResourceLayout::Undefined);
+    EXPECT_EQ(destinationGraph.GetRealizedAccess(foreignBuffer).uniformAccess.layout,
+              RHIResourceLayout::Undefined);
+
+    destinationGraph.SetExportState(foreignTexture, RHIResourceState::Present);
+    destinationGraph.SetExportState(localTexture, RHIResourceState::Present);
+    RenderGraphValidationAccess::Compile(destinationGraph);
+    EXPECT_FALSE(destinationGraph.GetCompileStats().compileValid);
+    EXPECT_EQ(destinationGraph.GetCompileStats().invalidResourceUsageCount, 3u);
+    ASSERT_FALSE(destinationGraph.GetCompileDiagnostics().empty());
+    EXPECT_NE(destinationGraph.GetCompileDiagnostics().front().find("invalid"),
+              std::string::npos);
+}
+
+TEST(RenderGraphValidation, ClearInvalidatesOldHandleGenerationWithoutChangingGraphIdentity)
+{
+    RenderGraph graph;
+    const uint64 graphIdentity = graph.GetGraphIdentity();
+    const uint64 firstGeneration = graph.GetRecordingGeneration();
+    EXPECT_NE(graphIdentity, 0u);
+    EXPECT_NE(firstGeneration, 0u);
+
+    const RHITextureDesc textureDesc =
+        RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT);
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 64;
+    bufferDesc.usage = RHIBufferUsage::ShaderResource;
+
+    const RGTextureHandle oldTexture = graph.CreateTexture(textureDesc);
+    const RGBufferHandle oldBuffer = graph.CreateBuffer(bufferDesc);
+    const RGTextureHandle oldSubresource = oldTexture.Subresource(0);
+    const RGBufferHandle oldRange = oldBuffer.Range(8, 16);
+    EXPECT_EQ(oldSubresource.graphIdentity, oldTexture.graphIdentity);
+    EXPECT_EQ(oldSubresource.recordingGeneration, oldTexture.recordingGeneration);
+    EXPECT_EQ(oldRange.graphIdentity, oldBuffer.graphIdentity);
+    EXPECT_EQ(oldRange.recordingGeneration, oldBuffer.recordingGeneration);
+
+    RenderGraphValidationAccess::Reset(graph);
+    EXPECT_EQ(graph.GetGraphIdentity(), graphIdentity);
+    EXPECT_NE(graph.GetRecordingGeneration(), firstGeneration);
+    EXPECT_NE(graph.GetRecordingGeneration(), 0u);
+
+    const RGTextureHandle currentTexture = graph.CreateTexture(textureDesc);
+    const RGBufferHandle currentBuffer = graph.CreateBuffer(bufferDesc);
+    EXPECT_EQ(currentTexture.index, oldTexture.index);
+    EXPECT_EQ(currentBuffer.index, oldBuffer.index);
+    EXPECT_NE(currentTexture.recordingGeneration, oldTexture.recordingGeneration);
+    EXPECT_NE(currentBuffer.recordingGeneration, oldBuffer.recordingGeneration);
+    EXPECT_EQ(graph.GetTextureDesc(oldTexture), nullptr);
+    EXPECT_EQ(graph.GetBufferDesc(oldBuffer), nullptr);
+    EXPECT_NE(graph.GetTextureDesc(currentTexture), nullptr);
+    EXPECT_NE(graph.GetBufferDesc(currentBuffer), nullptr);
+    bool staleTextureRejected = false;
+    bool staleBufferRejected = false;
+    bool currentTextureAccepted = false;
+    bool currentBufferAccepted = false;
+
+    struct StaleHandlePassData
+    {
+        RGTextureHandle staleTexture;
+        RGBufferHandle staleBuffer;
+        RGTextureHandle currentTexture;
+        RGBufferHandle currentBuffer;
+    };
+    graph.AddPass<StaleHandlePassData>(
+        "RejectStaleGeneration",
+        RenderGraphPassType::Graphics,
+        [oldTexture,
+         oldBuffer,
+         currentTexture,
+         currentBuffer,
+         &staleTextureRejected,
+         &staleBufferRejected,
+         &currentTextureAccepted,
+         &currentBufferAccepted](
+            RenderGraphBuilder& builder,
+            StaleHandlePassData& data)
+        {
+            data.staleTexture = builder.Read(oldTexture);
+            data.staleBuffer = builder.Write(
+                oldBuffer, RHIResourceState::UnorderedAccess);
+            data.currentTexture = builder.Write(
+                currentTexture, RHIResourceState::RenderTarget);
+            data.currentBuffer = builder.Write(
+                currentBuffer, RHIResourceState::UnorderedAccess);
+            staleTextureRejected = !data.staleTexture.IsValid();
+            staleBufferRejected = !data.staleBuffer.IsValid();
+            currentTextureAccepted = data.currentTexture.IsValid();
+            currentBufferAccepted = data.currentBuffer.IsValid();
+        },
+        [](const StaleHandlePassData&, RHICommandContext&) {});
+
+    EXPECT_TRUE(staleTextureRejected);
+    EXPECT_TRUE(staleBufferRejected);
+    EXPECT_TRUE(currentTextureAccepted);
+    EXPECT_TRUE(currentBufferAccepted);
+
+    graph.SetExportState(currentTexture, RHIResourceState::Present);
+    RenderGraphValidationAccess::Compile(graph);
+    EXPECT_FALSE(graph.GetCompileStats().compileValid);
+    EXPECT_EQ(graph.GetCompileStats().invalidResourceUsageCount, 2u);
+    ASSERT_FALSE(graph.GetCompileDiagnostics().empty());
+    EXPECT_NE(graph.GetCompileDiagnostics().front().find("invalid"),
+              std::string::npos);
+}
+
+TEST(RenderGraphValidation, ResourceDescriptionQueriesStayStableDuringDefinitionGrowth)
+{
+    RenderGraph graph;
+
+    RHITextureDesc firstTextureDesc =
+        RHITextureDesc::RenderTarget(320, 180, RHIFormat::RGBA16_FLOAT);
+    RHIBufferDesc firstBufferDesc;
+    firstBufferDesc.size = 4096;
+    firstBufferDesc.usage = RHIBufferUsage::ShaderResource;
+
+    const RGTextureHandle firstTexture = graph.CreateTexture(firstTextureDesc);
+    const RGBufferHandle firstBuffer = graph.CreateBuffer(firstBufferDesc);
+    const RHITextureDesc* stableTextureDesc = graph.GetTextureDesc(firstTexture);
+    const RHIBufferDesc* stableBufferDesc = graph.GetBufferDesc(firstBuffer);
+    ASSERT_NE(nullptr, stableTextureDesc);
+    ASSERT_NE(nullptr, stableBufferDesc);
+
+    // Pass setup is allowed to query an existing resource and then declare or
+    // import more resources. Those mutations must not invalidate the query.
+    for (uint32 index = 0; index < 512; ++index)
+    {
+        RHITextureDesc textureDesc = RHITextureDesc::RenderTarget(
+            16 + index,
+            16,
+            RHIFormat::RGBA8_UNORM);
+        graph.CreateTexture(textureDesc);
+
+        RHIBufferDesc bufferDesc;
+        bufferDesc.size = 64 + index;
+        bufferDesc.usage = RHIBufferUsage::UnorderedAccess;
+        graph.CreateBuffer(bufferDesc);
+    }
+
+    EXPECT_EQ(stableTextureDesc, graph.GetTextureDesc(firstTexture));
+    EXPECT_EQ(RHIFormat::RGBA16_FLOAT, stableTextureDesc->format);
+    EXPECT_EQ(320u, stableTextureDesc->width);
+    EXPECT_EQ(180u, stableTextureDesc->height);
+    EXPECT_EQ(stableBufferDesc, graph.GetBufferDesc(firstBuffer));
+    EXPECT_EQ(4096u, stableBufferDesc->size);
+    EXPECT_EQ(RHIBufferUsage::ShaderResource, stableBufferDesc->usage);
+}
+
 TEST(RenderGraphValidation, InvalidBufferUsageIsReported)
 {
     RenderGraph graph;
+    RGBufferHandle invalidBuffer;
+    invalidBuffer.index = 888;
+    invalidBuffer.graphIdentity = graph.GetGraphIdentity();
+    invalidBuffer.recordingGeneration = graph.GetRecordingGeneration();
 
     struct InvalidBufferPassData
     {
@@ -1296,13 +4337,13 @@ TEST(RenderGraphValidation, InvalidBufferUsageIsReported)
     graph.AddPass<InvalidBufferPassData>(
         "InvalidBufferUsage",
         RenderGraphPassType::Compute,
-        [](RenderGraphBuilder& builder, InvalidBufferPassData& data)
+        [invalidBuffer](RenderGraphBuilder& builder, InvalidBufferPassData& data)
         {
-            data.buffer = builder.Write(RGBufferHandle{888}, RHIResourceState::UnorderedAccess);
+            data.buffer = builder.Write(invalidBuffer, RHIResourceState::UnorderedAccess);
         },
         [](const InvalidBufferPassData&, RHICommandContext&) {});
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 1u);
@@ -1322,7 +4363,7 @@ TEST(RenderGraphValidation, EmptyPassUsageIsReported)
         [](RenderGraphBuilder&, SimplePassData&) {},
         [](const SimplePassData&, RHICommandContext&) {});
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 1u);
@@ -1335,13 +4376,13 @@ TEST(RenderGraphValidation, ShaderStageMismatchWarningsDoNotInvalidateCompile)
 {
     FakeDevice device;
     RenderGraph graph;
-    graph.SetDevice(&device);
+    RenderGraphValidationAccess::SetDevice(graph, &device);
 
     RHITextureRef inputTexture =
         device.CreateTexture(RHITextureDesc::Texture2D(32, 32, RHIFormat::RGBA16_FLOAT));
     ASSERT_NE(inputTexture.Get(), nullptr);
 
-    RGTextureHandle input = graph.ImportTexture(inputTexture.Get(), RHIResourceState::ShaderResource);
+    RGTextureHandle input = RenderGraphValidationAccess::ImportTexture(graph, inputTexture.Get(), RHIResourceState::ShaderResource);
     RGTextureHandle computeOutput =
         graph.CreateTexture(RHITextureDesc::RenderTarget(32, 32, RHIFormat::RGBA16_FLOAT));
     RGTextureHandle rayTracingOutput =
@@ -1375,7 +4416,7 @@ TEST(RenderGraphValidation, ShaderStageMismatchWarningsDoNotInvalidateCompile)
 
     graph.SetExportState(computeOutput, RHIResourceState::ShaderResource);
     graph.SetExportState(rayTracingOutput, RHIResourceState::ShaderResource);
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_TRUE(stats.compileValid);
@@ -1392,17 +4433,21 @@ TEST(RenderGraphValidation, ShaderStageMismatchWarningsDoNotInvalidateCompile)
 TEST(RenderGraphValidation, IncompatiblePassStateIsReported)
 {
     RenderGraph graph;
+    RGTextureHandle invalidTexture;
+    invalidTexture.index = 999;
+    invalidTexture.graphIdentity = graph.GetGraphIdentity();
+    invalidTexture.recordingGeneration = graph.GetRecordingGeneration();
 
     graph.AddPass<SimplePassData>(
         "ComputeRenderTargetState",
         RenderGraphPassType::Compute,
-        [](RenderGraphBuilder& builder, SimplePassData& data)
+        [invalidTexture](RenderGraphBuilder& builder, SimplePassData& data)
         {
-            data.colorTarget = builder.Write(RGTextureHandle{999}, RHIResourceState::RenderTarget);
+            data.colorTarget = builder.Write(invalidTexture, RHIResourceState::RenderTarget);
         },
         [](const SimplePassData&, RHICommandContext&) {});
 
-    graph.Compile();
+    RenderGraphValidationAccess::Compile(graph);
 
     const auto& stats = graph.GetCompileStats();
     EXPECT_EQ(stats.totalPasses, 1u);

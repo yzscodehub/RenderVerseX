@@ -7,6 +7,7 @@ namespace RVX
 {
     class VulkanDevice;
     class VulkanPipeline;
+    struct RHIQueueSubmissionPlan;
 
     // =============================================================================
     // Vulkan Command Context
@@ -57,6 +58,12 @@ namespace RVX
         void DrawIndexed(uint32 indexCount, uint32 instanceCount, uint32 firstIndex, int32 vertexOffset, uint32 firstInstance) override;
         void DrawIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) override;
         void DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride) override;
+        void DrawIndexedIndirectCount(RHIBuffer* buffer,
+                                      uint64 offset,
+                                      RHIBuffer* countBuffer,
+                                      uint64 countOffset,
+                                      uint32 maxDrawCount,
+                                      uint32 stride) override;
 
         void Dispatch(uint32 groupCountX, uint32 groupCountY, uint32 groupCountZ) override;
         void DispatchIndirect(RHIBuffer* buffer, uint64 offset) override;
@@ -86,7 +93,7 @@ namespace RVX
         void WaitFence(RHIFence* fence, uint64 value) override;
 
         VkCommandBuffer GetCommandBuffer() const { return m_commandBuffer; }
-        RHICommandQueueType GetQueueType() const { return m_queueType; }
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
 
         // Flush pending barriers before draw/dispatch/copy operations
         void FlushBarriers();
@@ -110,5 +117,6 @@ namespace RVX
     RHICommandContextRef CreateVulkanCommandContext(VulkanDevice* device, RHICommandQueueType type);
     uint64 SubmitVulkanCommandContext(VulkanDevice* device, RHICommandContext* context, RHIFence* signalFence);
     uint64 SubmitVulkanCommandContexts(VulkanDevice* device, std::span<RHICommandContext* const> contexts, RHIFence* signalFence);
+    uint64 SubmitVulkanQueuePlan(VulkanDevice* device, const RHIQueueSubmissionPlan& plan, RHIFence* terminalFence);
 
 } // namespace RVX

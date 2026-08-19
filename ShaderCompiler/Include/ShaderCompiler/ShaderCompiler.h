@@ -42,6 +42,28 @@ namespace RVX
         bool enableOptimization = true;
     };
 
+    /** @brief Backend-neutral optimization policy selected for a shader compile. */
+    enum class ShaderOptimizationMode : uint8
+    {
+        Disabled = 0,
+        Level3,
+    };
+
+    /**
+     * @brief Resolve optimization independently from debug-information emission.
+     *
+     * Debug information must not silently change optimization semantics. Every
+     * backend consumes this policy so identical compile options select the same
+     * optimization level for DXIL, SPIR-V, and compatibility bytecode.
+     */
+    [[nodiscard]] constexpr ShaderOptimizationMode ResolveShaderOptimizationMode(
+        const ShaderCompileOptions& options) noexcept
+    {
+        return options.enableOptimization
+            ? ShaderOptimizationMode::Level3
+            : ShaderOptimizationMode::Disabled;
+    }
+
     // =============================================================================
     // Shader Compile Result
     // =============================================================================
@@ -96,6 +118,35 @@ namespace RVX
     };
 
     // =============================================================================
+    // Shader Compiler Capability
+    // =============================================================================
+    /** @brief Stable classification for shader compiler capability queries. */
+    enum class ShaderCompileSupportCode : uint8
+    {
+        Supported = 0,
+        RuntimeCompilerUnavailable,
+        BackendUnsupported,
+        StageUnsupported,
+    };
+
+    /** @brief Result of querying a compiler for a backend/stage combination. */
+    struct ShaderCompileSupport
+    {
+        ShaderCompileSupportCode code = ShaderCompileSupportCode::RuntimeCompilerUnavailable;
+        std::string reason;
+
+        [[nodiscard]] bool IsSupported() const
+        {
+            return code == ShaderCompileSupportCode::Supported;
+        }
+
+        static ShaderCompileSupport Supported()
+        {
+            return {ShaderCompileSupportCode::Supported, {}};
+        }
+    };
+
+    // =============================================================================
     // Shader Compiler Interface
     // =============================================================================
     class IShaderCompiler
@@ -103,6 +154,9 @@ namespace RVX
     public:
         virtual ~IShaderCompiler() = default;
 
+        /** @brief Query support without attempting compilation. */
+        [[nodiscard]] virtual ShaderCompileSupport QuerySupport(
+            const ShaderCompileOptions& options) const = 0;
         virtual ShaderCompileResult Compile(const ShaderCompileOptions& options) = 0;
     };
 

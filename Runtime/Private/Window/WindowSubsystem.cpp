@@ -35,6 +35,7 @@ void WindowSubsystem::Initialize()
     m_window->GetFramebufferSize(w, h);
     m_lastWidth = w;
     m_lastHeight = h;
+    m_surfaceGeneration = 1;
     
     RVX_CORE_INFO("WindowSubsystem initialized: {}x{}", m_lastWidth, m_lastHeight);
 }
@@ -63,6 +64,7 @@ void WindowSubsystem::Tick(float deltaTime)
     {
         m_lastWidth = currentWidth;
         m_lastHeight = currentHeight;
+        ++m_surfaceGeneration;
 
         // Publish resize event
         EventBus::Get().Publish(HAL::WindowResizedEvent(currentWidth, currentHeight));
@@ -90,6 +92,23 @@ void WindowSubsystem::GetFramebufferSize(uint32_t& width, uint32_t& height) cons
     }
 }
 
+bool WindowSubsystem::RequestResize(uint32 width, uint32 height)
+{
+    if (!m_window)
+    {
+        RVX_CORE_ERROR("Window resize requested before WindowSubsystem initialization");
+        return false;
+    }
+
+    if (!m_window->RequestResize(width, height))
+    {
+        RVX_CORE_ERROR("Native window resize request failed: {}x{}", width, height);
+        return false;
+    }
+
+    return true;
+}
+
 float WindowSubsystem::GetDpiScale() const
 {
     return m_window ? m_window->GetDpiScale() : 1.0f;
@@ -103,6 +122,45 @@ void* WindowSubsystem::GetNativeHandle() const
 void* WindowSubsystem::GetInternalHandle() const
 {
     return m_window ? m_window->GetInternalHandle() : nullptr;
+}
+
+NativeSurfaceDesc WindowSubsystem::CaptureRenderSurface(
+    RHIFormat preferredFormat) const
+{
+    NativeSurfaceDesc surface;
+    if (!m_window)
+    {
+        return surface;
+    }
+
+    const HAL::WindowRenderSurfaceHandles handles =
+        m_window->CaptureRenderSurfaceHandles();
+#if defined(_WIN32)
+    surface.platform = NativeSurfacePlatform::Win32;
+#elif defined(__APPLE__)
+    surface.platform = NativeSurfacePlatform::Cocoa;
+#else
+    surface.platform = NativeSurfacePlatform::GLFW;
+#endif
+    surface.nativeWindow = handles.nativeWindow;
+    surface.nativeDisplay = handles.nativeDisplay;
+    surface.nativeLayer = handles.nativeLayer;
+    surface.backendWindow = handles.backendWindow;
+    surface.width = handles.width;
+    surface.height = handles.height;
+    surface.contentScale = handles.contentScale;
+    surface.preferredFormat = preferredFormat;
+    surface.vsync = m_config.vsync;
+    surface.generation = m_surfaceGeneration;
+    return surface;
+}
+
+void WindowSubsystem::ReleaseGraphicsContextFromCurrentThread()
+{
+    if (m_window)
+    {
+        m_window->ReleaseGraphicsContextFromCurrentThread();
+    }
 }
 
 } // namespace RVX

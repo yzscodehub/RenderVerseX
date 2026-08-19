@@ -14,6 +14,9 @@
 #include "RHI/RHIHeap.h"
 #include "RHI/RHIQuery.h"
 #include "RHI/RHIUpload.h"
+#include "RHI/RHINativeSurface.h"
+#include "RHI/RHIDeviceStatus.h"
+#include "RHI/RHIQueueSubmission.h"
 
 namespace RVX
 {
@@ -37,13 +40,47 @@ namespace RVX
         uint64 budgetBytes = 0;          // GPU memory budget
         uint64 currentUsageBytes = 0;    // Current usage
     };
+
+    /** @brief Backend-neutral CPU descriptor allocator telemetry. */
+    struct RHIDescriptorAllocatorStats
+    {
+        uint32 currentPages = 0;
+        uint32 peakPages = 0;
+        uint32 activeDescriptors = 0;
+        uint32 peakActiveDescriptors = 0;
+        uint64 allocationFailures = 0;
+        uint64 validationFailures = 0;
+    };
+
+    /** @brief CPU-only descriptor pools used by explicit resource views. */
+    struct RHIDescriptorDiagnostics
+    {
+        RHIDescriptorAllocatorStats resourceViews;
+        RHIDescriptorAllocatorStats samplers;
+        RHIDescriptorAllocatorStats renderTargets;
+        RHIDescriptorAllocatorStats depthStencils;
+    };
+
+    /** @brief Backend-neutral native validation/debug-layer telemetry. */
+    struct RHINativeValidationDiagnostics
+    {
+        bool available = false;
+        bool enabled = false;
+        bool readComplete = true;
+        uint64 messageCount = 0;
+        uint64 warningCount = 0;
+        uint64 errorCount = 0;
+        uint64 corruptionCount = 0;
+    };
     // =============================================================================
     // Device Description
     // =============================================================================
     struct RHIDeviceDesc
     {
+        NativeSurfaceDesc initialSurface;
         bool enableDebugLayer = true;
         bool enableGPUValidation = false;
+        bool allowSoftwareAdapter = false;
         uint32 preferredAdapterIndex = 0;  // 0 = auto-select
         const char* applicationName = "RenderVerseX";
     };
@@ -149,14 +186,47 @@ namespace RVX
          * @brief Submit multiple command contexts for execution.
          * @param contexts Recorded command contexts to submit.
          * @param signalFence Optional fence to signal after submitted work completes.
+         * @note When mixed queue types are supported, execution is ordered
+         * Copy -> Compute -> Graphics and the optional fence represents the
+         * terminal queue in that dependency chain.
          * @return Submitted fence value when signalFence is provided and queued; 0 when no fence was signaled or submission failed.
          */
         virtual uint64 SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence = nullptr) = 0;
+
+        /**
+         * @brief Submit an explicitly ordered multi-queue dependency graph.
+         * @param plan Validated queue batches in topological order.
+         * @param terminalFence Optional fence signaled only by the terminal
+         * Graphics batch after every branch has joined it.
+         * @return Submitted fence value when terminalFence is queued; otherwise 0.
+         */
+        virtual uint64 SubmitQueuePlan(const RHIQueueSubmissionPlan& plan,
+                                       RHIFence* terminalFence = nullptr)
+        {
+            (void)plan;
+            (void)terminalFence;
+            return 0;
+        }
 
         // =========================================================================
         // SwapChain
         // =========================================================================
         virtual RHISwapChainRef CreateSwapChain(const RHISwapChainDesc& desc) = 0;
+
+        /**
+         * @brief Query whether this device can replace an active swap-chain surface.
+         * @param currentSurface Surface currently owned by the active swap chain.
+         * @param replacementSurface Requested replacement surface.
+         * @return True when replacement can proceed without recreating the device.
+         */
+        virtual bool SupportsSurfaceRebind(
+            const NativeSurfaceDesc& currentSurface,
+            const NativeSurfaceDesc& replacementSurface) const
+        {
+            (void)currentSurface;
+            (void)replacementSurface;
+            return true;
+        }
 
         // =========================================================================
         // Synchronization
@@ -200,6 +270,19 @@ namespace RVX
          */
         virtual RHIMemoryStats GetMemoryStats() const = 0;
 
+        /** @brief Optional descriptor telemetry; empty on backends without CPU heaps. */
+        virtual RHIDescriptorDiagnostics GetDescriptorDiagnostics() const
+        {
+            return {};
+        }
+
+        /** @brief Optional cumulative native validation telemetry. */
+        virtual RHINativeValidationDiagnostics
+            GetNativeValidationDiagnostics() const
+        {
+            return {};
+        }
+
         // =========================================================================
         // Debug Resource Groups
         // =========================================================================
@@ -220,12 +303,37 @@ namespace RVX
         // Capabilities
         // =========================================================================
         virtual const RHICapabilities& GetCapabilities() const = 0;
+        virtual RHICapabilityReport GetCapabilityReport() const
+        {
+            return BuildRHICapabilityReport(GetCapabilities());
+        }
+        virtual std::string ExportCapabilityReportText() const
+        {
+            return ExportRHICapabilityReportText(GetCapabilityReport());
+        }
+        virtual std::string ExportCapabilityReportJson() const
+        {
+            return ExportRHICapabilityReportJson(GetCapabilityReport());
+        }
         virtual RHIBackendType GetBackendType() const = 0;
-    };
 
-    // =============================================================================
-    // Device Factory
-    // =============================================================================
-    std::unique_ptr<IRHIDevice> CreateRHIDevice(RHIBackendType backend, const RHIDeviceDesc& desc);
+        // =========================================================================
+        // Runtime Health
+        // =========================================================================
+        /** @brief Query compact backend health without mutating backend state. */
+        virtual RHIDeviceRuntimeStatus QueryRuntimeStatus() const noexcept
+        {
+            return RHIDeviceRuntimeStatus::Ready;
+        }
+
+        /** @brief Copy the first terminal backend fault into owned value storage. */
+        virtual RHIDeviceFault GetLastDeviceFault() const
+        {
+            RHIDeviceFault fault;
+            fault.status = QueryRuntimeStatus();
+            fault.backend = GetBackendType();
+            return fault;
+        }
+    };
 
 } // namespace RVX

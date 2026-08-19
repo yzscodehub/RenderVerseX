@@ -9,13 +9,14 @@
 #pragma once
 
 #include "Core/Job/JobSystem.h"
-#include <vector>
+#include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
-#include <atomic>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace RVX
 {
@@ -244,6 +245,7 @@ namespace RVX
         std::unordered_map<std::string, JobNode::Ptr> m_jobLookup;
 
         std::mutex m_mutex;
+        std::condition_variable m_completionCondition;
         std::atomic<size_t> m_completedCount{0};
         std::atomic<bool> m_executing{false};
     };

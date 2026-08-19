@@ -1,5 +1,6 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
+#include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "Common/GpuTestUtils.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "DX11Device.h"
@@ -484,7 +485,13 @@ TEST(DX11Validation, DescriptorValidationRejectsInvalidInputs)
     EXPECT_EQ(device->CreatePipelineLayout(invalidPipelineLayout).Get(), nullptr);
 
     RHIDescriptorSetDesc validSetDesc;
-    validSetDesc.SetLayout(layout.Get());
+    RHIBufferDesc bufferDesc;
+    bufferDesc.SetSize(256)
+        .SetUsage(RHIBufferUsage::Constant)
+        .SetMemoryType(RHIMemoryType::Upload);
+    auto buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(nullptr, buffer.Get());
+    validSetDesc.SetLayout(layout.Get()).BindBuffer(0, buffer.Get(), 0, 256);
     auto set = device->CreateDescriptorSet(validSetDesc);
     ASSERT_NE(nullptr, set.Get());
     EXPECT_TRUE(set->Update({}));

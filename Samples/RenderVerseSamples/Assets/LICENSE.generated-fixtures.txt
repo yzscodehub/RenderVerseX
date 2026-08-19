@@ -1,0 +1,13 @@
+RenderVerseX Generated Fixture License
+
+Copyright (c) RenderVerseX contributors
+
+Permission is granted, free of charge, to use, copy, modify, and redistribute
+the generated RenderVerseX fixture data covered by this notice, with or without
+modification, for any purpose.
+
+THE FIXTURE DATA IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING
+FROM, OUT OF, OR IN CONNECTION WITH THE FIXTURE DATA OR ITS USE.

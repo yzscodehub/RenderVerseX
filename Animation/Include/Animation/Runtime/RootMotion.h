@@ -18,6 +18,7 @@
 #include "Animation/Core/TransformSample.h"
 #include "Animation/Data/AnimationClip.h"
 #include "Animation/Data/Skeleton.h"
+#include "Animation/Runtime/SkeletonPose.h"
 #include "Core/MathTypes.h"
 #include <memory>
 #include <string>
@@ -124,18 +125,26 @@ struct RootMotionDelta
 
         RootMotionDelta result;
         result.deltaTranslation = deltaTranslation + other.deltaTranslation;
-        result.deltaRotation = normalize(deltaRotation * other.deltaRotation);
+        result.deltaRotation = normalize(other.deltaRotation * deltaRotation);
         result.valid = true;
         return result;
     }
 
     RootMotionDelta& operator+=(const RootMotionDelta& other)
     {
-        if (other.valid)
+        if (!other.valid)
+        {
+            return *this;
+        }
+
+        if (!valid)
+        {
+            *this = other;
+        }
+        else
         {
             deltaTranslation += other.deltaTranslation;
-            deltaRotation = normalize(deltaRotation * other.deltaRotation);
-            valid = true;
+            deltaRotation = normalize(other.deltaRotation * deltaRotation);
         }
         return *this;
     }
@@ -319,6 +328,17 @@ public:
     RootMotionDelta ExtractTotal(const AnimationClip& clip) const;
 
     /**
+     * @brief Extract a forward looping delta over an unwrapped time interval.
+     *
+     * The clip must explicitly opt in to root motion and name an exact bone
+     * track. Invalid, reverse, or unqualified intervals return an invalid
+     * delta without falling back to configured or auto-detected root bones.
+     */
+    RootMotionDelta ExtractLoopingDelta(const AnimationClip& clip,
+                                        TimeUs previousTime,
+                                        TimeUs currentTime) const;
+
+    /**
      * @brief Sample root bone transform at a specific time
      * @param clip Animation clip
      * @param time Sample time
@@ -338,6 +358,14 @@ public:
     void ZeroRootMotion(TransformSample& rootTransform, bool keepVertical = true) const;
 
     /**
+     * @brief Remove an explicitly qualified clip root from a matching pose.
+     * @return True only when the pose was modified.
+     */
+    bool RemoveRootMotionFromPose(const AnimationClip& clip,
+                                  SkeletonPose& pose,
+                                  bool keepVertical = true) const;
+
+    /**
      * @brief Apply extracted root motion back to a pose
      * @param pose Pose to modify
      * @param delta Root motion to apply
@@ -350,6 +378,10 @@ private:
     Vec3 FilterTranslation(const Vec3& translation) const;
     Quat FilterRotation(const Quat& rotation) const;
     int FindRootBoneIndex() const;
+    bool ResolveQualifiedRootMotion(const AnimationClip& clip,
+                                    Skeleton::ConstPtr& skeleton,
+                                    int& rootBoneIndex,
+                                    const TransformTrack*& rootTrack) const;
 
     Skeleton::ConstPtr m_skeleton;
     RootMotionConfig m_config;

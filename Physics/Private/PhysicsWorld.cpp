@@ -10,12 +10,67 @@
 #include "Core/Math/Ray.h"
 #include "Core/Math/AABB.h"
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 namespace RVX::Physics
 {
 namespace
 {
+    constexpr uint64 kPoseHashOffsetBasis = 1469598103934665603ull;
+    constexpr uint64 kPoseHashPrime = 1099511628211ull;
+
+    void HashPoseWord(uint64& hash, uint64 word)
+    {
+        for (uint32 byteIndex = 0; byteIndex < sizeof(word); ++byteIndex)
+        {
+            hash ^= (word >> (byteIndex * 8u)) & 0xffu;
+            hash *= kPoseHashPrime;
+        }
+    }
+
+    uint32 CanonicalFloatBits(float value)
+    {
+        if (std::isnan(value))
+        {
+            return 0x7fc00000u;
+        }
+        if (value == 0.0f)
+        {
+            return 0u;
+        }
+        return std::bit_cast<uint32>(value);
+    }
+
+    void HashPoseFloat(uint64& hash, float value)
+    {
+        HashPoseWord(hash, CanonicalFloatBits(value));
+    }
+
+    void HashPoseVec3(uint64& hash, const Vec3& value)
+    {
+        HashPoseFloat(hash, value.x);
+        HashPoseFloat(hash, value.y);
+        HashPoseFloat(hash, value.z);
+    }
+
+    void HashPoseQuat(uint64& hash, Quat value)
+    {
+        value = normalize(value);
+        if (value.w < 0.0f ||
+            (value.w == 0.0f && (value.x < 0.0f ||
+                                 (value.x == 0.0f && (value.y < 0.0f ||
+                                                   (value.y == 0.0f && value.z < 0.0f))))))
+        {
+            value = Quat(-value.w, -value.x, -value.y, -value.z);
+        }
+
+        HashPoseFloat(hash, value.w);
+        HashPoseFloat(hash, value.x);
+        HashPoseFloat(hash, value.y);
+        HashPoseFloat(hash, value.z);
+    }
+
     struct AABBContact
     {
         Vec3 normal{0.0f, 1.0f, 0.0f};
@@ -114,6 +169,11 @@ namespace
 
     bool BodiesCanCollide(const RigidBody& bodyA, const RigidBody& bodyB)
     {
+        if (bodyA.GetShapeCount() == 0 || bodyB.GetShapeCount() == 0)
+        {
+            return false;
+        }
+
         if (bodyA.IsStatic() && bodyB.IsStatic())
         {
             return false;
@@ -584,7 +644,8 @@ namespace
 
     void BuildQueryBroadphase(const std::vector<std::shared_ptr<RigidBody>>& bodies,
                               std::vector<QueryBroadphasePrimitive>& primitives,
-                              std::vector<QueryBroadphaseNode>& nodes)
+                              std::vector<QueryBroadphaseNode>& nodes,
+                              PhysicsWorld::QueryStats& stats)
     {
         primitives.clear();
         nodes.clear();
@@ -595,6 +656,12 @@ namespace
             const auto& body = bodies[bodyIndex];
             if (!body)
             {
+                continue;
+            }
+
+            if (body->GetShapeCount() == 0)
+            {
+                ++stats.bodyWithoutShapeSkipCount;
                 continue;
             }
 
@@ -889,6 +956,14 @@ bool PhysicsWorld::Initialize(const PhysicsWorldConfig& config)
     }
     m_accumulatedTime = 0.0f;
     m_lastStepCount = 0;
+    m_fixedStepSequence = 0;
+    m_droppedSimulationTimeSeconds = 0.0f;
+    m_substepClampCount = 0;
+    m_createCount = 0;
+    m_destroyCount = 0;
+    m_recreateCount = 0;
+    m_colliderRebuildCount = 0;
+    m_staleHandleRejectCount = 0;
 
     m_requestedBackend = m_config.backend;
     m_activeBackend = ResolveBackendType(m_requestedBackend);
@@ -919,6 +994,66 @@ bool PhysicsWorld::Initialize(const PhysicsWorldConfig& config)
 
 void PhysicsWorld::Shutdown()
 {
+    // Retire every active slot rather than clearing the allocator. Keeping the
+    // generations makes a handle from an earlier world lifetime permanently
+    // stale after the next Initialize().
+    try
+    {
+        m_freeBodySlots.clear();
+        m_freeBodySlots.reserve(m_bodySlots.size());
+        for (uint32 index = 0; index < m_bodySlots.size(); ++index)
+        {
+            BodySlot& slot = m_bodySlots[index];
+            if (slot.allocated)
+            {
+                slot.allocated = false;
+                if (slot.generation == std::numeric_limits<uint32>::max())
+                {
+                    slot.retired = true;
+                }
+                else
+                {
+                    ++slot.generation;
+                }
+            }
+            else if (slot.generation == std::numeric_limits<uint32>::max())
+            {
+                slot.retired = true;
+            }
+
+            if (!slot.retired)
+            {
+                m_freeBodySlots.push_back(index);
+            }
+        }
+    }
+    catch (...)
+    {
+        // Shutdown must still invalidate every slot even under allocation
+        // pressure. An empty free list simply causes future allocation to use
+        // new slot indices.
+        for (BodySlot& slot : m_bodySlots)
+        {
+            if (slot.allocated)
+            {
+                slot.allocated = false;
+                if (slot.generation == std::numeric_limits<uint32>::max())
+                {
+                    slot.retired = true;
+                }
+                else
+                {
+                    ++slot.generation;
+                }
+            }
+            else if (slot.generation == std::numeric_limits<uint32>::max())
+            {
+                slot.retired = true;
+            }
+        }
+        m_freeBodySlots.clear();
+    }
+
     m_bodies.clear();
     m_bodyLookup.clear();
     m_constraints.clear();
@@ -946,15 +1081,90 @@ void PhysicsWorld::Step(float deltaTime)
 
     const float fixedTimeStep = m_config.fixedTimeStep;
     const float maxAccumulatedTime = fixedTimeStep * static_cast<float>(m_config.maxSubSteps);
-    m_accumulatedTime = std::min(m_accumulatedTime + deltaTime, maxAccumulatedTime);
+    const float accumulatedTime = m_accumulatedTime + deltaTime;
+    if (accumulatedTime > maxAccumulatedTime)
+    {
+        m_droppedSimulationTimeSeconds += accumulatedTime - maxAccumulatedTime;
+        ++m_substepClampCount;
+    }
+    m_accumulatedTime = std::min(accumulatedTime, maxAccumulatedTime);
 
     // Fixed timestep simulation
     while (m_accumulatedTime >= fixedTimeStep && m_lastStepCount < m_config.maxSubSteps)
     {
-        StepInternal(fixedTimeStep);
+        StepFixed(fixedTimeStep);
         m_accumulatedTime -= fixedTimeStep;
         ++m_lastStepCount;
     }
+}
+
+void PhysicsWorld::StepFixed(float fixedDelta)
+{
+    if (!m_initialized || !std::isfinite(fixedDelta) || fixedDelta <= 0.0f)
+    {
+        return;
+    }
+
+    StepInternal(fixedDelta);
+    ++m_fixedStepSequence;
+}
+
+PhysicsRuntimeDiagnosticsSnapshot PhysicsWorld::GetRuntimeDiagnosticsSnapshot() const
+{
+    PhysicsRuntimeDiagnosticsSnapshot snapshot;
+    snapshot.fixedStepSequence = m_fixedStepSequence;
+    snapshot.lastSubstepCount = m_lastStepCount;
+    snapshot.droppedSimulationTimeSeconds = m_droppedSimulationTimeSeconds;
+    snapshot.substepClampCount = m_substepClampCount;
+    snapshot.colliderCount = GetColliderCount();
+    snapshot.createCount = m_createCount;
+    snapshot.destroyCount = m_destroyCount;
+    snapshot.recreateCount = m_recreateCount;
+    snapshot.colliderRebuildCount = m_colliderRebuildCount;
+    snapshot.staleHandleRejectCount = m_staleHandleRejectCount;
+
+    std::vector<const RigidBody*> bodies;
+    bodies.reserve(m_bodies.size());
+    for (const std::shared_ptr<RigidBody>& body : m_bodies)
+    {
+        if (!body)
+        {
+            continue;
+        }
+
+        bodies.push_back(body.get());
+        switch (body->GetType())
+        {
+            case BodyType::Static:
+                ++snapshot.staticBodyCount;
+                break;
+            case BodyType::Dynamic:
+                ++snapshot.dynamicBodyCount;
+                break;
+            case BodyType::Kinematic:
+                ++snapshot.kinematicBodyCount;
+                break;
+        }
+    }
+
+    std::sort(bodies.begin(), bodies.end(), [](const RigidBody* lhs, const RigidBody* rhs) {
+        return lhs->GetId() < rhs->GetId();
+    });
+
+    uint64 hash = kPoseHashOffsetBasis;
+    for (const RigidBody* body : bodies)
+    {
+        HashPoseWord(hash, body->GetId());
+        HashPoseWord(hash, static_cast<uint64>(body->GetType()));
+        HashPoseWord(hash, static_cast<uint64>(body->GetShapeCount()));
+        HashPoseWord(hash, body->IsSleeping() ? 1u : 0u);
+        HashPoseVec3(hash, body->GetPosition());
+        HashPoseQuat(hash, body->GetRotation());
+        HashPoseVec3(hash, body->GetLinearVelocity());
+        HashPoseVec3(hash, body->GetAngularVelocity());
+    }
+    snapshot.bodyPoseHash = hash;
+    return snapshot;
 }
 
 void PhysicsWorld::StepInternal(float dt)
@@ -1244,6 +1454,67 @@ const char* PhysicsWorld::GetActiveBackendName() const
     return m_backend ? m_backend->GetName() : "None";
 }
 
+bool PhysicsWorld::IsLiveBodyHandle(BodyHandle handle) const
+{
+    if (!handle.IsValid())
+    {
+        return false;
+    }
+
+    const uint32 index = handle.GetIndex();
+    if (index >= m_bodySlots.size())
+    {
+        return false;
+    }
+
+    const BodySlot& slot = m_bodySlots[index];
+    return slot.allocated && slot.generation == handle.GetGeneration();
+}
+
+void PhysicsWorld::RecordStaleHandleReject(BodyHandle handle) const
+{
+    if (handle.IsValid())
+    {
+        ++m_staleHandleRejectCount;
+    }
+}
+
+bool PhysicsWorld::TryReleaseBodySlot(BodyHandle handle)
+{
+    if (!IsLiveBodyHandle(handle))
+    {
+        return false;
+    }
+
+    BodySlot& slot = m_bodySlots[handle.GetIndex()];
+    const bool retireSlot = slot.generation == std::numeric_limits<uint32>::max();
+    if (!retireSlot)
+    {
+        try
+        {
+            if (m_freeBodySlots.size() == m_freeBodySlots.capacity())
+            {
+                m_freeBodySlots.reserve(m_freeBodySlots.size() + 1u);
+            }
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    slot.allocated = false;
+    if (retireSlot)
+    {
+        slot.retired = true;
+        return true;
+    }
+
+    ++slot.generation;
+    m_freeBodySlots.push_back(handle.GetIndex());
+    return true;
+}
+
 BodyHandle PhysicsWorld::CreateBody(const RigidBodyDesc& desc)
 {
     if (!m_initialized || m_bodies.size() >= m_config.maxBodies)
@@ -1251,23 +1522,147 @@ BodyHandle PhysicsWorld::CreateBody(const RigidBodyDesc& desc)
         return BodyHandle{};
     }
 
-    auto body = std::make_shared<RigidBody>(desc);
-    uint64 id = m_nextBodyId++;
-    body->SetId(id);
+    // Reserve the rollback slot before mutating either allocation structure.
+    // This keeps a failed body construction from losing a reusable slot.
+    try
+    {
+        if (m_freeBodySlots.size() == m_freeBodySlots.capacity())
+        {
+            m_freeBodySlots.reserve(m_freeBodySlots.size() + 1u);
+        }
+    }
+    catch (...)
+    {
+        return BodyHandle{};
+    }
 
-    m_bodyLookup[id] = m_bodies.size();
-    m_bodies.push_back(std::move(body));
+    uint32 index = BodyHandle::InvalidIndex;
+    bool reusedSlot = false;
+    while (!m_freeBodySlots.empty())
+    {
+        index = m_freeBodySlots.back();
+        m_freeBodySlots.pop_back();
+        BodySlot& candidate = m_bodySlots[index];
+        if (!candidate.allocated && !candidate.retired &&
+            candidate.generation != std::numeric_limits<uint32>::max())
+        {
+            reusedSlot = candidate.everAllocated;
+            break;
+        }
 
-    return BodyHandle(id);
+        candidate.retired = true;
+        index = BodyHandle::InvalidIndex;
+    }
+    if (index == BodyHandle::InvalidIndex)
+    {
+        if (m_bodySlots.size() >= std::numeric_limits<uint32>::max())
+        {
+            return BodyHandle{};
+        }
+
+        index = static_cast<uint32>(m_bodySlots.size());
+        try
+        {
+            m_bodySlots.push_back(BodySlot{});
+        }
+        catch (...)
+        {
+            return BodyHandle{};
+        }
+    }
+
+    BodySlot& slot = m_bodySlots[index];
+    const BodyHandle handle = BodyHandle::Create(index, slot.generation);
+    std::shared_ptr<RigidBody> body;
+    try
+    {
+        body = std::make_shared<RigidBody>(desc);
+        body->SetId(handle.GetPackedValue());
+        m_bodies.reserve(m_bodies.size() + 1u);
+        m_bodyLookup.reserve(m_bodyLookup.size() + 1u);
+        m_bodies.push_back(body);
+        m_bodyLookup.emplace(handle.GetPackedValue(), m_bodies.size() - 1u);
+    }
+    catch (...)
+    {
+        if (!m_bodies.empty() && m_bodies.back() == body)
+        {
+            m_bodies.pop_back();
+        }
+        m_bodyLookup.erase(handle.GetPackedValue());
+        m_freeBodySlots.push_back(index);
+        return BodyHandle{};
+    }
+
+    slot.allocated = true;
+    slot.everAllocated = true;
+    ++m_createCount;
+    if (reusedSlot)
+    {
+        ++m_recreateCount;
+    }
+
+    return handle;
+}
+
+BodyCreateResult PhysicsWorld::CreateBodyValue(const RigidBodyDesc& desc)
+{
+    if (!m_initialized)
+    {
+        return {.status = BodyCreateStatus::WorldUnavailable};
+    }
+    if (m_bodies.size() >= m_config.maxBodies)
+    {
+        return {.status = BodyCreateStatus::CapacityExceeded};
+    }
+
+    const BodyHandle handle = CreateBody(desc);
+    if (!handle.IsValid())
+    {
+        return {.status = BodyCreateStatus::AllocationFailed};
+    }
+    return {.status = BodyCreateStatus::Created, .handle = handle};
+}
+
+size_t PhysicsWorld::GetColliderCount() const
+{
+    size_t colliderCount = 0;
+    for (const std::shared_ptr<RigidBody>& body : m_bodies)
+    {
+        if (body)
+        {
+            colliderCount += body->GetShapeCount();
+        }
+    }
+    return colliderCount;
 }
 
 void PhysicsWorld::DestroyBody(BodyHandle handle)
 {
-    auto it = m_bodyLookup.find(handle.GetId());
-    if (it == m_bodyLookup.end()) return;
+    static_cast<void>(DestroyBodyValue(handle));
+}
 
-    size_t index = it->second;
-    RemoveActivePairsForBody(handle.GetId());
+BodyDestroyStatus PhysicsWorld::DestroyBodyValue(BodyHandle handle)
+{
+    if (!handle.IsValid())
+    {
+        return BodyDestroyStatus::AlreadyAbsent;
+    }
+
+    auto it = m_bodyLookup.find(handle.GetPackedValue());
+    if (it == m_bodyLookup.end() || !IsLiveBodyHandle(handle))
+    {
+        RecordStaleHandleReject(handle);
+        return BodyDestroyStatus::AlreadyAbsent;
+    }
+
+    if (!TryReleaseBodySlot(handle))
+    {
+        return BodyDestroyStatus::ReleaseFailed;
+    }
+
+    const size_t index = it->second;
+    RemoveActivePairsForBody(handle.GetPackedValue());
 
     // Swap and pop
     if (index != m_bodies.size() - 1)
@@ -1277,26 +1672,137 @@ void PhysicsWorld::DestroyBody(BodyHandle handle)
     }
     m_bodies.pop_back();
     m_bodyLookup.erase(it);
+    ++m_destroyCount;
+    return BodyDestroyStatus::Destroyed;
+}
+
+std::optional<BodyState> PhysicsWorld::ReadBodyState(BodyHandle body) const
+{
+    const RigidBody* rigidBody = GetBody(body);
+    if (rigidBody == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    BodyState state;
+    state.pose.position = rigidBody->GetPosition();
+    state.pose.rotation = rigidBody->GetRotation();
+    state.linearVelocity = rigidBody->GetLinearVelocity();
+    state.angularVelocity = rigidBody->GetAngularVelocity();
+    state.configuration.type = rigidBody->GetType();
+    state.configuration.motionQuality = rigidBody->GetMotionQuality();
+    state.configuration.mass = rigidBody->GetMass();
+    state.configuration.linearDamping = rigidBody->GetLinearDamping();
+    state.configuration.angularDamping = rigidBody->GetAngularDamping();
+    state.configuration.gravityScale = rigidBody->GetGravityScale();
+    state.configuration.positionConstraints = rigidBody->GetPositionConstraints();
+    state.configuration.rotationConstraints = rigidBody->GetRotationConstraints();
+    state.configuration.layer = rigidBody->GetLayer();
+    state.configuration.collisionMask = rigidBody->GetCollisionMask();
+    state.configuration.group = rigidBody->GetGroup();
+    state.configuration.allowSleep = rigidBody->CanSleep();
+    state.configuration.isTrigger = rigidBody->IsTrigger();
+    state.sleeping = rigidBody->IsSleeping();
+    return state;
+}
+
+bool PhysicsWorld::WriteBodyPose(BodyHandle body, const BodyPose& pose)
+{
+    if (!IsFiniteVec3(pose.position) ||
+        !std::isfinite(pose.rotation.w) || !std::isfinite(pose.rotation.x) ||
+        !std::isfinite(pose.rotation.y) || !std::isfinite(pose.rotation.z) ||
+        glm::dot(pose.rotation, pose.rotation) <= std::numeric_limits<float>::epsilon())
+    {
+        return false;
+    }
+
+    RigidBody* rigidBody = GetBody(body);
+    if (rigidBody == nullptr)
+    {
+        return false;
+    }
+    rigidBody->SetTransform(pose.position, pose.rotation);
+    return true;
+}
+
+bool PhysicsWorld::WriteBodyConfiguration(BodyHandle body,
+                                          const BodyConfiguration& configuration)
+{
+    if (!std::isfinite(configuration.mass) || !std::isfinite(configuration.linearDamping) ||
+        !std::isfinite(configuration.angularDamping) || !std::isfinite(configuration.gravityScale) ||
+        configuration.linearDamping < 0.0f || configuration.angularDamping < 0.0f ||
+        (configuration.type == BodyType::Dynamic && configuration.mass <= 0.0f))
+    {
+        return false;
+    }
+
+    RigidBody* rigidBody = GetBody(body);
+    if (rigidBody == nullptr)
+    {
+        return false;
+    }
+
+    rigidBody->SetType(configuration.type);
+    rigidBody->SetMotionQuality(configuration.motionQuality);
+    rigidBody->SetMass(configuration.mass);
+    rigidBody->SetLinearDamping(configuration.linearDamping);
+    rigidBody->SetAngularDamping(configuration.angularDamping);
+    rigidBody->SetGravityScale(configuration.gravityScale);
+    rigidBody->SetPositionConstraints(configuration.positionConstraints);
+    rigidBody->SetRotationConstraints(configuration.rotationConstraints);
+    rigidBody->SetLayer(configuration.layer);
+    rigidBody->SetCollisionMask(configuration.collisionMask);
+    rigidBody->SetGroup(configuration.group);
+    rigidBody->SetAllowSleep(configuration.allowSleep);
+    rigidBody->SetTrigger(configuration.isTrigger);
+    return true;
 }
 
 RigidBody* PhysicsWorld::GetBody(BodyHandle handle)
 {
-    auto it = m_bodyLookup.find(handle.GetId());
-    if (it == m_bodyLookup.end()) return nullptr;
+    if (!handle.IsValid())
+    {
+        return nullptr;
+    }
+
+    auto it = m_bodyLookup.find(handle.GetPackedValue());
+    if (it == m_bodyLookup.end() || !IsLiveBodyHandle(handle))
+    {
+        RecordStaleHandleReject(handle);
+        return nullptr;
+    }
     return m_bodies[it->second].get();
 }
 
 const RigidBody* PhysicsWorld::GetBody(BodyHandle handle) const
 {
-    auto it = m_bodyLookup.find(handle.GetId());
-    if (it == m_bodyLookup.end()) return nullptr;
+    if (!handle.IsValid())
+    {
+        return nullptr;
+    }
+
+    auto it = m_bodyLookup.find(handle.GetPackedValue());
+    if (it == m_bodyLookup.end() || !IsLiveBodyHandle(handle))
+    {
+        RecordStaleHandleReject(handle);
+        return nullptr;
+    }
     return m_bodies[it->second].get();
 }
 
 std::shared_ptr<RigidBody> PhysicsWorld::GetBodyRef(BodyHandle handle) const
 {
-    auto it = m_bodyLookup.find(handle.GetId());
-    if (it == m_bodyLookup.end()) return {};
+    if (!handle.IsValid())
+    {
+        return {};
+    }
+
+    auto it = m_bodyLookup.find(handle.GetPackedValue());
+    if (it == m_bodyLookup.end() || !IsLiveBodyHandle(handle))
+    {
+        RecordStaleHandleReject(handle);
+        return {};
+    }
     return m_bodies[it->second];
 }
 
@@ -1501,6 +2007,32 @@ void PhysicsWorld::UpdateCollisionEvents()
     }
 }
 
+bool PhysicsWorld::ReplaceBodyCollider(BodyHandle body,
+                                       std::shared_ptr<CollisionShape> shape,
+                                       const Vec3& offset,
+                                       const Quat& rotation,
+                                       bool isTrigger,
+                                       bool recordRebuild)
+{
+    RigidBody* rigidBody = GetBody(body);
+    if (!rigidBody)
+    {
+        return false;
+    }
+
+    if (!rigidBody->ReplaceCollider(std::move(shape), offset, rotation))
+    {
+        return false;
+    }
+
+    rigidBody->SetTrigger(isTrigger);
+    if (recordRebuild)
+    {
+        ++m_colliderRebuildCount;
+    }
+    return true;
+}
+
 void PhysicsWorld::RemoveActivePairsForBody(uint64 bodyId)
 {
     for (auto it = m_activeCollisionPairs.begin(); it != m_activeCollisionPairs.end();)
@@ -1534,7 +2066,7 @@ bool PhysicsWorld::Raycast(const Vec3& origin, const Vec3& direction, float maxD
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectRayBroadphaseCandidates(broadphasePrimitives,
                                    broadphaseNodes,
                                    ray,
@@ -1592,7 +2124,7 @@ size_t PhysicsWorld::RaycastAll(const Vec3& origin, const Vec3& direction, float
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectRayBroadphaseCandidates(broadphasePrimitives,
                                    broadphaseNodes,
                                    ray,
@@ -1656,7 +2188,7 @@ bool PhysicsWorld::SphereCast(const Vec3& origin, float radius, const Vec3& dire
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectAABBBroadphaseCandidates(broadphasePrimitives,
                                     broadphaseNodes,
                                     sweptBounds,
@@ -1711,7 +2243,7 @@ size_t PhysicsWorld::OverlapSphere(const Vec3& center, float radius,
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectAABBBroadphaseCandidates(broadphasePrimitives,
                                     broadphaseNodes,
                                     queryBounds,
@@ -1769,7 +2301,7 @@ size_t PhysicsWorld::OverlapBox(const Vec3& center, const Vec3& halfExtents, con
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectAABBBroadphaseCandidates(broadphasePrimitives,
                                     broadphaseNodes,
                                     queryBounds,
@@ -1812,7 +2344,7 @@ size_t PhysicsWorld::OverlapCapsule(const Vec3& pointA, const Vec3& pointB, floa
     std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
     std::vector<QueryBroadphaseNode> broadphaseNodes;
     std::vector<size_t> candidateBodyIndices;
-    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+    BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, m_lastQueryStats);
     CollectAABBBroadphaseCandidates(broadphasePrimitives,
                                     broadphaseNodes,
                                     capsuleBounds,
@@ -1879,7 +2411,8 @@ void PhysicsWorld::GetDebugDrawData(std::vector<Vec3>& lines, std::vector<Vec4>&
         const Vec4 color = GetDebugBroadphaseColor();
         std::vector<QueryBroadphasePrimitive> broadphasePrimitives;
         std::vector<QueryBroadphaseNode> broadphaseNodes;
-        BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes);
+        QueryStats stats;
+        BuildQueryBroadphase(m_bodies, broadphasePrimitives, broadphaseNodes, stats);
         for (const QueryBroadphaseNode& node : broadphaseNodes)
         {
             AppendAABBDebugLines(node.bounds, color, lines, colors);

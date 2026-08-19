@@ -5,7 +5,7 @@
 // Descriptor sets:
 //   set 0 / space0: frame data
 //   set 1 / space1: object data
-//   set 2 / space2: material data and environment IBL textures
+//   set 2 / space2: material data, textures, and per-texture samplers
 //
 // Vertex inputs come from separate vertex buffers:
 //   Slot 0: Position buffer (float3)
@@ -14,12 +14,15 @@
 //   Slot 3: Tangent buffer (float4)
 //   Slot 4: Bone indices buffer (uint4)
 //   Slot 5: Bone weights buffer (float4)
+//   Slot 6: GPU-driven global instance index buffer (uint)
 // =============================================================================
 
-#include "Include/BRDF.hlsli"
-#include "Include/Lighting.hlsli"
-
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
+
+#include "Include/BRDF.hlsli"
+#include "Include/GPUInstanceData.hlsli"
+#include "Include/Lighting.hlsli"
+#include "GPUDriven/GPUSceneRaster.hlsli"
 
 #define MATERIAL_TEXTURE_BASE_COLOR 0x01
 #define MATERIAL_TEXTURE_NORMAL 0x02
@@ -57,6 +60,7 @@ cbuffer ViewConstants : register(b0, space0)
     float4 RayTracedShadowParams; // x: enabled, y: screen-space filter radius in pixels, z: composition mode
 };
 
+#if !defined(RVX_GPU_SCENE_RASTER)
 cbuffer ObjectConstants : register(b0, space1)
 {
     float4x4 World;
@@ -66,23 +70,7 @@ cbuffer ObjectConstants : register(b0, space1)
     float4 SkinningParams; // x: enabled, y: matrix count
     float4x4 SkinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
 };
-
-struct GPUInstanceData
-{
-    float4x4 worldMatrix;
-    float4x4 normalMatrix;
-    float4 boundingSphere;
-    float4 aabbMin;
-    float4 aabbMax;
-    uint meshId;
-    uint materialId;
-    uint indexCount;
-    uint firstIndex;
-    int vertexOffset;
-    uint sourceIndex;
-    uint drawGroupIndex;
-    uint drawGroupCommandOffset;
-};
+#endif
 
 cbuffer LightConstants : register(b3, space0)
 {
@@ -110,6 +98,21 @@ struct GPUCluster
 };
 
 cbuffer MaterialConstants : register(b0, space2)
+{
+    float4 BaseColorFactor;
+    float MetallicFactor;
+    float RoughnessFactor;
+    float NormalScale;
+    float OcclusionStrength;
+    float4 EmissiveColor_Strength;
+    uint TextureFlags;
+    uint AlphaMode;
+    float AlphaCutoff;
+    uint Workflow;
+    uint4 DoubleSided_MaterialPaddingBits;
+};
+
+struct MaterialParameterData
 {
     float4 BaseColorFactor;
     float MetallicFactor;
@@ -154,10 +157,12 @@ Texture2D NormalTexture : register(t2, space2);
 Texture2D MetallicRoughnessTexture : register(t3, space2);
 Texture2D OcclusionTexture : register(t4, space2);
 Texture2D EmissiveTexture : register(t5, space2);
-SamplerState MaterialSampler : register(s6, space2);
-TextureCube IrradianceTexture : register(t7, space2);
-TextureCube PrefilteredEnvironmentTexture : register(t8, space2);
-Texture2D BRDFLUTTexture : register(t9, space2);
+SamplerState BaseColorSampler : register(s6, space2);
+SamplerState NormalSampler : register(s7, space2);
+SamplerState MetallicRoughnessSampler : register(s8, space2);
+SamplerState OcclusionSampler : register(s9, space2);
+SamplerState EmissiveSampler : register(s10, space2);
+StructuredBuffer<MaterialParameterData> MaterialParameterTable : register(t11, space2);
 Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);
 SamplerState DirectionalShadowSampler : register(s2, space0);
 StructuredBuffer<PointLight> PointLights : register(t4, space0);
@@ -165,7 +170,13 @@ StructuredBuffer<SpotLight> SpotLights : register(t5, space0);
 Texture2D<float> RayTracedShadowMaskTexture : register(t6, space0);
 StructuredBuffer<GPUCluster> ClusterData : register(t8, space0);
 StructuredBuffer<uint> ClusterLightIndices : register(t9, space0);
+TextureCube IrradianceTexture : register(t10, space0);
+TextureCube PrefilteredEnvironmentTexture : register(t11, space0);
+Texture2D BRDFLUTTexture : register(t12, space0);
+SamplerState IBLLinearClampSampler : register(s13, space0);
+#if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
+#endif
 
 // =============================================================================
 // Vertex Shader Input/Output
@@ -181,6 +192,24 @@ struct VSInput
     float4 BoneWeights : BLENDWEIGHT;
 };
 
+// Direct rigid draws do not bind skinning or GPU-driven instance streams.
+struct RigidDirectVSInput
+{
+    float3 Position : POSITION;
+    float3 Normal   : NORMAL;
+    float2 TexCoord : TEXCOORD0;
+    float4 Tangent  : TANGENT;
+};
+
+struct RigidVSInput
+{
+    float3 Position : POSITION;
+    float3 Normal   : NORMAL;
+    float2 TexCoord : TEXCOORD0;
+    float4 Tangent  : TANGENT;
+    uint InstanceIndex : INSTANCE_INDEX;
+};
+
 struct PSInput
 {
     float4 Position    : SV_POSITION;
@@ -188,6 +217,8 @@ struct PSInput
     float3 WorldNormal : TEXCOORD1;
     float2 TexCoord    : TEXCOORD2;
     float4 WorldTangent : TEXCOORD3;
+    nointerpolation float ReceivesShadowValue : TEXCOORD4;
+    nointerpolation uint MaterialParameterSlot : TEXCOORD5;
 };
 
 // =============================================================================
@@ -259,25 +290,136 @@ PSInput VSMain(VSInput input)
     output.WorldNormal = normalize(mul((float3x3)NormalMatrix, localNormal));
     output.TexCoord = input.TexCoord;
     output.WorldTangent = float4(normalize(mul((float3x3)World, localTangent)), input.Tangent.w);
+    output.ReceivesShadowValue = ReceivesShadow;
+    output.MaterialParameterSlot = 0xFFFFFFFFu;
 
     return output;
 }
 
-PSInput VSMainGPUDriven(VSInput input, uint instanceId : SV_InstanceID)
+PSInput VSMainRigid(RigidDirectVSInput input)
 {
-    GPUInstanceData instance = GPUDrivenInstances[instanceId];
+    PSInput output;
+
+    const float4 worldPos = RVXTransformRigidAffinePosition(
+        World[0], World[1], World[2], input.Position);
+    output.WorldPos = worldPos.xyz;
+    output.Position = mul(ViewProjection, worldPos);
+    output.WorldNormal = normalize(mul((float3x3)NormalMatrix, input.Normal));
+    output.TexCoord = input.TexCoord;
+    output.WorldTangent = float4(normalize(mul((float3x3)World, input.Tangent.xyz)), input.Tangent.w);
+    output.ReceivesShadowValue = ReceivesShadow;
+    output.MaterialParameterSlot = 0xFFFFFFFFu;
+
+    return output;
+}
+
+#if !defined(RVX_GPU_SCENE_RASTER)
+PSInput VSMainGPUDriven(
+    RigidVSInput input)
+{
+    GPUInstanceData instance = GPUDrivenInstances[input.InstanceIndex];
 
     PSInput output;
 
-    float4 worldPos = mul(instance.worldMatrix, float4(input.Position, 1.0));
+    const float4 worldPos = RVXTransformRigidAffinePosition(
+        instance.worldMatrix[0],
+        instance.worldMatrix[1],
+        instance.worldMatrix[2],
+        input.Position);
     output.WorldPos = worldPos.xyz;
     output.Position = mul(ViewProjection, worldPos);
     output.WorldNormal = normalize(mul((float3x3)instance.normalMatrix, input.Normal));
     output.TexCoord = input.TexCoord;
     output.WorldTangent = float4(normalize(mul((float3x3)instance.worldMatrix, input.Tangent.xyz)), input.Tangent.w);
+    output.ReceivesShadowValue = ReceivesShadow;
+    output.MaterialParameterSlot = 0xFFFFFFFFu;
 
     return output;
 }
+
+PSInput VSMainInstancedMaterial(
+    RigidVSInput input)
+{
+    GPUInstanceData instance = GPUDrivenInstances[input.InstanceIndex];
+
+    PSInput output;
+    const float4 worldPos = RVXTransformRigidAffinePosition(
+        instance.worldMatrix[0],
+        instance.worldMatrix[1],
+        instance.worldMatrix[2],
+        input.Position);
+    output.WorldPos = worldPos.xyz;
+    output.Position = mul(ViewProjection, worldPos);
+    output.WorldNormal = normalize(mul((float3x3)instance.normalMatrix, input.Normal));
+    output.TexCoord = input.TexCoord;
+    output.WorldTangent = float4(
+        normalize(mul((float3x3)instance.worldMatrix, input.Tangent.xyz)),
+        input.Tangent.w);
+    output.ReceivesShadowValue = ReceivesShadow;
+    output.MaterialParameterSlot = instance.materialId;
+    return output;
+}
+#endif
+
+#if defined(RVX_GPU_SCENE_RASTER)
+PSInput VSMainGPUScene(RigidVSInput input)
+{
+    PSInput output;
+    GPUSceneTransformRow transform;
+    uint primitiveFlags;
+    uint materialParameterSlot;
+    if (!GPUSceneResolveRasterTransform(
+            input.InstanceIndex,
+            transform,
+            primitiveFlags,
+            materialParameterSlot))
+    {
+        output.Position = GPUSceneInvalidClipPosition();
+        output.WorldPos = float3(0.0f, 0.0f, 0.0f);
+        output.WorldNormal = float3(0.0f, 0.0f, 0.0f);
+        output.TexCoord = float2(0.0f, 0.0f);
+        output.WorldTangent = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        output.ReceivesShadowValue = 0.0f;
+        output.MaterialParameterSlot = 0xFFFFFFFFu;
+        return output;
+    }
+
+    const float4 worldPos = GPUSceneTransformPosition(transform, input.Position);
+    output.WorldPos = worldPos.xyz;
+    output.Position = mul(ViewProjection, worldPos);
+    output.WorldNormal = GPUSceneSafeNormalize(
+        GPUSceneTransformNormal(transform, input.Normal),
+        float3(0.0f, 0.0f, 1.0f));
+    output.TexCoord = input.TexCoord;
+    output.WorldTangent = float4(
+        GPUSceneSafeNormalize(GPUSceneTransformTangent(transform, input.Tangent.xyz),
+                               float3(1.0f, 0.0f, 0.0f)),
+        input.Tangent.w);
+    output.ReceivesShadowValue =
+        (primitiveFlags & RVX_GPU_SCENE_PRIMITIVE_RECEIVES_SHADOW) != 0u
+            ? 1.0f
+            : 0.0f;
+    output.MaterialParameterSlot = 0xFFFFFFFFu;
+    return output;
+}
+
+PSInput VSMainGPUSceneInstancedMaterial(RigidVSInput input)
+{
+    PSInput output = VSMainGPUScene(input);
+    GPUSceneTransformRow transform;
+    uint primitiveFlags;
+    uint materialParameterSlot;
+    if (GPUSceneResolveRasterTransform(
+            input.InstanceIndex,
+            transform,
+            primitiveFlags,
+            materialParameterSlot))
+    {
+        output.MaterialParameterSlot = materialParameterSlot;
+    }
+    return output;
+}
+#endif
 
 // =============================================================================
 // Pixel Shader
@@ -289,10 +431,13 @@ float3 SafeNormalize(float3 value, float3 fallback)
     return lenSq > 1.0e-8 ? value * rsqrt(lenSq) : fallback;
 }
 
-float3 SampleNormalMap(float2 uv, float3 worldNormal, float4 worldTangent)
+float3 SampleNormalMap(float2 uv,
+                       float3 worldNormal,
+                       float4 worldTangent,
+                       float normalScale)
 {
-    float3 tangentNormal = NormalTexture.Sample(MaterialSampler, uv).xyz * 2.0 - 1.0;
-    tangentNormal.xy *= NormalScale;
+    float3 tangentNormal = NormalTexture.Sample(NormalSampler, uv).xyz * 2.0 - 1.0;
+    tangentNormal.xy *= normalScale;
 
     float3 n = SafeNormalize(worldNormal, float3(0.0, 0.0, 1.0));
     float3 t = SafeNormalize(worldTangent.xyz, float3(1.0, 0.0, 0.0));
@@ -561,13 +706,19 @@ float SampleDirectionalShadow(float3 worldPos, float3 worldNormal)
     }
 
     int cascadeCount = (int)clamp(round(CameraForwardAndShadowCascadeCount.w), 1.0, 4.0);
+    float viewDepth = GetDirectionalShadowViewDepth(worldPos);
+    float lastCascadeSplit = DirectionalShadowCascadeSplits[cascadeCount - 1];
+    if (viewDepth > lastCascadeSplit)
+    {
+        return 1.0;
+    }
+
     int cascadeIndex = SelectDirectionalShadowCascade(worldPos);
     float shadow = SampleDirectionalShadowCascade(worldPos, worldNormal, cascadeIndex);
     int nextCascadeIndex = cascadeIndex + 1;
 
     if (nextCascadeIndex < cascadeCount)
     {
-        float viewDepth = GetDirectionalShadowViewDepth(worldPos);
         float splitDistance = DirectionalShadowCascadeSplits[cascadeIndex];
         float fadeDistance = DirectionalShadowCascadeFadeDistances[cascadeIndex];
         float fadeStart = splitDistance - fadeDistance;
@@ -641,46 +792,75 @@ float ComposeDirectionalShadowVisibility(float rasterVisibility, float rayTraced
     return rasterVisibility * rayTracedVisibility;
 }
 
-float4 PSMain(PSInput input) : SV_TARGET
+MaterialParameterData ResolveMaterialParameters(uint materialSlot)
 {
-    float4 baseColor = BaseColorFactor;
-    if ((TextureFlags & MATERIAL_TEXTURE_BASE_COLOR) != 0)
+    if (materialSlot != 0xFFFFFFFFu)
     {
-        baseColor *= BaseColorTexture.Sample(MaterialSampler, input.TexCoord);
+        return MaterialParameterTable[materialSlot];
     }
 
-    if (AlphaMode == MATERIAL_ALPHA_MASK && baseColor.a < AlphaCutoff)
+    MaterialParameterData material;
+    material.BaseColorFactor = BaseColorFactor;
+    material.MetallicFactor = MetallicFactor;
+    material.RoughnessFactor = RoughnessFactor;
+    material.NormalScale = NormalScale;
+    material.OcclusionStrength = OcclusionStrength;
+    material.EmissiveColor_Strength = EmissiveColor_Strength;
+    material.TextureFlags = TextureFlags;
+    material.AlphaMode = AlphaMode;
+    material.AlphaCutoff = AlphaCutoff;
+    material.Workflow = Workflow;
+    material.DoubleSided_MaterialPaddingBits =
+        DoubleSided_MaterialPaddingBits;
+    return material;
+}
+
+float4 PSMain(PSInput input) : SV_TARGET
+{
+    const MaterialParameterData material = ResolveMaterialParameters(
+        input.MaterialParameterSlot);
+    float4 baseColor = material.BaseColorFactor;
+    if ((material.TextureFlags & MATERIAL_TEXTURE_BASE_COLOR) != 0)
+    {
+        baseColor *= BaseColorTexture.Sample(BaseColorSampler, input.TexCoord);
+    }
+
+    if (material.AlphaMode == MATERIAL_ALPHA_MASK &&
+        baseColor.a < material.AlphaCutoff)
     {
         discard;
     }
 
-    float metallic = MetallicFactor;
-    float roughness = RoughnessFactor;
-    if ((TextureFlags & MATERIAL_TEXTURE_METALLIC_ROUGHNESS) != 0)
+    float metallic = material.MetallicFactor;
+    float roughness = material.RoughnessFactor;
+    if ((material.TextureFlags & MATERIAL_TEXTURE_METALLIC_ROUGHNESS) != 0)
     {
-        float4 mr = MetallicRoughnessTexture.Sample(MaterialSampler, input.TexCoord);
+        float4 mr = MetallicRoughnessTexture.Sample(MetallicRoughnessSampler, input.TexCoord);
         roughness *= mr.g;
         metallic *= mr.b;
     }
 
     float occlusion = 1.0;
-    if ((TextureFlags & MATERIAL_TEXTURE_OCCLUSION) != 0)
+    if ((material.TextureFlags & MATERIAL_TEXTURE_OCCLUSION) != 0)
     {
-        occlusion = lerp(1.0, OcclusionTexture.Sample(MaterialSampler, input.TexCoord).r, OcclusionStrength);
+        occlusion = lerp(1.0,
+                         OcclusionTexture.Sample(OcclusionSampler, input.TexCoord).r,
+                         material.OcclusionStrength);
     }
 
-    float3 emissive = EmissiveColor * EmissiveStrength;
-    if ((TextureFlags & MATERIAL_TEXTURE_EMISSIVE) != 0)
+    float3 emissive = material.EmissiveColor_Strength.xyz *
+                      material.EmissiveColor_Strength.w;
+    if ((material.TextureFlags & MATERIAL_TEXTURE_EMISSIVE) != 0)
     {
-        emissive *= EmissiveTexture.Sample(MaterialSampler, input.TexCoord).rgb;
+        emissive *= EmissiveTexture.Sample(EmissiveSampler, input.TexCoord).rgb;
     }
 
-    if (Workflow == MATERIAL_WORKFLOW_UNLIT)
+    if (material.Workflow == MATERIAL_WORKFLOW_UNLIT)
     {
         return float4(baseColor.rgb + emissive, baseColor.a);
     }
 
-    if (Workflow == MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS)
+    if (material.Workflow == MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS)
     {
         // Compatibility fallback until explicit specular/glossiness factors and textures exist.
         metallic = 0.0;
@@ -689,22 +869,26 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 viewDir = SafeNormalize(CameraPosition - input.WorldPos, float3(0.0, 0.0, 1.0));
     float3 normal = SafeNormalize(input.WorldNormal, float3(0.0, 0.0, 1.0));
     float4 doubleSidedTangent = input.WorldTangent;
-    if (DoubleSided != 0 && dot(normal, viewDir) < 0.0)
+    if (material.DoubleSided_MaterialPaddingBits.x != 0 &&
+        dot(normal, viewDir) < 0.0)
     {
         normal = -normal;
         doubleSidedTangent.w = -doubleSidedTangent.w;
     }
 
-    if ((TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
+    if ((material.TextureFlags & MATERIAL_TEXTURE_NORMAL) != 0)
     {
-        normal = SampleNormalMap(input.TexCoord, normal, doubleSidedTangent);
+        normal = SampleNormalMap(input.TexCoord,
+                                 normal,
+                                 doubleSidedTangent,
+                                 material.NormalScale);
     }
 
     float3 toLight = SafeNormalize(-LightDirection, float3(0.0, 1.0, 0.0));
     float clampedRoughness = clamp(roughness, 0.04, 1.0);
     float3 f0 = ComputeF0(baseColor.rgb, metallic);
 
-    const bool receivesShadow = ReceivesShadow > 0.5;
+    const bool receivesShadow = input.ReceivesShadowValue > 0.5;
     const float rasterShadowVisibility =
         receivesShadow ? SampleDirectionalShadow(input.WorldPos, normal) : 1.0;
     const float rayTracedShadowVisibility =
@@ -736,14 +920,16 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 ambientSpecular;
     if (IBLTextureParams.x > 0.5)
     {
-        float3 irradiance = IrradianceTexture.Sample(MaterialSampler, normal).rgb * IBLTextureParams.z;
+        float3 irradiance = IrradianceTexture.Sample(IBLLinearClampSampler, normal).rgb * IBLTextureParams.z;
         float prefilteredMip = clampedRoughness * max(IBLTextureParams.y - 1.0, 0.0);
         float3 reflectionDir = reflect(-viewDir, normal);
         float3 prefilteredColor = PrefilteredEnvironmentTexture.SampleLevel(
-            MaterialSampler,
+            IBLLinearClampSampler,
             reflectionDir,
             prefilteredMip).rgb * IBLTextureParams.z;
-        float2 brdf = BRDFLUTTexture.Sample(MaterialSampler, float2(nDotV, clampedRoughness)).rg;
+        float2 brdf = BRDFLUTTexture.Sample(
+            IBLLinearClampSampler,
+            float2(nDotV, clampedRoughness)).rg;
 
         float3 diffuseEnergy = baseColor.rgb * (1.0 - fresnel) * (1.0 - metallic);
         ambientDiffuse = diffuseEnergy * irradiance * occlusion;

@@ -9,50 +9,136 @@
 # - SceneRenderer, ViewData, RenderScene
 # - IRenderPass interface and built-in passes
 # =============================================================================
+add_library(RVX_RenderRuntimeCore STATIC)
+
+find_package(Threads REQUIRED)
+
+target_sources(RVX_RenderRuntimeCore PRIVATE
+    Private/Runtime/DedicatedRenderExecutor.cpp
+    Private/Runtime/RenderControlMailbox.cpp
+    Private/Runtime/RenderDiagnosticsPublisher.cpp
+    Private/Runtime/RenderReleaseQueue.cpp
+    Private/Runtime/RenderResourceGateway.cpp
+    Private/Runtime/RenderResourceReservationDirectory.cpp
+    Private/Runtime/RenderResourceStatusTable.cpp
+    Private/Runtime/RenderSceneUpdateQueue.cpp
+    Private/Runtime/RenderUploadQueue.cpp
+    Private/Runtime/RenderThreadGuard.cpp
+    Private/Resources/RenderRetirementQueue.cpp
+    Private/Resources/RenderResourceRegistry.cpp
+    Private/Resources/RenderSubmissionResourceBatch.cpp
+    Private/Resources/RenderSubmissionTracker.cpp
+    Private/Resources/RenderUploadProcessor.cpp
+)
+
+if(APPLE)
+    target_sources(RVX_RenderRuntimeCore PRIVATE
+        Private/Runtime/RenderThreadPlatformApple.mm
+    )
+    set_source_files_properties(
+        Private/Runtime/RenderThreadPlatformApple.mm
+        PROPERTIES COMPILE_OPTIONS "-fno-objc-arc"
+    )
+    find_library(RVX_FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    target_link_libraries(RVX_RenderRuntimeCore PRIVATE
+        ${RVX_FOUNDATION_FRAMEWORK}
+    )
+else()
+    target_sources(RVX_RenderRuntimeCore PRIVATE
+        Private/Runtime/RenderThreadPlatform.cpp
+    )
+endif()
+
+target_include_directories(RVX_RenderRuntimeCore PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
+)
+
+target_include_directories(RVX_RenderRuntimeCore PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
+)
+
+target_link_libraries(RVX_RenderRuntimeCore PUBLIC
+    RVX::Core
+    RVX::RenderContracts
+    RVX::RHI
+)
+
+target_link_libraries(RVX_RenderRuntimeCore PRIVATE
+    Threads::Threads
+)
+
 add_library(RVX_Render STATIC)
 
 target_sources(RVX_Render PRIVATE
     # Core
-    Private/RenderService.cpp
     Private/SwapChainManager.cpp
     Private/RenderSubsystem.cpp
+    # Runtime shell
+    Private/Runtime/RenderThreadRuntime.cpp
     Private/GPUUploadService.cpp
-    Private/GPUResourceManager.cpp
     Private/PipelineCache.cpp
     # Context
     Private/Context/RenderContext.cpp
+    Private/Context/RenderFrameTimingOwner.cpp
     Private/Context/FrameSynchronizer.cpp
     # Renderer
     Private/Renderer/ViewData.cpp
+    Private/Renderer/RenderDrawPacket.cpp
+    Private/Renderer/RenderDrawPacketCache.cpp
     Private/Renderer/RenderScene.cpp
-    Private/Renderer/RenderSceneCollector.cpp
+    Private/Renderer/RenderSceneDatabase.cpp
     Private/Renderer/RenderDrawItem.cpp
-    Private/Renderer/RenderFrameResourceBinder.cpp
     Private/Renderer/RenderPassRegistry.cpp
-    Private/Renderer/RenderProxySceneBridge.cpp
-    Private/Renderer/SceneSkyboxPassBridge.cpp
     Private/Renderer/SceneRenderer.cpp
+    # GPU scene CPU shadow and non-executing persistent upload (Tasks 11B/11C)
+    Private/GPUScene/GPUSceneDatabase.cpp
+    Private/GPUScene/GPUSceneUpdate.cpp
+    Private/GPUScene/GPUSceneUploader.cpp
+    # Visibility
+    Private/Visibility/RenderVisibility.cpp
+    # Policy
+    Private/Policy/RenderFramePlanCompiler.cpp
+    Private/Policy/RenderPolicyResolver.cpp
+    # Submission
+    Private/Submission/RenderSubmissionStrategy.cpp
+    Private/Submission/RenderInstanceBatchPlan.cpp
+    Private/Submission/RasterInstanceStream.cpp
+    Private/Submission/DirectRasterReadbackQualification.cpp
+    Private/Resources/FrameConstantUploadArena.cpp
+    # Diagnostics
+    Private/Diagnostics/RenderFeatureReport.cpp
+    Private/Diagnostics/RenderToolArtifacts.cpp
     # Ray tracing
     Private/RayTracing/RayTracingScene.cpp
     Private/RayTracing/RayTracingSceneManager.cpp
     # Passes
+    Private/Passes/DirectDrawPacketBatch.cpp
+    Private/Passes/MeshPassProcessor.cpp
+    Private/Passes/DepthMeshPassProcessor.cpp
+    Private/Passes/OpaqueMeshPassProcessor.cpp
+    Private/Passes/TransparentMeshPassProcessor.cpp
+    Private/Passes/ShadowMeshPassProcessor.cpp
+    Private/Passes/MaterialTextureGraphBindings.cpp
     Private/Passes/OpaquePass.cpp
     Private/Passes/DepthPrepass.cpp
     Private/Passes/TransparentPass.cpp
     Private/Passes/CameraVelocityPass.cpp
     Private/Passes/ObjectVelocityPass.cpp
+    Private/Passes/ParticleFeaturePass.cpp
     Private/Passes/SkyboxPass.cpp
     Private/Passes/ShadowPass.cpp
+    Private/Passes/TerrainPass.cpp
     Private/Passes/RayTracedShadowPass.cpp
     Private/Passes/RayTracedReflectionPass.cpp
     Private/Passes/RayTracedReflectionDenoisePass.cpp
     Private/Passes/RayTracedReflectionCompositePass.cpp
     Private/Passes/GBufferPass.cpp
+    Private/Passes/WaterPass.cpp
     # Graph (merged from RenderGraph module)
     Private/Graph/RenderGraph.cpp
     Private/Graph/RenderGraphCompiler.cpp
     Private/Graph/RenderGraphExecutor.cpp
-    Private/Graph/FrameResourceManager.cpp
+    Private/Graph/RenderGraphExecution.cpp
     Private/Graph/TransientResourcePool.cpp
     Private/Graph/ResourceViewCache.cpp
     # Material
@@ -92,26 +178,23 @@ target_sources(RVX_Render PRIVATE
 
 target_include_directories(RVX_Render PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
     $<INSTALL_INTERFACE:include>
 )
 
-# Private access to Engine, World, Resource, Scene headers for subsystem integration
-# Note: Engine links to Render, so we only add include dirs, not link dependencies
 target_include_directories(RVX_Render PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Engine/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/World/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Physics/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Resource/Include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Scene/Include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Private>
 )
 
 target_link_libraries(RVX_Render PUBLIC
     RVX_Core
+    RVX::RenderContracts
     RVX_RHI
-    RVX_Runtime
-    Spatial
     RVX::ShaderCompiler
+)
+
+target_link_libraries(RVX_Render PRIVATE
+    RVX::RHI_BackendFactory
+    RVX_RenderRuntimeCore
 )
 
 add_library(RVX::Render ALIAS RVX_Render)

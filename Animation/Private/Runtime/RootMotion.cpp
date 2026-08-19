@@ -166,6 +166,65 @@ RootMotionDelta RootMotionExtractor::ExtractTotal(const AnimationClip& clip) con
     return ExtractAbsolute(clip, clip.duration);
 }
 
+RootMotionDelta RootMotionExtractor::ExtractLoopingDelta(
+    const AnimationClip& clip,
+    TimeUs previousTime,
+    TimeUs currentTime) const
+{
+    Skeleton::ConstPtr qualifiedSkeleton;
+    const TransformTrack* rootTrack = nullptr;
+    int rootBoneIndex = -1;
+    if (!m_config.enabled || previousTime < 0 || currentTime < previousTime ||
+        !ResolveQualifiedRootMotion(clip, qualifiedSkeleton, rootBoneIndex, rootTrack))
+    {
+        return RootMotionDelta();
+    }
+
+    const TimeUs duration = clip.duration;
+    const TimeUs previousCycle = previousTime / duration;
+    const TimeUs currentCycle = currentTime / duration;
+    const TimeUs previousOffset = previousTime % duration;
+    const TimeUs currentOffset = currentTime % duration;
+
+    const auto makeSegmentDelta = [this, rootTrack](TimeUs start, TimeUs end) {
+        const TransformSample startSample = rootTrack->Sample(start);
+        const TransformSample endSample = rootTrack->Sample(end);
+
+        RootMotionDelta result;
+        result.deltaTranslation = FilterTranslation(endSample.translation - startSample.translation) *
+            m_config.motionScale;
+        result.deltaRotation = FilterRotation(
+            normalize(endSample.rotation * glm::conjugate(startSample.rotation)));
+        result.valid = true;
+        return result;
+    };
+
+    if (previousCycle == currentCycle)
+    {
+        return makeSegmentDelta(previousOffset, currentOffset);
+    }
+
+    RootMotionDelta result = makeSegmentDelta(previousOffset, duration);
+    const RootMotionDelta fullCycle = makeSegmentDelta(0, duration);
+
+    uint64_t completeCycles = static_cast<uint64_t>(currentCycle - previousCycle - 1);
+    RootMotionDelta repeatedCycle = RootMotionDelta::Identity();
+    RootMotionDelta cyclePower = fullCycle;
+    while (completeCycles > 0)
+    {
+        if ((completeCycles & 1u) != 0u)
+        {
+            repeatedCycle += cyclePower;
+        }
+        cyclePower += cyclePower;
+        completeCycles >>= 1u;
+    }
+
+    result += repeatedCycle;
+    result += makeSegmentDelta(0, currentOffset);
+    return result;
+}
+
 TransformSample RootMotionExtractor::SampleRootTransform(
     const AnimationClip& clip,
     TimeUs time) const
@@ -281,6 +340,46 @@ int RootMotionExtractor::FindRootBoneIndex() const
     return -1;
 }
 
+bool RootMotionExtractor::ResolveQualifiedRootMotion(
+    const AnimationClip& clip,
+    Skeleton::ConstPtr& skeleton,
+    int& rootBoneIndex,
+    const TransformTrack*& rootTrack) const
+{
+    skeleton.reset();
+    rootBoneIndex = -1;
+    rootTrack = nullptr;
+
+    if (!clip.hasRootMotion || clip.rootMotionBoneName.empty() || clip.duration <= 0)
+    {
+        return false;
+    }
+
+    skeleton = clip.skeleton ? clip.skeleton : m_skeleton;
+    if (!skeleton || (clip.skeleton && m_skeleton && clip.skeleton.get() != m_skeleton.get()))
+    {
+        return false;
+    }
+
+    rootBoneIndex = skeleton->FindBoneIndex(clip.rootMotionBoneName);
+    if (rootBoneIndex < 0)
+    {
+        return false;
+    }
+
+    for (const TransformTrack& track : clip.transformTracks)
+    {
+        if (track.targetType == TrackTargetType::Bone &&
+            track.targetName == clip.rootMotionBoneName && !track.IsEmpty())
+        {
+            rootTrack = &track;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void RootMotionExtractor::ZeroRootMotion(
     TransformSample& rootTransform,
     bool keepVertical) const
@@ -341,6 +440,33 @@ void RootMotionExtractor::ZeroRootMotion(
         default:
             break;
     }
+}
+
+bool RootMotionExtractor::RemoveRootMotionFromPose(
+    const AnimationClip& clip,
+    SkeletonPose& pose,
+    bool keepVertical) const
+{
+    Skeleton::ConstPtr qualifiedSkeleton;
+    const TransformTrack* rootTrack = nullptr;
+    int rootBoneIndex = -1;
+    if (!ResolveQualifiedRootMotion(clip, qualifiedSkeleton, rootBoneIndex, rootTrack) ||
+        !clip.skeleton || pose.GetSkeleton().get() != clip.skeleton.get() ||
+        qualifiedSkeleton.get() != pose.GetSkeleton().get() || rootBoneIndex < 0 ||
+        static_cast<size_t>(rootBoneIndex) >= pose.GetBoneCount())
+    {
+        return false;
+    }
+
+    const TransformSample evaluatedRoot = pose.GetLocalTransform(static_cast<size_t>(rootBoneIndex));
+    TransformSample replacement = qualifiedSkeleton->bones[rootBoneIndex].localBindPose;
+    if (keepVertical)
+    {
+        replacement.translation.y = evaluatedRoot.translation.y;
+    }
+
+    pose.SetLocalTransform(static_cast<size_t>(rootBoneIndex), replacement);
+    return true;
 }
 
 void RootMotionExtractor::ApplyRootMotion(

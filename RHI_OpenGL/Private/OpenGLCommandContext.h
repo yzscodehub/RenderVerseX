@@ -145,7 +145,7 @@ namespace RVX
         // =========================================================================
         // OpenGL Specific
         // =========================================================================
-        RHICommandQueueType GetQueueType() const { return m_queueType; }
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
 
     private:
         void ApplyGraphicsPipelineState();

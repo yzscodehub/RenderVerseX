@@ -21,21 +21,26 @@ static const float PI = 3.14159265359;
 static const float INV_PI = 0.31830988618;
 static const float EPSILON = 1e-6;
 
+// glTF material roughness is perceptual. GGX uses the microfacet alpha value.
+float PerceptualRoughnessToAlpha(float perceptualRoughness)
+{
+    return perceptualRoughness * perceptualRoughness;
+}
+
 // =============================================================================
 // Normal Distribution Function (D)
 // GGX/Trowbridge-Reitz distribution
 // =============================================================================
 
-float D_GGX(float NdotH, float roughness)
+float D_GGX(float NdotH, float alphaRoughness)
 {
-    float a = roughness * roughness;
-    float a2 = a * a;
+    float alphaRoughnessSquared = alphaRoughness * alphaRoughness;
     float NdotH2 = NdotH * NdotH;
-    
-    float denom = NdotH2 * (a2 - 1.0) + 1.0;
+
+    float denom = NdotH2 * (alphaRoughnessSquared - 1.0) + 1.0;
     denom = PI * denom * denom;
-    
-    return a2 / max(denom, EPSILON);
+
+    return alphaRoughnessSquared / max(denom, EPSILON);
 }
 
 // =============================================================================
@@ -59,11 +64,18 @@ float G_Smith(float NdotV, float NdotL, float roughness)
 }
 
 // Height-correlated Smith G term (more accurate)
-float G_SmithGGXCorrelated(float NdotV, float NdotL, float roughness)
+float G_SmithGGXCorrelated(
+    float NdotV,
+    float NdotL,
+    float alphaRoughness)
 {
-    float a2 = roughness * roughness;
-    float GGXV = NdotL * sqrt(NdotV * NdotV * (1.0 - a2) + a2);
-    float GGXL = NdotV * sqrt(NdotL * NdotL * (1.0 - a2) + a2);
+    float alphaRoughnessSquared = alphaRoughness * alphaRoughness;
+    float GGXV = NdotL * sqrt(
+        NdotV * NdotV * (1.0 - alphaRoughnessSquared) +
+        alphaRoughnessSquared);
+    float GGXL = NdotV * sqrt(
+        NdotL * NdotL * (1.0 - alphaRoughnessSquared) +
+        alphaRoughnessSquared);
     return 0.5 / max(GGXV + GGXL, EPSILON);
 }
 
@@ -93,7 +105,7 @@ float3 CookTorranceSpecular(
     float3 V,      // View direction
     float3 L,      // Light direction
     float3 F0,     // Base reflectance at normal incidence
-    float roughness)
+    float perceptualRoughness)
 {
     float3 H = normalize(V + L);
     
@@ -102,9 +114,12 @@ float3 CookTorranceSpecular(
     float NdotH = max(dot(N, H), 0.0);
     float VdotH = max(dot(V, H), 0.0);
     
-    // Specular BRDF components
-    float D = D_GGX(NdotH, roughness);
-    float G = G_SmithGGXCorrelated(NdotV, NdotL, roughness);
+    // Use the same alpha parameterization for the GGX distribution and
+    // height-correlated visibility terms.
+    float alphaRoughness =
+        PerceptualRoughnessToAlpha(perceptualRoughness);
+    float D = D_GGX(NdotH, alphaRoughness);
+    float G = G_SmithGGXCorrelated(NdotV, NdotL, alphaRoughness);
     float3 F = F_Schlick(VdotH, F0);
     
     // Combine: (D * G * F) / (4 * NdotV * NdotL)

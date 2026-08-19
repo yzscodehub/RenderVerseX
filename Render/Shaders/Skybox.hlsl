@@ -1,6 +1,8 @@
 // Procedural skybox minimum path.
 // Draws a fullscreen triangle and lets read-only depth keep foreground geometry.
 
+#include "Include/FullscreenTriangle.hlsli"
+
 cbuffer SkyboxConstants : register(b0, space0)
 {
     float4 SkyboxZenithColor;    // rgb: zenith color, a: exposure
@@ -24,16 +26,11 @@ struct VSOutput
 
 VSOutput VSMain(uint vertexId : SV_VertexID)
 {
-    static const float2 positions[3] =
-    {
-        float2(-1.0, -1.0),
-        float2(-1.0,  3.0),
-        float2( 3.0, -1.0)
-    };
-
     VSOutput output;
-    output.ndc = positions[vertexId];
-    output.position = float4(output.ndc, SkyboxGroundColor.a, 1.0);
+    const float2 texCoord = RVX_GetFullscreenTriangleTexCoord(vertexId);
+    output.ndc = RVX_GetFullscreenTriangleSemanticNdc(texCoord);
+    output.position = RVX_GetFullscreenTrianglePosition(texCoord);
+    output.position.z = SkyboxGroundColor.a;
     return output;
 }
 

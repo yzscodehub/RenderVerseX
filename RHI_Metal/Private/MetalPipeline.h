@@ -5,6 +5,8 @@
 
 namespace RVX
 {
+    class MetalPipelineLayout;
+
     // =============================================================================
     // MetalPipelineLayout
     // =============================================================================
@@ -37,6 +39,7 @@ namespace RVX
         MTLCullMode GetCullMode() const { return m_cullMode; }
         MTLWinding GetFrontFace() const { return m_frontFace; }
         MTLPrimitiveType GetPrimitiveType() const { return m_primitiveType; }
+        MetalPipelineLayout* GetDescriptorPipelineLayout() const { return m_descriptorPipelineLayout; }
 
     private:
         id<MTLRenderPipelineState> m_pipelineState = nil;
@@ -45,6 +48,7 @@ namespace RVX
         MTLCullMode m_cullMode = MTLCullModeBack;
         MTLWinding m_frontFace = MTLWindingCounterClockwise;
         MTLPrimitiveType m_primitiveType = MTLPrimitiveTypeTriangle;
+        MetalPipelineLayout* m_descriptorPipelineLayout = nullptr;
     };
 
     // =============================================================================
@@ -60,10 +64,12 @@ namespace RVX
 
         id<MTLComputePipelineState> GetMTLComputePipelineState() const { return m_pipelineState; }
         MTLSize GetThreadgroupSize() const { return m_threadgroupSize; }
+        MetalPipelineLayout* GetDescriptorPipelineLayout() const { return m_descriptorPipelineLayout; }
 
     private:
         id<MTLComputePipelineState> m_pipelineState = nil;
         MTLSize m_threadgroupSize;
+        MetalPipelineLayout* m_descriptorPipelineLayout = nullptr;
     };
 
 } // namespace RVX

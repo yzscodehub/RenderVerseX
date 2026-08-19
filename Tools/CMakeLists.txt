@@ -6,6 +6,7 @@ add_library(RVX_Tools STATIC)
 target_sources(RVX_Tools PRIVATE
     Private/AssetPipeline.cpp
     Private/AssetDatabase.cpp
+    Private/AnimationRootMotionDeriver.cpp
     Private/Importers/AudioImporter.cpp
 )
 
@@ -15,6 +16,7 @@ target_include_directories(RVX_Tools PUBLIC
 )
 
 target_link_libraries(RVX_Tools PUBLIC
+    RVX::Audio
     RVX::Core
     RVX::RHI
 )
@@ -22,11 +24,6 @@ target_link_libraries(RVX_Tools PUBLIC
 target_link_libraries(RVX_Tools PRIVATE
     RVX::Resource
     RVX::ShaderCompiler
-)
-
-# Include Audio headers for AudioImporter
-target_include_directories(RVX_Tools PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Audio/Include>
 )
 
 # Optional: Link asset processing libraries when available
@@ -46,3 +43,13 @@ target_link_libraries(RVXCook PRIVATE
 )
 
 target_compile_features(RVXCook PRIVATE cxx_std_20)
+
+add_executable(RVXAnimationDerive
+    Private/AnimationRootMotionDeriveMain.cpp
+)
+
+target_link_libraries(RVXAnimationDerive PRIVATE
+    RVX::Tools
+)
+
+target_compile_features(RVXAnimationDerive PRIVATE cxx_std_20)

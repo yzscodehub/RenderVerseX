@@ -22,6 +22,7 @@ namespace
         }
         return size;
     }
+
 } // namespace
 
 MeshResource::MeshResource() = default;
@@ -36,7 +37,6 @@ void MeshResource::SetMesh(std::shared_ptr<Mesh> mesh)
         m_lodMeshes.push_back(m_mesh);
     }
 
-    // Compute bounds if mesh has them
     if (m_mesh && m_mesh->GetBoundingBox())
     {
         m_bounds = *m_mesh->GetBoundingBox();
@@ -74,6 +74,14 @@ std::shared_ptr<Mesh> MeshResource::GetLODMesh(size_t lodIndex) const
     return lodIndex == 0 ? m_mesh : nullptr;
 }
 
+size_t MeshResource::GetAssetMeshSubmeshCount() const
+{
+    if (!m_mesh)
+        return 0;
+
+    return m_mesh->HasSubMeshes() ? m_mesh->GetSubMeshes().size() : 1;
+}
+
 size_t MeshResource::GetMemoryUsage() const
 {
     size_t size = sizeof(*this);
@@ -95,7 +103,6 @@ size_t MeshResource::GetMemoryUsage() const
 
 size_t MeshResource::GetGPUMemoryUsage() const
 {
-    // TODO: Calculate GPU buffer sizes when implemented
     return 0;
 }
 

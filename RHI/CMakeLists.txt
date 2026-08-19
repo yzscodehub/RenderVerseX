@@ -4,8 +4,15 @@
 add_library(RVX_RHI STATIC)
 
 target_sources(RVX_RHI PRIVATE
-    Private/RHIModule.cpp
+    Private/RHIAccess.cpp
+    Private/RHIIndirectExecution.cpp
+    Private/RHIQueueSubmission.cpp
     Private/RHIValidation.cpp
+    Private/RHIValidationMessageSink.cpp
+    Private/RHIConformance.cpp
+    Private/RHIShader.cpp
+    Private/RHIPipelineValidation.cpp
+    Private/RHIResources.cpp
     Private/DescriptorCache.cpp
 )
 

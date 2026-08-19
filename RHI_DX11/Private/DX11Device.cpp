@@ -4,9 +4,14 @@
 #include "DX11CommandContext.h"
 #include "DX11SwapChain.h"
 #include "DX11Upload.h"
+#include "RHI/RHIPipelineValidation.h"
 
 namespace RVX
 {
+    static_assert(sizeof(IndirectDrawIndexedCommand) ==
+                      sizeof(D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS),
+                  "DX11 indexed indirect execution must use the shared command layout.");
+
     // =============================================================================
     // Factory Function
     // =============================================================================
@@ -81,6 +86,17 @@ namespace RVX
     // =============================================================================
     bool DX11Device::Initialize(const RHIDeviceDesc& desc)
     {
+        m_runtimeStatus.store(RHIDeviceRuntimeStatus::Ready,
+                              std::memory_order_release);
+        m_faultClaimed.store(false, std::memory_order_release);
+        m_lastFaultNativeError.store(0, std::memory_order_release);
+        m_lastFaultOperation.store(RHIDeviceFaultOperation::None,
+                                   std::memory_order_release);
+        m_faultSequence.store(0, std::memory_order_release);
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            m_deviceFaultMessage.clear();
+        }
         RVX_RHI_INFO("Initializing DX11 Device...");
 
         if (!CreateFactory())
@@ -344,6 +360,7 @@ namespace RVX
         m_capabilities.supportsRaytracing = false;
         m_capabilities.supportsMeshShaders = false;
         m_capabilities.supportsVariableRateShading = false;
+        m_capabilities.supportsComputePipeline = true;
         m_capabilities.supportsAsyncCompute = false;  // Single queue
 
         // Dynamic state and advanced features
@@ -352,6 +369,21 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = false;      // DX11 doesn't support separate stencil refs
         m_capabilities.supportsSplitBarrier = false;            // DX11 doesn't have explicit barriers
         m_capabilities.supportsSecondaryCommandBuffer = false;  // DX11 uses deferred context instead
+        m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
+        m_capabilities.indexedIndirectExecution.supportsCountBuffer = false;
+        m_capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+        m_capabilities.indexedIndirectExecution.requiresExactCommandStride = false;
+        m_capabilities.indexedIndirectExecution.indexedCommandSize = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.minCommandStride = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+        m_capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.maxDrawCount = UINT32_MAX;
+        m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+        m_capabilities.indexedIndirectExecution.requiredArgumentState = RHIResourceState::IndirectArgument;
+        m_capabilities.indexedIndirectExecution.requiredCountState = RHIResourceState::IndirectArgument;
+        m_capabilities.supportsIndirectDrawCount =
+            m_capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_capabilities.supportsDescriptorSets = true;           // Implemented through DX11 binding remapping
         m_capabilities.supportsDynamicDescriptorOffsets = m_immediateContext1 != nullptr;
         m_capabilities.maxDescriptorSets = 4;
@@ -360,7 +392,13 @@ namespace RVX
         m_capabilities.supportsMemoryBudgetQuery = false;       // DX11 doesn't support memory budget
         m_capabilities.supportsPersistentMapping = false;       // DX11 doesn't support persistent mapping
         m_capabilities.supportsExplicitHeapManagement = false;  // DX11 backend has no explicit heap API
-        m_capabilities.supportsTimestampQueries = true;
+        // D3D11 exposes the timestamp frequency through a disjoint query that
+        // must execute on the immediate (Graphics) context.  Device startup
+        // cannot publish that observation without submitting work, so retain
+        // the query implementation but do not make a device-wide capability
+        // claim or fabricate a frequency.
+        m_capabilities.supportsTimestampQueries = false;
+        m_capabilities.timestampFrequency = 0;
         m_capabilities.supportsOcclusionQueries = true;
         m_capabilities.supportsPipelineStatisticsQueries = true;
         m_capabilities.supportsHostFenceSignal = false;
@@ -369,6 +407,13 @@ namespace RVX
         m_capabilities.supportsQueueFenceWait = false;
         m_capabilities.supportsMultiQueueBatchSubmit = false;
         m_capabilities.emulatesQueueFences = true;
+        m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::CompatibilityWaitIdle;
+        m_capabilities.queueTopology.logicalQueueDomains = {
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics,
+        };
+        m_capabilities.queueTopology.activeDomainCount = 1;
 
         // Set threading mode
         m_capabilities.dx11.threadingMode = DX11ThreadingMode::SingleThreaded;
@@ -381,11 +426,19 @@ namespace RVX
     // =============================================================================
     void DX11Device::BeginFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         DX11Debug::Get().BeginFrame(m_totalFrameCount);
     }
 
     void DX11Device::EndFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         DX11Debug::Get().EndFrame();
 
         m_frameIndex = (m_frameIndex + 1) % DX11_MAX_FRAME_COUNT;
@@ -394,10 +447,94 @@ namespace RVX
 
     void DX11Device::WaitIdle()
     {
-        if (m_immediateContext)
+        if (m_immediateContext &&
+            QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
         {
             m_immediateContext->Flush();
         }
+    }
+
+    RHIDeviceRuntimeStatus DX11Device::QueryRuntimeStatus() const noexcept
+    {
+        const RHIDeviceRuntimeStatus published =
+            m_runtimeStatus.load(std::memory_order_acquire);
+        if (published != RHIDeviceRuntimeStatus::Ready)
+        {
+            return published;
+        }
+        if (m_device)
+        {
+            const HRESULT reason = m_device->GetDeviceRemovedReason();
+            if (FAILED(reason))
+            {
+                const_cast<DX11Device*>(this)->ReportRuntimeFailure(
+                    reason,
+                    RHIDeviceFaultOperation::Context,
+                    "DX11 device removal detected while polling runtime status");
+                return m_runtimeStatus.load(std::memory_order_acquire);
+            }
+        }
+        return RHIDeviceRuntimeStatus::Ready;
+    }
+
+    RHIDeviceFault DX11Device::GetLastDeviceFault() const
+    {
+        RHIDeviceFault fault;
+        fault.status = QueryRuntimeStatus();
+        fault.operation =
+            m_lastFaultOperation.load(std::memory_order_acquire);
+        fault.backend = RHIBackendType::DX11;
+        fault.nativeError =
+            m_lastFaultNativeError.load(std::memory_order_acquire);
+        fault.sequence = m_faultSequence.load(std::memory_order_acquire);
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            fault.message = m_deviceFaultMessage;
+        }
+        if (fault.IsFailure() && fault.nativeError == 0 && m_device)
+        {
+            fault.nativeError = static_cast<uint32>(
+                m_device->GetDeviceRemovedReason());
+        }
+        return fault;
+    }
+
+    void DX11Device::ReportRuntimeFailure(
+        HRESULT reason,
+        RHIDeviceFaultOperation operation,
+        const char* message) noexcept
+    {
+        bool expected = false;
+        const RHIDeviceRuntimeStatus terminalStatus =
+            reason == DXGI_ERROR_DEVICE_REMOVED ||
+                    reason == DXGI_ERROR_DEVICE_RESET ||
+                    reason == DXGI_ERROR_DEVICE_HUNG
+                ? RHIDeviceRuntimeStatus::DeviceLost
+                : RHIDeviceRuntimeStatus::FatalError;
+        if (!m_faultClaimed.compare_exchange_strong(
+                expected,
+                true,
+                std::memory_order_acq_rel))
+        {
+            return;
+        }
+        m_lastFaultNativeError.store(static_cast<uint32>(reason),
+                                     std::memory_order_release);
+        m_lastFaultOperation.store(operation, std::memory_order_release);
+        m_faultSequence.store(1, std::memory_order_release);
+        try
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            m_deviceFaultMessage = message != nullptr
+                                       ? message
+                                       : "DX11 device or immediate context failed";
+        }
+        catch (...)
+        {
+            // Failure publication must remain noexcept even if diagnostic
+            // storage cannot allocate. The numeric fault remains authoritative.
+        }
+        m_runtimeStatus.store(terminalStatus, std::memory_order_release);
     }
 
     // =============================================================================
@@ -546,7 +683,9 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef DX11Device::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
-        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        auto validation = ValidateRHIDescriptorSetLayoutCapabilities(
+            desc,
+            GetCapabilities());
         if (!validation)
         {
             RVX_RHI_ERROR("DX11 descriptor set layout creation failed: {} (binding {})",
@@ -570,6 +709,15 @@ namespace RVX
 
     RHIPipelineRef DX11Device::CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc)
     {
+        const RHIPipelineValidationResult validation =
+            ValidateRHIGraphicsPipelineDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "DX11 graphics pipeline preflight failed: {}",
+                FormatRHIPipelineValidationResult(validation));
+            return nullptr;
+        }
         return MakeRef<DX11GraphicsPipeline>(this, desc);
     }
 
@@ -596,6 +744,20 @@ namespace RVX
     // =============================================================================
     RHIQueryPoolRef DX11Device::CreateQueryPool(const RHIQueryPoolDesc& desc)
     {
+        const RHIQueryValidationResult validation = ValidateRHIQueryPoolDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX11 query pool creation rejected: {}", validation.message);
+            return nullptr;
+        }
+
+        if (desc.type == RHIQueryType::Timestamp &&
+            !m_capabilities.supportsTimestampQueries)
+        {
+            RVX_RHI_ERROR("DX11 timestamp query creation rejected because Graphics timestamp support is not published");
+            return nullptr;
+        }
+
         return MakeRef<DX11QueryPool>(this, desc);
     }
 
@@ -621,6 +783,15 @@ namespace RVX
             auto* dx11Fence = static_cast<DX11Fence*>(signalFence);
             submittedValue = dx11Fence->AllocateSignalValue();
             dx11Fence->Signal(submittedValue);
+        }
+        const HRESULT status = m_device->GetDeviceRemovedReason();
+        if (FAILED(status))
+        {
+            ReportRuntimeFailure(
+                status,
+                RHIDeviceFaultOperation::CommandSubmission,
+                "DX11 device was removed during command submission");
+            return 0;
         }
         return submittedValue;
     }
@@ -649,6 +820,15 @@ namespace RVX
             auto* dx11Fence = static_cast<DX11Fence*>(signalFence);
             submittedValue = dx11Fence->AllocateSignalValue();
             dx11Fence->Signal(submittedValue);
+        }
+        const HRESULT status = m_device->GetDeviceRemovedReason();
+        if (FAILED(status))
+        {
+            ReportRuntimeFailure(
+                status,
+                RHIDeviceFaultOperation::CommandSubmission,
+                "DX11 device was removed during batched command submission");
+            return 0;
         }
         return submittedValue;
     }

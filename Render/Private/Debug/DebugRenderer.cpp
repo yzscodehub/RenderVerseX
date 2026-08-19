@@ -7,10 +7,29 @@
 #include "Render/Renderer/ViewData.h"
 #include "Render/PipelineCache.h"
 #include "Core/Log.h"
+
+#include <array>
 #include <cmath>
+#include <cstring>
 
 namespace RVX
 {
+
+namespace
+{
+    constexpr const char* RVX_DEBUG_LINE_PIPELINE_UNSUPPORTED_REASON =
+        "Debug line pipeline is not implemented";
+
+    Vec3 TransformClipCorner(const Mat4& inverseViewProjection, const Vec3& clipPosition)
+    {
+        Vec4 corner = inverseViewProjection * Vec4(clipPosition, 1.0f);
+        if (std::abs(corner.w) > 0.0001f)
+        {
+            corner /= corner.w;
+        }
+        return Vec3(corner.x, corner.y, corner.z);
+    }
+} // namespace
 
 DebugRenderer::~DebugRenderer()
 {
@@ -31,6 +50,13 @@ void DebugRenderer::Initialize(IRHIDevice* device, PipelineCache* pipelineCache)
 
     EnsureBuffers();
 
+    m_lastDiagnostics.initialized = IsInitialized();
+    m_lastDiagnostics.enabled = m_enabled;
+    m_lastDiagnostics.vertexBufferAvailable = m_vertexBuffer != nullptr;
+    m_lastDiagnostics.pipelineAvailable = false;
+    m_lastDiagnostics.depthTestEnabled = m_depthTestEnabled;
+    m_lastDiagnostics.reason = RVX_DEBUG_LINE_PIPELINE_UNSUPPORTED_REASON;
+
     RVX_CORE_DEBUG("DebugRenderer: Initialized");
 }
 
@@ -43,6 +69,7 @@ void DebugRenderer::Shutdown()
     m_vertices.clear();
     m_device = nullptr;
     m_pipelineCache = nullptr;
+    m_lastDiagnostics = {};
 
     RVX_CORE_DEBUG("DebugRenderer: Shutdown");
 }
@@ -99,7 +126,7 @@ void DebugRenderer::DrawAABB(const Vec3& min, const Vec3& max, const Vec4& color
 void DebugRenderer::DrawOBB(const Vec3& center, const Vec3& halfExtents, const Mat4& rotation, const Vec4& color)
 {
     (void)rotation;  // Would transform the box corners
-    
+
     // Simplified: draw as AABB
     Vec3 min = {center.x - halfExtents.x, center.y - halfExtents.y, center.z - halfExtents.z};
     Vec3 max = {center.x + halfExtents.x, center.y + halfExtents.y, center.z + halfExtents.z};
@@ -130,7 +157,7 @@ void DebugRenderer::DrawCircle(const Vec3& center, const Vec3& normal, float rad
         right.y /= len;
         right.z /= len;
     }
-    
+
     Vec3 forward = {
         normal.y * right.z - normal.z * right.y,
         normal.z * right.x - normal.x * right.z,
@@ -162,7 +189,7 @@ void DebugRenderer::DrawCircle(const Vec3& center, const Vec3& normal, float rad
 void DebugRenderer::DrawAxes(const Vec3& origin, const Mat4& orientation, float size)
 {
     (void)orientation;  // Would transform the axes
-    
+
     // X axis (red)
     DrawLine(origin, {origin.x + size, origin.y, origin.z}, {1, 0, 0, 1});
     // Y axis (green)
@@ -179,14 +206,14 @@ void DebugRenderer::DrawGrid(const Vec3& center, float size, int divisions, cons
     for (int i = 0; i <= divisions; ++i)
     {
         float offset = -halfSize + step * static_cast<float>(i);
-        
+
         // Lines along Z
         DrawLine(
             {center.x + offset, center.y, center.z - halfSize},
             {center.x + offset, center.y, center.z + halfSize},
             color
         );
-        
+
         // Lines along X
         DrawLine(
             {center.x - halfSize, center.y, center.z + offset},
@@ -198,15 +225,36 @@ void DebugRenderer::DrawGrid(const Vec3& center, float size, int divisions, cons
 
 void DebugRenderer::DrawFrustum(const Mat4& viewProjection, const Vec4& color)
 {
-    (void)viewProjection;
-    (void)color;
-    // TODO: Extract frustum corners from inverse VP and draw edges
+    const Mat4 inverseViewProjection = glm::inverse(viewProjection);
+    const std::array<Vec3, 8> clipCorners = {{
+        Vec3(-1.0f, -1.0f, 0.0f), Vec3(1.0f, -1.0f, 0.0f),
+        Vec3(1.0f, 1.0f, 0.0f), Vec3(-1.0f, 1.0f, 0.0f),
+        Vec3(-1.0f, -1.0f, 1.0f), Vec3(1.0f, -1.0f, 1.0f),
+        Vec3(1.0f, 1.0f, 1.0f), Vec3(-1.0f, 1.0f, 1.0f)
+    }};
+
+    std::array<Vec3, 8> worldCorners{};
+    for (size_t i = 0; i < clipCorners.size(); ++i)
+    {
+        worldCorners[i] = TransformClipCorner(inverseViewProjection, clipCorners[i]);
+    }
+
+    constexpr std::array<std::array<uint32, 2>, 12> edges = {{
+        {{0, 1}}, {{1, 2}}, {{2, 3}}, {{3, 0}},
+        {{4, 5}}, {{5, 6}}, {{6, 7}}, {{7, 4}},
+        {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}}
+    }};
+
+    for (const auto& edge : edges)
+    {
+        DrawLine(worldCorners[edge[0]], worldCorners[edge[1]], color);
+    }
 }
 
 void DebugRenderer::DrawArrow(const Vec3& start, const Vec3& end, const Vec4& color, float headSize)
 {
     DrawLine(start, end, color);
-    
+
     // Arrow head
     Vec3 dir = {end.x - start.x, end.y - start.y, end.z - start.z};
     float len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
@@ -216,7 +264,7 @@ void DebugRenderer::DrawArrow(const Vec3& start, const Vec3& end, const Vec4& co
         dir.y /= len;
         dir.z /= len;
     }
-    
+
     // Create perpendicular vector
     Vec3 perp = std::abs(dir.y) < 0.99f ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
     Vec3 side = {
@@ -224,14 +272,14 @@ void DebugRenderer::DrawArrow(const Vec3& start, const Vec3& end, const Vec4& co
         dir.z * perp.x - dir.x * perp.z,
         dir.x * perp.y - dir.y * perp.x
     };
-    
+
     Vec3 headBase = {
         end.x - dir.x * headSize,
         end.y - dir.y * headSize,
         end.z - dir.z * headSize
     };
-    
-    DrawLine(end, {headBase.x + side.x * headSize * 0.5f, 
+
+    DrawLine(end, {headBase.x + side.x * headSize * 0.5f,
                    headBase.y + side.y * headSize * 0.5f,
                    headBase.z + side.z * headSize * 0.5f}, color);
     DrawLine(end, {headBase.x - side.x * headSize * 0.5f,
@@ -254,15 +302,35 @@ void DebugRenderer::UpdateVertexBuffer()
 
 void DebugRenderer::Render(RHICommandContext& ctx, const ViewData& view)
 {
-    if (!m_enabled || m_vertices.empty())
-        return;
-
-    UpdateVertexBuffer();
-
-    // TODO: Bind debug line pipeline and draw
-    // This requires a debug line shader and pipeline in PipelineCache
     (void)ctx;
     (void)view;
+
+    m_lastDiagnostics.requested = m_enabled && !m_vertices.empty();
+    m_lastDiagnostics.supported = false;
+    m_lastDiagnostics.scheduled = false;
+    m_lastDiagnostics.executed = false;
+    m_lastDiagnostics.initialized = IsInitialized();
+    m_lastDiagnostics.enabled = m_enabled;
+    m_lastDiagnostics.vertexBufferAvailable = m_vertexBuffer != nullptr;
+    m_lastDiagnostics.pipelineAvailable = false;
+    m_lastDiagnostics.depthTestEnabled = m_depthTestEnabled;
+    m_lastDiagnostics.vertexCount = static_cast<uint32>(m_vertices.size());
+
+    if (!m_enabled)
+    {
+        m_lastDiagnostics.reason = "Debug rendering disabled by configuration";
+        return;
+    }
+
+    if (m_vertices.empty())
+    {
+        m_lastDiagnostics.reason = "No debug vertices queued";
+        return;
+    }
+
+    UpdateVertexBuffer();
+    m_lastDiagnostics.reason = RVX_DEBUG_LINE_PIPELINE_UNSUPPORTED_REASON;
+    RVX_CORE_WARN("DebugRenderer: render requested but {}", m_lastDiagnostics.reason);
 }
 
 } // namespace RVX

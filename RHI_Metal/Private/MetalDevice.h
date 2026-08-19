@@ -2,6 +2,8 @@
 
 #include "MetalCommon.h"
 #include "RHI/RHIDevice.h"
+#include <atomic>
+#include <memory>
 #include <mutex>
 #include <dispatch/dispatch.h>
 
@@ -58,6 +60,8 @@ namespace RVX
 
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override { return RHIBackendType::Metal; }
+        RHIDeviceRuntimeStatus QueryRuntimeStatus() const noexcept override;
+        RHIDeviceFault GetLastDeviceFault() const override;
 
         // Upload Resources
         RHIStagingBufferRef CreateStagingBuffer(const RHIStagingBufferDesc& desc) override;
@@ -75,15 +79,36 @@ namespace RVX
         // =========================================================================
         id<MTLDevice> GetMTLDevice() const { return m_device; }
         id<MTLCommandQueue> GetCommandQueue() const { return m_commandQueue; }
+        void ObserveCommandBuffer(
+            id<MTLCommandBuffer> commandBuffer,
+            RHIDeviceFaultOperation operation) noexcept;
 
     private:
+        struct RuntimeFaultState
+        {
+            std::atomic<RHIDeviceRuntimeStatus> status{
+                RHIDeviceRuntimeStatus::Ready};
+            std::atomic<bool> claimed{false};
+            std::atomic<uint32> nativeError{0};
+            std::atomic<RHIDeviceFaultOperation> operation{
+                RHIDeviceFaultOperation::None};
+            std::atomic<uint64> sequence{0};
+        };
+
         void QueryCapabilities();
+        static void PublishRuntimeFault(
+            const std::shared_ptr<RuntimeFaultState>& faultState,
+            RHIDeviceRuntimeStatus status,
+            uint32 nativeError,
+            RHIDeviceFaultOperation operation) noexcept;
 
         id<MTLDevice> m_device = nil;
         id<MTLCommandQueue> m_commandQueue = nil;
 
         RHICapabilities m_capabilities;
         uint32 m_currentFrameIndex = 0;
+        std::shared_ptr<RuntimeFaultState> m_faultState =
+            std::make_shared<RuntimeFaultState>();
 
         std::mutex m_submitMutex;
 

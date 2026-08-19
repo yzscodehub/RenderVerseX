@@ -1,9 +1,11 @@
 #include "DX12CommandContext.h"
 #include "DX12Device.h"
+#include "DX12IndirectExecution.h"
 #include "DX12Resources.h"
 #include "DX12Pipeline.h"
 #include "DX12Query.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace RVX
@@ -242,6 +244,69 @@ namespace RVX
             return true;
         }
 
+        DX12QueryPool* ValidateDX12QueryPoolForContext(
+            const char* operation,
+            const DX12CommandContext& context,
+            bool requiresRecording,
+            bool isRecording,
+            RHIQueryPool* pool,
+            RHIQueryType expectedType)
+        {
+            if (requiresRecording && !isRecording)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} requires active command recording",
+                              operation);
+                return nullptr;
+            }
+
+            if (pool == nullptr)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} requires a query pool", operation);
+                return nullptr;
+            }
+
+            auto* dx12Pool = dynamic_cast<DX12QueryPool*>(pool);
+            if (dx12Pool == nullptr || dx12Pool->GetHeap() == nullptr)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} requires a live DX12 query pool", operation);
+                return nullptr;
+            }
+
+            const RHIQueryValidationResult metadataValidation =
+                ValidateRHIQueryPoolMetadata(
+                    *dx12Pool,
+                    expectedType,
+                    context.GetQueueType());
+            if (!metadataValidation)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} rejected because {}",
+                              operation,
+                              metadataValidation.message);
+                return nullptr;
+            }
+
+            return dx12Pool;
+        }
+
+        bool ValidateDX12QueryRange(
+            const char* operation,
+            const RHIQueryPool& pool,
+            uint32 firstQuery,
+            uint32 queryCount)
+        {
+            const RHIQueryValidationResult rangeValidation =
+                ValidateRHIQueryRange(pool, firstQuery, queryCount);
+            if (!rangeValidation)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: {} rejected because {}",
+                              operation,
+                              rangeValidation.message);
+                return false;
+            }
+
+            return true;
+        }
+
         bool ValidateDX12BLASGeometryInputAddresses(const RHIBottomLevelASDesc& desc)
         {
             for (uint32 geometryIndex = 0; geometryIndex < desc.geometries.size(); ++geometryIndex)
@@ -366,18 +431,308 @@ namespace RVX
             return geometries;
         }
 
-        void InsertAccelerationStructureUAVBarrier(
-            ID3D12GraphicsCommandList* commandList,
-            DX12AccelerationStructure* accelerationStructure)
+        constexpr bool HasExecutionScope(
+            RHIExecutionScope value,
+            RHIExecutionScope mask)
         {
-            if (!commandList || !accelerationStructure || !accelerationStructure->GetResource())
-                return;
+            return static_cast<uint32>(value & mask) != 0;
+        }
 
-            D3D12_RESOURCE_BARRIER barrier = {};
-            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-            barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-            barrier.UAV.pResource = accelerationStructure->GetResource();
-            commandList->ResourceBarrier(1, &barrier);
+        D3D12_BARRIER_SYNC ToD3D12BarrierSync(RHIExecutionScope scope)
+        {
+            if (scope == RHIExecutionScope::None)
+                return D3D12_BARRIER_SYNC_NONE;
+            if (scope == RHIExecutionScope::AllCommands ||
+                HasExecutionScope(scope, RHIExecutionScope::Host))
+            {
+                return D3D12_BARRIER_SYNC_ALL;
+            }
+
+            D3D12_BARRIER_SYNC result = D3D12_BARRIER_SYNC_NONE;
+            if (HasExecutionScope(scope, RHIExecutionScope::VertexInput))
+            {
+                result |= D3D12_BARRIER_SYNC_INDEX_INPUT;
+                result |= D3D12_BARRIER_SYNC_VERTEX_SHADING;
+            }
+            if (HasExecutionScope(
+                    scope,
+                    RHIExecutionScope::VertexShader |
+                        RHIExecutionScope::HullShader |
+                        RHIExecutionScope::DomainShader |
+                        RHIExecutionScope::GeometryShader |
+                        RHIExecutionScope::MeshShader |
+                        RHIExecutionScope::AmplificationShader))
+            {
+                result |= D3D12_BARRIER_SYNC_VERTEX_SHADING;
+            }
+            if (HasExecutionScope(scope, RHIExecutionScope::PixelShader))
+                result |= D3D12_BARRIER_SYNC_PIXEL_SHADING;
+            if (HasExecutionScope(scope, RHIExecutionScope::ComputeShader))
+                result |= D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+            if (HasExecutionScope(scope, RHIExecutionScope::RayTracingShader))
+                result |= D3D12_BARRIER_SYNC_RAYTRACING;
+            if (HasExecutionScope(scope, RHIExecutionScope::ColorOutput))
+                result |= D3D12_BARRIER_SYNC_RENDER_TARGET;
+            if (HasExecutionScope(scope, RHIExecutionScope::DepthStencil))
+                result |= D3D12_BARRIER_SYNC_DEPTH_STENCIL;
+            if (HasExecutionScope(scope, RHIExecutionScope::Copy))
+                result |= D3D12_BARRIER_SYNC_COPY;
+            if (HasExecutionScope(scope, RHIExecutionScope::Indirect))
+                result |= D3D12_BARRIER_SYNC_EXECUTE_INDIRECT;
+            if (HasExecutionScope(scope, RHIExecutionScope::AccelerationStructure))
+            {
+                result |= D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE;
+                result |= D3D12_BARRIER_SYNC_RAYTRACING;
+            }
+            return result == D3D12_BARRIER_SYNC_NONE
+                ? D3D12_BARRIER_SYNC_ALL
+                : result;
+        }
+
+        D3D12_BARRIER_ACCESS ToD3D12BarrierAccess(RHIMemoryAccess access)
+        {
+            if (access == RHIMemoryAccess::None)
+                return D3D12_BARRIER_ACCESS_NO_ACCESS;
+
+            D3D12_BARRIER_ACCESS result = D3D12_BARRIER_ACCESS_COMMON;
+            if (HasAnyAccess(access, RHIMemoryAccess::VertexRead))
+                result |= D3D12_BARRIER_ACCESS_VERTEX_BUFFER;
+            if (HasAnyAccess(access, RHIMemoryAccess::IndexRead))
+                result |= D3D12_BARRIER_ACCESS_INDEX_BUFFER;
+            if (HasAnyAccess(access, RHIMemoryAccess::ConstantRead))
+                result |= D3D12_BARRIER_ACCESS_CONSTANT_BUFFER;
+
+            const bool shaderWrite = HasAnyAccess(
+                access, RHIMemoryAccess::ShaderWrite);
+            if (shaderWrite)
+            {
+                result |= D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+            }
+            else if (HasAnyAccess(access, RHIMemoryAccess::ShaderRead))
+            {
+                result |= D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
+            }
+
+            if (HasAnyAccess(access, RHIMemoryAccess::ColorWrite |
+                                         RHIMemoryAccess::ColorRead))
+            {
+                result |= D3D12_BARRIER_ACCESS_RENDER_TARGET;
+            }
+            if (HasAnyAccess(access, RHIMemoryAccess::DepthStencilWrite))
+            {
+                result |= D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE;
+            }
+            else if (HasAnyAccess(access, RHIMemoryAccess::DepthStencilRead))
+            {
+                result |= D3D12_BARRIER_ACCESS_DEPTH_STENCIL_READ;
+            }
+            if (HasAnyAccess(access, RHIMemoryAccess::CopyRead))
+                result |= D3D12_BARRIER_ACCESS_COPY_SOURCE;
+            if (HasAnyAccess(access, RHIMemoryAccess::CopyWrite))
+                result |= D3D12_BARRIER_ACCESS_COPY_DEST;
+            if (HasAnyAccess(access, RHIMemoryAccess::IndirectRead))
+                result |= D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT;
+            if (HasAnyAccess(access, RHIMemoryAccess::AccelerationStructureRead))
+            {
+                result |= D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ;
+            }
+            if (HasAnyAccess(access, RHIMemoryAccess::AccelerationStructureWrite))
+            {
+                result |= D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE;
+            }
+            return result;
+        }
+
+        D3D12_BARRIER_LAYOUT ToD3D12BarrierLayout(
+            const RHIAccessSnapshot& access)
+        {
+            switch (access.layout)
+            {
+                case RHIResourceLayout::Undefined:
+                    return D3D12_BARRIER_LAYOUT_UNDEFINED;
+                case RHIResourceLayout::General:
+                    return HasAnyAccess(
+                               access.memoryAccess,
+                               RHIMemoryAccess::ShaderWrite)
+                        ? D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS
+                        : D3D12_BARRIER_LAYOUT_COMMON;
+                case RHIResourceLayout::ShaderReadOnly:
+                    return D3D12_BARRIER_LAYOUT_SHADER_RESOURCE;
+                case RHIResourceLayout::ColorAttachment:
+                    return D3D12_BARRIER_LAYOUT_RENDER_TARGET;
+                case RHIResourceLayout::DepthStencilWrite:
+                    return D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE;
+                case RHIResourceLayout::DepthStencilRead:
+                    return D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_READ;
+                case RHIResourceLayout::CopySource:
+                    return D3D12_BARRIER_LAYOUT_COPY_SOURCE;
+                case RHIResourceLayout::CopyDestination:
+                    return D3D12_BARRIER_LAYOUT_COPY_DEST;
+                case RHIResourceLayout::Present:
+                    return D3D12_BARRIER_LAYOUT_PRESENT;
+                case RHIResourceLayout::Buffer:
+                case RHIResourceLayout::AccelerationStructure:
+                case RHIResourceLayout::ShaderBindingTable:
+                    return D3D12_BARRIER_LAYOUT_COMMON;
+            }
+            return D3D12_BARRIER_LAYOUT_COMMON;
+        }
+
+        RHIAccessSnapshot ResolveBarrierAccess(
+            bool hasScopedAccess,
+            const RHIAccessSnapshot& scopedAccess,
+            RHIResourceState state)
+        {
+            return hasScopedAccess
+                ? scopedAccess
+                : MakeRHIAccessSnapshot(state);
+        }
+
+        D3D12_RESOURCE_STATES ToD3D12LegacyResourceState(
+            RHIResourceState state,
+            bool hasScopedAccess,
+            const RHIAccessSnapshot& scopedAccess)
+        {
+            if (!hasScopedAccess || state != RHIResourceState::ShaderResource)
+            {
+                return ToD3D12ResourceState(state);
+            }
+
+            // A legacy compute command list rejects PIXEL_SHADER_RESOURCE.
+            // Graphics root descriptor tables, however, are emitted with broad
+            // shader visibility and the debug layer requires both read bits at
+            // bind time even when the graph access names one graphics stage.
+            // Queue-domain projection therefore preserves the established
+            // all-graphics state while narrowing only native compute work.
+            return scopedAccess.domain == GPUQueueDomain::Compute
+                ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+                : ToD3D12ResourceState(state);
+        }
+
+        void ResolveEnhancedBarrierAccess(
+            const RHIAccessSnapshot& before,
+            const RHIAccessSnapshot& after,
+            RHIDiscardIntent discardIntent,
+            D3D12_BARRIER_SYNC& syncBefore,
+            D3D12_BARRIER_SYNC& syncAfter,
+            D3D12_BARRIER_ACCESS& accessBefore,
+            D3D12_BARRIER_ACCESS& accessAfter)
+        {
+            syncBefore = ToD3D12BarrierSync(before.executionScope);
+            syncAfter = ToD3D12BarrierSync(after.executionScope);
+            accessBefore = ToD3D12BarrierAccess(before.memoryAccess);
+            accessAfter = ToD3D12BarrierAccess(after.memoryAccess);
+
+            // Queue fences make the prior domain complete. The acquire-side
+            // barrier only has to establish layout/access for the new domain.
+            if (before.domain != after.domain)
+            {
+                syncBefore = D3D12_BARRIER_SYNC_NONE;
+                accessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
+            }
+
+            if (discardIntent == RHIDiscardIntent::Discard)
+            {
+                accessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
+            }
+
+            if (accessBefore != D3D12_BARRIER_ACCESS_NO_ACCESS &&
+                syncBefore == D3D12_BARRIER_SYNC_NONE)
+            {
+                syncBefore = D3D12_BARRIER_SYNC_ALL;
+            }
+            if (accessAfter != D3D12_BARRIER_ACCESS_NO_ACCESS &&
+                syncAfter == D3D12_BARRIER_SYNC_NONE)
+            {
+                syncAfter = D3D12_BARRIER_SYNC_ALL;
+            }
+        }
+
+        uint32 GetDX12TexturePlaneCount(RHIFormat format)
+        {
+            return format == RHIFormat::D24_UNORM_S8_UINT ||
+                       format == RHIFormat::D32_FLOAT_S8_UINT
+                ? 2u
+                : 1u;
+        }
+
+        bool ResolveEnhancedSubresourceRange(
+            const DX12Texture& texture,
+            const RHISubresourceRange& range,
+            D3D12_BARRIER_SUBRESOURCE_RANGE& nativeRange)
+        {
+            const bool allMips = range.mipLevelCount == RVX_ALL_MIPS;
+            const bool allLayers = range.arrayLayerCount == RVX_ALL_LAYERS;
+            const bool allAspects = range.aspect == RHITextureAspect::Color ||
+                                    range.aspect == RHITextureAspect::DepthStencil;
+            if (range.baseMipLevel == 0 && allMips &&
+                range.baseArrayLayer == 0 && allLayers && allAspects)
+            {
+                nativeRange.IndexOrFirstMipLevel = 0xffffffffu;
+                nativeRange.NumMipLevels = 0;
+                return true;
+            }
+
+            if (range.baseMipLevel >= texture.GetMipLevels() ||
+                range.baseArrayLayer >= texture.GetArraySize())
+            {
+                RVX_RHI_ERROR("DX12CommandContext: texture barrier subresource range starts outside the texture");
+                return false;
+            }
+
+            nativeRange.IndexOrFirstMipLevel = range.baseMipLevel;
+            nativeRange.NumMipLevels = allMips
+                ? texture.GetMipLevels() - range.baseMipLevel
+                : std::min(range.mipLevelCount,
+                           texture.GetMipLevels() - range.baseMipLevel);
+            nativeRange.FirstArraySlice = range.baseArrayLayer;
+            nativeRange.NumArraySlices = allLayers
+                ? texture.GetArraySize() - range.baseArrayLayer
+                : std::min(range.arrayLayerCount,
+                           texture.GetArraySize() - range.baseArrayLayer);
+
+            const uint32 planeCount = GetDX12TexturePlaneCount(
+                texture.GetFormat());
+            switch (range.aspect)
+            {
+                case RHITextureAspect::Stencil:
+                    if (planeCount < 2)
+                    {
+                        RVX_RHI_ERROR("DX12CommandContext: stencil barrier requested for a format without a stencil plane");
+                        return false;
+                    }
+                    nativeRange.FirstPlane = 1;
+                    nativeRange.NumPlanes = 1;
+                    break;
+                case RHITextureAspect::Depth:
+                    nativeRange.FirstPlane = 0;
+                    nativeRange.NumPlanes = 1;
+                    break;
+                case RHITextureAspect::DepthStencil:
+                    nativeRange.FirstPlane = 0;
+                    nativeRange.NumPlanes = planeCount;
+                    break;
+                case RHITextureAspect::Color:
+                    nativeRange.FirstPlane = 0;
+                    nativeRange.NumPlanes = 1;
+                    break;
+            }
+            return nativeRange.NumMipLevels > 0 &&
+                   nativeRange.NumArraySlices > 0 &&
+                   nativeRange.NumPlanes > 0;
+        }
+
+        ID3D12Resource* GetDX12AliasingResource(RHIResource* resource)
+        {
+            if (auto* buffer = dynamic_cast<DX12Buffer*>(resource))
+            {
+                return buffer->GetResource();
+            }
+            if (auto* texture = dynamic_cast<DX12Texture*>(resource))
+            {
+                return texture->GetResource();
+            }
+            return nullptr;
         }
     } // namespace
 
@@ -401,6 +756,16 @@ namespace RVX
         m_commandAllocator = device->GetAllocatorPool().Acquire(m_listType);
         RVX_ASSERT_MSG(m_commandAllocator, "DX12CommandContext: Failed to acquire command allocator");
         DX12_CHECK(d3dDevice->CreateCommandList(0, m_listType, m_commandAllocator.Get(), nullptr, IID_PPV_ARGS(&m_commandList)));
+
+        if (device->GetCapabilities().dx12.barrierDialect ==
+            DX12BarrierDialect::Enhanced)
+        {
+            const HRESULT enhancedResult = m_commandList.As(
+                &m_enhancedCommandList);
+            RVX_ASSERT_MSG(
+                SUCCEEDED(enhancedResult) && m_enhancedCommandList,
+                "DX12CommandContext: device declared Enhanced Barriers but ID3D12GraphicsCommandList7 is unavailable");
+        }
 
         // Command list starts in recording state, close it
         m_commandList->Close();
@@ -552,9 +917,50 @@ namespace RVX
     // =============================================================================
     // Resource Barriers
     // =============================================================================
+    bool DX12CommandContext::UsesEnhancedBarriers() const
+    {
+        return m_enhancedCommandList &&
+               m_device &&
+               m_device->GetCapabilities().dx12.barrierDialect ==
+                   DX12BarrierDialect::Enhanced;
+    }
+
+    void DX12CommandContext::QueueEnhancedBarrier(
+        const D3D12_BUFFER_BARRIER& barrier)
+    {
+        if (!m_pendingTextureBarriers.empty() ||
+            !m_pendingGlobalBarriers.empty())
+        {
+            FlushBarriers();
+        }
+        m_pendingBufferBarriers.push_back(barrier);
+    }
+
+    void DX12CommandContext::QueueEnhancedBarrier(
+        const D3D12_TEXTURE_BARRIER& barrier)
+    {
+        if (!m_pendingBufferBarriers.empty() ||
+            !m_pendingGlobalBarriers.empty())
+        {
+            FlushBarriers();
+        }
+        m_pendingTextureBarriers.push_back(barrier);
+    }
+
+    void DX12CommandContext::QueueEnhancedBarrier(
+        const D3D12_GLOBAL_BARRIER& barrier)
+    {
+        if (!m_pendingBufferBarriers.empty() ||
+            !m_pendingTextureBarriers.empty())
+        {
+            FlushBarriers();
+        }
+        m_pendingGlobalBarriers.push_back(barrier);
+    }
+
     void DX12CommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
-        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter)
+        if (!barrier.buffer)
         {
             return;
         }
@@ -565,20 +971,174 @@ namespace RVX
             return;
         }
 
+        // D3D12 fixes committed Upload and Readback resources in
+        // GENERIC_READ and COPY_DEST respectively. They cannot participate in
+        // state transitions (including the Common split used for cross-queue
+        // ownership). Queue Signal/Wait still provides the required ordering,
+        // so the physical barrier is intentionally empty for these heaps.
+        if (dx12Buffer->GetMemoryType() != RHIMemoryType::Default)
+        {
+            if (barrier.hasScopedAccess &&
+                barrier.accessBefore.domain != barrier.accessAfter.domain)
+            {
+                GPUQueueDomain contextDomain = GPUQueueDomain::Graphics;
+                if (!TryGetGPUQueueDomain(
+                        m_device->GetCapabilities().queueTopology,
+                        GetQueueType(),
+                        contextDomain))
+                {
+                    RVX_RHI_ERROR(
+                        "DX12 fixed-state buffer ownership barrier used an invalid queue domain");
+                    return;
+                }
+                if (contextDomain != barrier.accessBefore.domain &&
+                    contextDomain != barrier.accessAfter.domain)
+                {
+                    RVX_RHI_ERROR(
+                        "DX12 fixed-state buffer ownership barrier recorded on an unrelated queue");
+                }
+            }
+            return;
+        }
+
+        RHIAccessSnapshot scopedBefore = barrier.accessBefore;
+        RHIAccessSnapshot scopedAfter = barrier.accessAfter;
+        RHIResourceState legacyBefore = barrier.stateBefore;
+        RHIResourceState legacyAfter = barrier.stateAfter;
+
+        if (barrier.hasScopedAccess &&
+            barrier.accessBefore.domain != barrier.accessAfter.domain)
+        {
+            GPUQueueDomain contextDomain = GPUQueueDomain::Graphics;
+            if (!TryGetGPUQueueDomain(
+                    m_device->GetCapabilities().queueTopology,
+                    GetQueueType(),
+                    contextDomain))
+            {
+                RVX_RHI_ERROR("DX12 buffer ownership barrier used an invalid queue domain");
+                return;
+            }
+            if (contextDomain == barrier.accessBefore.domain)
+            {
+                scopedAfter = MakeRHIAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    contextDomain,
+                    barrier.accessBefore.contentValidity);
+                legacyAfter = RHIResourceState::Common;
+            }
+            else if (contextDomain == barrier.accessAfter.domain)
+            {
+                scopedBefore = MakeRHIAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    contextDomain,
+                    barrier.accessBefore.contentValidity);
+                legacyBefore = RHIResourceState::Common;
+            }
+            else
+            {
+                RVX_RHI_ERROR("DX12 buffer ownership barrier recorded on an unrelated queue");
+                return;
+            }
+        }
+
+        if (UsesEnhancedBarriers())
+        {
+            if (barrier.hasScopedAccess &&
+                barrier.dependencyKind == RHIDependencyKind::None)
+            {
+                return;
+            }
+            if (!barrier.hasScopedAccess && legacyBefore == legacyAfter)
+            {
+                return;
+            }
+
+            const RHIAccessSnapshot before = ResolveBarrierAccess(
+                barrier.hasScopedAccess,
+                scopedBefore,
+                legacyBefore);
+            const RHIAccessSnapshot after = ResolveBarrierAccess(
+                barrier.hasScopedAccess,
+                scopedAfter,
+                legacyAfter);
+
+            D3D12_BUFFER_BARRIER nativeBarrier = {};
+            ResolveEnhancedBarrierAccess(
+                before,
+                after,
+                barrier.discardIntent,
+                nativeBarrier.SyncBefore,
+                nativeBarrier.SyncAfter,
+                nativeBarrier.AccessBefore,
+                nativeBarrier.AccessAfter);
+            nativeBarrier.pResource = dx12Buffer->GetResource();
+            const uint64 bufferSize = dx12Buffer->GetSize();
+            if (barrier.offset >= bufferSize)
+            {
+                RVX_RHI_ERROR(
+                    "DX12 enhanced buffer barrier range starts beyond the resource (offset={}, size={})",
+                    barrier.offset,
+                    bufferSize);
+                return;
+            }
+            const uint64 remainingSize = bufferSize - barrier.offset;
+            const uint64 requestedSize =
+                barrier.size == RVX_WHOLE_SIZE
+                    ? remainingSize
+                    : std::min(barrier.size, remainingSize);
+            if (requestedSize == 0)
+            {
+                RVX_RHI_ERROR("DX12 enhanced buffer barrier resolved to an empty range");
+                return;
+            }
+            nativeBarrier.Offset = barrier.offset;
+            nativeBarrier.Size = requestedSize;
+            QueueEnhancedBarrier(nativeBarrier);
+            return;
+        }
+
+        const D3D12_RESOURCE_STATES nativeBefore =
+            ToD3D12LegacyResourceState(
+                legacyBefore, barrier.hasScopedAccess, scopedBefore);
+        const D3D12_RESOURCE_STATES nativeAfter =
+            ToD3D12LegacyResourceState(
+                legacyAfter, barrier.hasScopedAccess, scopedAfter);
+        if (nativeBefore == nativeAfter)
+        {
+            if (!barrier.hasScopedAccess ||
+                !HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory) ||
+                !HasAnyAccess(
+                    scopedBefore.memoryAccess |
+                        scopedAfter.memoryAccess,
+                    RHIMemoryAccess::ShaderWrite))
+            {
+                return;
+            }
+
+            D3D12_RESOURCE_BARRIER uavBarrier = {};
+            uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            uavBarrier.UAV.pResource = dx12Buffer->GetResource();
+            m_pendingLegacyBarriers.push_back(uavBarrier);
+            return;
+        }
+
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
         d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
         d3dBarrier.Transition.pResource = dx12Buffer->GetResource();
         d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(barrier.stateBefore);
-        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
+        d3dBarrier.Transition.StateBefore = nativeBefore;
+        d3dBarrier.Transition.StateAfter = nativeAfter;
 
-        m_pendingBarriers.push_back(d3dBarrier);
+        m_pendingLegacyBarriers.push_back(d3dBarrier);
     }
 
     void DX12CommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
-        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter)
+        if (!barrier.texture)
         {
             return;
         }
@@ -589,19 +1149,138 @@ namespace RVX
             return;
         }
 
+        RHIAccessSnapshot scopedBefore = barrier.accessBefore;
+        RHIAccessSnapshot scopedAfter = barrier.accessAfter;
+        RHIResourceState legacyBefore = barrier.stateBefore;
+        RHIResourceState legacyAfter = barrier.stateAfter;
+
+        if (barrier.hasScopedAccess &&
+            barrier.accessBefore.domain != barrier.accessAfter.domain)
+        {
+            GPUQueueDomain contextDomain = GPUQueueDomain::Graphics;
+            if (!TryGetGPUQueueDomain(
+                    m_device->GetCapabilities().queueTopology,
+                    GetQueueType(),
+                    contextDomain))
+            {
+                RVX_RHI_ERROR("DX12 texture ownership barrier used an invalid queue domain");
+                return;
+            }
+            if (contextDomain == barrier.accessBefore.domain)
+            {
+                scopedAfter = MakeRHIAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    contextDomain,
+                    barrier.accessBefore.contentValidity);
+                legacyAfter = RHIResourceState::Common;
+            }
+            else if (contextDomain == barrier.accessAfter.domain)
+            {
+                scopedBefore = MakeRHIAccessSnapshot(
+                    RHIResourceState::Common,
+                    RHIShaderStage::None,
+                    contextDomain,
+                    barrier.accessBefore.contentValidity);
+                legacyBefore = RHIResourceState::Common;
+            }
+            else
+            {
+                RVX_RHI_ERROR("DX12 texture ownership barrier recorded on an unrelated queue");
+                return;
+            }
+        }
+
+        if (UsesEnhancedBarriers())
+        {
+            if (barrier.hasScopedAccess &&
+                barrier.dependencyKind == RHIDependencyKind::None)
+            {
+                return;
+            }
+            if (!barrier.hasScopedAccess && legacyBefore == legacyAfter)
+            {
+                return;
+            }
+
+            const RHIAccessSnapshot before = ResolveBarrierAccess(
+                barrier.hasScopedAccess,
+                scopedBefore,
+                legacyBefore);
+            const RHIAccessSnapshot after = ResolveBarrierAccess(
+                barrier.hasScopedAccess,
+                scopedAfter,
+                legacyAfter);
+
+            D3D12_TEXTURE_BARRIER nativeBarrier = {};
+            ResolveEnhancedBarrierAccess(
+                before,
+                after,
+                barrier.discardIntent,
+                nativeBarrier.SyncBefore,
+                nativeBarrier.SyncAfter,
+                nativeBarrier.AccessBefore,
+                nativeBarrier.AccessAfter);
+            nativeBarrier.LayoutBefore =
+                barrier.discardIntent == RHIDiscardIntent::Discard
+                ? D3D12_BARRIER_LAYOUT_UNDEFINED
+                : ToD3D12BarrierLayout(before);
+            nativeBarrier.LayoutAfter = ToD3D12BarrierLayout(after);
+            nativeBarrier.pResource = dx12Texture->GetResource();
+            nativeBarrier.Flags =
+                barrier.discardIntent == RHIDiscardIntent::Discard
+                ? D3D12_TEXTURE_BARRIER_FLAG_DISCARD
+                : D3D12_TEXTURE_BARRIER_FLAG_NONE;
+            if (!ResolveEnhancedSubresourceRange(
+                    *dx12Texture,
+                    barrier.subresourceRange,
+                    nativeBarrier.Subresources))
+            {
+                return;
+            }
+            QueueEnhancedBarrier(nativeBarrier);
+            return;
+        }
+
+        const D3D12_RESOURCE_STATES nativeBefore =
+            ToD3D12LegacyResourceState(
+                legacyBefore, barrier.hasScopedAccess, scopedBefore);
+        const D3D12_RESOURCE_STATES nativeAfter =
+            ToD3D12LegacyResourceState(
+                legacyAfter, barrier.hasScopedAccess, scopedAfter);
+        if (nativeBefore == nativeAfter)
+        {
+            if (!barrier.hasScopedAccess ||
+                !HasDependencyKind(barrier.dependencyKind, RHIDependencyKind::Memory) ||
+                !HasAnyAccess(
+                    scopedBefore.memoryAccess |
+                        scopedAfter.memoryAccess,
+                    RHIMemoryAccess::ShaderWrite))
+            {
+                return;
+            }
+
+            D3D12_RESOURCE_BARRIER uavBarrier = {};
+            uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            uavBarrier.UAV.pResource = dx12Texture->GetResource();
+            m_pendingLegacyBarriers.push_back(uavBarrier);
+            return;
+        }
+
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
         d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
         d3dBarrier.Transition.pResource = dx12Texture->GetResource();
-        d3dBarrier.Transition.StateBefore = ToD3D12ResourceState(barrier.stateBefore);
-        d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
+        d3dBarrier.Transition.StateBefore = nativeBefore;
+        d3dBarrier.Transition.StateAfter = nativeAfter;
 
         // Handle subresource range
         const auto& range = barrier.subresourceRange;
         if (range.mipLevelCount == RVX_ALL_MIPS && range.arrayLayerCount == RVX_ALL_LAYERS)
         {
             d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            m_pendingBarriers.push_back(d3dBarrier);
+            m_pendingLegacyBarriers.push_back(d3dBarrier);
         }
         else
         {
@@ -619,7 +1298,7 @@ namespace RVX
                     d3dBarrier.Transition.Subresource = dx12Texture->GetSubresourceIndex(
                         range.baseMipLevel + mip,
                         range.baseArrayLayer + layer);
-                    m_pendingBarriers.push_back(d3dBarrier);
+                    m_pendingLegacyBarriers.push_back(d3dBarrier);
                 }
             }
         }
@@ -641,13 +1320,90 @@ namespace RVX
 
     void DX12CommandContext::FlushBarriers()
     {
-        if (!m_pendingBarriers.empty())
+        if (!m_pendingLegacyBarriers.empty())
         {
             m_commandList->ResourceBarrier(
-                static_cast<UINT>(m_pendingBarriers.size()),
-                m_pendingBarriers.data());
-            m_pendingBarriers.clear();
+                static_cast<UINT>(m_pendingLegacyBarriers.size()),
+                m_pendingLegacyBarriers.data());
+            m_pendingLegacyBarriers.clear();
         }
+
+        if (!UsesEnhancedBarriers())
+        {
+            return;
+        }
+
+        std::array<D3D12_BARRIER_GROUP, 3> groups{};
+        uint32 groupCount = 0;
+        if (!m_pendingGlobalBarriers.empty())
+        {
+            D3D12_BARRIER_GROUP& group = groups[groupCount++];
+            group.Type = D3D12_BARRIER_TYPE_GLOBAL;
+            group.NumBarriers = static_cast<UINT32>(
+                m_pendingGlobalBarriers.size());
+            group.pGlobalBarriers = m_pendingGlobalBarriers.data();
+        }
+        if (!m_pendingBufferBarriers.empty())
+        {
+            D3D12_BARRIER_GROUP& group = groups[groupCount++];
+            group.Type = D3D12_BARRIER_TYPE_BUFFER;
+            group.NumBarriers = static_cast<UINT32>(
+                m_pendingBufferBarriers.size());
+            group.pBufferBarriers = m_pendingBufferBarriers.data();
+        }
+        if (!m_pendingTextureBarriers.empty())
+        {
+            D3D12_BARRIER_GROUP& group = groups[groupCount++];
+            group.Type = D3D12_BARRIER_TYPE_TEXTURE;
+            group.NumBarriers = static_cast<UINT32>(
+                m_pendingTextureBarriers.size());
+            group.pTextureBarriers = m_pendingTextureBarriers.data();
+        }
+        if (groupCount > 0)
+        {
+            m_enhancedCommandList->Barrier(groupCount, groups.data());
+            m_pendingGlobalBarriers.clear();
+            m_pendingBufferBarriers.clear();
+            m_pendingTextureBarriers.clear();
+        }
+    }
+
+    void DX12CommandContext::InsertAccelerationStructureBarrier(
+        DX12AccelerationStructure* accelerationStructure)
+    {
+        if (!accelerationStructure || !accelerationStructure->GetResource())
+            return;
+
+        FlushBarriers();
+        if (UsesEnhancedBarriers())
+        {
+            D3D12_BUFFER_BARRIER barrier = {};
+            barrier.SyncBefore =
+                D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE;
+            barrier.SyncAfter =
+                D3D12_BARRIER_SYNC_ALL_SHADING |
+                D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE |
+                D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE |
+                D3D12_BARRIER_SYNC_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO;
+            barrier.AccessBefore =
+                D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE;
+            barrier.AccessAfter =
+                D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ |
+                D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE;
+            barrier.pResource = accelerationStructure->GetResource();
+            barrier.Offset = 0;
+            barrier.Size = UINT64_MAX;
+            QueueEnhancedBarrier(barrier);
+        }
+        else
+        {
+            D3D12_RESOURCE_BARRIER barrier = {};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            barrier.UAV.pResource = accelerationStructure->GetResource();
+            m_pendingLegacyBarriers.push_back(barrier);
+        }
+        FlushBarriers();
     }
 
     // =============================================================================
@@ -656,6 +1412,111 @@ namespace RVX
     void DX12CommandContext::BeginRenderPass(const RHIRenderPassDesc& desc)
     {
         FlushBarriers();
+
+        m_renderPassColorFormats.fill(RHIFormat::Unknown);
+        m_renderPassColorAttachmentCount = desc.colorAttachmentCount;
+        m_renderPassDepthFormat = RHIFormat::Unknown;
+        m_renderPassSampleCount = RHISampleCount::Count1;
+        m_renderPassAttachmentSnapshotValid = true;
+
+        bool sampleCountInitialized = false;
+        const auto validateSampleCount = [this, &sampleCountInitialized](
+                                             RHITexture* texture,
+                                             const char* attachmentLabel)
+        {
+            if (!texture)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: render pass {} attachment has no texture",
+                              attachmentLabel);
+                m_renderPassAttachmentSnapshotValid = false;
+                return;
+            }
+            if (!sampleCountInitialized)
+            {
+                m_renderPassSampleCount = texture->GetSampleCount();
+                sampleCountInitialized = true;
+                return;
+            }
+            if (m_renderPassSampleCount != texture->GetSampleCount())
+            {
+                RVX_RHI_ERROR("DX12CommandContext: render pass attachments use different sample counts");
+                m_renderPassAttachmentSnapshotValid = false;
+            }
+        };
+
+        if (desc.colorAttachmentCount > RVX_MAX_RENDER_TARGETS)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: render pass color attachment count {} exceeds {}",
+                          desc.colorAttachmentCount,
+                          RVX_MAX_RENDER_TARGETS);
+            m_renderPassAttachmentSnapshotValid = false;
+        }
+        for (uint32 i = 0; i < std::min(desc.colorAttachmentCount,
+                                        static_cast<uint32>(RVX_MAX_RENDER_TARGETS)); ++i)
+        {
+            RHITextureView* view = desc.colorAttachments[i].view;
+            if (!view)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: render pass color attachment {} is null", i);
+                m_renderPassAttachmentSnapshotValid = false;
+                continue;
+            }
+            RHITexture* texture = view->GetTexture();
+            m_renderPassColorFormats[i] = view->GetFormat() == RHIFormat::Unknown
+                ? (texture ? texture->GetFormat() : RHIFormat::Unknown)
+                : view->GetFormat();
+            validateSampleCount(texture, "color");
+
+            if (texture && desc.colorAttachments[i].loadOp == RHILoadOp::Clear)
+            {
+                const auto* dx12Texture = static_cast<const DX12Texture*>(texture);
+                const RHIOptimizedClearValue& optimized =
+                    dx12Texture->GetDesc().optimizedClearValue;
+                if (optimized.type == RHIOptimizedClearValueType::Color &&
+                    !AreRHIClearColorsEqual(optimized.color,
+                                            desc.colorAttachments[i].clearColor))
+                {
+                    RVX_RHI_ERROR("DX12CommandContext: color attachment {} clear does not match its optimized clear value",
+                                  i);
+                }
+            }
+        }
+        if (desc.hasDepthStencil)
+        {
+            RHITextureView* view = desc.depthStencilAttachment.view;
+            if (!view)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: render pass depth attachment is null");
+                m_renderPassAttachmentSnapshotValid = false;
+            }
+            else
+            {
+                RHITexture* texture = view->GetTexture();
+                m_renderPassDepthFormat = view->GetFormat() == RHIFormat::Unknown
+                    ? (texture ? texture->GetFormat() : RHIFormat::Unknown)
+                    : view->GetFormat();
+                validateSampleCount(texture, "depth");
+                if (texture &&
+                    desc.depthStencilAttachment.depthLoadOp == RHILoadOp::Clear)
+                {
+                    const auto* dx12Texture = static_cast<const DX12Texture*>(texture);
+                    const RHIOptimizedClearValue& optimized =
+                        dx12Texture->GetDesc().optimizedClearValue;
+                    if (optimized.type == RHIOptimizedClearValueType::DepthStencil &&
+                        !AreRHIClearDepthStencilValuesEqual(
+                            optimized.depthStencil,
+                            desc.depthStencilAttachment.clearValue))
+                    {
+                        RVX_RHI_ERROR("DX12CommandContext: depth attachment clear does not match its optimized clear value");
+                    }
+                }
+            }
+        }
+
+        if (!m_renderPassAttachmentSnapshotValid)
+        {
+            return;
+        }
 
         m_inRenderPass = true;
 
@@ -736,6 +1597,9 @@ namespace RVX
     void DX12CommandContext::EndRenderPass()
     {
         m_inRenderPass = false;
+        m_renderPassAttachmentSnapshotValid = false;
+        m_renderPassColorAttachmentCount = 0;
+        m_renderPassDepthFormat = RHIFormat::Unknown;
     }
 
     // =============================================================================
@@ -753,6 +1617,11 @@ namespace RVX
         }
 
         auto* dx12Pipeline = static_cast<DX12Pipeline*>(pipeline);
+        if (!dx12Pipeline->IsValid())
+        {
+            RVX_RHI_ERROR("DX12CommandContext: SetPipeline requires a valid native pipeline");
+            return;
+        }
         if (dx12Pipeline->IsRayTracing())
         {
             if (m_queueType == RHICommandQueueType::Copy)
@@ -793,6 +1662,30 @@ namespace RVX
             }
             m_currentPipeline = dx12Pipeline;
             return;
+        }
+
+        if (!dx12Pipeline->IsCompute() && m_inRenderPass &&
+            m_renderPassAttachmentSnapshotValid)
+        {
+            bool compatible =
+                dx12Pipeline->GetRenderTargetCount() ==
+                    m_renderPassColorAttachmentCount &&
+                dx12Pipeline->GetDepthStencilFormat() ==
+                    m_renderPassDepthFormat &&
+                dx12Pipeline->GetSampleCount() == m_renderPassSampleCount;
+            for (uint32 i = 0;
+                 compatible && i < m_renderPassColorAttachmentCount;
+                 ++i)
+            {
+                compatible = dx12Pipeline->GetRenderTargetFormat(i) ==
+                             m_renderPassColorFormats[i];
+            }
+            if (!compatible)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: graphics pipeline '{}' is incompatible with the active render-pass attachment formats or sample count",
+                              dx12Pipeline->GetDebugName());
+                return;
+            }
         }
 
         m_currentPipeline = dx12Pipeline;
@@ -868,29 +1761,40 @@ namespace RVX
         }
 
         auto* dx12Set = static_cast<DX12DescriptorSet*>(set);
-        if (bindingRayTracingPipeline && !dx12Set->IsValid())
+        if (!dx12Set->IsValid())
         {
-            RVX_RHI_ERROR("DX12CommandContext: ray tracing descriptor set binding requires a valid DX12 descriptor set");
+            RVX_RHI_ERROR("DX12CommandContext: descriptor set binding requires a complete valid DX12 descriptor snapshot");
             return;
         }
 
         auto* pipelineLayout = m_currentPipeline->GetPipelineLayout();
         auto* setLayout = dx12Set->GetLayout();
+        if (!pipelineLayout)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: descriptor set binding requires a pipeline layout");
+            return;
+        }
+
+        DX12DescriptorSetLayout* expectedLayout = pipelineLayout->GetSetLayout(slot);
+        if (!setLayout || expectedLayout != setLayout ||
+            !dx12Set->IsReadyForBinding(expectedLayout))
+        {
+            RVX_RHI_ERROR("DX12CommandContext: descriptor set layout does not match pipeline slot {}", slot);
+            return;
+        }
+
+        if (dynamicOffsets.size() != dx12Set->GetRequiredDynamicOffsetCount())
+        {
+            RVX_RHI_ERROR(
+                "DX12CommandContext: descriptor set {} requires {} dynamic offsets, received {}",
+                slot,
+                dx12Set->GetRequiredDynamicOffsetCount(),
+                dynamicOffsets.size());
+            return;
+        }
+
         if (bindingRayTracingPipeline)
         {
-            if (!pipelineLayout)
-            {
-                RVX_RHI_ERROR("DX12CommandContext: ray tracing descriptor set binding requires a pipeline layout");
-                return;
-            }
-
-            DX12DescriptorSetLayout* expectedLayout = pipelineLayout->GetSetLayout(slot);
-            if (!setLayout || expectedLayout != setLayout)
-            {
-                RVX_RHI_ERROR("DX12CommandContext: ray tracing descriptor set binding layout does not match the pipeline layout slot");
-                return;
-            }
-
             if (slot >= m_boundRayTracingDescriptorSetLayouts.size())
             {
                 m_boundRayTracingDescriptorSetLayouts.resize(slot + 1, nullptr);
@@ -991,6 +1895,7 @@ namespace RVX
         {
             m_boundRayTracingDescriptorSetLayouts[slot] = setLayout;
         }
+        dx12Set->MarkBound();
     }
 
     void DX12CommandContext::SetPushConstants(const void* data, uint32 size, uint32 offset)
@@ -1089,23 +1994,37 @@ namespace RVX
 
     void DX12CommandContext::DrawIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride)
     {
-        FlushBarriers();
-        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
-        if (!dx12Buffer)
+        if (drawCount == 0)
             return;
-
-        if (stride == 0)
-            stride = sizeof(D3D12_DRAW_ARGUMENTS);
-
-        if (stride != sizeof(D3D12_DRAW_ARGUMENTS))
+        stride = NormalizeDX12IndirectCommandStride(
+            RHIIndirectCommandSemantic::Draw, stride);
+        const DX12IndirectValidationResult rangeValidation =
+            ValidateDX12IndirectArgumentRange(buffer,
+                                              offset,
+                                              drawCount,
+                                              stride,
+                                              RHIIndirectCommandSemantic::Draw);
+        if (!rangeValidation)
         {
-            RVX_RHI_WARN("DrawIndirect stride {} does not match D3D12_DRAW_ARGUMENTS size {}", stride, sizeof(D3D12_DRAW_ARGUMENTS));
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndirect rejected because {}",
+                          rangeValidation.message);
+            return;
         }
-
-        auto* signature = m_device->GetDrawCommandSignature();
+        auto* dx12Buffer = dynamic_cast<DX12Buffer*>(buffer);
+        if (dx12Buffer == nullptr || dx12Buffer->GetResource() == nullptr)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndirect rejected because the argument buffer is not a live DX12 buffer");
+            return;
+        }
+        constexpr RHIIndirectCommandLayout layout{
+            RHIIndirectCommandSemantic::Draw,
+            sizeof(D3D12_DRAW_ARGUMENTS),
+            RHIIndirectCommandStateInvalidation::None};
+        auto* signature = m_device->GetCommandSignature(layout);
         if (!signature)
             return;
 
+        FlushBarriers();
         m_commandList->ExecuteIndirect(
             signature,
             drawCount,
@@ -1117,23 +2036,54 @@ namespace RVX
 
     void DX12CommandContext::DrawIndexedIndirect(RHIBuffer* buffer, uint64 offset, uint32 drawCount, uint32 stride)
     {
-        FlushBarriers();
-        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
-        if (!dx12Buffer)
+        if (drawCount == 0)
             return;
-
-        if (stride == 0)
-            stride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
-
-        if (stride != sizeof(D3D12_DRAW_INDEXED_ARGUMENTS))
+        stride = NormalizeDX12IndirectCommandStride(
+            RHIIndirectCommandSemantic::DrawIndexed, stride);
+        const RHICapabilities& capabilities = m_device->GetCapabilities();
+        RHIIndexedIndirectExecutionDesc execution;
+        execution.mode = RHIIndirectExecutionMode::FixedCount;
+        execution.argumentBuffer = buffer;
+        execution.argumentOffset = offset;
+        execution.commandStride = stride;
+        execution.maxDrawCount = drawCount;
+        execution.argumentState =
+            capabilities.indexedIndirectExecution.requiredArgumentState;
+        const RHIIndexedIndirectExecutionValidationResult contractValidation =
+            ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution);
+        if (!contractValidation)
         {
-            RVX_RHI_WARN("DrawIndexedIndirect stride {} does not match D3D12_DRAW_INDEXED_ARGUMENTS size {}", stride, sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirect rejected by the RHI contract: {}",
+                          contractValidation.message);
+            return;
         }
-
-        auto* signature = m_device->GetDrawIndexedCommandSignature();
+        const DX12IndirectValidationResult rangeValidation =
+            ValidateDX12IndirectArgumentRange(buffer,
+                                              offset,
+                                              drawCount,
+                                              stride,
+                                              RHIIndirectCommandSemantic::DrawIndexed);
+        if (!rangeValidation)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirect rejected because {}",
+                          rangeValidation.message);
+            return;
+        }
+        auto* dx12Buffer = dynamic_cast<DX12Buffer*>(buffer);
+        if (dx12Buffer == nullptr || dx12Buffer->GetResource() == nullptr)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirect rejected because the argument buffer is not a live DX12 buffer");
+            return;
+        }
+        constexpr RHIIndirectCommandLayout layout{
+            RHIIndirectCommandSemantic::DrawIndexed,
+            sizeof(IndirectDrawIndexedCommand),
+            RHIIndirectCommandStateInvalidation::None};
+        auto* signature = m_device->GetCommandSignature(layout);
         if (!signature)
             return;
 
+        FlushBarriers();
         m_commandList->ExecuteIndirect(
             signature,
             drawCount,
@@ -1150,26 +2100,65 @@ namespace RVX
                                                       uint32 maxDrawCount,
                                                       uint32 stride)
     {
-        FlushBarriers();
-        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
-        auto* dx12CountBuffer = static_cast<DX12Buffer*>(countBuffer);
-        if (!dx12Buffer || !dx12CountBuffer)
+        if (maxDrawCount == 0)
             return;
-
-        if (stride == 0)
-            stride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
-
-        if (stride != sizeof(D3D12_DRAW_INDEXED_ARGUMENTS))
+        stride = NormalizeDX12IndirectCommandStride(
+            RHIIndirectCommandSemantic::DrawIndexed, stride);
+        const RHICapabilities& capabilities = m_device->GetCapabilities();
+        RHIIndexedIndirectExecutionDesc execution;
+        execution.mode = RHIIndirectExecutionMode::CountBuffer;
+        execution.argumentBuffer = buffer;
+        execution.argumentOffset = offset;
+        execution.commandStride = stride;
+        execution.maxDrawCount = maxDrawCount;
+        execution.argumentState =
+            capabilities.indexedIndirectExecution.requiredArgumentState;
+        execution.countBuffer = countBuffer;
+        execution.countOffset = countOffset;
+        execution.countState =
+            capabilities.indexedIndirectExecution.requiredCountState;
+        const RHIIndexedIndirectExecutionValidationResult contractValidation =
+            ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution);
+        if (!contractValidation)
         {
-            RVX_RHI_WARN("DrawIndexedIndirectCount stride {} does not match D3D12_DRAW_INDEXED_ARGUMENTS size {}",
-                         stride,
-                         sizeof(D3D12_DRAW_INDEXED_ARGUMENTS));
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirectCount rejected by the RHI contract: {}",
+                          contractValidation.message);
+            return;
         }
-
-        auto* signature = m_device->GetDrawIndexedCommandSignature();
+        const DX12IndirectValidationResult rangeValidation =
+            ValidateDX12IndirectArgumentRange(buffer,
+                                              offset,
+                                              maxDrawCount,
+                                              stride,
+                                              RHIIndirectCommandSemantic::DrawIndexed);
+        const DX12IndirectValidationResult countValidation =
+            ValidateDX12IndirectCountRange(countBuffer, countOffset);
+        if (!rangeValidation || !countValidation)
+        {
+            const char* message = !rangeValidation
+                ? rangeValidation.message
+                : countValidation.message;
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirectCount rejected because {}",
+                          message);
+            return;
+        }
+        auto* dx12Buffer = dynamic_cast<DX12Buffer*>(buffer);
+        auto* dx12CountBuffer = dynamic_cast<DX12Buffer*>(countBuffer);
+        if (dx12Buffer == nullptr || dx12Buffer->GetResource() == nullptr ||
+            dx12CountBuffer == nullptr || dx12CountBuffer->GetResource() == nullptr)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DrawIndexedIndirectCount rejected because a buffer is not a live DX12 buffer");
+            return;
+        }
+        constexpr RHIIndirectCommandLayout layout{
+            RHIIndirectCommandSemantic::DrawIndexed,
+            sizeof(IndirectDrawIndexedCommand),
+            RHIIndirectCommandStateInvalidation::None};
+        auto* signature = m_device->GetCommandSignature(layout);
         if (!signature)
             return;
 
+        FlushBarriers();
         m_commandList->ExecuteIndirect(
             signature,
             maxDrawCount,
@@ -1190,15 +2179,33 @@ namespace RVX
 
     void DX12CommandContext::DispatchIndirect(RHIBuffer* buffer, uint64 offset)
     {
-        FlushBarriers();
-        auto* dx12Buffer = static_cast<DX12Buffer*>(buffer);
-        if (!dx12Buffer)
+        const DX12IndirectValidationResult rangeValidation =
+            ValidateDX12IndirectArgumentRange(buffer,
+                                              offset,
+                                              1,
+                                              sizeof(D3D12_DISPATCH_ARGUMENTS),
+                                              RHIIndirectCommandSemantic::Dispatch);
+        if (!rangeValidation)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DispatchIndirect rejected because {}",
+                          rangeValidation.message);
             return;
-
-        auto* signature = m_device->GetDispatchCommandSignature();
+        }
+        auto* dx12Buffer = dynamic_cast<DX12Buffer*>(buffer);
+        if (dx12Buffer == nullptr || dx12Buffer->GetResource() == nullptr)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: DispatchIndirect rejected because the argument buffer is not a live DX12 buffer");
+            return;
+        }
+        constexpr RHIIndirectCommandLayout layout{
+            RHIIndirectCommandSemantic::Dispatch,
+            sizeof(D3D12_DISPATCH_ARGUMENTS),
+            RHIIndirectCommandStateInvalidation::None};
+        auto* signature = m_device->GetCommandSignature(layout);
         if (!signature)
             return;
 
+        FlushBarriers();
         m_commandList->ExecuteIndirect(
             signature,
             1,
@@ -1314,7 +2321,7 @@ namespace RVX
         buildDesc.ScratchAccelerationStructureData = scratchAddress;
 
         commandList4->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
-        InsertAccelerationStructureUAVBarrier(m_commandList.Get(), dstAS);
+        InsertAccelerationStructureBarrier(dstAS);
     }
 
     void DX12CommandContext::BuildTopLevelAccelerationStructure(
@@ -1430,7 +2437,7 @@ namespace RVX
         buildDesc.ScratchAccelerationStructureData = scratchAddress;
 
         commandList4->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
-        InsertAccelerationStructureUAVBarrier(m_commandList.Get(), dstAS);
+        InsertAccelerationStructureBarrier(dstAS);
     }
 
     void DX12CommandContext::DispatchRays(const RHIDispatchRaysDesc& desc)
@@ -1582,11 +2589,27 @@ namespace RVX
         srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         srcLoc.PlacedFootprint.Offset = desc.bufferOffset;
         srcLoc.PlacedFootprint.Footprint.Format = dx12Dst->GetDXGIFormat();
-        srcLoc.PlacedFootprint.Footprint.Width = desc.textureRegion.width > 0 ? desc.textureRegion.width : dx12Dst->GetWidth();
-        srcLoc.PlacedFootprint.Footprint.Height = desc.textureRegion.height > 0 ? desc.textureRegion.height : dx12Dst->GetHeight();
+        const uint32 logicalWidth = desc.textureRegion.width > 0
+            ? desc.textureRegion.width
+            : dx12Dst->GetWidth();
+        const uint32 logicalHeight = desc.textureRegion.height > 0
+            ? desc.textureRegion.height
+            : dx12Dst->GetHeight();
+        const bool blockCompressed = IsCompressedFormat(dx12Dst->GetFormat());
+        srcLoc.PlacedFootprint.Footprint.Width = blockCompressed
+            ? (logicalWidth + 3u) & ~3u
+            : logicalWidth;
+        srcLoc.PlacedFootprint.Footprint.Height = blockCompressed
+            ? (logicalHeight + 3u) & ~3u
+            : logicalHeight;
         srcLoc.PlacedFootprint.Footprint.Depth = 1;
+        const uint32 sourceRowBytes = blockCompressed
+            ? (srcLoc.PlacedFootprint.Footprint.Width / 4u) *
+                  GetFormatBytesPerPixel(dx12Dst->GetFormat())
+            : srcLoc.PlacedFootprint.Footprint.Width *
+                  GetFormatBytesPerPixel(dx12Dst->GetFormat());
         srcLoc.PlacedFootprint.Footprint.RowPitch = desc.bufferRowPitch > 0 ? desc.bufferRowPitch
-            : ((srcLoc.PlacedFootprint.Footprint.Width * GetFormatBytesPerPixel(dx12Dst->GetFormat()) + 255) & ~255);
+            : ((sourceRowBytes + 255u) & ~255u);
 
         D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
         dstLoc.pResource = dx12Dst->GetResource();
@@ -1617,11 +2640,27 @@ namespace RVX
         dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         dstLoc.PlacedFootprint.Offset = desc.bufferOffset;
         dstLoc.PlacedFootprint.Footprint.Format = dx12Src->GetDXGIFormat();
-        dstLoc.PlacedFootprint.Footprint.Width = desc.textureRegion.width > 0 ? desc.textureRegion.width : dx12Src->GetWidth();
-        dstLoc.PlacedFootprint.Footprint.Height = desc.textureRegion.height > 0 ? desc.textureRegion.height : dx12Src->GetHeight();
+        const uint32 logicalWidth = desc.textureRegion.width > 0
+            ? desc.textureRegion.width
+            : dx12Src->GetWidth();
+        const uint32 logicalHeight = desc.textureRegion.height > 0
+            ? desc.textureRegion.height
+            : dx12Src->GetHeight();
+        const bool blockCompressed = IsCompressedFormat(dx12Src->GetFormat());
+        dstLoc.PlacedFootprint.Footprint.Width = blockCompressed
+            ? (logicalWidth + 3u) & ~3u
+            : logicalWidth;
+        dstLoc.PlacedFootprint.Footprint.Height = blockCompressed
+            ? (logicalHeight + 3u) & ~3u
+            : logicalHeight;
         dstLoc.PlacedFootprint.Footprint.Depth = 1;
+        const uint32 destinationRowBytes = blockCompressed
+            ? (dstLoc.PlacedFootprint.Footprint.Width / 4u) *
+                  GetFormatBytesPerPixel(dx12Src->GetFormat())
+            : dstLoc.PlacedFootprint.Footprint.Width *
+                  GetFormatBytesPerPixel(dx12Src->GetFormat());
         dstLoc.PlacedFootprint.Footprint.RowPitch = desc.bufferRowPitch > 0 ? desc.bufferRowPitch
-            : ((dstLoc.PlacedFootprint.Footprint.Width * GetFormatBytesPerPixel(dx12Src->GetFormat()) + 255) & ~255);
+            : ((destinationRowBytes + 255u) & ~255u);
 
         D3D12_BOX srcBox = {};
         srcBox.left = desc.textureRegion.x;
@@ -1661,11 +2700,34 @@ namespace RVX
         queue->ExecuteCommandLists(1, cmdLists);
 
         uint64 submittedValue = 0;
+        bool submissionFailed = false;
         if (signalFence)
         {
             auto* dx12Fence = static_cast<DX12Fence*>(signalFence);
             submittedValue = dx12Fence->AllocateSignalValue();
-            queue->Signal(dx12Fence->GetFence(), submittedValue);
+            const HRESULT signalResult =
+                queue->Signal(dx12Fence->GetFence(), submittedValue);
+            if (FAILED(signalResult))
+            {
+                device->HandleDeviceLost(
+                    signalResult,
+                    RHIDeviceFaultOperation::CommandSubmission);
+                submissionFailed = true;
+            }
+        }
+
+        const HRESULT deviceStatus = device->GetDeviceRemovedReason();
+        if (FAILED(deviceStatus))
+        {
+            device->HandleDeviceLost(
+                deviceStatus,
+                RHIDeviceFaultOperation::CommandSubmission);
+            submissionFailed = true;
+        }
+        if (submissionFailed)
+        {
+            static_cast<void>(dx12Context->DetachCommandAllocator());
+            return 0;
         }
 
         device->GetAllocatorPool().Release(dx12Context->DetachCommandAllocator(),
@@ -1679,17 +2741,14 @@ namespace RVX
         if (!device || contexts.empty())
             return 0;
 
-        std::vector<ID3D12CommandList*> cmdLists;
-        cmdLists.reserve(contexts.size());
-
-        if (!contexts.front())
+        struct SubmissionEntry
         {
-            RVX_RHI_ERROR("SubmitDX12CommandContexts: null first command context");
-            return 0;
-        }
-
-        auto* firstContext = static_cast<DX12CommandContext*>(contexts.front());
-        RHICommandQueueType queueType = firstContext->GetQueueType();
+            DX12CommandContext* context = nullptr;
+            ID3D12CommandQueue* queue = nullptr;
+            ID3D12CommandList* commandList = nullptr;
+        };
+        std::vector<SubmissionEntry> entries;
+        entries.reserve(contexts.size());
         for (auto* context : contexts)
         {
             if (!context)
@@ -1699,38 +2758,296 @@ namespace RVX
             }
 
             auto* dx12Context = static_cast<DX12CommandContext*>(context);
-            if (dx12Context->GetQueueType() != queueType)
+            ID3D12CommandQueue* queue =
+                device->GetQueue(dx12Context->GetQueueType());
+            if (!queue)
             {
-                RVX_RHI_ERROR("SubmitDX12CommandContexts requires all contexts to use the same command queue type");
+                RVX_RHI_ERROR("SubmitDX12CommandContexts: invalid command queue");
                 return 0;
             }
-
-            cmdLists.push_back(dx12Context->GetCommandList());
+            entries.push_back({dx12Context,
+                               queue,
+                               dx12Context->GetCommandList()});
         }
-
-        auto* queue = device->GetQueue(queueType);
-        if (!queue)
+        const auto queueRank = [](const SubmissionEntry& entry)
         {
-            RVX_RHI_ERROR("SubmitDX12CommandContexts: invalid command queue");
-            return 0;
-        }
-
-        queue->ExecuteCommandLists(static_cast<UINT>(cmdLists.size()), cmdLists.data());
+            switch (entry.context->GetQueueType())
+            {
+                case RHICommandQueueType::Copy: return 0;
+                case RHICommandQueueType::Compute: return 1;
+                case RHICommandQueueType::Graphics: return 2;
+            }
+            return 3;
+        };
+        std::stable_sort(entries.begin(), entries.end(),
+                         [&queueRank](const SubmissionEntry& left,
+                                      const SubmissionEntry& right)
+                         {
+                             return queueRank(left) < queueRank(right);
+                         });
 
         uint64 submittedValue = 0;
+        bool submissionFailed = false;
+        for (size_t i = 0; i < entries.size(); ++i)
+        {
+            SubmissionEntry& entry = entries[i];
+            if (i > 0 && entries[i - 1].queue != entry.queue)
+            {
+                const uint32 sourceQueueIndex = static_cast<uint32>(
+                    entries[i - 1].context->GetQueueType());
+                RVX_ASSERT(sourceQueueIndex <
+                           device->m_queueTimelineFences.size());
+                ID3D12Fence* queueChainFence =
+                    device->m_queueTimelineFences[sourceQueueIndex].Get();
+                const uint64 dependencyValue =
+                    device->m_queueTimelineNextValues[sourceQueueIndex]++;
+                if (!queueChainFence || dependencyValue == 0)
+                {
+                    RVX_RHI_ERROR(
+                        "SubmitDX12CommandContexts exhausted its queue timeline");
+                    submissionFailed = true;
+                    break;
+                }
+                HRESULT result = entries[i - 1].queue->Signal(
+                    queueChainFence, dependencyValue);
+                if (SUCCEEDED(result))
+                {
+                    result = entry.queue->Wait(
+                        queueChainFence, dependencyValue);
+                }
+                if (FAILED(result))
+                {
+                    device->HandleDeviceLost(
+                        result,
+                        RHIDeviceFaultOperation::CommandSubmission);
+                    submissionFailed = true;
+                    break;
+                }
+            }
+            entry.queue->ExecuteCommandLists(1, &entry.commandList);
+        }
+
         if (signalFence)
         {
             auto* dx12Fence = static_cast<DX12Fence*>(signalFence);
             submittedValue = dx12Fence->AllocateSignalValue();
-            queue->Signal(dx12Fence->GetFence(), submittedValue);
+            const HRESULT signalResult = submissionFailed
+                ? E_FAIL
+                : entries.back().queue->Signal(
+                      dx12Fence->GetFence(), submittedValue);
+            if (FAILED(signalResult))
+            {
+                device->HandleDeviceLost(
+                    signalResult,
+                    RHIDeviceFaultOperation::CommandSubmission);
+                submissionFailed = true;
+            }
         }
 
-        for (auto* context : contexts)
+        const HRESULT deviceStatus = device->GetDeviceRemovedReason();
+        if (FAILED(deviceStatus))
         {
-            auto* dx12Context = static_cast<DX12CommandContext*>(context);
-            device->GetAllocatorPool().Release(dx12Context->DetachCommandAllocator(),
-                                               dx12Context->GetD3DListType(),
-                                               queue);
+            device->HandleDeviceLost(
+                deviceStatus,
+                RHIDeviceFaultOperation::CommandSubmission);
+            submissionFailed = true;
+        }
+        if (submissionFailed)
+        {
+            for (SubmissionEntry& entry : entries)
+            {
+                static_cast<void>(
+                    entry.context->DetachCommandAllocator());
+            }
+            return 0;
+        }
+
+        for (SubmissionEntry& entry : entries)
+        {
+            device->GetAllocatorPool().Release(
+                entry.context->DetachCommandAllocator(),
+                entry.context->GetD3DListType(),
+                entry.queue);
+        }
+        return submittedValue;
+    }
+
+    uint64 SubmitDX12QueuePlan(DX12Device* device,
+                               const RHIQueueSubmissionPlan& plan,
+                               RHIFence* terminalFence)
+    {
+        if (!device)
+        {
+            return 0;
+        }
+
+        const RHIQueueSubmissionPlanValidationResult validation =
+            ValidateRHIQueueSubmissionPlan(plan);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("SubmitDX12QueuePlan rejected invalid plan: {}",
+                          validation.message);
+            return 0;
+        }
+
+        struct BatchState
+        {
+            ID3D12CommandQueue* queue = nullptr;
+            std::vector<DX12CommandContext*> contexts;
+            std::vector<ID3D12CommandList*> commandLists;
+            ID3D12Fence* completionFence = nullptr;
+            uint64 completionValue = 0;
+        };
+
+        std::vector<BatchState> batches(plan.batches.size());
+        std::vector<uint8> needsCrossQueueSignal(plan.batches.size(), 0);
+        for (uint32 targetIndex = 0;
+             targetIndex < static_cast<uint32>(plan.batches.size());
+             ++targetIndex)
+        {
+            const RHIQueueSubmissionBatch& target = plan.batches[targetIndex];
+            for (uint32 sourceIndex : target.prerequisiteBatchIndices)
+            {
+                if (plan.batches[sourceIndex].queueType != target.queueType)
+                {
+                    needsCrossQueueSignal[sourceIndex] = 1;
+                }
+            }
+        }
+
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(plan.batches.size());
+             ++batchIndex)
+        {
+            const RHIQueueSubmissionBatch& source = plan.batches[batchIndex];
+            BatchState& batch = batches[batchIndex];
+            batch.queue = device->GetQueue(source.queueType);
+            if (!batch.queue)
+            {
+                RVX_RHI_ERROR("SubmitDX12QueuePlan encountered an unavailable queue");
+                return 0;
+            }
+            batch.contexts.reserve(source.contexts.size());
+            batch.commandLists.reserve(source.contexts.size());
+            for (RHICommandContext* context : source.contexts)
+            {
+                auto* dx12Context = static_cast<DX12CommandContext*>(context);
+                batch.contexts.push_back(dx12Context);
+                batch.commandLists.push_back(dx12Context->GetCommandList());
+            }
+
+            if (needsCrossQueueSignal[batchIndex] != 0)
+            {
+                const uint32 queueIndex = static_cast<uint32>(source.queueType);
+                RVX_ASSERT(queueIndex < device->m_queueTimelineFences.size());
+                batch.completionFence =
+                    device->m_queueTimelineFences[queueIndex].Get();
+                batch.completionValue =
+                    device->m_queueTimelineNextValues[queueIndex]++;
+            }
+        }
+
+        const auto abandonAllocators = [&batches]()
+        {
+            for (BatchState& batch : batches)
+            {
+                for (DX12CommandContext* context : batch.contexts)
+                {
+                    static_cast<void>(context->DetachCommandAllocator());
+                }
+            }
+        };
+
+        uint64 submittedValue = 0;
+        for (uint32 batchIndex = 0;
+             batchIndex < static_cast<uint32>(plan.batches.size());
+             ++batchIndex)
+        {
+            const RHIQueueSubmissionBatch& source = plan.batches[batchIndex];
+            BatchState& batch = batches[batchIndex];
+            for (uint32 prerequisiteIndex : source.prerequisiteBatchIndices)
+            {
+                BatchState& prerequisite = batches[prerequisiteIndex];
+                if (prerequisite.queue == batch.queue)
+                {
+                    continue;
+                }
+                if (!prerequisite.completionFence ||
+                    prerequisite.completionValue == 0)
+                {
+                    RVX_RHI_ERROR(
+                        "SubmitDX12QueuePlan found a cross-queue dependency without a source signal");
+                    abandonAllocators();
+                    return 0;
+                }
+                const HRESULT waitResult = batch.queue->Wait(
+                    prerequisite.completionFence,
+                    prerequisite.completionValue);
+                if (FAILED(waitResult))
+                {
+                    device->HandleDeviceLost(
+                        waitResult,
+                        RHIDeviceFaultOperation::CommandSubmission);
+                    abandonAllocators();
+                    return 0;
+                }
+            }
+
+            batch.queue->ExecuteCommandLists(
+                static_cast<UINT>(batch.commandLists.size()),
+                batch.commandLists.data());
+
+            if (batch.completionFence && batch.completionValue != 0)
+            {
+                const HRESULT signalResult = batch.queue->Signal(
+                    batch.completionFence,
+                    batch.completionValue);
+                if (FAILED(signalResult))
+                {
+                    device->HandleDeviceLost(
+                        signalResult,
+                        RHIDeviceFaultOperation::CommandSubmission);
+                    abandonAllocators();
+                    return 0;
+                }
+            }
+
+            if (batchIndex == plan.terminalGraphicsBatchIndex && terminalFence)
+            {
+                auto* dx12Fence = static_cast<DX12Fence*>(terminalFence);
+                submittedValue = dx12Fence->AllocateSignalValue();
+                const HRESULT signalResult = batch.queue->Signal(
+                    dx12Fence->GetFence(), submittedValue);
+                if (FAILED(signalResult))
+                {
+                    device->HandleDeviceLost(
+                        signalResult,
+                        RHIDeviceFaultOperation::CommandSubmission);
+                    abandonAllocators();
+                    return 0;
+                }
+            }
+        }
+
+        const HRESULT deviceStatus = device->GetDeviceRemovedReason();
+        if (FAILED(deviceStatus))
+        {
+            device->HandleDeviceLost(
+                deviceStatus,
+                RHIDeviceFaultOperation::CommandSubmission);
+            abandonAllocators();
+            return 0;
+        }
+
+        for (BatchState& batch : batches)
+        {
+            for (DX12CommandContext* context : batch.contexts)
+            {
+                device->GetAllocatorPool().Release(
+                    context->DetachCommandAllocator(),
+                    context->GetD3DListType(),
+                    batch.queue);
+            }
         }
         return submittedValue;
     }
@@ -1740,10 +3057,19 @@ namespace RVX
     // =============================================================================
     void DX12CommandContext::BeginQuery(RHIQueryPool* pool, uint32 index)
     {
-        if (!pool)
+        auto* dx12Pool = ValidateDX12QueryPoolForContext(
+            "BeginQuery",
+            *this,
+            true,
+            m_isRecording,
+            pool,
+            pool != nullptr ? pool->GetType() : RHIQueryType::Timestamp);
+        if (dx12Pool == nullptr ||
+            !ValidateDX12QueryRange("BeginQuery", *dx12Pool, index, 1))
+        {
             return;
+        }
 
-        auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
         D3D12_QUERY_TYPE queryType = dx12Pool->GetD3D12QueryType();
 
         // Timestamp queries don't have Begin/End, only WriteTimestamp
@@ -1758,10 +3084,19 @@ namespace RVX
 
     void DX12CommandContext::EndQuery(RHIQueryPool* pool, uint32 index)
     {
-        if (!pool)
+        auto* dx12Pool = ValidateDX12QueryPoolForContext(
+            "EndQuery",
+            *this,
+            true,
+            m_isRecording,
+            pool,
+            pool != nullptr ? pool->GetType() : RHIQueryType::Timestamp);
+        if (dx12Pool == nullptr ||
+            !ValidateDX12QueryRange("EndQuery", *dx12Pool, index, 1))
+        {
             return;
+        }
 
-        auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
         D3D12_QUERY_TYPE queryType = dx12Pool->GetD3D12QueryType();
 
         // Timestamp queries don't have Begin/End, only WriteTimestamp
@@ -1776,10 +3111,18 @@ namespace RVX
 
     void DX12CommandContext::WriteTimestamp(RHIQueryPool* pool, uint32 index)
     {
-        if (!pool)
+        auto* dx12Pool = ValidateDX12QueryPoolForContext(
+            "WriteTimestamp",
+            *this,
+            true,
+            m_isRecording,
+            pool,
+            RHIQueryType::Timestamp);
+        if (dx12Pool == nullptr ||
+            !ValidateDX12QueryRange("WriteTimestamp", *dx12Pool, index, 1))
+        {
             return;
-
-        auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
+        }
 
         // In DX12, timestamps are written using EndQuery with TIMESTAMP type
         m_commandList->EndQuery(dx12Pool->GetHeap(), D3D12_QUERY_TYPE_TIMESTAMP, index);
@@ -1788,11 +3131,44 @@ namespace RVX
     void DX12CommandContext::ResolveQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount,
                                             RHIBuffer* destBuffer, uint64 destOffset)
     {
-        if (!pool || !destBuffer)
+        auto* dx12Pool = ValidateDX12QueryPoolForContext(
+            "ResolveQueries",
+            *this,
+            true,
+            m_isRecording,
+            pool,
+            pool != nullptr ? pool->GetType() : RHIQueryType::Timestamp);
+        if (dx12Pool == nullptr)
+        {
             return;
+        }
 
-        auto* dx12Pool = static_cast<DX12QueryPool*>(pool);
-        auto* dx12Buffer = static_cast<DX12Buffer*>(destBuffer);
+        if (destBuffer == nullptr)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: ResolveQueries requires a destination buffer");
+            return;
+        }
+
+        const RHIQueryValidationResult resolveValidation =
+            ValidateRHIQueryResolveDestination(
+                *dx12Pool,
+                firstQuery,
+                queryCount,
+                *destBuffer,
+                destOffset);
+        if (!resolveValidation)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: ResolveQueries rejected because {}",
+                          resolveValidation.message);
+            return;
+        }
+
+        auto* dx12Buffer = dynamic_cast<DX12Buffer*>(destBuffer);
+        if (dx12Buffer == nullptr || dx12Buffer->GetResource() == nullptr)
+        {
+            RVX_RHI_ERROR("DX12CommandContext: ResolveQueries requires a live DX12 destination buffer");
+            return;
+        }
 
         m_commandList->ResolveQueryData(
             dx12Pool->GetHeap(),
@@ -1805,12 +3181,23 @@ namespace RVX
 
     void DX12CommandContext::ResetQueries(RHIQueryPool* pool, uint32 firstQuery, uint32 queryCount)
     {
+        auto* dx12Pool = ValidateDX12QueryPoolForContext(
+            "ResetQueries",
+            *this,
+            false,
+            m_isRecording,
+            pool,
+            pool != nullptr ? pool->GetType() : RHIQueryType::Timestamp);
+        if (dx12Pool == nullptr ||
+            !ValidateDX12QueryRange("ResetQueries", *dx12Pool, firstQuery, queryCount))
+        {
+            return;
+        }
+
         // D3D12 queries don't need explicit reset like Vulkan
         // The ResolveQueryData operation handles this implicitly
         // This function is provided for API compatibility
-        (void)pool;
-        (void)firstQuery;
-        (void)queryCount;
+        (void)dx12Pool;
     }
 
     // =============================================================================
@@ -1880,6 +3267,59 @@ namespace RVX
         }
     }
 
+    void DX12CommandContext::AliasingBarriers(
+        std::span<const RHIResourceAliasingBarrier> barriers)
+    {
+        bool hasValidBarrier = false;
+        for (const RHIResourceAliasingBarrier& barrier : barriers)
+        {
+            ID3D12Resource* before = GetDX12AliasingResource(
+                barrier.resourceBefore);
+            ID3D12Resource* after = GetDX12AliasingResource(
+                barrier.resourceAfter);
+            if (!before || !after || before == after)
+            {
+                RVX_RHI_ERROR("DX12CommandContext: aliasing barrier requires two distinct native buffer/texture resources");
+                continue;
+            }
+
+            hasValidBarrier = true;
+            if (UsesEnhancedBarriers())
+            {
+                continue;
+            }
+
+            D3D12_RESOURCE_BARRIER nativeBarrier = {};
+            nativeBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+            nativeBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            nativeBarrier.Aliasing.pResourceBefore = before;
+            nativeBarrier.Aliasing.pResourceAfter = after;
+            m_pendingLegacyBarriers.push_back(nativeBarrier);
+        }
+
+        if (hasValidBarrier && UsesEnhancedBarriers())
+        {
+            // The current RHI aliasing contract identifies the overlapping
+            // resources but not their final/initial access snapshots. Until
+            // that contract is enriched, use the native conservative
+            // equivalent of a NULL/NULL legacy aliasing barrier: finish all
+            // preceding work and flush every write class. The first-use
+            // resource barrier that follows activates the new resource and
+            // establishes its layout/access.
+            D3D12_GLOBAL_BARRIER nativeBarrier = {};
+            nativeBarrier.SyncBefore = D3D12_BARRIER_SYNC_ALL;
+            nativeBarrier.SyncAfter = D3D12_BARRIER_SYNC_ALL;
+            nativeBarrier.AccessBefore =
+                D3D12_BARRIER_ACCESS_RENDER_TARGET |
+                D3D12_BARRIER_ACCESS_UNORDERED_ACCESS |
+                D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE |
+                D3D12_BARRIER_ACCESS_COPY_DEST |
+                D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE;
+            nativeBarrier.AccessAfter = D3D12_BARRIER_ACCESS_NO_ACCESS;
+            QueueEnhancedBarrier(nativeBarrier);
+        }
+    }
+
     void DX12CommandContext::WaitFence(RHIFence* fence, uint64 value)
     {
         if (fence && m_device)
@@ -1911,6 +3351,29 @@ namespace RVX
         if (!dx12Buffer || !dx12Buffer->GetResource())
             return;
 
+        if (UsesEnhancedBarriers())
+        {
+            const RHIAccessSnapshot before = ResolveBarrierAccess(
+                barrier.hasScopedAccess, barrier.accessBefore, barrier.stateBefore);
+            const RHIAccessSnapshot after = ResolveBarrierAccess(
+                barrier.hasScopedAccess, barrier.accessAfter, barrier.stateAfter);
+            D3D12_BUFFER_BARRIER nativeBarrier = {};
+            ResolveEnhancedBarrierAccess(
+                before,
+                after,
+                barrier.discardIntent,
+                nativeBarrier.SyncBefore,
+                nativeBarrier.SyncAfter,
+                nativeBarrier.AccessBefore,
+                nativeBarrier.AccessAfter);
+            nativeBarrier.SyncAfter = D3D12_BARRIER_SYNC_SPLIT;
+            nativeBarrier.pResource = dx12Buffer->GetResource();
+            nativeBarrier.Offset = 0;
+            nativeBarrier.Size = UINT64_MAX;
+            QueueEnhancedBarrier(nativeBarrier);
+            return;
+        }
+
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
         d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY;  // Split barrier - begin
@@ -1919,7 +3382,7 @@ namespace RVX
         d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
         d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
-        m_pendingBarriers.push_back(d3dBarrier);
+        m_pendingLegacyBarriers.push_back(d3dBarrier);
     }
 
     void DX12CommandContext::BeginBarrier(const RHITextureBarrier& barrier)
@@ -1933,6 +3396,42 @@ namespace RVX
         if (!dx12Texture || !dx12Texture->GetResource())
             return;
 
+        if (UsesEnhancedBarriers())
+        {
+            const RHIAccessSnapshot before = ResolveBarrierAccess(
+                barrier.hasScopedAccess, barrier.accessBefore, barrier.stateBefore);
+            const RHIAccessSnapshot after = ResolveBarrierAccess(
+                barrier.hasScopedAccess, barrier.accessAfter, barrier.stateAfter);
+            D3D12_TEXTURE_BARRIER nativeBarrier = {};
+            ResolveEnhancedBarrierAccess(
+                before,
+                after,
+                barrier.discardIntent,
+                nativeBarrier.SyncBefore,
+                nativeBarrier.SyncAfter,
+                nativeBarrier.AccessBefore,
+                nativeBarrier.AccessAfter);
+            nativeBarrier.SyncAfter = D3D12_BARRIER_SYNC_SPLIT;
+            nativeBarrier.LayoutBefore =
+                barrier.discardIntent == RHIDiscardIntent::Discard
+                ? D3D12_BARRIER_LAYOUT_UNDEFINED
+                : ToD3D12BarrierLayout(before);
+            nativeBarrier.LayoutAfter = ToD3D12BarrierLayout(after);
+            nativeBarrier.pResource = dx12Texture->GetResource();
+            nativeBarrier.Flags =
+                barrier.discardIntent == RHIDiscardIntent::Discard
+                ? D3D12_TEXTURE_BARRIER_FLAG_DISCARD
+                : D3D12_TEXTURE_BARRIER_FLAG_NONE;
+            if (ResolveEnhancedSubresourceRange(
+                    *dx12Texture,
+                    barrier.subresourceRange,
+                    nativeBarrier.Subresources))
+            {
+                QueueEnhancedBarrier(nativeBarrier);
+            }
+            return;
+        }
+
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
         d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY;  // Split barrier - begin
@@ -1941,7 +3440,7 @@ namespace RVX
         d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
         d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
-        m_pendingBarriers.push_back(d3dBarrier);
+        m_pendingLegacyBarriers.push_back(d3dBarrier);
     }
 
     void DX12CommandContext::EndBarrier(const RHIBufferBarrier& barrier)
@@ -1955,6 +3454,29 @@ namespace RVX
         if (!dx12Buffer || !dx12Buffer->GetResource())
             return;
 
+        if (UsesEnhancedBarriers())
+        {
+            const RHIAccessSnapshot before = ResolveBarrierAccess(
+                barrier.hasScopedAccess, barrier.accessBefore, barrier.stateBefore);
+            const RHIAccessSnapshot after = ResolveBarrierAccess(
+                barrier.hasScopedAccess, barrier.accessAfter, barrier.stateAfter);
+            D3D12_BUFFER_BARRIER nativeBarrier = {};
+            ResolveEnhancedBarrierAccess(
+                before,
+                after,
+                barrier.discardIntent,
+                nativeBarrier.SyncBefore,
+                nativeBarrier.SyncAfter,
+                nativeBarrier.AccessBefore,
+                nativeBarrier.AccessAfter);
+            nativeBarrier.SyncBefore = D3D12_BARRIER_SYNC_SPLIT;
+            nativeBarrier.pResource = dx12Buffer->GetResource();
+            nativeBarrier.Offset = 0;
+            nativeBarrier.Size = UINT64_MAX;
+            QueueEnhancedBarrier(nativeBarrier);
+            return;
+        }
+
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
         d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_END_ONLY;  // Split barrier - end
@@ -1963,7 +3485,7 @@ namespace RVX
         d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
         d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
-        m_pendingBarriers.push_back(d3dBarrier);
+        m_pendingLegacyBarriers.push_back(d3dBarrier);
     }
 
     void DX12CommandContext::EndBarrier(const RHITextureBarrier& barrier)
@@ -1977,6 +3499,42 @@ namespace RVX
         if (!dx12Texture || !dx12Texture->GetResource())
             return;
 
+        if (UsesEnhancedBarriers())
+        {
+            const RHIAccessSnapshot before = ResolveBarrierAccess(
+                barrier.hasScopedAccess, barrier.accessBefore, barrier.stateBefore);
+            const RHIAccessSnapshot after = ResolveBarrierAccess(
+                barrier.hasScopedAccess, barrier.accessAfter, barrier.stateAfter);
+            D3D12_TEXTURE_BARRIER nativeBarrier = {};
+            ResolveEnhancedBarrierAccess(
+                before,
+                after,
+                barrier.discardIntent,
+                nativeBarrier.SyncBefore,
+                nativeBarrier.SyncAfter,
+                nativeBarrier.AccessBefore,
+                nativeBarrier.AccessAfter);
+            nativeBarrier.SyncBefore = D3D12_BARRIER_SYNC_SPLIT;
+            nativeBarrier.LayoutBefore =
+                barrier.discardIntent == RHIDiscardIntent::Discard
+                ? D3D12_BARRIER_LAYOUT_UNDEFINED
+                : ToD3D12BarrierLayout(before);
+            nativeBarrier.LayoutAfter = ToD3D12BarrierLayout(after);
+            nativeBarrier.pResource = dx12Texture->GetResource();
+            nativeBarrier.Flags =
+                barrier.discardIntent == RHIDiscardIntent::Discard
+                ? D3D12_TEXTURE_BARRIER_FLAG_DISCARD
+                : D3D12_TEXTURE_BARRIER_FLAG_NONE;
+            if (ResolveEnhancedSubresourceRange(
+                    *dx12Texture,
+                    barrier.subresourceRange,
+                    nativeBarrier.Subresources))
+            {
+                QueueEnhancedBarrier(nativeBarrier);
+            }
+            return;
+        }
+
         D3D12_RESOURCE_BARRIER d3dBarrier = {};
         d3dBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         d3dBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_END_ONLY;  // Split barrier - end
@@ -1985,7 +3543,7 @@ namespace RVX
         d3dBarrier.Transition.StateAfter = ToD3D12ResourceState(barrier.stateAfter);
         d3dBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
-        m_pendingBarriers.push_back(d3dBarrier);
+        m_pendingLegacyBarriers.push_back(d3dBarrier);
     }
 
 } // namespace RVX

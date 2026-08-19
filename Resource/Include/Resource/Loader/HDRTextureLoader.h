@@ -14,15 +14,28 @@
  * - EXR (OpenEXR) via tinyexr
  */
 
+#include "Core/MathTypes.h"
+#include "Core/Types.h"
+#include "Resource/ResourceContentIdentity.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/TextureResource.h"
-#include "Core/MathTypes.h"
 #include <string>
 #include <memory>
 #include <array>
+#include <functional>
+#include <vector>
 
 namespace RVX::Resource
 {
+    /** @brief Engine-owned IBL bake quality profiles. */
+    enum class HDRIBLQualityProfile : uint8
+    {
+        Validation = 0,
+        Low,
+        Default,
+        High
+    };
+
     /**
      * @brief IBL data generated from environment map
      */
@@ -42,6 +55,15 @@ namespace RVX::Resource
 
         /// Number of mip levels in prefiltered map
         uint32_t prefilteredMipLevels = 0;
+
+        /**
+         * @brief Identity of the exact encoded HDR/EXR bytes decoded for this bake.
+         *
+         * This is populated only from the immutable byte vector supplied to the
+         * decoder.  EnvironmentLoader forwards it into its prepared bundle so
+         * owner-thread publication can verify catalog content identity.
+         */
+        ResourceContentIdentity observedContentIdentity;
 
         bool IsValid() const 
         { 
@@ -85,6 +107,12 @@ namespace RVX::Resource
         float exposure = 1.0f;
     };
 
+    /** @brief Resolve one named IBL profile into explicit deterministic bake options. */
+    [[nodiscard]] HDRLoadOptions ResolveHDRIBLQualityProfile(
+        HDRIBLQualityProfile profile,
+        float exposure = 1.0f,
+        bool applyGamma = false);
+
     /**
      * @brief Cubemap face data
      */
@@ -118,7 +146,11 @@ namespace RVX::Resource
     class HDRTextureLoader : public IResourceLoader
     {
     public:
-        explicit HDRTextureLoader(ResourceManager* manager);
+        /// Cooperative cancellation point used by worker-only IBL preparation.
+        /// An empty predicate preserves the legacy, non-cancellable API path.
+        using CancellationPredicate = std::function<bool()>;
+
+        explicit HDRTextureLoader(ResourceManager* manager, bool prepareOnly = false);
         ~HDRTextureLoader() override = default;
 
         // =====================================================================
@@ -128,6 +160,10 @@ namespace RVX::Resource
         ResourceType GetResourceType() const override { return ResourceType::Texture; }
         std::vector<std::string> GetSupportedExtensions() const override;
         IResource* Load(const std::string& path) override;
+        bool Prepare(const ResourceLoadPreparationContext& context,
+                     PreparedResourceBundle& outBundle,
+                     ResourceLoadError& outError) override;
+        bool SupportsPreparedLoading() const override { return true; }
         bool CanLoad(const std::string& path) const override;
 
         // =====================================================================
@@ -158,7 +194,15 @@ namespace RVX::Resource
          * @return IBL data structure with all generated textures
          */
         IBLData LoadIBL(const std::string& path,
-                        const HDRLoadOptions& options = HDRLoadOptions());
+                        const HDRLoadOptions& options = HDRLoadOptions(),
+                        const CancellationPredicate& cancellationRequested = {});
+
+        /** @brief Load IBL using an engine-owned quality profile. */
+        IBLData LoadIBL(const std::string& path,
+                        HDRIBLQualityProfile profile,
+                        float exposure = 1.0f,
+                        bool applyGamma = false,
+                        const CancellationPredicate& cancellationRequested = {});
 
         /**
          * @brief Convert equirectangular map to cubemap
@@ -171,7 +215,8 @@ namespace RVX::Resource
          */
         CubemapFaces EquirectangularToCubemap(const float* equirectData,
                                                uint32_t width, uint32_t height,
-                                               uint32_t cubemapSize);
+                                               uint32_t cubemapSize,
+                                               const CancellationPredicate& cancellationRequested = {});
 
         // =====================================================================
         // IBL Generation
@@ -184,7 +229,8 @@ namespace RVX::Resource
          */
         CubemapFaces GenerateIrradianceMap(const CubemapFaces& envMap,
                                             uint32_t outputSize,
-                                            uint32_t numSamples = 1024);
+                                            uint32_t numSamples = 1024,
+                                            const CancellationPredicate& cancellationRequested = {});
 
         /**
          * @brief Generate prefiltered environment map
@@ -194,7 +240,8 @@ namespace RVX::Resource
         std::vector<CubemapFaces> GeneratePrefilteredMap(const CubemapFaces& envMap,
                                                           uint32_t outputSize,
                                                           uint32_t numMipLevels,
-                                                          uint32_t numSamples = 1024);
+                                                          uint32_t numSamples = 1024,
+                                                          const CancellationPredicate& cancellationRequested = {});
 
         /**
          * @brief Generate BRDF integration LUT
@@ -202,7 +249,8 @@ namespace RVX::Resource
          * 2D lookup table for split-sum approximation.
          */
         TextureResource* GenerateBRDFLUT(uint32_t resolution = 512,
-                                          uint32_t numSamples = 1024);
+                                          uint32_t numSamples = 1024,
+                                          const CancellationPredicate& cancellationRequested = {});
 
         // =====================================================================
         // Default Textures
@@ -221,12 +269,25 @@ namespace RVX::Resource
     private:
         // Loading helpers
         bool LoadHDR(const std::string& path,
+                     const std::vector<uint8>& sourceBytes,
                      std::vector<float>& outPixels,
                      uint32_t& outWidth, uint32_t& outHeight);
 
         bool LoadEXR(const std::string& path,
+                     const std::vector<uint8>& sourceBytes,
                      std::vector<float>& outPixels,
                      uint32_t& outWidth, uint32_t& outHeight);
+
+        /** @brief Decode one already-consumed immutable source byte vector. */
+        TextureResource* LoadWithOptionsFromBytes(const std::string& path,
+                                                  const std::vector<uint8>& sourceBytes,
+                                                  const HDRLoadOptions& options);
+
+        /** @brief Bake IBL from one already-consumed immutable source byte vector. */
+        IBLData LoadIBLFromBytes(const std::string& path,
+                                 const std::vector<uint8>& sourceBytes,
+                                 const HDRLoadOptions& options,
+                                 const CancellationPredicate& cancellationRequested);
 
         // Cubemap helpers
         Vec3 GetCubemapDirection(CubemapFaces::Face face, float u, float v) const;
@@ -245,7 +306,8 @@ namespace RVX::Resource
 
         ResourceId GenerateHDRTextureId(const std::string& uniqueKey);
 
-        ResourceManager* m_manager;
+        ResourceManager* m_manager = nullptr;
+        bool m_prepareOnly = false;
         TextureResource* m_defaultEnvMap = nullptr;
         TextureResource* m_defaultBRDFLUT = nullptr;
     };

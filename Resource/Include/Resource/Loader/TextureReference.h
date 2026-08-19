@@ -12,6 +12,7 @@
 #include <vector>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 
 namespace RVX::Resource
 {
@@ -32,6 +33,14 @@ namespace RVX::Resource
         Color,      ///< sRGB color texture (albedo, emissive)
         Normal,     ///< Linear normal map
         Data        ///< Linear data texture (metallic-roughness, AO, etc.)
+    };
+
+    /** @brief Canonical value used while a streamed texture is not resident. */
+    enum class TextureFallbackSemantic : uint8_t
+    {
+        White = 0,
+        FlatNormal,
+        Black
     };
 
     /**
@@ -56,6 +65,9 @@ namespace RVX::Resource
         /// Embedded texture data (only used when sourceType == Embedded)
         std::vector<uint8_t> embeddedData;
 
+        /// Immutable source bytes captured by importers that support deferred decode.
+        std::shared_ptr<const std::vector<uint8_t>> capturedPayload;
+
         /// MIME type of the texture data (e.g., "image/png", "image/jpeg")
         std::string mimeType;
 
@@ -76,6 +88,32 @@ namespace RVX::Resource
 
         /// Whether the texture should be treated as sRGB
         bool isSRGB = true;
+
+        /// Stable engine fallback used by the minimum-resident representation.
+        TextureFallbackSemantic fallbackSemantic = TextureFallbackSemantic::White;
+
+        /** @brief True when the importer already captured the encoded source bytes. */
+        bool HasCapturedPayload() const
+        {
+            return (capturedPayload && !capturedPayload->empty()) ||
+                   !embeddedData.empty();
+        }
+
+        const std::vector<uint8_t>& GetCapturedPayload() const
+        {
+            return capturedPayload ? *capturedPayload : embeddedData;
+        }
+
+        std::shared_ptr<const std::vector<uint8_t>> ShareCapturedPayload()
+        {
+            if (!capturedPayload && !embeddedData.empty())
+            {
+                capturedPayload =
+                    std::make_shared<const std::vector<uint8_t>>(
+                        std::move(embeddedData));
+            }
+            return capturedPayload;
+        }
 
         // =====================================================================
         // Key Generation
@@ -114,7 +152,7 @@ namespace RVX::Resource
             }
             else
             {
-                return !embeddedData.empty() && imageIndex >= 0;
+                return HasCapturedPayload() && imageIndex >= 0;
             }
         }
 

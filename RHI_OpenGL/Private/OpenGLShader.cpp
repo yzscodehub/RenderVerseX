@@ -11,7 +11,8 @@ namespace RVX
     // =============================================================================
 
     OpenGLShader::OpenGLShader(OpenGLDevice* device, const RHIShaderDesc& desc, const std::string& glslSource)
-        : m_device(device)
+        : RHIShader(desc)
+        , m_device(device)
         , m_stage(desc.stage)
         , m_glslSource(glslSource)
         , m_entryPoint(desc.entryPoint ? desc.entryPoint : "main")
@@ -35,7 +36,8 @@ namespace RVX
     }
 
     OpenGLShader::OpenGLShader(OpenGLDevice* device, const RHIShaderDesc& desc, bool useSpirvPath)
-        : m_device(device)
+        : RHIShader(desc)
+        , m_device(device)
         , m_stage(desc.stage)
         , m_entryPoint(desc.entryPoint ? desc.entryPoint : "main")
     {

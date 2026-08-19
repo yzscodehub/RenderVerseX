@@ -84,7 +84,8 @@ public:
 
     void* CreateBackendShape(CollisionShape* shape) override
     {
-        return shape;
+        (void)shape;
+        return nullptr;
     }
 
     void DestroyBackendShape(void* backendShape) override

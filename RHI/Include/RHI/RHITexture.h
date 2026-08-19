@@ -1,10 +1,51 @@
 #pragma once
 
+#include "Core/Assert.h"
 #include "RHI/RHIResources.h"
 #include <algorithm>
+#include <cmath>
+#include <utility>
 
 namespace RVX
 {
+    enum class RHIOptimizedClearValueType : uint8
+    {
+        None = 0,
+        Color,
+        DepthStencil,
+    };
+
+    /**
+     * @brief Optional texture creation hint for APIs with optimized clear metadata
+     *
+     * The value is an optimization contract, not the texture's initial contents.
+     * Render passes that clear a hinted resource must use the exact same value.
+     */
+    struct RHIOptimizedClearValue
+    {
+        RHIOptimizedClearValueType type = RHIOptimizedClearValueType::None;
+        RHIClearColor color{};
+        RHIClearDepthStencil depthStencil{};
+
+        static RHIOptimizedClearValue Color(RHIClearColor value)
+        {
+            RHIOptimizedClearValue result;
+            result.type = RHIOptimizedClearValueType::Color;
+            result.color = value;
+            return result;
+        }
+
+        static RHIOptimizedClearValue DepthStencil(RHIClearDepthStencil value)
+        {
+            RHIOptimizedClearValue result;
+            result.type = RHIOptimizedClearValueType::DepthStencil;
+            result.depthStencil = value;
+            return result;
+        }
+
+        bool IsPresent() const { return type != RHIOptimizedClearValueType::None; }
+    };
+
     // =============================================================================
     // Texture Description
     // =============================================================================
@@ -21,6 +62,7 @@ namespace RVX
         RHITextureUsage usage = RHITextureUsage::ShaderResource;
         RHITextureDimension dimension = RHITextureDimension::Texture2D;
         RHISampleCount sampleCount = RHISampleCount::Count1;
+        RHIOptimizedClearValue optimizedClearValue;
         const char* debugName = nullptr;
 
         // Builder pattern helpers
@@ -33,6 +75,21 @@ namespace RVX
         RHITextureDesc& SetUsage(RHITextureUsage u) { usage = u; return *this; }
         RHITextureDesc& SetDimension(RHITextureDimension d) { dimension = d; return *this; }
         RHITextureDesc& SetSampleCount(RHISampleCount s) { sampleCount = s; return *this; }
+        RHITextureDesc& SetOptimizedClearColor(RHIClearColor value)
+        {
+            optimizedClearValue = RHIOptimizedClearValue::Color(value);
+            return *this;
+        }
+        RHITextureDesc& SetOptimizedClearDepthStencil(RHIClearDepthStencil value)
+        {
+            optimizedClearValue = RHIOptimizedClearValue::DepthStencil(value);
+            return *this;
+        }
+        RHITextureDesc& ClearOptimizedClearValue()
+        {
+            optimizedClearValue = {};
+            return *this;
+        }
         RHITextureDesc& SetDebugName(const char* n) { debugName = n; return *this; }
 
         // Convenience constructors
@@ -83,6 +140,78 @@ namespace RVX
             return mipLevel + arraySlice * GetMipLevels();
         }
     };
+
+    inline bool AreRHIClearColorsEqual(const RHIClearColor& lhs, const RHIClearColor& rhs)
+    {
+        return lhs.r == rhs.r && lhs.g == rhs.g && lhs.b == rhs.b && lhs.a == rhs.a;
+    }
+
+    inline bool AreRHIClearDepthStencilValuesEqual(
+        const RHIClearDepthStencil& lhs,
+        const RHIClearDepthStencil& rhs)
+    {
+        return lhs.depth == rhs.depth && lhs.stencil == rhs.stencil;
+    }
+
+    inline bool AreRHIOptimizedClearValuesEqual(
+        const RHIOptimizedClearValue& lhs,
+        const RHIOptimizedClearValue& rhs)
+    {
+        if (lhs.type != rhs.type)
+        {
+            return false;
+        }
+        switch (lhs.type)
+        {
+            case RHIOptimizedClearValueType::None:
+                return true;
+            case RHIOptimizedClearValueType::Color:
+                return AreRHIClearColorsEqual(lhs.color, rhs.color);
+            case RHIOptimizedClearValueType::DepthStencil:
+                return AreRHIClearDepthStencilValuesEqual(lhs.depthStencil, rhs.depthStencil);
+        }
+        return false;
+    }
+
+    /** @brief Validate that an optimized clear hint is legal for the texture. */
+    inline bool IsRHIOptimizedClearValueCompatible(const RHITextureDesc& desc)
+    {
+        switch (desc.optimizedClearValue.type)
+        {
+            case RHIOptimizedClearValueType::None:
+                return true;
+            case RHIOptimizedClearValueType::Color:
+            {
+                const RHIClearColor& color = desc.optimizedClearValue.color;
+                return HasFlag(desc.usage, RHITextureUsage::RenderTarget) &&
+                       !IsDepthFormat(desc.format) &&
+                       std::isfinite(color.r) && std::isfinite(color.g) &&
+                       std::isfinite(color.b) && std::isfinite(color.a);
+            }
+            case RHIOptimizedClearValueType::DepthStencil:
+            {
+                const float depth = desc.optimizedClearValue.depthStencil.depth;
+                return HasFlag(desc.usage, RHITextureUsage::DepthStencil) &&
+                       IsDepthFormat(desc.format) && std::isfinite(depth) &&
+                       depth >= 0.0f && depth <= 1.0f;
+            }
+        }
+        return false;
+    }
+
+    /** @brief Compare allocation-relevant texture identity; debug names are excluded. */
+    inline bool AreRHITextureDescsEquivalent(
+        const RHITextureDesc& lhs,
+        const RHITextureDesc& rhs)
+    {
+        return lhs.width == rhs.width && lhs.height == rhs.height &&
+               lhs.depth == rhs.depth && lhs.mipLevels == rhs.mipLevels &&
+               lhs.arraySize == rhs.arraySize && lhs.format == rhs.format &&
+               lhs.usage == rhs.usage && lhs.dimension == rhs.dimension &&
+               lhs.sampleCount == rhs.sampleCount &&
+               AreRHIOptimizedClearValuesEqual(lhs.optimizedClearValue,
+                                                rhs.optimizedClearValue);
+    }
 
     struct RHITextureSubresource
     {
@@ -182,6 +311,12 @@ namespace RVX
     inline bool IsTextureViewTypeCompatible(RHITextureUsage usage, RHIFormat textureFormat, const RHITextureViewDesc& desc)
     {
         const RHIFormat viewFormat = desc.format == RHIFormat::Unknown ? textureFormat : desc.format;
+        const uint32 viewFormatValue = static_cast<uint32>(viewFormat);
+        if (viewFormat == RHIFormat::Unknown ||
+            viewFormatValue >= static_cast<uint32>(RHIFormat::Count))
+        {
+            return false;
+        }
         switch (desc.type)
         {
             case RHITextureViewType::ShaderResource:
@@ -203,9 +338,19 @@ namespace RVX
     class RHITextureView : public RHIResource
     {
     public:
+        explicit RHITextureView(RHITextureRef texture)
+            : m_sourceTexture(std::move(texture))
+        {
+            RVX_ASSERT_MSG(m_sourceTexture,
+                           "RHI texture views require a live source texture");
+        }
         virtual ~RHITextureView() = default;
 
-        virtual RHITexture* GetTexture() const = 0;
+        virtual RHITexture* GetTexture() const final
+        {
+            return m_sourceTexture.Get();
+        }
+        const RHITextureRef& GetTextureRef() const { return m_sourceTexture; }
         virtual RHIFormat GetFormat() const = 0;
         virtual const RHISubresourceRange& GetSubresourceRange() const = 0;
 
@@ -217,6 +362,12 @@ namespace RVX
          * OpenGL ImGui renderer.
          */
         virtual uint64 GetNativeShaderResourceHandleForUI() const { return 0; }
+
+    private:
+        // Declared in the base so every backend obeys the same source lifetime
+        // contract.  The derived native view is destroyed before this member,
+        // which guarantees (for example) VkImageView-before-VkImage ordering.
+        RHITextureRef m_sourceTexture;
     };
 
 } // namespace RVX

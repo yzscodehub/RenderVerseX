@@ -348,6 +348,45 @@ namespace
     }
 } // namespace
 
+TEST(HDRTextureLoaderValidation, QualityProfileResolutionPolicyLivesInResource)
+{
+    struct ExpectedProfile
+    {
+        HDRIBLQualityProfile profile;
+        uint32 cubemapResolution;
+        uint32 irradianceResolution;
+        uint32 prefilteredResolution;
+        uint32 prefilteredMipLevels;
+        uint32 brdfLUTResolution;
+        uint32 convolutionSamples;
+    };
+
+    constexpr ExpectedProfile expectedProfiles[] = {
+        {HDRIBLQualityProfile::Validation, 8, 2, 8, 4, 8, 16},
+        {HDRIBLQualityProfile::Low, 32, 8, 32, 5, 32, 64},
+        {HDRIBLQualityProfile::Default, 64, 16, 64, 6, 64, 128},
+        {HDRIBLQualityProfile::High, 128, 32, 128, 7, 128, 256}};
+
+    for (const ExpectedProfile& expected : expectedProfiles)
+    {
+        const HDRLoadOptions options = ResolveHDRIBLQualityProfile(
+            expected.profile, 1.25f, true);
+        EXPECT_TRUE(options.generateCubemap);
+        EXPECT_TRUE(options.generateIBL);
+        EXPECT_EQ(expected.cubemapResolution, options.cubemapResolution);
+        EXPECT_EQ(expected.irradianceResolution,
+                  options.irradianceResolution);
+        EXPECT_EQ(expected.prefilteredResolution,
+                  options.prefilteredResolution);
+        EXPECT_EQ(expected.prefilteredMipLevels,
+                  options.prefilteredMipLevels);
+        EXPECT_EQ(expected.brdfLUTResolution, options.brdfLUTResolution);
+        EXPECT_EQ(expected.convolutionSamples, options.convolutionSamples);
+        EXPECT_FLOAT_EQ(1.25f, options.exposure);
+        EXPECT_TRUE(options.applyGamma);
+    }
+}
+
 TEST(HDRTextureLoaderValidation, IrradianceSampleCountChangesNonUniformOutput)
 {
     HDRTextureLoader loader(nullptr);

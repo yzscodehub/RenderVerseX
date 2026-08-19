@@ -17,6 +17,8 @@
 namespace RVX
 {
     class RHICommandContext;
+    class RenderRetirementQueue;
+    struct GPUCompletionToken;
 
     enum class RayTracingInstanceAlphaMetadataFlags : uint32
     {
@@ -106,6 +108,23 @@ namespace RVX
     static_assert(sizeof(RayTracingInstanceMaterialMetadata) == 208,
                   "RayTracingInstanceMaterialMetadata must match the ray tracing shader layout");
 
+    enum class RayTracingSceneFallbackCode : uint8
+    {
+        None,
+        MissingDevice,
+        RayTracingUnsupported,
+        EmptyBuildPlan,
+        BottomLevelASCreationFailed,
+        TopLevelInstanceMappingFailed,
+        InvalidTopLevelDescription,
+        InstanceMetadataOrderMismatch,
+        MissingBottomLevelASAddress,
+        InstanceBufferUpdateFailed,
+        MaterialMetadataBufferUpdateFailed,
+        AlphaMetadataBufferUpdateFailed,
+        TopLevelASCreationFailed,
+    };
+
     struct RayTracingSceneManagerStats
     {
         bool supported = false;
@@ -147,6 +166,7 @@ namespace RVX
         bool resourceBudgetEvictionAttempted = false;
         bool resourceByteAccountingOverflowed = false;
         bool recordedTLASBuild = false;
+        RayTracingSceneFallbackCode fallbackCode = RayTracingSceneFallbackCode::None;
         const char* fallbackReason = "";
     };
 
@@ -183,6 +203,10 @@ namespace RVX
         bool Prepare(const RayTracingSceneBuildPlan& plan);
         void RecordBuildCommands(RHICommandContext& ctx);
 
+        /** @brief Transfer replaced AS/buffer owners using prior-submit evidence. */
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion,
+                                  RenderRetirementQueue& retirement);
+
         // =====================================================================
         // Accessors
         // =====================================================================
@@ -206,16 +230,11 @@ namespace RVX
             m_trackedResourceBudget = budgetBytes;
         }
         uint64 GetTrackedResourceBudget() const { return m_trackedResourceBudget; }
-        void SetBLASScratchReleaseFrameDelay(uint64 frameDelay)
-        {
-            m_blasScratchReleaseFrameDelay = std::max<uint64>(frameDelay, 1u);
-        }
-        uint64 GetBLASScratchReleaseFrameDelay() const { return m_blasScratchReleaseFrameDelay; }
-        const std::vector<Resource::ResourceId>& GetInstanceMaterialTextureTable() const
+        const std::vector<uint64>& GetInstanceMaterialTextureTable() const
         {
             return m_instanceMaterialTextureIds;
         }
-        const std::vector<Resource::ResourceId>& GetInstanceAlphaTextureTable() const
+        const std::vector<uint64>& GetInstanceAlphaTextureTable() const
         {
             return m_instanceAlphaTextureIds;
         }
@@ -265,7 +284,7 @@ namespace RVX
         void UpdateResourceStats();
         void ResetFrameState();
         void InvalidateFrameOutputs();
-        void SetFallback(const char* reason);
+        void SetFallback(RayTracingSceneFallbackCode code, const char* reason);
 
         IRHIDevice* m_device = nullptr;
         std::deque<BLASCacheEntry> m_blasCache;
@@ -273,9 +292,9 @@ namespace RVX
         std::vector<BLASCacheEntry*> m_pendingBLASBuilds;
         std::vector<RHIRayTracingInstanceRecord> m_instanceRecords;
         std::vector<RayTracingInstanceMaterialMetadata> m_instanceMaterialMetadataRecords;
-        std::vector<Resource::ResourceId> m_instanceMaterialTextureIds;
+        std::vector<uint64> m_instanceMaterialTextureIds;
         std::vector<RayTracingInstanceAlphaMetadata> m_instanceAlphaMetadataRecords;
-        std::vector<Resource::ResourceId> m_instanceAlphaTextureIds;
+        std::vector<uint64> m_instanceAlphaTextureIds;
         std::vector<RHIBuffer*> m_instanceAlphaIndexBuffers;
         std::vector<RHIBuffer*> m_instanceAlphaUVBuffers;
         std::vector<RHIBuffer*> m_instanceAlphaNormalBuffers;
@@ -294,7 +313,7 @@ namespace RVX
         uint64 m_frameCounter = 0;
         uint64 m_blasCacheEvictionFrameThreshold = 300;
         uint64 m_trackedResourceBudget = 0;
-        uint64 m_blasScratchReleaseFrameDelay = 2;
+        std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
     };
 
 } // namespace RVX

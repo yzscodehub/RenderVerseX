@@ -90,15 +90,74 @@ namespace RVX
             }
         }
 
+        bool IsShaderModel5Stage(RHIShaderStage stage)
+        {
+            switch (stage)
+            {
+                case RHIShaderStage::Vertex:
+                case RHIShaderStage::Pixel:
+                case RHIShaderStage::Compute:
+                case RHIShaderStage::Geometry:
+                case RHIShaderStage::Hull:
+                case RHIShaderStage::Domain:
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        bool IsShaderModel6Stage(RHIShaderStage stage)
+        {
+            if (IsShaderModel5Stage(stage))
+            {
+                return true;
+            }
+
+            switch (stage)
+            {
+                case RHIShaderStage::Mesh:
+                case RHIShaderStage::Amplification:
+                case RHIShaderStage::RayGeneration:
+                case RHIShaderStage::AnyHit:
+                case RHIShaderStage::ClosestHit:
+                case RHIShaderStage::Miss:
+                case RHIShaderStage::Intersection:
+                case RHIShaderStage::Callable:
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
         uint32 GetDX11FlattenedRegisterBase(char registerType, uint32 space)
         {
             const char lowerType = static_cast<char>(std::tolower(static_cast<unsigned char>(registerType)));
             switch (lowerType)
             {
-                case 'b': return space * 4;
+                // The renderer's SM5 constant-buffer ABI keeps the sparse
+                // frame bindings at their logical slots (b0, b3, b7) and
+                // reserves b1/b2/b4 for the object, material, and optional
+                // fourth descriptor sets. A fixed range per set would alias
+                // frame b7 with set 1 binding 3 after reflection.
+                case 'b':
+                    switch (space)
+                    {
+                        case 0: return 0;
+                        case 1: return 1;
+                        case 2: return 2;
+                        case 3: return 4;
+                        default: return 0;
+                    }
                 case 't': return space * 32;
                 case 'u': return space * 2;
-                case 's': return space * 4;
+                // The renderer's sampler ABI already assigns non-overlapping
+                // logical slots across the currently supported descriptor
+                // sets (frame s1/s2/s13 and material s6-s10). Preserve those
+                // slots for SM5 instead of adding a space base that can exceed
+                // D3D11's 16-sampler limit.
+                case 's': return 0;
                 default:  return 0;
             }
         }
@@ -121,11 +180,28 @@ namespace RVX
             switch (resource.type)
             {
                 case RHIBindingType::UniformBuffer:
-                    if (restoreFromRange(0, 0, 4) ||
-                        restoreFromRange(1, 4, 4) ||
-                        restoreFromRange(2, 8, 4) ||
-                        restoreFromRange(3, 12, 2))
+                    if (slot == 1)
                     {
+                        resource.set = 1;
+                        resource.binding = 0;
+                        return;
+                    }
+                    if (slot == 2)
+                    {
+                        resource.set = 2;
+                        resource.binding = 0;
+                        return;
+                    }
+                    if (slot == 4)
+                    {
+                        resource.set = 3;
+                        resource.binding = 0;
+                        return;
+                    }
+                    if (slot < 14)
+                    {
+                        resource.set = 0;
+                        resource.binding = slot;
                         return;
                     }
                     break;
@@ -150,10 +226,16 @@ namespace RVX
                     }
                     break;
                 case RHIBindingType::Sampler:
-                    if (restoreFromRange(0, 0, 4) ||
-                        restoreFromRange(1, 4, 4) ||
-                        restoreFromRange(2, 8, 8))
+                    if (slot >= 6 && slot <= 10)
                     {
+                        resource.set = 2;
+                        resource.binding = slot;
+                        return;
+                    }
+                    if (slot < 16)
+                    {
+                        resource.set = 0;
+                        resource.binding = slot;
                         return;
                     }
                     break;
@@ -311,12 +393,71 @@ namespace RVX
             RVX_CORE_INFO("DXCShaderCompiler: Initialized with DXC support");
         }
 
+        ShaderCompileSupport QuerySupport(
+            const ShaderCompileOptions& options) const override
+        {
+            switch (options.targetBackend)
+            {
+                case RHIBackendType::DX11:
+                    if (!IsShaderModel5Stage(options.stage))
+                    {
+                        return {
+                            ShaderCompileSupportCode::StageUnsupported,
+                            "FXC does not support the requested shader stage"};
+                    }
+                    return ShaderCompileSupport::Supported();
+
+                case RHIBackendType::DX12:
+                case RHIBackendType::Vulkan:
+                    if (!IsShaderModel6Stage(options.stage))
+                    {
+                        return {
+                            ShaderCompileSupportCode::StageUnsupported,
+                            "DXC does not support the requested shader stage"};
+                    }
+                    if (!m_utils || !m_compiler)
+                    {
+                        return {
+                            ShaderCompileSupportCode::RuntimeCompilerUnavailable,
+                            "DXC not initialized"};
+                    }
+                    return ShaderCompileSupport::Supported();
+
+                case RHIBackendType::OpenGL:
+                    if (!IsShaderModel5Stage(options.stage))
+                    {
+                        return {
+                            ShaderCompileSupportCode::StageUnsupported,
+                            "The OpenGL shader path does not support the requested shader stage"};
+                    }
+                    if (!m_utils || !m_compiler)
+                    {
+                        return {
+                            ShaderCompileSupportCode::RuntimeCompilerUnavailable,
+                            "DXC not initialized"};
+                    }
+                    return ShaderCompileSupport::Supported();
+
+                default:
+                    return {
+                        ShaderCompileSupportCode::BackendUnsupported,
+                        "DXC shader compiler does not support the requested backend"};
+            }
+        }
+
         ShaderCompileResult Compile(const ShaderCompileOptions& options) override
         {
             ShaderCompileResult result;
             if (!options.sourceCode || !options.entryPoint)
             {
                 result.errorMessage = "Missing shader source or entry point";
+                return result;
+            }
+
+            const ShaderCompileSupport support = QuerySupport(options);
+            if (!support.IsSupported())
+            {
+                result.errorMessage = support.reason;
                 return result;
             }
 
@@ -337,7 +478,7 @@ namespace RVX
                     return CompileWithDXC_SPIRV(options);
 
                 default:
-                    result.errorMessage = "Unsupported backend type";
+                    result.errorMessage = support.reason;
                     return result;
             }
         }
@@ -374,9 +515,10 @@ namespace RVX
             UINT flags = 0;
             if (options.enableDebugInfo)
             {
-                flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+                flags |= D3DCOMPILE_DEBUG;
             }
-            else if (!options.enableOptimization)
+
+            if (ResolveShaderOptimizationMode(options) == ShaderOptimizationMode::Disabled)
             {
                 flags |= D3DCOMPILE_SKIP_OPTIMIZATION;
             }
@@ -469,9 +611,9 @@ namespace RVX
             {
                 args.push_back(L"-Zi");
                 args.push_back(L"-Qembed_debug");
-                args.push_back(L"-Od");
             }
-            else if (options.enableOptimization)
+
+            if (ResolveShaderOptimizationMode(options) == ShaderOptimizationMode::Level3)
             {
                 args.push_back(L"-O3");
             }
@@ -607,7 +749,7 @@ namespace RVX
                 args.push_back(L"-Qembed_debug");
             }
 
-            if (!options.enableOptimization)
+            if (ResolveShaderOptimizationMode(options) == ShaderOptimizationMode::Disabled)
             {
                 args.push_back(L"-Od");
             }
@@ -625,12 +767,15 @@ namespace RVX
 
             if (options.targetBackend == RHIBackendType::Vulkan)
             {
+                // DXC's reflection annotations declare VK_GOOGLE extensions that
+                // are not required by the Vulkan 1.2 production baseline.
                 args.push_back(L"-fvk-use-dx-layout");
                 args.push_back(L"-fspv-target-env=vulkan1.2");
             }
             else
             {
                 // OpenGL: use Vulkan 1.0 semantics for broader compatibility
+                args.push_back(L"-fspv-reflect");
                 args.push_back(L"-fspv-target-env=vulkan1.0");
             }
 

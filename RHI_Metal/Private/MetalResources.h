@@ -85,14 +85,12 @@ namespace RVX
         MetalTextureView(MetalTexture* texture, const RHITextureViewDesc& desc);
         ~MetalTextureView() override;
 
-        RHITexture* GetTexture() const override { return m_sourceTexture; }
         RHIFormat GetFormat() const override { return m_format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_subresourceRange; }
 
         id<MTLTexture> GetMTLTexture() const { return m_textureView; }
 
     private:
-        MetalTexture* m_sourceTexture = nullptr;
         id<MTLTexture> m_textureView = nil;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_subresourceRange;
@@ -184,13 +182,13 @@ namespace RVX
         MetalDescriptorSet(const RHIDescriptorSetDesc& desc);
         ~MetalDescriptorSet() override = default;
 
-        bool Update(const std::vector<RHIDescriptorBinding>& bindings) override;
-
-        const RHIDescriptorSetDesc& GetDesc() const { return m_desc; }
-
         // Binding data for direct binding approach
         struct BindingData
         {
+            uint32 binding = 0;
+            uint32 arrayElement = 0;
+            RHIBindingType type = RHIBindingType::UniformBuffer;
+            bool isDynamic = false;
             id<MTLBuffer> buffer = nil;
             uint64 offset = 0;
             id<MTLTexture> texture = nil;
@@ -200,7 +198,7 @@ namespace RVX
         const std::vector<BindingData>& GetBindings() const { return m_bindings; }
 
     private:
-        RHIDescriptorSetDesc m_desc;
+        bool InitializeNativeSnapshot();
         std::vector<BindingData> m_bindings;
     };
 

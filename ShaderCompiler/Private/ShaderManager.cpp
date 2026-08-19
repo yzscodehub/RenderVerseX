@@ -18,12 +18,17 @@ namespace RVX
         Initialize(config);
     }
 
-    ShaderManager::ShaderManager(std::unique_ptr<IShaderCompiler> /* compiler */)
+    ShaderManager::ShaderManager(const ShaderManagerConfig& config,
+                                 std::unique_ptr<IShaderCompiler> compiler)
     {
-        // Legacy constructor - create with default config
+        Initialize(config, std::move(compiler));
+    }
+
+    ShaderManager::ShaderManager(std::unique_ptr<IShaderCompiler> compiler)
+    {
         ShaderManagerConfig config;
         config.cacheDirectory = std::filesystem::current_path() / "ShaderCache";
-        Initialize(config);
+        Initialize(config, std::move(compiler));
     }
 
     ShaderManager::~ShaderManager()
@@ -31,7 +36,8 @@ namespace RVX
         // Services are cleaned up automatically via unique_ptr
     }
 
-    void ShaderManager::Initialize(const ShaderManagerConfig& config)
+    void ShaderManager::Initialize(const ShaderManagerConfig& config,
+                                   std::unique_ptr<IShaderCompiler> compiler)
     {
         m_config = config;
 
@@ -45,7 +51,15 @@ namespace RVX
         ShaderCompileService::Config compileConfig;
         compileConfig.maxConcurrentCompiles = m_config.maxConcurrentCompiles;
         compileConfig.enableStatistics = m_config.enableStatistics;
-        m_compileService = std::make_unique<ShaderCompileService>(compileConfig);
+        if (compiler)
+        {
+            m_compileService = std::make_unique<ShaderCompileService>(
+                std::move(compiler), compileConfig);
+        }
+        else
+        {
+            m_compileService = std::make_unique<ShaderCompileService>(compileConfig);
+        }
 
         // Create cache manager
         ShaderCacheManager::Config cacheConfig;
@@ -135,6 +149,11 @@ namespace RVX
                 shaderDesc.stage = desc.stage;
                 shaderDesc.entryPoint = desc.entryPoint.c_str();
                 shaderDesc.debugName = desc.path.empty() ? "Shader" : desc.path.c_str();
+                RHIShaderInterface shaderInterface =
+                    BuildRHIShaderInterface(
+                        desc.stage,
+                        cached->reflection);
+                shaderDesc.shaderInterface = &shaderInterface;
 
                 // Handle backend-specific bytecode
                 if (desc.backend == RHIBackendType::OpenGL)
@@ -225,9 +244,7 @@ namespace RVX
         }
 
         // Extract reflection if not provided
-        if (result.compileResult.reflection.resources.empty() &&
-            result.compileResult.reflection.inputs.empty() &&
-            result.compileResult.reflection.pushConstants.empty())
+        if (!result.compileResult.reflection.valid)
         {
             result.compileResult.reflection = ReflectShader(
                 desc.backend, desc.stage, result.compileResult.bytecode);
@@ -238,6 +255,11 @@ namespace RVX
         shaderDesc.stage = desc.stage;
         shaderDesc.entryPoint = desc.entryPoint.c_str();
         shaderDesc.debugName = desc.path.empty() ? "Shader" : desc.path.c_str();
+        RHIShaderInterface shaderInterface =
+            BuildRHIShaderInterface(
+                desc.stage,
+                result.compileResult.reflection);
+        shaderDesc.shaderInterface = &shaderInterface;
 
         if (desc.backend == RHIBackendType::OpenGL)
         {
@@ -394,6 +416,11 @@ namespace RVX
                     shaderDesc.stage = descCopy.stage;
                     shaderDesc.entryPoint = descCopy.entryPoint.c_str();
                     shaderDesc.debugName = descCopy.path.empty() ? "Shader" : descCopy.path.c_str();
+                    RHIShaderInterface shaderInterface =
+                        BuildRHIShaderInterface(
+                            descCopy.stage,
+                            compileResult.reflection);
+                    shaderDesc.shaderInterface = &shaderInterface;
 
                     if (descCopy.backend == RHIBackendType::OpenGL)
                     {

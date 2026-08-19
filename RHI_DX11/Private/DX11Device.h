@@ -6,7 +6,10 @@
 #include "RHI/RHIDevice.h"
 #include "RHI/RHICapabilities.h"
 
+#include <atomic>
 #include <memory>
+#include <mutex>
+#include <string>
 
 namespace RVX
 {
@@ -80,6 +83,8 @@ namespace RVX
         // Capabilities
         const RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RHIBackendType GetBackendType() const override { return RHIBackendType::DX11; }
+        RHIDeviceRuntimeStatus QueryRuntimeStatus() const noexcept override;
+        RHIDeviceFault GetLastDeviceFault() const override;
 
         // Upload Resources
         RHIStagingBufferRef CreateStagingBuffer(const RHIStagingBufferDesc& desc) override;
@@ -114,6 +119,10 @@ namespace RVX
         // State cache for pipeline state objects
         DX11StateCache* GetStateCache() { return m_stateCache.get(); }
 
+        void ReportRuntimeFailure(HRESULT reason,
+                                  RHIDeviceFaultOperation operation,
+                                  const char* message) noexcept;
+
     private:
         bool CreateFactory();
         bool SelectAdapter(uint32 preferredIndex);
@@ -141,6 +150,16 @@ namespace RVX
         RHICapabilities m_capabilities;
         bool m_debugLayerEnabled = false;
         bool m_initialized = false;
+
+        std::atomic<RHIDeviceRuntimeStatus> m_runtimeStatus{
+            RHIDeviceRuntimeStatus::Ready};
+        std::atomic<bool> m_faultClaimed{false};
+        std::atomic<uint32> m_lastFaultNativeError{0};
+        std::atomic<RHIDeviceFaultOperation> m_lastFaultOperation{
+            RHIDeviceFaultOperation::None};
+        std::atomic<uint64> m_faultSequence{0};
+        mutable std::mutex m_deviceFaultMutex;
+        std::string m_deviceFaultMessage;
 
         // State cache
         std::unique_ptr<DX11StateCache> m_stateCache;

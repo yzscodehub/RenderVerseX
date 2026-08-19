@@ -9,6 +9,8 @@
 
 #include "Render/PostProcess/PostProcessStack.h"
 
+#include <string>
+
 namespace RVX
 {
     /**
@@ -31,6 +33,25 @@ namespace RVX
         Medium,         ///< Balanced quality/performance
         High,           ///< High quality
         Ultra           ///< Maximum quality with bokeh sprites
+    };
+
+    enum class DOFImplementationTier : uint8
+    {
+        Unsupported = 0,
+        GatherComposite
+    };
+
+    const char* GetDOFImplementationTierName(DOFImplementationTier tier);
+
+    struct DOFDiagnostics
+    {
+        bool requested = false;
+        bool supported = false;
+        bool scheduled = false;
+        bool depthAvailable = false;
+        uint32 sampleCount = 0;
+        DOFImplementationTier implementationTier = DOFImplementationTier::Unsupported;
+        std::string reason;
     };
 
     /**
@@ -93,6 +114,10 @@ namespace RVX
         int32 GetPriority() const override { return 200; }  // Early in pipeline (after SSAO)
 
         void Configure(const PostProcessSettings& settings) override;
+        PostProcessFrameInputRequirements GetFrameInputRequirements() const override
+        {
+            return {.requiresDepth = true};
+        }
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
 
         // =========================================================================
@@ -157,6 +182,8 @@ namespace RVX
          */
         void SetFocusTransitionSpeed(float speed) { m_focusTransitionSpeed = speed; }
 
+        const DOFDiagnostics& GetLastDiagnostics() const { return m_lastDiagnostics; }
+
     private:
         /**
          * @brief Calculate Circle of Confusion size
@@ -164,11 +191,14 @@ namespace RVX
          * @return CoC radius in pixels (negative for foreground)
          */
         float CalculateCoC(float depth) const;
+        uint32 GetSampleCount() const;
+        void RecordUnsupportedDiagnostics(bool depthAvailable);
 
         DOFConfig m_config;
         float m_focusTransitionSpeed = 5.0f;
         float m_currentFocusDistance = 10.0f;
         RGTextureHandle m_depthTexture;
+        DOFDiagnostics m_lastDiagnostics;
     };
 
 } // namespace RVX

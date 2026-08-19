@@ -6,10 +6,33 @@
 #include "Render/Decal/DecalRenderer.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Core/Log.h"
+
 #include <algorithm>
+#include <cmath>
 
 namespace RVX
 {
+
+namespace
+{
+    constexpr const char* RVX_DECAL_UNSUPPORTED_REASON =
+        "Decal deferred projection pipeline is not implemented";
+
+    uint32 GetEffectiveMaxDecals(const DecalRendererConfig& config)
+    {
+        return std::max<uint32>(1u, config.maxDecals);
+    }
+} // namespace
+
+const char* GetDecalRendererImplementationTierName(DecalRendererImplementationTier tier)
+{
+    switch (tier)
+    {
+        case DecalRendererImplementationTier::Unsupported: return "Unsupported";
+        case DecalRendererImplementationTier::DeferredProjection: return "DeferredProjection";
+    }
+    return "Unknown";
+}
 
 DecalRenderer::~DecalRenderer()
 {
@@ -24,25 +47,37 @@ void DecalRenderer::Initialize(IRHIDevice* device, const DecalRendererConfig& co
         return;
     }
 
+    if (!device)
+    {
+        m_supported = false;
+        m_unsupportedReason = "No RHI device";
+        RecordUnsupportedDiagnostics(false, false, false, false, false, m_unsupportedReason);
+        RVX_CORE_WARN("DecalRenderer: Cannot initialize without an RHI device");
+        return;
+    }
+
     m_device = device;
     m_config = config;
+    m_supported = false;
+    m_unsupportedReason = RVX_DECAL_UNSUPPORTED_REASON;
 
     // Reserve space for decals
     m_decals.reserve(config.maxDecals);
     m_sortedIndices.reserve(config.maxDecals);
 
-    // Create GPU buffers
+    // Create GPU buffers for the future projection path and residency diagnostics.
     RHIBufferDesc bufferDesc{};
-    bufferDesc.size = sizeof(Mat4) * config.maxDecals;  // Transform matrices
+    bufferDesc.size = sizeof(Mat4) * GetEffectiveMaxDecals(config);
     bufferDesc.usage = RHIBufferUsage::ShaderResource;
     bufferDesc.memoryType = RHIMemoryType::Default;
     m_decalBuffer = device->CreateBuffer(bufferDesc);
 
-    bufferDesc.size = 256;  // Constant buffer
+    bufferDesc.size = 256;
     bufferDesc.usage = RHIBufferUsage::Constant;
     bufferDesc.memoryType = RHIMemoryType::Upload;
     m_constantBuffer = device->CreateBuffer(bufferDesc);
 
+    RecordUnsupportedDiagnostics(false, false, false, false, false, RVX_DECAL_UNSUPPORTED_REASON);
     RVX_CORE_DEBUG("DecalRenderer: Initialized with max {} decals", config.maxDecals);
 }
 
@@ -58,19 +93,41 @@ void DecalRenderer::Shutdown()
     m_decalNormalPipeline.Reset();
     m_decalStainPipeline.Reset();
     m_device = nullptr;
+    m_supported = false;
+    m_lastDiagnostics = {};
 
     RVX_CORE_DEBUG("DecalRenderer: Shutdown");
 }
 
 void DecalRenderer::SetConfig(const DecalRendererConfig& config)
 {
-    // May need to recreate buffers if max decals changed
-    if (config.maxDecals != m_config.maxDecals)
-    {
-        RVX_CORE_WARN("DecalRenderer: Max decals changed, recreating buffers");
-        // TODO: Recreate buffers
-    }
+    const bool maxDecalsChanged = config.maxDecals != m_config.maxDecals;
     m_config = config;
+
+    if (m_decals.size() > m_config.maxDecals)
+    {
+        m_decals.resize(m_config.maxDecals);
+        m_needsSort = true;
+    }
+
+    if (maxDecalsChanged && m_device)
+    {
+        RVX_CORE_DEBUG("DecalRenderer: Max decals changed, recreating buffers");
+
+        RHIBufferDesc bufferDesc{};
+        bufferDesc.size = sizeof(Mat4) * GetEffectiveMaxDecals(m_config);
+        bufferDesc.usage = RHIBufferUsage::ShaderResource;
+        bufferDesc.memoryType = RHIMemoryType::Default;
+        m_decalBuffer = m_device->CreateBuffer(bufferDesc);
+
+        bufferDesc.size = 256;
+        bufferDesc.usage = RHIBufferUsage::Constant;
+        bufferDesc.memoryType = RHIMemoryType::Upload;
+        m_constantBuffer = m_device->CreateBuffer(bufferDesc);
+    }
+
+    m_supported = false;
+    m_unsupportedReason = RVX_DECAL_UNSUPPORTED_REASON;
 }
 
 uint32 DecalRenderer::AddDecal(const DecalData& decal)
@@ -132,10 +189,32 @@ void DecalRenderer::SortDecals()
     m_needsSort = false;
 }
 
+void DecalRenderer::RecordUnsupportedDiagnostics(bool requested,
+                                                 bool albedoAvailable,
+                                                 bool normalAvailable,
+                                                 bool roughnessAvailable,
+                                                 bool depthAvailable,
+                                                 const std::string& reason)
+{
+    m_lastDiagnostics.requested = requested;
+    m_lastDiagnostics.supported = false;
+    m_lastDiagnostics.scheduled = false;
+    m_lastDiagnostics.executed = false;
+    m_lastDiagnostics.initialized = IsInitialized();
+    m_lastDiagnostics.enabled = m_enabled;
+    m_lastDiagnostics.gBufferAlbedoAvailable = albedoAvailable;
+    m_lastDiagnostics.gBufferNormalAvailable = normalAvailable;
+    m_lastDiagnostics.gBufferRoughnessAvailable = roughnessAvailable;
+    m_lastDiagnostics.depthAvailable = depthAvailable;
+    m_lastDiagnostics.decalCount = static_cast<uint32>(m_decals.size());
+    m_lastDiagnostics.implementationTier = DecalRendererImplementationTier::Unsupported;
+    m_lastDiagnostics.reason = reason.empty() ? m_unsupportedReason : reason;
+}
+
 void DecalRenderer::UploadDecalData(RHICommandContext& ctx)
 {
     (void)ctx;
-    // TODO: Upload decal transforms and properties to GPU buffer
+    // Reserved for the future projection path. Public render entry points remain capability-gated.
 }
 
 void DecalRenderer::RenderDecalBatch(RHICommandContext& ctx, uint32 startIndex, uint32 count)
@@ -143,7 +222,7 @@ void DecalRenderer::RenderDecalBatch(RHICommandContext& ctx, uint32 startIndex, 
     (void)ctx;
     (void)startIndex;
     (void)count;
-    // TODO: Render a batch of decals with the same blend mode
+    // Reserved for the future projection path. Public render entry points remain capability-gated.
 }
 
 void DecalRenderer::Render(RHICommandContext& ctx,
@@ -154,30 +233,60 @@ void DecalRenderer::Render(RHICommandContext& ctx,
                            const Mat4& viewMatrix,
                            const Mat4& projMatrix)
 {
-    if (!m_enabled || m_decals.empty())
-        return;
+    (void)ctx;
 
-    (void)gBufferAlbedo;
-    (void)gBufferNormal;
-    (void)gBufferRoughness;
-    (void)depthBuffer;
+    const bool requested = m_enabled && !m_decals.empty();
+    const bool albedoAvailable = gBufferAlbedo != nullptr;
+    const bool normalAvailable = gBufferNormal != nullptr;
+    const bool roughnessAvailable = gBufferRoughness != nullptr;
+    const bool depthAvailable = depthBuffer != nullptr;
 
     m_viewMatrix = viewMatrix;
     m_projMatrix = projMatrix;
     m_invViewProj = glm::inverse(projMatrix * viewMatrix);
 
-    SortDecals();
-    UploadDecalData(ctx);
+    if (!m_enabled)
+    {
+        RecordUnsupportedDiagnostics(false,
+                                     albedoAvailable,
+                                     normalAvailable,
+                                     roughnessAvailable,
+                                     depthAvailable,
+                                     "Decal rendering disabled by configuration");
+        return;
+    }
 
-    // Group decals by blend mode and render batches
-    // TODO: Actual rendering implementation
-    // 1. Bind GBuffer textures
-    // 2. For each decal:
-    //    - Render box mesh with decal shader
-    //    - Reconstruct world position from depth
-    //    - Project into decal space
-    //    - Sample decal textures
-    //    - Blend with GBuffer
+    if (m_decals.empty())
+    {
+        RecordUnsupportedDiagnostics(false,
+                                     albedoAvailable,
+                                     normalAvailable,
+                                     roughnessAvailable,
+                                     depthAvailable,
+                                     "No decals queued");
+        return;
+    }
+
+    if (!albedoAvailable || !normalAvailable || !roughnessAvailable || !depthAvailable)
+    {
+        RecordUnsupportedDiagnostics(requested,
+                                     albedoAvailable,
+                                     normalAvailable,
+                                     roughnessAvailable,
+                                     depthAvailable,
+                                     "Decal rendering skipped because a GBuffer or depth input is unavailable");
+        RVX_CORE_WARN("DecalRenderer: {}", m_lastDiagnostics.reason);
+        return;
+    }
+
+    SortDecals();
+    RecordUnsupportedDiagnostics(requested,
+                                 albedoAvailable,
+                                 normalAvailable,
+                                 roughnessAvailable,
+                                 depthAvailable,
+                                 RVX_DECAL_UNSUPPORTED_REASON);
+    RVX_CORE_WARN("DecalRenderer: render requested but {}", m_lastDiagnostics.reason);
 }
 
 void DecalRenderer::AddToGraph(RenderGraph& graph,
@@ -188,46 +297,60 @@ void DecalRenderer::AddToGraph(RenderGraph& graph,
                                 const Mat4& viewMatrix,
                                 const Mat4& projMatrix)
 {
-    if (!m_enabled || m_decals.empty())
-        return;
+    (void)graph;
 
-    struct DecalPassData
-    {
-        RGTextureHandle albedo;
-        RGTextureHandle normal;
-        RGTextureHandle roughness;
-        RGTextureHandle depth;
-        
-        Mat4 invViewProj;
-        uint32 decalCount;
-    };
+    const bool requested = m_enabled && !m_decals.empty();
+    const bool albedoAvailable = gBufferAlbedo.IsValid();
+    const bool normalAvailable = gBufferNormal.IsValid();
+    const bool roughnessAvailable = gBufferRoughness.IsValid();
+    const bool depthAvailable = depthBuffer.IsValid();
 
     m_viewMatrix = viewMatrix;
     m_projMatrix = projMatrix;
     m_invViewProj = glm::inverse(projMatrix * viewMatrix);
 
-    SortDecals();
+    if (!m_enabled)
+    {
+        RecordUnsupportedDiagnostics(false,
+                                     albedoAvailable,
+                                     normalAvailable,
+                                     roughnessAvailable,
+                                     depthAvailable,
+                                     "Decal rendering disabled by configuration");
+        return;
+    }
 
-    graph.AddPass<DecalPassData>(
-        "DecalPass",
-        RenderGraphPassType::Graphics,
-        [this, gBufferAlbedo, gBufferNormal, gBufferRoughness, depthBuffer]
-        (RenderGraphBuilder& builder, DecalPassData& data)
-        {
-            data.albedo = builder.ReadWrite(gBufferAlbedo);
-            data.normal = builder.ReadWrite(gBufferNormal);
-            data.roughness = builder.ReadWrite(gBufferRoughness);
-            data.depth = builder.Read(depthBuffer);
-            
-            data.invViewProj = m_invViewProj;
-            data.decalCount = static_cast<uint32>(m_decals.size());
-        },
-        [this](const DecalPassData& data, RHICommandContext& ctx)
-        {
-            (void)data;
-            (void)ctx;
-            // TODO: Render decals
-        });
+    if (m_decals.empty())
+    {
+        RecordUnsupportedDiagnostics(false,
+                                     albedoAvailable,
+                                     normalAvailable,
+                                     roughnessAvailable,
+                                     depthAvailable,
+                                     "No decals queued");
+        return;
+    }
+
+    if (!albedoAvailable || !normalAvailable || !roughnessAvailable || !depthAvailable)
+    {
+        RecordUnsupportedDiagnostics(requested,
+                                     albedoAvailable,
+                                     normalAvailable,
+                                     roughnessAvailable,
+                                     depthAvailable,
+                                     "Decal rendering skipped because a GBuffer or depth input is unavailable");
+        RVX_CORE_WARN("DecalRenderer: {}", m_lastDiagnostics.reason);
+        return;
+    }
+
+    SortDecals();
+    RecordUnsupportedDiagnostics(requested,
+                                 albedoAvailable,
+                                 normalAvailable,
+                                 roughnessAvailable,
+                                 depthAvailable,
+                                 RVX_DECAL_UNSUPPORTED_REASON);
+    RVX_CORE_WARN("DecalRenderer: graph pass requested but {}", m_lastDiagnostics.reason);
 }
 
 Mat4 DecalRenderer::CreateDecalTransform(const Vec3& position,
@@ -245,7 +368,7 @@ bool DecalRenderer::IsPointInDecal(const Vec3& point, const DecalData& decal)
     // Transform point to decal local space
     Mat4 invTransform = glm::inverse(decal.transform);
     Vec4 localPoint = invTransform * Vec4(point, 1.0f);
-    
+
     // Check if within unit box
     return std::abs(localPoint.x) <= 0.5f &&
            std::abs(localPoint.y) <= 0.5f &&

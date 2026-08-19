@@ -312,6 +312,28 @@ void RigidBody::AddShape(std::shared_ptr<CollisionShape> shape,
     m_shapes.push_back({std::move(shape), offset, rotation});
 }
 
+bool RigidBody::ReplaceCollider(std::shared_ptr<CollisionShape> shape,
+                                const Vec3& offset,
+                                const Quat& rotation)
+{
+    std::vector<ShapeInstance> replacement;
+    if (shape)
+    {
+        try
+        {
+            replacement.reserve(1);
+            replacement.push_back({std::move(shape), offset, rotation});
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    m_shapes.swap(replacement);
+    return true;
+}
+
 void RigidBody::ClearShapes()
 {
     m_shapes.clear();

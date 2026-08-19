@@ -14,6 +14,21 @@
 namespace RVX
 {
     /**
+     * @brief Value-only compatibility identity for instance-material batching.
+     *
+     * The hash covers texture and sampler source bindings, while the material
+     * handle remains the authoritative resource identity on the draw packet.
+     */
+    struct MaterialInstanceBindingKey
+    {
+        uint64 textureBindingHash = 0;
+        bool parameterTableCompatible = false;
+
+        [[nodiscard]] bool operator==(
+            const MaterialInstanceBindingKey&) const noexcept = default;
+    };
+
+    /**
      * @brief Texture flags for material shader
      * 
      * Bitmask indicating which textures are bound for the material.

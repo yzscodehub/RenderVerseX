@@ -7,16 +7,25 @@
 
 #include "Render/Renderer/ViewData.h"
 #include "Render/Renderer/RenderScene.h"
+#include "Render/RenderDiagnostics.h"
+#include "Render/GPUScene/GPUScenePublication.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Graph/TransientResourcePool.h"
 #include "Render/Graph/ResourceViewCache.h"
 #include "Render/Context/RenderContext.h"
 #include "Render/GPUDriven/GPUCulling.h"
-#include "Render/GPUResourceManager.h"
+#include "Render/GPUDriven/GPUDrivenDiagnostics.h"
+#include "Render/GPUDriven/GPUDrivenPolicy.h"
+#include "Render/Resources/RenderResourceTypes.h"
 #include "Render/Material/MaterialSystem.h"
 #include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/RenderPassRecordContext.h"
+#include "Render/Passes/MeshPassProcessor.h"
+#include "Render/Policy/RenderFramePlanCompiler.h"
+#include "Render/Policy/RenderPolicyDiagnostics.h"
 #include "Render/Passes/CameraVelocityPass.h"
 #include "Render/Passes/ObjectVelocityPass.h"
+#include "Render/Passes/ParticleFeaturePass.h"
 #include "Render/Passes/RayTracedReflectionCompositePass.h"
 #include "Render/Passes/RayTracedReflectionDenoisePass.h"
 #include "Render/Passes/RayTracedReflectionPass.h"
@@ -26,8 +35,14 @@
 #include "Render/PostProcess/PostProcessStack.h"
 #include "Render/RayTracing/RayTracingSceneManager.h"
 #include "Render/Renderer/RenderDrawItem.h"
-#include "Render/Renderer/RenderProxy.h"
+#include "Render/Submission/RenderInstanceBatchPlan.h"
+#include "Render/Submission/DirectRasterReadbackQualification.h"
+#include "Render/Visibility/RenderVisibility.h"
+#include "RenderContracts/FeatureRenderSnapshot.h"
+#include "RenderContracts/RenderProxy.h"
+#include "RHI/RHICapabilities.h"
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -39,8 +54,6 @@ namespace RVX
 {
     inline constexpr RHIFormat RVX_SCENE_COLOR_HDR_FORMAT = RHIFormat::RGBA16_FLOAT;
 
-    class World;
-    class Camera;
     class BloomPass;
     class CameraVelocityPass;
     class ClusteredLighting;
@@ -48,29 +61,38 @@ namespace RVX
     class ChromaticAberrationPass;
     class ColorGradingPass;
     class FXAAPass;
+    class FilmGrainPass;
+    class SSAOPass;
     class LightManager;
     class VignettePass;
     class IRenderPass;
     class DepthPrepass;
     class OpaquePass;
+    class ParticleFeaturePass;
     class RenderPassRegistry;
-    class RenderProxySceneBridge;
+    class RenderRetirementQueue;
+    class RenderResourceRegistry;
+    class RenderSceneDatabase;
+    class RenderSubmissionResourceBatch;
+    class RenderSubmissionTracker;
+    class GPUSceneUpdate;
+    class GPUSceneUploader;
     class RayTracedReflectionCompositePass;
     class RayTracedReflectionDenoisePass;
     class RayTracedReflectionPass;
     class RayTracedShadowPass;
-    class SceneManager;
-    class SceneSkyboxPassBridge;
     class ShadowPass;
     class SkyboxPass;
     class ToneMappingPass;
     class TransparentPass;
+    struct GPUCompletionToken;
 
     enum class SceneRenderCollectionPath : uint8
     {
         None = 0,
         Proxy,
-        LegacyFallback
+        SceneManagerDirect,
+        ProxyRejected
     };
 
     struct SceneRenderCollectionStats
@@ -78,10 +100,33 @@ namespace RVX
         SceneRenderCollectionPath lastPath = SceneRenderCollectionPath::None;
         uint64 proxyFrameCount = 0;
         uint64 legacyFallbackFrameCount = 0;
+        uint64 sceneManagerDirectFrameCount = 0;
+        uint64 rejectedProxyFrameCount = 0;
         size_t lastProxyPrimitiveCount = 0;
         size_t lastProxyLightCount = 0;
         uint64 lastFallbackOwnerId = 0;
         std::string lastFallbackReason;
+        bool lastFallbackSuppressed = false;
+    };
+
+    struct SceneFeatureExtractionStats
+    {
+        bool attempted = false;
+        bool usedProviderPath = false;
+        bool requiresLegacyFallback = false;
+        uint32 snapshotSchemaVersion = RVX_RENDER_FEATURE_SNAPSHOT_SCHEMA_VERSION;
+        uint64 snapshotSequence = 0;
+        bool snapshotComplete = false;
+        size_t providerCount = 0;
+        size_t skippedProviderCount = 0;
+        size_t particleItemCount = 0;
+        size_t particleMetadataOnlyCount = 0;
+        size_t particleRenderPayloadReadyCount = 0;
+        size_t particleSortingSupportedCount = 0;
+        size_t waterItemCount = 0;
+        size_t terrainItemCount = 0;
+        uint64 fallbackOwnerId = 0;
+        std::string fallbackReason;
     };
 
     struct SceneRenderPassChainStats
@@ -120,13 +165,16 @@ namespace RVX
         ToneMappingOutputColorSpace toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
         bool hdrSceneColorEnabled = false;
         std::string hdrFallbackReason;
+        bool frameInputDepthAvailable = false;
+        bool frameInputVelocityAvailable = false;
+        bool frameInputTemporalHistoryAvailable = false;
         PostProcessStackExecuteStats stackStats;
     };
 
     struct SceneRendererExternalTargetDesc
     {
-        RHITexture* colorTarget = nullptr;
-        RHITexture* depthTarget = nullptr;
+        RHITextureRef colorTarget;
+        RHITextureRef depthTarget;
         RHIResourceState colorInitialState = RHIResourceState::ShaderResource;
         RHIResourceState colorFinalState = RHIResourceState::ShaderResource;
         RHIResourceState depthInitialState = RHIResourceState::DepthWrite;
@@ -152,8 +200,156 @@ namespace RVX
         std::string fallbackReason;
     };
 
+    struct SceneGPUDrivenCullingStats
+    {
+        bool policyDecisionAvailable = false;
+        GPUDrivenPolicyDecision policyDecision;
+        bool enabled = false;
+        bool fallbackUsed = false;
+        bool graphPassAdded = false;
+        bool graphPassRecorded = false;
+        uint32 gpuCullingGraphPassCount = 0;
+        bool gpuExecutionRecorded = false;
+        bool executionDecisionAvailable = false;
+        GPUCullingExecutionDecision executionDecision;
+        uint32 inputOpaqueDrawItemCount = 0;
+        uint32 inputMaskedDrawItemCount = 0;
+        uint32 outputOpaqueDrawItemCount = 0;
+        uint32 outputMaskedDrawItemCount = 0;
+        uint32 cullableOpaqueDrawItemCount = 0;
+        uint32 cullableMaskedDrawItemCount = 0;
+        uint32 graphInputDrawItemCount = 0;
+        uint32 visibilityCandidateCount = 0;
+        uint32 cpuVisibleCandidateCount = 0;
+        uint32 passVisibilityCandidateCount = 0;
+        uint32 gpuPlannedVisibilityCandidateCount = 0;
+        uint32 invalidVisibilityBoundsCount = 0;
+        uint32 gpuDeferredVisibilityCandidateCount = 0;
+        bool gpuVisibilityReadbackPerformed = false;
+        bool occlusionRequestedButUnavailable = false;
+        uint64 instanceUploadBytes = 0;
+        uint64 gpuSceneCandidateUploadBytes = 0;
+        /** @brief Sum of per-lane active-row indirection bytes copied this frame. */
+        uint64 activeRowUploadBytes = 0;
+        /** @brief Active logical rows across Depth and Opaque owners. */
+        uint32 activeRowCount = 0;
+        /** @brief Highest sparse physical row touched by either owner. */
+        uint32 activeRowHighWatermark = 0;
+        uint32 instancePatchedRowCount = 0;
+        uint32 gpuSceneCandidatePatchedRowCount = 0;
+        uint32 activeRowPatchedRowCount = 0;
+        /** @brief Cumulative explicit full streams, observed as monotonic counters. */
+        uint64 instanceFullMaterializationCount = 0;
+        uint64 gpuSceneCandidateFullMaterializationCount = 0;
+        uint64 activeRowFullMaterializationCount = 0;
+        uint64 continuityFullMaterializationCount = 0;
+        uint64 capacityFullMaterializationCount = 0;
+        uint64 directRasterInstanceUploadBytes = 0;
+        uint64 directRasterInstanceIndexUploadBytes = 0;
+        RenderUploadWorkDiagnostics canonicalInstanceUploadWork{};
+        RenderUploadWorkDiagnostics canonicalCandidateUploadWork{};
+        RenderUploadWorkDiagnostics canonicalActiveRowUploadWork{};
+        RenderUploadWorkDiagnostics directRasterInstanceUploadWork{};
+        RenderUploadWorkDiagnostics directRasterIndexUploadWork{};
+        /** @brief Successfully committed Direct-lane instance rows this frame. */
+        uint32 directRasterInstancePatchedRowCount = 0;
+        /** @brief Successfully committed Direct-lane draw-order rows this frame. */
+        uint32 directRasterIndexPatchedRowCount = 0;
+        /** @brief Sum of active Direct stream rows across raster pass owners. */
+        uint32 directRasterActiveInstanceCount = 0;
+        /** @brief Sum of Direct stream capacities across raster pass owners. */
+        uint32 directRasterActiveInstanceCapacity = 0;
+        /** @brief Direct streams that fully materialized instance rows this frame. */
+        uint32 directRasterInstanceFullMaterializationCount = 0;
+        /** @brief Direct streams that fully materialized draw-order rows this frame. */
+        uint32 directRasterIndexFullMaterializationCount = 0;
+        MeshPassProcessorStats opaqueMeshPassProcessorStats;
+        uint32 skippedMissingGpuDataCount = 0;
+        bool gpuVisibilityCountsAvailable = false;
+        uint32 visibleCullableDrawItemCount = 0;
+        uint32 frustumCulledDrawItemCount = 0;
+        uint32 distanceCulledDrawItemCount = 0;
+        uint32 cpuReferenceVisibleCullableDrawItemCount = 0;
+        uint32 cpuReferenceCulledDrawItemCount = 0;
+        bool opaqueIndirectRequested = false;
+        bool opaqueCullingReady = false;
+        bool opaquePipelineReady = false;
+        bool opaqueIndirectEligible = false;
+        bool opaqueIndirectSubmitted = false;
+        uint32 opaqueDirectDrawCount = 0;
+        uint32 opaqueGpuDrivenIndirectBatchCount = 0;
+        uint32 opaqueGpuDrivenIndirectSubmittedDrawUpperBound = 0;
+        bool opaqueGpuDrivenExecutedDrawCountAvailable = false;
+        uint32 opaqueGpuDrivenIndirectDrawCount = 0;
+        GPUDrivenDrawFallbackReason opaqueFallbackReason =
+            GPUDrivenDrawFallbackReason::Disabled;
+        /** Actual Direct Opaque resident-index raster transcript. */
+        RasterTranscriptDigest directOpaqueRasterTranscript{};
+        DirectRasterReadbackQualificationDiagnostics
+            directOpaqueRasterReadbackQualification{};
+        GPUSceneCullingQualificationDiagnostics gpuSceneDepthQualification{};
+        GPUSceneCullingQualificationDiagnostics gpuSceneOpaqueQualification{};
+    };
+
+    inline constexpr uint32 RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION = 2;
+    inline constexpr uint32 RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION = 7;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION = 28;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION = 24;
+    inline constexpr uint32 RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION = 25;
+
+    enum class SceneRenderFeature : uint8
+    {
+        PBR = 0,
+        Shadows,
+        IBL,
+        PostProcess,
+        GPUDriven,
+        Instancing,
+        RayTracing,
+    };
+
+    enum class SceneRenderFeatureStatus : uint8
+    {
+        Unknown = 0,
+        Supported,
+        Fallback,
+        Unsupported,
+        Skipped,
+    };
+
+    const char* GetSceneRenderFeatureName(SceneRenderFeature feature);
+    const char* GetSceneRenderFeatureStatusName(SceneRenderFeatureStatus status);
+
+    struct SceneRenderFeatureCapability
+    {
+        SceneRenderFeature feature = SceneRenderFeature::PBR;
+        SceneRenderFeatureStatus status = SceneRenderFeatureStatus::Unknown;
+        bool requested = false;
+        bool supported = false;
+        bool enabled = false;
+        bool fallbackUsed = false;
+        bool renderGraphBacked = false;
+        bool rhiCapabilityKnown = false;
+        std::string requiredCapability;
+        std::string diagnosticMessage;
+        uint32 graphPassCount = 0;
+        uint64 estimatedWorkItems = 0;
+    };
+
+    struct SceneRenderFeatureReport
+    {
+        uint32 schemaVersion = RVX_SCENE_RENDER_FEATURE_REPORT_SCHEMA_VERSION;
+        std::vector<SceneRenderFeatureCapability> features;
+        uint32 supportedCount = 0;
+        uint32 fallbackCount = 0;
+        uint32 unsupportedCount = 0;
+        uint32 skippedCount = 0;
+        uint32 unknownCount = 0;
+    };
+
     struct SceneRendererFrameDiagnostics
     {
+        uint32 schemaVersion = RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION;
         uint64 frameCount = 0;
         bool renderAttempted = false;
         bool rendered = false;
@@ -162,6 +358,17 @@ namespace RVX
         bool graphCompileValid = true;
         bool graphExecutionSkipped = false;
         std::string skippedReason;
+        /** @brief Completion-qualified cumulative mutation evidence. */
+        RenderMutationEvidenceDiagnostics mutationEvidence{};
+        /** Exact material generations used by the most recently presented frame. */
+        bool presentedMaterialBindingsAvailable = false;
+        bool presentedMaterialBindingsOverflow = false;
+        std::vector<RenderPresentedMaterialBindingReceipt>
+            presentedMaterialBindings{};
+        bool presentedSkinningPalettesAvailable = false;
+        bool presentedSkinningPalettesOverflow = false;
+        std::vector<RenderPresentedSkinningPaletteReceipt>
+            presentedSkinningPalettes{};
 
         uint32 renderGraphTotalPasses = 0;
         uint32 renderGraphCulledPasses = 0;
@@ -178,6 +385,24 @@ namespace RVX
         size_t opaqueDrawItemCount = 0;
         size_t maskedDrawItemCount = 0;
         size_t transparentDrawItemCount = 0;
+        uint32 transparentRejectedNonFiniteDepthCount = 0;
+        bool transparentOrderValid = true;
+        uint64 transparentOrderHash = 0;
+        uint32 transparentCandidateDrawItemCount = 0;
+        uint32 transparentPreparedDrawItemCount = 0;
+        uint32 transparentExecutedPacketCount = 0;
+        uint32 transparentExecutedDrawCount = 0;
+        uint32 transparentSkippedMaterialBindingCount = 0;
+        uint32 transparentSkippedResourceCount = 0;
+        uint32 transparentSkippedExecutionDrawCount = 0;
+        uint32 transparentMaterialBindingCount = 0;
+        uint32 transparentMaterialFallbackBindingCount = 0;
+        uint32 transparentMaterialTextureFlags = 0;
+        uint32 transparentMaterialFallbackTextureFlags = 0;
+        bool transparentNoWork = false;
+        bool transparentPreflightFailed = false;
+        bool transparentExecutionFailed = false;
+        SceneFeatureExtractionStats featureExtractionStats;
         uint32 pointLightCount = 0;
         uint32 spotLightCount = 0;
         bool lightConstantsBufferReady = false;
@@ -190,6 +415,35 @@ namespace RVX
         uint32 localShadowRequestCount = 0;
         bool localShadowAtlasReady = false;
         std::string localShadowFallbackReason;
+        bool localLightingAvailable = false;
+        uint32 pointLightRequestedCount = 0;
+        uint32 pointLightAdmittedCount = 0;
+        uint32 pointLightCapacity = 0;
+        uint32 pointLightOverflowCount = 0;
+        uint32 spotLightRequestedCount = 0;
+        uint32 spotLightAdmittedCount = 0;
+        uint32 spotLightCapacity = 0;
+        uint32 spotLightOverflowCount = 0;
+        bool pointShadowSupported = false;
+        std::string pointShadowUnsupportedReason;
+        bool spotShadowSupported = false;
+        std::string spotShadowUnsupportedReason;
+        bool directionalShadowAvailable = false;
+        bool directionalShadowRequested = false;
+        bool directionalShadowSupported = false;
+        bool directionalShadowOutputReady = false;
+        bool directionalShadowSamplingEnabled = false;
+        uint32 directionalShadowRequestedCascadeCount = 0;
+        uint32 directionalShadowProducedCascadeCount = 0;
+        uint32 directionalShadowResolvedCascadeCount = 0;
+        uint32 directionalShadowMapSize = 0;
+        uint32 directionalShadowCasterCount = 0;
+        uint32 directionalShadowDrawCount = 0;
+        std::string directionalShadowReason;
+        bool hzbRequested = false;
+        bool hzbSupported = false;
+        bool hzbEnabled = false;
+        std::string hzbReason;
         bool clusteredLightingInitialized = false;
         bool clusteredLightingFrameBegun = false;
         bool clusteredLightingLightsAssigned = false;
@@ -212,15 +466,33 @@ namespace RVX
         size_t skippedUnsupportedPassCount = 0;
         std::vector<RenderPassStatus> passStatuses;
 
+        RenderResourceRegistryStats gpuResourceStats;
+        SceneGPUDrivenCullingStats gpuDrivenCullingStats;
+        RenderInstancingDiagnostics instancing;
+        RenderPolicyDiagnostics policy;
+        RayTracingSceneManagerStats rayTracingSceneStats;
+
         uint32 requestedPostProcessEffectCount = 0;
         uint32 enabledPostProcessEffectCount = 0;
         uint32 unsupportedPostProcessSkippedCount = 0;
+        uint32 scheduledPostProcessEffectCount = 0;
         uint32 postProcessGraphPassCount = 0;
+        RenderVisualQualityPreset requestedVisualQualityPreset = RenderVisualQualityPreset::Medium;
+        RenderVisualQualityPreset appliedVisualQualityPreset = RenderVisualQualityPreset::Medium;
         bool hdrSceneColorEnabled = false;
         ToneMappingOutputColorSpace toneMappingOutputColorSpace = ToneMappingOutputColorSpace::SRGB;
+        RHIFormat postProcessFinalOutputFormat = RHIFormat::Unknown;
         bool postProcessToneMappingBoundaryValid = true;
+        bool postProcessFallbackCopyApplied = false;
+        uint32 postProcessFallbackCopyPassCount = 0;
+        bool postProcessDepthInputAvailable = false;
+        bool postProcessVelocityInputAvailable = false;
+        bool postProcessTemporalHistoryAvailable = false;
         std::string hdrFallbackReason;
+        std::string postProcessFallbackCopyReason;
         std::string postProcessToneMappingBoundaryWarning;
+        std::vector<PostProcessEffectExecutionPlan> postProcessEffectPlans;
+        SceneRenderFeatureReport featureReport;
 
         bool externalTargetRequested = false;
         bool externalTargetActive = false;
@@ -229,6 +501,215 @@ namespace RVX
         std::string externalTargetFallbackReason;
 
         std::vector<std::string> graphDiagnostics;
+    };
+
+    /**
+     * @brief Render-stage CPU durations from the currently recorded accepted frame.
+     *
+     * This is an owner-thread handoff value only. RenderSubsystem combines it
+     * with frame-slot, submission, and presentation durations after a frame
+     * has completed presentation successfully.
+     */
+    struct SceneRendererCpuFrameTiming
+    {
+        uint64 renderPrepare = 0;
+        uint64 policy = 0;
+        uint64 graphBuild = 0;
+        uint64 graphCompile = 0;
+        uint64 graphRealizeRecord = 0;
+    };
+
+    struct SceneRendererToolDiagnosticsSnapshot
+    {
+        uint32 schemaVersion = RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION;
+        bool frameDiagnosticsAvailable = false;
+        bool renderGraphDiagnosticsAvailable = false;
+        bool rhiCapabilityReportAvailable = false;
+        SceneRendererFrameDiagnostics frame;
+        RenderGraph::Diagnostics renderGraph;
+        RHICapabilityReport rhiCapabilityReport;
+    };
+
+    struct SceneRendererToolDiagnosticsArtifactValidationCodeCount
+    {
+        std::string code;
+        uint32 count = 0;
+    };
+
+    struct SceneRendererToolDiagnosticsArtifactResult
+    {
+        bool requested = false;
+        bool directoryReady = false;
+        bool captureMetadataAvailable = false;
+        uint32 toolDiagnosticsSchemaVersion = RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 frameDiagnosticsSchemaVersion = RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 renderGraphDiagnosticsSchemaVersion = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 rhiCapabilityReportSchemaVersion = RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION;
+        uint32 artifactSummarySchemaVersion = RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION;
+        uint32 artifactValidationSchemaVersion = RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION;
+        std::string renderGraphDiagnosticsSchemaId = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID;
+        std::string rhiCapabilityReportSchemaId = RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID;
+        uint64 frameIndex = 0;
+        size_t renderGraphPassCount = 0;
+        size_t renderGraphResourceCount = 0;
+        bool rhiCapabilityReportJsonExpected = false;
+        bool toolDiagnosticsTextSaved = false;
+        bool renderGraphGraphvizSaved = false;
+        bool renderGraphDiagnosticsTextSaved = false;
+        bool renderGraphDiagnosticsJsonSaved = false;
+        bool rhiCapabilityReportJsonSaved = false;
+        bool manifestJsonSaved = false;
+        bool artifactSummaryJsonSaved = false;
+        bool artifactValidationJsonSaved = false;
+        bool allPrimaryArtifactsSaved = false;
+        bool artifactValidationResultAvailable = false;
+        bool artifactValidationAllPrimaryArtifactsValid = false;
+        bool artifactValidationBundleHashMatches = false;
+        std::string artifactValidationVerdictCode = "Unavailable";
+        std::string artifactValidationPrimaryFailureCode = "Unavailable";
+        uint32 artifactValidationPrimaryFailureEntryIndex = RVX_INVALID_INDEX;
+        uint32 artifactValidationPrimaryFailureEntryCount = 0;
+        uint32 artifactValidationEntryCount = 0;
+        bool artifactValidationEntryCountMatchesCheckedPrimaryArtifactCount = false;
+        std::string artifactValidationEntryCoverageCode = "Unavailable";
+        std::string artifactValidationEntryCoverageMessage = "validation result is unavailable";
+        std::string artifactValidationPrimaryFailureArtifactId;
+        std::string artifactValidationPrimaryFailureArtifactRelativePath;
+        std::string artifactValidationPrimaryFailureArtifactKind;
+        std::string artifactValidationPrimaryFailureArtifactContentType;
+        std::string artifactValidationPrimaryFailureArtifactSchemaId;
+        uint32 artifactValidationPrimaryFailureArtifactSchemaVersion = 0;
+        std::string artifactValidationPrimaryFailureMessage;
+        uint32 primaryArtifactCount = 0;
+        uint32 savedPrimaryArtifactCount = 0;
+        uint32 artifactValidationCheckedPrimaryArtifactCount = 0;
+        uint32 artifactValidationValidPrimaryArtifactCount = 0;
+        uint32 artifactValidationFailedPrimaryArtifactCount = 0;
+        uint64 totalPrimaryArtifactBytes = 0;
+        uint64 artifactValidationActualTotalPrimaryArtifactBytes = 0;
+        bool toolDiagnosticsTextExists = false;
+        bool renderGraphGraphvizExists = false;
+        bool renderGraphDiagnosticsTextExists = false;
+        bool renderGraphDiagnosticsJsonExists = false;
+        bool rhiCapabilityReportJsonExists = false;
+        bool manifestJsonExists = false;
+        bool artifactValidationJsonExists = false;
+        uint64 toolDiagnosticsTextBytes = 0;
+        uint64 renderGraphGraphvizBytes = 0;
+        uint64 renderGraphDiagnosticsTextBytes = 0;
+        uint64 renderGraphDiagnosticsJsonBytes = 0;
+        uint64 rhiCapabilityReportJsonBytes = 0;
+        uint64 manifestJsonBytes = 0;
+        uint64 artifactValidationJsonBytes = 0;
+        std::string toolDiagnosticsTextContentHash;
+        std::string renderGraphGraphvizContentHash;
+        std::string renderGraphDiagnosticsTextContentHash;
+        std::string renderGraphDiagnosticsJsonContentHash;
+        std::string rhiCapabilityReportJsonContentHash;
+        std::string manifestJsonContentHash;
+        std::string artifactValidationJsonContentHash;
+        std::string primaryArtifactBundleHash;
+        std::string artifactValidationExpectedPrimaryArtifactBundleHash;
+        std::string artifactValidationActualPrimaryArtifactBundleHash;
+        std::vector<SceneRendererToolDiagnosticsArtifactValidationCodeCount> artifactValidationDiagnosticCodeCounts;
+        std::string outputDirectory;
+        std::string captureId;
+        std::string captureBaseName;
+        std::string toolDiagnosticsTextPath;
+        std::string renderGraphGraphvizPath;
+        std::string renderGraphDiagnosticsTextPath;
+        std::string renderGraphDiagnosticsJsonPath;
+        std::string rhiCapabilityReportJsonPath;
+        std::string manifestJsonPath;
+        std::string artifactSummaryJsonPath;
+        std::string artifactValidationJsonPath;
+        std::string toolDiagnosticsTextRelativePath;
+        std::string renderGraphGraphvizRelativePath;
+        std::string renderGraphDiagnosticsTextRelativePath;
+        std::string renderGraphDiagnosticsJsonRelativePath;
+        std::string rhiCapabilityReportJsonRelativePath;
+        std::string manifestJsonRelativePath;
+        std::string artifactSummaryJsonRelativePath;
+        std::string artifactValidationJsonRelativePath;
+    };
+
+    struct SceneRendererToolDiagnosticsArtifactValidationEntry
+    {
+        uint32 entryIndex = RVX_INVALID_INDEX;
+        std::string id;
+        std::string kind;
+        std::string contentType;
+        std::string schemaId;
+        uint32 schemaVersion = 0;
+        std::string path;
+        std::string relativePath;
+        bool expectedSaved = false;
+        bool exists = false;
+        bool valid = false;
+        bool primaryFailure = false;
+        bool byteSizeMatches = false;
+        bool contentHashMatches = false;
+        bool identityChecked = false;
+        bool identityMatches = false;
+        bool schemaChecked = false;
+        bool schemaMatches = false;
+        uint64 expectedByteSize = 0;
+        uint64 actualByteSize = 0;
+        std::string expectedContentHash;
+        std::string actualContentHash;
+        std::string actualId;
+        std::string actualKind;
+        std::string actualContentType;
+        std::string actualSchemaId;
+        uint32 actualSchemaVersion = 0;
+        std::string diagnosticCode = "None";
+        std::string diagnosticMessage;
+    };
+
+    struct SceneRendererToolDiagnosticsArtifactValidationResult
+    {
+        uint32 schemaVersion = RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION;
+        bool artifactResultAvailable = false;
+        bool allPrimaryArtifactsValid = false;
+        bool bundleHashMatches = false;
+        std::string verdictCode = "Unavailable";
+        std::string primaryFailureCode = "Unavailable";
+        uint32 primaryFailureEntryIndex = RVX_INVALID_INDEX;
+        uint32 primaryFailureEntryCount = 0;
+        uint32 entryCount = 0;
+        bool entryCountMatchesCheckedPrimaryArtifactCount = false;
+        std::string entryCoverageCode = "Unavailable";
+        std::string entryCoverageMessage = "validation result is unavailable";
+        std::string primaryFailureArtifactId;
+        std::string primaryFailureArtifactRelativePath;
+        std::string primaryFailureArtifactKind;
+        std::string primaryFailureArtifactContentType;
+        std::string primaryFailureArtifactSchemaId;
+        uint32 primaryFailureArtifactSchemaVersion = 0;
+        std::string primaryFailureMessage;
+        uint32 checkedPrimaryArtifactCount = 0;
+        uint32 validPrimaryArtifactCount = 0;
+        uint32 failedPrimaryArtifactCount = 0;
+        uint64 actualTotalPrimaryArtifactBytes = 0;
+        std::string expectedPrimaryArtifactBundleHash;
+        std::string actualPrimaryArtifactBundleHash;
+        bool captureMetadataAvailable = false;
+        std::string captureId;
+        std::string captureBaseName;
+        std::string outputDirectory;
+        uint64 frameIndex = 0;
+        uint32 toolDiagnosticsSchemaVersion = RVX_SCENE_RENDERER_TOOL_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 frameDiagnosticsSchemaVersion = RVX_SCENE_RENDERER_FRAME_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 renderGraphDiagnosticsSchemaVersion = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION;
+        uint32 rhiCapabilityReportSchemaVersion = RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION;
+        uint32 artifactSummarySchemaVersion = RVX_SCENE_RENDERER_TOOL_ARTIFACT_SUMMARY_SCHEMA_VERSION;
+        uint32 artifactValidationSchemaVersion = RVX_SCENE_RENDERER_TOOL_ARTIFACT_VALIDATION_SCHEMA_VERSION;
+        std::string renderGraphDiagnosticsSchemaId = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID;
+        std::string rhiCapabilityReportSchemaId = RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID;
+        size_t renderGraphPassCount = 0;
+        size_t renderGraphResourceCount = 0;
+        std::vector<SceneRendererToolDiagnosticsArtifactValidationCodeCount> diagnosticCodeCounts;
+        std::vector<SceneRendererToolDiagnosticsArtifactValidationEntry> entries;
     };
 
     struct SceneLocalLightingStats
@@ -246,6 +727,18 @@ namespace RVX
         uint32 localShadowRequestCount = 0;
         bool localShadowAtlasReady = false;
         std::string localShadowFallbackReason;
+        uint32 pointLightRequestedCount = 0;
+        uint32 pointLightAdmittedCount = 0;
+        uint32 pointLightCapacity = 0;
+        uint32 pointLightOverflowCount = 0;
+        uint32 spotLightRequestedCount = 0;
+        uint32 spotLightAdmittedCount = 0;
+        uint32 spotLightCapacity = 0;
+        uint32 spotLightOverflowCount = 0;
+        bool pointShadowSupported = false;
+        std::string pointShadowUnsupportedReason;
+        bool spotShadowSupported = false;
+        std::string spotShadowUnsupportedReason;
     };
 
     struct SceneClusteredLightingStats
@@ -273,34 +766,15 @@ namespace RVX
         uint64 frameCount = 0;
         bool skyboxFound = false;
         bool uploadRequested = false;
+        /**
+         * @brief At least one environment IBL handle was supplied by the
+         * accepted scene. This is independent from binding readiness.
+         */
+        bool requested = false;
         bool textureIBLEnabled = false;
         uint32 prefilteredMipLevels = 1;
         float intensity = 1.0f;
         std::string fallbackReason;
-    };
-
-    struct SceneGPUDrivenCullingStats
-    {
-        bool enabled = false;
-        bool fallbackUsed = false;
-        bool graphPassAdded = false;
-        bool graphPassRecorded = false;
-        bool gpuExecutionRecorded = false;
-        uint32 inputOpaqueDrawItemCount = 0;
-        uint32 inputMaskedDrawItemCount = 0;
-        uint32 outputOpaqueDrawItemCount = 0;
-        uint32 outputMaskedDrawItemCount = 0;
-        uint32 cullableOpaqueDrawItemCount = 0;
-        uint32 cullableMaskedDrawItemCount = 0;
-        uint32 graphInputDrawItemCount = 0;
-        uint32 skippedMissingGpuDataCount = 0;
-        uint32 visibleCullableDrawItemCount = 0;
-        uint32 frustumCulledDrawItemCount = 0;
-        uint32 distanceCulledDrawItemCount = 0;
-        bool opaqueIndirectRequested = false;
-        bool opaqueIndirectEligible = false;
-        uint32 opaqueGpuDrivenIndirectBatchCount = 0;
-        uint32 opaqueGpuDrivenIndirectDrawCount = 0;
     };
 
     struct SceneRayTracingBudgetSettings
@@ -516,7 +990,9 @@ namespace RVX
          * @brief Initialize the scene renderer
          * @param renderContext The render context to use
          */
-        void Initialize(RenderContext* renderContext);
+        void Initialize(RenderContext* renderContext,
+                        RenderResourceRegistry* resourceRegistry,
+                        RenderRetirementQueue* retirementQueue = nullptr);
 
         /**
          * @brief Shutdown and release resources
@@ -532,19 +1008,95 @@ namespace RVX
         // Frame Setup
         // =====================================================================
 
-        /**
-         * @brief Setup view data from camera and collect scene data
-         * @param camera The camera to render from
-         * @param world The world to render (can be null for just camera setup)
-         */
-        void SetupView(const Camera& camera, World* world);
+        /** @brief Consume v5 frame state without constructing a v4 packet. */
+        [[nodiscard]] RenderFrameApplyResult ApplyFrameV5(
+            const RenderFramePacketV5& frame,
+            const RenderSceneDatabase& scene,
+            RenderResourceRegistry& registry);
+
+        /** @brief Record the currently accepted packet into the active frame. */
+        [[nodiscard]] RenderFrameExecutionResult RenderAcceptedFrame();
+
+        /** @brief Map the optional ToneMapping probe after its exact frame completes. */
+        [[nodiscard]] bool CompleteToneMappingPixelProbe(
+            uint64 requestId,
+            uint64 frameSequence,
+            RenderFramePixelProbeResult& outResult);
+
+        /** @brief Seal current recording ownership with the actual submission token. */
+        [[nodiscard]] bool NotifySubmission(const GPUCompletionToken& completion);
+
+        /** @brief Arm one post-fence GPU-scene culling qualification capture per lane. */
+        [[nodiscard]] bool ArmGPUSceneCullingQualificationCapture();
+
+        /** @brief Arm one post-fence Direct Opaque physical readback. */
+        [[nodiscard]] bool ArmDirectOpaqueRasterReadbackQualificationCapture();
+
+        /** @brief Poll accepted qualification fences without requiring a new frame. */
+        void PollGPUSceneCullingQualificationCompletion(
+            const RenderSubmissionTracker& tracker);
+
+        /** @brief Whether completion-only owner polling remains required. */
+        [[nodiscard]] bool HasPendingGPUSceneCullingQualificationCompletion()
+            const noexcept;
+
+        [[nodiscard]] bool HasPendingDirectOpaqueRasterReadbackQualificationCompletion()
+            const noexcept;
+
+        /** @brief Release current recording ownership when no GPU work was submitted. */
+        void ReleaseUnsubmittedFrame();
+
+        /** @brief Commit temporal history only after successful presentation. */
+        void MarkAcceptedFramePresented();
+
+        /** @brief Sequence of the packet most recently presented. */
+        uint64 GetLastPresentedFrameSequence() const
+        {
+            return m_renderScene.GetLastRenderedFrameSequence();
+        }
+
+        /** @brief Update the surface key used by temporal compatibility checks. */
+        void SetSurfaceCompatibilityKey(uint64 key) noexcept;
+
+        /** @brief Read-only diagnostics for persistent GPUScene publication. */
+        [[nodiscard]] const GPUScenePublicationStats&
+            GetGPUScenePublicationStats() const noexcept;
 
         /**
-         * @brief Setup view data from camera and collect scene data from a SceneManager.
-         * @param camera The camera to render from
-         * @param sceneManager The scene manager to render (can be null for just camera setup)
+         * @brief Raw GPUScene uploader-attempt diagnostics.
+         *
+         * Host mapped-write receipt evidence is intentionally visible here
+         * before a submission succeeds.  Consumers that need a completed-frame
+         * view must use GetGPUSceneDiagnostics(), which gates GPU-copy and
+         * direct-frame work on exact submission evidence.
          */
-        void SetupView(const Camera& camera, SceneManager* sceneManager);
+        [[nodiscard]] const GPUSceneUploadDiagnostics&
+            GetGPUSceneUploadDiagnostics() const noexcept;
+
+        /**
+         * @brief Backend-neutral, informational completed-frame GPUScene snapshot.
+         *
+         * Per-frame upload/copy receipt values are unavailable until this
+         * renderer has accepted the recording's exact submission token.
+         */
+        [[nodiscard]] GPUSceneDiagnostics GetGPUSceneDiagnostics() const noexcept;
+
+        /** @brief Value-only retained-scene work counters for scale probes. */
+        [[nodiscard]] RenderSceneRetainedStats
+            GetRenderSceneRetainedStats() const noexcept
+        {
+            return m_renderScene.GetRetainedStats();
+        }
+
+        /** @brief Value-only draw-packet cache work counters for scale probes. */
+        [[nodiscard]] RenderDrawPacketCacheStats
+            GetRenderDrawPacketCacheStats() const noexcept
+        {
+            return m_renderScene.GetDrawPacketCacheStats();
+        }
+
+        /** @brief Explicitly discard CPU publication and resident GPUScene state. */
+        void ClearGPUScene();
 
         /**
          * @brief Reset temporal histories on the next rendered view.
@@ -653,10 +1205,6 @@ namespace RVX
         void SetRenderGraphForTesting(std::unique_ptr<RenderGraph> renderGraph)
         {
             m_renderGraph = std::move(renderGraph);
-            if (m_renderGraph && m_transientResourcePool)
-            {
-                m_renderGraph->SetTransientResourcePool(m_transientResourcePool.get());
-            }
         }
 
         /// Build the render graph for focused validation without executing a full frame.
@@ -664,6 +1212,18 @@ namespace RVX
         {
             BuildRenderGraph();
             RefreshFrameDiagnostics(false, false, true, false, nullptr);
+        }
+
+        /// Refresh frame diagnostics for focused validation without building a full RenderGraph.
+        void RefreshFrameDiagnosticsForTesting(bool graphBuilt = false);
+
+        /// Compile an empty/current prepared frame policy for lifecycle validation.
+        void CompileRenderFramePlanForTesting() { CompileRenderFramePlan(); }
+
+        /// Override the RHI capability source for focused feature-report tests.
+        void SetRenderFeatureReportDeviceForTesting(IRHIDevice* device)
+        {
+            m_featureReportDeviceForTesting = device;
         }
 
         // =====================================================================
@@ -683,10 +1243,6 @@ namespace RVX
         const RenderScene& GetRenderScene() const { return m_renderScene; }
 
         /// Get the render context
-        RenderContext* GetRenderContext() { return m_renderContext; }
-
-        /// Get the GPU resource manager
-        GPUResourceManager* GetGPUResourceManager() { return m_gpuResourceManager.get(); }
 
         /// Get the pipeline cache
         PipelineCache* GetPipelineCache() { return m_pipelineCache.get(); }
@@ -714,6 +1270,12 @@ namespace RVX
         /// Get scene collection path statistics.
         const SceneRenderCollectionStats& GetCollectionStats() const { return m_collectionStats; }
 
+        /// Get render-facing feature extraction statistics.
+        const SceneFeatureExtractionStats& GetFeatureExtractionStats() const { return m_featureExtractionStats; }
+
+        /// Get the most recent render-facing feature snapshot.
+        const RenderFeatureSnapshot& GetFeatureSnapshot() const { return m_featureSnapshot; }
+
         /// Get render pass chain statistics from the last RenderGraph build.
         const SceneRenderPassChainStats& GetPassChainStats() const { return m_passChainStats; }
 
@@ -735,25 +1297,126 @@ namespace RVX
         /// Get aggregate frame diagnostics for editor/debug tooling.
         const SceneRendererFrameDiagnostics& GetFrameDiagnostics() const { return m_frameDiagnostics; }
 
+        /** @brief CPU stage timings for the active accepted-frame recording. */
+        [[nodiscard]] const SceneRendererCpuFrameTiming&
+            GetCurrentCpuFrameTiming() const noexcept
+        {
+            return m_currentCpuFrameTiming;
+        }
+
+        /// Get the coherent modern-rendering feature capability report from the latest diagnostics refresh.
+        const SceneRenderFeatureReport& GetRenderFeatureReport() const { return m_frameDiagnostics.featureReport; }
+
+        /// Get versioned frame and RenderGraph diagnostics for editor/profiler tooling.
+        const SceneRendererToolDiagnosticsSnapshot& GetToolDiagnosticsSnapshot() const
+        {
+            return m_toolDiagnosticsSnapshot;
+        }
+
+        /// Export the latest tool diagnostics snapshot as readable text for logs/debug panels.
+        std::string ExportToolDiagnosticsText() const;
+
+        /// Save the latest tool diagnostics snapshot as readable text.
+        bool SaveToolDiagnosticsText(const char* filename) const;
+
+        /// Export the latest RenderGraph from the tool diagnostics snapshot as Graphviz DOT.
+        std::string ExportToolRenderGraphGraphviz() const;
+
+        /// Save the latest RenderGraph from the tool diagnostics snapshot as Graphviz DOT.
+        bool SaveToolRenderGraphGraphviz(const char* filename) const;
+
+        /// Export the latest RenderGraph detailed diagnostics as readable text.
+        std::string ExportToolRenderGraphDiagnosticsText() const;
+
+        /// Save the latest RenderGraph detailed diagnostics as readable text.
+        bool SaveToolRenderGraphDiagnosticsText(const char* filename) const;
+
+        /// Export the latest RenderGraph detailed diagnostics as machine-readable JSON.
+        std::string ExportToolRenderGraphDiagnosticsJson() const;
+
+        /// Save the latest RenderGraph detailed diagnostics as machine-readable JSON.
+        bool SaveToolRenderGraphDiagnosticsJson(const char* filename) const;
+
+        /// Export the latest RHI capability report from the tool diagnostics snapshot as machine-readable JSON.
+        std::string ExportToolRHICapabilityReportJson() const;
+
+        /// Save the latest RHI capability report from the tool diagnostics snapshot as machine-readable JSON.
+        bool SaveToolRHICapabilityReportJson(const char* filename) const;
+
+        /// Export a machine-readable manifest for the latest tool diagnostics snapshot.
+        std::string ExportToolDiagnosticsManifestJson(
+            const SceneRendererToolDiagnosticsArtifactResult* artifacts = nullptr) const;
+
+        /// Save a machine-readable manifest for the latest tool diagnostics snapshot.
+        bool SaveToolDiagnosticsManifestJson(
+            const char* filename,
+            const SceneRendererToolDiagnosticsArtifactResult* artifacts = nullptr) const;
+
+        /// Export a machine-readable summary of the saved tool diagnostics artifacts.
+        std::string ExportToolDiagnosticsArtifactSummaryJson(
+            const SceneRendererToolDiagnosticsArtifactResult* artifacts = nullptr) const;
+
+        /// Save a machine-readable summary of the saved tool diagnostics artifacts.
+        bool SaveToolDiagnosticsArtifactSummaryJson(
+            const char* filename,
+            const SceneRendererToolDiagnosticsArtifactResult* artifacts = nullptr) const;
+
+        /// Save all tool diagnostics artifacts into a directory using a shared base name.
+        SceneRendererToolDiagnosticsArtifactResult SaveToolDiagnosticsArtifacts(const char* directory,
+                                                                               const char* baseName) const;
+
+        /// Validate a saved primary diagnostics artifact bundle against its recorded hashes and sizes.
+        static SceneRendererToolDiagnosticsArtifactValidationResult ValidateToolDiagnosticsArtifacts(
+            const SceneRendererToolDiagnosticsArtifactResult& artifacts);
+
+        /// Export a tool diagnostics artifact validation result as machine-readable JSON.
+        static std::string ExportToolDiagnosticsArtifactValidationJson(
+            const SceneRendererToolDiagnosticsArtifactValidationResult& validation);
+
+        /// Save a tool diagnostics artifact validation result as machine-readable JSON.
+        static bool SaveToolDiagnosticsArtifactValidationJson(
+            const char* filename,
+            const SceneRendererToolDiagnosticsArtifactValidationResult& validation);
+
         /// Get environment IBL binding statistics from the last view setup.
         const SceneEnvironmentIBLStats& GetEnvironmentIBLStats() const { return m_environmentIBLStats; }
 
         /// Get GPU-driven culling statistics from the last draw-list build.
         const SceneGPUDrivenCullingStats& GetGPUDrivenCullingStats() const { return m_gpuDrivenCullingStats; }
 
-        /// Enable or disable GPU-driven draw-list culling. CPU fallback is used until compute pipelines are ready.
-        void SetGPUDrivenCullingEnabled(bool enabled) { m_gpuDrivenCullingEnabled = enabled; }
+        /// Resolve and apply the requested GPU-driven runtime policy.
+        void SetGPUDrivenCullingMode(RenderGPUDrivenMode mode);
+        RenderGPUDrivenMode GetGPUDrivenCullingMode() const { return m_gpuDrivenCullingMode; }
+        const GPUDrivenPolicyDecision& GetGPUDrivenPolicyDecision() const
+        {
+            return m_gpuDrivenPolicyDecision;
+        }
+        const RenderPolicyDiagnostics& GetRenderPolicyDiagnostics() const
+        {
+            return m_renderPolicyDiagnostics;
+        }
+
+        /// Compatibility wrapper for callers that still use a binary override.
+        void SetGPUDrivenCullingEnabled(bool enabled);
         bool IsGPUDrivenCullingEnabled() const { return m_gpuDrivenCullingEnabled; }
         void SetGPUDrivenCullingConfig(const GPUCullingConfig& config)
         {
-            if (m_gpuCulling)
+            InvalidateRenderFramePlan();
+            if (m_depthGPUCulling)
             {
-                m_gpuCulling->SetConfig(config);
+                m_depthGPUCulling->SetConfig(config);
+            }
+            if (m_opaqueGPUCulling)
+            {
+                m_opaqueGPUCulling->SetConfig(config);
             }
         }
         GPUCullingConfig GetGPUDrivenCullingConfig() const
         {
-            return m_gpuCulling ? m_gpuCulling->GetConfig() : GPUCullingConfig{};
+            const GPUCulling* owner = m_opaqueGPUCulling
+                ? m_opaqueGPUCulling.get()
+                : m_depthGPUCulling.get();
+            return owner ? owner->GetConfig() : GPUCullingConfig{};
         }
 
         /// Get runtime ray-tracing scene acceleration-structure statistics.
@@ -764,6 +1427,9 @@ namespace RVX
 
         /// Get runtime object velocity pass statistics.
         const ObjectVelocityPassStats& GetObjectVelocityStats() const;
+
+        /// Get runtime particle feature pass statistics.
+        const ParticleFeaturePassStats& GetParticleFeaturePassStats() const;
 
         /// Get the current frame top-level acceleration structure, if prepared.
         RHIAccelerationStructure* GetRayTracingTopLevelAS() const;
@@ -811,20 +1477,76 @@ namespace RVX
         const std::vector<RenderDrawItem>& GetOpaqueDrawItems() const { return m_opaqueDrawItems; }
         const std::vector<RenderDrawItem>& GetMaskedDrawItems() const { return m_maskedDrawItems; }
         const std::vector<RenderDrawItem>& GetTransparentDrawItems() const { return m_transparentDrawItems; }
+        const SceneMeshPassPreparation& GetMeshPassPreparation() const
+        {
+            return m_meshPassPreparation;
+        }
 
         /// Set shader directory (must be set before Initialize)
         void SetShaderDirectory(const std::string& dir) { m_shaderDir = dir; }
 
     private:
+        friend class SceneRendererTestAccess;
+
+        /** @brief First irreversible GPU-driven failure observed while recording a frame. */
+        enum class GPUDrivenFrameFailureStage : uint8
+        {
+            None = 0,
+            Tier1FrameSlot,
+            Tier1PacketRange,
+            Tier1DrawGroup,
+            Tier1Instance,
+            Tier1FinalCount,
+            Tier1Seal,
+            TierConfirmationMissingTier1,
+            TierConfirmationNoFallback,
+            TierConfirmationResidentNotReady,
+            GPUSceneLeaseAcquire,
+            GPUSceneLeaseSeal,
+            GPUSceneRasterBinding,
+            PassRegistration,
+            CullCommandRecording,
+            RasterCommandRecording,
+            AccessSnapshotCommit,
+            GraphExecution,
+            GraphAdoption,
+        };
+
+        void PrepareFrameApplyResources(RenderResourceRegistry& registry);
+        [[nodiscard]] RenderFrameApplyResult FinalizeFrameApply(
+            RenderFrameApplyResult result,
+            RenderResourceRegistry& registry);
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion);
+        void PublishProvisionalFrameAccessSnapshots(
+            const RHITextureAccessSnapshot* depthAccess,
+            const RHITextureAccessSnapshot* backBufferAccess) noexcept;
+        void ConfirmProvisionalFrameAccessSnapshots() noexcept;
+        void RestoreProvisionalFrameAccessSnapshots() noexcept;
+        void UpdateEnvironmentIBLBindingDiagnostics(
+            bool requested,
+            bool textureIBLEnabled,
+            std::string fallbackReason);
         void BuildRenderGraph();
+        void SynchronizeGPUSceneUploader() noexcept;
+        void ReclaimGPUSceneRetiredRows() noexcept;
         void PrepareRayTracingScene();
         void AddRayTracingSceneBuildPass();
-        void AddGPUDrivenCullingPass();
+        void AddGPUDrivenCullingPass(
+            const RenderPassRecordIdentity& recordIdentity);
+        void CommitGPUDrivenAccessSnapshots();
         void BuildMaterialDrawLists();
-        void ApplyGPUDrivenCullingToDrawLists();
-        void ApplyGPUDrivenCullingToDrawList(std::vector<RenderDrawItem>& drawItems,
-                                             uint32& cullableDrawItemCount);
+        void PrepareMeshPassPackets();
+        void CompileRenderFramePlan();
+        void InvalidateRenderFramePlan();
+        void ApplyRenderFramePlanProjection();
+        void BuildGPUDrivenVisibilityInputs();
         void PrepareGPUDrivenGraphCullInputs();
+        void ConfirmGPUDrivenActualTier();
+        void FinalizeRenderExecutionReportStatus(bool graphExecuted) noexcept;
+        [[nodiscard]] bool HasSubmissionFailure() const noexcept;
+        void MarkGPUDrivenFrameFailure(GPUDrivenFrameFailureStage stage) noexcept;
+        [[nodiscard]] static const char* GetGPUDrivenFrameFailureStageName(
+            GPUDrivenFrameFailureStage stage) noexcept;
         void ApplyObjectMotionHistory();
         void UpdateObjectMotionHistory();
         void PreparePassesForFrame();
@@ -836,24 +1558,24 @@ namespace RVX
                                    bool denoiseRequested);
         void SetupDefaultPostProcess();
         void SetupDefaultPasses();
-        void UpdateEnvironmentIBL(World* world);
-        void UpdateSkyboxPass(World* world);
         SceneColorFormatPolicy ResolveSceneColorFormatPolicy(RHIFormat backBufferFormat,
                                                              bool postProcessActive) const;
         ToneMappingOutputColorSpace ResolveToneMappingOutputColorSpace(RHIFormat outputFormat) const;
         bool SupportsHDRSceneColor() const;
         void ResolveRenderTargetExtent(uint32& width, uint32& height) const;
-        void SetupCameraViewData(const Camera& camera, uint32 width, uint32 height);
-        void FinalizeViewScene(const Camera& camera);
-        void UpdatePassResources();
         void RunPreGraphPrepareCallbacks();
-        void ExecutePasses(RHICommandContext& ctx);
         void EnsureDepthBuffer(uint32_t width, uint32_t height);
         void RefreshFrameDiagnostics(bool renderAttempted,
                                      bool rendered,
                                      bool graphBuilt,
                                      bool graphCompiled,
                                      const char* skippedReason);
+        /** Refresh one accepted frame after its exact submission token is verified. */
+        void RefreshSubmissionQualifiedFrameDiagnostics();
+        void UpdateLiveMutationEvidence();
+        void FreezeMutationEvidenceForPresentedFrame();
+        void FreezePresentedMaterialBindingsForPresentedFrame();
+        SceneRenderFeatureReport BuildRenderFeatureReport(const SceneRendererFrameDiagnostics& diagnostics) const;
 
         struct PreGraphPrepareCallbackEntry
         {
@@ -862,8 +1584,10 @@ namespace RVX
         };
 
         RenderContext* m_renderContext = nullptr;
+        RenderResourceRegistry* m_renderResourceRegistry = nullptr;
+        RenderRetirementQueue* m_retirementQueue = nullptr;
+        std::unique_ptr<RenderSubmissionResourceBatch> m_submissionBatch;
         std::unique_ptr<RenderGraph> m_renderGraph;
-        std::unique_ptr<GPUResourceManager> m_gpuResourceManager;
         std::unique_ptr<PipelineCache> m_pipelineCache;
         std::unique_ptr<MaterialSystem> m_materialSystem;
         std::unique_ptr<LightManager> m_lightManager;
@@ -871,16 +1595,98 @@ namespace RVX
         std::unique_ptr<TransientResourcePool> m_transientResourcePool;
         std::unique_ptr<ResourceViewCache> m_resourceViewCache;
         std::unique_ptr<RenderPassRegistry> m_passRegistry;
-        std::unique_ptr<RenderProxySceneBridge> m_proxyBridge;
-        std::unique_ptr<SceneSkyboxPassBridge> m_skyboxBridge;
-        std::unique_ptr<GPUCulling> m_gpuCulling;
+        // Each GPU-capable pass owns its instance/group/indirect/count stream.
+        // Candidate extraction remains shared, but compaction and resource
+        // lifetime are intentionally pass-local.
+        std::unique_ptr<GPUCulling> m_depthGPUCulling;
+        std::unique_ptr<GPUCulling> m_opaqueGPUCulling;
+        DirectRasterReadbackQualification m_directOpaqueRasterReadbackQualification;
+        struct GPUCullingGraphHandles
+        {
+            RGBufferHandle constants;
+            RGBufferHandle instances;
+            RGBufferHandle gpuSceneCandidates;
+            RGBufferHandle gpuScenePrimitives;
+            RGBufferHandle gpuSceneTransforms;
+            RGBufferHandle instanceIndices;
+            RGBufferHandle visibility;
+            RGBufferHandle visibleInstances;
+            RGBufferHandle indirectDraws;
+            RGBufferHandle drawCount;
+            std::shared_ptr<const GPUSceneRasterBindingSnapshot> gpuSceneRasterBinding;
+            uint64 gpuSceneLeaseVersion = 0;
+            bool gpuSceneRasterEnabled = false;
+
+            bool IsValid() const
+            {
+                const bool commonHandles = constants.IsValid() &&
+                       instanceIndices.IsValid() &&
+                       visibility.IsValid() && visibleInstances.IsValid() &&
+                       indirectDraws.IsValid() && drawCount.IsValid();
+                if (!gpuSceneRasterEnabled)
+                {
+                    return commonHandles && instances.IsValid();
+                }
+                return commonHandles && gpuSceneCandidates.IsValid() &&
+                       gpuScenePrimitives.IsValid() &&
+                       gpuSceneTransforms.IsValid() &&
+                       gpuSceneRasterBinding != nullptr &&
+                       gpuSceneLeaseVersion != 0;
+            }
+        };
+
+        enum class GPUDrivenGraphFailureInjection : uint8
+        {
+            None = 0,
+            Acquire,
+            Seal,
+            Binding,
+            PassRegistration,
+        };
+
+        struct GPUDrivenTierExecutionTestProbe
+        {
+            uint32 gpuSceneLeaseAcquireAttempts = 0;
+            uint32 gpuSceneSealAttempts = 0;
+            uint32 tierOneSealAttempts = 0;
+            uint32 graphPassRegistrationAttempts = 0;
+            uint64 depthGPUSceneLeaseVersion = 0;
+            uint64 opaqueGPUSceneLeaseVersion = 0;
+            GPUDrivenTier depthActualTier = GPUDrivenTier::Direct;
+            GPUDrivenTier opaqueActualTier = GPUDrivenTier::Direct;
+            bool frameFailed = false;
+        };
+
+        GPUCullingGraphHandles m_depthGPUCullingGraphHandles;
+        GPUCullingGraphHandles m_opaqueGPUCullingGraphHandles;
+        std::shared_ptr<GPUCullingRecordedState> m_depthGPUCullingRecordedState;
+        std::shared_ptr<GPUCullingRecordedState> m_opaqueGPUCullingRecordedState;
+        bool m_depthGPUCullingFramePrepared = false;
+        bool m_opaqueGPUCullingFramePrepared = false;
+        bool m_gpuSceneCullingCommandRecordingFailed = false;
+        bool m_gpuDrivenTier1PreparationFailed = false;
+        bool m_gpuDrivenFrameFailure = false;
+        GPUDrivenFrameFailureStage m_gpuDrivenFrameFailureStage =
+            GPUDrivenFrameFailureStage::None;
+        GPUDrivenTier m_confirmedGPUDrivenTier = GPUDrivenTier::Direct;
+        GPUDrivenGraphFailureInjection m_gpuDrivenGraphFailureInjection =
+            GPUDrivenGraphFailureInjection::None;
+        GPUDrivenTierExecutionTestProbe m_gpuDrivenTierExecutionTestProbe{};
+        std::shared_ptr<std::atomic_bool> m_gpuSceneRasterCommandRecordingFailed;
         std::unique_ptr<PostProcessStack> m_postProcessStack;
         std::unique_ptr<RayTracingSceneManager> m_rayTracingSceneManager;
+        std::unique_ptr<GPUSceneUpdate> m_gpuSceneUpdate;
+        std::unique_ptr<GPUSceneUploader> m_gpuSceneUploader;
+        uint64 m_lastGPUSceneResourceContentRevision = 0;
+        bool m_forceFullGPUScenePublication = false;
 
         ViewData m_viewData;
+        PrimaryDirectionalLightRecordInput m_primaryDirectionalLight;
         RenderScene m_renderScene;
+        RenderFeatureSnapshot m_featureSnapshot;
         RenderProxySnapshot m_proxySnapshot;
         SceneRenderCollectionStats m_collectionStats;
+        SceneFeatureExtractionStats m_featureExtractionStats;
         SceneRenderPassChainStats m_passChainStats;
         SceneRenderPostProcessStats m_postProcessStats;
         SceneRendererExternalTargetDesc m_externalRenderTarget;
@@ -888,9 +1694,43 @@ namespace RVX
         SceneLocalLightingStats m_localLightingStats;
         SceneClusteredLightingStats m_clusteredLightingStats;
         SceneRendererFrameDiagnostics m_frameDiagnostics;
+        RenderMutationEvidenceDiagnostics m_liveMutationEvidence{};
+        RenderMutationEvidenceDiagnostics m_lastObservedMutationEvidence{};
+        RenderMutationEvidenceDiagnostics m_completedMutationEvidence{};
+        bool m_completedPresentedMaterialBindingsAvailable = false;
+        bool m_completedPresentedMaterialBindingsOverflow = false;
+        std::vector<RenderPresentedMaterialBindingReceipt>
+            m_completedPresentedMaterialBindings{};
+        bool m_completedPresentedSkinningPalettesAvailable = false;
+        bool m_completedPresentedSkinningPalettesOverflow = false;
+        std::vector<RenderPresentedSkinningPaletteReceipt>
+            m_completedPresentedSkinningPalettes{};
+        uint64 m_mutationEvidenceEpoch = 1;
+        uint64 m_completedPresentationCount = 0;
+        bool m_completedPresentationCountSaturated = false;
+        SceneRendererCpuFrameTiming m_currentCpuFrameTiming{};
+        SceneRendererToolDiagnosticsSnapshot m_toolDiagnosticsSnapshot;
         uint64 m_frameDiagnosticsCounter = 0;
+        /// Incremented for every graph recording so a frame-local handle slice
+        /// can never be reused after RenderGraph::Clear().
+        uint64 m_renderPassRecordEpoch = 0;
+        std::shared_ptr<RenderPassRecordResults> m_activeRenderPassResults;
+        RenderPassRecordIdentity m_activeRenderPassIdentity{};
+        /** Frozen physical RHI slot for the active Direct readback recording. */
+        uint32 m_directOpaqueRasterReadbackSourceFrameSlot = RVX_INVALID_INDEX;
+        /** Completion evidence must advance beyond this realized recording boundary. */
+        uint64 m_recordingGraphicsSubmissionBaseline = 0;
+        /** Tracker that issued the boundary; valid only while the recording is pending. */
+        RenderSubmissionTracker* m_recordingSubmissionTracker = nullptr;
+        bool m_hasRecordingSubmissionBoundary = false;
+        /** Only submission-qualified work may appear in completed-frame telemetry. */
+        bool m_submissionQualifiedFrameDiagnostics = false;
+        IRHIDevice* m_featureReportDeviceForTesting = nullptr;
         SceneEnvironmentIBLStats m_environmentIBLStats;
+        /** Accepted scene intent retained even when the current binding is incomplete. */
+        bool m_environmentIBLRequested = false;
         SceneGPUDrivenCullingStats m_gpuDrivenCullingStats;
+        RenderInstancingDiagnostics m_instancingDiagnostics;
         RayTracingSceneManagerStats m_rayTracingSceneStats;
         SceneRayTracingBudgetSettings m_rayTracingBudgetSettings;
         SceneRayTracingFrameStats m_rayTracingFrameBudgetStats;
@@ -915,15 +1755,25 @@ namespace RVX
         Mat4 m_previousViewProjectionMatrix = Mat4Identity();
         bool m_previousViewProjectionValid = false;
         bool m_pendingTemporalHistoryReset = false;
-        bool m_gpuDrivenCullingEnabled = true;
+        RenderGPUDrivenMode m_gpuDrivenCullingMode = RenderGPUDrivenMode::Auto;
+        GPUDrivenPolicyDecision m_gpuDrivenPolicyDecision;
+        bool m_gpuDrivenCullingEnabled = false;
+        RenderPolicyDiagnostics m_renderPolicyDiagnostics;
         std::unordered_map<uint64, Mat4> m_previousObjectWorldMatrices;
         PostProcessSettings m_postProcessSettings;
         ShadowPassConfig m_shadowPassConfig;
         std::vector<uint32_t> m_visibleObjectIndices;
+        std::vector<uint32_t> m_coarseCandidateObjectIndices;
         std::vector<RenderDrawItem> m_opaqueDrawItems;
         std::vector<RenderDrawItem> m_maskedDrawItems;
         std::vector<RenderDrawItem> m_transparentDrawItems;
-        std::vector<RenderDrawItem> m_gpuCullingScratchDrawItems;
+        TransparentDrawListDiagnostics m_transparentDrawListDiagnostics{};
+        std::vector<RenderDrawItem> m_coarseOpaqueDrawItems;
+        std::vector<RenderDrawItem> m_coarseMaskedDrawItems;
+        SceneMeshPassPreparation m_meshPassPreparation;
+        SceneRenderInstanceBatchPlans m_instanceBatchPlans;
+        RenderCandidateSet m_renderCandidates;
+        RenderVisibilityResult m_renderVisibility;
         std::vector<std::string> m_loggedUnsupportedPassNames;
         std::vector<PreGraphPrepareCallbackEntry> m_preGraphPrepareCallbacks;
 
@@ -934,6 +1784,7 @@ namespace RVX
         RayTracedShadowPass* m_rayTracedShadowPass = nullptr;  // Cached pointer to ray traced shadow pass
         CameraVelocityPass* m_cameraVelocityPass = nullptr;  // Cached pointer to camera velocity pass
         ObjectVelocityPass* m_objectVelocityPass = nullptr;  // Cached pointer to object velocity pass
+        ParticleFeaturePass* m_particleFeaturePass = nullptr;  // Cached pointer to particle feature pass
         RayTracedReflectionPass* m_rayTracedReflectionPass = nullptr;  // Cached pointer to ray traced reflection pass
         RayTracedReflectionDenoisePass* m_rayTracedReflectionDenoisePass = nullptr;  // Cached pointer to RT reflection denoise pass
         RayTracedReflectionCompositePass* m_rayTracedReflectionCompositePass = nullptr;  // Cached pointer to RT reflection composite pass
@@ -944,6 +1795,8 @@ namespace RVX
         ColorGradingPass* m_colorGradingPostProcess = nullptr;
         ChromaticAberrationPass* m_chromaticAberrationPostProcess = nullptr;
         VignettePass* m_vignettePostProcess = nullptr;
+        FilmGrainPass* m_filmGrainPostProcess = nullptr;
+        SSAOPass* m_ssaoPostProcess = nullptr;
         FXAAPass* m_fxaaPostProcess = nullptr;
 
         // Depth buffer
@@ -953,8 +1806,30 @@ namespace RVX
         uint32_t m_depthHeight = 0;
 
         // Back buffer state tracking
-        std::vector<RHIResourceState> m_backBufferStates;
-        RHIResourceState m_depthBufferState = RHIResourceState::Undefined;
+        struct FrameAccessSnapshotRollback
+        {
+            struct ResourceTexture
+            {
+                RenderResourceHandle resource{};
+                RHITextureAccessSnapshot access{};
+            };
+
+            bool pending = false;
+            bool restoreDepth = false;
+            RHITextureAccessSnapshot depthAccess;
+            uint32 backBufferIndex = RVX_INVALID_INDEX;
+            RHITextureAccessSnapshot backBufferAccess;
+            std::vector<ResourceTexture> resourceTextures{};
+        };
+
+        std::vector<RHITextureAccessSnapshot> m_backBufferAccessSnapshots;
+        RHITextureAccessSnapshot m_depthAccessSnapshot;
+        FrameAccessSnapshotRollback m_frameAccessSnapshotRollback;
+        std::vector<RenderGraphExternalTextureAccess>
+            m_frameExternalTextureAccesses;
+        RGTextureHandle m_depthGraphHandle;
+        RGTextureHandle m_backBufferGraphHandle;
+        uint32 m_activeBackBufferIndex = RVX_INVALID_INDEX;
 
         // Track swap chain dimensions to detect resize
         uint32_t m_lastSwapChainWidth = 0;

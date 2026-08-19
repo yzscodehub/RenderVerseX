@@ -1,5 +1,5 @@
 #include "Resource/DefaultResources.h"
-#include "Scene/Material.h"
+#include "Geometry/Asset/Material.h"
 #include "Core/Log.h"
 #include <functional>
 
@@ -126,6 +126,49 @@ namespace RVX::Resource
             default:
                 return WhiteTexture();
         }
+    }
+
+    DefaultTexturePayload DefaultResources::GetTexturePayload(
+        TextureFallbackSemantic semantic,
+        TextureUsage usage,
+        bool isSRGB)
+    {
+        // Function-local immutable storage is thread-safe and intentionally
+        // outlives ResourceManager jobs. Logical streamed textures share these
+        // bytes but keep their own stable AssetId/render handle.
+        static const auto white =
+            std::make_shared<const std::vector<uint8_t>>(
+                std::initializer_list<uint8_t>{255, 255, 255, 255});
+        static const auto normal =
+            std::make_shared<const std::vector<uint8_t>>(
+                std::initializer_list<uint8_t>{128, 128, 255, 255});
+        static const auto black =
+            std::make_shared<const std::vector<uint8_t>>(
+                std::initializer_list<uint8_t>{0, 0, 0, 255});
+
+        DefaultTexturePayload result;
+        switch (semantic)
+        {
+            case TextureFallbackSemantic::FlatNormal:
+                result.bytes = normal;
+                break;
+            case TextureFallbackSemantic::Black:
+                result.bytes = black;
+                break;
+            case TextureFallbackSemantic::White:
+            default:
+                result.bytes = white;
+                break;
+        }
+        result.metadata.width = 1;
+        result.metadata.height = 1;
+        result.metadata.depth = 1;
+        result.metadata.mipLevels = 1;
+        result.metadata.arrayLayers = 1;
+        result.metadata.format = TextureFormat::RGBA8;
+        result.metadata.isSRGB = isSRGB;
+        result.metadata.usage = usage;
+        return result;
     }
 
     // =========================================================================

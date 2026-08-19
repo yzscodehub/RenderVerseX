@@ -24,7 +24,7 @@ target_sources(RVX_Physics PRIVATE
     
     # Character Controller
     Private/CharacterController.cpp
-    
+
     # Built-in Physics Engine
     Private/BuiltIn/Integrator.cpp
     Private/BuiltIn/CollisionDetection.cpp
@@ -42,11 +42,6 @@ target_include_directories(RVX_Physics PUBLIC
 
 target_link_libraries(RVX_Physics PUBLIC
     RVX::Core
-)
-
-# Link Geometry module for collision algorithms
-target_link_libraries(RVX_Physics PUBLIC
-    RVX::Geometry
 )
 
 # Optional: Link Jolt Physics only when the unfinished adapter is explicitly enabled

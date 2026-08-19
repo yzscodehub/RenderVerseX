@@ -3,19 +3,139 @@
 /**
  * @file TransientResourcePool.h
  * @brief Resource pool for transient RenderGraph resources
- * 
+ *
  * TransientResourcePool caches GPU resources across frames to avoid
  * repeated allocation/deallocation overhead. Resources are matched
  * by their description hash and reused when available.
  */
 
 #include "RHI/RHI.h"
-#include <unordered_map>
-#include <vector>
 #include <memory>
-
+#include <unordered_map>
 namespace RVX
 {
+    struct GPUCompletionToken;
+    class RenderRetirementQueue;
+    class RenderSubmissionTracker;
+    class TransientResourceLeaseControl;
+
+    enum class TransientResourceLeaseState : uint8
+    {
+        Free = 0,
+        Recording,
+        InFlight,
+        Evicting,
+    };
+
+    class TransientTextureLease
+    {
+    public:
+        TransientTextureLease() = default;
+        ~TransientTextureLease();
+        TransientTextureLease(TransientTextureLease&& other) noexcept;
+        TransientTextureLease& operator=(TransientTextureLease&& other) noexcept;
+        TransientTextureLease(const TransientTextureLease&) = delete;
+        TransientTextureLease& operator=(const TransientTextureLease&) = delete;
+
+        RHITexture* texture = nullptr;
+        RHITextureAccessSnapshot accessSnapshot;
+        bool reused = false;
+
+        explicit operator bool() const
+        {
+            return texture != nullptr && !m_resolved;
+        }
+
+        [[nodiscard]] bool Commit(
+            const GPUCompletionToken& completion,
+            const RHITextureAccessSnapshot& finalAccess);
+        [[nodiscard]] bool CanCommit(
+            const GPUCompletionToken& completion) const;
+        [[nodiscard]] bool AbortUnsubmitted();
+        [[nodiscard]] bool MarkDeviceLost();
+        /** @brief Resolve a view cached by the physical pool slot. */
+        [[nodiscard]] RHITextureViewRef GetOrCreateView(
+            const RHITextureViewDesc& desc) const;
+        [[nodiscard]] uint64 GetSlotId() const noexcept { return m_slotId; }
+        [[nodiscard]] uint32 GetGeneration() const noexcept
+        {
+            return m_generation;
+        }
+        [[nodiscard]] bool IsResolved() const noexcept { return m_resolved; }
+
+    private:
+        friend class TransientResourcePool;
+        TransientTextureLease(
+            std::shared_ptr<TransientResourceLeaseControl> control,
+            uint64 poolIdentity,
+            uint64 slotId,
+            uint32 generation,
+            RHITexture* texture,
+            RHITextureAccessSnapshot accessSnapshot,
+            bool reused);
+        void AutoAbort() noexcept;
+        void Reset() noexcept;
+
+        std::shared_ptr<TransientResourceLeaseControl> m_control;
+        uint64 m_poolIdentity = 0;
+        uint64 m_slotId = 0;
+        uint32 m_generation = 0;
+        bool m_resolved = true;
+    };
+
+    class TransientBufferLease
+    {
+    public:
+        TransientBufferLease() = default;
+        ~TransientBufferLease();
+        TransientBufferLease(TransientBufferLease&& other) noexcept;
+        TransientBufferLease& operator=(TransientBufferLease&& other) noexcept;
+        TransientBufferLease(const TransientBufferLease&) = delete;
+        TransientBufferLease& operator=(const TransientBufferLease&) = delete;
+
+        RHIBuffer* buffer = nullptr;
+        RHIBufferAccessSnapshot accessSnapshot;
+        bool reused = false;
+
+        explicit operator bool() const
+        {
+            return buffer != nullptr && !m_resolved;
+        }
+
+        [[nodiscard]] bool Commit(
+            const GPUCompletionToken& completion,
+            const RHIBufferAccessSnapshot& finalAccess);
+        [[nodiscard]] bool CanCommit(
+            const GPUCompletionToken& completion) const;
+        [[nodiscard]] bool AbortUnsubmitted();
+        [[nodiscard]] bool MarkDeviceLost();
+        [[nodiscard]] uint64 GetSlotId() const noexcept { return m_slotId; }
+        [[nodiscard]] uint32 GetGeneration() const noexcept
+        {
+            return m_generation;
+        }
+        [[nodiscard]] bool IsResolved() const noexcept { return m_resolved; }
+
+    private:
+        friend class TransientResourcePool;
+        TransientBufferLease(
+            std::shared_ptr<TransientResourceLeaseControl> control,
+            uint64 poolIdentity,
+            uint64 slotId,
+            uint32 generation,
+            RHIBuffer* buffer,
+            RHIBufferAccessSnapshot accessSnapshot,
+            bool reused);
+        void AutoAbort() noexcept;
+        void Reset() noexcept;
+
+        std::shared_ptr<TransientResourceLeaseControl> m_control;
+        uint64 m_poolIdentity = 0;
+        uint64 m_slotId = 0;
+        uint32 m_generation = 0;
+        bool m_resolved = true;
+    };
+
     /**
      * @brief Pool for transient GPU resources
      * 
@@ -39,7 +159,7 @@ namespace RVX
     class TransientResourcePool
     {
     public:
-        TransientResourcePool() = default;
+        TransientResourcePool();
         ~TransientResourcePool();
 
         // Non-copyable
@@ -54,7 +174,9 @@ namespace RVX
          * @brief Initialize the pool with a device
          * @param device The RHI device for resource creation
          */
-        void Initialize(IRHIDevice* device);
+        void Initialize(IRHIDevice* device,
+                        RenderSubmissionTracker* submissionTracker = nullptr,
+                        RenderRetirementQueue* retirementQueue = nullptr);
 
         /**
          * @brief Shutdown and release all pooled resources
@@ -64,7 +186,10 @@ namespace RVX
         /**
          * @brief Check if the pool is initialized
          */
-        bool IsInitialized() const { return m_device != nullptr; }
+        bool IsInitialized() const;
+
+        /** @brief Publish the actual token for the most recently recorded pool use. */
+        void NotifySubmission(const GPUCompletionToken& completion);
 
         // =========================================================================
         // Frame Management
@@ -98,12 +223,18 @@ namespace RVX
          */
         RHITexture* AcquireTexture(const RHITextureDesc& desc);
 
+        /** @brief Acquire a texture together with its last realized access snapshot. */
+        TransientTextureLease AcquireTextureLease(const RHITextureDesc& desc);
+
         /**
          * @brief Acquire a buffer from the pool
          * @param desc The buffer description
          * @return A buffer matching the description, or nullptr on failure
          */
         RHIBuffer* AcquireBuffer(const RHIBufferDesc& desc);
+
+        /** @brief Acquire a buffer together with its last realized access snapshot. */
+        TransientBufferLease AcquireBufferLease(const RHIBufferDesc& desc);
 
         /**
          * @brief Release a texture back to the pool
@@ -113,11 +244,17 @@ namespace RVX
          */
         void ReleaseTexture(RHITexture* texture);
 
+        /** @brief Release a texture and commit its final realized access snapshot. */
+        void ReleaseTexture(RHITexture* texture, const RHITextureAccessSnapshot& finalAccess);
+
         /**
          * @brief Release a buffer back to the pool
          * @param buffer The buffer to release
          */
         void ReleaseBuffer(RHIBuffer* buffer);
+
+        /** @brief Release a buffer and commit its final realized access snapshot. */
+        void ReleaseBuffer(RHIBuffer* buffer, const RHIBufferAccessSnapshot& finalAccess);
 
         // =========================================================================
         // Eviction
@@ -144,6 +281,19 @@ namespace RVX
             uint32 bufferHits = 0;
             uint32 bufferMisses = 0;
             uint64 totalPooledMemory = 0;    // Estimated memory in pool
+            uint32 recordingTextureLeases = 0;
+            uint32 recordingBufferLeases = 0;
+            uint32 inFlightTextureLeases = 0;
+            uint32 inFlightBufferLeases = 0;
+            uint64 leaseCommitCount = 0;
+            uint64 leaseAbortCount = 0;
+            uint64 leaseDeviceLostCount = 0;
+            uint64 leaseValidationFailureCount = 0;
+            uint64 completionRetirementCount = 0;
+            uint32 textureViewCount = 0;
+            uint32 textureViewHits = 0;
+            uint32 textureViewMisses = 0;
+            uint64 textureViewCreationFailureCount = 0;
         };
 
         /**
@@ -157,6 +307,13 @@ namespace RVX
         void ResetFrameStats();
 
     private:
+        // Short-lived source compatibility for the legacy raw-pointer API.
+        // The adapter owns the real generation-safe lease until Release*().
+        std::unordered_map<RHITexture*, TransientTextureLease>
+            m_legacyTextureLeases;
+        std::unordered_map<RHIBuffer*, TransientBufferLease>
+            m_legacyBufferLeases;
+
         // Hash function for texture descriptions
         static uint64 HashTextureDesc(const RHITextureDesc& desc);
         static uint64 HashBufferDesc(const RHIBufferDesc& desc);
@@ -165,33 +322,8 @@ namespace RVX
         static uint64 EstimateTextureMemory(const RHITextureDesc& desc);
         static uint64 EstimateBufferMemory(const RHIBufferDesc& desc);
 
-        struct PooledTexture
-        {
-            RHITextureRef texture;
-            uint64 descHash = 0;
-            uint32 lastUsedFrame = 0;
-            uint64 memorySize = 0;
-            bool inUse = false;
-        };
-
-        struct PooledBuffer
-        {
-            RHIBufferRef buffer;
-            uint64 descHash = 0;
-            uint32 lastUsedFrame = 0;
-            uint64 memorySize = 0;
-            bool inUse = false;
-        };
-
-        IRHIDevice* m_device = nullptr;
-        uint32 m_currentFrame = 0;
-
-        // Pooled resources indexed by description hash
-        std::unordered_multimap<uint64, PooledTexture> m_texturePool;
-        std::unordered_multimap<uint64, PooledBuffer> m_bufferPool;
-
-        // Statistics
-        mutable Stats m_stats;
+        class Impl;
+        std::shared_ptr<Impl> m_impl;
     };
 
 } // namespace RVX

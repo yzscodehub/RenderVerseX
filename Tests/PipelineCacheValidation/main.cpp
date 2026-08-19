@@ -1,14 +1,19 @@
+#include "Common/DeterministicShaderCompiler.h"
 #include "Core/Log.h"
+#include "Render/GPUDriven/GPUCulling.h"
 #include "Render/PipelineCache.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/Renderer/RenderScene.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resources/RenderRetirementQueue.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHI.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +23,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -82,6 +88,16 @@ namespace
         fs::path m_path;
     };
 
+    class PipelineCacheForValidation final : public RVX::PipelineCache
+    {
+    public:
+        PipelineCacheForValidation()
+            : RVX::PipelineCache(
+                  RVX::Tests::CreateDeterministicShaderCompiler)
+        {
+        }
+    };
+
     class FakeBuffer final : public RVX::RHIBuffer
     {
     public:
@@ -129,34 +145,70 @@ namespace
     class FakeTextureView final : public RVX::RHITextureView
     {
     public:
-        FakeTextureView(RVX::RHITexture* texture, const RVX::RHITextureViewDesc& desc)
-            : m_texture(texture)
+        FakeTextureView(RVX::RHITexture* texture,
+                        const RVX::RHITextureViewDesc& desc,
+                        int* destructionCount = nullptr)
+            : RVX::RHITextureView(RVX::RHITextureRef(texture))
             , m_desc(desc)
+            , m_destructionCount(destructionCount)
         {
-            if (m_desc.format == RVX::RHIFormat::Unknown && m_texture)
+            if (m_desc.format == RVX::RHIFormat::Unknown && texture)
             {
-                m_desc.format = m_texture->GetFormat();
+                m_desc.format = texture->GetFormat();
             }
         }
 
-        RVX::RHITexture* GetTexture() const override { return m_texture; }
+        ~FakeTextureView() override
+        {
+            if (m_destructionCount)
+            {
+                ++*m_destructionCount;
+            }
+        }
+
         RVX::RHIFormat GetFormat() const override { return m_desc.format; }
         const RVX::RHISubresourceRange& GetSubresourceRange() const override { return m_desc.subresourceRange; }
 
     private:
-        RVX::RHITexture* m_texture = nullptr;
         RVX::RHITextureViewDesc m_desc;
+        int* m_destructionCount = nullptr;
     };
 
     class FakeSampler final : public RVX::RHISampler
     {
     };
 
+    class FakeFence final : public RVX::RHIFence
+    {
+    public:
+        explicit FakeFence(RVX::uint64 initialValue)
+            : m_completedValue(initialValue)
+        {
+        }
+
+        RVX::uint64 GetCompletedValue() const override { return m_completedValue; }
+        void Signal(RVX::uint64 value) override { m_signaledValue = value; }
+        void SignalOnQueue(RVX::uint64 value, RVX::RHICommandQueueType) override
+        {
+            Signal(value);
+        }
+        void Wait(RVX::uint64 value, RVX::uint64 = UINT64_MAX) override
+        {
+            m_completedValue = value;
+        }
+        void Complete(RVX::uint64 value) { m_completedValue = value; }
+
+    private:
+        RVX::uint64 m_completedValue = 0;
+        RVX::uint64 m_signaledValue = 0;
+    };
+
     class FakeShader final : public RVX::RHIShader
     {
     public:
         explicit FakeShader(const RVX::RHIShaderDesc& desc)
-            : m_stage(desc.stage)
+            : RHIShader(desc)
+            , m_stage(desc.stage)
         {
             if (desc.bytecode && desc.bytecodeSize > 0)
             {
@@ -189,6 +241,65 @@ namespace
 
     class FakePipelineLayout final : public RVX::RHIPipelineLayout
     {
+    public:
+        explicit FakePipelineLayout(
+            const RVX::RHIPipelineLayoutDesc& desc)
+            : RHIPipelineLayout(desc)
+        {
+        }
+    };
+
+    class GPUSceneDepthPermutationRejectingCompiler final : public RVX::IShaderCompiler
+    {
+    public:
+        GPUSceneDepthPermutationRejectingCompiler()
+            : m_delegate(RVX::Tests::CreateDeterministicShaderCompiler())
+        {
+        }
+
+        RVX::ShaderCompileSupport QuerySupport(
+            const RVX::ShaderCompileOptions& options) const override
+        {
+            return m_delegate->QuerySupport(options);
+        }
+
+        RVX::ShaderCompileResult Compile(
+            const RVX::ShaderCompileOptions& options) override
+        {
+            const bool gpuScenePermutation = options.entryPoint != nullptr &&
+                std::string(options.entryPoint) == "VSMainGPUScene" &&
+                std::any_of(options.defines.begin(), options.defines.end(),
+                    [](const RVX::ShaderMacro& define)
+                    {
+                        return define.name == "RVX_GPU_SCENE_RASTER" &&
+                               define.value == "1";
+                    });
+            const bool depthOnlyShader = options.sourcePath != nullptr &&
+                std::filesystem::path(options.sourcePath).filename() == "DepthOnly.hlsl";
+            if (gpuScenePermutation && depthOnlyShader)
+            {
+                RVX::ShaderCompileResult rejected;
+                rejected.errorMessage = "GPU-scene DepthOnly permutation rejected by test compiler";
+                return rejected;
+            }
+            return m_delegate->Compile(options);
+        }
+
+    private:
+        std::unique_ptr<RVX::IShaderCompiler> m_delegate;
+    };
+
+    class GPUSceneDepthPermutationRejectingPipelineCache final : public RVX::PipelineCache
+    {
+    public:
+        GPUSceneDepthPermutationRejectingPipelineCache()
+            : RVX::PipelineCache(
+                  []()
+                  {
+                      return std::make_unique<GPUSceneDepthPermutationRejectingCompiler>();
+                  })
+        {
+        }
     };
 
     class FakePipeline final : public RVX::RHIPipeline
@@ -201,7 +312,8 @@ namespace
     {
     public:
         explicit FakeDescriptorSet(const RVX::RHIDescriptorSetDesc& desc)
-            : m_bindings(desc.bindings)
+            : RHIDescriptorSet(desc)
+            , m_bindings(desc.bindings)
         {
         }
 
@@ -244,7 +356,11 @@ namespace
         RVX::RHITextureViewRef CreateTextureView(RVX::RHITexture* texture, const RVX::RHITextureViewDesc& desc) override
         {
             capturedTextureViewDescs.push_back(desc);
-            return RVX::MakeRef<FakeTextureView>(texture, desc);
+            int* destructionCount = trackNextTextureViewDestruction
+                ? &trackedTextureViewDestructionCount : nullptr;
+            trackNextTextureViewDestruction = false;
+            return RVX::MakeRef<FakeTextureView>(
+                texture, desc, destructionCount);
         }
 
         RVX::RHISamplerRef CreateSampler(const RVX::RHISamplerDesc& desc) override
@@ -270,6 +386,11 @@ namespace
         RVX::RHIDescriptorSetLayoutRef CreateDescriptorSetLayout(const RVX::RHIDescriptorSetLayoutDesc& desc) override
         {
             capturedSetLayouts.push_back(desc);
+            if (rejectGPUSceneRasterObjectSetLayout && desc.debugName &&
+                std::string(desc.debugName) == "GPUSceneRasterObjectSetLayout")
+            {
+                return {};
+            }
             return RVX::MakeRef<FakeDescriptorSetLayout>(desc);
         }
 
@@ -280,7 +401,7 @@ namespace
             capturedPipelineLayoutDescs.push_back(desc);
             if (failPipelineLayoutCreation)
                 return {};
-            return RVX::MakeRef<FakePipelineLayout>();
+            return RVX::MakeRef<FakePipelineLayout>(desc);
         }
 
         RVX::RHIPipelineRef CreateGraphicsPipeline(const RVX::RHIGraphicsPipelineDesc& desc) override
@@ -305,7 +426,12 @@ namespace
         RVX::uint64 SubmitCommandContext(RVX::RHICommandContext*, RVX::RHIFence*) override { return 0; }
         RVX::uint64 SubmitCommandContexts(std::span<RVX::RHICommandContext* const>, RVX::RHIFence*) override { return 0; }
         RVX::RHISwapChainRef CreateSwapChain(const RVX::RHISwapChainDesc&) override { return {}; }
-        RVX::RHIFenceRef CreateFence(RVX::uint64) override { return {}; }
+        RVX::RHIFenceRef CreateFence(RVX::uint64 initialValue) override
+        {
+            auto fence = RVX::MakeRef<FakeFence>(initialValue);
+            trackedFences.push_back(fence);
+            return fence;
+        }
         void WaitForFence(RVX::RHIFence*, RVX::uint64) override {}
         void WaitIdle() override {}
         void BeginFrame() override {}
@@ -319,14 +445,45 @@ namespace
         const RVX::RHICapabilities& GetCapabilities() const override { return m_capabilities; }
         RVX::RHIBackendType GetBackendType() const override { return m_backend; }
 
+        void EnableNativeTimelineCompletion()
+        {
+            m_capabilities.backendType = RVX::RHIBackendType::DX12;
+            m_capabilities.supportsComputePipeline = true;
+            m_capabilities.supportsDescriptorSets = true;
+            m_capabilities.supportsDynamicDescriptorOffsets = true;
+            m_capabilities.maxDescriptorSets = 8;
+            m_capabilities.supportsExplicitResourceBarriers = true;
+            m_capabilities.supportsDefaultQueueFenceSignal = true;
+            m_capabilities.supportsExplicitQueueFenceSignal = true;
+            m_capabilities.supportsAsyncCompute = true;
+            m_capabilities.queueTopology.completionMode =
+                RVX::RHIQueueCompletionMode::NativeTimeline;
+            m_capabilities.queueTopology.logicalQueueDomains = {
+                RVX::GPUQueueDomain::Graphics,
+                RVX::GPUQueueDomain::Compute,
+                RVX::GPUQueueDomain::Copy};
+            m_capabilities.queueTopology.activeDomainCount = 3;
+        }
+
+        void CompleteTrackedFences(RVX::uint64 value)
+        {
+            for (const RVX::RHIFenceRef& fence : trackedFences)
+            {
+                static_cast<FakeFence*>(fence.Get())->Complete(value);
+            }
+        }
+
         bool failBufferCreation = false;
         bool failShaderCreation = false;
         RVX::uint32 failShaderCreationAtIndex = std::numeric_limits<RVX::uint32>::max();
         bool failPipelineLayoutCreation = false;
         bool failPipelineCreation = false;
+        bool rejectGPUSceneRasterObjectSetLayout = false;
         RVX::uint32 failPipelineCreationAtIndex = std::numeric_limits<RVX::uint32>::max();
         RVX::uint32 shaderCreateCount = 0;
         RVX::uint32 capturedPipelineLayoutSetCount = 0;
+        bool trackNextTextureViewDestruction = false;
+        int trackedTextureViewDestructionCount = 0;
         std::vector<RVX::uint32> capturedPipelineLayoutSetCounts;
         std::vector<RVX::RHIPipelineLayoutDesc> capturedPipelineLayoutDescs;
         std::vector<RVX::RHIBufferDesc> capturedBufferDescs;
@@ -338,11 +495,49 @@ namespace
         std::vector<FakeDescriptorSet*> capturedDescriptorSets;
         std::vector<RVX::RHIDescriptorSetLayoutDesc> capturedSetLayouts;
         std::vector<RVX::RHIGraphicsPipelineDesc> capturedGraphicsPipelines;
+        std::vector<RVX::RHIFenceRef> trackedFences;
 
     private:
         RVX::RHIBackendType m_backend = RVX::RHIBackendType::DX12;
         RVX::RHICapabilities m_capabilities;
     };
+
+    void ExpectGPUSceneRasterUnavailablePreservesBaseCache(
+        RVX::PipelineCache& cache,
+        std::string_view expectedReason)
+    {
+        EXPECT_TRUE(cache.IsInitialized());
+        EXPECT_TRUE(cache.GetLastError().empty());
+        EXPECT_FALSE(cache.IsGPUSceneRasterReady());
+        EXPECT_NE(cache.GetGPUSceneRasterUnavailableReason().find(expectedReason),
+                  std::string::npos);
+        EXPECT_EQ(nullptr, cache.GetGPUSceneRasterLayout());
+        EXPECT_EQ(nullptr, cache.GetGPUSceneRasterObjectSetLayout());
+        EXPECT_EQ(nullptr, cache.GetGPUScenePipelineForVariant(
+                               RVX::MaterialPipelineVariant::Opaque,
+                               RVX::RHIFormat::RGBA8_UNORM));
+        EXPECT_EQ(nullptr, cache.GetGPUSceneDepthOnlyPipeline());
+
+        RVX::GPUSceneRasterResourceSnapshot emptyResources;
+        RVX::ObjectConstants objectConstants{};
+        RVX::GPUSceneRasterBindingSnapshot binding;
+        EXPECT_FALSE(cache.CreateGPUSceneRasterBindingSnapshot(
+            emptyResources, objectConstants, binding));
+        EXPECT_FALSE(binding.IsReadyForBinding());
+        EXPECT_TRUE(cache.GetLastError().empty());
+
+        ASSERT_NE(nullptr, cache.GetDefaultLayout());
+        ASSERT_NE(nullptr, cache.GetObjectSetLayout());
+        ASSERT_NE(nullptr, cache.GetObjectDescriptorSet());
+        EXPECT_EQ(2u, cache.GetObjectSetLayout()->GetEntries().size());
+        EXPECT_EQ(2u, cache.GetObjectDescriptorSet()->GetDescriptorSnapshot().size());
+        EXPECT_NE(nullptr, cache.GetOpaquePipeline());
+        EXPECT_NE(nullptr, cache.GetDepthOnlyPipeline());
+        EXPECT_NE(nullptr, cache.GetGPUDrivenPipelineForVariant(
+                               RVX::MaterialPipelineVariant::Opaque,
+                               RVX::RHIFormat::RGBA8_UNORM));
+        EXPECT_TRUE(cache.GetLastError().empty());
+    }
 
     const RVX::RHIBindingLayoutEntry* FindBinding(
         const RVX::RHIDescriptorSetLayoutDesc& desc,
@@ -368,7 +563,7 @@ namespace
         return it == desc.bindings.end() ? nullptr : &(*it);
     }
 
-    bool HasCompilerAvailable()
+    bool HasShaderFixtures()
     {
         auto shaderDir = FindShaderDirectory();
         return !shaderDir.empty();
@@ -681,6 +876,7 @@ namespace
 
         return TryEvaluateUintExpression(expression, outValue);
     }
+
     fs::path FindModelViewerSourcePath()
     {
         const fs::path shaderDir = FindShaderDirectory();
@@ -690,14 +886,30 @@ namespace
         }
 
         const fs::path repoRoot = shaderDir.parent_path().parent_path();
-        const fs::path showcasePath = repoRoot / "Samples" / "Showcase" / "ModelViewer" / "main.cpp";
+        const fs::path showcasePath =
+            repoRoot / "Samples" / "Showcase" / "ModelViewer" / "main.cpp";
         if (fs::exists(showcasePath))
         {
             return showcasePath;
         }
 
-        const fs::path legacyPath = repoRoot / "Samples" / "ModelViewer" / "main.cpp";
+        const fs::path legacyPath =
+            repoRoot / "Samples" / "ModelViewer" / "main.cpp";
         return fs::exists(legacyPath) ? legacyPath : fs::path{};
+    }
+
+    fs::path FindRenderVerseSceneSourcePath(const char* fileName)
+    {
+        const fs::path shaderDir = FindShaderDirectory();
+        if (shaderDir.empty())
+        {
+            return {};
+        }
+
+        const fs::path repoRoot = shaderDir.parent_path().parent_path();
+        const fs::path scenePath = repoRoot / "Samples" / "RenderVerseSamples" /
+                                   "Scenes" / fileName;
+        return fs::exists(scenePath) ? scenePath : fs::path{};
     }
 
     fs::path FindTestsCMakePath()
@@ -765,16 +977,31 @@ namespace
 
 TEST_F(PipelineCacheValidationFixture, NullDeviceFailsWithVisibleError)
 {
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     EXPECT_FALSE(cache.Initialize(nullptr, ""));
     EXPECT_NE(cache.GetLastError().find("Invalid device"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, NullInjectedCompilerFailsWithVisibleError)
+{
+    FakeDevice device;
+    RVX::PipelineCache cache(
+        []() -> std::unique_ptr<RVX::IShaderCompiler>
+        {
+            return {};
+        });
+
+    EXPECT_FALSE(cache.Initialize(&device, ""));
+    EXPECT_NE(
+        cache.GetLastError().find("factory returned no compiler"),
+        std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingShaderFileFailsWithVisibleError)
 {
     TempDirectory temp("rvx_pipeline_missing_shader");
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
     EXPECT_NE(cache.GetLastError().find("Shader file not found"), std::string::npos);
@@ -782,7 +1009,7 @@ TEST_F(PipelineCacheValidationFixture, MissingShaderFileFailsWithVisibleError)
 
 TEST_F(PipelineCacheValidationFixture, FailedShaderCreationFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -790,14 +1017,14 @@ TEST_F(PipelineCacheValidationFixture, FailedShaderCreationFailsWithVisibleError
     FakeDevice device;
     device.failShaderCreation = true;
 
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("vertex shader"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingToneMappingShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -810,7 +1037,7 @@ TEST_F(PipelineCacheValidationFixture, MissingToneMappingShaderFailsWithVisibleE
     fs::create_directories(temp.Path() / "PostProcess");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
     EXPECT_NE(cache.GetLastError().find("ToneMapping shader file not found"), std::string::npos);
@@ -818,7 +1045,7 @@ TEST_F(PipelineCacheValidationFixture, MissingToneMappingShaderFailsWithVisibleE
 
 TEST_F(PipelineCacheValidationFixture, MissingBloomShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -833,15 +1060,40 @@ TEST_F(PipelineCacheValidationFixture, MissingBloomShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ToneMapping.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
     EXPECT_NE(cache.GetLastError().find("Bloom shader file not found"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, MissingSSAOShaderFailsWithVisibleError)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path sourceDir = FindShaderDirectory();
+    TempDirectory temp("rvx_pipeline_missing_ssao_shader");
+    fs::copy_file(sourceDir / "DefaultLit.hlsl", temp.Path() / "DefaultLit.hlsl");
+    fs::copy_file(sourceDir / "DepthOnly.hlsl", temp.Path() / "DepthOnly.hlsl");
+    fs::copy(sourceDir / "Include", temp.Path() / "Include", fs::copy_options::recursive);
+    fs::create_directories(temp.Path() / "PostProcess");
+    fs::copy_file(sourceDir / "PostProcess" / "ToneMapping.hlsl",
+                  temp.Path() / "PostProcess" / "ToneMapping.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "Bloom.hlsl",
+                  temp.Path() / "PostProcess" / "Bloom.hlsl");
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
+    EXPECT_NE(cache.GetLastError().find("SSAO shader file not found"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, MissingCameraVelocityShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -851,7 +1103,7 @@ TEST_F(PipelineCacheValidationFixture, MissingCameraVelocityShaderFailsWithVisib
     fs::remove(shaderDir / "PostProcess" / "CameraVelocity.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_NE(cache.GetLastError().find("CameraVelocity shader file not found"), std::string::npos);
@@ -859,7 +1111,7 @@ TEST_F(PipelineCacheValidationFixture, MissingCameraVelocityShaderFailsWithVisib
 
 TEST_F(PipelineCacheValidationFixture, MissingObjectVelocityShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -869,14 +1121,14 @@ TEST_F(PipelineCacheValidationFixture, MissingObjectVelocityShaderFailsWithVisib
     fs::remove(shaderDir / "ObjectVelocity.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_NE(cache.GetLastError().find("ObjectVelocity shader file not found"), std::string::npos);
 }
 TEST_F(PipelineCacheValidationFixture, MissingFXAAShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -891,6 +1143,44 @@ TEST_F(PipelineCacheValidationFixture, MissingFXAAShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ToneMapping.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "Bloom.hlsl",
                   temp.Path() / "PostProcess" / "Bloom.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "SSAO.hlsl",
+                  temp.Path() / "PostProcess" / "SSAO.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "CameraVelocity.hlsl",
+                  temp.Path() / "PostProcess" / "CameraVelocity.hlsl");
+    fs::copy_file(sourceDir / "ObjectVelocity.hlsl", temp.Path() / "ObjectVelocity.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "ColorGrading.hlsl",
+                  temp.Path() / "PostProcess" / "ColorGrading.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "ChromaticAberration.hlsl",
+                  temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "FilmGrain.hlsl",
+                  temp.Path() / "PostProcess" / "FilmGrain.hlsl");
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
+    EXPECT_NE(cache.GetLastError().find("FXAA shader file not found"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, MissingFilmGrainShaderFailsWithVisibleError)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path sourceDir = FindShaderDirectory();
+    TempDirectory temp("rvx_pipeline_missing_film_grain_shader");
+    fs::copy_file(sourceDir / "DefaultLit.hlsl", temp.Path() / "DefaultLit.hlsl");
+    fs::copy_file(sourceDir / "DepthOnly.hlsl", temp.Path() / "DepthOnly.hlsl");
+    fs::copy(sourceDir / "Include", temp.Path() / "Include", fs::copy_options::recursive);
+    fs::create_directories(temp.Path() / "PostProcess");
+    fs::copy_file(sourceDir / "PostProcess" / "ToneMapping.hlsl",
+                  temp.Path() / "PostProcess" / "ToneMapping.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "Bloom.hlsl",
+                  temp.Path() / "PostProcess" / "Bloom.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "SSAO.hlsl",
+                  temp.Path() / "PostProcess" / "SSAO.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "CameraVelocity.hlsl",
                   temp.Path() / "PostProcess" / "CameraVelocity.hlsl");
     fs::copy_file(sourceDir / "ObjectVelocity.hlsl", temp.Path() / "ObjectVelocity.hlsl");
@@ -900,15 +1190,15 @@ TEST_F(PipelineCacheValidationFixture, MissingFXAAShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
-    EXPECT_NE(cache.GetLastError().find("FXAA shader file not found"), std::string::npos);
+    EXPECT_NE(cache.GetLastError().find("FilmGrain shader file not found"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, MissingChromaticAberrationShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -923,6 +1213,8 @@ TEST_F(PipelineCacheValidationFixture, MissingChromaticAberrationShaderFailsWith
                   temp.Path() / "PostProcess" / "ToneMapping.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "Bloom.hlsl",
                   temp.Path() / "PostProcess" / "Bloom.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "SSAO.hlsl",
+                  temp.Path() / "PostProcess" / "SSAO.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "CameraVelocity.hlsl",
                   temp.Path() / "PostProcess" / "CameraVelocity.hlsl");
     fs::copy_file(sourceDir / "ObjectVelocity.hlsl", temp.Path() / "ObjectVelocity.hlsl");
@@ -930,7 +1222,7 @@ TEST_F(PipelineCacheValidationFixture, MissingChromaticAberrationShaderFailsWith
                   temp.Path() / "PostProcess" / "ColorGrading.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
     EXPECT_NE(cache.GetLastError().find("ChromaticAberration shader file not found"), std::string::npos);
@@ -938,7 +1230,7 @@ TEST_F(PipelineCacheValidationFixture, MissingChromaticAberrationShaderFailsWith
 
 TEST_F(PipelineCacheValidationFixture, MissingColorGradingShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -953,12 +1245,14 @@ TEST_F(PipelineCacheValidationFixture, MissingColorGradingShaderFailsWithVisible
                   temp.Path() / "PostProcess" / "ToneMapping.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "Bloom.hlsl",
                   temp.Path() / "PostProcess" / "Bloom.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "SSAO.hlsl",
+                  temp.Path() / "PostProcess" / "SSAO.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "CameraVelocity.hlsl",
                   temp.Path() / "PostProcess" / "CameraVelocity.hlsl");
     fs::copy_file(sourceDir / "ObjectVelocity.hlsl", temp.Path() / "ObjectVelocity.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
     EXPECT_NE(cache.GetLastError().find("ColorGrading shader file not found"), std::string::npos);
@@ -966,7 +1260,7 @@ TEST_F(PipelineCacheValidationFixture, MissingColorGradingShaderFailsWithVisible
 
 TEST_F(PipelineCacheValidationFixture, MissingVignetteShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -981,6 +1275,8 @@ TEST_F(PipelineCacheValidationFixture, MissingVignetteShaderFailsWithVisibleErro
                   temp.Path() / "PostProcess" / "ToneMapping.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "Bloom.hlsl",
                   temp.Path() / "PostProcess" / "Bloom.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "SSAO.hlsl",
+                  temp.Path() / "PostProcess" / "SSAO.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "CameraVelocity.hlsl",
                   temp.Path() / "PostProcess" / "CameraVelocity.hlsl");
     fs::copy_file(sourceDir / "ObjectVelocity.hlsl", temp.Path() / "ObjectVelocity.hlsl");
@@ -988,11 +1284,13 @@ TEST_F(PipelineCacheValidationFixture, MissingVignetteShaderFailsWithVisibleErro
                   temp.Path() / "PostProcess" / "ColorGrading.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "ChromaticAberration.hlsl",
                   temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "FilmGrain.hlsl",
+                  temp.Path() / "PostProcess" / "FilmGrain.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "FXAA.hlsl",
                   temp.Path() / "PostProcess" / "FXAA.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
     EXPECT_NE(cache.GetLastError().find("Vignette shader file not found"), std::string::npos);
@@ -1000,7 +1298,7 @@ TEST_F(PipelineCacheValidationFixture, MissingVignetteShaderFailsWithVisibleErro
 
 TEST_F(PipelineCacheValidationFixture, MissingSkyboxShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1015,6 +1313,8 @@ TEST_F(PipelineCacheValidationFixture, MissingSkyboxShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ToneMapping.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "Bloom.hlsl",
                   temp.Path() / "PostProcess" / "Bloom.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "SSAO.hlsl",
+                  temp.Path() / "PostProcess" / "SSAO.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "CameraVelocity.hlsl",
                   temp.Path() / "PostProcess" / "CameraVelocity.hlsl");
     fs::copy_file(sourceDir / "ObjectVelocity.hlsl", temp.Path() / "ObjectVelocity.hlsl");
@@ -1022,6 +1322,8 @@ TEST_F(PipelineCacheValidationFixture, MissingSkyboxShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ColorGrading.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "ChromaticAberration.hlsl",
                   temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "FilmGrain.hlsl",
+                  temp.Path() / "PostProcess" / "FilmGrain.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "FXAA.hlsl",
                   temp.Path() / "PostProcess" / "FXAA.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "Vignette.hlsl",
@@ -1029,7 +1331,7 @@ TEST_F(PipelineCacheValidationFixture, MissingSkyboxShaderFailsWithVisibleError)
     fs::copy_file(sourceDir / "UI.hlsl", temp.Path() / "UI.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
     EXPECT_NE(cache.GetLastError().find("Skybox shader file not found"), std::string::npos);
@@ -1037,7 +1339,7 @@ TEST_F(PipelineCacheValidationFixture, MissingSkyboxShaderFailsWithVisibleError)
 
 TEST_F(PipelineCacheValidationFixture, MissingUIShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1052,6 +1354,8 @@ TEST_F(PipelineCacheValidationFixture, MissingUIShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ToneMapping.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "Bloom.hlsl",
                   temp.Path() / "PostProcess" / "Bloom.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "SSAO.hlsl",
+                  temp.Path() / "PostProcess" / "SSAO.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "CameraVelocity.hlsl",
                   temp.Path() / "PostProcess" / "CameraVelocity.hlsl");
     fs::copy_file(sourceDir / "ObjectVelocity.hlsl", temp.Path() / "ObjectVelocity.hlsl");
@@ -1059,13 +1363,15 @@ TEST_F(PipelineCacheValidationFixture, MissingUIShaderFailsWithVisibleError)
                   temp.Path() / "PostProcess" / "ColorGrading.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "ChromaticAberration.hlsl",
                   temp.Path() / "PostProcess" / "ChromaticAberration.hlsl");
+    fs::copy_file(sourceDir / "PostProcess" / "FilmGrain.hlsl",
+                  temp.Path() / "PostProcess" / "FilmGrain.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "FXAA.hlsl",
                   temp.Path() / "PostProcess" / "FXAA.hlsl");
     fs::copy_file(sourceDir / "PostProcess" / "Vignette.hlsl",
                   temp.Path() / "PostProcess" / "Vignette.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, temp.Path().string()));
     EXPECT_NE(cache.GetLastError().find("UI shader file not found"), std::string::npos);
@@ -1073,7 +1379,7 @@ TEST_F(PipelineCacheValidationFixture, MissingUIShaderFailsWithVisibleError)
 
 TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionCompositeShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1083,7 +1389,7 @@ TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionCompositeShader
     fs::remove(shaderDir / "PostProcess" / "RayTracedReflectionComposite.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_NE(cache.GetLastError().find("RayTracedReflectionComposite shader file not found"),
@@ -1092,7 +1398,7 @@ TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionCompositeShader
 
 TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionDenoiseShaderFailsWithVisibleError)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1102,7 +1408,7 @@ TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionDenoiseShaderFa
     fs::remove(shaderDir / "PostProcess" / "RayTracedReflectionDenoise.hlsl");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_NE(cache.GetLastError().find("RayTracedReflectionDenoise shader file not found"),
@@ -1111,7 +1417,7 @@ TEST_F(PipelineCacheValidationFixture, MissingRayTracedReflectionDenoiseShaderFa
 
 TEST_F(PipelineCacheValidationFixture, SkyboxShaderUsesFullscreenTriangleAndProceduralGradient)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1130,7 +1436,7 @@ TEST_F(PipelineCacheValidationFixture, SkyboxShaderUsesFullscreenTriangleAndProc
 
 TEST_F(PipelineCacheValidationFixture, ToneMappingShaderUsesSingleDisplayConversion)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1161,9 +1467,104 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingShaderUsesSingleDisplayConvers
     EXPECT_EQ(countOccurrences(shaderSource, "pow("), static_cast<size_t>(1));
 }
 
+TEST_F(PipelineCacheValidationFixture, FullscreenTrianglePassesPreserveUpperLeftTextureOrientation)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path shaderDirectory = FindShaderDirectory();
+    const std::string toneMappingSource =
+        ReadTextFile(shaderDirectory / "PostProcess" / "ToneMapping.hlsl");
+    const std::string bloomSource =
+        ReadTextFile(shaderDirectory / "PostProcess" / "Bloom.hlsl");
+    const std::string skyboxSource =
+        ReadTextFile(shaderDirectory / "Skybox.hlsl");
+    const std::string fullscreenSource =
+        ReadTextFile(shaderDirectory / "Include" / "FullscreenTriangle.hlsli");
+    const std::string pipelineCacheSource =
+        ReadTextFile(shaderDirectory.parent_path() / "Private" / "PipelineCache.cpp");
+
+    struct FullscreenVertexShaderExpectation
+    {
+        const char* fileName = nullptr;
+        const char* vertexIdName = nullptr;
+        const char* descriptorName = nullptr;
+    };
+    const std::array<FullscreenVertexShaderExpectation, 8> postProcessShaders = {{
+        {"SSAO.hlsl", "vertexID", "ssaoVsDesc"},
+        {"RayTracedReflectionComposite.hlsl", "vertexID", "reflectionCompositeVsDesc"},
+        {"RayTracedReflectionDenoise.hlsl", "vertexID", "reflectionDenoiseVsDesc"},
+        {"ColorGrading.hlsl", "vertexId", "colorGradingVsDesc"},
+        {"ChromaticAberration.hlsl", "vertexID", "chromaticAberrationVsDesc"},
+        {"FilmGrain.hlsl", "vertexID", "filmGrainVsDesc"},
+        {"FXAA.hlsl", "vertexID", "fxaaVsDesc"},
+        {"Vignette.hlsl", "vertexID", "vignetteVsDesc"},
+    }};
+
+    EXPECT_NE(
+        toneMappingSource.find("RVX_GetFullscreenTriangleTexCoord(vertexID)"),
+        std::string::npos);
+    EXPECT_NE(
+        toneMappingSource.find("RVX_GetFullscreenTrianglePosition(output.TexCoord)"),
+        std::string::npos);
+    EXPECT_NE(
+        bloomSource.find("RVX_GetFullscreenTriangleTexCoord(vertexID)"),
+        std::string::npos);
+    EXPECT_NE(
+        bloomSource.find("RVX_GetFullscreenTrianglePosition(output.TexCoord)"),
+        std::string::npos);
+    EXPECT_NE(
+        skyboxSource.find("RVX_GetFullscreenTriangleSemanticNdc(texCoord)"),
+        std::string::npos);
+    EXPECT_NE(
+        skyboxSource.find("RVX_GetFullscreenTrianglePosition(texCoord)"),
+        std::string::npos);
+    EXPECT_NE(
+        fullscreenSource.find("#if RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y"),
+        std::string::npos);
+    EXPECT_NE(
+        fullscreenSource.find("texCoord * 2.0 - 1.0"),
+        std::string::npos);
+    EXPECT_NE(
+        fullscreenSource.find(
+            "texCoord * float2(2.0, -2.0) + float2(-1.0, 1.0)"),
+        std::string::npos);
+    EXPECT_NE(
+        pipelineCacheSource.find("RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y"),
+        std::string::npos);
+    EXPECT_NE(
+        pipelineCacheSource.find("backend == RHIBackendType::Vulkan || backend == RHIBackendType::OpenGL"),
+        std::string::npos);
+
+    for (const FullscreenVertexShaderExpectation& expectation : postProcessShaders)
+    {
+        const std::string shaderSource =
+            ReadTextFile(shaderDirectory / "PostProcess" / expectation.fileName);
+        EXPECT_NE(
+            shaderSource.find("#include \"../Include/FullscreenTriangle.hlsli\""),
+            std::string::npos)
+            << expectation.fileName;
+        EXPECT_NE(
+            shaderSource.find(std::string("RVX_GetFullscreenTriangleTexCoord(") +
+                              expectation.vertexIdName + ")"),
+            std::string::npos)
+            << expectation.fileName;
+        EXPECT_NE(shaderSource.find("RVX_GetFullscreenTrianglePosition("),
+                  std::string::npos)
+            << expectation.fileName;
+        EXPECT_NE(
+            pipelineCacheSource.find(std::string(expectation.descriptorName) +
+                                     ".defines.push_back(fullscreenUVYMappingDefine)"),
+            std::string::npos)
+            << expectation.descriptorName;
+    }
+}
+
 TEST_F(PipelineCacheValidationFixture, BloomShaderUsesMipChainCompositeModes)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1207,7 +1608,7 @@ TEST_F(PipelineCacheValidationFixture, BloomShaderUsesMipChainCompositeModes)
 
 TEST_F(PipelineCacheValidationFixture, FXAAShaderUsesPostProcessDescriptorLayout)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1222,7 +1623,7 @@ TEST_F(PipelineCacheValidationFixture, FXAAShaderUsesPostProcessDescriptorLayout
 
 TEST_F(PipelineCacheValidationFixture, VignetteShaderUsesPostProcessDescriptorLayout)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1235,9 +1636,46 @@ TEST_F(PipelineCacheValidationFixture, VignetteShaderUsesPostProcessDescriptorLa
     EXPECT_NE(shaderSource.find("SamplerState LinearSampler : register(s2, space0)"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, FilmGrainShaderUsesPostProcessDescriptorLayout)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const std::string shaderSource =
+        ReadTextFile(FindShaderDirectory() / "PostProcess" / "FilmGrain.hlsl");
+
+    EXPECT_NE(shaderSource.find("cbuffer FilmGrainConstants : register(b0, space0)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("Texture2D<float4> InputTexture : register(t1, space0)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SamplerState LinearSampler : register(s2, space0)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("VSMain"), std::string::npos);
+    EXPECT_NE(shaderSource.find("PSMain"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("RWTexture2D"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, SSAOShaderUsesPostProcessDescriptorLayout)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const std::string shaderSource =
+        ReadTextFile(FindShaderDirectory() / "PostProcess" / "SSAO.hlsl");
+
+    EXPECT_NE(shaderSource.find("cbuffer SSAOConstants : register(b0, space0)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("Texture2D<float4> InputTexture : register(t1, space0)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("SamplerState LinearSampler : register(s2, space0)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("Texture2D<float> DepthTexture : register(t3, space0)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("VSMain"), std::string::npos);
+    EXPECT_NE(shaderSource.find("PSMain"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("RWTexture2D"), std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, ColorGradingShaderUsesPostProcessDescriptorLayout)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1253,7 +1691,7 @@ TEST_F(PipelineCacheValidationFixture, ColorGradingShaderUsesPostProcessDescript
 
 TEST_F(PipelineCacheValidationFixture, ChromaticAberrationShaderUsesPostProcessDescriptorLayout)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1272,27 +1710,63 @@ TEST_F(PipelineCacheValidationFixture, ChromaticAberrationShaderUsesPostProcessD
 
 TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
-    ASSERT_GE(device.capturedSetLayouts.size(), 6u);
-    ASSERT_GE(device.capturedPipelineLayoutSetCounts.size(), 3u);
-    EXPECT_EQ(device.capturedPipelineLayoutSetCounts[0], 3u);
-    EXPECT_EQ(device.capturedPipelineLayoutSetCounts[1], 1u);
-    EXPECT_EQ(device.capturedPipelineLayoutSetCounts[2], 1u);
+    const auto findSetLayout = [&device](const char* debugName)
+    {
+        return std::find_if(device.capturedSetLayouts.begin(),
+                            device.capturedSetLayouts.end(),
+                            [debugName](const RVX::RHIDescriptorSetLayoutDesc& desc)
+                            {
+                                return desc.debugName && std::string(desc.debugName) == debugName;
+                            });
+    };
+    const auto findPipelineLayout = [&device](const char* debugName)
+    {
+        return std::find_if(device.capturedPipelineLayoutDescs.begin(),
+                            device.capturedPipelineLayoutDescs.end(),
+                            [debugName](const RVX::RHIPipelineLayoutDesc& desc)
+                            {
+                                return desc.debugName && std::string(desc.debugName) == debugName;
+                            });
+    };
 
-    const auto& frameLayout = device.capturedSetLayouts[0];
-    const auto& objectLayout = device.capturedSetLayouts[1];
-    const auto& materialLayout = device.capturedSetLayouts[2];
-    const auto& postProcessLayout = device.capturedSetLayouts[3];
-    const auto& uiLayout = device.capturedSetLayouts[4];
-    const auto& skyboxLayout = device.capturedSetLayouts[5];
+    const auto defaultPipelineLayout = findPipelineLayout("DefaultLitPipelineLayout");
+    const auto postProcessPipelineLayout = findPipelineLayout("PostProcessPipelineLayout");
+    const auto uiPipelineLayout = findPipelineLayout("UIPipelineLayout");
+    ASSERT_NE(defaultPipelineLayout, device.capturedPipelineLayoutDescs.end());
+    ASSERT_NE(postProcessPipelineLayout, device.capturedPipelineLayoutDescs.end());
+    ASSERT_NE(uiPipelineLayout, device.capturedPipelineLayoutDescs.end());
+    EXPECT_EQ(defaultPipelineLayout->setLayouts.size(), 3u);
+    EXPECT_EQ(postProcessPipelineLayout->setLayouts.size(), 1u);
+    EXPECT_EQ(uiPipelineLayout->setLayouts.size(), 1u);
+
+    const auto frameLayoutIt = findSetLayout("DefaultFrameSetLayout");
+    const auto objectLayoutIt = findSetLayout("DefaultObjectSetLayout");
+    const auto materialLayoutIt = findSetLayout("DefaultMaterialSetLayout");
+    const auto postProcessLayoutIt = findSetLayout("PostProcessSetLayout");
+    const auto uiLayoutIt = findSetLayout("UITextureSetLayout");
+    const auto skyboxLayoutIt = findSetLayout("SkyboxSetLayout");
+    ASSERT_NE(frameLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(objectLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(materialLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(postProcessLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(uiLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_NE(skyboxLayoutIt, device.capturedSetLayouts.end());
+
+    const auto& frameLayout = *frameLayoutIt;
+    const auto& objectLayout = *objectLayoutIt;
+    const auto& materialLayout = *materialLayoutIt;
+    const auto& postProcessLayout = *postProcessLayoutIt;
+    const auto& uiLayout = *uiLayoutIt;
+    const auto& skyboxLayout = *skyboxLayoutIt;
 
     const auto* frame = FindBinding(frameLayout, 0);
     ASSERT_NE(frame, nullptr);
@@ -1335,6 +1809,19 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     ASSERT_NE(frameClusterLightIndices, nullptr);
     EXPECT_EQ(frameClusterLightIndices->type, RVX::RHIBindingType::ShaderResourceBuffer);
     EXPECT_TRUE(RVX::HasFlag(frameClusterLightIndices->visibility, RVX::RHIShaderStage::Pixel));
+    for (RVX::uint32 binding = 10; binding <= 12; ++binding)
+    {
+        const auto* iblTexture = FindBinding(frameLayout, binding);
+        ASSERT_NE(iblTexture, nullptr);
+        EXPECT_EQ(iblTexture->type, RVX::RHIBindingType::SampledTexture);
+        EXPECT_TRUE(RVX::HasFlag(
+            iblTexture->visibility, RVX::RHIShaderStage::Pixel));
+    }
+    const auto* iblSampler = FindBinding(frameLayout, 13);
+    ASSERT_NE(iblSampler, nullptr);
+    EXPECT_EQ(iblSampler->type, RVX::RHIBindingType::Sampler);
+    EXPECT_TRUE(RVX::HasFlag(
+        iblSampler->visibility, RVX::RHIShaderStage::Pixel));
 
     ASSERT_FALSE(device.capturedDescriptorSetDescs.empty());
     const RVX::RHIDescriptorSetDesc& frameSetDesc = device.capturedDescriptorSetDescs.front();
@@ -1388,6 +1875,27 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_TRUE(RVX::HasFlag(fallbackClusterLightIndices->buffer->GetUsage(), RVX::RHIBufferUsage::Structured));
     EXPECT_TRUE(RVX::HasFlag(fallbackClusterLightIndices->buffer->GetUsage(), RVX::RHIBufferUsage::ShaderResource));
     EXPECT_EQ(fallbackClusterLightIndices->buffer->GetStride(), sizeof(RVX::LightIndex));
+    const auto* fallbackIrradiance = FindDescriptorBinding(frameSetDesc, 10);
+    const auto* fallbackPrefiltered = FindDescriptorBinding(frameSetDesc, 11);
+    const auto* fallbackBRDFLUT = FindDescriptorBinding(frameSetDesc, 12);
+    const auto* fallbackIBLSampler = FindDescriptorBinding(frameSetDesc, 13);
+    ASSERT_NE(fallbackIrradiance, nullptr);
+    ASSERT_NE(fallbackPrefiltered, nullptr);
+    ASSERT_NE(fallbackBRDFLUT, nullptr);
+    ASSERT_NE(fallbackIBLSampler, nullptr);
+    ASSERT_NE(fallbackIrradiance->textureView, nullptr);
+    ASSERT_NE(fallbackPrefiltered->textureView, nullptr);
+    ASSERT_NE(fallbackBRDFLUT->textureView, nullptr);
+    ASSERT_NE(fallbackIBLSampler->sampler, nullptr);
+    EXPECT_EQ(
+        fallbackIrradiance->textureView->GetTexture()->GetDimension(),
+        RVX::RHITextureDimension::TextureCube);
+    EXPECT_EQ(
+        fallbackPrefiltered->textureView,
+        fallbackIrradiance->textureView);
+    EXPECT_EQ(
+        fallbackBRDFLUT->textureView->GetTexture()->GetDimension(),
+        RVX::RHITextureDimension::Texture2D);
 
     const auto* object = FindBinding(objectLayout, 0);
     ASSERT_NE(object, nullptr);
@@ -1406,16 +1914,16 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
         EXPECT_EQ(texture->type, RVX::RHIBindingType::SampledTexture);
     }
 
-    const auto* sampler = FindBinding(materialLayout, 6);
-    ASSERT_NE(sampler, nullptr);
-    EXPECT_EQ(sampler->type, RVX::RHIBindingType::Sampler);
-
-    for (RVX::uint32 binding = 7; binding <= 9; ++binding)
+    for (RVX::uint32 binding = 6; binding <= 10; ++binding)
     {
-        const auto* iblTexture = FindBinding(materialLayout, binding);
-        ASSERT_NE(iblTexture, nullptr);
-        EXPECT_EQ(iblTexture->type, RVX::RHIBindingType::SampledTexture);
+        const auto* sampler = FindBinding(materialLayout, binding);
+        ASSERT_NE(sampler, nullptr);
+        EXPECT_EQ(sampler->type, RVX::RHIBindingType::Sampler);
     }
+    const auto* materialParameterTable = FindBinding(materialLayout, 11);
+    ASSERT_NE(materialParameterTable, nullptr);
+    EXPECT_EQ(materialParameterTable->type,
+              RVX::RHIBindingType::ShaderResourceBuffer);
 
     const auto* postProcessConstants = FindBinding(postProcessLayout, 0);
     ASSERT_NE(postProcessConstants, nullptr);
@@ -1432,14 +1940,23 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
     EXPECT_EQ(postProcessSampler->type, RVX::RHIBindingType::Sampler);
     EXPECT_TRUE(RVX::HasFlag(postProcessSampler->visibility, RVX::RHIShaderStage::Pixel));
 
+    const auto* postProcessDepthTexture = FindBinding(postProcessLayout, 3);
+    ASSERT_NE(postProcessDepthTexture, nullptr);
+    EXPECT_EQ(postProcessDepthTexture->type, RVX::RHIBindingType::SampledTexture);
+    EXPECT_TRUE(RVX::HasFlag(postProcessDepthTexture->visibility, RVX::RHIShaderStage::Pixel));
+
     EXPECT_NE(cache.GetPostProcessSetLayout(), nullptr);
     EXPECT_NE(cache.GetPostProcessLayout(), nullptr);
 
-    ASSERT_EQ(uiLayout.entries.size(), static_cast<size_t>(1));
+    ASSERT_EQ(uiLayout.entries.size(), static_cast<size_t>(2));
     const auto* uiTexture = FindBinding(uiLayout, 0);
     ASSERT_NE(uiTexture, nullptr);
-    EXPECT_EQ(uiTexture->type, RVX::RHIBindingType::CombinedTextureSampler);
+    EXPECT_EQ(uiTexture->type, RVX::RHIBindingType::SampledTexture);
     EXPECT_TRUE(RVX::HasFlag(uiTexture->visibility, RVX::RHIShaderStage::Pixel));
+    const auto* uiSampler = FindBinding(uiLayout, 1);
+    ASSERT_NE(uiSampler, nullptr);
+    EXPECT_EQ(uiSampler->type, RVX::RHIBindingType::Sampler);
+    EXPECT_TRUE(RVX::HasFlag(uiSampler->visibility, RVX::RHIShaderStage::Pixel));
     EXPECT_NE(cache.GetUITextureSetLayout(), nullptr);
     EXPECT_NE(cache.GetUILayout(), nullptr);
 
@@ -1463,7 +1980,7 @@ TEST_F(PipelineCacheValidationFixture, ReflectionBuildsDefaultLitLayouts)
 
 TEST_F(PipelineCacheValidationFixture, OpenGLDescriptorBindingsUseStableGLSLBindingABIAndSingleSamplerPropagation)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1500,7 +2017,7 @@ TEST_F(PipelineCacheValidationFixture, OpenGLDescriptorBindingsUseStableGLSLBind
 
 TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCoverage)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1508,54 +2025,117 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
     const fs::path testsCMakePath = FindTestsCMakePath();
     ASSERT_FALSE(testsCMakePath.empty());
     const std::string testsCMake = ReadTextFile(testsCMakePath);
-    EXPECT_NE(testsCMake.find("if(RVX_ENABLE_OPENGL AND TARGET ModelViewer)"), std::string::npos);
-    EXPECT_NE(testsCMake.find("ModelViewerOpenGLPBRMaterialSmoke"), std::string::npos);
-    EXPECT_NE(testsCMake.find("OpenGLPBRMaterialVisualGoldenValidation"), std::string::npos);
-    EXPECT_NE(testsCMake.find("RQ4_PBRMaterial_OpenGL_320x180.ppm"), std::string::npos);
-    EXPECT_NE(testsCMake.find("--model \"${CMAKE_CURRENT_SOURCE_DIR}/Fixtures/ModelViewer/PBRMaterialSwatch.gltf\""),
-              std::string::npos);
-    EXPECT_NE(testsCMake.find("--material-test-scene"), std::string::npos);
-    EXPECT_NE(testsCMake.find("--expect-material-ready"), std::string::npos);
-    EXPECT_NE(testsCMake.find("--backend opengl"), std::string::npos);
-    EXPECT_NE(testsCMake.find("set_property(TEST OpenGLPBRMaterialVisualGoldenValidation PROPERTY DEPENDS ModelViewerOpenGLPBRMaterialSmoke)"),
-              std::string::npos);
-    EXPECT_NE(testsCMake.find("ModelViewerCookedBCFixtureWriter"), std::string::npos);
-    EXPECT_NE(testsCMake.find("ModelViewerCookedBCMaterialFixture"), std::string::npos);
-    EXPECT_NE(testsCMake.find("ModelViewerOpenGLCookedBCMaterialSmoke"), std::string::npos);
-    EXPECT_NE(testsCMake.find("OpenGLCookedBCMaterialImageContentValidation"), std::string::npos);
-    EXPECT_NE(testsCMake.find("--rvxcook \"$<TARGET_FILE:RVXCook>\""), std::string::npos);
-    EXPECT_NE(testsCMake.find("SP14_CookedBCMaterial_OpenGL_320x180.ppm"), std::string::npos);
-    EXPECT_NE(testsCMake.find("set_property(TEST ModelViewerOpenGLCookedBCMaterialSmoke PROPERTY DEPENDS ModelViewerCookedBCMaterialFixture)"),
-              std::string::npos);
-    EXPECT_NE(testsCMake.find("set_property(TEST OpenGLCookedBCMaterialImageContentValidation PROPERTY DEPENDS ModelViewerOpenGLCookedBCMaterialSmoke)"),
-              std::string::npos);
+    const bool hasDx12PbrWorkflow =
+        testsCMake.find("rvx_add_renderverse_pbr_workflow_parity(dx12 DX12)") != std::string::npos;
+    const bool hasDx12PbrResponse =
+        testsCMake.find("rvx_add_renderverse_pbr_response_validation(dx12 DX12)") != std::string::npos;
+    const bool hasDx12PbrTextureSmoke =
+        testsCMake.find("rvx_add_renderverse_pbr_texture_smoke(dx12 DX12)") != std::string::npos;
+    const bool hasVulkanPbrWorkflow =
+        testsCMake.find("rvx_add_renderverse_pbr_workflow_parity(vulkan Vulkan)") != std::string::npos;
+    const bool hasVulkanPbrResponse =
+        testsCMake.find(
+            "rvx_add_renderverse_pbr_response_validation(vulkan Vulkan)") != std::string::npos;
+    const bool hasVulkanPbrTextureSmoke =
+        testsCMake.find("rvx_add_renderverse_pbr_texture_smoke(vulkan Vulkan)") != std::string::npos;
+    const bool hasMetalPbrWorkflow =
+        testsCMake.find("rvx_add_renderverse_pbr_workflow_parity(metal Metal)") != std::string::npos;
+    const bool hasMetalPbrResponse =
+        testsCMake.find(
+            "rvx_add_renderverse_pbr_response_validation(metal Metal)") != std::string::npos;
+    const bool hasMetalPbrTextureSmoke =
+        testsCMake.find("rvx_add_renderverse_pbr_texture_smoke(metal Metal)") != std::string::npos;
+    if (!hasDx12PbrWorkflow && !hasVulkanPbrWorkflow && !hasMetalPbrWorkflow)
+    {
+        GTEST_SKIP()
+            << "RenderVerseSamples PBR workflow tests are not registered in this configuration.";
+    }
 
-    const fs::path fixtureWriterPath =
-        testsCMakePath.parent_path() / "ModelViewerCookedBCFixtureWriter" / "main.cpp";
-    ASSERT_TRUE(fs::exists(fixtureWriterPath));
-    const std::string fixtureWriterSource = ReadTextFile(fixtureWriterPath);
-    EXPECT_NE(fixtureWriterSource.find("SP14BaseColorBC7"), std::string::npos);
-    EXPECT_NE(fixtureWriterSource.find("texture.compression[BaseColorBC7.tga]=bc7"), std::string::npos);
-    EXPECT_NE(fixtureWriterSource.find("SP14MetallicRoughnessBC3"), std::string::npos);
-    EXPECT_NE(fixtureWriterSource.find("texture.compression[MetallicRoughness.tga]=bc3"), std::string::npos);
-    EXPECT_NE(fixtureWriterSource.find("--rewrite-gltf-texture-uris"), std::string::npos);
-    EXPECT_NE(fixtureWriterSource.find("VerifyRewrittenGltf"), std::string::npos);
+    auto expectPbrWorkflowContracts = [&](bool checkWorkflow,
+                                          bool checkResponse,
+                                          bool checkTextureSmoke)
+    {
+        const std::string factorPrefix = "RenderVerseSamples${BACKEND_LABEL}PBRMaterials";
+        const std::string factorSmoke = factorPrefix + "Smoke";
+        const std::string textureSmoke = factorPrefix + "TextureSmoke";
+        const std::string workflowParity = factorPrefix + "WorkflowParity";
+        const std::string factorCapture = factorPrefix + "_320x180.ppm";
+        const std::string textureCapture = factorPrefix + "Texture_320x180.ppm";
+        const std::string workflowDiff = factorPrefix + "WorkflowDiff.ppm";
+        const std::string workflowReport = factorPrefix + "WorkflowParity.json";
+        const std::string responseImageVar = "${test_prefix}ResponseValidation";
 
-    const fs::path modelViewerPath = FindModelViewerSourcePath();
-    ASSERT_FALSE(modelViewerPath.empty());
-    const std::string modelViewerSource = ReadTextFile(modelViewerPath);
-    EXPECT_NE(modelViewerSource.find("IsSmokeScreenshotBackendSupported"), std::string::npos);
-    EXPECT_NE(modelViewerSource.find("RHIBackendType::OpenGL"), std::string::npos);
-    EXPECT_NE(modelViewerSource.find("windowConfig.graphicsApi = options.backend == RHIBackendType::OpenGL"),
+        EXPECT_NE(testsCMake.find(factorSmoke), std::string::npos);
+        EXPECT_NE(testsCMake.find(factorCapture), std::string::npos);
+        if (checkResponse)
+        {
+            EXPECT_NE(testsCMake.find("set(test_prefix \"RenderVerseSamples${BACKEND_LABEL}${SAMPLE_LABEL}\")"),
+                      std::string::npos);
+            EXPECT_NE(testsCMake.find(responseImageVar), std::string::npos);
+        }
+        if (checkTextureSmoke)
+        {
+            EXPECT_NE(testsCMake.find(textureSmoke), std::string::npos);
+            EXPECT_NE(testsCMake.find(textureCapture), std::string::npos);
+        }
+        if (checkWorkflow)
+        {
+            EXPECT_NE(testsCMake.find(workflowParity), std::string::npos);
+            EXPECT_NE(testsCMake.find(workflowDiff), std::string::npos);
+            EXPECT_NE(testsCMake.find(workflowReport), std::string::npos);
+        }
+    };
+
+    EXPECT_NE(testsCMake.find("RenderVerseSamples"), std::string::npos);
+    EXPECT_NE(testsCMake.find("rvx_add_renderverse_primary_smoke("), std::string::npos);
+    EXPECT_NE(testsCMake.find("pbr-materials PBRMaterials pbr-material-grid"), std::string::npos);
+    EXPECT_NE(testsCMake.find("pbr-materials PBRMaterialsTexture pbr-material-texture-cube"),
               std::string::npos);
-    EXPECT_NE(modelViewerSource.find("outScreenshot.originBottomLeft = backendType == RHIBackendType::OpenGL"),
+    EXPECT_NE(testsCMake.find("rvx_add_renderverse_pbr_response_validation("),
               std::string::npos);
+    EXPECT_NE(testsCMake.find("rvx_add_renderverse_pbr_texture_smoke("),
+              std::string::npos);
+    EXPECT_NE(testsCMake.find("--require-pbr-grid-response"), std::string::npos);
+    EXPECT_NE(testsCMake.find("--min-pbr-metallic-luma-delta 40"), std::string::npos);
+    EXPECT_NE(testsCMake.find("--min-pbr-roughness-contrast-delta 2"), std::string::npos);
+
+    if (hasDx12PbrWorkflow || hasDx12PbrResponse || hasDx12PbrTextureSmoke)
+    {
+        expectPbrWorkflowContracts(hasDx12PbrWorkflow, hasDx12PbrResponse, hasDx12PbrTextureSmoke);
+    }
+    if (hasVulkanPbrWorkflow || hasVulkanPbrResponse || hasVulkanPbrTextureSmoke)
+    {
+        expectPbrWorkflowContracts(
+            hasVulkanPbrWorkflow, hasVulkanPbrResponse, hasVulkanPbrTextureSmoke);
+    }
+    if (hasMetalPbrWorkflow || hasMetalPbrResponse || hasMetalPbrTextureSmoke)
+    {
+        expectPbrWorkflowContracts(
+            hasMetalPbrWorkflow, hasMetalPbrResponse, hasMetalPbrTextureSmoke);
+    }
 
     const fs::path repoRoot = FindShaderDirectory().parent_path().parent_path();
-    const std::string renderSubsystem =
-        ReadTextFile(repoRoot / "Render" / "Private" / "RenderSubsystem.cpp");
-    EXPECT_NE(renderSubsystem.find("backendType == RHIBackendType::OpenGL"), std::string::npos);
-    EXPECT_NE(renderSubsystem.find("windowSubsystem->GetInternalHandle()"), std::string::npos);
+    const fs::path sampleMainPath = repoRoot / "Samples" / "RenderVerseSamples" / "main.cpp";
+    const fs::path sampleRegisterPath =
+        repoRoot / "Samples" / "RenderVerseSamples" / "RegisterSamples.cpp";
+    ASSERT_TRUE(fs::exists(sampleMainPath));
+    ASSERT_TRUE(fs::exists(sampleRegisterPath));
+    const std::string sampleMainSource = ReadTextFile(sampleMainPath);
+    const std::string sampleRegisterSource = ReadTextFile(sampleRegisterPath);
+    EXPECT_NE(sampleMainSource.find("RegisterRenderVerseSamples"), std::string::npos);
+    EXPECT_NE(sampleMainSource.find("SampleRunner"), std::string::npos);
+    EXPECT_NE(sampleRegisterSource.find("ModelViewerSample"), std::string::npos);
+    EXPECT_NE(sampleRegisterSource.find("PBRMaterialsSample"), std::string::npos);
+
+    const std::string renderRuntimeComposition =
+        ReadTextFile(repoRoot / "Engine" / "Private" / "ECS" / "EcsRenderRuntimeComposition.cpp");
+    const std::string windowSubsystem =
+        ReadTextFile(repoRoot / "Runtime" / "Private" / "Window" / "WindowSubsystem.cpp");
+    EXPECT_NE(renderRuntimeComposition.find("m_services->CaptureRenderSurface()"), std::string::npos);
+    EXPECT_NE(renderRuntimeComposition.find("m_services->ReleaseGraphicsContextFromUpdateThread()"),
+              std::string::npos);
+    EXPECT_NE(windowSubsystem.find("m_window->CaptureRenderSurfaceHandles()"), std::string::npos);
+    EXPECT_NE(windowSubsystem.find("surface.backendWindow = handles.backendWindow"), std::string::npos);
 
     const std::string openGLCommandContext =
         ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLCommandContext.cpp");
@@ -1565,8 +2145,12 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
         ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLResources.h");
     const std::string openGLUpload =
         ReadTextFile(repoRoot / "RHI_OpenGL" / "Private" / "OpenGLUpload.cpp");
-    const std::string particleRenderer =
-        ReadTextFile(repoRoot / "Particle" / "Private" / "Rendering" / "ParticleRenderer.cpp");
+    const std::string particleCMake =
+        ReadTextFile(repoRoot / "Particle" / "CMakeLists.txt");
+    const std::string renderCMake =
+        ReadTextFile(repoRoot / "Render" / "CMakeLists.txt");
+    const std::string particleFeaturePass =
+        ReadTextFile(repoRoot / "Render" / "Private" / "Passes" / "ParticleFeaturePass.cpp");
     EXPECT_NE(openGLCommandContext.find("srcGL->GetHandle() == 0"), std::string::npos);
     EXPECT_NE(openGLCommandContext.find("glReadPixels"), std::string::npos);
     EXPECT_NE(openGLCommandContext.find("GL_PIXEL_PACK_BUFFER"), std::string::npos);
@@ -1580,13 +2164,15 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
               std::string::npos);
     EXPECT_NE(openGLUpload.find("m_wrapperBuffer.Reset();"), std::string::npos);
     EXPECT_EQ(openGLUpload.find("m_wrapperBuffer = m_device->CreateBuffer(desc);"), std::string::npos);
-    EXPECT_NE(particleRenderer.find("m_device->GetBackendType() == RHIBackendType::OpenGL"), std::string::npos);
-    EXPECT_NE(particleRenderer.find("result.glslSource"), std::string::npos);
+    EXPECT_EQ(particleCMake.find("Private/Rendering/ParticleRenderer.cpp"), std::string::npos);
+    EXPECT_EQ(particleCMake.find("RVX_ShaderCompiler"), std::string::npos);
+    EXPECT_NE(renderCMake.find("Private/Passes/ParticleFeaturePass.cpp"), std::string::npos);
+    EXPECT_NE(particleFeaturePass.find("ParticleRenderSnapshotPayloadStatus::MetadataOnly"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, RVXCookWorkflowDocumentationCoversCurrentCliContract)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1619,10 +2205,6 @@ TEST_F(PipelineCacheValidationFixture, RVXCookWorkflowDocumentationCoversCurrent
     EXPECT_NE(doc.find("binary `.glb` rewrite is not implemented"), std::string::npos);
     EXPECT_NE(doc.find("not a production-quality geometric simplifier"), std::string::npos);
 
-    EXPECT_NE(testsCMake.find("ModelViewerCookedBCMaterialFixture"), std::string::npos);
-    EXPECT_NE(doc.find("ModelViewerCookedBCMaterialFixture"), std::string::npos);
-    EXPECT_NE(doc.find("ModelViewerOpenGLCookedBCMaterialSmoke"), std::string::npos);
-    EXPECT_NE(doc.find("OpenGLCookedBCMaterialImageContentValidation"), std::string::npos);
     EXPECT_NE(doc.find("RVXCookCliAppliesMeshProfileLODOptions"), std::string::npos);
     EXPECT_NE(doc.find("RVXCookCliRejectsInvalidMeshCookProfile"), std::string::npos);
     EXPECT_NE(doc.find("RVXCookCliRewritesGltfTextureUrisToCookedArtifacts"), std::string::npos);
@@ -1632,7 +2214,7 @@ TEST_F(PipelineCacheValidationFixture, RVXCookWorkflowDocumentationCoversCurrent
 
 TEST_F(PipelineCacheValidationFixture, OpenGLRenderPassClearsIgnorePreviousWriteMasks)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1678,7 +2260,7 @@ TEST_F(PipelineCacheValidationFixture, OpenGLRenderPassClearsIgnorePreviousWrite
 
 TEST_F(PipelineCacheValidationFixture, ShaderCacheKeyIncludesCompilerAbiVersion)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -1702,13 +2284,13 @@ TEST_F(PipelineCacheValidationFixture, ShaderCacheKeyIncludesCompilerAbiVersion)
 
 TEST_F(PipelineCacheValidationFixture, DX11DefaultLitContractBuildsLocalLightBindings)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device(RVX::RHIBackendType::DX11);
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
     ASSERT_FALSE(device.capturedSetLayouts.empty());
@@ -1735,6 +2317,16 @@ TEST_F(PipelineCacheValidationFixture, DX11DefaultLitContractBuildsLocalLightBin
     const auto* frameClusterLightIndices = FindBinding(frameLayout, 9);
     ASSERT_NE(frameClusterLightIndices, nullptr);
     EXPECT_EQ(frameClusterLightIndices->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    for (RVX::uint32 binding = 10; binding <= 12; ++binding)
+    {
+        const auto* frameIBLTexture = FindBinding(frameLayout, binding);
+        ASSERT_NE(frameIBLTexture, nullptr);
+        EXPECT_EQ(
+            frameIBLTexture->type, RVX::RHIBindingType::SampledTexture);
+    }
+    const auto* frameIBLSampler = FindBinding(frameLayout, 13);
+    ASSERT_NE(frameIBLSampler, nullptr);
+    EXPECT_EQ(frameIBLSampler->type, RVX::RHIBindingType::Sampler);
 }
 
 TEST_F(PipelineCacheValidationFixture, ViewConstantsLayoutMatchesDefaultLitCBufferPacking)
@@ -1778,13 +2370,13 @@ TEST_F(PipelineCacheValidationFixture, ObjectConstantsLayoutMatchesDefaultLitCBu
 
 TEST_F(PipelineCacheValidationFixture, ObjectConstantBufferUsesAlignedObjectConstantsStride)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     constexpr RVX::uint64 kExpectedConstantBufferAlignment = 256;
@@ -1810,15 +2402,258 @@ TEST_F(PipelineCacheValidationFixture, ObjectConstantBufferUsesAlignedObjectCons
     EXPECT_EQ(objectBinding->range, expectedStride);
 }
 
-TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsWorldAndNormalMatrices)
+TEST_F(PipelineCacheValidationFixture,
+       RasterDrawBindingSnapshotRejectsDynamicOffsetOverflowAndNormalizesZeroCapacity)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    RVX::ViewData view;
+    RVX::RasterDrawBindingSnapshot overflowSnapshot;
+    EXPECT_FALSE(cache.CreateRasterDrawBindingSnapshot(
+        view, std::numeric_limits<RVX::uint32>::max(), overflowSnapshot));
+    EXPECT_FALSE(overflowSnapshot.IsValid());
+
+    RVX::RasterDrawBindingSnapshot zeroCapacitySnapshot;
+    ASSERT_TRUE(cache.CreateRasterDrawBindingSnapshot(view, 0, zeroCapacitySnapshot));
+    EXPECT_EQ(1u, zeroCapacitySnapshot.objectCapacity);
+    EXPECT_TRUE(cache.UpdateRasterDrawBindingSnapshotObject(
+        zeroCapacitySnapshot,
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        false,
+        true));
+    EXPECT_FALSE(cache.UpdateRasterDrawBindingSnapshotObject(
+        zeroCapacitySnapshot,
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        RVX::Mat4Identity(),
+        false,
+        true));
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DirectionalShadowCascadeBindingsUseImmutableAlignedPageRanges)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    std::vector<RVX::ViewData> cascadeViews(3);
+    for (RVX::uint32 cascadeIndex = 0;
+         cascadeIndex < static_cast<RVX::uint32>(cascadeViews.size());
+         ++cascadeIndex)
+    {
+        cascadeViews[cascadeIndex].viewProjectionMatrix = RVX::Mat4Identity();
+        cascadeViews[cascadeIndex].viewProjectionMatrix[0][0] =
+            static_cast<float>(cascadeIndex + 2u);
+        cascadeViews[cascadeIndex].cameraForward =
+            RVX::Vec3(0.0f, 0.0f, -1.0f);
+    }
+
+    RVX::DirectionalShadowCascadeBindingSnapshot snapshot;
+    ASSERT_TRUE(cache.CreateDirectionalShadowCascadeBindingSnapshot(
+        cascadeViews, snapshot));
+    ASSERT_TRUE(snapshot.IsValid());
+    ASSERT_EQ(cascadeViews.size(), snapshot.frameDescriptorSets.size());
+
+    const RVX::uint64 expectedStride =
+        (sizeof(RVX::ViewConstants) + 255u) & ~static_cast<RVX::uint64>(255u);
+    EXPECT_EQ(expectedStride, snapshot.viewConstantStride);
+    EXPECT_EQ(expectedStride * cascadeViews.size(),
+              snapshot.viewConstantPageBuffer->GetSize());
+
+    const auto* const pageBuffer = static_cast<const FakeBuffer*>(
+        snapshot.viewConstantPageBuffer.Get());
+    ASSERT_NE(nullptr, pageBuffer);
+    std::vector<RVX::ViewConstants> uploaded(cascadeViews.size());
+    for (size_t cascadeIndex = 0; cascadeIndex < uploaded.size(); ++cascadeIndex)
+    {
+        std::memcpy(&uploaded[cascadeIndex],
+                    pageBuffer->GetStorage().data() +
+                        cascadeIndex * expectedStride,
+                    sizeof(RVX::ViewConstants));
+        EXPECT_FLOAT_EQ(static_cast<float>(cascadeIndex + 2u),
+                        uploaded[cascadeIndex].viewProjection[0][0]);
+    }
+    EXPECT_NE(0, std::memcmp(&uploaded[0].viewProjection,
+                             &uploaded[1].viewProjection,
+                             sizeof(RVX::Mat4)));
+    EXPECT_NE(0, std::memcmp(&uploaded[1].viewProjection,
+                             &uploaded[2].viewProjection,
+                             sizeof(RVX::Mat4)));
+
+    std::vector<const RVX::RHIDescriptorSetDesc*> cascadeDescriptors;
+    for (const RVX::RHIDescriptorSetDesc& desc :
+         device.capturedDescriptorSetDescs)
+    {
+        if (desc.debugName != nullptr &&
+            std::string(desc.debugName) ==
+                "DirectionalShadowCascadeFrameDescriptorSet")
+        {
+            cascadeDescriptors.push_back(&desc);
+        }
+    }
+    ASSERT_EQ(cascadeViews.size(), cascadeDescriptors.size());
+    for (size_t cascadeIndex = 0;
+         cascadeIndex < cascadeDescriptors.size(); ++cascadeIndex)
+    {
+        const RVX::RHIDescriptorBinding* const viewBinding =
+            FindDescriptorBinding(*cascadeDescriptors[cascadeIndex], 0);
+        ASSERT_NE(nullptr, viewBinding);
+        EXPECT_EQ(snapshot.viewConstantPageBuffer.Get(), viewBinding->buffer);
+        EXPECT_EQ(cascadeIndex * expectedStride, viewBinding->offset);
+        EXPECT_EQ(expectedStride, viewBinding->range);
+    }
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       DirectionalShadowCascadeBindingsFailClosedWhenPageAllocationFails)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    std::vector<RVX::ViewData> cascadeViews(3);
+    const size_t descriptorCountBefore =
+        device.capturedDescriptorSetDescs.size();
+    device.failBufferCreation = true;
+
+    RVX::DirectionalShadowCascadeBindingSnapshot snapshot;
+    EXPECT_FALSE(cache.CreateDirectionalShadowCascadeBindingSnapshot(
+        cascadeViews, snapshot));
+    EXPECT_FALSE(snapshot.IsValid());
+    EXPECT_EQ(descriptorCountBefore,
+              device.capturedDescriptorSetDescs.size());
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       FrameDescriptorOwnersRetainDirectionalShadowAcrossCascadeRebuildAndRetirement)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.EnableNativeTimelineCompletion();
+
+    RVX::RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(&device));
+    RVX::RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    RVX::RHITextureDesc textureDesc = RVX::RHITextureDesc::DepthStencil(
+        32, 32, RVX::RHIFormat::D32_FLOAT);
+    RVX::RHITextureRef shadowTexture = device.CreateTexture(textureDesc);
+    ASSERT_TRUE(shadowTexture);
+
+    RVX::RHITextureViewDesc viewDesc;
+    viewDesc.format = shadowTexture->GetFormat();
+    viewDesc.dimension = shadowTexture->GetDimension();
+    viewDesc.type = RVX::RHITextureViewType::ShaderResource;
+    viewDesc.subresourceRange = RVX::RHISubresourceRange::All();
+    viewDesc.subresourceRange.aspect = RVX::RHITextureAspect::Depth;
+    device.trackNextTextureViewDestruction = true;
+    RVX::RHITextureViewRef shadowView =
+        device.CreateTextureView(shadowTexture.Get(), viewDesc);
+    ASSERT_TRUE(shadowView);
+    RVX::RHITextureView* const publishedShadowView = shadowView.Get();
+
+    RVX::DirectionalShadowFrameResources shadowResources;
+    shadowResources.enabled = true;
+    shadowResources.shadowMapView = publishedShadowView;
+    ASSERT_TRUE(
+        cache.UpdateDirectionalShadowFrameResources(shadowResources)
+            .shadowSamplingEnabled);
+
+    // The graph-published input is allowed to disappear immediately after the
+    // cache has accepted it. Frame descriptor ownership must now be the sole
+    // source-of-truth for the raw RHI descriptor binding.
+    shadowView.Reset();
+    EXPECT_EQ(0, device.trackedTextureViewDestructionCount);
+
+    std::vector<RVX::ViewData> cascadeViews(2);
+    for (RVX::ViewData& cascadeView : cascadeViews)
+    {
+        cascadeView.viewProjectionMatrix = RVX::Mat4Identity();
+        cascadeView.cameraForward = RVX::Vec3(0.0f, 0.0f, -1.0f);
+    }
+
+    RVX::DirectionalShadowCascadeBindingSnapshot snapshot;
+    ASSERT_TRUE(cache.CreateDirectionalShadowCascadeBindingSnapshot(
+        cascadeViews, snapshot));
+    ASSERT_EQ(cascadeViews.size(), snapshot.frameDescriptorSets.size());
+    for (const RVX::RHIDescriptorSetRef& cascadeSet :
+         snapshot.frameDescriptorSets)
+    {
+        const auto* const fakeCascadeSet =
+            static_cast<const FakeDescriptorSet*>(cascadeSet.Get());
+        RVX::RHIDescriptorSetDesc cascadeDescriptorDesc;
+        cascadeDescriptorDesc.bindings = fakeCascadeSet->GetBindings();
+        const RVX::RHIDescriptorBinding* const shadowBinding =
+            FindDescriptorBinding(cascadeDescriptorDesc, 1);
+        ASSERT_NE(nullptr, shadowBinding);
+        EXPECT_EQ(publishedShadowView, shadowBinding->textureView);
+    }
+
+    // Rebuild the frame descriptor with fallback bindings. The old descriptor
+    // and all of its strong source owners must move together into retirement.
+    cache.ResetFrameResourceBindings();
+    ASSERT_FALSE(cache.UpdateDirectionalShadowFrameResources({})
+                     .shadowSamplingEnabled);
+    snapshot = {};
+    EXPECT_EQ(0, device.trackedTextureViewDestructionCount);
+
+    RVX::GPUCompletionToken completion;
+    ASSERT_TRUE(RVX::InsertGPUCompletionPoint(
+        completion, {RVX::GPUQueueDomain::Graphics, 1}));
+    cache.RetireOwnerSnapshots(completion, retirement);
+    EXPECT_EQ(RVX::GPUCompletionStatus::Pending, retirement.Poll());
+    EXPECT_EQ(0, device.trackedTextureViewDestructionCount);
+
+    device.CompleteTrackedFences(1);
+    EXPECT_EQ(RVX::GPUCompletionStatus::Completed, retirement.Poll());
+    EXPECT_EQ(1, device.trackedTextureViewDestructionCount);
+
+    cache.Shutdown();
+    tracker.Shutdown();
+}
+
+TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsWorldAndNormalMatrices)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     RVX::Mat4 world = RVX::Mat4Identity();
@@ -1868,13 +2703,13 @@ TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsWorldAndNorma
 
 TEST_F(PipelineCacheValidationFixture, UpdateObjectConstantsUploadsSkinningMatrices)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     std::array<RVX::Mat4, 2> skinningMatrices = {
@@ -1929,30 +2764,30 @@ TEST_F(PipelineCacheValidationFixture, DrawPassesUploadRenderObjectNormalMatrix)
     const std::string shadowPass = ReadTextFile(passesDir / "ShadowPass.cpp");
     const std::string objectVelocityPass = ReadTextFile(passesDir / "ObjectVelocityPass.cpp");
 
-    EXPECT_NE(opaquePass.find("obj.previousWorldMatrix"), std::string::npos);
-    EXPECT_NE(transparentPass.find("obj.previousWorldMatrix"), std::string::npos);
-    EXPECT_NE(depthPrepass.find("obj.previousWorldMatrix"), std::string::npos);
-    EXPECT_NE(shadowPass.find("obj.previousWorldMatrix"), std::string::npos);
+    EXPECT_NE(opaquePass.find("object->previousWorldMatrix"), std::string::npos);
+    EXPECT_NE(transparentPass.find("object.previousWorldMatrix"), std::string::npos);
+    EXPECT_NE(depthPrepass.find("object->previousWorldMatrix"), std::string::npos);
+    EXPECT_NE(shadowPass.find("object->previousWorldMatrix"), std::string::npos);
     EXPECT_NE(opaquePass.find("view.previousViewProjectionMatrix"), std::string::npos);
     EXPECT_NE(transparentPass.find("view.previousViewProjectionMatrix"), std::string::npos);
     EXPECT_NE(depthPrepass.find("view.previousViewProjectionMatrix"), std::string::npos);
     EXPECT_NE(shadowPass.find("view.previousViewProjectionMatrix"), std::string::npos);
-    EXPECT_NE(opaquePass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
-    EXPECT_NE(transparentPass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
-    EXPECT_NE(depthPrepass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
-    EXPECT_NE(shadowPass.find("ResolveSkinningMatrices(obj, buffers)"), std::string::npos);
+    EXPECT_NE(opaquePass.find("ResolveSkinningMatrices(*object, planned.buffers)"), std::string::npos);
+    EXPECT_NE(transparentPass.find("ResolveSkinningMatrices(object, buffers)"), std::string::npos);
+    EXPECT_NE(depthPrepass.find("ResolveSkinningMatrices(*object, planned.buffers)"), std::string::npos);
+    EXPECT_NE(shadowPass.find("ResolveSkinningMatrices(*object, planned.buffers)"), std::string::npos);
     EXPECT_NE(objectVelocityPass.find("ResolveSkinningMatrices(object, buffers)"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbientValues)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     RVX::ViewData view;
@@ -2001,13 +2836,13 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDefaultIBLAmbie
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabledIBLAmbientValues)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     RVX::ViewData view;
@@ -2072,13 +2907,13 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsCustomAndDisabl
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsZeroAmbientFloorForTextureIBLReadyViews)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     RVX::ViewData view;
@@ -2099,13 +2934,13 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsZeroAmbientFloo
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesTextureIBLIntensity)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     RVX::ViewData view;
@@ -2128,12 +2963,18 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesTextureIBLInt
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShadowParamsAndBackendConvention)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     RVX::ViewData view;
+    view.viewProjectionMatrix = RVX::Mat4Identity();
+    view.viewProjectionMatrix[0][1] = 0.25f;
+    view.viewProjectionMatrix[1][0] = 0.5f;
+    view.viewProjectionMatrix[1][1] = 2.0f;
+    view.viewProjectionMatrix[2][1] = -0.75f;
+    view.viewProjectionMatrix[3][1] = 1.25f;
     view.directionalShadowEnabled = 1;
     view.cameraForward = RVX::Vec3(0.0f, 0.0f, -4.0f);
     view.directionalShadowCascadeCount = 3;
@@ -2143,6 +2984,9 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     view.directionalShadowViewProjections[0][1][1] = 2.0f;
     view.directionalShadowViewProjections[0][1][0] = 0.25f;
     view.directionalShadowViewProjections[0][1][2] = -0.5f;
+    view.directionalShadowViewProjections[0][0][1] = 0.125f;
+    view.directionalShadowViewProjections[0][2][1] = -0.375f;
+    view.directionalShadowViewProjections[0][3][1] = 0.625f;
     view.directionalShadowViewProjections[0][3][2] = 0.75f;
     view.directionalShadowViewProjections[1] = RVX::Mat4Identity();
     view.directionalShadowViewProjections[1][0][0] = 3.0f;
@@ -2158,7 +3002,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     view.rayTracedShadowMode = RVX::RayTracedShadowMode::ReplaceRaster;
 
     FakeDevice dxDevice(RVX::RHIBackendType::DX12);
-    RVX::PipelineCache dxCache;
+    PipelineCacheForValidation dxCache;
     ASSERT_TRUE(dxCache.Initialize(&dxDevice, FindShaderDirectory().string())) << dxCache.GetLastError();
     dxCache.UpdateViewConstants(view);
 
@@ -2167,6 +3011,11 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
 
     RVX::ViewConstants uploaded{};
     std::memcpy(&uploaded, dxViewBuffer->GetStorage().data(), sizeof(uploaded));
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[0][1], 0.25f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[1][0], 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[1][1], 2.0f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[2][1], -0.75f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[3][1], 1.25f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.x, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.y, 0.0f);
     EXPECT_FLOAT_EQ(uploaded.cameraForwardAndShadowCascadeCount.z, -1.0f);
@@ -2194,16 +3043,24 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     EXPECT_FLOAT_EQ(uploaded.rayTracedShadowParams.z, 1.0f);
 
     FakeDevice vkDevice(RVX::RHIBackendType::Vulkan);
-    RVX::PipelineCache vkCache;
+    PipelineCacheForValidation vkCache;
     ASSERT_TRUE(vkCache.Initialize(&vkDevice, FindShaderDirectory().string())) << vkCache.GetLastError();
     vkCache.UpdateViewConstants(view);
 
     const FakeBuffer* vkViewBuffer = FindCapturedBuffer(vkDevice, "ViewConstantBuffer");
     ASSERT_NE(vkViewBuffer, nullptr);
     std::memcpy(&uploaded, vkViewBuffer->GetStorage().data(), sizeof(uploaded));
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][0], -0.25f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][1], -2.0f);
-    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][2], 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[0][1], -0.25f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[1][0], 0.5f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[1][1], -2.0f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[2][1], 0.75f);
+    EXPECT_FLOAT_EQ(uploaded.viewProjection[3][1], -1.25f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][0], 0.25f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][1], 2.0f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][1][2], -0.5f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][0][1], 0.125f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][2][1], -0.375f);
+    EXPECT_FLOAT_EQ(uploaded.directionalShadowViewProjections[0][3][1], 0.625f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.x, 1.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowParams.w, 2.0f / 512.0f);
     EXPECT_FLOAT_EQ(uploaded.directionalShadowReceiverParams.x, 0.03125f);
@@ -2211,7 +3068,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
     EXPECT_FLOAT_EQ(uploaded.rayTracedShadowParams.z, 1.0f);
 
     FakeDevice reverseZDevice(RVX::RHIBackendType::DX12);
-    RVX::PipelineCache reverseZCache;
+    PipelineCacheForValidation reverseZCache;
     RVX::PipelineCacheConfig config;
     config.reverseZ = true;
     reverseZCache.SetConfig(config);
@@ -2227,13 +3084,13 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsUploadsDirectionalShad
 
 TEST_F(PipelineCacheValidationFixture, DirectionalShadowFrameResourcesReportFallbackReasons)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     RVX::DirectionalShadowFrameBindingResult result =
@@ -2265,7 +3122,7 @@ TEST_F(PipelineCacheValidationFixture, DirectionalShadowFrameResourcesReportFall
     EXPECT_TRUE(result.shadowSamplingEnabled);
     EXPECT_EQ(result.fallbackReason, RVX::DirectionalShadowFallbackReason::None);
 
-    RVX::PipelineCache reverseZCache;
+    PipelineCacheForValidation reverseZCache;
     RVX::PipelineCacheConfig config;
     config.reverseZ = true;
     reverseZCache.SetConfig(config);
@@ -2276,25 +3133,119 @@ TEST_F(PipelineCacheValidationFixture, DirectionalShadowFrameResourcesReportFall
     EXPECT_EQ(result.fallbackReason, RVX::DirectionalShadowFallbackReason::ReverseZUnsupported);
 }
 
-TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurviveShadowUpdates)
+TEST_F(PipelineCacheValidationFixture, EnvironmentIBLUsesFrameBindingsAndLinearClampSampler)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
-    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
 
-    ASSERT_FALSE(device.capturedDescriptorSets.empty());
-    FakeDescriptorSet* frameSet = device.capturedDescriptorSets.front();
+    RVX::EnvironmentIBLFrameBindingResult result =
+        cache.UpdateEnvironmentIBLFrameResources({});
+    EXPECT_FALSE(result.textureIBLSamplingEnabled);
+    EXPECT_EQ(result.fallbackReason, RVX::EnvironmentIBLFallbackReason::Disabled);
+
+    RVX::EnvironmentIBLFrameResources resources;
+    resources.enabled = true;
+    result = cache.UpdateEnvironmentIBLFrameResources(resources);
+    EXPECT_FALSE(result.textureIBLSamplingEnabled);
+    EXPECT_EQ(
+        result.fallbackReason,
+        RVX::EnvironmentIBLFallbackReason::MissingIrradianceSRV);
+
+    RVX::RHITextureDesc cubeDesc = RVX::RHITextureDesc::Texture2D(
+        4, 4, RVX::RHIFormat::RGBA16_FLOAT);
+    cubeDesc.dimension = RVX::RHITextureDimension::TextureCube;
+    RVX::RHITextureRef irradianceTexture = device.CreateTexture(cubeDesc);
+    RVX::RHITextureRef prefilteredTexture = device.CreateTexture(cubeDesc);
+    RVX::RHITextureDesc lutDesc = RVX::RHITextureDesc::Texture2D(
+        4, 4, RVX::RHIFormat::RGBA16_FLOAT);
+    RVX::RHITextureRef brdfLUTTexture = device.CreateTexture(lutDesc);
+    ASSERT_TRUE(irradianceTexture);
+    ASSERT_TRUE(prefilteredTexture);
+    ASSERT_TRUE(brdfLUTTexture);
+
+    RVX::RHITextureViewDesc cubeViewDesc;
+    cubeViewDesc.dimension = RVX::RHITextureDimension::TextureCube;
+    cubeViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+    RVX::RHITextureViewRef irradianceView = device.CreateTextureView(
+        irradianceTexture.Get(), cubeViewDesc);
+    RVX::RHITextureViewRef prefilteredView = device.CreateTextureView(
+        prefilteredTexture.Get(), cubeViewDesc);
+    RVX::RHITextureViewDesc lutViewDesc;
+    lutViewDesc.dimension = RVX::RHITextureDimension::Texture2D;
+    lutViewDesc.type = RVX::RHITextureViewType::ShaderResource;
+    RVX::RHITextureViewRef brdfLUTView = device.CreateTextureView(
+        brdfLUTTexture.Get(), lutViewDesc);
+    ASSERT_TRUE(irradianceView);
+    ASSERT_TRUE(prefilteredView);
+    ASSERT_TRUE(brdfLUTView);
+
+    resources.irradianceView = irradianceView.Get();
+    resources.prefilteredEnvironmentView = prefilteredView.Get();
+    resources.brdfLUTView = brdfLUTView.Get();
+    result = cache.UpdateEnvironmentIBLFrameResources(resources);
+    EXPECT_TRUE(result.textureIBLSamplingEnabled);
+    EXPECT_EQ(result.fallbackReason, RVX::EnvironmentIBLFallbackReason::None);
+
+    const FakeDescriptorSet* frameSet =
+        static_cast<const FakeDescriptorSet*>(cache.GetFrameDescriptorSet());
     ASSERT_NE(frameSet, nullptr);
+    const RVX::RHIDescriptorSetDesc bindingsDesc{
+        nullptr, frameSet->GetBindings(), nullptr};
+    ASSERT_EQ(
+        FindDescriptorBinding(bindingsDesc, 10)->textureView,
+        irradianceView.Get());
+    ASSERT_EQ(
+        FindDescriptorBinding(bindingsDesc, 11)->textureView,
+        prefilteredView.Get());
+    ASSERT_EQ(
+        FindDescriptorBinding(bindingsDesc, 12)->textureView,
+        brdfLUTView.Get());
+    ASSERT_NE(FindDescriptorBinding(bindingsDesc, 13)->sampler, nullptr);
+
+    const auto samplerIt = std::find_if(
+        device.capturedSamplerDescs.begin(),
+        device.capturedSamplerDescs.end(),
+        [](const RVX::RHISamplerDesc& desc)
+        {
+            return desc.debugName != nullptr &&
+                std::string(desc.debugName) ==
+                    "EnvironmentIBLLinearClampSampler";
+        });
+    ASSERT_NE(samplerIt, device.capturedSamplerDescs.end());
+    EXPECT_EQ(samplerIt->minFilter, RVX::RHIFilterMode::Linear);
+    EXPECT_EQ(samplerIt->magFilter, RVX::RHIFilterMode::Linear);
+    EXPECT_EQ(samplerIt->mipFilter, RVX::RHIFilterMode::Linear);
+    EXPECT_EQ(samplerIt->addressU, RVX::RHIAddressMode::ClampToEdge);
+    EXPECT_EQ(samplerIt->addressV, RVX::RHIAddressMode::ClampToEdge);
+    EXPECT_EQ(samplerIt->addressW, RVX::RHIAddressMode::ClampToEdge);
+    EXPECT_FALSE(samplerIt->anisotropyEnable);
+}
+
+TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurviveShadowUpdates)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     RVX::FrameLightBindingResult fallbackResult = cache.UpdateFrameLightResources({});
     EXPECT_TRUE(fallbackResult.lightResourcesBound);
     EXPECT_EQ(fallbackResult.fallbackReason, RVX::FrameLightFallbackReason::MissingLightConstants);
 
+    FakeDescriptorSet* frameSet =
+        static_cast<FakeDescriptorSet*>(cache.GetFrameDescriptorSet());
+    ASSERT_NE(frameSet, nullptr);
     const auto& fallbackBindings = frameSet->GetBindings();
     EXPECT_NE(FindDescriptorBinding({nullptr, fallbackBindings, nullptr}, 0), nullptr);
     EXPECT_NE(FindDescriptorBinding({nullptr, fallbackBindings, nullptr}, 1), nullptr);
@@ -2371,6 +3322,8 @@ TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurvive
     EXPECT_EQ(realResult.fallbackReason, RVX::FrameLightFallbackReason::None);
     EXPECT_EQ(realResult.clusteredFallbackReason, RVX::FrameClusteredLightFallbackReason::None);
 
+    frameSet = static_cast<FakeDescriptorSet*>(cache.GetFrameDescriptorSet());
+    ASSERT_NE(frameSet, nullptr);
     auto bindingsDesc = RVX::RHIDescriptorSetDesc{nullptr, frameSet->GetBindings(), nullptr};
     ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 3)->buffer, lightConstants.Get());
     ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 4)->buffer, pointLights.Get());
@@ -2383,6 +3336,8 @@ TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurvive
     EXPECT_FALSE(shadowFallback.shadowSamplingEnabled);
     EXPECT_EQ(shadowFallback.fallbackReason, RVX::DirectionalShadowFallbackReason::DisabledNoDirectionalLight);
 
+    frameSet = static_cast<FakeDescriptorSet*>(cache.GetFrameDescriptorSet());
+    ASSERT_NE(frameSet, nullptr);
     bindingsDesc = RVX::RHIDescriptorSetDesc{nullptr, frameSet->GetBindings(), nullptr};
     ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 3)->buffer, lightConstants.Get());
     ASSERT_EQ(FindDescriptorBinding(bindingsDesc, 4)->buffer, pointLights.Get());
@@ -2394,13 +3349,13 @@ TEST_F(PipelineCacheValidationFixture, FrameLightResourcesUseFallbacksAndSurvive
 
 TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLightingControls)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     RVX::ViewData view;
@@ -2495,7 +3450,7 @@ TEST_F(PipelineCacheValidationFixture, UpdateViewConstantsSanitizesInvalidLighti
 
 TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -2503,9 +3458,12 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
     EXPECT_NE(shader.find("IBLDiffuseAmbient"), std::string::npos);
     EXPECT_NE(shader.find("IBLSpecularAmbient"), std::string::npos);
-    EXPECT_NE(shader.find("TextureCube IrradianceTexture : register(t7, space2);"), std::string::npos);
-    EXPECT_NE(shader.find("TextureCube PrefilteredEnvironmentTexture : register(t8, space2);"), std::string::npos);
-    EXPECT_NE(shader.find("Texture2D BRDFLUTTexture : register(t9, space2);"), std::string::npos);
+    EXPECT_NE(shader.find("TextureCube IrradianceTexture : register(t10, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("TextureCube PrefilteredEnvironmentTexture : register(t11, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("Texture2D BRDFLUTTexture : register(t12, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("SamplerState IBLLinearClampSampler : register(s13, space0);"), std::string::npos);
+    EXPECT_NE(shader.find("IrradianceTexture.Sample(IBLLinearClampSampler"), std::string::npos);
+    EXPECT_NE(shader.find("BRDFLUTTexture.Sample(\n            IBLLinearClampSampler"), std::string::npos);
     EXPECT_NE(shader.find("Texture2DArray<float> DirectionalShadowMapTexture : register(t1, space0);"),
               std::string::npos);
     EXPECT_NE(shader.find("SamplerState DirectionalShadowSampler : register(s2, space0);"), std::string::npos);
@@ -2535,6 +3493,11 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("float3(uv, (float)cascadeIndex)"), std::string::npos);
     EXPECT_NE(shader.find("int nextCascadeIndex = cascadeIndex + 1;"), std::string::npos);
     EXPECT_NE(shader.find("nextCascadeIndex < cascadeCount"), std::string::npos);
+    EXPECT_NE(shader.find(
+                  "float lastCascadeSplit = DirectionalShadowCascadeSplits[cascadeCount - 1];"),
+              std::string::npos);
+    EXPECT_NE(shader.find("if (viewDepth > lastCascadeSplit)"),
+              std::string::npos);
     EXPECT_NE(shader.find("bool insideFadeBand = fadeDistance > 1.0e-5"), std::string::npos);
     EXPECT_NE(shader.find("float nextShadow = SampleDirectionalShadowCascade(worldPos, worldNormal, nextCascadeIndex);"),
               std::string::npos);
@@ -2553,7 +3516,24 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
     EXPECT_NE(shader.find("SampleDirectionalShadowPCF(shadowUV, compareDepth, DirectionalShadowParams.w, cascadeIndex)"),
               std::string::npos);
     EXPECT_NE(shader.find("#define ReceivesShadow ObjectVelocityParams.y"), std::string::npos);
-    EXPECT_NE(shader.find("const bool receivesShadow = ReceivesShadow > 0.5;"), std::string::npos);
+    const auto countShaderOccurrences = [&shader](std::string_view needle)
+    {
+        size_t count = 0;
+        for (size_t offset = shader.find(needle);
+             offset != std::string::npos;
+             offset = shader.find(needle, offset + needle.size()))
+        {
+            ++count;
+        }
+        return count;
+    };
+    EXPECT_EQ(countShaderOccurrences(
+                  "output.ReceivesShadowValue = ReceivesShadow;"),
+              4u);
+    EXPECT_NE(shader.find("(primitiveFlags & RVX_GPU_SCENE_PRIMITIVE_RECEIVES_SHADOW) != 0u"),
+              std::string::npos);
+    EXPECT_NE(shader.find("const bool receivesShadow = input.ReceivesShadowValue > 0.5;"),
+              std::string::npos);
     EXPECT_NE(shader.find("receivesShadow ? SampleDirectionalShadow(input.WorldPos, normal) : 1.0"),
               std::string::npos);
     EXPECT_NE(shader.find("receivesShadow ? SampleRayTracedShadowMask(input.Position) : 1.0"),
@@ -2577,9 +3557,55 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesIBLAmbientViewConstants)
               std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture, DefaultLitUsesOneGGXAlphaRoughnessContract)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const std::string brdf =
+        ReadTextFile(FindShaderDirectory() / "Include" / "BRDF.hlsli");
+    const std::string defaultLit =
+        ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
+    EXPECT_NE(
+        brdf.find(
+            "float PerceptualRoughnessToAlpha(float perceptualRoughness)"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find("return perceptualRoughness * perceptualRoughness;"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find("float D_GGX(float NdotH, float alphaRoughness)"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find("float alphaRoughnessSquared = alphaRoughness * alphaRoughness;"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find("PerceptualRoughnessToAlpha(perceptualRoughness)"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find("D_GGX(NdotH, alphaRoughness)"),
+        std::string::npos);
+    EXPECT_NE(
+        brdf.find(
+            "G_SmithGGXCorrelated(NdotV, NdotL, alphaRoughness)"),
+        std::string::npos);
+    EXPECT_EQ(
+        brdf.find("G_SmithGGXCorrelated(NdotV, NdotL, roughness)"),
+        std::string::npos);
+    EXPECT_NE(
+        defaultLit.find(
+            "float prefilteredMip = clampedRoughness * max(IBLTextureParams.y - 1.0, 0.0);"),
+        std::string::npos);
+    EXPECT_NE(
+        defaultLit.find("float2(nDotV, clampedRoughness)"),
+        std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoubleSidedFlags)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -2588,20 +3614,25 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitConsumesMaterialWorkflowAndDoub
     EXPECT_NE(shader.find("#define MATERIAL_WORKFLOW_METALLIC_ROUGHNESS 0"), std::string::npos);
     EXPECT_NE(shader.find("#define MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS 1"), std::string::npos);
     EXPECT_NE(shader.find("#define MATERIAL_WORKFLOW_UNLIT 2"), std::string::npos);
-    EXPECT_NE(shader.find("if (Workflow == MATERIAL_WORKFLOW_UNLIT)"), std::string::npos);
+    EXPECT_NE(shader.find("if (material.Workflow == MATERIAL_WORKFLOW_UNLIT)"), std::string::npos);
     EXPECT_NE(shader.find("return float4(baseColor.rgb + emissive, baseColor.a);"), std::string::npos);
-    EXPECT_NE(shader.find("if (Workflow == MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS)"), std::string::npos);
+    EXPECT_NE(shader.find("if (material.Workflow == MATERIAL_WORKFLOW_SPECULAR_GLOSSINESS)"), std::string::npos);
     EXPECT_NE(shader.find("metallic = 0.0;"), std::string::npos);
     EXPECT_NE(shader.find("float4 doubleSidedTangent = input.WorldTangent;"), std::string::npos);
-    EXPECT_NE(shader.find("if (DoubleSided != 0 && dot(normal, viewDir) < 0.0)"), std::string::npos);
+    EXPECT_NE(shader.find("if (material.DoubleSided_MaterialPaddingBits.x != 0 &&"), std::string::npos);
     EXPECT_NE(shader.find("normal = -normal;"), std::string::npos);
     EXPECT_NE(shader.find("doubleSidedTangent.w = -doubleSidedTangent.w;"), std::string::npos);
-    EXPECT_NE(shader.find("SampleNormalMap(input.TexCoord, normal, doubleSidedTangent)"), std::string::npos);
+    EXPECT_NE(shader.find("material.NormalScale"), std::string::npos);
+    EXPECT_NE(shader.find("StructuredBuffer<MaterialParameterData> MaterialParameterTable"),
+              std::string::npos);
+    EXPECT_NE(shader.find("nointerpolation uint MaterialParameterSlot"),
+              std::string::npos);
+    EXPECT_NE(shader.find("VSMainInstancedMaterial"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, DefaultLitUsesFrameLocalLightResources)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -2628,7 +3659,7 @@ TEST_F(PipelineCacheValidationFixture, DefaultLitUsesFrameLocalLightResources)
 
 TEST_F(PipelineCacheValidationFixture, SceneRendererWiresLightManagerIntoDefaultLitPasses)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -2638,7 +3669,8 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresLightManagerIntoDefault
     EXPECT_NE(source.find("#include \"Render/Lighting/LightManager.h\""), std::string::npos);
     EXPECT_NE(source.find("m_lightManager = std::make_unique<LightManager>();"), std::string::npos);
     EXPECT_NE(source.find("m_lightManager->Initialize(renderContext->GetDevice());"), std::string::npos);
-    EXPECT_NE(source.find("m_lightManager->CollectLights(m_renderScene);"), std::string::npos);
+    EXPECT_NE(source.find("m_lightManager->CollectLights(m_renderScene, m_viewData.cullingMask);"),
+              std::string::npos);
     EXPECT_NE(source.find("m_lightManager->UpdateGPUBuffers();"), std::string::npos);
     EXPECT_NE(source.find("m_localLightingStats.pointLightCount = m_lightManager->GetPointLightCount();"),
               std::string::npos);
@@ -2658,7 +3690,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresLightManagerIntoDefault
 
 TEST_F(PipelineCacheValidationFixture, SceneRendererBuildsClusteredLightingFrameData)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -2686,7 +3718,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererBuildsClusteredLightingFrame
 
 TEST_F(PipelineCacheValidationFixture, LightManagerCreatesStructuredLocalLightBuffers)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -2732,9 +3764,47 @@ TEST_F(PipelineCacheValidationFixture, LightManagerTracksRequestedLocalShadowsSe
     EXPECT_EQ(lights.GetLocalShadowRequestCount(), 0u);
 }
 
+TEST_F(PipelineCacheValidationFixture,
+       LightManagerReportsSameFrameLocalLightAdmissionAndOverflow)
+{
+    RVX::LightManager lights;
+    for (RVX::uint32 i = 0; i < RVX::LightManager::MaxPointLights + 2; ++i)
+    {
+        lights.AddPointLight({}, {}, 1.0f, 10.0f);
+    }
+    for (RVX::uint32 i = 0; i < RVX::LightManager::MaxSpotLights + 3; ++i)
+    {
+        lights.AddSpotLight({}, {0.0f, -1.0f, 0.0f}, {},
+                            1.0f, 10.0f, 0.1f, 0.2f);
+    }
+
+    EXPECT_EQ(RVX::LightManager::MaxPointLights + 2,
+              lights.GetPointLightRequestedCount());
+    EXPECT_EQ(RVX::LightManager::MaxPointLights,
+              lights.GetPointLightAdmittedCount());
+    EXPECT_EQ(RVX::LightManager::MaxPointLights,
+              lights.GetPointLightCapacity());
+    EXPECT_EQ(2u, lights.GetPointLightOverflowCount());
+    EXPECT_EQ(RVX::LightManager::MaxSpotLights + 3,
+              lights.GetSpotLightRequestedCount());
+    EXPECT_EQ(RVX::LightManager::MaxSpotLights,
+              lights.GetSpotLightAdmittedCount());
+    EXPECT_EQ(RVX::LightManager::MaxSpotLights,
+              lights.GetSpotLightCapacity());
+    EXPECT_EQ(3u, lights.GetSpotLightOverflowCount());
+
+    lights.Clear();
+    EXPECT_EQ(0u, lights.GetPointLightRequestedCount());
+    EXPECT_EQ(0u, lights.GetPointLightAdmittedCount());
+    EXPECT_EQ(0u, lights.GetPointLightOverflowCount());
+    EXPECT_EQ(0u, lights.GetSpotLightRequestedCount());
+    EXPECT_EQ(0u, lights.GetSpotLightAdmittedCount());
+    EXPECT_EQ(0u, lights.GetSpotLightOverflowCount());
+}
+
 TEST_F(PipelineCacheValidationFixture, SceneRendererClearsAmbientFloorWhenTextureIBLIsReady)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -2742,35 +3812,53 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererClearsAmbientFloorWhenTextur
     const fs::path sceneRendererPath = FindShaderDirectory().parent_path() /
         "Private" / "Renderer" / "SceneRenderer.cpp";
     const std::string source = ReadTextFile(sceneRendererPath);
-    EXPECT_NE(source.find("m_viewData.ambientFloorIntensity = 0.08f;"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.ambientFloorIntensity = 0.0f;"), std::string::npos);
+    EXPECT_NE(source.find("m_viewData.textureIBLEnabled =\n        m_environmentIBLStats.textureIBLEnabled ? 1 : 0;"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_environmentIBLStats.textureIBLEnabled ? 0.0f : 0.08f"),
+              std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, SceneRendererUsesSamePrimaryDirectionalLightForDefaultLitAndShadowPass)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     const fs::path sceneRendererPath = FindShaderDirectory().parent_path() /
         "Private" / "Renderer" / "SceneRenderer.cpp";
+    const fs::path contextPath = FindShaderDirectory().parent_path() /
+        "Include" / "Render" / "Passes" / "RenderPassRecordContext.h";
     const std::string source = ReadTextFile(sceneRendererPath);
-    EXPECT_NE(source.find("m_viewData.directionalLightDirection = Vec3{0.5f, -0.8f, 0.3f};"),
+    const std::string contextHeader = ReadTextFile(contextPath);
+    EXPECT_NE(contextHeader.find("struct PrimaryDirectionalLightRecordInput"),
               std::string::npos);
-    EXPECT_NE(source.find("m_viewData.directionalLightColor = Vec3{1.0f, 1.0f, 1.0f};"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.directionalLightDirection = light.direction;"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.directionalLightIntensity = light.intensity;"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.directionalLightColor = light.color;"), std::string::npos);
-    EXPECT_NE(source.find("m_shadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);"),
+    EXPECT_NE(contextHeader.find("PrimaryDirectionalLightRecordInput primaryDirectionalLight{};"),
               std::string::npos);
-    EXPECT_NE(source.find("m_rayTracedShadowPass->SetDirectionalLight(light.direction, light.color, light.intensity);"),
+    EXPECT_NE(contextHeader.find("snapshot->primaryDirectionalLight = context.primaryDirectionalLight;"),
+              std::string::npos);
+    EXPECT_NE(contextHeader.find("snapshot->view.directionalLightDirection ="),
+              std::string::npos);
+    EXPECT_NE(contextHeader.find("SelectPrimaryDirectionalLightRecordInput("),
+              std::string::npos);
+    EXPECT_NE(contextHeader.find("later casters"), std::string::npos);
+    EXPECT_NE(source.find("m_renderScene, m_viewData.cullingMask);"),
+              std::string::npos);
+    EXPECT_NE(source.find("passRecordContext.primaryDirectionalLight = m_primaryDirectionalLight;"),
+              std::string::npos);
+    EXPECT_NE(source.find("m_shadowPass->SetEnabled(frameSettings.shadows.enabled);"),
+              std::string::npos);
+    EXPECT_NE(source.find("frameSettings.rayTracing.enableShadows"),
+              std::string::npos);
+    EXPECT_EQ(source.find("m_shadowPass->SetDirectional" "Light("),
+              std::string::npos);
+    EXPECT_EQ(source.find("m_rayTracedShadowPass->SetDirectional" "Light("),
               std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, SceneRendererAppliesShadowQualityConfigToShadowPass)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -2783,6 +3871,8 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererAppliesShadowQualityConfigTo
     EXPECT_NE(header.find("const ShadowPassConfig& GetShadowPassConfig() const"), std::string::npos);
     EXPECT_NE(header.find("ShadowPassConfig m_shadowPassConfig;"), std::string::npos);
     EXPECT_NE(source.find("m_shadowPassConfig = config;"), std::string::npos);
+    EXPECT_NE(source.find("m_shadowPassConfig.maxDistance = frameSettings.shadows.maxDistance;"),
+              std::string::npos);
     EXPECT_NE(source.find("if (m_shadowPass)"), std::string::npos);
     EXPECT_NE(source.find("m_shadowPass->SetConfig(m_shadowPassConfig);"), std::string::npos);
     EXPECT_NE(source.find("shadowPass->SetConfig(m_shadowPassConfig);"), std::string::npos);
@@ -2790,9 +3880,63 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererAppliesShadowQualityConfigTo
     EXPECT_NE(source.find("rayTracedShadowPass->SetConfig(m_shadowPassConfig);"), std::string::npos);
 }
 
+TEST_F(PipelineCacheValidationFixture,
+       RenderDiagnosticsProjectCurrentDirectionalAndLocalLightValues)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = FindShaderDirectory().parent_path();
+    const std::string diagnostics = ReadTextFile(
+        renderRoot / "Include" / "Render" / "RenderDiagnostics.h");
+    const std::string rendererHeader = ReadTextFile(
+        renderRoot / "Include" / "Render" / "Renderer" / "SceneRenderer.h");
+    const std::string rendererSource = ReadTextFile(
+        renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+    const std::string subsystemSource = ReadTextFile(
+        renderRoot / "Private" / "RenderSubsystem.cpp");
+
+    for (const char* field : {"available", "outputReady", "requestedCascadeCount",
+                              "producedCascadeCount", "resolvedCascadeCount",
+                              "shadowMapSize", "shadowCasterCount", "drawCount"})
+    {
+        EXPECT_NE(diagnostics.find(field), std::string::npos);
+    }
+    for (const char* field : {"pointLightRequested", "pointLightAdmitted",
+                              "pointLightCapacity", "pointLightOverflow",
+                              "spotLightRequested", "spotLightAdmitted",
+                              "spotLightCapacity", "spotLightOverflow",
+                              "pointShadowSupported", "spotShadowSupported"})
+    {
+        EXPECT_NE(diagnostics.find(field), std::string::npos);
+    }
+    EXPECT_NE(rendererHeader.find("bool directionalShadowAvailable = false;"),
+              std::string::npos);
+    EXPECT_NE(rendererSource.find("m_activeRenderPassResults->shadowStats"),
+              std::string::npos);
+    EXPECT_NE(rendererSource.find("directionalShadowOutput.IsCompatibleWith("),
+              std::string::npos);
+    EXPECT_NE(rendererSource.find(
+                  "diagnostics.directionalShadowRequested\n"
+                  "                ? m_shadowPassConfig.numCascades"),
+              std::string::npos);
+    EXPECT_EQ(rendererSource.find(
+                  "directionalShadowRequestedCascadeCount =\n"
+                  "            shadowStats.configuredCascadeCount"),
+              std::string::npos);
+    EXPECT_EQ(subsystemSource.find("GetLastDirectionalShadowFrameBindingResult"),
+              std::string::npos);
+    EXPECT_NE(subsystemSource.find("features.localLighting.pointLightAdmitted"),
+              std::string::npos);
+    EXPECT_NE(subsystemSource.find("features.directionalShadow.outputReady"),
+              std::string::npos);
+}
+
 TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracingSceneBuildBeforeRenderPasses)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -2810,7 +3954,9 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracingSceneBuildBef
 
     EXPECT_NE(source.find("m_rayTracingSceneManager = std::make_unique<RayTracingSceneManager>();"), std::string::npos);
     EXPECT_NE(source.find("m_rayTracingSceneManager->Initialize(m_renderContext->GetDevice());"), std::string::npos);
-    EXPECT_NE(source.find("RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan("), std::string::npos);
+    EXPECT_NE(source.find("RayTracingSceneBuildPlan plan = BuildRayTracingSceneBuildPlan("),
+              std::string::npos);
+    EXPECT_NE(source.find("*m_renderResourceRegistry"), std::string::npos);
     EXPECT_NE(source.find("m_rayTracingSceneManager->SetBLASCacheEvictionFrameThreshold("),
               std::string::npos);
     EXPECT_NE(source.find("m_rayTracingSceneManager->SetTrackedResourceBudget("), std::string::npos);
@@ -2822,10 +3968,11 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracingSceneBuildBef
     const auto renderStart = source.find("void SceneRenderer::Render()");
     ASSERT_NE(renderStart, std::string::npos);
     const auto prepareCall = source.find("PrepareRayTracingScene();", renderStart);
-    const auto clearCall = source.find("m_renderGraph->Clear();", renderStart);
+    const auto definitionCall = source.find(
+        "m_renderGraph = std::make_unique<RenderGraph>();", renderStart);
     ASSERT_NE(prepareCall, std::string::npos);
-    ASSERT_NE(clearCall, std::string::npos);
-    EXPECT_LT(prepareCall, clearCall);
+    ASSERT_NE(definitionCall, std::string::npos);
+    EXPECT_LT(prepareCall, definitionCall);
 
     const auto buildGraphStart = source.find("void SceneRenderer::BuildRenderGraph()");
     ASSERT_NE(buildGraphStart, std::string::npos);
@@ -2838,7 +3985,7 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracingSceneBuildBef
 
 TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerInvalidatesFrameOutputsOnFallback)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -2851,7 +3998,9 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerInvalidatesFrameOut
 
     EXPECT_NE(managerHeader.find("void InvalidateFrameOutputs();"), std::string::npos);
     EXPECT_NE(managerHeader.find("void SetTrackedResourceBudget(uint64 budgetBytes)"), std::string::npos);
-    EXPECT_NE(managerHeader.find("void SetBLASScratchReleaseFrameDelay(uint64 frameDelay)"), std::string::npos);
+    EXPECT_EQ(managerHeader.find("BLASScratchReleaseFrameDelay"), std::string::npos);
+    EXPECT_NE(managerHeader.find("void RetireOwnerSnapshots(const GPUCompletionToken& completion"),
+              std::string::npos);
     EXPECT_NE(managerHeader.find("size_t resourceBudgetEvictedBLASCount = 0;"), std::string::npos);
     EXPECT_NE(managerHeader.find("size_t releasedBLASScratchCount = 0;"), std::string::npos);
     EXPECT_NE(managerHeader.find("size_t pendingBLASScratchReleaseCount = 0;"), std::string::npos);
@@ -2865,6 +4014,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerInvalidatesFrameOut
               std::string::npos);
     EXPECT_NE(managerSource.find("ReleaseRetiredBLASScratchBuffers();"), std::string::npos);
     EXPECT_NE(managerSource.find("entry->scratchReleasePending = true;"), std::string::npos);
+    EXPECT_NE(managerSource.find("QueueRenderOwnerRetirement("), std::string::npos);
     EXPECT_NE(managerSource.find("m_stats.releasedBLASScratchBytes = AddSaturatingUint64("),
               std::string::npos);
     EXPECT_EQ(managerSource.find("m_stats.releasedBLASScratchBytes +="), std::string::npos);
@@ -2976,15 +4126,15 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerInvalidatesFrameOut
     EXPECT_NE(invalidateBody.find("m_instanceMaterialTextureIds.clear();"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_instanceAlphaMetadataRecords.clear();"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_instanceAlphaTextureIds.clear();"), std::string::npos);
-    EXPECT_NE(invalidateBody.find("m_instanceBuffer.Reset();"), std::string::npos);
+    EXPECT_NE(invalidateBody.find("m_instanceBuffer, m_pendingOwnerRetirements"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_instanceBufferSize = 0;"), std::string::npos);
-    EXPECT_NE(invalidateBody.find("m_instanceMaterialMetadataBuffer.Reset();"), std::string::npos);
+    EXPECT_NE(invalidateBody.find("m_instanceMaterialMetadataBuffer, m_pendingOwnerRetirements"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_instanceMaterialMetadataBufferSize = 0;"), std::string::npos);
-    EXPECT_NE(invalidateBody.find("m_instanceAlphaMetadataBuffer.Reset();"), std::string::npos);
+    EXPECT_NE(invalidateBody.find("m_instanceAlphaMetadataBuffer, m_pendingOwnerRetirements"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_instanceAlphaMetadataBufferSize = 0;"), std::string::npos);
-    EXPECT_NE(invalidateBody.find("m_topLevelAS.Reset();"), std::string::npos);
+    EXPECT_NE(invalidateBody.find("m_topLevelAS, m_pendingOwnerRetirements"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_topLevelSizes = {};"), std::string::npos);
-    EXPECT_NE(invalidateBody.find("m_topLevelScratchBuffer.Reset();"), std::string::npos);
+    EXPECT_NE(invalidateBody.find("m_topLevelScratchBuffer, m_pendingOwnerRetirements"), std::string::npos);
     EXPECT_NE(invalidateBody.find("m_topLevelBuildDesc = {};"), std::string::npos);
     EXPECT_EQ(invalidateBody.find("m_blasCache.clear();"), std::string::npos);
 
@@ -3002,7 +4152,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerInvalidatesFrameOut
 
 TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerRetriesIncompleteBLASCacheEntries)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -3045,7 +4195,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneManagerRetriesIncompleteBL
 
 TEST_F(PipelineCacheValidationFixture, RayTracingValidationRejectsNonFiniteTLASInstanceTransforms)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -3154,7 +4304,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingValidationRejectsNonFiniteTLASI
 
 TEST_F(PipelineCacheValidationFixture, RayTracingSceneBuildPlanSkipsZeroInstanceMasksBeforeBLASWork)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -3166,19 +4316,19 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneBuildPlanSkipsZeroInstance
         ReadTextFile(renderRoot / "Private" / "RayTracing" / "RayTracingScene.cpp");
 
     EXPECT_NE(sceneHeader.find("InstanceMaskZero"), std::string::npos);
-    EXPECT_NE(sceneSource.find("const uint32 resolvedInstanceMask = ResolveRayTracingInstanceMask"),
+    EXPECT_NE(sceneSource.find("const uint32 instanceMask = ResolveRayTracingInstanceMask"),
               std::string::npos);
-    EXPECT_NE(sceneSource.find("if (resolvedInstanceMask == 0)"), std::string::npos);
+    EXPECT_NE(sceneSource.find("if (instanceMask == 0)"), std::string::npos);
     EXPECT_NE(sceneSource.find("RayTracingSceneSkipReason::InstanceMaskZero"), std::string::npos);
     EXPECT_NE(sceneHeader.find("InvalidTransform"), std::string::npos);
     EXPECT_NE(sceneSource.find("bool IsFiniteTransform(const Mat4& matrix)"), std::string::npos);
     EXPECT_NE(sceneSource.find("if (!IsFiniteTransform(object.worldMatrix))"), std::string::npos);
     EXPECT_NE(sceneSource.find("RayTracingSceneSkipReason::InvalidTransform"), std::string::npos);
-    EXPECT_NE(sceneSource.find("instance.desc.instanceMask = resolvedInstanceMask;"), std::string::npos);
+    EXPECT_NE(sceneSource.find("instance.desc.instanceMask = instanceMask;"), std::string::npos);
     EXPECT_EQ(sceneSource.find("instance.desc.instanceMask = ResolveRayTracingInstanceMask"),
               std::string::npos);
 
-    const auto maskFilter = sceneSource.find("if (resolvedInstanceMask == 0)");
+    const auto maskFilter = sceneSource.find("if (instanceMask == 0)");
     const auto transformFilter = sceneSource.find("if (!IsFiniteTransform(object.worldMatrix))", maskFilter);
     const auto blasKey = sceneSource.find("RayTracingBLASKey key;", maskFilter);
     ASSERT_NE(maskFilter, std::string::npos);
@@ -3190,7 +4340,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneBuildPlanSkipsZeroInstance
 
 TEST_F(PipelineCacheValidationFixture, RayTracingSceneBuildPassTransitionsScratchBuffersAsUAV)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -3212,7 +4362,8 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneBuildPassTransitionsScratc
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("SetExportState(scratchBufferHandle, RHIResourceState::Common)"),
               std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("ImportBuffer(instanceBuffer, RHIResourceState::ShaderResource)"),
+    EXPECT_NE(sceneRendererSource.find(
+                  "ImportBuffer(RHIBufferRef(instanceBuffer), RHIResourceState::ShaderResource)"),
               std::string::npos);
     EXPECT_NE(sceneRendererSource.find("SetExportState(instanceHandle, RHIResourceState::ShaderResource)"),
               std::string::npos);
@@ -3228,7 +4379,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneBuildPassTransitionsScratc
 
 TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfterRasterShadow)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -3398,7 +4549,9 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
     EXPECT_NE(source.find("#include \"Render/Passes/RayTracedReflectionPass.h\""), std::string::npos);
     EXPECT_NE(source.find("SceneRayTracingFrameStats SceneRenderer::GetRayTracingFrameStats() const"),
               std::string::npos);
-    EXPECT_NE(source.find("const RayTracedShadowPassStats& shadowStats = GetRayTracedShadowStats();"),
+    EXPECT_NE(source.find("const RayTracedShadowPassStats& shadowStats =\n        m_activeRenderPassResults"),
+              std::string::npos);
+    EXPECT_NE(source.find(": GetRayTracedShadowStats();"),
               std::string::npos);
     EXPECT_NE(source.find("const RayTracedReflectionPassStats& reflectionStats = GetRayTracedReflectionStats();"),
               std::string::npos);
@@ -3621,7 +4774,10 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
     EXPECT_NE(source.find("rayTracedReflectionPass->SetResources("), std::string::npos);
     EXPECT_NE(source.find("rayTracedReflectionDenoisePass->SetResources("), std::string::npos);
     EXPECT_NE(source.find("rayTracedReflectionCompositePass->SetResources("), std::string::npos);
-    EXPECT_NE(source.find("m_gpuResourceManager.get(),"), std::string::npos);
+    EXPECT_NE(source.find("rayTracedShadowPass->SetResourceRegistry(m_renderResourceRegistry);"),
+              std::string::npos);
+    EXPECT_NE(source.find("rayTracedReflectionPass->SetResourceRegistry(m_renderResourceRegistry);"),
+              std::string::npos);
     EXPECT_NE(source.find("m_pipelineCache.get(),"), std::string::npos);
     EXPECT_NE(source.find("m_resourceViewCache.get());"),
               std::string::npos);
@@ -3642,8 +4798,10 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
               std::string::npos);
     EXPECT_NE(source.find("m_rayTracedReflectionCompositePass->SetDenoisedReflectionSource(m_rayTracedReflectionDenoisePass);"),
               std::string::npos);
-    EXPECT_NE(source.find("m_rayTracedShadowPass->SetEnabled(false);"), std::string::npos);
-    EXPECT_NE(source.find("m_rayTracedShadowPass->SetEnabled(true);"), std::string::npos);
+    EXPECT_NE(source.find("m_rayTracedShadowPass->SetEnabled(\n"
+                          "            frameSettings.rayTracing.enabled &&\n"
+                          "            frameSettings.rayTracing.enableShadows);"),
+              std::string::npos);
     EXPECT_NE(source.find("m_cameraVelocityPass->SetEnabled(false);"), std::string::npos);
     EXPECT_NE(source.find("const bool cameraVelocityRequested = rayTracedReflectionsRequested && m_postProcessSettings.enableTAA;"),
               std::string::npos);
@@ -3653,8 +4811,9 @@ TEST_F(PipelineCacheValidationFixture, SceneRendererWiresRayTracedShadowPassAfte
               std::string::npos);
     EXPECT_NE(source.find("void SceneRenderer::RequestTemporalHistoryReset()"), std::string::npos);
     EXPECT_NE(source.find("m_pendingTemporalHistoryReset = true;"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.resetTemporalHistory = resetTemporalHistory;"), std::string::npos);
-    EXPECT_NE(source.find("m_viewData.previousViewProjectionMatrix = (!resetTemporalHistory && m_previousViewProjectionValid)"),
+    EXPECT_NE(source.find("m_viewData.SetupFromSnapshot(m_renderScene.GetView(),"),
+              std::string::npos);
+    EXPECT_NE(source.find("result.temporalHistoryReset);"),
               std::string::npos);
     EXPECT_NE(source.find("m_previousViewProjectionValid = false;"), std::string::npos);
     EXPECT_NE(source.find("m_previousViewProjectionMatrix = m_viewData.viewProjectionMatrix;"),
@@ -3925,29 +5084,32 @@ TEST_F(PipelineCacheValidationFixture, RayTracingSceneMetadataConstantsMatchBetw
 
 TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAndDispatchesRays)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
-    const std::string passHeader = ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "RayTracedShadowPass.h");
+    std::string passHeader = ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "RayTracedShadowPass.h");
+    passHeader += ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "RenderPassRecordContext.h");
     const std::string passSource = ReadTextFile(renderRoot / "Private" / "Passes" / "RayTracedShadowPass.cpp");
     const std::string viewDataHeader = ReadTextFile(renderRoot / "Include" / "Render" / "Renderer" / "ViewData.h");
     const std::string pipelineHeader = ReadTextFile(renderRoot / "Include" / "Render" / "PipelineCache.h");
     const std::string pipelineSource = ReadTextFile(renderRoot / "Private" / "PipelineCache.cpp");
+    const std::string sceneRendererSource =
+        ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
     const std::string shaderSource = ReadTextFile(FindShaderDirectory() / "RayTracing" / "RayTracedShadow.hlsl");
     const std::string metadataSource =
         ReadTextFile(FindShaderDirectory() / "RayTracing" / "RayTracingSceneMetadata.hlsli");
 
     EXPECT_NE(passHeader.find("void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);"),
               std::string::npos);
-    EXPECT_NE(passHeader.find("void SetResources(GPUResourceManager* gpuResources,"),
+    EXPECT_NE(passHeader.find("void SetResourceRegistry(const RenderResourceRegistry* registry)"),
               std::string::npos);
-    EXPECT_NE(passHeader.find("bool EnsureHistoryTextures(uint32 width, uint32 height);"), std::string::npos);
-    EXPECT_NE(passHeader.find("void ResetHistoryTextures();"), std::string::npos);
-    EXPECT_NE(passHeader.find("ShadowPassConfig m_lastHistoryConfig;"), std::string::npos);
-    EXPECT_NE(passHeader.find("bool m_lastHistoryConfigValid = false;"), std::string::npos);
+    EXPECT_NE(passSource.find("bool EnsureHistoryTextures("), std::string::npos);
+    EXPECT_NE(passSource.find("void ResetHistoryTextures("), std::string::npos);
+    EXPECT_NE(passSource.find("ShadowPassConfig lastHistoryConfig{};"), std::string::npos);
+    EXPECT_NE(passSource.find("bool lastHistoryConfigValid = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool temporalAccumulated = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool resourceViewsAvailable = false;"), std::string::npos);
     EXPECT_NE(passHeader.find("bool descriptorSetAvailable = false;"), std::string::npos);
@@ -3978,124 +5140,153 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     EXPECT_NE(passHeader.find("uint64 gpuTimestampFrequency = 0;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint64 gpuTimingReadbackBytes = 0;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint64 gpuTimingElapsedTicks = 0;"), std::string::npos);
-    EXPECT_NE(passHeader.find("float gpuTimingElapsedMs = 0.0f;"), std::string::npos);
+    EXPECT_NE(passHeader.find("float32 gpuTimingElapsedMs = 0.0f;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint32 gpuTimingReadbackBufferCount = 0;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint32 gpuTimingReadbackFrameIndex = RVX_INVALID_INDEX;"), std::string::npos);
-    EXPECT_NE(passHeader.find("RHIQueryPoolRef m_timingQueryPool;"), std::string::npos);
-    EXPECT_NE(passHeader.find("std::array<RHIBufferRef, RVX_MAX_FRAME_COUNT> m_timingReadbackBuffers;"),
+    EXPECT_NE(passSource.find("RHIQueryPoolRef timingQueryPool;"), std::string::npos);
+    EXPECT_NE(passSource.find("RHIBufferRef timingReadbackBuffer;"),
               std::string::npos);
-    EXPECT_NE(passHeader.find("std::array<bool, RVX_MAX_FRAME_COUNT> m_timingReadbackValid{};"),
+    EXPECT_NE(passSource.find("std::vector<PendingTimingSample> pendingTimingSamples;"),
               std::string::npos);
+    EXPECT_NE(passHeader.find("void RefreshCompletionDiagnostics();"), std::string::npos);
+    EXPECT_NE(passSource.find("std::vector<std::shared_ptr<RayTracedShadowSubmissionRecord>> submissionRecords;"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("RenderPassRecordIdentity lastSubmittedIdentity{};"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("bool legacyAdapter = false;"), std::string::npos);
+    EXPECT_NE(passSource.find("state->submissionRecord->stats = state->stats;"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("legacyRecordingAlreadyActive"), std::string::npos);
+    EXPECT_NE(passSource.find("owner.lastSubmittedIdentity = identity;"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("m_lastSubmittedStats = (*submission)->stats;"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("isNewestSubmittedRecording &&"), std::string::npos);
+    EXPECT_NE(passSource.find("MakeRHITextureAccessSnapshot(RHIResourceState::Common)"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("std::vector<HistorySlot> slots;"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("builder.ImportTexture(owner.slots[read].mask, owner.slots[read].maskAccess)"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("recordedGraph->GetRealizedAccess(reservation->shadowMaskHandle)"),
+              std::string::npos);
+    const auto applyRayTracingBudget = sceneRendererSource.find(
+        "void SceneRenderer::ApplyRayTracingBudget(ShadowPassConfig& shadowConfig,");
+    const auto refreshShadowDiagnostics = sceneRendererSource.find(
+        "m_rayTracedShadowPass->RefreshCompletionDiagnostics();", applyRayTracingBudget);
+    const auto readPreviousShadowStats = sceneRendererSource.find(
+        "const RayTracedShadowPassStats& previousShadowStats = GetRayTracedShadowStats();",
+        applyRayTracingBudget);
+    ASSERT_NE(applyRayTracingBudget, std::string::npos);
+    ASSERT_NE(refreshShadowDiagnostics, std::string::npos);
+    ASSERT_NE(readPreviousShadowStats, std::string::npos);
+    EXPECT_LT(refreshShadowDiagnostics, readPreviousShadowStats);
     EXPECT_NE(passHeader.find("uint32 samplesPerPixel = 1;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint64 dispatchPixelCount = 0;"), std::string::npos);
     EXPECT_NE(passHeader.find("uint64 estimatedRayCount = 0;"), std::string::npos);
-    EXPECT_NE(passHeader.find("bool ResolveMaterialTextureViews(std::vector<RHITextureView*>& outViews) const;"),
+    EXPECT_NE(passSource.find("std::vector<RHITextureViewRef> materialTextureViews;"),
               std::string::npos);
-    EXPECT_NE(passHeader.find("m_historyDepthTextures"), std::string::npos);
-    EXPECT_NE(passHeader.find("m_historyNormalTextures"), std::string::npos);
-    EXPECT_NE(passHeader.find("RGTextureHandle m_velocityReadHandle;"), std::string::npos);
-    EXPECT_NE(passHeader.find("RHITextureRef m_fallbackVelocityTexture;"), std::string::npos);
-    EXPECT_NE(passHeader.find("bool EnsureFallbackVelocityTexture();"), std::string::npos);
+    EXPECT_NE(passSource.find("struct HistorySlot"), std::string::npos);
+    EXPECT_NE(passSource.find("AppendHistorySlot(owner, device)"), std::string::npos);
+    EXPECT_EQ(passSource.find("RVX_MAX_FRAME_COUNT + 1"), std::string::npos);
+    EXPECT_NE(passSource.find("RGTextureHandle velocityHandle{};"), std::string::npos);
+    EXPECT_EQ(passHeader.find("m_fallbackVelocityTexture"), std::string::npos);
+    EXPECT_NE(passHeader.find("bool CreateFrameFallbackTextures(RayTracedShadowFrameState& state) const;"), std::string::npos);
     EXPECT_NE(passSource.find("GetRayTracedShadowPipeline()"), std::string::npos);
     EXPECT_NE(passSource.find("GetRayTracedShadowShaderTable()"), std::string::npos);
-    EXPECT_NE(passSource.find("EnsureHistoryTextures(view.viewportWidth, view.viewportHeight)"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.historyReset = view.resetTemporalHistory;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.historyRecreated = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("ShadowHistoryConfigChanged(m_lastHistoryConfig, m_config)"),
+    EXPECT_NE(passSource.find("EnsureHistoryTextures(*state->historyOwner,"), std::string::npos);
+    EXPECT_NE(passSource.find("stats.historyReset = stats.historyReset || resetRequested || configChanged;"), std::string::npos);
+    EXPECT_NE(passSource.find("stats.historyRecreated = true;"), std::string::npos);
+    EXPECT_NE(passSource.find("ShadowHistoryConfigChanged(owner.lastHistoryConfig, config)"),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.historyConfigChanged = historyConfigChanged;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_lastHistoryConfig = m_config;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_lastHistoryConfigValid = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.historyResolutionChanged = historyResolutionChanged;"),
+    EXPECT_NE(passSource.find("stats.historyConfigChanged = configChanged;"), std::string::npos);
+    EXPECT_NE(passSource.find("owner.lastHistoryConfig = reservation->config;"), std::string::npos);
+    EXPECT_NE(passSource.find("owner.lastHistoryConfigValid = true;"), std::string::npos);
+    EXPECT_NE(passSource.find("stats.historyResolutionChanged = resolutionChanged;"),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.historyAvailable = false;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_viewCache->InvalidateTexture(texture.Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("reservation->historyAvailable = reusableHistory;"), std::string::npos);
+    EXPECT_NE(passSource.find("viewCache->InvalidateTexture(slot.mask.Get())"), std::string::npos);
     const auto shadowOnAdd = passSource.find("void RayTracedShadowPass::OnAdd(IRHIDevice* device)");
     ASSERT_NE(shadowOnAdd, std::string::npos);
     const auto shadowDeviceChange = passSource.find("if (m_device != device)", shadowOnAdd);
     ASSERT_NE(shadowDeviceChange, std::string::npos);
-    const auto shadowResetHistoryOnDeviceChange = passSource.find("ResetHistoryTextures();", shadowDeviceChange);
-    const auto shadowMaskClearOnDeviceChange = passSource.find("m_shadowMaskTexture = nullptr;", shadowDeviceChange);
-    const auto shadowConstantBufferResetOnDeviceChange = passSource.find("m_constantBuffer.Reset();", shadowDeviceChange);
-    const auto shadowRetainedDescriptorsClearOnDeviceChange =
-        passSource.find("m_retainedDescriptorSets.clear();", shadowDeviceChange);
+    const auto shadowResetHistoryOnDeviceChange = passSource.find("ResetHistoryTextures(*m_historyOwner, m_viewCache);", shadowDeviceChange);
     const auto shadowDeviceAssign = passSource.find("m_device = device;", shadowDeviceChange);
     ASSERT_NE(shadowResetHistoryOnDeviceChange, std::string::npos);
-    ASSERT_NE(shadowMaskClearOnDeviceChange, std::string::npos);
-    ASSERT_NE(shadowConstantBufferResetOnDeviceChange, std::string::npos);
-    ASSERT_NE(shadowRetainedDescriptorsClearOnDeviceChange, std::string::npos);
     ASSERT_NE(shadowDeviceAssign, std::string::npos);
-    EXPECT_LT(shadowResetHistoryOnDeviceChange, shadowMaskClearOnDeviceChange);
-    EXPECT_LT(shadowMaskClearOnDeviceChange, shadowConstantBufferResetOnDeviceChange);
-    EXPECT_LT(shadowConstantBufferResetOnDeviceChange, shadowRetainedDescriptorsClearOnDeviceChange);
-    EXPECT_LT(shadowRetainedDescriptorsClearOnDeviceChange, shadowDeviceAssign);
-    EXPECT_NE(passSource.find("if (view.resetTemporalHistory)"), std::string::npos);
-    EXPECT_NE(passSource.find("m_historyValid = false;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_historyViewValid = false;"), std::string::npos);
-    EXPECT_NE(passSource.find("view.renderGraph->ImportTexture("), std::string::npos);
-    EXPECT_NE(passSource.find("SetExportState(m_shadowMaskHandle, RHIResourceState::ShaderResource)"),
+    EXPECT_LT(shadowResetHistoryOnDeviceChange, shadowDeviceAssign);
+    EXPECT_EQ(passSource.find("m_retainedDescriptorSets"), std::string::npos);
+    EXPECT_NE(passSource.find("context.RetainSubmissionResource("), std::string::npos);
+    EXPECT_NE(passSource.find("state->execution.view.resetTemporalHistory"), std::string::npos);
+    EXPECT_NE(passSource.find("owner.historyValid = false;"), std::string::npos);
+    EXPECT_NE(passSource.find("owner.historyViewValid = false;"), std::string::npos);
+    EXPECT_EQ(passSource.find("view.renderGraph->"), std::string::npos);
+    EXPECT_NE(passSource.find("shadowMask, RHIResourceState::ShaderResource"),
               std::string::npos);
-    EXPECT_NE(passSource.find("RayTracedShadowDepthHistory0"), std::string::npos);
-    EXPECT_NE(passSource.find("RayTracedShadowNormalHistory0"), std::string::npos);
-    EXPECT_NE(passSource.find("SetExportState(m_historyDepthWriteHandle, RHIResourceState::ShaderResource)"),
+    EXPECT_NE(passSource.find("RayTracedShadowDepthHistory"), std::string::npos);
+    EXPECT_NE(passSource.find("RayTracedShadowNormalHistory"), std::string::npos);
+    EXPECT_NE(passSource.find("historyDepthWrite, RHIResourceState::ShaderResource"),
               std::string::npos);
-    EXPECT_NE(passSource.find("SetExportState(m_historyNormalWriteHandle, RHIResourceState::ShaderResource)"),
+    EXPECT_NE(passSource.find("historyNormalWrite, RHIResourceState::ShaderResource"),
               std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultUAV(shadowMask)"), std::string::npos);
-    EXPECT_NE(passSource.find("m_depthReadHandle = builder.Read(depthHandle, RHIShaderStage::AllRayTracing);"),
+    EXPECT_NE(passSource.find("data->shadowMaskViewHandle = declareView("), std::string::npos);
+    EXPECT_NE(passSource.find("data->depthViewHandle = declareView("),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.velocityAvailable = view.velocityTarget.IsValid();"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.samplesPerPixel = std::min(std::max(m_config.rayTracedSamplesPerPixel, 1u), 8u);"),
+    EXPECT_NE(passSource.find("state->stats.velocityAvailable = state->execution.view.velocityTarget.IsValid();"), std::string::npos);
+    EXPECT_NE(passSource.find("state->stats.samplesPerPixel = std::clamp(state->config.rayTracedSamplesPerPixel, 1u, 8u);"),
               std::string::npos);
-    EXPECT_NE(passSource.find("TryGetRHIRayTracingDispatchRayCount(m_stats.width, m_stats.height, 1, m_stats.dispatchPixelCount)"),
+    EXPECT_NE(passSource.find("TryGetRHIRayTracingDispatchRayCount(state->stats.width, state->stats.height, 1, state->stats.dispatchPixelCount)"),
               std::string::npos);
-    EXPECT_NE(passSource.find("TryMultiplyRHIRayTracingCount(m_stats.dispatchPixelCount"),
+    EXPECT_NE(passSource.find("TryMultiplyRHIRayTracingCount(state->stats.dispatchPixelCount"),
               std::string::npos);
     EXPECT_NE(passSource.find("RVX_RAY_TRACED_SHADOW_TIMING_QUERY_COUNT_PER_FRAME = 2"),
               std::string::npos);
-    EXPECT_NE(passSource.find("queryDesc.count = RVX_MAX_FRAME_COUNT * RVX_RAY_TRACED_SHADOW_TIMING_QUERY_COUNT_PER_FRAME;"),
+    EXPECT_NE(passSource.find("queryDesc.count = RVX_RAY_TRACED_SHADOW_TIMING_QUERY_COUNT_PER_FRAME;"),
               std::string::npos);
     EXPECT_NE(passSource.find("queryDesc.debugName = \"RayTracedShadowTimingQueries\";"), std::string::npos);
     EXPECT_NE(passSource.find("RVX_RAY_TRACED_SHADOW_TIMING_READBACK_BYTES = sizeof(uint64) * 2"),
               std::string::npos);
+    EXPECT_NE(passSource.find("status == GPUCompletionStatus::Completed ||\n                status == GPUCompletionStatus::CompatibilityWaitIdle"),
+              std::string::npos);
     EXPECT_NE(passSource.find("readbackDesc.usage = RHIBufferUsage::CopyDst;"), std::string::npos);
     EXPECT_NE(passSource.find("readbackDesc.memoryType = RHIMemoryType::Readback;"), std::string::npos);
     EXPECT_NE(passSource.find("readbackDesc.debugName = \"RayTracedShadowTimingReadback\";"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingSupported = m_timingQueryPool != nullptr;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingReadbackBufferAvailable = timingReadbackBuffer != nullptr;"),
+    EXPECT_NE(passSource.find("data->stats.gpuTimingSupported = data->timingQueryPool != nullptr;"), std::string::npos);
+    EXPECT_NE(passSource.find("data->stats.gpuTimingReadbackBufferAvailable = data->timingReadbackBuffer != nullptr;"),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingReadbackBytes = static_cast<uint64>(timingReadbackBufferCount) *"),
+    EXPECT_NE(passSource.find("data->stats.gpuTimingReadbackBufferCount ="),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimestampFrequency = m_timingQueryPool ? m_timingQueryPool->GetTimestampFrequency() : 0;"),
+    EXPECT_NE(passSource.find("data->stats.gpuTimingReadbackBytes = data->timingReadbackBuffer"),
               std::string::npos);
-    EXPECT_NE(passSource.find("ctx.WriteTimestamp(m_timingQueryPool.Get(), timingStartQuery);"),
+    EXPECT_NE(passSource.find("data->stats.gpuTimingReadbackFrameIndex = RVX_INVALID_INDEX;"),
               std::string::npos);
-    EXPECT_NE(passSource.find("ctx.WriteTimestamp(m_timingQueryPool.Get(), timingEndQuery);"),
+    EXPECT_NE(passSource.find("ctx.WriteTimestamp(data->timingQueryPool.Get(), data->stats.gpuTimingStartQueryIndex);"),
               std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingQueriesRecorded = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("ctx.ResolveQueries(m_timingQueryPool.Get(),"), std::string::npos);
-    EXPECT_NE(passSource.find("m_timingReadbackValid[timingFrameIndex] = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingResolveRecorded = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("TryReadbackTimingResult(timingFrameIndex);"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.gpuTimingElapsedMs = static_cast<float>("), std::string::npos);
-    EXPECT_NE(passSource.find("m_velocityReadHandle = builder.Read(view.velocityTarget, RHIShaderStage::AllRayTracing);"),
+    EXPECT_NE(passSource.find("ctx.WriteTimestamp(data->timingQueryPool.Get(), data->stats.gpuTimingEndQueryIndex);"),
               std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultSRV(depthTexture)"), std::string::npos);
-    EXPECT_NE(passSource.find("RHITexture* sceneVelocity = m_velocityReadHandle.IsValid() ?"),
+    EXPECT_NE(passSource.find("data->stats.gpuTimingQueriesRecorded = true;"), std::string::npos);
+    EXPECT_NE(passSource.find("ctx.ResolveQueries(data->timingQueryPool.Get(),"), std::string::npos);
+    EXPECT_NE(passSource.find("data->reservation->timingResolveRecorded = true;"), std::string::npos);
+    EXPECT_NE(passSource.find("PollCompletedTimingSamples();"), std::string::npos);
+    EXPECT_NE(passSource.find("m_lastSubmittedStats.gpuTimingElapsedMs = static_cast<float32>("), std::string::npos);
+    EXPECT_NE(passSource.find("const RGTextureHandle velocityHandle = view.velocityTarget.IsValid()"),
               std::string::npos);
-    EXPECT_NE(passSource.find("EnsureFallbackVelocityTexture()"), std::string::npos);
-    EXPECT_NE(passSource.find("RHITextureDesc::Texture2D(1, 1, RHIFormat::RG16_FLOAT)"), std::string::npos);
+    EXPECT_NE(passSource.find("context.GetTextureView(\n                    data->depthViewHandle)"), std::string::npos);
+    EXPECT_NE(passSource.find("context.GetTexture(data->velocityHandle)"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("bool RayTracedShadowPass::CreateFrameFallbackTextures("), std::string::npos);
+    EXPECT_NE(passSource.find("RHIFormat::RG16_FLOAT, RHITextureUsage::ShaderResource"), std::string::npos);
     EXPECT_NE(passSource.find("RayTracedShadowFallbackVelocity"), std::string::npos);
-    EXPECT_NE(passSource.find("sceneVelocity = m_fallbackVelocityTexture.Get();"), std::string::npos);
-    EXPECT_NE(passSource.find("m_viewCache->GetDefaultSRV(sceneVelocity)"), std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultSRV(previousShadowMask)"), std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultSRV(previousDepthHistory)"), std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultUAV(currentDepthHistory)"), std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultSRV(previousNormalHistory)"), std::string::npos);
-    EXPECT_NE(passSource.find("GetDefaultUAV(currentNormalHistory)"), std::string::npos);
-    EXPECT_NE(passSource.find("EnsureConstantBuffer()"), std::string::npos);
-    EXPECT_NE(passSource.find("UpdateConstants(view)"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindAccelerationStructure(RTShadowBindings::RVX_RT_SHADOW_TLAS_BINDING, tlas);"), std::string::npos);
+    EXPECT_NE(passSource.find("data->fallbackVelocityTexture,\n                        RHIResourceState::Common"), std::string::npos);
+    EXPECT_NE(passSource.find("data->velocityViewHandle"), std::string::npos);
+    EXPECT_NE(passSource.find("data->historyReadViewHandle"), std::string::npos);
+    EXPECT_NE(passSource.find("data->historyDepthReadViewHandle"), std::string::npos);
+    EXPECT_NE(passSource.find("data->historyDepthWriteViewHandle"), std::string::npos);
+    EXPECT_NE(passSource.find("data->historyNormalReadViewHandle"), std::string::npos);
+    EXPECT_NE(passSource.find("data->historyNormalWriteViewHandle"), std::string::npos);
+    EXPECT_NE(passSource.find("CreateFrameConstantBuffer(*state)"), std::string::npos);
+    EXPECT_NE(passSource.find("UpdateConstants(*data)"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindAccelerationStructure(RTShadowBindings::RVX_RT_SHADOW_TLAS_BINDING, data->tlas.Get());"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_OUTPUT_MASK_BINDING, shadowMaskUAV);"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_SCENE_DEPTH_BINDING, depthSRV);"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_CONSTANTS_BINDING,"), std::string::npos);
@@ -4104,26 +5295,27 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_OUTPUT_DEPTH_BINDING, currentDepthHistoryUAV);"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_PREVIOUS_NORMAL_BINDING, previousNormalHistorySRV);"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_OUTPUT_NORMAL_BINDING, currentNormalHistoryUAV);"), std::string::npos);
-    EXPECT_NE(passSource.find("RHIBuffer* materialMetadataBuffer = m_sceneManager->GetInstanceMaterialMetadataBuffer();"),
+    EXPECT_NE(passSource.find("state->materialMetadata = RHIBufferRef(m_sceneManager->GetInstanceMaterialMetadataBuffer());"),
               std::string::npos);
-    EXPECT_NE(passSource.find("ResolveMaterialTextureViews(materialTextureViews)"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.resourceViewsAvailable = true;"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_METADATA_BINDING, alphaMetadataBuffer);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_ALPHA_TEXTURES_BINDING, alphaTextureViews[textureIndex], textureIndex);"),
+    EXPECT_NE(passSource.find("state->materialTextureViews.emplace_back(view);"), std::string::npos);
+    EXPECT_NE(passSource.find("data->stats.resourceViewsAvailable = true;"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_METADATA_BINDING, data->alphaMetadata.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("RHITextureView* alphaFallback"), std::string::npos);
+    EXPECT_NE(passSource.find("index < data->alphaTextureViews.size()"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_INDEX_BUFFERS_BINDING, alphaIndexBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find("index < data->alphaIndexBuffers.size()"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_ALPHA_UV_BUFFERS_BINDING, alphaUVBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find(": data->alphaMetadata.Get();"), std::string::npos);
+    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_MATERIAL_METADATA_BINDING, data->materialMetadata.Get());"), std::string::npos);
+    EXPECT_NE(passSource.find("RHITextureView* materialFallback"), std::string::npos);
+    EXPECT_NE(passSource.find("index < data->materialTextureViews.size()"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTShadowBindings::RVX_RT_SHADOW_MATERIAL_METADATA_BINDING, materialMetadataBuffer);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_MATERIAL_TEXTURES_BINDING, materialTextureViews[textureIndex], textureIndex);"),
-              std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_SCENE_VELOCITY_BINDING, sceneVelocitySRV);"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.descriptorSetAvailable = true;"), std::string::npos);
-    const auto shadowResourceViewsReady = passSource.find("m_stats.resourceViewsAvailable = true;");
-    const auto shadowCreateDescriptorSet = passSource.find("device->CreateDescriptorSet(descriptorDesc);");
-    const auto shadowDescriptorSetReady = passSource.find("m_stats.descriptorSetAvailable = true;");
-    const auto shadowSetPipeline = passSource.find("ctx.SetPipeline(pipeline);");
+    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTShadowBindings::RVX_RT_SHADOW_SCENE_VELOCITY_BINDING, velocitySRV);"), std::string::npos);
+    EXPECT_NE(passSource.find("data->stats.descriptorSetAvailable = true;"), std::string::npos);
+    const auto shadowResourceViewsReady = passSource.find("data->stats.resourceViewsAvailable = true;");
+    const auto shadowCreateDescriptorSet = passSource.find("data->descriptorDevice->CreateDescriptorSet(descriptorDesc);");
+    const auto shadowDescriptorSetReady = passSource.find("data->stats.descriptorSetAvailable = true;");
+    const auto shadowSetPipeline = passSource.find("ctx.SetPipeline(data->pipeline.Get());");
     ASSERT_NE(shadowResourceViewsReady, std::string::npos);
     ASSERT_NE(shadowCreateDescriptorSet, std::string::npos);
     ASSERT_NE(shadowDescriptorSetReady, std::string::npos);
@@ -4132,23 +5324,24 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     EXPECT_LT(shadowCreateDescriptorSet, shadowDescriptorSetReady);
     EXPECT_LT(shadowDescriptorSetReady, shadowSetPipeline);
     EXPECT_NE(passSource.find("m_sceneManager->GetInstanceMaterialTextureTable()"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedTemporalAccumulation"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedLightAngularRadius"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedSamplesPerPixel"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedTemporalBlendFactor"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedHistoryDepthThreshold"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedHistoryNormalThreshold"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedHistoryVelocityRejectionScale"), std::string::npos);
-    EXPECT_NE(passSource.find("view.velocityTarget.IsValid() ? 1.0f : 0.0f"), std::string::npos);
-    EXPECT_NE(passSource.find("velocityRejectionScale"), std::string::npos);
-    EXPECT_NE(passSource.find("m_config.rayTracedInstanceMask"), std::string::npos);
-    EXPECT_NE(passSource.find("constants.previousViewProjection = m_historyViewValid"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedTemporalAccumulation"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedLightAngularRadius"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedTemporalBlendFactor"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedHistoryDepthThreshold"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedHistoryNormalThreshold"), std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedHistoryVelocityRejectionScale"), std::string::npos);
+    EXPECT_NE(passSource.find("state.execution.view.velocityTarget.IsValid() ? 1.0f : 0.0f"), std::string::npos);
+    EXPECT_NE(passSource.find("ClampFiniteNonNegative(state.config.rayTracedHistoryVelocityRejectionScale, 8.0f)"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("state.config.rayTracedInstanceMask"), std::string::npos);
+    EXPECT_NE(passSource.find("constants.previousViewProjection = state.reservation->historyViewValid"),
+              std::string::npos);
     EXPECT_NE(passSource.find("historyReprojectionParams"), std::string::npos);
     EXPECT_NE(passSource.find("softShadowParams"), std::string::npos);
     EXPECT_NE(passSource.find("rayOptions"), std::string::npos);
-    EXPECT_NE(passSource.find("std::min<uint32>(m_config.rayTracedInstanceMask, 0xFFu)"),
+    EXPECT_NE(passSource.find("std::min<uint32>(state.config.rayTracedInstanceMask, 0xFFu)"),
               std::string::npos);
-    EXPECT_NE(passSource.find("std::min(std::max(m_config.rayTracedSamplesPerPixel, 1u), 8u)"),
+    EXPECT_NE(passSource.find("static_cast<float32>(state.stats.samplesPerPixel)"),
               std::string::npos);
     EXPECT_NE(passSource.find("view.frameNumber & 0x00FFFFFFull"), std::string::npos);
     EXPECT_NE(passSource.find("ctx.DispatchRays(dispatchDesc);"), std::string::npos);
@@ -4361,7 +5554,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
 
 TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -4587,7 +5780,8 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_SCENE_DEPTH_BINDING, sceneDepthSRV);"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_CONSTANTS_BINDING,"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_MATERIAL_METADATA_BINDING, materialMetadataBuffer);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_MATERIAL_TEXTURES_BINDING, materialTextureViews[textureIndex], textureIndex);"),
+    EXPECT_NE(passSource.find("RHITextureView* materialTextureFallback"), std::string::npos);
+    EXPECT_NE(passSource.find("textureIndex < RTReflectionBindings::RVX_RT_REFLECTION_MAX_MATERIAL_TEXTURES"),
               std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_PREVIOUS_HISTORY_BINDING, previousReflectionSRV);"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindTexture(RTReflectionBindings::RVX_RT_REFLECTION_OUTPUT_DEPTH_BINDING, currentDepthHistoryUAV);"), std::string::npos);
@@ -4613,13 +5807,16 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(passSource.find("m_stats.resourceViewsAvailable = true;"), std::string::npos);
     EXPECT_NE(passSource.find("m_sceneManager->GetInstanceAlphaTangentBufferTable()"), std::string::npos);
     EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_GEOMETRY_METADATA_BINDING, geometryMetadataBuffer);"), std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_INDEX_BUFFERS_BINDING, geometryIndexBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find("bufferIndex < RTReflectionBindings::RVX_RT_REFLECTION_MAX_GEOMETRY_BUFFERS"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_UV_BUFFERS_BINDING, geometryUVBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find(": geometryMetadataBuffer;"), std::string::npos);
+    EXPECT_NE(passSource.find("RTReflectionBindings::RVX_RT_REFLECTION_INDEX_BUFFERS_BINDING"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING, geometryNormalBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find("RTReflectionBindings::RVX_RT_REFLECTION_UV_BUFFERS_BINDING"),
               std::string::npos);
-    EXPECT_NE(passSource.find("descriptorDesc.BindBuffer(RTReflectionBindings::RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING, geometryTangentBuffers[bufferIndex], 0, RVX_WHOLE_SIZE, bufferIndex);"),
+    EXPECT_NE(passSource.find("RTReflectionBindings::RVX_RT_REFLECTION_NORMAL_BUFFERS_BINDING"),
+              std::string::npos);
+    EXPECT_NE(passSource.find("RTReflectionBindings::RVX_RT_REFLECTION_TANGENT_BUFFERS_BINDING"),
               std::string::npos);
     EXPECT_NE(passSource.find("m_stats.geometryTangentBufferCount"), std::string::npos);
     EXPECT_NE(passSource.find("m_config.maxTraceDistance"), std::string::npos);
@@ -4677,15 +5874,15 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(passSource.find("TryReadbackTimingResult(timingFrameIndex);"), std::string::npos);
     EXPECT_NE(passSource.find("m_stats.gpuTimingElapsedMs = static_cast<float>("), std::string::npos);
     EXPECT_NE(passSource.find("m_stats.velocityAvailable = view.velocityTarget.IsValid();"), std::string::npos);
-    EXPECT_NE(passSource.find("m_velocityReadHandle = builder.Read(view.velocityTarget, RHIShaderStage::AllRayTracing);"),
+    EXPECT_NE(passSource.find("m_velocityReadHandle = view.velocityTarget;"),
               std::string::npos);
-    EXPECT_NE(passSource.find("RHITexture* sceneVelocity = m_velocityReadHandle.IsValid() ?"),
+    EXPECT_NE(passSource.find("RHITexture* sceneVelocity = context.GetTexture(m_velocityReadHandle);"),
               std::string::npos);
     EXPECT_NE(passSource.find("EnsureFallbackVelocityTexture()"), std::string::npos);
     EXPECT_NE(passSource.find("RHITextureDesc::Texture2D(1, 1, RHIFormat::RG16_FLOAT)"), std::string::npos);
     EXPECT_NE(passSource.find("RayTracedReflectionFallbackVelocity"), std::string::npos);
-    EXPECT_NE(passSource.find("sceneVelocity = m_fallbackVelocityTexture.Get();"), std::string::npos);
-    EXPECT_NE(passSource.find("m_viewCache->GetDefaultSRV(sceneVelocity)"), std::string::npos);
+    EXPECT_NE(passSource.find("m_velocityReadHandle = builder.ImportTexture("), std::string::npos);
+    EXPECT_NE(passSource.find("context.GetTextureView(m_velocityViewHandle)"), std::string::npos);
     EXPECT_EQ(passSource.find("sceneVelocity ? m_viewCache->GetDefaultSRV(sceneVelocity) : sceneColorSRV"),
               std::string::npos);
     EXPECT_NE(passSource.find("m_stats.historyReset = view.resetTemporalHistory;"), std::string::npos);
@@ -4705,16 +5902,14 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     ASSERT_NE(reflectionDeviceChange, std::string::npos);
     const auto reflectionResetHistoryOnDeviceChange = passSource.find("ResetHistoryTextures();", reflectionDeviceChange);
     const auto reflectionConstantBufferResetOnDeviceChange = passSource.find("m_constantBuffer.Reset();", reflectionDeviceChange);
-    const auto reflectionRetainedDescriptorsClearOnDeviceChange =
-        passSource.find("m_retainedDescriptorSets.clear();", reflectionDeviceChange);
     const auto reflectionDeviceAssign = passSource.find("m_device = device;", reflectionDeviceChange);
     ASSERT_NE(reflectionResetHistoryOnDeviceChange, std::string::npos);
     ASSERT_NE(reflectionConstantBufferResetOnDeviceChange, std::string::npos);
-    ASSERT_NE(reflectionRetainedDescriptorsClearOnDeviceChange, std::string::npos);
     ASSERT_NE(reflectionDeviceAssign, std::string::npos);
     EXPECT_LT(reflectionResetHistoryOnDeviceChange, reflectionConstantBufferResetOnDeviceChange);
-    EXPECT_LT(reflectionConstantBufferResetOnDeviceChange, reflectionRetainedDescriptorsClearOnDeviceChange);
-    EXPECT_LT(reflectionRetainedDescriptorsClearOnDeviceChange, reflectionDeviceAssign);
+    EXPECT_LT(reflectionConstantBufferResetOnDeviceChange, reflectionDeviceAssign);
+    EXPECT_EQ(passSource.find("m_retainedDescriptorSets"), std::string::npos);
+    EXPECT_NE(passSource.find("context.RetainSubmissionResource("), std::string::npos);
 
     const auto reflectionOnRemove = passSource.find("void RayTracedReflectionPass::OnRemove()");
     ASSERT_NE(reflectionOnRemove, std::string::npos);
@@ -4767,9 +5962,9 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
               std::string::npos);
     EXPECT_NE(cameraVelocityPassSource.find("view.previousViewProjectionValid != 0 && !view.resetTemporalHistory"),
               std::string::npos);
-    EXPECT_NE(cameraVelocityPassSource.find("m_depthReadHandle = builder.Read(depthHandle, RHIShaderStage::Pixel);"),
+    EXPECT_NE(cameraVelocityPassSource.find("m_depthViewHandle = builder.CreateTextureView("),
               std::string::npos);
-    EXPECT_NE(cameraVelocityPassSource.find("m_velocityWriteHandle = builder.Write(view.velocityTarget, RHIResourceState::RenderTarget);"),
+    EXPECT_NE(cameraVelocityPassSource.find("m_velocityViewHandle = builder.CreateTextureView("),
               std::string::npos);
     EXPECT_NE(cameraVelocityPassSource.find("descriptorDesc.debugName = \"CameraVelocityDescriptorSet\""),
               std::string::npos);
@@ -4964,7 +6159,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(compositePassHeader.find("bool denoiseFallbackToRaw = false;"), std::string::npos);
     EXPECT_NE(compositePassHeader.find("RayTracedReflectionCompositeSource source = RayTracedReflectionCompositeSource::None;"),
               std::string::npos);
-    EXPECT_NE(compositePassSource.find("GetRayTracedReflectionCompositePipeline(outputFormat)"),
+    EXPECT_NE(compositePassSource.find("GetRayTracedReflectionCompositePipeline(\n                m_outputFormat)"),
               std::string::npos);
     EXPECT_NE(compositePassSource.find("m_denoisePass->GetDenoisedReflectionHandle()"), std::string::npos);
     EXPECT_NE(compositePassSource.find("m_stats.denoisedSourceUsed = true;"), std::string::npos);
@@ -5002,7 +6197,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
     EXPECT_NE(denoisePassHeader.find("float normalThreshold = 0.85f;"), std::string::npos);
     EXPECT_NE(denoisePassHeader.find("float centerWeight = 1.0f;"), std::string::npos);
     EXPECT_NE(denoisePassHeader.find("float lowConfidenceDepthScale = 4.0f;"), std::string::npos);
-    EXPECT_NE(denoisePassSource.find("GetRayTracedReflectionDenoisePipeline(outputFormat)"), std::string::npos);
+    EXPECT_NE(denoisePassSource.find("GetRayTracedReflectionDenoisePipeline(\n                m_outputFormat)"), std::string::npos);
     EXPECT_NE(denoisePassSource.find("GetRayTracedReflectionDenoiseSetLayout()"), std::string::npos);
     EXPECT_NE(denoisePassSource.find("RHITextureDesc::RenderTarget(view.viewportWidth, view.viewportHeight, RHIFormat::RGBA16_FLOAT)"),
               std::string::npos);
@@ -5021,7 +6216,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
               std::string::npos);
     EXPECT_NE(denoisePassSource.find("m_stats.lowConfidenceDepthScale = std::max(m_config.lowConfidenceDepthScale, 1.0f);"),
               std::string::npos);
-    EXPECT_NE(denoisePassSource.find("m_normalGuideReadHandle = builder.Read(normalGuideHandle, RHIShaderStage::Pixel);"),
+    EXPECT_NE(denoisePassSource.find("m_normalGuideViewHandle = createReadView("),
               std::string::npos);
     EXPECT_NE(denoisePassSource.find("descriptorDesc.BindTexture(1, reflectionView);"), std::string::npos);
     EXPECT_NE(denoisePassSource.find("descriptorDesc.BindTexture(2, depthView);"), std::string::npos);
@@ -5065,7 +6260,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionPipelineCacheResources
 
 TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -5078,9 +6273,11 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
     const std::string pipelineSource = ReadTextFile(renderRoot / "Private" / "PipelineCache.cpp");
     const std::string defaultLitSource = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
 
-    EXPECT_NE(opaqueHeader.find("void SetRayTracedShadowSource(const RayTracedShadowPass* shadowPass);"),
+    EXPECT_EQ(opaqueHeader.find("SetRayTraced" "ShadowRecordInputs"),
               std::string::npos);
-    EXPECT_NE(opaqueSource.find("m_rayTracedShadowMaskReadHandle = builder.Read(shadowMask, RHIShaderStage::Pixel);"),
+    EXPECT_NE(opaqueSource.find("m_rayTracedShadowInputs = rayTracedShadow;"),
+              std::string::npos);
+    EXPECT_NE(opaqueSource.find("m_rayTracedShadowMaskViewHandle =\n                    builder.CreateTextureView(shadowMask, viewDesc);"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("RayTracedShadowFrameResources rayTracedShadowResources;"),
               std::string::npos);
@@ -5088,24 +6285,44 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
               std::string::npos);
     EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowEnabled = rayTracedShadowBinding.shadowMaskSamplingEnabled ? 1 : 0;"),
               std::string::npos);
-    EXPECT_NE(opaqueSource.find("rayTracedShadowConfig.filterRadiusTexels"),
+    EXPECT_NE(opaqueSource.find("m_rayTracedShadowInputs.filterRadiusTexels"),
               std::string::npos);
-    EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowMode = rayTracedShadowConfig.rayTracedShadowMode;"),
+    EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowMode = m_rayTracedShadowInputs.mode;"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("drawView.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster"),
               std::string::npos);
     EXPECT_NE(opaqueSource.find("ClearDirectionalShadowViewData(drawView);"),
               std::string::npos);
-    EXPECT_NE(sceneRendererSource.find("m_opaquePass->SetRayTracedShadowSource(m_rayTracedShadowPass);"),
+    EXPECT_NE(opaqueSource.find("dispatchReady.load(std::memory_order_acquire)"),
+              std::string::npos);
+    EXPECT_NE(opaqueSource.find("rayTracedExecutionFailed"), std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("passRecordContext.rayTracedShadow ="),
+              std::string::npos);
+    EXPECT_EQ(sceneRendererSource.find("SetRayTracedShadowSource("), std::string::npos);
+
+    const auto shadowStatsAccessor = sceneRendererSource.find(
+        "const RayTracedShadowPassStats& SceneRenderer::GetRayTracedShadowStats() const");
+    ASSERT_NE(shadowStatsAccessor, std::string::npos);
+    const auto shadowStatsAccessorEnd = sceneRendererSource.find(
+        "const RayTracedReflectionPassStats& SceneRenderer::GetRayTracedReflectionStats() const",
+        shadowStatsAccessor);
+    ASSERT_NE(shadowStatsAccessorEnd, std::string::npos);
+    const std::string shadowStatsAccessorBody = sceneRendererSource.substr(
+        shadowStatsAccessor, shadowStatsAccessorEnd - shadowStatsAccessor);
+    EXPECT_NE(shadowStatsAccessorBody.find("m_rayTracedShadowPass ? m_rayTracedShadowPass->GetStats()"),
+              std::string::npos);
+    EXPECT_EQ(shadowStatsAccessorBody.find("m_activeRenderPassResults->rayTracedShadowStats"),
+              std::string::npos);
+    EXPECT_NE(sceneRendererSource.find("? m_activeRenderPassResults->rayTracedShadowStats"),
               std::string::npos);
 
     EXPECT_NE(pipelineHeader.find("RayTracedShadowFrameResources"), std::string::npos);
     EXPECT_NE(pipelineHeader.find("UpdateRayTracedShadowFrameResources"), std::string::npos);
     EXPECT_NE(pipelineSource.find("frameLayout.AddBinding(6, RHIBindingType::SampledTexture"),
               std::string::npos);
-    EXPECT_NE(pipelineSource.find("descSetDesc.BindTexture(6, m_fallbackRayTracedShadowMaskView.Get());"),
+    EXPECT_NE(pipelineSource.find("frameSetDesc.BindTexture(6, m_fallbackRayTracedShadowMaskView.Get());"),
               std::string::npos);
-    EXPECT_NE(pipelineSource.find("bindings.push_back({6, nullptr, 0, 0, rayTracedShadowMask, nullptr});"),
+    EXPECT_NE(pipelineSource.find("bindings.push_back({6, nullptr, 0, 0, owners.rayTracedShadowMaskView.Get(), nullptr});"),
               std::string::npos);
     EXPECT_NE(pipelineSource.find("view.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster ? 1.0f : 0.0f"),
               std::string::npos);
@@ -5129,7 +6346,7 @@ TEST_F(PipelineCacheValidationFixture, OpaquePassConsumesRayTracedShadowMask)
 
 TEST_F(PipelineCacheValidationFixture, DX12BackendImplementsRayTracingPipelineShaderTableAndDispatch)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -5340,13 +6557,13 @@ TEST_F(PipelineCacheValidationFixture, DX12BackendImplementsRayTracingPipelineSh
               std::string::npos);
     EXPECT_NE(commandSource.find("bindingRayTracingPipeline"), std::string::npos);
     EXPECT_NE(commandSource.find("ray tracing descriptor set binding"), std::string::npos);
-    EXPECT_NE(commandSource.find("ray tracing descriptor set binding requires a valid DX12 descriptor set"),
+    EXPECT_NE(commandSource.find("descriptor set binding requires a complete valid DX12 descriptor snapshot"),
               std::string::npos);
-    EXPECT_NE(commandSource.find("ray tracing descriptor set binding requires a pipeline layout"),
+    EXPECT_NE(commandSource.find("descriptor set binding requires a pipeline layout"),
               std::string::npos);
     EXPECT_NE(commandSource.find("pipelineLayout->GetSetLayout(slot)"), std::string::npos);
     EXPECT_NE(commandSource.find("expectedLayout != setLayout"), std::string::npos);
-    EXPECT_NE(commandSource.find("ray tracing descriptor set binding layout does not match the pipeline layout slot"),
+    EXPECT_NE(commandSource.find("descriptor set layout does not match pipeline slot"),
               std::string::npos);
     EXPECT_NE(commandSource.find("m_boundRayTracingDescriptorSetLayouts.clear();"), std::string::npos);
     EXPECT_NE(commandSource.find("m_boundRayTracingDescriptorSetLayouts.resize(pipelineLayout->GetSetLayoutCount(), nullptr)"),
@@ -5412,12 +6629,12 @@ TEST_F(PipelineCacheValidationFixture, DX12BackendImplementsRayTracingPipelineSh
     EXPECT_NE(setDescriptorSetBody.find("bindingRayTracingPipeline"), std::string::npos);
     EXPECT_NE(setDescriptorSetBody.find("ValidateDX12RayTracingCommandState(m_isRecording, m_inRenderPass, \"ray tracing descriptor set binding\")"),
               std::string::npos);
-    EXPECT_NE(setDescriptorSetBody.find("ray tracing descriptor set binding requires a valid DX12 descriptor set"),
+    EXPECT_NE(setDescriptorSetBody.find("descriptor set binding requires a complete valid DX12 descriptor snapshot"),
               std::string::npos);
     EXPECT_NE(setDescriptorSetBody.find("auto* setLayout = dx12Set->GetLayout();"), std::string::npos);
     EXPECT_NE(setDescriptorSetBody.find("pipelineLayout->GetSetLayout(slot)"), std::string::npos);
     EXPECT_NE(setDescriptorSetBody.find("expectedLayout != setLayout"), std::string::npos);
-    EXPECT_NE(setDescriptorSetBody.find("ray tracing descriptor set binding layout does not match the pipeline layout slot"),
+    EXPECT_NE(setDescriptorSetBody.find("descriptor set layout does not match pipeline slot"),
               std::string::npos);
     EXPECT_NE(setDescriptorSetBody.find("m_boundRayTracingDescriptorSetLayouts[slot] = setLayout;"),
               std::string::npos);
@@ -5511,9 +6728,11 @@ TEST_F(PipelineCacheValidationFixture, DX12BackendImplementsRayTracingPipelineSh
     EXPECT_NE(tlasBuildBody.find("buildDesc.SourceAccelerationStructureData = update ? srcAS->GetGPUVirtualAddress() : 0;"),
               std::string::npos);
     const auto blasDxrBuild = blasBuildBody.find("BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);");
-    const auto blasUavBarrier = blasBuildBody.find("InsertAccelerationStructureUAVBarrier(m_commandList.Get(), dstAS);");
+    const auto blasUavBarrier =
+        blasBuildBody.find("InsertAccelerationStructureBarrier(dstAS);");
     const auto tlasDxrBuild = tlasBuildBody.find("BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);");
-    const auto tlasUavBarrier = tlasBuildBody.find("InsertAccelerationStructureUAVBarrier(m_commandList.Get(), dstAS);");
+    const auto tlasUavBarrier =
+        tlasBuildBody.find("InsertAccelerationStructureBarrier(dstAS);");
     ASSERT_NE(blasDxrBuild, std::string::npos);
     ASSERT_NE(blasUavBarrier, std::string::npos);
     ASSERT_NE(tlasDxrBuild, std::string::npos);
@@ -5533,7 +6752,7 @@ TEST_F(PipelineCacheValidationFixture, DX12BackendImplementsRayTracingPipelineSh
 
 TEST_F(PipelineCacheValidationFixture, VulkanBackendDoesNotAdvertiseRayTracingBeforeBackendImplementation)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -5556,8 +6775,8 @@ TEST_F(PipelineCacheValidationFixture, VulkanBackendDoesNotAdvertiseRayTracingBe
     EXPECT_EQ(commandSource.find("BuildTopLevelAccelerationStructure"), std::string::npos);
     EXPECT_EQ(commandSource.find("DispatchRays"), std::string::npos);
 
-    EXPECT_NE(deviceSource.find("const bool hasRayTracingExtensions ="), std::string::npos);
-    EXPECT_NE(deviceSource.find("VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME"), std::string::npos);
+    EXPECT_NE(deviceSource.find("constexpr bool hasRayTracingExtensions = false;"),
+              std::string::npos);
     EXPECT_NE(deviceSource.find("m_capabilities.supportsRaytracing = false;"), std::string::npos);
     EXPECT_NE(deviceSource.find("m_capabilities.supportsRaytracingPipeline = false;"), std::string::npos);
     EXPECT_NE(deviceSource.find("m_capabilities.supportsRayQuery = false;"), std::string::npos);
@@ -5571,7 +6790,7 @@ TEST_F(PipelineCacheValidationFixture, VulkanBackendDoesNotAdvertiseRayTracingBe
 
 TEST_F(PipelineCacheValidationFixture, ToneMappingOperatorUsesSharedRuntimeSettings)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -5663,7 +6882,7 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingOperatorUsesSharedRuntimeSetti
     const auto defaultsEnd = sceneRendererSource.find("SceneRenderer::SceneRenderer()", defaultsStart);
     ASSERT_NE(defaultsEnd, std::string::npos);
     const std::string defaultsBody = sceneRendererSource.substr(defaultsStart, defaultsEnd - defaultsStart);
-    EXPECT_NE(defaultsBody.find("settings.toneMappingOperator = ToneMappingOperator::None;"), std::string::npos);
+    EXPECT_NE(defaultsBody.find("settings.toneMappingOperator = ToneMappingOperator::ACES;"), std::string::npos);
     EXPECT_NE(defaultsBody.find("settings.enableRayTracedReflections = false;"), std::string::npos);
     EXPECT_NE(defaultsBody.find("settings.enableRayTracedReflectionDenoise = true;"), std::string::npos);
 
@@ -5677,12 +6896,33 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingOperatorUsesSharedRuntimeSetti
 
 TEST_F(PipelineCacheValidationFixture, ModelViewerExposesShadowQualityPresets)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     const fs::path modelViewerPath = FindModelViewerSourcePath();
+    if (modelViewerPath.empty())
+    {
+        const fs::path samplePath =
+            FindRenderVerseSceneSourcePath("ModelViewerSample.cpp");
+        ASSERT_FALSE(samplePath.empty());
+        const std::string currentSource = ReadTextFile(samplePath);
+        EXPECT_NE(currentSource.find("context.renderSettings.shadows.enabled = true;"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find("context.renderSettings.shadows.atlasResolution ="),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find("context.renderSettings.shadows.cascadeCount ="),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "context.options.quality == \"low\" ? 1024u : 2048u"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find("MakeDirectionalLight("), std::string::npos);
+        EXPECT_EQ(currentSource.find("engine.SetRenderFrameSettings("),
+                  std::string::npos);
+        EXPECT_EQ(currentSource.find("GetSceneRenderer("), std::string::npos);
+        return;
+    }
     ASSERT_FALSE(modelViewerPath.empty());
     const std::string source = ReadTextFile(modelViewerPath);
 
@@ -5694,27 +6934,55 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesShadowQualityPresets)
     EXPECT_NE(source.find("value == \"medium\""), std::string::npos);
     EXPECT_NE(source.find("value == \"high\""), std::string::npos);
     EXPECT_NE(source.find("value == \"ultra\""), std::string::npos);
-    EXPECT_NE(source.find("ShadowPassConfig MakeShadowQualityConfig"), std::string::npos);
-    EXPECT_NE(source.find("return ShadowPassConfig{};"), std::string::npos);
-    EXPECT_NE(source.find("config.casterDepthBias = 0.0f;"), std::string::npos);
-    EXPECT_NE(source.find("config.casterSlopeScaledDepthBias = 0.0f;"), std::string::npos);
-    EXPECT_NE(source.find("config.casterDepthBiasClamp = 0.0f;"), std::string::npos);
+    EXPECT_NE(source.find("RenderShadowSettings MakeShadowQualityConfig"), std::string::npos);
+    EXPECT_NE(source.find("return RenderShadowSettings{};"), std::string::npos);
+    EXPECT_NE(source.find("config.atlasResolution = 4096;"), std::string::npos);
+    EXPECT_NE(source.find("config.shadowBias = 0.0025f;"), std::string::npos);
+    EXPECT_NE(source.find("config.normalBias = 0.0300f;"), std::string::npos);
     EXPECT_NE(source.find("MakeShadowQualityConfig(options.shadowQualityPreset)"), std::string::npos);
-    EXPECT_NE(source.find("sceneRenderer->ApplyShadowPassConfig(shadowConfig);"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.shadows ="), std::string::npos);
+    EXPECT_NE(source.find("engine.SetRenderFrameSettings(frameSettings)"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelection)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     const fs::path modelViewerPath = FindModelViewerSourcePath();
+    if (modelViewerPath.empty())
+    {
+        const fs::path samplePath =
+            FindRenderVerseSceneSourcePath("RenderPipelineShowcaseSample.cpp");
+        ASSERT_FALSE(samplePath.empty());
+        const std::string currentSource = ReadTextFile(samplePath);
+        EXPECT_NE(currentSource.find(
+                      "context.renderSettings.postProcess.toneMappingOperator ="),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find("RenderToneMappingOperator::ACES"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "context.renderSettings.postProcess.exposure = 1.0f;"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "context.renderSettings.postProcess.gamma = 2.2f;"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "context.renderSettings.postProcess.enableBloom = true;"),
+                  std::string::npos);
+        EXPECT_NE(currentSource.find(
+                      "reporter.Enable(\"ACESToneMappingRequested\")"),
+                  std::string::npos);
+        EXPECT_EQ(currentSource.find("GetPostProcessSettings("), std::string::npos);
+        EXPECT_EQ(currentSource.find("ApplyPostProcessSettings("), std::string::npos);
+        return;
+    }
     ASSERT_FALSE(modelViewerPath.empty());
     const std::string source = ReadTextFile(modelViewerPath);
 
-    EXPECT_NE(source.find("#include \"Render/PostProcess/ToneMappingTypes.h\""), std::string::npos);
+    EXPECT_NE(source.find("#include \"Engine/Engine.h\""), std::string::npos);
     EXPECT_NE(source.find("--tonemap <default|none|reinhard|reinhard-extended|aces|uncharted2|neutral>"),
               std::string::npos);
     EXPECT_NE(source.find("--post-exposure <linear>"), std::string::npos);
@@ -5761,15 +7029,15 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
 
     const auto operatorStart = source.find("bool TryGetToneMappingOperator");
     ASSERT_NE(operatorStart, std::string::npos);
-    const auto operatorEnd = source.find("ShadowPassConfig MakeShadowQualityConfig", operatorStart);
+    const auto operatorEnd = source.find("RenderShadowSettings MakeShadowQualityConfig", operatorStart);
     ASSERT_NE(operatorEnd, std::string::npos);
     const std::string operatorBody = source.substr(operatorStart, operatorEnd - operatorStart);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::None;"), std::string::npos);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Reinhard;"), std::string::npos);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::ReinhardExtended;"), std::string::npos);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::ACES;"), std::string::npos);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Uncharted2;"), std::string::npos);
-    EXPECT_NE(operatorBody.find("outOperator = ToneMappingOperator::Neutral;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::None;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::Reinhard;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::ReinhardExtended;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::ACES;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::Uncharted2;"), std::string::npos);
+    EXPECT_NE(operatorBody.find("outOperator = RenderToneMappingOperator::Neutral;"), std::string::npos);
 
     const auto parseFloatStart = source.find("bool ParseFloat");
     ASSERT_NE(parseFloatStart, std::string::npos);
@@ -5803,68 +7071,81 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerExposesTonemapOperatorSelectio
     EXPECT_NE(source.find("Invalid --bloom-threshold value"), std::string::npos);
     EXPECT_NE(source.find("arg == \"--bloom-radius\""), std::string::npos);
     EXPECT_NE(source.find("Invalid --bloom-radius value"), std::string::npos);
-    EXPECT_NE(source.find("PostProcessSettings postProcessSettings = sceneRenderer->GetPostProcessSettings();"),
+    EXPECT_NE(source.find("RenderFrameSettings frameSettings = engine.GetRenderFrameSettings();"),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.toneMappingOperator = tonemapOperator;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.exposureMode = ToneMappingExposureMode::CameraEV100;"),
+    EXPECT_NE(source.find("frameSettings.postProcess.toneMappingOperator = toneMapping;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.exposureMode = RenderExposureMode::CameraEV100;"),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.cameraEV100 = options.cameraEV100;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.exposureCompensationEV ="), std::string::npos);
-    EXPECT_NE(source.find("options.exposureCompensationSet ? options.exposureCompensationEV : 0.0f"),
+    EXPECT_NE(source.find("frameSettings.postProcess.cameraEV100 = options.cameraEV100;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.exposureCompensationEV ="), std::string::npos);
+    EXPECT_NE(source.find("options.exposureCompensationSet ? options.exposureCompensationEV"),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.exposureMode = ToneMappingExposureMode::ManualMultiplier;"),
+    EXPECT_NE(source.find("RenderExposureMode::ManualMultiplier;"),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.exposure = options.postExposure;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.gamma = options.displayGamma;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.enableBloom = true;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.bloomIntensity = options.bloomIntensity;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.bloomThreshold = options.bloomThreshold;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.bloomRadius = options.bloomRadius;"), std::string::npos);
-    EXPECT_NE(source.find("bloomIntensity={:.3f}"), std::string::npos);
-    EXPECT_NE(source.find("bloomThreshold={:.3f}"), std::string::npos);
-    EXPECT_NE(source.find("bloomRadius={:.3f}"), std::string::npos);
-    EXPECT_NE(source.find("sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"), std::string::npos);
-    EXPECT_NE(source.find("TryGetToneMappingOperator(options.tonemapSelection, tonemapOperator)"),
+    EXPECT_NE(source.find("frameSettings.postProcess.exposure = options.postExposure;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.gamma = options.displayGamma;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.bloomIntensity = options.bloomIntensity;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.bloomThreshold = options.bloomThreshold;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.bloomRadius = options.bloomRadius;"), std::string::npos);
+    EXPECT_NE(source.find("engine.SetRenderFrameSettings(frameSettings)"), std::string::npos);
+    EXPECT_NE(source.find("TryGetToneMappingOperator(options.tonemapSelection, toneMapping)"),
               std::string::npos);
-    EXPECT_NE(source.find("bool applyPostProcessSettings ="), std::string::npos);
-    EXPECT_NE(source.find("tonemapSet || options.postExposureSet || options.cameraEV100Set ||"), std::string::npos);
-    EXPECT_NE(source.find("options.exposureCompensationSet || options.displayGammaSet ||"), std::string::npos);
-    EXPECT_NE(source.find("options.bloomIntensitySet || options.bloomThresholdSet || options.bloomRadiusSet ||"),
-              std::string::npos);
-    EXPECT_NE(source.find("options.enableRayTracedReflections;"), std::string::npos);
     EXPECT_NE(source.find("Invalid --tonemap value"), std::string::npos);
     EXPECT_EQ(source.find("options.tonemapSelection = ToneMapSelection::ACES"), std::string::npos);
-
-    const auto applyStart = source.find("if (applyPostProcessSettings)");
-    ASSERT_NE(applyStart, std::string::npos);
-    const auto applyEnd = source.find("const ShadowPassConfig shadowConfig", applyStart);
-    ASSERT_NE(applyEnd, std::string::npos);
-    const std::string applyBody = source.substr(applyStart, applyEnd - applyStart);
-    EXPECT_NE(applyBody.find("sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"), std::string::npos);
-
-    auto countOccurrences = [](const std::string& text, const std::string& needle)
-    {
-        size_t count = 0;
-        size_t pos = text.find(needle);
-        while (pos != std::string::npos)
-        {
-            ++count;
-            pos = text.find(needle, pos + needle.size());
-        }
-        return count;
-    };
-    EXPECT_EQ(countOccurrences(source, "sceneRenderer->ApplyPostProcessSettings(postProcessSettings);"),
-              static_cast<size_t>(1));
+    EXPECT_EQ(source.find("GetPostProcessSettings()"), std::string::npos);
+    EXPECT_EQ(source.find("ApplyPostProcessSettings("), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObservable)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     const fs::path modelViewerPath = FindModelViewerSourcePath();
+    if (modelViewerPath.empty())
+    {
+        const fs::path shaderDir = FindShaderDirectory();
+        ASSERT_FALSE(shaderDir.empty());
+        const fs::path repoRoot = shaderDir.parent_path().parent_path();
+        const std::string frameTypes = ReadTextFile(
+            repoRoot / "RenderContracts" / "Include" / "RenderContracts" /
+            "RenderFrameTypes.h");
+        EXPECT_NE(frameTypes.find("struct RenderRayTracingSettings"),
+                  std::string::npos);
+        EXPECT_NE(frameTypes.find("RenderRayTracingSettings rayTracing;"),
+                  std::string::npos);
+
+        const fs::path sceneRoot = repoRoot / "Samples" / "RenderVerseSamples" /
+                                   "Scenes";
+        ASSERT_TRUE(fs::is_directory(sceneRoot));
+        constexpr std::array<const char*, 4> forbidden = {
+            "RayTracingScene",
+            "RayTracedShadowPass",
+            "RayTracedReflectionPass",
+            "GetSceneRenderer(",
+        };
+        size_t sourceCount = 0;
+        for (const fs::directory_entry& entry :
+             fs::recursive_directory_iterator(sceneRoot))
+        {
+            if (!entry.is_regular_file() || entry.path().extension() != ".cpp")
+            {
+                continue;
+            }
+            ++sourceCount;
+            const std::string currentSource = ReadTextFile(entry.path());
+            for (const char* token : forbidden)
+            {
+                EXPECT_EQ(currentSource.find(token), std::string::npos)
+                    << entry.path().string()
+                    << " owns engine Render policy via " << token;
+            }
+        }
+        EXPECT_GE(sourceCount, 13u);
+        return;
+    }
     ASSERT_FALSE(modelViewerPath.empty());
     const std::string source = ReadTextFile(modelViewerPath);
 
@@ -5928,26 +7209,20 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
               std::string::npos);
     EXPECT_NE(source.find("options.backend = dx12SmokeRequested ? RHIBackendType::DX12 : RHIBackendType::DX11;"),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.enableRayTracedReflections = true;"), std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.enableRayTracedReflectionDenoise = options.enableRayTracedReflectionDenoise;"),
+    EXPECT_NE(source.find("frameSettings.rayTracing.enableReflections ="), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.postProcess.enableRayTracedReflectionDenoise ="),
               std::string::npos);
-    EXPECT_NE(source.find("postProcessSettings.enableTAA = true;"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedShadowReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedShadowHistoryReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedShadowHistoryResetReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedShadowHistoryResizeReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedReflectionReady(SceneRenderer* sceneRenderer,"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedReflectionHistoryReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedReflectionHistoryResetReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("bool IsRayTracedReflectionHistoryResizeReady(SceneRenderer* sceneRenderer"), std::string::npos);
-    EXPECT_NE(source.find("const SceneRayTracingFrameStats stats = sceneRenderer->GetRayTracingFrameStats();"),
+    EXPECT_NE(source.find("bool IsRayTracedShadowReady(\n        const RenderFrameFeatureDiagnostics*"), std::string::npos);
+    EXPECT_NE(source.find("bool IsRayTracedShadowHistoryReady(\n        const RenderFrameFeatureDiagnostics*"), std::string::npos);
+    EXPECT_NE(source.find("bool IsRayTracedReflectionReady(const RenderFrameFeatureDiagnostics*"), std::string::npos);
+    EXPECT_NE(source.find("const RenderRayTracingDiagnostics stats = sceneRenderer->rayTracing;"),
               std::string::npos);
-    EXPECT_NE(source.find("sceneRenderer->ApplyRayTracingBudgetSettings(budgetSettings);"), std::string::npos);
-    EXPECT_NE(source.find("budgetSettings.maxTrackedResourceBytes = options.rayTracingMaxResourceBytes;"),
+    EXPECT_NE(source.find("engine.SetRenderFrameSettings(frameSettings)"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.rayTracing.maxTrackedResourceBytes ="),
               std::string::npos);
-    EXPECT_NE(source.find("budgetSettings.maxMeasuredGpuMs = options.rayTracingMaxGpuMs;"), std::string::npos);
-    EXPECT_NE(source.find("budgetSettings.maxReflectionMeasuredGpuMs = options.rayTracingMaxReflectionGpuMs;"), std::string::npos);
-    EXPECT_NE(source.find("budgetSettings.gpuTimingAdjustmentFrameCount = options.rayTracingGpuAdjustmentFrameCount;"),
+    EXPECT_NE(source.find("frameSettings.rayTracing.maxMeasuredGpuMs = options.rayTracingMaxGpuMs;"), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.rayTracing.maxReflectionMeasuredGpuMs ="), std::string::npos);
+    EXPECT_NE(source.find("frameSettings.rayTracing.gpuTimingAdjustmentFrameCount ="),
               std::string::npos);
     EXPECT_NE(source.find("DescribeRayTracingShadowHistoryReadiness"), std::string::npos);
     EXPECT_NE(source.find("DescribeRayTracingReflectionHistoryReadiness"), std::string::npos);
@@ -5992,6 +7267,18 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
     EXPECT_NE(source.find("stats.shadowWidth == expectedWidth && stats.shadowHeight == expectedHeight"),
               std::string::npos);
     EXPECT_NE(source.find("!stats.shadowTemporalAccumulated"), std::string::npos);
+    EXPECT_NE(source.find(
+                  "stats.shadowHistoryReset &&\n"
+                  "                           !stats.shadowHistoryAvailable &&\n"
+                  "                           !stats.shadowDepthHistoryAvailable && !stats.shadowNormalHistoryAvailable &&\n"
+                  "                           !stats.shadowTemporalAccumulated;"),
+              std::string::npos);
+    EXPECT_NE(source.find(
+                  "stats.shadowHistoryResolutionChanged && !stats.shadowHistoryConfigChanged &&\n"
+                  "                           !stats.shadowHistoryAvailable &&\n"
+                  "                           !stats.shadowDepthHistoryAvailable && !stats.shadowNormalHistoryAvailable &&\n"
+                  "                           !stats.shadowTemporalAccumulated && sizeMatches;"),
+              std::string::npos);
     EXPECT_NE(source.find("stats.reflectionRequested && stats.reflectionSupported && stats.reflectionRecorded"),
               std::string::npos);
     EXPECT_NE(source.find("stats.reflectionHistoryAvailable &&"), std::string::npos);
@@ -6009,7 +7296,10 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
     EXPECT_NE(source.find("ModelViewer smoke ray-traced shadow history ready"), std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced shadow history reset ready"), std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced shadow history resize ready"), std::string::npos);
-    EXPECT_NE(source.find("ModelViewer smoke resized RT history viewport"), std::string::npos);
+    EXPECT_NE(source.find("ModelViewer smoke requested native resize on frame"),
+              std::string::npos);
+    EXPECT_NE(source.find("ModelViewer smoke observed native framebuffer resize on frame"),
+              std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced reflection ready"), std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced reflection history ready"), std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced reflection history reset ready"), std::string::npos);
@@ -6064,25 +7354,26 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
     const std::string renderSubsystem = ReadTextFile(renderRoot / "Private" / "RenderSubsystem.cpp");
-    EXPECT_NE(renderSubsystem.find("m_renderContext->WaitIdle();\n            if (m_sceneRenderer)\n            {\n                m_sceneRenderer->PrepareForSwapChainResize();"),
+    EXPECT_NE(renderSubsystem.find("if (!m_context->WaitForSurfaceGeneration())"),
               std::string::npos);
-    EXPECT_NE(renderSubsystem.find("m_renderContext->WaitIdle();\n        if (m_sceneRenderer)\n        {\n            m_sceneRenderer->PrepareForSwapChainResize();"),
+    EXPECT_NE(renderSubsystem.find("m_sceneRenderer->PrepareForSwapChainResize();"),
               std::string::npos);
+    EXPECT_EQ(renderSubsystem.find("m_legacyBridge"), std::string::npos);
 }
 
 TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAware)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice firstDevice;
-    RVX::PipelineCache firstCache;
+    PipelineCacheForValidation firstCache;
     ASSERT_TRUE(firstCache.Initialize(&firstDevice, FindShaderDirectory().string())) << firstCache.GetLastError();
 
     FakeDevice secondDevice;
-    RVX::PipelineCache secondCache;
+    PipelineCacheForValidation secondCache;
     ASSERT_TRUE(secondCache.Initialize(&secondDevice, FindShaderDirectory().string())) << secondCache.GetLastError();
 
     EXPECT_EQ(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque),
@@ -6092,26 +7383,30 @@ TEST_F(PipelineCacheValidationFixture, PipelineStateHashesAreStableAndVariantAwa
               firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Transparent));
     EXPECT_NE(firstCache.GetStats().toneMappingPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().bloomPipelineHash, 0u);
+    EXPECT_NE(firstCache.GetStats().ssaoPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().colorGradingPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().chromaticAberrationPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().vignettePipelineHash, 0u);
+    EXPECT_NE(firstCache.GetStats().filmGrainPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().fxaaPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().skyboxPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().uiPipelineHash, 0u);
     EXPECT_NE(firstCache.GetStats().toneMappingPipelineHash, firstCache.GetStats().bloomPipelineHash);
+    EXPECT_NE(firstCache.GetStats().ssaoPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().colorGradingPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().chromaticAberrationPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().vignettePipelineHash, firstCache.GetStats().bloomPipelineHash);
+    EXPECT_NE(firstCache.GetStats().filmGrainPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().fxaaPipelineHash, firstCache.GetStats().bloomPipelineHash);
     EXPECT_NE(firstCache.GetStats().skyboxPipelineHash, firstCache.GetStats().toneMappingPipelineHash);
     EXPECT_NE(firstCache.GetStats().uiPipelineHash, firstCache.GetStats().bloomPipelineHash);
-    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 14u);
-    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 14u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCreateCount, 17u);
+    EXPECT_EQ(firstCache.GetStats().pipelineCacheMissCount, 17u);
 }
 
 TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -6121,6 +7416,10 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     const std::string pipelineSource = ReadTextFile(renderRoot / "Private" / "PipelineCache.cpp");
     const std::string passHeader =
         ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "ObjectVelocityPass.h");
+    const std::string recordContextHeader =
+        ReadTextFile(renderRoot / "Include" / "Render" / "Passes" / "RenderPassRecordContext.h");
+    const std::string materialHeader =
+        ReadTextFile(renderRoot / "Include" / "Render" / "Material" / "MaterialSystem.h");
     const std::string passSource =
         ReadTextFile(renderRoot / "Private" / "Passes" / "ObjectVelocityPass.cpp");
     const std::string rendererSource = ReadTextFile(renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
@@ -6131,45 +7430,61 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
     EXPECT_NE(pipelineHeader.find("GetOrCreateMaskedObjectVelocityPipeline"), std::string::npos);
     EXPECT_NE(pipelineHeader.find("BuildMaskedObjectVelocityPipelineDesc"), std::string::npos);
     EXPECT_NE(pipelineHeader.find("m_maskedObjectVelocityVertexShader"), std::string::npos);
+    EXPECT_NE(pipelineHeader.find("m_rigidMaskedObjectVelocityVertexShader"), std::string::npos);
     EXPECT_NE(pipelineHeader.find("m_maskedObjectVelocityPixelShader"), std::string::npos);
     EXPECT_NE(pipelineHeader.find("m_maskedObjectVelocityPipeline"), std::string::npos);
+    EXPECT_NE(pipelineHeader.find("m_rigidMaskedObjectVelocityPipeline"), std::string::npos);
 
     EXPECT_NE(pipelineSource.find("maskedObjectVelocityVsDesc.entryPoint = \"VSMainMasked\""), std::string::npos);
+    EXPECT_NE(pipelineSource.find(
+                  "rigidMaskedObjectVelocityVsDesc.entryPoint = \"VSMainMaskedRigid\""),
+              std::string::npos);
     EXPECT_NE(pipelineSource.find("maskedObjectVelocityPsDesc.entryPoint = \"PSMainMasked\""), std::string::npos);
     EXPECT_NE(pipelineSource.find("GetMaskedObjectVelocityPipeline(RHIFormat outputFormat)"), std::string::npos);
     EXPECT_NE(pipelineSource.find("GetOrCreateMaskedObjectVelocityPipeline"), std::string::npos);
     EXPECT_NE(pipelineSource.find("BuildMaskedObjectVelocityPipelineDesc"), std::string::npos);
     EXPECT_NE(pipelineSource.find("pipelineDesc.debugName = \"MaskedObjectVelocityPipeline\""), std::string::npos);
-    EXPECT_NE(pipelineSource.find("pipelineDesc.inputLayout.AddElement(\"TEXCOORD\", RHIFormat::RG32_FLOAT, 2)"),
+    EXPECT_NE(pipelineSource.find("pipelineDesc.inputLayout.AddElementAtLocation("),
               std::string::npos);
 
     EXPECT_NE(passHeader.find("MaterialSystem* materialSystem"), std::string::npos);
-    EXPECT_NE(passHeader.find("maskedDrawItemCount"), std::string::npos);
-    EXPECT_NE(passHeader.find("maskedDrawCount"), std::string::npos);
-    EXPECT_NE(passHeader.find("skippedMissingUVCount"), std::string::npos);
-    EXPECT_NE(passHeader.find("skippedMaterialBindingCount"), std::string::npos);
-    EXPECT_NE(passHeader.find("const std::vector<RenderDrawItem>* maskedDrawItems"), std::string::npos);
+    EXPECT_NE(passHeader.find("RenderPassRecordContext"), std::string::npos);
+    EXPECT_EQ(passHeader.find("SetRenderScene"), std::string::npos);
+    EXPECT_NE(recordContextHeader.find("struct ObjectVelocityPassStats"), std::string::npos);
+    EXPECT_NE(recordContextHeader.find("maskedDrawItemCount"), std::string::npos);
+    EXPECT_NE(recordContextHeader.find("maskedDrawCount"), std::string::npos);
+    EXPECT_NE(recordContextHeader.find("skippedMissingUVCount"), std::string::npos);
+    EXPECT_NE(recordContextHeader.find("skippedMaterialBindingCount"), std::string::npos);
+    EXPECT_NE(materialHeader.find("std::vector<RHITextureRef> textures"), std::string::npos);
 
-    EXPECT_NE(passSource.find("GetMaskedObjectVelocityPipeline(RHIFormat::RG16_FLOAT)"), std::string::npos);
-    EXPECT_NE(passSource.find("m_stats.maskedDrawItemCount"), std::string::npos);
-    EXPECT_NE(passSource.find("MaterialBindingOptions materialOptions;"), std::string::npos);
-    EXPECT_NE(passSource.find("materialOptions.allowNormalMap = false;"), std::string::npos);
-    EXPECT_NE(passSource.find("m_materialSystem->PrepareMaterialBinding(materialResource, view.viewCache, materialOptions)"),
+    EXPECT_NE(passSource.find("GetMaskedObjectVelocityPipeline("), std::string::npos);
+    EXPECT_NE(passSource.find("DefaultLitDirectVertexInputMode::Skinned"), std::string::npos);
+    EXPECT_NE(passSource.find("DefaultLitDirectVertexInputMode::Rigid"), std::string::npos);
+    EXPECT_NE(passSource.find("CreateMaterialBindingSnapshot"), std::string::npos);
+    EXPECT_NE(passSource.find("ObjectVelocityPassStats& stats = data.results->objectVelocityStats"),
               std::string::npos);
-    EXPECT_NE(passSource.find("++m_stats.skippedMissingUVCount"), std::string::npos);
-    EXPECT_NE(passSource.find("++m_stats.skippedMaterialBindingCount"), std::string::npos);
-    EXPECT_NE(passSource.find("ctx.SetDescriptorSet(2, materialBinding.descriptorSet, materialBinding.dynamicOffsets)"),
-              std::string::npos);
-    EXPECT_NE(passSource.find("ctx.SetVertexBuffer(2, buffers.uvBuffer)"), std::string::npos);
-    EXPECT_NE(passSource.find("++m_stats.maskedDrawCount"), std::string::npos);
+    EXPECT_NE(passSource.find("++stats.skippedMissingUVCount"), std::string::npos);
+    EXPECT_NE(passSource.find("++stats.skippedMaterialBindingCount"), std::string::npos);
+    EXPECT_NE(passSource.find("builder.ReadWrite"), std::string::npos);
+    EXPECT_NE(passSource.find("RHIResourceState::DepthRead"), std::string::npos);
+    EXPECT_NE(passSource.find("draw.material.descriptorSet.Get()"), std::string::npos);
+    EXPECT_NE(passSource.find("draw.material.textures"), std::string::npos);
+    EXPECT_NE(passSource.find("context.GetTextureView(data.velocityViewHandle)"), std::string::npos);
+    EXPECT_NE(passSource.find("context.GetTextureView(data.depthViewHandle)"), std::string::npos);
+    EXPECT_NE(passSource.find("draw.buffers.uvBuffer"), std::string::npos);
+    EXPECT_NE(passSource.find("++stats.maskedDrawCount"), std::string::npos);
+    EXPECT_NE(passSource.find("data.results->identity != data.identity"), std::string::npos);
 
     EXPECT_NE(rendererSource.find("objectVelocityPass->SetResources("), std::string::npos);
     EXPECT_NE(rendererSource.find("m_materialSystem.get());"), std::string::npos);
-    EXPECT_NE(rendererSource.find("m_objectVelocityPass->SetRenderScene(&m_renderScene, &m_opaqueDrawItems, &m_maskedDrawItems);"),
-              std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_objectVelocityPass->SetRenderScene"), std::string::npos);
 
     EXPECT_NE(shaderSource.find("struct VSMaskedInput"), std::string::npos);
     EXPECT_NE(shaderSource.find("VSMaskedOutput VSMainMasked(VSMaskedInput input)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("struct VSMaskedRigidInput"), std::string::npos);
+    EXPECT_NE(shaderSource.find(
+                  "VSMaskedOutput VSMainMaskedRigid(VSMaskedRigidInput input)"),
+              std::string::npos);
     EXPECT_NE(shaderSource.find("float2 PSMainMasked(VSMaskedOutput input) : SV_TARGET"), std::string::npos);
     EXPECT_NE(shaderSource.find("Texture2D BaseColorTexture : register(t1, space2);"), std::string::npos);
     EXPECT_NE(shaderSource.find("SamplerState MaterialSampler : register(s6, space2);"), std::string::npos);
@@ -6179,13 +7494,13 @@ TEST_F(PipelineCacheValidationFixture, MaskedObjectVelocityAlphaTestContracts)
 }
 TEST_F(PipelineCacheValidationFixture, CameraVelocityPipelineIsLazyAndUsesRG16F)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()));
 
     const size_t initialPipelineCount = device.capturedGraphicsPipelines.size();
@@ -6212,13 +7527,13 @@ TEST_F(PipelineCacheValidationFixture, CameraVelocityPipelineIsLazyAndUsesRG16F)
 
 TEST_F(PipelineCacheValidationFixture, ObjectVelocityPipelineIsLazyAndUsesRG16FDepthRead)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()));
 
     const size_t initialPipelineCount = device.capturedGraphicsPipelines.size();
@@ -6266,18 +7581,27 @@ TEST_F(PipelineCacheValidationFixture, ObjectVelocityPipelineIsLazyAndUsesRG16FD
     EXPECT_NE(maskedVelocityDesc.vertexShader, nullptr);
     EXPECT_NE(maskedVelocityDesc.pixelShader, nullptr);
     ASSERT_EQ(maskedVelocityDesc.inputLayout.elements.size(), 4u);
+
     EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[0].semanticName, "POSITION");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[0].semanticIndex, 0u);
     EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[0].format, RVX::RHIFormat::RGB32_FLOAT);
     EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[0].inputSlot, 0u);
-    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[1].semanticName, "BLENDINDICES");
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].format, RVX::RHIFormat::RGBA32_UINT);
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].inputSlot, 4u);
-    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[2].semanticName, "BLENDWEIGHT");
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].format, RVX::RHIFormat::RGBA32_FLOAT);
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].inputSlot, 5u);
-    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[3].semanticName, "TEXCOORD");
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].format, RVX::RHIFormat::RG32_FLOAT);
-    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].inputSlot, 2u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[0].location, 0u);
+    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[1].semanticName, "TEXCOORD");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].semanticIndex, 0u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].format, RVX::RHIFormat::RG32_FLOAT);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].inputSlot, 2u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[1].location, 1u);
+    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[2].semanticName, "BLENDINDICES");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].semanticIndex, 0u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].format, RVX::RHIFormat::RGBA32_UINT);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].inputSlot, 4u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[2].location, 2u);
+    EXPECT_STREQ(maskedVelocityDesc.inputLayout.elements[3].semanticName, "BLENDWEIGHT");
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].semanticIndex, 0u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].format, RVX::RHIFormat::RGBA32_FLOAT);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].inputSlot, 5u);
+    EXPECT_EQ(maskedVelocityDesc.inputLayout.elements[3].location, 3u);
 
     EXPECT_EQ(cache.GetObjectVelocityPipeline(RVX::RHIFormat::RG16_FLOAT), velocityPipeline);
     EXPECT_EQ(cache.GetMaskedObjectVelocityPipeline(RVX::RHIFormat::RG16_FLOAT), maskedVelocityPipeline);
@@ -6285,23 +7609,23 @@ TEST_F(PipelineCacheValidationFixture, ObjectVelocityPipelineIsLazyAndUsesRG16FD
 }
 TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice firstDevice;
-    RVX::PipelineCache firstCache;
+    PipelineCacheForValidation firstCache;
     ASSERT_TRUE(firstCache.Initialize(&firstDevice, FindShaderDirectory().string())) << firstCache.GetLastError();
 
     FakeDevice secondDevice;
-    RVX::PipelineCache secondCache;
+    PipelineCacheForValidation secondCache;
     secondCache.SetRenderTargetFormat(RVX::RHIFormat::RGBA16_FLOAT);
     ASSERT_TRUE(secondCache.Initialize(&secondDevice, FindShaderDirectory().string())) << secondCache.GetLastError();
 
     EXPECT_NE(firstCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque),
               secondCache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque));
-    ASSERT_GE(secondDevice.capturedGraphicsPipelines.size(), 14u);
+    ASSERT_GE(secondDevice.capturedGraphicsPipelines.size(), 15u);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines.front().renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines[4].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines[5].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
@@ -6313,17 +7637,18 @@ TEST_F(PipelineCacheValidationFixture, RenderTargetFormatChangesPipelineHash)
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines[11].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines[12].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(secondDevice.capturedGraphicsPipelines[13].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(secondDevice.capturedGraphicsPipelines[14].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
 }
 
 TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAndToneMapping)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetRenderTargetFormats(RVX::RHIFormat::RGBA16_FLOAT,
                                  RVX::RHIFormat::RGBA16_FLOAT,
                                  RVX::RHIFormat::BGRA8_UNORM);
@@ -6336,7 +7661,7 @@ TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAn
     EXPECT_EQ(cache.GetPostProcessIntermediateFormat(), RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(cache.GetToneMappingOutputFormat(), RVX::RHIFormat::BGRA8_UNORM);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 14u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 17u);
     EXPECT_EQ(device.capturedGraphicsPipelines[0].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[1].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[2].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
@@ -6345,22 +7670,26 @@ TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAn
     EXPECT_EQ(device.capturedGraphicsPipelines[6].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[7].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[8].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
-    EXPECT_EQ(device.capturedGraphicsPipelines[9].renderTargetFormats[0], RVX::RHIFormat::BGRA8_UNORM);
+    EXPECT_EQ(device.capturedGraphicsPipelines[9].renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
     EXPECT_EQ(device.capturedGraphicsPipelines[10].renderTargetFormats[0], RVX::RHIFormat::BGRA8_UNORM);
     EXPECT_EQ(device.capturedGraphicsPipelines[11].renderTargetFormats[0], RVX::RHIFormat::BGRA8_UNORM);
     EXPECT_EQ(device.capturedGraphicsPipelines[12].renderTargetFormats[0], RVX::RHIFormat::BGRA8_UNORM);
     EXPECT_EQ(device.capturedGraphicsPipelines[13].renderTargetFormats[0], RVX::RHIFormat::BGRA8_UNORM);
+    EXPECT_EQ(device.capturedGraphicsPipelines[14].renderTargetFormats[0], RVX::RHIFormat::BGRA8_UNORM);
+    EXPECT_EQ(device.capturedGraphicsPipelines[15].renderTargetFormats[0], RVX::RHIFormat::BGRA8_UNORM);
 
     EXPECT_NE(cache.GetPipelineStateHashForVariant(RVX::MaterialPipelineVariant::Opaque), 0u);
     EXPECT_NE(cache.GetStats().skyboxPipelineHash, 0u);
     EXPECT_NE(cache.GetStats().toneMappingPipelineHash, 0u);
     EXPECT_NE(cache.GetStats().bloomPipelineHash, 0u);
+    EXPECT_NE(cache.GetStats().ssaoPipelineHash, 0u);
     EXPECT_NE(cache.GetStats().colorGradingPipelineHash, 0u);
     EXPECT_NE(cache.GetStats().chromaticAberrationPipelineHash, 0u);
     EXPECT_NE(cache.GetStats().vignettePipelineHash, 0u);
     EXPECT_NE(cache.GetStats().fxaaPipelineHash, 0u);
     EXPECT_NE(cache.GetStats().uiPipelineHash, 0u);
     EXPECT_NE(cache.GetStats().toneMappingPipelineHash, cache.GetStats().bloomPipelineHash);
+    EXPECT_NE(cache.GetStats().ssaoPipelineHash, cache.GetStats().bloomPipelineHash);
     EXPECT_NE(cache.GetStats().colorGradingPipelineHash, cache.GetStats().bloomPipelineHash);
     EXPECT_NE(cache.GetStats().chromaticAberrationPipelineHash, cache.GetStats().bloomPipelineHash);
     EXPECT_NE(cache.GetStats().vignettePipelineHash, cache.GetStats().bloomPipelineHash);
@@ -6370,13 +7699,13 @@ TEST_F(PipelineCacheValidationFixture, SplitRenderTargetFormatsRouteSceneBloomAn
 
 TEST_F(PipelineCacheValidationFixture, BloomAdditivePipelineUsesAdditiveColorAndPreservesAlpha)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetRenderTargetFormats(RVX::RHIFormat::RGBA16_FLOAT,
                                  RVX::RHIFormat::RGBA16_FLOAT,
                                  RVX::RHIFormat::BGRA8_UNORM);
@@ -6407,13 +7736,13 @@ TEST_F(PipelineCacheValidationFixture, BloomAdditivePipelineUsesAdditiveColorAnd
 
 TEST_F(PipelineCacheValidationFixture, RuntimeOutputFormatRequestsCreateMatchingPipelines)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetRenderTargetFormats(RVX::RHIFormat::RGBA16_FLOAT,
                                  RVX::RHIFormat::RGBA16_FLOAT,
                                  RVX::RHIFormat::BGRA8_UNORM);
@@ -6423,13 +7752,15 @@ TEST_F(PipelineCacheValidationFixture, RuntimeOutputFormatRequestsCreateMatching
     ASSERT_NE(cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque, RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetSkyboxPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetBloomPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
+    ASSERT_NE(cache.GetSSAOPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetVignettePipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
+    ASSERT_NE(cache.GetFilmGrainPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetFXAAPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetColorGradingPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetChromaticAberrationPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetUIPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 8u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 10u);
     EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount].renderTargetFormats[0],
               RVX::RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 1].renderTargetFormats[0],
@@ -6446,17 +7777,21 @@ TEST_F(PipelineCacheValidationFixture, RuntimeOutputFormatRequestsCreateMatching
               RVX::RHIFormat::RGBA8_UNORM);
     EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 7].renderTargetFormats[0],
               RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 8].renderTargetFormats[0],
+              RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(device.capturedGraphicsPipelines[initialPipelineCount + 9].renderTargetFormats[0],
+              RVX::RHIFormat::RGBA8_UNORM);
 }
 
 TEST_F(PipelineCacheValidationFixture, RuntimeRenderTargetFormatSwitchRefreshesCurrentFormatPipelines)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetRenderTargetFormats(RVX::RHIFormat::RGBA16_FLOAT,
                                  RVX::RHIFormat::RGBA16_FLOAT,
                                  RVX::RHIFormat::BGRA8_UNORM);
@@ -6471,14 +7806,16 @@ TEST_F(PipelineCacheValidationFixture, RuntimeRenderTargetFormatSwitchRefreshesC
     ASSERT_NE(cache.GetSkyboxPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetBloomPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetToneMappingPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
+    ASSERT_NE(cache.GetSSAOPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetVignettePipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
+    ASSERT_NE(cache.GetFilmGrainPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetFXAAPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetColorGradingPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetChromaticAberrationPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
     ASSERT_NE(cache.GetUIPipeline(RVX::RHIFormat::RGBA8_UNORM), nullptr);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 9u);
-    for (size_t index = initialPipelineCount; index < initialPipelineCount + 9u; ++index)
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), initialPipelineCount + 10u);
+    for (size_t index = initialPipelineCount; index < device.capturedGraphicsPipelines.size(); ++index)
     {
         EXPECT_EQ(device.capturedGraphicsPipelines[index].renderTargetFormats[0],
                   RVX::RHIFormat::RGBA8_UNORM);
@@ -6487,20 +7824,20 @@ TEST_F(PipelineCacheValidationFixture, RuntimeRenderTargetFormatSwitchRefreshesC
 
 TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     EXPECT_EQ(cache.GetConfig().depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(RVX::PipelineCache::GetDefaultDepthStencilFormat(), RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(cache.GetDepthClearValue(), 1.0f);
 
-    ASSERT_GE(device.capturedGraphicsPipelines.size(), 14u);
+    ASSERT_GE(device.capturedGraphicsPipelines.size(), 17u);
     const auto& opaqueDesc = device.capturedGraphicsPipelines[0];
     const auto& transparentDesc = device.capturedGraphicsPipelines[2];
     const auto& depthOnlyDesc = device.capturedGraphicsPipelines[3];
@@ -6509,11 +7846,14 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     const auto& bloomDesc = device.capturedGraphicsPipelines[6];
     const auto& reflectionCompositeDesc = device.capturedGraphicsPipelines[7];
     const auto& reflectionDenoiseDesc = device.capturedGraphicsPipelines[8];
-    const auto& vignetteDesc = device.capturedGraphicsPipelines[9];
-    const auto& fxaaDesc = device.capturedGraphicsPipelines[10];
-    const auto& colorGradingDesc = device.capturedGraphicsPipelines[11];
-    const auto& chromaticAberrationDesc = device.capturedGraphicsPipelines[12];
-    const auto& uiDesc = device.capturedGraphicsPipelines[13];
+    const auto& ssaoDesc = device.capturedGraphicsPipelines[9];
+    const auto& vignetteDesc = device.capturedGraphicsPipelines[10];
+    const auto& filmGrainDesc = device.capturedGraphicsPipelines[11];
+    const auto& fxaaDesc = device.capturedGraphicsPipelines[12];
+    const auto& colorGradingDesc = device.capturedGraphicsPipelines[13];
+    const auto& chromaticAberrationDesc = device.capturedGraphicsPipelines[14];
+    const auto& uiDesc = device.capturedGraphicsPipelines[15];
+    const auto& maskedDepthOnlyDesc = device.capturedGraphicsPipelines[16];
 
     EXPECT_EQ(opaqueDesc.depthStencilFormat, RVX::RHIFormat::D32_FLOAT);
     EXPECT_EQ(opaqueDesc.depthStencilState.depthCompareOp, RVX::RHICompareOp::Less);
@@ -6540,6 +7880,45 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_STREQ(depthOnlyDesc.inputLayout.elements[2].semanticName, "BLENDWEIGHT");
     EXPECT_EQ(depthOnlyDesc.inputLayout.elements[2].format, RVX::RHIFormat::RGBA32_FLOAT);
     EXPECT_EQ(depthOnlyDesc.inputLayout.elements[2].inputSlot, 5u);
+
+    ASSERT_NE(cache.GetMaskedDepthOnlyPipeline(), nullptr);
+    EXPECT_STREQ(maskedDepthOnlyDesc.debugName, "MaskedDepthOnlyPipeline");
+    EXPECT_EQ(maskedDepthOnlyDesc.numRenderTargets, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.depthStencilFormat,
+              RVX::RHIFormat::D32_FLOAT);
+    EXPECT_TRUE(maskedDepthOnlyDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(maskedDepthOnlyDesc.vertexShader, nullptr);
+    EXPECT_NE(maskedDepthOnlyDesc.pixelShader, nullptr);
+    ASSERT_EQ(maskedDepthOnlyDesc.inputLayout.elements.size(),
+              static_cast<size_t>(4));
+    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[0].semanticName,
+                 "POSITION");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].format,
+              RVX::RHIFormat::RGB32_FLOAT);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].inputSlot, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[0].location, 0u);
+    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[1].semanticName,
+                 "TEXCOORD");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].format,
+              RVX::RHIFormat::RG32_FLOAT);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].inputSlot, 2u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[1].location, 1u);
+    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[2].semanticName,
+                 "BLENDINDICES");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].format,
+              RVX::RHIFormat::RGBA32_UINT);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].inputSlot, 4u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[2].location, 2u);
+    EXPECT_STREQ(maskedDepthOnlyDesc.inputLayout.elements[3].semanticName,
+                 "BLENDWEIGHT");
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].semanticIndex, 0u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].format,
+              RVX::RHIFormat::RGBA32_FLOAT);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].inputSlot, 5u);
+    EXPECT_EQ(maskedDepthOnlyDesc.inputLayout.elements[3].location, 3u);
 
     ASSERT_NE(cache.GetSkyboxPipeline(), nullptr);
     EXPECT_EQ(skyboxDesc.numRenderTargets, 1u);
@@ -6592,6 +7971,16 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_NE(reflectionDenoiseDesc.pixelShader, nullptr);
     EXPECT_TRUE(reflectionDenoiseDesc.inputLayout.elements.empty());
 
+    ASSERT_NE(cache.GetSSAOPipeline(), nullptr);
+    EXPECT_EQ(ssaoDesc.numRenderTargets, 1u);
+    EXPECT_EQ(ssaoDesc.renderTargetFormats[0], RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(ssaoDesc.depthStencilFormat, RVX::RHIFormat::Unknown);
+    EXPECT_FALSE(ssaoDesc.depthStencilState.depthTestEnable);
+    EXPECT_FALSE(ssaoDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(ssaoDesc.vertexShader, nullptr);
+    EXPECT_NE(ssaoDesc.pixelShader, nullptr);
+    EXPECT_TRUE(ssaoDesc.inputLayout.elements.empty());
+
     ASSERT_NE(cache.GetVignettePipeline(), nullptr);
     EXPECT_EQ(vignetteDesc.numRenderTargets, 1u);
     EXPECT_EQ(vignetteDesc.renderTargetFormats[0], RVX::RHIFormat::RGBA8_UNORM);
@@ -6601,6 +7990,16 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_NE(vignetteDesc.vertexShader, nullptr);
     EXPECT_NE(vignetteDesc.pixelShader, nullptr);
     EXPECT_TRUE(vignetteDesc.inputLayout.elements.empty());
+
+    ASSERT_NE(cache.GetFilmGrainPipeline(), nullptr);
+    EXPECT_EQ(filmGrainDesc.numRenderTargets, 1u);
+    EXPECT_EQ(filmGrainDesc.renderTargetFormats[0], RVX::RHIFormat::RGBA8_UNORM);
+    EXPECT_EQ(filmGrainDesc.depthStencilFormat, RVX::RHIFormat::Unknown);
+    EXPECT_FALSE(filmGrainDesc.depthStencilState.depthTestEnable);
+    EXPECT_FALSE(filmGrainDesc.depthStencilState.depthWriteEnable);
+    EXPECT_NE(filmGrainDesc.vertexShader, nullptr);
+    EXPECT_NE(filmGrainDesc.pixelShader, nullptr);
+    EXPECT_TRUE(filmGrainDesc.inputLayout.elements.empty());
 
     ASSERT_NE(cache.GetFXAAPipeline(), nullptr);
     EXPECT_EQ(fxaaDesc.numRenderTargets, 1u);
@@ -6665,10 +8064,13 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
                                                  std::string(desc.debugName) == "UITextureSetLayout";
                                       });
     ASSERT_NE(uiSetLayoutIt, device.capturedSetLayouts.end());
-    ASSERT_EQ(uiSetLayoutIt->entries.size(), 1u);
+    ASSERT_EQ(uiSetLayoutIt->entries.size(), 2u);
     EXPECT_EQ(uiSetLayoutIt->entries[0].binding, 0u);
-    EXPECT_EQ(uiSetLayoutIt->entries[0].type, RVX::RHIBindingType::CombinedTextureSampler);
+    EXPECT_EQ(uiSetLayoutIt->entries[0].type, RVX::RHIBindingType::SampledTexture);
     EXPECT_TRUE(RVX::HasFlag(uiSetLayoutIt->entries[0].visibility, RVX::RHIShaderStage::Pixel));
+    EXPECT_EQ(uiSetLayoutIt->entries[1].binding, 1u);
+    EXPECT_EQ(uiSetLayoutIt->entries[1].type, RVX::RHIBindingType::Sampler);
+    EXPECT_TRUE(RVX::HasFlag(uiSetLayoutIt->entries[1].visibility, RVX::RHIShaderStage::Pixel));
 
     auto uiPipelineLayoutIt = std::find_if(device.capturedPipelineLayoutDescs.begin(),
                                            device.capturedPipelineLayoutDescs.end(),
@@ -6685,15 +8087,166 @@ TEST_F(PipelineCacheValidationFixture, DefaultDepthFormatIsD32AndForwardZ)
     EXPECT_TRUE(RVX::HasFlag(uiPipelineLayoutIt->pushConstantStages, RVX::RHIShaderStage::Pixel));
 }
 
-TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearConvention)
+TEST_F(PipelineCacheValidationFixture,
+       GPUSceneRasterUsesIndependentObjectSetAndPurposeSeparatedPipelines)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    ASSERT_NE(cache.GetDefaultLayout(), nullptr);
+    ASSERT_NE(cache.GetObjectSetLayout(), nullptr);
+    ASSERT_TRUE(cache.IsGPUSceneRasterReady());
+    ASSERT_NE(cache.GetGPUSceneRasterLayout(), nullptr);
+    ASSERT_NE(cache.GetGPUSceneRasterObjectSetLayout(), nullptr);
+    EXPECT_NE(cache.GetDefaultLayout(), cache.GetGPUSceneRasterLayout());
+    EXPECT_NE(cache.GetObjectSetLayout(), cache.GetGPUSceneRasterObjectSetLayout());
+
+    const auto gpuSceneLayoutIt = std::find_if(
+        device.capturedSetLayouts.begin(), device.capturedSetLayouts.end(),
+        [](const RVX::RHIDescriptorSetLayoutDesc& desc)
+        {
+            return desc.debugName &&
+                   std::string(desc.debugName) == "GPUSceneRasterObjectSetLayout";
+        });
+    ASSERT_NE(gpuSceneLayoutIt, device.capturedSetLayouts.end());
+    ASSERT_EQ(4u, gpuSceneLayoutIt->entries.size());
+    const RVX::RHIBindingLayoutEntry* objectConstants = FindBinding(*gpuSceneLayoutIt, 0u);
+    ASSERT_NE(objectConstants, nullptr);
+    EXPECT_EQ(RVX::RHIBindingType::DynamicUniformBuffer, objectConstants->type);
+    EXPECT_TRUE(objectConstants->isDynamic);
+    EXPECT_TRUE(RVX::HasFlag(objectConstants->visibility, RVX::RHIShaderStage::Vertex));
+    EXPECT_TRUE(RVX::HasFlag(objectConstants->visibility, RVX::RHIShaderStage::Pixel));
+    for (RVX::uint32 binding = 1u; binding <= 3u; ++binding)
+    {
+        const RVX::RHIBindingLayoutEntry* entry = FindBinding(*gpuSceneLayoutIt, binding);
+        ASSERT_NE(entry, nullptr);
+        EXPECT_EQ(RVX::RHIBindingType::ShaderResourceBuffer, entry->type);
+        EXPECT_EQ(RVX::RHIShaderStage::Vertex, entry->visibility);
+        EXPECT_EQ(RVX::RHIResourceDataVolatility::StableWhileBound,
+                  entry->resourceDataVolatility);
+    }
+
+    const auto& directObjectEntries = cache.GetObjectSetLayout()->GetEntries();
+    ASSERT_EQ(2u, directObjectEntries.size());
+    EXPECT_NE(nullptr, FindBinding(*gpuSceneLayoutIt, 2u));
+    EXPECT_EQ(directObjectEntries.end(), std::find_if(
+        directObjectEntries.begin(), directObjectEntries.end(),
+        [](const RVX::RHIBindingLayoutEntry& entry) { return entry.binding == 2u; }));
+
+    const size_t preGPUScenePipelineCount = device.capturedGraphicsPipelines.size();
+    RVX::RHIPipeline* opaque = cache.GetGPUScenePipelineForVariant(
+        RVX::MaterialPipelineVariant::Opaque, RVX::RHIFormat::RGBA8_UNORM);
+    ASSERT_NE(opaque, nullptr);
+    const RVX::uint64 opaqueHash = cache.GetStats().lastPipelineStateHash;
+    RVX::RHIPipeline* masked = cache.GetGPUScenePipelineForVariant(
+        RVX::MaterialPipelineVariant::Masked, RVX::RHIFormat::RGBA8_UNORM);
+    ASSERT_NE(masked, nullptr);
+    const RVX::uint64 maskedHash = cache.GetStats().lastPipelineStateHash;
+    RVX::RHIPipeline* depth = cache.GetGPUSceneDepthOnlyPipeline();
+    ASSERT_NE(depth, nullptr);
+    const RVX::uint64 depthHash = cache.GetStats().lastPipelineStateHash;
+    EXPECT_EQ(nullptr, cache.GetGPUScenePipelineForVariant(
+                           RVX::MaterialPipelineVariant::Transparent,
+                           RVX::RHIFormat::RGBA8_UNORM));
+    EXPECT_NE(opaqueHash, maskedHash);
+    EXPECT_NE(opaqueHash, depthHash);
+    EXPECT_NE(maskedHash, depthHash);
+    ASSERT_EQ(preGPUScenePipelineCount + 3u, device.capturedGraphicsPipelines.size());
+
+    const auto& opaqueDesc = device.capturedGraphicsPipelines[preGPUScenePipelineCount];
+    const auto& maskedDesc = device.capturedGraphicsPipelines[preGPUScenePipelineCount + 1u];
+    const auto& depthDesc = device.capturedGraphicsPipelines[preGPUScenePipelineCount + 2u];
+    EXPECT_EQ(cache.GetGPUSceneRasterLayout(), opaqueDesc.pipelineLayout);
+    EXPECT_EQ(cache.GetGPUSceneRasterLayout(), maskedDesc.pipelineLayout);
+    EXPECT_EQ(cache.GetGPUSceneRasterLayout(), depthDesc.pipelineLayout);
+    EXPECT_STREQ("GPUSceneOpaquePipeline", opaqueDesc.debugName);
+    EXPECT_STREQ("GPUSceneMaskedPipeline", maskedDesc.debugName);
+    EXPECT_STREQ("GPUSceneDepthOnlyPipeline", depthDesc.debugName);
+    EXPECT_NE(nullptr, opaqueDesc.pixelShader);
+    EXPECT_NE(nullptr, maskedDesc.pixelShader);
+    EXPECT_EQ(nullptr, depthDesc.pixelShader);
+    ASSERT_FALSE(opaqueDesc.inputLayout.elements.empty());
+    const auto instanceElement = std::find_if(
+        opaqueDesc.inputLayout.elements.begin(), opaqueDesc.inputLayout.elements.end(),
+        [](const RVX::RHIInputElement& element)
+        {
+            return std::string(element.semanticName) == "INSTANCE_INDEX";
+        });
+    ASSERT_NE(instanceElement, opaqueDesc.inputLayout.elements.end());
+    EXPECT_EQ(6u, instanceElement->inputSlot);
+    EXPECT_TRUE(instanceElement->perInstance);
+    EXPECT_EQ(1u, instanceElement->instanceDataStepRate);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       GPUSceneRasterShaderPermutationFailureLeavesBaseCacheUsable)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    GPUSceneDepthPermutationRejectingPipelineCache cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    ExpectGPUSceneRasterUnavailablePreservesBaseCache(cache, "DepthOnly");
+
+    cache.Shutdown();
+    EXPECT_TRUE(cache.GetGPUSceneRasterUnavailableReason().empty());
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    ExpectGPUSceneRasterUnavailablePreservesBaseCache(cache, "DepthOnly");
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       GPUSceneRasterLayoutFailureLeavesBaseCacheUsableAndCanRetry)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.rejectGPUSceneRasterObjectSetLayout = true;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    ExpectGPUSceneRasterUnavailablePreservesBaseCache(
+        cache, "object descriptor layout");
+
+    cache.Shutdown();
+    EXPECT_TRUE(cache.GetGPUSceneRasterUnavailableReason().empty());
+    device.rejectGPUSceneRasterObjectSetLayout = false;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+    EXPECT_TRUE(cache.IsGPUSceneRasterReady());
+    EXPECT_TRUE(cache.GetGPUSceneRasterUnavailableReason().empty());
+    EXPECT_NE(nullptr, cache.GetGPUSceneRasterLayout());
+    EXPECT_NE(nullptr, cache.GetGPUSceneRasterObjectSetLayout());
+    EXPECT_NE(nullptr, cache.GetOpaquePipeline());
+    EXPECT_NE(nullptr, cache.GetGPUDrivenPipelineForVariant(
+                           RVX::MaterialPipelineVariant::Opaque,
+                           RVX::RHIFormat::RGBA8_UNORM));
+    EXPECT_TRUE(cache.GetLastError().empty());
+}
+
+TEST_F(PipelineCacheValidationFixture, ReverseZOptInChangesDepthCompareAndClearConvention)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
     RVX::PipelineCacheConfig config;
     config.reverseZ = true;
     cache.SetConfig(config);
@@ -6746,13 +8299,13 @@ TEST_F(PipelineCacheValidationFixture, ShadowDepthBiasStateSanitizesUnsafeValues
 
 TEST_F(PipelineCacheValidationFixture, ShadowDepthPipelineUsesPurposeKeyAndSanitizedCasterBias)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
     const size_t initialPipelineCount = device.capturedGraphicsPipelines.size();
@@ -6813,14 +8366,14 @@ TEST_F(PipelineCacheValidationFixture, VulkanRasterizerEnablesDepthBiasForSlopeA
 
 TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     TempDirectory temp("rvx_pipeline_manifest_cold");
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
 
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
@@ -6830,13 +8383,16 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_TRUE(fs::exists(temp.Path() / RVX::PipelineCache::GetManifestFileName()));
 
     const std::string manifest = ReadTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName());
-    EXPECT_NE(manifest.find("version=11"), std::string::npos);
+    EXPECT_NE(manifest.find("version=16"), std::string::npos);
     EXPECT_NE(manifest.find("skyboxVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("skyboxPipelineHash="), std::string::npos);
     EXPECT_NE(manifest.find("fxaaVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("fxaaPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("fxaaPipelineHash="), std::string::npos);
+    EXPECT_NE(manifest.find("ssaoVertexShaderHash="), std::string::npos);
+    EXPECT_NE(manifest.find("ssaoPixelShaderHash="), std::string::npos);
+    EXPECT_NE(manifest.find("ssaoPipelineHash="), std::string::npos);
     EXPECT_NE(manifest.find("colorGradingVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("colorGradingPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("colorGradingPipelineHash="), std::string::npos);
@@ -6846,6 +8402,9 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
     EXPECT_NE(manifest.find("vignetteVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("vignettePixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("vignettePipelineHash="), std::string::npos);
+    EXPECT_NE(manifest.find("filmGrainVertexShaderHash="), std::string::npos);
+    EXPECT_NE(manifest.find("filmGrainPixelShaderHash="), std::string::npos);
+    EXPECT_NE(manifest.find("filmGrainPipelineHash="), std::string::npos);
     EXPECT_NE(manifest.find("uiVertexShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("uiPixelShaderHash="), std::string::npos);
     EXPECT_NE(manifest.find("uiPipelineHash="), std::string::npos);
@@ -6853,7 +8412,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestMissingIsColdInitAndSavesMetadata
 
 TEST_F(PipelineCacheValidationFixture, ManifestReloadsAsValidForSameInputs)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -6862,13 +8421,13 @@ TEST_F(PipelineCacheValidationFixture, ManifestReloadsAsValidForSameInputs)
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
     }
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -6879,7 +8438,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestReloadsAsValidForSameInputs)
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenConfigChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -6888,7 +8447,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenConfigChanges)
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
     }
@@ -6897,7 +8456,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenConfigChanges)
     changedConfig.renderTargetFormat = RVX::RHIFormat::RGBA16_FLOAT;
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(changedConfig);
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -6908,7 +8467,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenConfigChanges)
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingOutputFormatChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -6917,7 +8476,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingOutputF
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
     }
@@ -6926,7 +8485,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingOutputF
     changedConfig.toneMappingOutputFormat = RVX::RHIFormat::BGRA8_UNORM;
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(changedConfig);
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -6937,7 +8496,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingOutputF
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingPipelineHashChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -6948,7 +8507,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingPipelin
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
         firstToneMappingHash = cache.GetStats().toneMappingPipelineHash;
@@ -6959,7 +8518,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingPipelin
     ReplaceManifestFieldValue(manifestPath, "toneMappingPipelineHash", std::to_string(staleToneMappingHash));
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -6970,7 +8529,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenToneMappingPipelin
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenBloomPipelineHashChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -6981,7 +8540,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenBloomPipelineHashC
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
         firstBloomHash = cache.GetStats().bloomPipelineHash;
@@ -6992,7 +8551,40 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenBloomPipelineHashC
     ReplaceManifestFieldValue(manifestPath, "bloomPipelineHash", std::to_string(staleBloomHash));
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
+    cache.SetConfig(ConfigWithManifest(temp.Path()));
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    EXPECT_TRUE(cache.GetStats().manifestLoaded);
+    EXPECT_FALSE(cache.GetStats().manifestValid);
+    EXPECT_TRUE(cache.GetStats().manifestInvalidated);
+}
+
+TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSSAOPipelineHashChanges)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    TempDirectory temp("rvx_pipeline_manifest_ssao_stale");
+    const fs::path manifestPath = temp.Path() / RVX::PipelineCache::GetManifestFileName();
+    RVX::uint64 firstSSAOHash = 0;
+
+    {
+        FakeDevice device;
+        PipelineCacheForValidation cache;
+        cache.SetConfig(ConfigWithManifest(temp.Path()));
+        ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+        firstSSAOHash = cache.GetStats().ssaoPipelineHash;
+        ASSERT_NE(firstSSAOHash, 0u);
+    }
+
+    const RVX::uint64 staleSSAOHash = firstSSAOHash == 1u ? 2u : 1u;
+    ReplaceManifestFieldValue(manifestPath, "ssaoPipelineHash", std::to_string(staleSSAOHash));
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -7003,7 +8595,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenBloomPipelineHashC
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingPipelineHashChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7014,7 +8606,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingPipeli
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
         firstColorGradingHash = cache.GetStats().colorGradingPipelineHash;
@@ -7025,7 +8617,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingPipeli
     ReplaceManifestFieldValue(manifestPath, "colorGradingPipelineHash", std::to_string(staleColorGradingHash));
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -7036,7 +8628,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingPipeli
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberrationPipelineHashChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7047,7 +8639,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberratio
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
         firstChromaticAberrationHash = cache.GetStats().chromaticAberrationPipelineHash;
@@ -7060,7 +8652,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberratio
                               std::to_string(staleChromaticAberrationHash));
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -7071,7 +8663,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberratio
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignettePipelineHashChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7082,7 +8674,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignettePipelineHa
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
         firstVignetteHash = cache.GetStats().vignettePipelineHash;
@@ -7093,7 +8685,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignettePipelineHa
     ReplaceManifestFieldValue(manifestPath, "vignettePipelineHash", std::to_string(staleVignetteHash));
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -7104,7 +8696,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignettePipelineHa
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAPipelineHashChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7115,7 +8707,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAPipelineHashCh
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
         firstFXAAHash = cache.GetStats().fxaaPipelineHash;
@@ -7126,7 +8718,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAPipelineHashCh
     ReplaceManifestFieldValue(manifestPath, "fxaaPipelineHash", std::to_string(staleFXAAHash));
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -7137,7 +8729,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAPipelineHashCh
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIPipelineHashChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7148,7 +8740,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIPipelineHashChan
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
         firstUIHash = cache.GetStats().uiPipelineHash;
@@ -7159,7 +8751,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIPipelineHashChan
     ReplaceManifestFieldValue(manifestPath, "uiPipelineHash", std::to_string(staleUIHash));
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -7170,7 +8762,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIPipelineHashChan
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxPipelineHashChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7181,7 +8773,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxPipelineHash
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
         firstSkyboxHash = cache.GetStats().skyboxPipelineHash;
@@ -7192,7 +8784,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxPipelineHash
     ReplaceManifestFieldValue(manifestPath, "skyboxPipelineHash", std::to_string(staleSkyboxHash));
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
 
@@ -7203,7 +8795,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxPipelineHash
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxShaderChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7215,7 +8807,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxShaderChange
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstSkyboxHash = cache.GetStats().skyboxPipelineHash;
@@ -7229,7 +8821,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxShaderChange
     WriteTextFile(skyboxShader, source);
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -7240,7 +8832,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenSkyboxShaderChange
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAShaderChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7252,7 +8844,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAShaderChanges)
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstFXAAHash = cache.GetStats().fxaaPipelineHash;
@@ -7266,7 +8858,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAShaderChanges)
     WriteTextFile(fxaaShader, source);
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -7277,7 +8869,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenFXAAShaderChanges)
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingShaderChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7289,7 +8881,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingShader
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstColorGradingHash = cache.GetStats().colorGradingPipelineHash;
@@ -7303,7 +8895,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingShader
     WriteTextFile(colorGradingShader, source);
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -7314,7 +8906,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenColorGradingShader
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberrationShaderChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7326,7 +8918,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberratio
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstChromaticAberrationHash = cache.GetStats().chromaticAberrationPipelineHash;
@@ -7340,7 +8932,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberratio
     WriteTextFile(shader, source);
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -7351,7 +8943,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenChromaticAberratio
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignetteShaderChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7363,7 +8955,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignetteShaderChan
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstVignetteHash = cache.GetStats().vignettePipelineHash;
@@ -7377,7 +8969,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignetteShaderChan
     WriteTextFile(vignetteShader, source);
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -7388,7 +8980,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenVignetteShaderChan
 
 TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIShaderChanges)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7400,7 +8992,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIShaderChanges)
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(manifestDir));
         ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
         firstUIHash = cache.GetStats().uiPipelineHash;
@@ -7414,7 +9006,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIShaderChanges)
     WriteTextFile(uiShader, source);
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(manifestDir));
     ASSERT_TRUE(cache.Initialize(&device, shaderDir.string()));
     EXPECT_TRUE(cache.GetStats().manifestLoaded);
@@ -7425,7 +9017,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestInvalidatesWhenUIShaderChanges)
 
 TEST_F(PipelineCacheValidationFixture, CorruptManifestInvalidatesWithoutFailingInitialization)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7434,7 +9026,7 @@ TEST_F(PipelineCacheValidationFixture, CorruptManifestInvalidatesWithoutFailingI
     WriteTextFile(temp.Path() / RVX::PipelineCache::GetManifestFileName(), "not a manifest\n");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
 
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
@@ -7445,7 +9037,7 @@ TEST_F(PipelineCacheValidationFixture, CorruptManifestInvalidatesWithoutFailingI
 
 TEST_F(PipelineCacheValidationFixture, ManifestRejectsInvalidReverseZValue)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7455,7 +9047,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestRejectsInvalidReverseZValue)
 
     {
         FakeDevice device;
-        RVX::PipelineCache cache;
+        PipelineCacheForValidation cache;
         cache.SetConfig(ConfigWithManifest(temp.Path()));
         ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
     }
@@ -7463,7 +9055,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestRejectsInvalidReverseZValue)
     ReplaceManifestFieldValue(manifestPath, "reverseZ", "2");
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(ConfigWithManifest(temp.Path()));
 
     ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
@@ -7474,7 +9066,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestRejectsInvalidReverseZValue)
 
 TEST_F(PipelineCacheValidationFixture, ManifestWriteFailureDoesNotFailInitialization)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
@@ -7487,7 +9079,7 @@ TEST_F(PipelineCacheValidationFixture, ManifestWriteFailureDoesNotFailInitializa
     config.manifestDirectory = fileInsteadOfDirectory;
 
     FakeDevice device;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
     cache.SetConfig(config);
 
     EXPECT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
@@ -7496,14 +9088,14 @@ TEST_F(PipelineCacheValidationFixture, ManifestWriteFailureDoesNotFailInitializa
 
 TEST_F(PipelineCacheValidationFixture, BackendPipelineCreationFailureIsVisible)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
     device.failPipelineCreation = true;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("Backend failed to create pipeline"), std::string::npos);
@@ -7511,14 +9103,14 @@ TEST_F(PipelineCacheValidationFixture, BackendPipelineCreationFailureIsVisible)
 
 TEST_F(PipelineCacheValidationFixture, ToneMappingPipelineCreationFailureIsVisible)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
     device.failPipelineCreationAtIndex = 6;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("ToneMapping pipeline"), std::string::npos);
@@ -7526,14 +9118,14 @@ TEST_F(PipelineCacheValidationFixture, ToneMappingPipelineCreationFailureIsVisib
 
 TEST_F(PipelineCacheValidationFixture, SkyboxPipelineCreationFailureIsVisible)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
     device.failPipelineCreationAtIndex = 5;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("Skybox pipeline"), std::string::npos);
@@ -7541,14 +9133,14 @@ TEST_F(PipelineCacheValidationFixture, SkyboxPipelineCreationFailureIsVisible)
 
 TEST_F(PipelineCacheValidationFixture, BloomPipelineCreationFailureIsVisible)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
     device.failPipelineCreationAtIndex = 7;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("Bloom pipeline"), std::string::npos);
@@ -7556,14 +9148,14 @@ TEST_F(PipelineCacheValidationFixture, BloomPipelineCreationFailureIsVisible)
 
 TEST_F(PipelineCacheValidationFixture, RayTracedReflectionCompositePipelineCreationFailureIsVisible)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
     device.failPipelineCreationAtIndex = 8;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("RayTracedReflectionComposite pipeline"), std::string::npos);
@@ -7571,14 +9163,14 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionCompositePipelineCreat
 
 TEST_F(PipelineCacheValidationFixture, RayTracedReflectionDenoisePipelineCreationFailureIsVisible)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
     device.failPipelineCreationAtIndex = 9;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("RayTracedReflectionDenoise pipeline"), std::string::npos);
@@ -7586,44 +9178,74 @@ TEST_F(PipelineCacheValidationFixture, RayTracedReflectionDenoisePipelineCreatio
 
 TEST_F(PipelineCacheValidationFixture, VignettePipelineCreationFailureIsVisible)
 {
-    if (!HasCompilerAvailable())
-    {
-        GTEST_SKIP() << "Render/Shaders directory not found";
-    }
-
-    FakeDevice device;
-    device.failPipelineCreationAtIndex = 10;
-    RVX::PipelineCache cache;
-
-    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
-    EXPECT_NE(cache.GetLastError().find("Vignette pipeline"), std::string::npos);
-}
-
-TEST_F(PipelineCacheValidationFixture, FXAAPipelineCreationFailureIsVisible)
-{
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
     device.failPipelineCreationAtIndex = 11;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
+    EXPECT_NE(cache.GetLastError().find("Vignette pipeline"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, SSAOPipelineCreationFailureIsVisible)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.failPipelineCreationAtIndex = 10;
+    PipelineCacheForValidation cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
+    EXPECT_NE(cache.GetLastError().find("SSAO pipeline"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, FXAAPipelineCreationFailureIsVisible)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.failPipelineCreationAtIndex = 13;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("FXAA pipeline"), std::string::npos);
 }
 
-TEST_F(PipelineCacheValidationFixture, ColorGradingPipelineCreationFailureIsVisible)
+TEST_F(PipelineCacheValidationFixture, FilmGrainPipelineCreationFailureIsVisible)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
     device.failPipelineCreationAtIndex = 12;
-    RVX::PipelineCache cache;
+    PipelineCacheForValidation cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
+    EXPECT_NE(cache.GetLastError().find("FilmGrain pipeline"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, ColorGradingPipelineCreationFailureIsVisible)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.failPipelineCreationAtIndex = 14;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("ColorGrading pipeline"), std::string::npos);
@@ -7631,14 +9253,14 @@ TEST_F(PipelineCacheValidationFixture, ColorGradingPipelineCreationFailureIsVisi
 
 TEST_F(PipelineCacheValidationFixture, ChromaticAberrationPipelineCreationFailureIsVisible)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    device.failPipelineCreationAtIndex = 13;
-    RVX::PipelineCache cache;
+    device.failPipelineCreationAtIndex = 15;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("ChromaticAberration pipeline"), std::string::npos);
@@ -7646,15 +9268,451 @@ TEST_F(PipelineCacheValidationFixture, ChromaticAberrationPipelineCreationFailur
 
 TEST_F(PipelineCacheValidationFixture, UIPipelineCreationFailureIsVisible)
 {
-    if (!HasCompilerAvailable())
+    if (!HasShaderFixtures())
     {
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
     FakeDevice device;
-    device.failPipelineCreationAtIndex = 14;
-    RVX::PipelineCache cache;
+    device.failPipelineCreationAtIndex = 16;
+    PipelineCacheForValidation cache;
 
     EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
     EXPECT_NE(cache.GetLastError().find("UI pipeline"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture, DefaultLitDirectVertexInputModesUseDistinctShadersLayoutsAndFormatPipelines)
+{
+    EXPECT_EQ(static_cast<RVX::uint8>(
+                  RVX::DefaultLitDirectVertexInputMode::Rigid),
+              0u);
+    EXPECT_EQ(static_cast<RVX::uint8>(
+                  RVX::DefaultLitDirectVertexInputMode::Skinned),
+              1u);
+
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    cache.SetRenderTargetFormats(RVX::RHIFormat::RGBA16_FLOAT,
+                                 RVX::RHIFormat::RGBA16_FLOAT,
+                                 RVX::RHIFormat::BGRA8_UNORM);
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string())) << cache.GetLastError();
+
+    const RVX::RHIPipeline* legacySkinned =
+        cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                    RVX::RHIFormat::RGBA16_FLOAT);
+    const RVX::RHIPipeline* explicitSkinned =
+        cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                    RVX::RHIFormat::RGBA16_FLOAT,
+                                    RVX::DefaultLitDirectVertexInputMode::Skinned);
+    const RVX::RHIPipeline* rigidRGBA16 =
+        cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                    RVX::RHIFormat::RGBA16_FLOAT,
+                                    RVX::DefaultLitDirectVertexInputMode::Rigid);
+    const RVX::RHIPipeline* rigidRGBA8 =
+        cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                    RVX::RHIFormat::RGBA8_UNORM,
+                                    RVX::DefaultLitDirectVertexInputMode::Rigid);
+    const RVX::RHIPipeline* rigidDefaultFormat =
+        cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                    RVX::RHIFormat::Unknown,
+                                    RVX::DefaultLitDirectVertexInputMode::Rigid);
+    const RVX::RHIPipeline* invalidInputMode =
+        cache.GetPipelineForVariant(
+            RVX::MaterialPipelineVariant::Opaque,
+            RVX::RHIFormat::RGBA16_FLOAT,
+            static_cast<RVX::DefaultLitDirectVertexInputMode>(255));
+
+    ASSERT_NE(legacySkinned, nullptr);
+    ASSERT_EQ(legacySkinned, explicitSkinned);
+    ASSERT_NE(rigidRGBA16, nullptr);
+    ASSERT_NE(rigidRGBA8, nullptr);
+    ASSERT_EQ(rigidDefaultFormat, rigidRGBA16);
+    EXPECT_EQ(invalidInputMode, nullptr);
+    EXPECT_NE(cache.GetLastError().find("vertex input mode"),
+              std::string::npos);
+    EXPECT_NE(rigidRGBA16, explicitSkinned);
+    EXPECT_NE(rigidRGBA16, rigidRGBA8);
+
+    const auto findPipeline = [&device](const char* debugName, RVX::RHIFormat format)
+        -> const RVX::RHIGraphicsPipelineDesc*
+    {
+        const auto it = std::find_if(
+            device.capturedGraphicsPipelines.begin(),
+            device.capturedGraphicsPipelines.end(),
+            [debugName, format](const RVX::RHIGraphicsPipelineDesc& desc)
+            {
+                return desc.debugName != nullptr &&
+                    std::string(desc.debugName) == debugName &&
+                    desc.renderTargetFormats[0] == format;
+            });
+        return it == device.capturedGraphicsPipelines.end() ? nullptr : &(*it);
+    };
+
+    const RVX::RHIGraphicsPipelineDesc* const skinnedDesc =
+        findPipeline("DefaultOpaquePipeline", RVX::RHIFormat::RGBA16_FLOAT);
+    const RVX::RHIGraphicsPipelineDesc* const rigidRGBA16Desc =
+        findPipeline("DefaultOpaqueRigidPipeline", RVX::RHIFormat::RGBA16_FLOAT);
+    const RVX::RHIGraphicsPipelineDesc* const rigidRGBA8Desc =
+        findPipeline("DefaultOpaqueRigidPipeline", RVX::RHIFormat::RGBA8_UNORM);
+    ASSERT_NE(skinnedDesc, nullptr);
+    ASSERT_NE(rigidRGBA16Desc, nullptr);
+    ASSERT_NE(rigidRGBA8Desc, nullptr);
+
+    EXPECT_NE(skinnedDesc->vertexShader, rigidRGBA16Desc->vertexShader);
+    ASSERT_EQ(skinnedDesc->inputLayout.elements.size(), 6u);
+    ASSERT_EQ(rigidRGBA16Desc->inputLayout.elements.size(), 4u);
+    for (size_t index = 0; index < rigidRGBA16Desc->inputLayout.elements.size(); ++index)
+    {
+        EXPECT_EQ(rigidRGBA16Desc->inputLayout.elements[index].inputSlot, index);
+    }
+    EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[0].semanticName, "POSITION");
+    EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[1].semanticName, "NORMAL");
+    EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[2].semanticName, "TEXCOORD");
+    EXPECT_STREQ(rigidRGBA16Desc->inputLayout.elements[3].semanticName, "TANGENT");
+    EXPECT_STREQ(skinnedDesc->inputLayout.elements[4].semanticName, "BLENDINDICES");
+    EXPECT_STREQ(skinnedDesc->inputLayout.elements[5].semanticName, "BLENDWEIGHT");
+    EXPECT_EQ(rigidRGBA16Desc->renderTargetFormats[0], RVX::RHIFormat::RGBA16_FLOAT);
+    EXPECT_EQ(rigidRGBA8Desc->renderTargetFormats[0], RVX::RHIFormat::RGBA8_UNORM);
+
+    const size_t pipelineCountAfterFirstRequests = device.capturedGraphicsPipelines.size();
+    EXPECT_EQ(cache.GetPipelineForVariant(RVX::MaterialPipelineVariant::Opaque,
+                                          RVX::RHIFormat::RGBA16_FLOAT,
+                                          RVX::DefaultLitDirectVertexInputMode::Rigid),
+              rigidRGBA16);
+    EXPECT_EQ(device.capturedGraphicsPipelines.size(), pipelineCountAfterFirstRequests);
+
+    const std::string shader = ReadTextFile(FindShaderDirectory() / "DefaultLit.hlsl");
+    EXPECT_NE(shader.find("struct RigidDirectVSInput"), std::string::npos);
+    EXPECT_NE(shader.find("PSInput VSMainRigid(RigidDirectVSInput input)"), std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       MaskedDepthOnlyPipelineCreationFailureIsVisible)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    device.failPipelineCreationAtIndex = 17;
+    PipelineCacheForValidation cache;
+
+    EXPECT_FALSE(cache.Initialize(&device, FindShaderDirectory().string()));
+    EXPECT_NE(cache.GetLastError().find("masked depth-only pipeline"),
+              std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       TypedRasterShadowOutputIsPublishedDuringSetupBeforeOpaqueRegistration)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    const fs::path renderRoot = FindShaderDirectory().parent_path();
+    const std::string contextHeader = ReadTextFile(
+        renderRoot / "Include" / "Render" / "Passes" /
+        "RenderPassRecordContext.h");
+    const std::string shadowHeader = ReadTextFile(
+        renderRoot / "Include" / "Render" / "Passes" / "ShadowPass.h");
+    const std::string shadowSource = ReadTextFile(
+        renderRoot / "Private" / "Passes" / "ShadowPass.cpp");
+    const std::string rendererSource = ReadTextFile(
+        renderRoot / "Private" / "Renderer" / "SceneRenderer.cpp");
+
+    EXPECT_NE(contextHeader.find("struct DirectionalShadowRecordOutput"),
+              std::string::npos);
+    EXPECT_EQ(contextHeader.find("OpaqueDirectionalShadowRecordInputs"),
+              std::string::npos);
+    EXPECT_NE(contextHeader.find(
+                  "DirectionalShadowRecordOutput directionalShadowOutput{};"),
+              std::string::npos);
+    EXPECT_NE(contextHeader.find("ShadowPassStats shadowStats{};"),
+              std::string::npos);
+    EXPECT_NE(shadowHeader.find(
+                  "int32_t GetPriority() const override { return 200; }"),
+              std::string::npos);
+
+    const size_t setEnabled = shadowSource.find(
+        "data.recorder->SetEnabled(requestedEnabled);");
+    const size_t primaryLight = shadowSource.find(
+        "const PrimaryDirectionalLightRecordInput primaryLight = execution.frameSnapshot");
+    const size_t eligibleGate = shadowSource.find(
+        "if (!primaryLight.IsShadowEligible())");
+    const size_t setup = shadowSource.find(
+        "data.recorder->Setup(builder, data.execution.view, primaryLight);");
+    const size_t publishOutput = shadowSource.find(
+        "MakeDirectionalShadowRecordOutput(", setup);
+    ASSERT_NE(setEnabled, std::string::npos);
+    ASSERT_NE(primaryLight, std::string::npos);
+    ASSERT_NE(eligibleGate, std::string::npos);
+    ASSERT_NE(setup, std::string::npos);
+    ASSERT_NE(publishOutput, std::string::npos);
+    EXPECT_LT(primaryLight, setEnabled);
+    EXPECT_LT(setEnabled, setup);
+    EXPECT_LT(eligibleGate, setup);
+    EXPECT_LT(setup, publishOutput);
+    EXPECT_EQ(shadowSource.find("SetDirectional" "Light("), std::string::npos);
+
+    EXPECT_NE(rendererSource.find(
+                  "passRecordContext.results->directionalShadowOutput.identity ="),
+              std::string::npos);
+    EXPECT_NE(rendererSource.find(
+                  "passRecordContext.directionalShadow =\n"
+                  "                passRecordContext.results->directionalShadowOutput;"),
+              std::string::npos);
+    EXPECT_NE(rendererSource.find(
+                  "m_shadowPass->PublishRecordResults("),
+              std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_shadowPass->GetShadowMapTextureHandle"),
+              std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_shadowPass->GetCascades"),
+              std::string::npos);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       PagedObjectConstantsPreserveSlot8191AndStartSlot8192AtZero)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    RVX::ObjectConstantBinding first;
+    RVX::ObjectConstantBinding finalFirstPage;
+    RVX::ObjectConstantBinding firstSecondPage;
+    for (RVX::uint32 index = 0; index != 8193; ++index)
+    {
+        RVX::Mat4 world = RVX::Mat4Identity();
+        world[3][0] = static_cast<float>(index);
+        RVX::ObjectConstantBinding binding;
+        ASSERT_TRUE(cache.CreateObjectConstantBinding(
+            world,
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            false,
+            true,
+            {},
+            nullptr,
+            binding));
+        if (index == 0)
+        {
+            first = binding;
+        }
+        else if (index == 8191)
+        {
+            finalFirstPage = binding;
+        }
+        else if (index == 8192)
+        {
+            firstSecondPage = binding;
+        }
+    }
+
+    ASSERT_TRUE(first.IsValid());
+    ASSERT_TRUE(finalFirstPage.IsValid());
+    ASSERT_TRUE(firstSecondPage.IsValid());
+    EXPECT_EQ(first.pageIdentity, finalFirstPage.pageIdentity);
+    EXPECT_NE(first.pageIdentity, firstSecondPage.pageIdentity);
+    EXPECT_EQ(0u, first.dynamicOffsets[0]);
+    EXPECT_EQ(0u, firstSecondPage.dynamicOffsets[0]);
+    EXPECT_GT(finalFirstPage.dynamicOffsets[0], first.dynamicOffsets[0]);
+    EXPECT_NE(first.constantBuffer.Get(), firstSecondPage.constantBuffer.Get());
+    const auto* firstPage = static_cast<const FakeBuffer*>(finalFirstPage.constantBuffer.Get());
+    ASSERT_NE(nullptr, firstPage);
+    RVX::ObjectConstants retainedConstants{};
+    std::memcpy(&retainedConstants,
+                firstPage->GetStorage().data() + finalFirstPage.dynamicOffsets[0],
+                sizeof(retainedConstants));
+    EXPECT_FLOAT_EQ(8191.0f, retainedConstants.world[3][0]);
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       RejectedObjectConstantRecordingReleasesItsPageWithoutOverwrite)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    RVX::ObjectConstantBinding rejected;
+    ASSERT_TRUE(cache.CreateObjectConstantBinding(
+        RVX::Mat4Identity(), RVX::Mat4Identity(), RVX::Mat4Identity(),
+        RVX::Mat4Identity(), false, true, {}, nullptr, rejected));
+    cache.ReleaseUnsubmittedObjectConstants();
+
+    RVX::ObjectConstantBinding retry;
+    ASSERT_TRUE(cache.CreateObjectConstantBinding(
+        RVX::Mat4Identity(), RVX::Mat4Identity(), RVX::Mat4Identity(),
+        RVX::Mat4Identity(), false, true, {}, nullptr, retry));
+    EXPECT_EQ(rejected.pageIdentity, retry.pageIdentity);
+    EXPECT_EQ(0u, retry.dynamicOffsets[0]);
+    EXPECT_FALSE(cache.NotifyObjectConstantSubmission(RVX::GPUCompletionToken{}));
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       ExternalObjectConstantDescriptorsAreFreshAndRetainTheirInstanceBuffer)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    const auto countPagedObjectDescriptors = [&device]()
+    {
+        return static_cast<size_t>(std::count_if(
+            device.capturedDescriptorSetDescs.begin(),
+            device.capturedDescriptorSetDescs.end(),
+            [](const RVX::RHIDescriptorSetDesc& desc)
+            {
+                return desc.debugName != nullptr &&
+                       std::string_view(desc.debugName) ==
+                           "PagedObjectConstantDescriptorSet";
+            }));
+    };
+    const auto createBinding = [&cache](RVX::RHIBuffer* instanceBuffer,
+                                        RVX::ObjectConstantBinding& outBinding)
+    {
+        return cache.CreateObjectConstantBinding(
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            false,
+            true,
+            {},
+            instanceBuffer,
+            outBinding);
+    };
+
+    RVX::RHIBufferDesc instanceDesc;
+    instanceDesc.size = 256;
+    instanceDesc.usage = RVX::RHIBufferUsage::Structured |
+                         RVX::RHIBufferUsage::ShaderResource;
+    instanceDesc.memoryType = RVX::RHIMemoryType::Upload;
+    instanceDesc.stride = 16;
+    instanceDesc.debugName = "ValidationExternalInstance";
+    RVX::RHIBufferRef external = device.CreateBuffer(instanceDesc);
+    ASSERT_TRUE(external);
+
+    RVX::ObjectConstantBinding first;
+    const RVX::uint32 initialReferenceCount = external->GetRefCount();
+    ASSERT_TRUE(createBinding(external.Get(), first));
+    ASSERT_TRUE(first.IsValid());
+    EXPECT_TRUE(first.requiresInstanceBuffer);
+    EXPECT_EQ(external.Get(), first.instanceBuffer.Get());
+    EXPECT_EQ(initialReferenceCount + 1u, external->GetRefCount());
+    const size_t descriptorsAfterFirst = countPagedObjectDescriptors();
+
+    RVX::ObjectConstantBinding second;
+    ASSERT_TRUE(createBinding(external.Get(), second));
+    EXPECT_EQ(first.pageIdentity, second.pageIdentity);
+    EXPECT_NE(first.descriptorSet.Get(), second.descriptorSet.Get());
+    EXPECT_EQ(descriptorsAfterFirst + 1u, countPagedObjectDescriptors());
+
+    RVX::RHIBuffer* const firstExternal = external.Get();
+    external.Reset();
+    EXPECT_EQ(firstExternal, first.instanceBuffer.Get());
+    EXPECT_EQ(firstExternal, second.instanceBuffer.Get());
+
+    const RVX::uint64 reusedPageIdentity = first.pageIdentity;
+    first = {};
+    second = {};
+    cache.ReleaseUnsubmittedObjectConstants();
+
+    RVX::RHIBufferRef replacement = device.CreateBuffer(instanceDesc);
+    ASSERT_TRUE(replacement);
+    const size_t descriptorsBeforeReplacement = countPagedObjectDescriptors();
+    RVX::ObjectConstantBinding replacementBinding;
+    ASSERT_TRUE(createBinding(replacement.Get(), replacementBinding));
+    EXPECT_EQ(reusedPageIdentity, replacementBinding.pageIdentity);
+    EXPECT_EQ(descriptorsBeforeReplacement + 1u, countPagedObjectDescriptors());
+    EXPECT_EQ(replacement.Get(), replacementBinding.instanceBuffer.Get());
+}
+
+TEST_F(PipelineCacheValidationFixture,
+       FallbackObjectConstantDescriptorsRemainCachedAcrossPageReuse)
+{
+    if (!HasShaderFixtures())
+    {
+        GTEST_SKIP() << "Render/Shaders directory not found";
+    }
+
+    FakeDevice device;
+    PipelineCacheForValidation cache;
+    ASSERT_TRUE(cache.Initialize(&device, FindShaderDirectory().string()))
+        << cache.GetLastError();
+
+    const auto countPagedObjectDescriptors = [&device]()
+    {
+        return static_cast<size_t>(std::count_if(
+            device.capturedDescriptorSetDescs.begin(),
+            device.capturedDescriptorSetDescs.end(),
+            [](const RVX::RHIDescriptorSetDesc& desc)
+            {
+                return desc.debugName != nullptr &&
+                       std::string_view(desc.debugName) ==
+                           "PagedObjectConstantDescriptorSet";
+            }));
+    };
+    const auto createFallbackBinding = [&cache](RVX::ObjectConstantBinding& outBinding)
+    {
+        return cache.CreateObjectConstantBinding(
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            RVX::Mat4Identity(),
+            false,
+            true,
+            {},
+            nullptr,
+            outBinding);
+    };
+
+    RVX::ObjectConstantBinding first;
+    ASSERT_TRUE(createFallbackBinding(first));
+    ASSERT_TRUE(first.IsValid());
+    ASSERT_TRUE(first.instanceBuffer);
+    const size_t descriptorsAfterFirst = countPagedObjectDescriptors();
+
+    RVX::ObjectConstantBinding second;
+    ASSERT_TRUE(createFallbackBinding(second));
+    EXPECT_EQ(first.pageIdentity, second.pageIdentity);
+    EXPECT_EQ(first.descriptorSet.Get(), second.descriptorSet.Get());
+    EXPECT_EQ(descriptorsAfterFirst, countPagedObjectDescriptors());
+
+    const RVX::uint64 reusedPageIdentity = first.pageIdentity;
+    RVX::RHIDescriptorSet* const cachedDescriptor = first.descriptorSet.Get();
+    first = {};
+    second = {};
+    cache.ReleaseUnsubmittedObjectConstants();
+
+    RVX::ObjectConstantBinding reused;
+    ASSERT_TRUE(createFallbackBinding(reused));
+    EXPECT_EQ(reusedPageIdentity, reused.pageIdentity);
+    EXPECT_EQ(cachedDescriptor, reused.descriptorSet.Get());
+    EXPECT_EQ(descriptorsAfterFirst, countPagedObjectDescriptors());
 }

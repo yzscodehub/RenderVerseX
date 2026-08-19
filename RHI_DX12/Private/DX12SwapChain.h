@@ -32,6 +32,16 @@ namespace RVX
 
         // DX12 Specific
         IDXGISwapChain4* GetSwapChain() const { return m_swapChain.Get(); }
+        bool IsValid() const
+        {
+            return m_swapChain.Get() != nullptr && !m_backBuffers.empty();
+        }
+
+        /** @brief Resolve matching DXGI creation/presentation tearing flags. */
+        static UINT ResolveCreationFlags(bool vsync,
+                                         bool tearingSupported) noexcept;
+        static UINT ResolvePresentFlags(bool vsync,
+                                        bool tearingSupported) noexcept;
 
     private:
         void CreateBackBufferResources();
@@ -46,6 +56,7 @@ namespace RVX
         RHIFormat m_format = RHIFormat::BGRA8_UNORM;
         uint32 m_bufferCount = 3;
         bool m_vsync = true;
+        bool m_tearingSupported = false;
 
         uint32 m_currentBackBufferIndex = 0;
 

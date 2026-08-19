@@ -31,6 +31,7 @@ namespace
         bool recursive = true;
         bool failOnErrors = false;
         bool rewriteGltfTextureUris = false;
+        bool modelOnly = false;
         bool showHelp = false;
     };
 
@@ -869,6 +870,7 @@ namespace
                                 const std::filesystem::path& outputRoot,
                                 const std::filesystem::path& sourcePath,
                                 const std::filesystem::path& outputPath,
+                                const std::vector<std::filesystem::path>& dependencyPaths,
                                 bool success,
                                 uint32_t rewriteCount,
                                 std::string error)
@@ -894,7 +896,39 @@ namespace
         {
             entry.outputModTime = GetFileWriteTimeTicks(outputPath);
             entry.outputSize = GetFileSizeBytes(outputPath);
-            entry.warnings.push_back("runtimeGltfTextureUriRewrites=" + std::to_string(rewriteCount));
+            const std::string runtimeRewriteSettings =
+                "settingsSchema=RVX_COOK_SETTINGS_V1\n"
+                "assetType=Mesh\n"
+                "operation=RuntimeGltfTextureUriRewrite\n"
+                "rewriteGltfTextureUris=1\n";
+            std::string identityError;
+            if (!RVX::Tools::CookManifest::PopulateSuccessfulEntry(
+                    entry,
+                    sourceRoot,
+                    outputRoot,
+                    sourcePath,
+                    outputPath,
+                    {outputPath},
+                    dependencyPaths,
+                    runtimeRewriteSettings,
+                    "RVXCook.RuntimeGltfTextureUriRewrite",
+                    identityError))
+            {
+                entry.success = false;
+                entry.error = "Cook manifest v2 identity capture failed: " + identityError;
+                entry.dependencyOutputs.clear();
+                entry.dependencies.clear();
+                entry.artifacts.clear();
+                entry.sourceContent = {};
+                entry.canonicalCookSettings.clear();
+                entry.cookSettingsHash.clear();
+                entry.recipeHash.clear();
+            }
+            else
+            {
+                entry.warnings.push_back("runtimeGltfTextureUriRewrites=" +
+                                         std::to_string(rewriteCount));
+            }
         }
         manifest.entries.push_back(std::move(entry));
     }
@@ -905,6 +939,26 @@ namespace
                                        bool recursive)
     {
         const auto textureOutputBySource = BuildCookedTextureOutputMap(manifest);
+        std::vector<std::filesystem::path> runtimeDependencyPaths;
+        runtimeDependencyPaths.reserve(textureOutputBySource.size());
+        for (const auto& [sourcePath, outputPath] : textureOutputBySource)
+        {
+            (void)sourcePath;
+            runtimeDependencyPaths.emplace_back(outputRoot / outputPath);
+        }
+        std::sort(runtimeDependencyPaths.begin(), runtimeDependencyPaths.end(),
+                  [](const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+        {
+            return lhs.generic_string() < rhs.generic_string();
+        });
+        runtimeDependencyPaths.erase(
+            std::unique(runtimeDependencyPaths.begin(), runtimeDependencyPaths.end(),
+                        [](const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+            {
+                return lhs.generic_string() == rhs.generic_string();
+            }),
+            runtimeDependencyPaths.end());
+
         for (const std::filesystem::path& gltfPath : CollectGltfSourceFiles(sourceRoot, recursive))
         {
             std::error_code ec;
@@ -916,6 +970,7 @@ namespace
                                        outputRoot,
                                        gltfPath,
                                        outputRoot / gltfPath.filename(),
+                                       {},
                                        false,
                                        0,
                                        "Failed to make glTF path relative to source root: " + ec.message());
@@ -931,6 +986,7 @@ namespace
                                        outputRoot,
                                        gltfPath,
                                        outputGltf,
+                                       {},
                                        false,
                                        0,
                                        "Failed to open source glTF for URI rewrite: " + gltfPath.string());
@@ -958,6 +1014,7 @@ namespace
                                        outputRoot,
                                        gltfPath,
                                        outputGltf,
+                                       {},
                                        false,
                                        rewriteCount,
                                        rewriteError);
@@ -972,6 +1029,7 @@ namespace
                                        outputRoot,
                                        gltfPath,
                                        outputGltf,
+                                       {},
                                        false,
                                        rewriteCount,
                                        "Failed to create runtime glTF directory: " + ec.message());
@@ -986,6 +1044,7 @@ namespace
                                        outputRoot,
                                        gltfPath,
                                        outputGltf,
+                                       {},
                                        false,
                                        rewriteCount,
                                        "Failed to open runtime glTF output: " + outputGltf.string());
@@ -1001,6 +1060,7 @@ namespace
                                        outputRoot,
                                        gltfPath,
                                        outputGltf,
+                                       {},
                                        false,
                                        rewriteCount,
                                        "Failed while writing runtime glTF output: " + outputGltf.string());
@@ -1012,6 +1072,7 @@ namespace
                                    outputRoot,
                                    gltfPath,
                                    outputGltf,
+                                   runtimeDependencyPaths,
                                    true,
                                    rewriteCount,
                                    {});
@@ -1033,6 +1094,7 @@ namespace
             << "                        and mesh.lodReductionFactor\n"
             << "  --rewrite-gltf-texture-uris\n"
             << "                        Emit runtime .gltf copies with external image URIs redirected to cooked .rva textures\n"
+            << "  --model-only          Cook complete glTF model products and their owned dependencies only\n"
             << "  --non-recursive       Only cook files directly under --source\n"
             << "  --fail-on-errors      Return non-zero when any asset fails to cook\n"
             << "  --help                Show this help\n";
@@ -1104,6 +1166,10 @@ namespace
             {
                 options.rewriteGltfTextureUris = true;
             }
+            else if (arg == "--model-only")
+            {
+                options.modelOnly = true;
+            }
             else if (arg == "--fail-on-errors")
             {
                 options.failOnErrors = true;
@@ -1130,6 +1196,11 @@ namespace
             std::cerr << "--output is required\n";
             return false;
         }
+        if (options.modelOnly && options.rewriteGltfTextureUris)
+        {
+            std::cerr << "--model-only cannot be combined with --rewrite-gltf-texture-uris\n";
+            return false;
+        }
         if (options.manifestPath.empty())
         {
             options.manifestPath = options.outputRoot / "CookManifest.rvxmanifest";
@@ -1138,13 +1209,17 @@ namespace
         return true;
     }
 
-    RVX::Tools::AssetPipeline CreateDefaultPipeline()
+    RVX::Tools::AssetPipeline CreateDefaultPipeline(bool modelOnly)
     {
         RVX::Tools::AssetPipeline pipeline;
-        pipeline.RegisterImporter(std::make_unique<RVX::Tools::TextureImporter>());
-        pipeline.RegisterImporter(std::make_unique<RVX::Tools::MeshImporter>());
-        pipeline.RegisterImporter(std::make_unique<RVX::Tools::ShaderImporter>());
-        pipeline.RegisterImporter(std::make_unique<RVX::Tools::AudioImporter>());
+        if (!modelOnly)
+        {
+            pipeline.RegisterImporter(std::make_unique<RVX::Tools::TextureImporter>());
+            pipeline.RegisterImporter(std::make_unique<RVX::Tools::MeshImporter>());
+            pipeline.RegisterImporter(std::make_unique<RVX::Tools::ShaderImporter>());
+            pipeline.RegisterImporter(std::make_unique<RVX::Tools::AudioImporter>());
+        }
+        pipeline.RegisterImporter(std::make_unique<RVX::Tools::ModelImporter>());
         return pipeline;
     }
 } // namespace
@@ -1185,10 +1260,11 @@ int main(int argc, char** argv)
 
     try
     {
-        RVX::Tools::AssetPipeline pipeline = CreateDefaultPipeline();
+        RVX::Tools::AssetPipeline pipeline = CreateDefaultPipeline(options.modelOnly);
         RVX::Tools::AssetPipeline::ImportOptionsProvider optionsProvider;
         RVX::Tools::TextureImportOptions resolvedTextureOptions = options.textureOptions;
         RVX::Tools::MeshImportOptions resolvedMeshOptions = cookProfile.meshOptions;
+        RVX::Tools::ModelImportOptions resolvedModelOptions;
         if (options.hasTextureOptions ||
             !cookProfile.textureCompressionRules.empty() ||
             cookProfile.hasMeshOptions)
@@ -1196,7 +1272,8 @@ int main(int argc, char** argv)
             optionsProvider = [&options,
                                &cookProfile,
                                &resolvedTextureOptions,
-                               &resolvedMeshOptions](const std::filesystem::path& sourcePath,
+                               &resolvedMeshOptions,
+                               &resolvedModelOptions](const std::filesystem::path& sourcePath,
                                                      RVX::Tools::AssetType assetType) -> const void*
             {
                 if (assetType == RVX::Tools::AssetType::Mesh)
@@ -1208,6 +1285,14 @@ int main(int argc, char** argv)
 
                     resolvedMeshOptions = cookProfile.meshOptions;
                     return &resolvedMeshOptions;
+                }
+
+                if (assetType == RVX::Tools::AssetType::Model)
+                {
+                    if (!cookProfile.hasMeshOptions)
+                        return nullptr;
+                    resolvedModelOptions.mesh = cookProfile.meshOptions;
+                    return &resolvedModelOptions;
                 }
 
                 if (assetType != RVX::Tools::AssetType::Texture)
@@ -1230,16 +1315,35 @@ int main(int argc, char** argv)
             };
         }
 
-        const std::filesystem::path pipelineManifestPath =
-            options.rewriteGltfTextureUris ? std::filesystem::path{} : options.manifestPath;
+        RVX::Tools::AssetPipeline::StagingMutator stagingMutator;
+        if (options.rewriteGltfTextureUris)
+        {
+            stagingMutator = [&options](RVX::Tools::CookManifest& stagedManifest,
+                                        const std::filesystem::path& stagingOutputRoot,
+                                        std::string& outError)
+            {
+                RewriteRuntimeGltfTextureUris(stagedManifest,
+                                              options.sourceRoot,
+                                              stagingOutputRoot,
+                                              options.recursive);
+                if (stagedManifest.GetFailureCount() != 0u)
+                {
+                    outError = "One or more runtime glTF URI rewrites failed";
+                    return false;
+                }
+                outError.clear();
+                return true;
+            };
+        }
 
         RVX::Tools::CookManifest manifest =
             pipeline.CookDirectory(options.sourceRoot,
                                    options.outputRoot,
                                    options.recursive,
-                                   pipelineManifestPath,
+                                   options.manifestPath,
                                    nullptr,
-                                   optionsProvider);
+                                   optionsProvider,
+                                   std::move(stagingMutator));
 
         if (!manifest.manifestError.empty() && manifest.entries.empty())
         {
@@ -1248,18 +1352,18 @@ int main(int argc, char** argv)
             return 2;
         }
 
-        if (options.rewriteGltfTextureUris)
-        {
-            RewriteRuntimeGltfTextureUris(manifest,
-                                          options.sourceRoot,
-                                          options.outputRoot,
-                                          options.recursive);
-            manifest.manifestWritten = manifest.Save(options.manifestPath, manifest.manifestError);
-        }
-
         if (!manifest.manifestWritten)
         {
             std::cerr << "Cook manifest write failed: " << manifest.manifestError << "\n";
+            for (const RVX::Tools::CookManifestEntry& entry : manifest.entries)
+            {
+                if (!entry.success)
+                {
+                    std::cerr << "Cook entry failed: source='" << entry.sourcePath
+                              << "' output='" << entry.outputPath
+                              << "' error='" << entry.error << "'\n";
+                }
+            }
             RVX::Log::Shutdown();
             return 2;
         }
@@ -1274,6 +1378,15 @@ int main(int argc, char** argv)
 
         if (options.failOnErrors && manifest.GetFailureCount() > 0)
         {
+            for (const RVX::Tools::CookManifestEntry& entry : manifest.entries)
+            {
+                if (!entry.success)
+                {
+                    std::cerr << "Cook entry failed: source='" << entry.sourcePath
+                              << "' output='" << entry.outputPath
+                              << "' error='" << entry.error << "'\n";
+                }
+            }
             RVX::Log::Shutdown();
             return 3;
         }

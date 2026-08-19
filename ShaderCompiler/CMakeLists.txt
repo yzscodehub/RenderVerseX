@@ -44,7 +44,7 @@ if(WIN32)
         Private/TrackingIncludeHandler.h
         Private/TrackingIncludeHandler.cpp
     )
-elseif(APPLE)
+else()
     target_sources(RVX_ShaderCompiler PRIVATE
         Private/DXCCompiler_Apple.cpp
         Private/SPIRVCrossTranslator.cpp
@@ -74,19 +74,29 @@ if(WIN32)
     )
 endif()
 
-# Apple: Use glslang for HLSL -> SPIR-V, then SPIRV-Cross for SPIR-V -> MSL
-if(APPLE)
+# Non-Windows: Use glslang for HLSL -> SPIR-V. Apple additionally translates
+# SPIR-V to MSL through SPIRV-Cross.
+if(NOT WIN32)
     # Link glslang for HLSL compilation (HLSL support is built into main library)
+    # glslang guards its HLSL-specific consumer API with the same feature
+    # define used by the library build. This module exclusively feeds HLSL to
+    # that frontend, so expose the matching declarations to our translation
+    # unit as well.
+    target_compile_definitions(RVX_ShaderCompiler PRIVATE ENABLE_HLSL)
+
     target_link_libraries(RVX_ShaderCompiler PRIVATE
         glslang::glslang
         glslang::glslang-default-resource-limits
         glslang::SPIRV
-    )
-
-    # Link SPIRV-Cross libraries for MSL translation
-    target_link_libraries(RVX_ShaderCompiler PRIVATE
         spirv-cross-core
         spirv-cross-glsl
+    )
+
+endif()
+
+if(APPLE)
+    # Link SPIRV-Cross libraries for MSL translation
+    target_link_libraries(RVX_ShaderCompiler PRIVATE
         spirv-cross-hlsl
         spirv-cross-msl
     )

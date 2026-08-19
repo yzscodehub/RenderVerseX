@@ -6,8 +6,18 @@
  */
 
 #include "Core/Job/ThreadPool.h"
-#include <memory>
+#include "Core/Types.h"
 #include <atomic>
+#include <chrono>
+#include <functional>
+#include <future>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <string>
+#include <type_traits>
+#include <vector>
 
 namespace RVX
 {
@@ -24,6 +34,26 @@ namespace RVX
     };
 
     /**
+     * @brief Thread/context used to run a job completion callback.
+     */
+    enum class JobCompletionDispatch
+    {
+        WorkerThread = 0,
+        MainThread
+    };
+
+    /**
+     * @brief Submission metadata for runtime jobs.
+     */
+    struct JobSubmissionDesc
+    {
+        JobPriority priority = JobPriority::Normal;
+        std::string category;
+        std::function<void()> continuation;
+        JobCompletionDispatch completionDispatch = JobCompletionDispatch::WorkerThread;
+    };
+
+    /**
      * @brief Handle to a submitted job
      */
     class JobHandle
@@ -32,9 +62,9 @@ namespace RVX
         JobHandle() = default;
 
         /// Check if the job has completed
-        bool IsComplete() const 
-        { 
-            return m_completed ? m_completed->load() : true; 
+        bool IsComplete() const
+        {
+            return m_completed ? m_completed->load() : true;
         }
 
         /// Wait for the job to complete
@@ -46,35 +76,54 @@ namespace RVX
             }
         }
 
+        /// Wait for completion with a timeout.
+        bool WaitFor(uint32 timeoutMs) const
+        {
+            if (!m_future.valid())
+            {
+                return true;
+            }
+
+            return m_future.wait_for(std::chrono::milliseconds(timeoutMs)) == std::future_status::ready;
+        }
+
+        /// Get the named category used for scheduling/diagnostics.
+        const std::string& GetCategory() const { return m_category; }
+
+        /// Get the requested priority.
+        JobPriority GetPriority() const { return m_priority; }
+
     private:
         friend class JobSystem;
-        
+
         std::shared_future<void> m_future;
         std::shared_ptr<std::atomic<bool>> m_completed;
+        std::string m_category;
+        JobPriority m_priority = JobPriority::Normal;
     };
 
     /**
      * @brief High-level job system for parallel task execution
-     * 
+     *
      * The JobSystem provides a convenient interface for submitting
      * parallel work. It wraps the ThreadPool with additional features
      * like job handles and priority scheduling.
-     * 
+     *
      * Usage:
      * @code
      * // Get the global job system
      * JobSystem& jobs = JobSystem::Get();
-     * 
+     *
      * // Submit a job
      * JobHandle handle = jobs.Submit([]() {
      *     DoExpensiveWork();
      * });
-     * 
+     *
      * // Continue with other work...
-     * 
+     *
      * // Wait for completion
      * handle.Wait();
-     * 
+     *
      * // Or submit many jobs and wait for all
      * std::vector<JobHandle> handles;
      * for (int i = 0; i < 100; ++i) {
@@ -123,23 +172,67 @@ namespace RVX
         template<typename F>
         JobHandle Submit(F&& func, JobPriority priority)
         {
+            JobSubmissionDesc desc;
+            desc.priority = priority;
+            return Submit(std::forward<F>(func), desc);
+        }
+
+        /**
+         * @brief Submit a job with diagnostic metadata and optional continuation.
+         */
+        template<typename F>
+        JobHandle Submit(F&& func, const JobSubmissionDesc& desc)
+        {
             if (!m_threadPool)
             {
                 // Execute synchronously if not initialized
-                func();
-                return JobHandle{};
+                try
+                {
+                    func();
+                }
+                catch (...)
+                {
+                    QueueCompletion(desc.continuation, desc.completionDispatch);
+                    throw;
+                }
+
+                QueueCompletion(desc.continuation, desc.completionDispatch);
+
+                JobHandle handle;
+                handle.m_category = desc.category;
+                handle.m_priority = desc.priority;
+                return handle;
             }
 
             auto completed = std::make_shared<std::atomic<bool>>(false);
+            auto continuation = desc.continuation;
+            const JobCompletionDispatch completionDispatch = desc.completionDispatch;
 
-            auto future = m_threadPool->Submit([func = std::forward<F>(func), completed]() {
-                func();
-                completed->store(true);
-            }, priority);
+            auto future = m_threadPool->Submit([this,
+                                                func = std::forward<F>(func),
+                                                completed,
+                                                continuation = std::move(continuation),
+                                                completionDispatch]() mutable {
+                try
+                {
+                    func();
+                }
+                catch (...)
+                {
+                    completed->store(true, std::memory_order_release);
+                    QueueCompletion(std::move(continuation), completionDispatch);
+                    throw;
+                }
+
+                completed->store(true, std::memory_order_release);
+                QueueCompletion(std::move(continuation), completionDispatch);
+            }, desc.priority);
 
             JobHandle handle;
             handle.m_future = future.share();
             handle.m_completed = completed;
+            handle.m_category = desc.category;
+            handle.m_priority = desc.priority;
             return handle;
         }
 
@@ -149,14 +242,69 @@ namespace RVX
         template<typename F>
         auto SubmitWithResult(F&& func) -> std::future<std::invoke_result_t<F>>
         {
+            JobSubmissionDesc desc;
+            return SubmitWithResult(std::forward<F>(func), desc);
+        }
+
+        /**
+         * @brief Submit a value-returning job with metadata and optional continuation.
+         */
+        template<typename F>
+        auto SubmitWithResult(F&& func, const JobSubmissionDesc& desc) -> std::future<std::invoke_result_t<F>>
+        {
+            using ReturnType = std::invoke_result_t<F>;
+
             if (!m_threadPool)
             {
-                std::promise<std::invoke_result_t<F>> promise;
-                promise.set_value(func());
+                std::promise<ReturnType> promise;
+                try
+                {
+                    if constexpr (std::is_void_v<ReturnType>)
+                    {
+                        func();
+                        promise.set_value();
+                    }
+                    else
+                    {
+                        promise.set_value(func());
+                    }
+                }
+                catch (...)
+                {
+                    promise.set_exception(std::current_exception());
+                }
+
+                QueueCompletion(desc.continuation, desc.completionDispatch);
                 return promise.get_future();
             }
 
-            return m_threadPool->Submit(std::forward<F>(func));
+            auto continuation = desc.continuation;
+            const JobCompletionDispatch completionDispatch = desc.completionDispatch;
+
+            return m_threadPool->Submit([this,
+                                         func = std::forward<F>(func),
+                                         continuation = std::move(continuation),
+                                         completionDispatch]() mutable -> ReturnType {
+                try
+                {
+                    if constexpr (std::is_void_v<ReturnType>)
+                    {
+                        func();
+                        QueueCompletion(std::move(continuation), completionDispatch);
+                    }
+                    else
+                    {
+                        ReturnType result = func();
+                        QueueCompletion(std::move(continuation), completionDispatch);
+                        return result;
+                    }
+                }
+                catch (...)
+                {
+                    QueueCompletion(std::move(continuation), completionDispatch);
+                    throw;
+                }
+            }, desc.priority);
         }
 
         /**
@@ -187,11 +335,11 @@ namespace RVX
             }
 
             std::vector<std::future<void>> futures;
-            
+
             for (size_t batchStart = start; batchStart < end; batchStart += batchSize)
             {
                 size_t batchEnd = std::min(batchStart + batchSize, end);
-                
+
                 futures.push_back(m_threadPool->Submit([&func, batchStart, batchEnd]() {
                     for (size_t i = batchStart; i < batchEnd; ++i)
                     {
@@ -229,6 +377,22 @@ namespace RVX
         }
 
         /**
+         * @brief Queue a callback for the next main-thread completion dispatch point.
+         */
+        void DispatchToMainThread(std::function<void()> callback);
+
+        /**
+         * @brief Run queued main-thread completions.
+         * @return Number of callbacks dispatched.
+         */
+        size_t ProcessMainThreadCompletions(size_t maxCallbacks = std::numeric_limits<size_t>::max());
+
+        /**
+         * @brief Get queued main-thread completion count.
+         */
+        size_t GetPendingMainThreadCompletionCount() const;
+
+        /**
          * @brief Get the number of worker threads
          */
         size_t GetWorkerCount() const
@@ -243,7 +407,12 @@ namespace RVX
         JobSystem(const JobSystem&) = delete;
         JobSystem& operator=(const JobSystem&) = delete;
 
+        void QueueCompletion(std::function<void()> continuation, JobCompletionDispatch dispatch);
+        void RunCompletion(std::function<void()> continuation);
+
         std::unique_ptr<ThreadPool> m_threadPool;
+        mutable std::mutex m_mainThreadCompletionMutex;
+        std::queue<std::function<void()>> m_mainThreadCompletions;
     };
 
 } // namespace RVX

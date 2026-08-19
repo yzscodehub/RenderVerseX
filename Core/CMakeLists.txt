@@ -9,6 +9,19 @@ target_sources(RVX_Core PRIVATE
     Private/Log.cpp
     Private/PathUtils.cpp
     Private/SystemManager.cpp
+
+    # Content identity
+    Private/Hash/SHA256.cpp
+
+    # Diagnostics
+    Private/Diagnostics/ArtifactMetadata.cpp
+    Private/Diagnostics/ContentHash.cpp
+    Private/Diagnostics/JsonWriter.cpp
+    Private/Diagnostics/PortablePath.cpp
+    Private/Diagnostics/Trace.cpp
+
+    # Camera contracts
+    Private/Camera/Camera.cpp
     
     # Event System
     Private/Event/EventBus.cpp

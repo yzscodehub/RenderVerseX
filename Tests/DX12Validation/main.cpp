@@ -1,16 +1,38 @@
 #include "Common/GpuTestUtils.h"
+#include "Common/RenderGraphValidationAccess.h"
 #include "Core/Core.h"
+#include "DX12CommandContext.h"
+#include "DX12DescriptorHeap.h"
+#include "DX12Device.h"
+#include "DX12IndirectExecution.h"
+#include "DX12Pipeline.h"
 #include "DX12Resources.h"
+#include "DX12SwapChain.h"
+#include "GPUScene/GPUSceneDatabase.h"
+#include "GPUScene/GPUSceneUploader.h"
+#include "Render/Context/RenderContext.h"
+#include "Render/GPUUploadService.h"
+#include "Render/Graph/RenderGraph.h"
 #include "Render/PipelineCache.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
+#include "Render/Submission/RasterInstanceStream.h"
+#include "Resources/RenderRetirementQueue.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "RHI/RHI.h"
+#include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 using namespace RVX;
@@ -19,6 +41,25 @@ namespace
 {
     namespace RTShadowBindings = RayTracingResourceBindings::Shadow;
     namespace RTReflectionBindings = RayTracingResourceBindings::Reflection;
+
+    class IndirectValidationBuffer final : public RHIBuffer
+    {
+    public:
+        explicit IndirectValidationBuffer(RHIBufferDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        uint64 GetSize() const override { return m_desc.size; }
+        RHIBufferUsage GetUsage() const override { return m_desc.usage; }
+        RHIMemoryType GetMemoryType() const override { return m_desc.memoryType; }
+        uint32 GetStride() const override { return m_desc.stride; }
+        void* Map() override { return nullptr; }
+        void Unmap() override {}
+
+    private:
+        RHIBufferDesc m_desc;
+    };
 
     std::filesystem::path FindRenderShaderDirectory()
     {
@@ -254,6 +295,580 @@ namespace
                                           static_cast<uint64>(uploadBytes.size()),
                                           debugName);
     }
+
+    RHIShaderRef CompileInlineDX12GraphicsShader(IRHIDevice& device,
+                                                   RHIShaderStage stage,
+                                                   const char* entryPoint,
+                                                   const char* source,
+                                                   const char* targetProfile,
+                                                   const char* debugName)
+    {
+        std::unique_ptr<IShaderCompiler> compiler = CreateShaderCompiler();
+        if (!compiler)
+        {
+            ADD_FAILURE() << "Shader compiler is unavailable for " << debugName;
+            return {};
+        }
+
+        ShaderCompileOptions options;
+        options.stage = stage;
+        options.entryPoint = entryPoint;
+        options.sourceCode = source;
+        options.sourcePath = debugName;
+        options.targetProfile = targetProfile;
+        options.targetBackend = RHIBackendType::DX12;
+        options.enableDebugInfo = true;
+
+        ShaderCompileResult compiled = compiler->Compile(options);
+        if (!compiled.success)
+        {
+            ADD_FAILURE() << "Failed to compile " << debugName << ": "
+                          << compiled.errorMessage;
+            return {};
+        }
+
+        RHIShaderDesc shaderDesc;
+        shaderDesc.stage = stage;
+        shaderDesc.bytecode = compiled.bytecode.data();
+        shaderDesc.bytecodeSize = static_cast<uint64>(compiled.bytecode.size());
+        shaderDesc.entryPoint = entryPoint;
+        shaderDesc.debugName = debugName;
+        return device.CreateShader(shaderDesc);
+    }
+
+    bool ClearDX12InfoQueue(DX12Device& device, const char* gateName)
+    {
+        ComPtr<ID3D12InfoQueue> infoQueue;
+        if (FAILED(device.GetD3DDevice()->QueryInterface(IID_PPV_ARGS(&infoQueue))) ||
+            !infoQueue)
+        {
+            ADD_FAILURE() << gateName << " requires the DX12 InfoQueue";
+            return false;
+        }
+        infoQueue->ClearStoredMessages();
+        return true;
+    }
+
+    bool VerifyDX12InfoQueueClean(DX12Device& device, const char* gateName)
+    {
+        ComPtr<ID3D12InfoQueue> infoQueue;
+        if (FAILED(device.GetD3DDevice()->QueryInterface(IID_PPV_ARGS(&infoQueue))) ||
+            !infoQueue)
+        {
+            ADD_FAILURE() << gateName << " requires the DX12 InfoQueue";
+            return false;
+        }
+
+        uint64 errorCount = 0;
+        uint64 corruptionCount = 0;
+        const UINT64 messageCount = infoQueue->GetNumStoredMessages();
+        for (UINT64 index = 0; index < messageCount; ++index)
+        {
+            SIZE_T messageSize = 0;
+            if (FAILED(infoQueue->GetMessage(index, nullptr, &messageSize)) ||
+                messageSize == 0)
+            {
+                continue;
+            }
+            std::vector<uint8> bytes(messageSize);
+            auto* message = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
+            if (FAILED(infoQueue->GetMessage(index, message, &messageSize)))
+            {
+                continue;
+            }
+            errorCount += message->Severity == D3D12_MESSAGE_SEVERITY_ERROR;
+            corruptionCount += message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION;
+        }
+        infoQueue->ClearStoredMessages();
+        if (errorCount != 0 || corruptionCount != 0)
+        {
+            ADD_FAILURE() << gateName << " emitted DX12 InfoQueue errors=" << errorCount
+                          << " corruption=" << corruptionCount;
+            return false;
+        }
+        return true;
+    }
+
+    GPUSceneObjectData MakeGPUSceneLeaseObject(uint64 objectId, float32 marker)
+    {
+        GPUSceneObjectData object;
+        object.objectId = objectId;
+        object.bounds.minimum = {marker, 0.0F, 0.0F, 0.0F};
+        object.bounds.maximum = {marker + 1.0F, 1.0F, 1.0F, 0.0F};
+        object.draws.resize(1);
+        object.draws[0].draw.indexCount = 3;
+        object.draws[0].draw.instanceCount = 1;
+        object.draws[0].geometry.indexCount = 3;
+        return object;
+    }
+
+    struct GPUSceneLeaseReadPassData
+    {
+        std::array<RGBufferHandle, GPU_SCENE_RESIDENT_TABLE_COUNT> handles;
+        RGBufferHandle completionBridge;
+    };
+
+    struct GPUSceneLeaseTerminalPassData
+    {
+        RGBufferHandle completionBridge;
+    };
+
+    bool SubmitGPUSceneUpload(GPUSceneUploader& uploader,
+                              IRHIDevice& device,
+                              RenderSubmissionTracker& tracker,
+                              RenderRetirementQueue& retirement,
+                              GPUCompletionToken& outToken)
+    {
+        outToken = {};
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+        RenderSubmissionResourceBatch batch;
+        const auto releaseUnsubmitted = [&uploader, &batch, &retirement]()
+        {
+            uploader.ReleaseUnsubmittedFrame();
+            batch.ReleaseUnsubmitted(retirement);
+        };
+        uploader.BuildRenderGraph(graph, &batch);
+
+        RenderGraphCompileOptions compileOptions;
+        compileOptions.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+        compileOptions.capabilities = device.GetCapabilities();
+        compileOptions.hasCapabilitySnapshot = true;
+        RenderGraphValidationAccess::Compile(graph, compileOptions);
+        if (!graph.GetCompileStats().compileValid)
+        {
+            releaseUnsubmitted();
+            return false;
+        }
+
+        RenderGraph::RecordedQueueSubmission recorded;
+        if (!RenderGraphValidationAccess::RecordQueueSubmission(graph, recorded))
+        {
+            releaseUnsubmitted();
+            return false;
+        }
+        uploader.CommitRealizedAccess(graph);
+
+        const GPUCompletionPoint point = tracker.Submit(recorded.plan);
+        if (point.value == 0 || !InsertGPUCompletionPoint(outToken, point))
+        {
+            releaseUnsubmitted();
+            return false;
+        }
+        if (!uploader.NotifySubmission(outToken))
+        {
+            return false;
+        }
+        batch.SealAndTransfer(outToken, retirement);
+        return uploader.GetDiagnostics().failureReason ==
+            GPUSceneUploadFailureReason::None;
+    }
+
+    std::optional<GPUSceneResidentGraphLease> SubmitGPUSceneLeaseRead(
+        GPUSceneUploader& uploader,
+        IRHIDevice& device,
+        RenderSubmissionTracker& tracker,
+        RenderRetirementQueue& retirement,
+        uint64 requiredVersion,
+        GPUCompletionToken& outToken)
+    {
+        outToken = {};
+        RenderGraph graph;
+        RenderGraphValidationAccess::SetDevice(graph, &device);
+        RenderSubmissionResourceBatch batch;
+        std::optional<GPUSceneResidentGraphLease> lease =
+            uploader.AcquireCurrentGraphLease(graph, &batch, requiredVersion);
+        const auto releaseUnsubmitted = [&uploader, &batch, &retirement]()
+        {
+            uploader.ReleaseUnsubmittedFrame();
+            batch.ReleaseUnsubmitted(retirement);
+        };
+        if (!lease)
+        {
+            releaseUnsubmitted();
+            return std::nullopt;
+        }
+
+        RHIBufferDesc completionBridgeDesc;
+        completionBridgeDesc.size = sizeof(uint32);
+        completionBridgeDesc.usage = RHIBufferUsage::Structured |
+                                    RHIBufferUsage::UnorderedAccess;
+        completionBridgeDesc.memoryType = RHIMemoryType::Default;
+        completionBridgeDesc.stride = sizeof(uint32);
+        completionBridgeDesc.debugName = "GPUSceneLeaseCompletionBridge";
+        RHIBufferRef completionBridge = device.CreateBuffer(completionBridgeDesc);
+        if (!completionBridge ||
+            !batch.Retain(completionBridge, completionBridge->GetSize()))
+        {
+            releaseUnsubmitted();
+            return std::nullopt;
+        }
+        const RGBufferHandle completionBridgeHandle = graph.ImportBuffer(
+            std::move(completionBridge),
+            MakeRHIBufferAccessSnapshot(RHIResourceState::Common,
+                                        RHIShaderStage::None,
+                                        GPUQueueDomain::Compute,
+                                        RHIContentValidity::Valid));
+        if (!completionBridgeHandle.IsValid())
+        {
+            releaseUnsubmitted();
+            return std::nullopt;
+        }
+
+        const auto addReader = [&graph, &lease, completionBridgeHandle](const char* name)
+        {
+            graph.AddPass<GPUSceneLeaseReadPassData>(
+                name,
+                RenderGraphPassType::Compute,
+                [lease, completionBridgeHandle](RenderGraphBuilder& builder,
+                                                GPUSceneLeaseReadPassData& data)
+                {
+                    for (uint32 tableIndex = 0;
+                         tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+                         ++tableIndex)
+                    {
+                        data.handles[tableIndex] = builder.Read(
+                            lease->handles[tableIndex],
+                            MakeRHIAccessSnapshot(RHIResourceState::ShaderResource,
+                                                  RHIShaderStage::Compute));
+                    }
+                    data.completionBridge = builder.Write(
+                        completionBridgeHandle,
+                        MakeRHIAccessSnapshot(RHIResourceState::UnorderedAccess,
+                                              RHIShaderStage::Compute));
+                },
+                [](const GPUSceneLeaseReadPassData&, RHICommandContext&) {});
+        };
+        // One frozen lease is deliberately shared by two independent consumers,
+        // mirroring the Depth/Opaque multi-reader contract.
+        addReader("GPUSceneLeaseRead.Depth");
+        addReader("GPUSceneLeaseRead.Opaque");
+        // A production frame ends at a Graphics gateway that joins prior
+        // queue work. Make that ownership boundary explicit so its exact
+        // Graphics token covers both lease readers.
+        graph.AddPass<GPUSceneLeaseTerminalPassData>(
+            "GPUSceneLeaseRead.TerminalGraphicsGateway",
+            RenderGraphPassType::Graphics,
+            [completionBridgeHandle](RenderGraphBuilder& builder,
+                                     GPUSceneLeaseTerminalPassData& data)
+            {
+                data.completionBridge = builder.ReadWrite(
+                    completionBridgeHandle,
+                    MakeRHIAccessSnapshot(RHIResourceState::UnorderedAccess,
+                                          RHIShaderStage::AllGraphics));
+            },
+            [](const GPUSceneLeaseTerminalPassData&, RHICommandContext&) {});
+        RenderGraphCompileOptions compileOptions;
+        compileOptions.queuePolicy = RGQueuePolicy::PreferMultiQueue;
+        compileOptions.capabilities = device.GetCapabilities();
+        compileOptions.hasCapabilitySnapshot = true;
+        RenderGraphValidationAccess::Compile(graph, compileOptions);
+        if (!graph.GetCompileStats().compileValid)
+        {
+            releaseUnsubmitted();
+            return std::nullopt;
+        }
+
+        RenderGraph::RecordedQueueSubmission recorded;
+        if (!RenderGraphValidationAccess::RecordQueueSubmission(graph, recorded))
+        {
+            releaseUnsubmitted();
+            return std::nullopt;
+        }
+        uploader.CommitRealizedAccess(graph);
+
+        const GPUCompletionPoint point = tracker.Submit(recorded.plan);
+        if (point.value == 0 || !InsertGPUCompletionPoint(outToken, point))
+        {
+            releaseUnsubmitted();
+            return std::nullopt;
+        }
+        if (!uploader.NotifySubmission(outToken))
+        {
+            return std::nullopt;
+        }
+        batch.SealAndTransfer(outToken, retirement);
+        if (uploader.GetDiagnostics().failureReason !=
+            GPUSceneUploadFailureReason::None)
+        {
+            return std::nullopt;
+        }
+        return lease;
+    }
+
+    constexpr uint32 kNativeIndirectWidth = 96;
+    constexpr uint32 kNativeIndirectHeight = 32;
+    constexpr uint32 kNativeIndirectRowPitch = 512;
+
+    struct NativeIndexedIndirectReadback
+    {
+        std::vector<uint8> pixels;
+        bool completed = false;
+    };
+
+    NativeIndexedIndirectReadback ExecuteNativeIndexedIndirectScenario(
+        uint32 drawCount,
+        uint32 maxDrawCount,
+        const char* debugName)
+    {
+        NativeIndexedIndirectReadback result;
+
+        RHIDeviceDesc deviceDesc;
+        deviceDesc.enableDebugLayer = true;
+        auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+        if (!device || device->GetBackendType() != RHIBackendType::DX12)
+        {
+            ADD_FAILURE() << debugName << " failed to realize a DX12 device";
+            return result;
+        }
+
+        auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+        if (!dx12Device || !dx12Device->GetD3DDevice() ||
+            !ClearDX12InfoQueue(*dx12Device, debugName))
+        {
+            return result;
+        }
+
+        constexpr const char* kVertexShaderSource = R"(
+            struct Output { float4 position : SV_Position; };
+            Output VSMain(uint drawIndex : DRAWID,
+                          uint vertexId : SV_VertexID)
+            {
+                float2 vertexPosition = vertexId == 0
+                    ? float2(-0.18, -0.42)
+                    : (vertexId == 1
+                        ? float2(0.18, -0.42)
+                        : float2(0.00, 0.42));
+                Output output;
+                const float xOffset = -0.6666667 + 0.6666667 * drawIndex;
+                output.position = float4(vertexPosition + float2(xOffset, 0.0),
+                                         0.0,
+                                         1.0);
+                return output;
+            }
+        )";
+        constexpr const char* kPixelShaderSource = R"(
+            float4 PSMain() : SV_Target0 { return float4(1.0, 0.0, 0.0, 1.0); }
+        )";
+
+        RHIShaderRef vertexShader = CompileInlineDX12GraphicsShader(
+            *device, RHIShaderStage::Vertex, "VSMain", kVertexShaderSource,
+            "vs_6_0", "NativeIndexedIndirectVS");
+        RHIShaderRef pixelShader = CompileInlineDX12GraphicsShader(
+            *device, RHIShaderStage::Pixel, "PSMain", kPixelShaderSource,
+            "ps_6_0", "NativeIndexedIndirectPS");
+        if (!vertexShader || !pixelShader)
+        {
+            return result;
+        }
+
+        RHIPipelineLayoutDesc layoutDesc;
+        layoutDesc.debugName = "NativeIndexedIndirectLayout";
+        RHIPipelineLayoutRef pipelineLayout = device->CreatePipelineLayout(layoutDesc);
+        RHIGraphicsPipelineDesc pipelineDesc;
+        pipelineDesc.vertexShader = vertexShader.Get();
+        pipelineDesc.pixelShader = pixelShader.Get();
+        pipelineDesc.pipelineLayout = pipelineLayout.Get();
+        pipelineDesc.inputLayout.AddElement("DRAWID", RHIFormat::R32_UINT, 0);
+        pipelineDesc.inputLayout.elements.back().perInstance = true;
+        pipelineDesc.inputLayout.elements.back().instanceDataStepRate = 1;
+        pipelineDesc.rasterizerState = RHIRasterizerState::NoCull();
+        pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+        pipelineDesc.numRenderTargets = 1;
+        pipelineDesc.renderTargetFormats[0] = RHIFormat::RGBA8_UNORM;
+        pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+        pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+        pipelineDesc.debugName = "NativeIndexedIndirectPipeline";
+        RHIPipelineRef pipeline = pipelineLayout
+            ? device->CreateGraphicsPipeline(pipelineDesc)
+            : RHIPipelineRef{};
+        if (!pipeline)
+        {
+            ADD_FAILURE() << debugName << " failed to create the graphics pipeline";
+            return result;
+        }
+
+        const std::array<uint32, 3> indices{0u, 1u, 2u};
+        RHIBufferRef indexBuffer = CreateUploadBufferWithData(
+            *device, sizeof(indices), RHIBufferUsage::Index, sizeof(uint32),
+            indices.data(), sizeof(indices), "NativeIndexedIndirectIndices");
+        const std::array<uint32, 3> drawIndices{0u, 1u, 2u};
+        RHIBufferRef drawIndexBuffer = CreateUploadBufferWithData(
+            *device, sizeof(drawIndices), RHIBufferUsage::Vertex, sizeof(uint32),
+            drawIndices.data(), sizeof(drawIndices),
+            "NativeIndexedIndirectDrawIndices");
+        const std::array<IndirectDrawIndexedCommand, 3> commands
+        {{
+            {3u, 1u, 0u, 0, 0u},
+            {3u, 1u, 0u, 0, 1u},
+            {3u, 1u, 0u, 0, 2u},
+        }};
+        RHIBufferRef argumentUpload = CreateUploadBufferWithData(
+            *device, sizeof(commands), RHIBufferUsage::CopySrc,
+            sizeof(IndirectDrawIndexedCommand), commands.data(), sizeof(commands),
+            "NativeIndexedIndirectArgumentUpload");
+        RHIBufferDesc argumentDesc;
+        argumentDesc.size = sizeof(commands);
+        argumentDesc.usage = RHIBufferUsage::IndirectArgs | RHIBufferUsage::CopyDst;
+        argumentDesc.memoryType = RHIMemoryType::Default;
+        argumentDesc.stride = sizeof(IndirectDrawIndexedCommand);
+        argumentDesc.debugName = "NativeIndexedIndirectArguments";
+        RHIBufferRef argumentBuffer = device->CreateBuffer(argumentDesc);
+
+        RHIBufferRef countUpload = CreateUploadBufferWithData(
+            *device, sizeof(drawCount), RHIBufferUsage::CopySrc, sizeof(uint32),
+            &drawCount, sizeof(drawCount), "NativeIndexedIndirectCountUpload");
+        RHIBufferDesc countDesc;
+        countDesc.size = sizeof(uint32);
+        countDesc.usage = RHIBufferUsage::IndirectArgs | RHIBufferUsage::CopyDst;
+        countDesc.memoryType = RHIMemoryType::Default;
+        countDesc.stride = sizeof(uint32);
+        countDesc.debugName = "NativeIndexedIndirectCount";
+        RHIBufferRef countBuffer = device->CreateBuffer(countDesc);
+
+        RHITextureDesc renderTargetDesc = RHITextureDesc::Texture2D(
+            kNativeIndirectWidth, kNativeIndirectHeight, RHIFormat::RGBA8_UNORM,
+            RHITextureUsage::RenderTarget | RHITextureUsage::CopySrc);
+        renderTargetDesc.debugName = "NativeIndexedIndirectRenderTarget";
+        RHITextureRef renderTarget = device->CreateTexture(renderTargetDesc);
+        RHITextureViewRef renderTargetView = CreateTestTextureView(
+            *device, renderTarget.Get(), RHITextureViewType::RenderTarget,
+            RHIFormat::RGBA8_UNORM, "NativeIndexedIndirectRTV");
+
+        RHIBufferDesc readbackDesc;
+        readbackDesc.size = static_cast<uint64>(kNativeIndirectRowPitch) *
+                            kNativeIndirectHeight;
+        readbackDesc.usage = RHIBufferUsage::CopyDst;
+        readbackDesc.memoryType = RHIMemoryType::Readback;
+        readbackDesc.debugName = "NativeIndexedIndirectReadback";
+        RHIBufferRef readbackBuffer = device->CreateBuffer(readbackDesc);
+        if (!indexBuffer || !drawIndexBuffer || !argumentUpload ||
+            !argumentBuffer || !countUpload || !countBuffer || !renderTarget ||
+            !renderTargetView || !readbackBuffer)
+        {
+            ADD_FAILURE() << debugName << " failed to create native indirect resources";
+            return result;
+        }
+
+        RHICommandContextRef context = device->CreateCommandContext(
+            RHICommandQueueType::Graphics);
+        RHIFenceRef fence = device->CreateFence(0);
+        if (!context || !fence)
+        {
+            ADD_FAILURE() << debugName << " failed to create context or fence";
+            return result;
+        }
+
+        context->Begin();
+        context->BufferBarrier(argumentBuffer.Get(), RHIResourceState::Common,
+                               RHIResourceState::CopyDest);
+        context->BufferBarrier(countBuffer.Get(), RHIResourceState::Common,
+                               RHIResourceState::CopyDest);
+        context->CopyBuffer(argumentUpload.Get(), argumentBuffer.Get(), 0, 0,
+                            sizeof(commands));
+        context->CopyBuffer(countUpload.Get(), countBuffer.Get(), 0, 0,
+                            sizeof(drawCount));
+        context->BufferBarrier(argumentBuffer.Get(), RHIResourceState::CopyDest,
+                               RHIResourceState::IndirectArgument);
+        context->BufferBarrier(countBuffer.Get(), RHIResourceState::CopyDest,
+                               RHIResourceState::IndirectArgument);
+        context->TextureBarrier(renderTarget.Get(), RHIResourceState::Common,
+                                RHIResourceState::RenderTarget);
+
+        RHIRenderPassDesc renderPass;
+        renderPass.AddColorAttachment(renderTargetView.Get(), RHILoadOp::Clear,
+                                      RHIStoreOp::Store, {0.0f, 0.0f, 0.0f, 1.0f});
+        context->BeginRenderPass(renderPass);
+        context->SetViewport({0.0f, 0.0f,
+                              static_cast<float>(kNativeIndirectWidth),
+                              static_cast<float>(kNativeIndirectHeight),
+                              0.0f, 1.0f});
+        context->SetScissor({0, 0, kNativeIndirectWidth, kNativeIndirectHeight});
+        context->SetPipeline(pipeline.Get());
+        context->SetVertexBuffer(0, drawIndexBuffer.Get());
+        context->SetIndexBuffer(indexBuffer.Get(), RHIFormat::R32_UINT);
+        context->DrawIndexedIndirectCount(argumentBuffer.Get(), 0, countBuffer.Get(),
+                                          0, maxDrawCount,
+                                          sizeof(IndirectDrawIndexedCommand));
+        context->EndRenderPass();
+        context->TextureBarrier(renderTarget.Get(), RHIResourceState::RenderTarget,
+                                RHIResourceState::CopySource);
+        RHIBufferTextureCopyDesc readbackCopy;
+        readbackCopy.bufferRowPitch = kNativeIndirectRowPitch;
+        readbackCopy.textureRegion = {0, 0, kNativeIndirectWidth, kNativeIndirectHeight};
+        context->CopyTextureToBuffer(renderTarget.Get(), readbackBuffer.Get(), readbackCopy);
+        context->End();
+
+        const uint64 submittedValue = device->SubmitCommandContext(context.Get(), fence.Get());
+        if (submittedValue == 0)
+        {
+            ADD_FAILURE() << debugName << " failed to submit native indirect work";
+            return result;
+        }
+        device->WaitForFence(fence.Get(), submittedValue);
+        if (fence->GetCompletedValue() < submittedValue)
+        {
+            ADD_FAILURE() << debugName << " did not complete its native indirect fence";
+            return result;
+        }
+
+        void* mappedReadback = readbackBuffer->Map();
+        if (!mappedReadback)
+        {
+            ADD_FAILURE() << debugName << " failed to map the native indirect readback";
+            return result;
+        }
+        result.pixels.resize(static_cast<size_t>(readbackDesc.size));
+        std::memcpy(result.pixels.data(), mappedReadback, result.pixels.size());
+        readbackBuffer->Unmap();
+
+        device->WaitIdle();
+        result.completed = VerifyDX12InfoQueueClean(*dx12Device, debugName);
+        return result;
+    }
+
+    bool IsNativeIndirectRegionRed(const NativeIndexedIndirectReadback& result,
+                                   uint32 x,
+                                   uint32 y)
+    {
+        if (result.pixels.size() <
+            static_cast<size_t>(kNativeIndirectRowPitch) * kNativeIndirectHeight ||
+            x >= kNativeIndirectWidth || y >= kNativeIndirectHeight)
+        {
+            return false;
+        }
+        const uint8* pixel = result.pixels.data() +
+            static_cast<size_t>(y) * kNativeIndirectRowPitch +
+            static_cast<size_t>(x) * 4u;
+        return pixel[0] > 200u && pixel[1] < 32u && pixel[2] < 32u;
+    }
+
+    class NativeBufferRetirementProbe final : public RefCounted
+    {
+    public:
+        struct State
+        {
+            std::atomic_bool destroyed{false};
+            std::atomic_bool releasedNativeBuffer{false};
+        };
+
+        NativeBufferRetirementProbe(RHIBufferRef buffer, std::shared_ptr<State> state)
+            : m_buffer(std::move(buffer))
+            , m_state(std::move(state))
+        {
+        }
+
+        ~NativeBufferRetirementProbe() override
+        {
+            m_state->releasedNativeBuffer.store(m_buffer != nullptr,
+                                                std::memory_order_release);
+            m_state->destroyed.store(true, std::memory_order_release);
+        }
+
+    private:
+        RHIBufferRef m_buffer;
+        std::shared_ptr<State> m_state;
+    };
 } // namespace
 
 // =============================================================================
@@ -270,6 +885,189 @@ TEST(DX12Validation, DeviceCreation)
     EXPECT_EQ(device->GetBackendType(), RHIBackendType::DX12);
 }
 
+TEST(DX12Validation, SwapChainTearingFlagsAreCreationAndPresentCoherent)
+{
+    const UINT vsyncCreation =
+        DX12SwapChain::ResolveCreationFlags(true, true);
+    const UINT vsyncPresent =
+        DX12SwapChain::ResolvePresentFlags(true, true);
+    EXPECT_EQ(vsyncCreation & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, 0U);
+    EXPECT_EQ(vsyncPresent & DXGI_PRESENT_ALLOW_TEARING, 0U);
+
+    const UINT unsupportedCreation =
+        DX12SwapChain::ResolveCreationFlags(false, false);
+    const UINT unsupportedPresent =
+        DX12SwapChain::ResolvePresentFlags(false, false);
+    EXPECT_EQ(unsupportedCreation & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, 0U);
+    EXPECT_EQ(unsupportedPresent & DXGI_PRESENT_ALLOW_TEARING, 0U);
+
+    const UINT tearingCreation =
+        DX12SwapChain::ResolveCreationFlags(false, true);
+    const UINT tearingPresent =
+        DX12SwapChain::ResolvePresentFlags(false, true);
+    EXPECT_NE(tearingCreation & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, 0U);
+    EXPECT_NE(tearingPresent & DXGI_PRESENT_ALLOW_TEARING, 0U);
+}
+
+TEST(DX12Validation, DriverIdentityMatchesSelectedAdapter)
+{
+    RHIDeviceDesc desc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, desc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+    IDXGIAdapter4* adapter = dx12Device->GetDXGIAdapter();
+    ASSERT_NE(adapter, nullptr);
+
+    LARGE_INTEGER nativeDriverVersion = {};
+    ASSERT_TRUE(SUCCEEDED(adapter->CheckInterfaceSupport(
+        __uuidof(IDXGIDevice), &nativeDriverVersion)));
+    ASSERT_NE(nativeDriverVersion.QuadPart, 0);
+
+    const uint32 highPart = static_cast<uint32>(nativeDriverVersion.HighPart);
+    const uint32 lowPart = nativeDriverVersion.LowPart;
+    const std::string expectedVersion =
+        std::to_string((highPart >> 16U) & 0xFFFFU) + "." +
+        std::to_string(highPart & 0xFFFFU) + "." +
+        std::to_string((lowPart >> 16U) & 0xFFFFU) + "." +
+        std::to_string(lowPart & 0xFFFFU);
+    const std::string& reportedVersion =
+        device->GetCapabilities().driverVersion;
+    EXPECT_FALSE(reportedVersion.empty());
+    EXPECT_EQ(reportedVersion, expectedVersion);
+}
+
+TEST(DX12Validation, CapabilitiesReflectNativeFeatureQueriesAndCreatePipelineLayout)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+
+    const RHICapabilities& capabilities = device->GetCapabilities();
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS nativeOptions = {};
+    const HRESULT optionsResult = dx12Device->GetD3DDevice()->CheckFeatureSupport(
+        D3D12_FEATURE_D3D12_OPTIONS, &nativeOptions, sizeof(nativeOptions));
+    ASSERT_TRUE(SUCCEEDED(optionsResult));
+
+    const uint32 nativeBindingTier = static_cast<uint32>(nativeOptions.ResourceBindingTier);
+    EXPECT_GE(nativeBindingTier, static_cast<uint32>(D3D12_RESOURCE_BINDING_TIER_1));
+    EXPECT_LE(nativeBindingTier, static_cast<uint32>(D3D12_RESOURCE_BINDING_TIER_3));
+    EXPECT_EQ(capabilities.dx12.resourceBindingTier, nativeBindingTier);
+    EXPECT_EQ(capabilities.supportsBindless,
+              nativeOptions.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_2);
+
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE nativeRootSignature = {};
+    nativeRootSignature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    const HRESULT rootSignatureResult = dx12Device->GetD3DDevice()->CheckFeatureSupport(
+        D3D12_FEATURE_ROOT_SIGNATURE, &nativeRootSignature, sizeof(nativeRootSignature));
+    if (SUCCEEDED(rootSignatureResult))
+    {
+        EXPECT_EQ(capabilities.dx12.supportsRootSignature1_1,
+                  nativeRootSignature.HighestVersion >= D3D_ROOT_SIGNATURE_VERSION_1_1);
+    }
+    else
+    {
+        EXPECT_FALSE(capabilities.dx12.supportsRootSignature1_1);
+    }
+
+    D3D12_FEATURE_DATA_SHADER_MODEL nativeShaderModel = { D3D_SHADER_MODEL_6_6 };
+    HRESULT shaderModelResult = dx12Device->GetD3DDevice()->CheckFeatureSupport(
+        D3D12_FEATURE_SHADER_MODEL, &nativeShaderModel, sizeof(nativeShaderModel));
+    if (shaderModelResult == E_INVALIDARG)
+    {
+        nativeShaderModel = { D3D_SHADER_MODEL_6_0 };
+        shaderModelResult = dx12Device->GetD3DDevice()->CheckFeatureSupport(
+            D3D12_FEATURE_SHADER_MODEL, &nativeShaderModel, sizeof(nativeShaderModel));
+    }
+
+    if (SUCCEEDED(shaderModelResult))
+    {
+        EXPECT_EQ(capabilities.dx12.supportsSM6_0,
+                  nativeShaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_0);
+        EXPECT_EQ(capabilities.dx12.supportsSM6_6,
+                  nativeShaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_6);
+    }
+    else
+    {
+        EXPECT_FALSE(capabilities.dx12.supportsSM6_0);
+        EXPECT_FALSE(capabilities.dx12.supportsSM6_6);
+    }
+    EXPECT_FALSE(capabilities.dx12.supportsSM6_6 && !capabilities.dx12.supportsSM6_0);
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS12 nativeOptions12 = {};
+    const HRESULT options12Result = dx12Device->GetD3DDevice()->CheckFeatureSupport(
+        D3D12_FEATURE_D3D12_OPTIONS12,
+        &nativeOptions12,
+        sizeof(nativeOptions12));
+    EXPECT_EQ(capabilities.dx12.supportsEnhancedBarriers,
+              SUCCEEDED(options12Result) && nativeOptions12.EnhancedBarriersSupported);
+    EXPECT_EQ(capabilities.dx12.barrierDialect,
+              capabilities.dx12.supportsEnhancedBarriers
+                  ? DX12BarrierDialect::Enhanced
+                  : DX12BarrierDialect::Legacy);
+    EXPECT_EQ(capabilities.supportsBufferRangeBarriers,
+              capabilities.dx12.barrierDialect ==
+                  DX12BarrierDialect::Enhanced);
+
+    if (SUCCEEDED(shaderModelResult) &&
+        nativeShaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_0)
+    {
+        std::unique_ptr<IShaderCompiler> compiler = CreateShaderCompiler();
+        if (compiler)
+        {
+            ShaderCompileOptions shaderOptions;
+            shaderOptions.stage = RHIShaderStage::Vertex;
+            shaderOptions.entryPoint = "VSMain";
+            shaderOptions.sourceCode = "float4 VSMain() : SV_Position { return float4(0, 0, 0, 1); }";
+            shaderOptions.sourcePath = "CapabilityProbeSM6.hlsl";
+            shaderOptions.targetProfile = "vs_6_0";
+            shaderOptions.targetBackend = RHIBackendType::DX12;
+
+            if (compiler->QuerySupport(shaderOptions).IsSupported())
+            {
+                const ShaderCompileResult compiledShader = compiler->Compile(shaderOptions);
+                ASSERT_TRUE(compiledShader.success) << compiledShader.errorMessage;
+
+                RHIShaderDesc shaderDesc;
+                shaderDesc.stage = shaderOptions.stage;
+                shaderDesc.bytecode = compiledShader.bytecode.data();
+                shaderDesc.bytecodeSize = static_cast<uint64>(compiledShader.bytecode.size());
+                shaderDesc.entryPoint = shaderOptions.entryPoint;
+                shaderDesc.debugName = "CapabilityProbeSM6";
+                EXPECT_NE(device->CreateShader(shaderDesc).Get(), nullptr);
+                EXPECT_TRUE(capabilities.dx12.supportsSM6_0);
+            }
+        }
+    }
+
+    RHIDescriptorSetLayoutDesc setLayoutDesc;
+    setLayoutDesc.AddBinding(0, RHIBindingType::SampledTexture);
+    setLayoutDesc.AddBinding(1, RHIBindingType::StorageBuffer);
+    setLayoutDesc.AddBinding(2, RHIBindingType::Sampler);
+    setLayoutDesc.debugName = "CapabilityProbeRootSignatureSet";
+    RHIDescriptorSetLayoutRef setLayout = device->CreateDescriptorSetLayout(setLayoutDesc);
+    ASSERT_NE(setLayout.Get(), nullptr);
+
+    RHIPipelineLayoutDesc pipelineLayoutDesc;
+    pipelineLayoutDesc.setLayouts.push_back(setLayout.Get());
+    pipelineLayoutDesc.pushConstantSize = 16;
+    pipelineLayoutDesc.debugName = "CapabilityProbeRootSignatureLayout";
+    RHIPipelineLayoutRef pipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+    ASSERT_NE(pipelineLayout.Get(), nullptr);
+
+    auto* dx12PipelineLayout = dynamic_cast<DX12PipelineLayout*>(pipelineLayout.Get());
+    ASSERT_NE(dx12PipelineLayout, nullptr);
+    EXPECT_NE(dx12PipelineLayout->GetRootSignature(), nullptr);
+    EXPECT_NE(dx12PipelineLayout->GetSrvUavTableIndex(0), UINT32_MAX);
+    EXPECT_NE(dx12PipelineLayout->GetSamplerTableIndex(0), UINT32_MAX);
+    EXPECT_NE(dx12PipelineLayout->GetPushConstantRootIndex(), UINT32_MAX);
+}
+
 TEST(DX12Validation, BufferCreation)
 {
     RHIDeviceDesc deviceDesc;
@@ -279,7 +1077,7 @@ TEST(DX12Validation, BufferCreation)
     // Test Default buffer
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 1024;
-    bufferDesc.usage = RHIBufferUsage::Vertex;
+    bufferDesc.usage = RHIBufferUsage::Vertex | RHIBufferUsage::UnorderedAccess;
     bufferDesc.memoryType = RHIMemoryType::Default;
     bufferDesc.debugName = "TestVertexBuffer";
 
@@ -312,6 +1110,87 @@ TEST(DX12Validation, UploadBuffer)
     float testData[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     std::memcpy(mappedData, testData, sizeof(testData));
     buffer->Unmap();
+}
+
+TEST(DX12Validation, RangeMappedWriteReportsCoherentUploadAndStagingRanges)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 64;
+    bufferDesc.usage = RHIBufferUsage::CopySrc;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    bufferDesc.debugName = "DX12RangeMappedWrite";
+    RHIBufferRef buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(buffer.Get(), nullptr);
+
+    void* legacyAccess = buffer->Map();
+    ASSERT_NE(legacyAccess, nullptr);
+    EXPECT_FALSE(buffer->MapWriteRange(4, 4).IsValid());
+    EXPECT_TRUE(buffer->CommitMappedWrite());
+
+    EXPECT_FALSE(buffer->MapWriteRange(0, 0).IsValid());
+    EXPECT_FALSE(buffer->MapWriteRange(60, 8).IsValid());
+    auto access = buffer->MapWriteRange(12, 8);
+    ASSERT_TRUE(access.IsValid());
+    std::memset(access.GetData(), 0xA5, static_cast<size_t>(access.GetSize()));
+    EXPECT_FALSE(buffer->MapWriteRange(24, 4).IsValid());
+    EXPECT_EQ(buffer->Map(), nullptr);
+    buffer->Unmap();
+    EXPECT_FALSE(buffer->CommitMappedWrite());
+
+    const RHIHostWriteReceipt receipt =
+        buffer->CommitMappedWriteRange(std::move(access));
+    EXPECT_TRUE(receipt.IsPublished());
+    EXPECT_EQ(receipt.synchronization,
+              RHIHostWriteSynchronization::CoherentNoExplicitSync);
+    EXPECT_EQ(receipt.cpuWriteOffset, 12U);
+    EXPECT_EQ(receipt.cpuWriteSize, 8U);
+    EXPECT_FALSE(receipt.HasSynchronizedRange());
+    EXPECT_EQ(receipt.synchronizedSize, 0U);
+    EXPECT_FALSE(buffer->CommitMappedWriteRange(std::move(access)).IsPublished());
+
+    auto cancelledAccess = buffer->MapWriteRange(24, 4);
+    ASSERT_TRUE(cancelledAccess.IsValid());
+    EXPECT_TRUE(buffer->CancelMappedWriteRange(std::move(cancelledAccess)));
+    auto retryAccess = buffer->MapWriteRange(24, 4);
+    ASSERT_TRUE(retryAccess.IsValid());
+    EXPECT_TRUE(buffer->CommitMappedWriteRange(std::move(retryAccess)).IsPublished());
+
+    const std::array<uint32, 2> uploadData = {0x10203040U, 0x50607080U};
+    ASSERT_TRUE(buffer->Upload(uploadData.data(), uploadData.size(), 32));
+    const auto* mappedData = static_cast<const uint8*>(buffer->Map());
+    ASSERT_NE(mappedData, nullptr);
+    EXPECT_EQ(0, std::memcmp(mappedData + 32, uploadData.data(), sizeof(uploadData)));
+    buffer->Unmap();
+
+    RHIStagingBufferDesc stagingDesc;
+    stagingDesc.size = 64;
+    stagingDesc.debugName = "DX12RangeMappedStaging";
+    RHIStagingBufferRef staging = device->CreateStagingBuffer(stagingDesc);
+    ASSERT_NE(staging.Get(), nullptr);
+    void* legacyStagingAccess = staging->Map(0, 4);
+    ASSERT_NE(legacyStagingAccess, nullptr);
+    EXPECT_FALSE(staging->MapWriteRange(4, 4).IsValid());
+    EXPECT_TRUE(staging->CommitMappedWrite());
+    auto stagingAccess = staging->MapWriteRange(16, 12);
+    ASSERT_TRUE(stagingAccess.IsValid());
+    std::memset(stagingAccess.GetData(), 0x5A,
+                static_cast<size_t>(stagingAccess.GetSize()));
+    EXPECT_EQ(staging->Map(0, 4), nullptr);
+    staging->Unmap();
+    EXPECT_FALSE(staging->CommitMappedWrite());
+    const RHIHostWriteReceipt stagingReceipt =
+        staging->CommitMappedWriteRange(std::move(stagingAccess));
+    EXPECT_TRUE(stagingReceipt.IsPublished());
+    EXPECT_EQ(stagingReceipt.synchronization,
+              RHIHostWriteSynchronization::CoherentNoExplicitSync);
+    EXPECT_EQ(stagingReceipt.cpuWriteOffset, 16U);
+    EXPECT_EQ(stagingReceipt.cpuWriteSize, 12U);
+    EXPECT_FALSE(stagingReceipt.HasSynchronizedRange());
+    EXPECT_EQ(stagingReceipt.synchronizedSize, 0U);
 }
 
 TEST(DX12Validation, TextureCreation)
@@ -354,6 +1233,49 @@ TEST(DX12Validation, DepthStencilTexture)
     ASSERT_NE(nullptr, texture.Get());
     EXPECT_TRUE(HasFlag(texture->GetUsage(), RHITextureUsage::DepthStencil));
     EXPECT_EQ(texture->GetFormat(), RHIFormat::D24_UNORM_S8_UINT);
+}
+
+TEST(DX12Validation, OptionalOptimizedClearUsesExactColorAndReverseDepthValues)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    RHITextureDesc absentDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    absentDesc.debugName = "OptimizedClearAbsent";
+    RHITextureRef absent = device->CreateTexture(absentDesc);
+    ASSERT_NE(absent.Get(), nullptr);
+    EXPECT_EQ(static_cast<DX12Texture*>(absent.Get())
+                  ->GetDesc()
+                  .optimizedClearValue.type,
+              RHIOptimizedClearValueType::None);
+
+    const RHIClearColor sceneClear = {0.1f, 0.1f, 0.15f, 1.0f};
+    RHITextureDesc colorDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    colorDesc.SetOptimizedClearColor(sceneClear);
+    colorDesc.debugName = "OptimizedClearColor";
+    RHITextureRef color = device->CreateTexture(colorDesc);
+    ASSERT_NE(color.Get(), nullptr);
+    EXPECT_TRUE(AreRHIClearColorsEqual(
+        static_cast<DX12Texture*>(color.Get())
+            ->GetDesc()
+            .optimizedClearValue.color,
+        sceneClear));
+
+    const RHIClearDepthStencil reverseZClear = {0.0f, 0};
+    RHITextureDesc depthDesc = RHITextureDesc::DepthStencil(
+        64, 64, RHIFormat::D32_FLOAT);
+    depthDesc.SetOptimizedClearDepthStencil(reverseZClear);
+    depthDesc.debugName = "OptimizedClearReverseZDepth";
+    RHITextureRef depth = device->CreateTexture(depthDesc);
+    ASSERT_NE(depth.Get(), nullptr);
+    EXPECT_TRUE(AreRHIClearDepthStencilValuesEqual(
+        static_cast<DX12Texture*>(depth.Get())
+            ->GetDesc()
+            .optimizedClearValue.depthStencil,
+        reverseZClear));
 }
 
 TEST(DX12Validation, TextureView)
@@ -427,10 +1349,14 @@ TEST(DX12Validation, TextureViewRolesAndStorageTextureBinding)
 
     RHIDescriptorSetDesc setDesc;
     setDesc.SetLayout(layout.Get());
-    auto set = device->CreateDescriptorSet(setDesc);
-    ASSERT_NE(nullptr, set.Get());
+    EXPECT_EQ(nullptr, device->CreateDescriptorSet(setDesc).Get());
 
-    EXPECT_TRUE(set->Update({RHIDescriptorBinding{0, nullptr, 0, 0, storageUAV.Get(), nullptr}}));
+    RHIDescriptorSetDesc immutableSetDesc;
+    immutableSetDesc.SetLayout(layout.Get()).BindTexture(0, storageUAV.Get());
+    auto set = device->CreateDescriptorSet(immutableSetDesc);
+    ASSERT_NE(nullptr, set.Get());
+    EXPECT_TRUE(set->Update({}));
+    EXPECT_FALSE(set->Update({RHIDescriptorBinding{0, nullptr, 0, 0, storageUAV.Get(), nullptr}}));
     EXPECT_FALSE(set->Update({RHIDescriptorBinding{0, nullptr, 0, 0, storageSRV.Get(), nullptr}}));
 
     RHIDescriptorSetDesc validInitialSetDesc;
@@ -475,6 +1401,186 @@ TEST(DX12Validation, Texture2DArrayLayerViewsCreateNativeDescriptors)
     EXPECT_TRUE(dx12Srv->GetSRVHandle().IsValid());
 }
 
+TEST(DX12Validation, PagedCpuDescriptorAllocatorIsLazyGenerationSafeAndBudgeted)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(nullptr, dx12Device);
+
+    DX12PagedDescriptorAllocator allocator;
+    ASSERT_TRUE(allocator.Initialize(
+        dx12Device->GetD3DDevice(),
+        D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+        2,
+        2));
+
+    DX12DescriptorAllocatorStats stats = allocator.GetStats();
+    EXPECT_EQ(0u, stats.currentPages);
+    EXPECT_EQ(0u, stats.activeDescriptors);
+    EXPECT_EQ(4u, stats.GetMaximumCapacity());
+
+    const DX12DescriptorHandle first = allocator.Allocate();
+    const DX12DescriptorHandle second = allocator.Allocate();
+    ASSERT_TRUE(first.IsValid());
+    ASSERT_TRUE(second.IsValid());
+    EXPECT_EQ(0u, first.pageIndex);
+    EXPECT_EQ(0u, first.slotIndex);
+    EXPECT_EQ(0u, second.pageIndex);
+    EXPECT_EQ(1u, second.slotIndex);
+    EXPECT_EQ(1u, allocator.GetStats().currentPages);
+
+    const DX12DescriptorHandle third = allocator.Allocate();
+    const DX12DescriptorHandle fourth = allocator.Allocate();
+    ASSERT_TRUE(third.IsValid());
+    ASSERT_TRUE(fourth.IsValid());
+    EXPECT_EQ(1u, third.pageIndex);
+    EXPECT_EQ(1u, fourth.pageIndex);
+    EXPECT_EQ(2u, allocator.GetStats().currentPages);
+
+    const DX12DescriptorHandle overBudget = allocator.Allocate();
+    EXPECT_FALSE(overBudget.IsValid());
+    stats = allocator.GetStats();
+    EXPECT_EQ(4u, stats.activeDescriptors);
+    EXPECT_EQ(4u, stats.peakActiveDescriptors);
+    EXPECT_EQ(1u, stats.allocationFailures);
+
+    ASSERT_TRUE(allocator.Free(first));
+    const DX12DescriptorHandle reused = allocator.Allocate();
+    ASSERT_TRUE(reused.IsValid());
+    EXPECT_EQ(first.pageIndex, reused.pageIndex);
+    EXPECT_EQ(first.slotIndex, reused.slotIndex);
+    EXPECT_NE(first.generation, reused.generation);
+    EXPECT_FALSE(allocator.Free(first));
+
+    DX12PagedDescriptorAllocator foreignAllocator;
+    ASSERT_TRUE(foreignAllocator.Initialize(
+        dx12Device->GetD3DDevice(),
+        D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+        1,
+        1));
+    const DX12DescriptorHandle foreign = foreignAllocator.Allocate();
+    ASSERT_TRUE(foreign.IsValid());
+    EXPECT_FALSE(allocator.Free(foreign));
+    EXPECT_TRUE(foreignAllocator.Free(foreign));
+
+    EXPECT_TRUE(allocator.Free(reused));
+    EXPECT_FALSE(allocator.Free(reused));
+    EXPECT_TRUE(allocator.Free(second));
+    EXPECT_TRUE(allocator.Free(third));
+    EXPECT_TRUE(allocator.Free(fourth));
+
+    stats = allocator.GetStats();
+    EXPECT_EQ(0u, stats.activeDescriptors);
+    EXPECT_EQ(3u, stats.validationFailures);
+}
+
+TEST(DX12Validation, InvalidCpuDescriptorGateNeverInvokesNativeCreation)
+{
+    DX12DescriptorHandle invalidHandle;
+    bool nativeCreateInvoked = false;
+    const bool created = TryCreateDX12CpuDescriptor(
+        invalidHandle,
+        [&](D3D12_CPU_DESCRIPTOR_HANDLE) {
+            nativeCreateInvoked = true;
+        });
+
+    EXPECT_FALSE(created);
+    EXPECT_FALSE(nativeCreateInvoked);
+}
+
+TEST(DX12Validation, TexturesAllocateDescriptorsOnlyForExplicitViews)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(nullptr, dx12Device);
+    DX12DescriptorHeapManager& heaps = dx12Device->GetDescriptorHeapManager();
+
+    const DX12DescriptorAllocatorStats cpuBefore = heaps.GetCpuCbvSrvUavStats();
+    const DX12DescriptorAllocatorStats samplerBefore = heaps.GetCpuSamplerStats();
+    const DX12DescriptorAllocatorStats rtvBefore = heaps.GetRTVStats();
+    const DX12DescriptorAllocatorStats dsvBefore = heaps.GetDSVStats();
+    EXPECT_EQ(16384u, cpuBefore.pageSize);
+    EXPECT_EQ(64u, cpuBefore.maxPages);
+    EXPECT_EQ(256u, samplerBefore.pageSize);
+    EXPECT_EQ(8u, samplerBefore.maxPages);
+    EXPECT_EQ(512u, rtvBefore.pageSize);
+    EXPECT_EQ(32u, rtvBefore.maxPages);
+    EXPECT_EQ(256u, dsvBefore.pageSize);
+    EXPECT_EQ(16u, dsvBefore.maxPages);
+
+    RHITextureRef sampled = device->CreateTexture(
+        RHITextureDesc::Texture2D(64, 64, RHIFormat::RGBA8_UNORM));
+    RHITextureRef renderTarget = device->CreateTexture(
+        RHITextureDesc::RenderTarget(64, 64, RHIFormat::RGBA8_UNORM));
+    RHITextureRef depth = device->CreateTexture(
+        RHITextureDesc::DepthStencil(64, 64, RHIFormat::D32_FLOAT));
+    RHITextureRef storage = device->CreateTexture(RHITextureDesc::Texture2D(
+        64,
+        64,
+        RHIFormat::R32_FLOAT,
+        RHITextureUsage::ShaderResource | RHITextureUsage::UnorderedAccess));
+    ASSERT_NE(nullptr, sampled.Get());
+    ASSERT_NE(nullptr, renderTarget.Get());
+    ASSERT_NE(nullptr, depth.Get());
+    ASSERT_NE(nullptr, storage.Get());
+
+    // Native textures carry no hidden default views or descriptor allocations.
+    EXPECT_EQ(cpuBefore.activeDescriptors, heaps.GetCpuCbvSrvUavStats().activeDescriptors);
+    EXPECT_EQ(rtvBefore.activeDescriptors, heaps.GetRTVStats().activeDescriptors);
+    EXPECT_EQ(dsvBefore.activeDescriptors, heaps.GetDSVStats().activeDescriptors);
+
+    RHITextureViewDesc srvDesc;
+    srvDesc.type = RHITextureViewType::ShaderResource;
+    srvDesc.format = RHIFormat::RGBA8_UNORM;
+    RHITextureViewRef srv = device->CreateTextureView(sampled.Get(), srvDesc);
+
+    RHITextureViewDesc rtvDesc;
+    rtvDesc.type = RHITextureViewType::RenderTarget;
+    rtvDesc.format = RHIFormat::RGBA8_UNORM;
+    RHITextureViewRef rtv = device->CreateTextureView(renderTarget.Get(), rtvDesc);
+
+    RHITextureViewDesc dsvDesc;
+    dsvDesc.type = RHITextureViewType::DepthStencil;
+    dsvDesc.format = RHIFormat::D32_FLOAT;
+    dsvDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+    RHITextureViewRef dsv = device->CreateTextureView(depth.Get(), dsvDesc);
+
+    RHITextureViewDesc uavDesc;
+    uavDesc.type = RHITextureViewType::UnorderedAccess;
+    uavDesc.format = RHIFormat::R32_FLOAT;
+    RHITextureViewRef uav = device->CreateTextureView(storage.Get(), uavDesc);
+
+    ASSERT_NE(nullptr, srv.Get());
+    ASSERT_NE(nullptr, rtv.Get());
+    ASSERT_NE(nullptr, dsv.Get());
+    ASSERT_NE(nullptr, uav.Get());
+    EXPECT_EQ(cpuBefore.activeDescriptors + 2u, heaps.GetCpuCbvSrvUavStats().activeDescriptors);
+    EXPECT_EQ(rtvBefore.activeDescriptors + 1u, heaps.GetRTVStats().activeDescriptors);
+    EXPECT_EQ(dsvBefore.activeDescriptors + 1u, heaps.GetDSVStats().activeDescriptors);
+    const RHIDescriptorDiagnostics publicDiagnostics =
+        device->GetDescriptorDiagnostics();
+    EXPECT_EQ(cpuBefore.activeDescriptors + 2u,
+              publicDiagnostics.resourceViews.activeDescriptors);
+    EXPECT_EQ(rtvBefore.activeDescriptors + 1u,
+              publicDiagnostics.renderTargets.activeDescriptors);
+    EXPECT_EQ(dsvBefore.activeDescriptors + 1u,
+              publicDiagnostics.depthStencils.activeDescriptors);
+
+    srv.Reset();
+    rtv.Reset();
+    dsv.Reset();
+    uav.Reset();
+    EXPECT_EQ(cpuBefore.activeDescriptors, heaps.GetCpuCbvSrvUavStats().activeDescriptors);
+    EXPECT_EQ(rtvBefore.activeDescriptors, heaps.GetRTVStats().activeDescriptors);
+    EXPECT_EQ(dsvBefore.activeDescriptors, heaps.GetDSVStats().activeDescriptors);
+}
+
 TEST(DX12Validation, Sampler)
 {
     RHIDeviceDesc deviceDesc;
@@ -510,6 +1616,148 @@ TEST(DX12Validation, CommandContext)
     device->WaitIdle();
 }
 
+TEST(DX12Validation,
+     GraphicsTimestampQueriesResolveAfterExactFenceCompletion)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    const RHICapabilities& capabilities = device->GetCapabilities();
+    ASSERT_TRUE(ValidateRHICapabilities(capabilities));
+    if (!capabilities.supportsTimestampQueries)
+    {
+        EXPECT_EQ(capabilities.timestampFrequency, 0u);
+        RHIQueryPoolDesc unsupportedDesc;
+        unsupportedDesc.type = RHIQueryType::Timestamp;
+        unsupportedDesc.count = 2;
+        EXPECT_EQ(device->CreateQueryPool(unsupportedDesc).Get(), nullptr);
+        return;
+    }
+
+    ASSERT_GT(capabilities.timestampFrequency, 0u);
+    RHIQueryPoolDesc queryDesc;
+    queryDesc.type = RHIQueryType::Timestamp;
+    queryDesc.queueType = RHICommandQueueType::Graphics;
+    queryDesc.count = 2;
+    queryDesc.debugName = "DX12ExactCompletionTimestampQueries";
+    RHIQueryPoolRef queryPool = device->CreateQueryPool(queryDesc);
+    ASSERT_NE(queryPool.Get(), nullptr);
+    EXPECT_EQ(queryPool->GetQueueType(), RHICommandQueueType::Graphics);
+    EXPECT_EQ(queryPool->GetTimestampValidBits(), 64);
+    EXPECT_EQ(queryPool->GetTimestampFrequency(), capabilities.timestampFrequency);
+
+    RHIQueryPoolDesc unsupportedQueueDesc = queryDesc;
+    unsupportedQueueDesc.queueType = RHICommandQueueType::Compute;
+    EXPECT_EQ(device->CreateQueryPool(unsupportedQueueDesc).Get(), nullptr);
+
+    RHIBufferDesc readbackDesc;
+    readbackDesc.size = sizeof(uint64) * 2;
+    readbackDesc.usage = RHIBufferUsage::CopyDst;
+    readbackDesc.memoryType = RHIMemoryType::Readback;
+    readbackDesc.debugName = "DX12ExactCompletionTimestampReadback";
+    RHIBufferRef readbackBuffer = device->CreateBuffer(readbackDesc);
+    ASSERT_NE(readbackBuffer.Get(), nullptr);
+
+    RHICommandContextRef context =
+        device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(context.Get(), nullptr);
+    RHIFenceRef completionFence = device->CreateFence(0);
+    ASSERT_NE(completionFence.Get(), nullptr);
+
+    context->Begin();
+    context->WriteTimestamp(queryPool.Get(), 0);
+    context->WriteTimestamp(queryPool.Get(), 1);
+    context->ResolveQueries(queryPool.Get(), 0, 2, readbackBuffer.Get(), 0);
+    context->End();
+
+    const uint64 completionValue =
+        device->SubmitCommandContext(context.Get(), completionFence.Get());
+    ASSERT_GT(completionValue, 0u);
+    device->WaitForFence(completionFence.Get(), completionValue);
+
+    const auto* timestamps = static_cast<const uint64*>(readbackBuffer->Map());
+    ASSERT_NE(timestamps, nullptr);
+    EXPECT_NE(timestamps[0], 0u);
+    EXPECT_NE(timestamps[1], 0u);
+    EXPECT_GE(timestamps[1], timestamps[0]);
+    EXPECT_LT(CalculateRHITimestampElapsedDelta(
+                  timestamps[0],
+                  timestamps[1],
+                  queryPool->GetTimestampValidBits()),
+              capabilities.timestampFrequency);
+    readbackBuffer->Unmap();
+}
+
+TEST(DX12Validation, ClosedQueryCommandsDoNotReachNativeCommandList)
+{
+    constexpr const char* kGateName = "ClosedQueryCommandsDoNotReachNativeCommandList";
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+
+    RHIQueryPoolDesc queryDesc;
+    queryDesc.type = RHIQueryType::Occlusion;
+    queryDesc.queueType = RHICommandQueueType::Graphics;
+    queryDesc.count = 1;
+    queryDesc.debugName = "DX12ClosedQueryCommands";
+    RHIQueryPoolRef queryPool = device->CreateQueryPool(queryDesc);
+    ASSERT_NE(queryPool.Get(), nullptr);
+
+    RHIBufferDesc readbackDesc;
+    readbackDesc.size = sizeof(uint64);
+    readbackDesc.usage = RHIBufferUsage::CopyDst;
+    readbackDesc.memoryType = RHIMemoryType::Readback;
+    readbackDesc.debugName = "DX12ClosedQueryCommandsReadback";
+    RHIBufferRef readbackBuffer = device->CreateBuffer(readbackDesc);
+    ASSERT_NE(readbackBuffer.Get(), nullptr);
+
+    RHICommandContextRef context =
+        device->CreateCommandContext(RHICommandQueueType::Graphics);
+    ASSERT_NE(context.Get(), nullptr);
+    ASSERT_TRUE(ClearDX12InfoQueue(*dx12Device, kGateName));
+    // DX12CommandContext constructors leave the list closed. These calls must
+    // stop at the shared recording preflight rather than issue EndQuery or
+    // ResolveQueryData on a closed native command list.
+    context->EndQuery(queryPool.Get(), 0);
+    context->ResolveQueries(queryPool.Get(), 0, 1, readbackBuffer.Get(), 0);
+
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(*dx12Device, kGateName));
+}
+
+TEST(DX12Validation, TerminalDeviceLossHRESULTClassification)
+{
+    EXPECT_TRUE(IsDX12TerminalDeviceLossReason(DXGI_ERROR_DEVICE_HUNG));
+    EXPECT_TRUE(IsDX12TerminalDeviceLossReason(DXGI_ERROR_DEVICE_REMOVED));
+    EXPECT_TRUE(IsDX12TerminalDeviceLossReason(DXGI_ERROR_DEVICE_RESET));
+    EXPECT_TRUE(IsDX12TerminalDeviceLossReason(DXGI_ERROR_DRIVER_INTERNAL_ERROR));
+    EXPECT_TRUE(IsDX12TerminalDeviceLossReason(DXGI_ERROR_INVALID_CALL));
+    EXPECT_FALSE(IsDX12TerminalDeviceLossReason(E_FAIL));
+}
+
+TEST(DX12Validation, DeviceRemovalDuringCapabilityDiscoveryUsesOwnedFaultPath)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+    dx12Device->HandleDeviceLost(
+        DXGI_ERROR_DEVICE_REMOVED,
+        RHIDeviceFaultOperation::Context);
+
+    EXPECT_EQ(dx12Device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::DeviceLost);
+    const RHIDeviceFault fault = dx12Device->GetLastDeviceFault();
+    EXPECT_TRUE(fault.IsDeviceLost());
+    EXPECT_EQ(fault.operation, RHIDeviceFaultOperation::Context);
+    EXPECT_EQ(fault.nativeError, static_cast<uint32>(DXGI_ERROR_DEVICE_REMOVED));
+}
+
 TEST(DX12Validation, Fence)
 {
     RHIDeviceDesc deviceDesc;
@@ -537,8 +1785,395 @@ TEST(DX12Validation, SynchronizationCapabilities)
     EXPECT_TRUE(caps.supportsDefaultQueueFenceSignal);
     EXPECT_TRUE(caps.supportsExplicitQueueFenceSignal);
     EXPECT_TRUE(caps.supportsQueueFenceWait);
-    EXPECT_FALSE(caps.supportsMultiQueueBatchSubmit);
+    EXPECT_TRUE(caps.supportsMultiQueueBatchSubmit);
+    EXPECT_TRUE(caps.supportsQueueSubmissionPlan);
     EXPECT_FALSE(caps.emulatesQueueFences);
+    EXPECT_EQ(caps.queueTopology.completionMode, RHIQueueCompletionMode::NativeTimeline);
+    EXPECT_EQ(caps.queueTopology.activeDomainCount, 3);
+    EXPECT_EQ(caps.queueTopology.logicalQueueDomains[0], GPUQueueDomain::Graphics);
+    EXPECT_EQ(caps.queueTopology.logicalQueueDomains[1], GPUQueueDomain::Compute);
+    EXPECT_EQ(caps.queueTopology.logicalQueueDomains[2], GPUQueueDomain::Copy);
+    EXPECT_TRUE(ValidateRHICapabilities(caps));
+}
+
+TEST(DX12Validation, QueueSubmissionPlanExecutesCopyComputeGraphicsDag)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    ASSERT_TRUE(device->GetCapabilities().supportsQueueSubmissionPlan);
+
+    const std::array<RHICommandQueueType, 6> queueTypes = {
+        RHICommandQueueType::Copy,
+        RHICommandQueueType::Compute,
+        RHICommandQueueType::Graphics,
+        RHICommandQueueType::Compute,
+        RHICommandQueueType::Graphics,
+        RHICommandQueueType::Graphics,
+    };
+    std::array<RHICommandContextRef, 6> contexts;
+    RHIQueueSubmissionPlan plan;
+    for (uint32 index = 0; index < contexts.size(); ++index)
+    {
+        contexts[index] = device->CreateCommandContext(queueTypes[index]);
+        ASSERT_NE(contexts[index].Get(), nullptr);
+        contexts[index]->Begin();
+        contexts[index]->End();
+        RHIQueueSubmissionBatch batch;
+        batch.queueType = queueTypes[index];
+        batch.contexts.push_back(contexts[index].Get());
+        if (index != 0)
+        {
+            batch.prerequisiteBatchIndices.push_back(index - 1u);
+        }
+        plan.batches.push_back(std::move(batch));
+    }
+    plan.terminalGraphicsBatchIndex = 5;
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(plan));
+
+    RHIFenceRef terminalFence = device->CreateFence(0);
+    ASSERT_NE(terminalFence.Get(), nullptr);
+    const uint64 submittedValue =
+        device->SubmitQueuePlan(plan, terminalFence.Get());
+    ASSERT_NE(submittedValue, 0u);
+    device->WaitForFence(terminalFence.Get(), submittedValue);
+    device->WaitIdle();
+    EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
+}
+
+TEST(DX12Validation, QueueSubmissionPlanTransitionsScopedShaderResourceAcrossGraphicsCompute)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    ASSERT_TRUE(device->GetCapabilities().supportsQueueSubmissionPlan);
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+    ASSERT_TRUE(ClearDX12InfoQueue(
+        *dx12Device,
+        "QueueSubmissionPlanTransitionsScopedShaderResourceAcrossGraphicsCompute"));
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 256u;
+    bufferDesc.usage = RHIBufferUsage::ShaderResource;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.debugName = "DX12ScopedQueueShaderResource";
+    RHIBufferRef buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(buffer.Get(), nullptr);
+
+    const RHIAccessSnapshot commonAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::Common,
+        RHIShaderStage::None,
+        GPUQueueDomain::Graphics);
+    const RHIAccessSnapshot graphicsRead = MakeRHIAccessSnapshot(
+        RHIResourceState::ShaderResource,
+        RHIShaderStage::Pixel,
+        GPUQueueDomain::Graphics);
+    const RHIAccessSnapshot computeRead = MakeRHIAccessSnapshot(
+        RHIResourceState::ShaderResource,
+        RHIShaderStage::Compute,
+        GPUQueueDomain::Compute);
+
+    RHIFenceRef terminalFence = device->CreateFence(0);
+    ASSERT_NE(terminalFence.Get(), nullptr);
+    std::vector<RHICommandContextRef> retainedContexts;
+    retainedContexts.reserve(24u);
+    uint64 submittedValue = 0;
+    for (uint32 submissionIndex = 0; submissionIndex < 8u; ++submissionIndex)
+    {
+        RHICommandContextRef graphicsRelease =
+            device->CreateCommandContext(RHICommandQueueType::Graphics);
+        RHICommandContextRef compute =
+            device->CreateCommandContext(RHICommandQueueType::Compute);
+        RHICommandContextRef graphicsAcquire =
+            device->CreateCommandContext(RHICommandQueueType::Graphics);
+        ASSERT_NE(graphicsRelease.Get(), nullptr);
+        ASSERT_NE(compute.Get(), nullptr);
+        ASSERT_NE(graphicsAcquire.Get(), nullptr);
+
+        graphicsRelease->Begin();
+        graphicsRelease->BufferBarrier(buffer.Get(), commonAccess, graphicsRead);
+        graphicsRelease->BufferBarrier(buffer.Get(), graphicsRead, computeRead);
+        graphicsRelease->End();
+
+        compute->Begin();
+        compute->BufferBarrier(buffer.Get(), graphicsRead, computeRead);
+        compute->BufferBarrier(buffer.Get(), computeRead, graphicsRead);
+        compute->End();
+
+        graphicsAcquire->Begin();
+        graphicsAcquire->BufferBarrier(buffer.Get(), computeRead, graphicsRead);
+        graphicsAcquire->BufferBarrier(buffer.Get(), graphicsRead, commonAccess);
+        graphicsAcquire->End();
+
+        RHIQueueSubmissionPlan plan;
+        plan.batches.push_back(
+            {RHICommandQueueType::Graphics, {graphicsRelease.Get()}, {}});
+        plan.batches.push_back(
+            {RHICommandQueueType::Compute, {compute.Get()}, {0u}});
+        plan.batches.push_back(
+            {RHICommandQueueType::Graphics, {graphicsAcquire.Get()}, {1u}});
+        plan.terminalGraphicsBatchIndex = 2u;
+        ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(plan));
+
+        submittedValue = device->SubmitQueuePlan(plan, terminalFence.Get());
+        ASSERT_NE(submittedValue, 0u);
+        retainedContexts.push_back(std::move(graphicsRelease));
+        retainedContexts.push_back(std::move(compute));
+        retainedContexts.push_back(std::move(graphicsAcquire));
+    }
+
+    device->WaitForFence(terminalFence.Get(), submittedValue);
+    device->WaitIdle();
+    EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(
+        *dx12Device,
+        "QueueSubmissionPlanTransitionsScopedShaderResourceAcrossGraphicsCompute"));
+}
+
+TEST(DX12Validation, UploadGatewayTransfersCopyOwnershipToGraphics)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    GPUUploadService uploadService;
+    uploadService.Initialize(device.get());
+    ASSERT_TRUE(uploadService.IsInitialized());
+
+    const std::array<uint32, 4> source = {1, 2, 3, 4};
+    GPUUploadBufferDesc desc;
+    desc.size = sizeof(source);
+    desc.usage = RHIBufferUsage::Vertex;
+    desc.stride = sizeof(uint32);
+    desc.debugName = "DX12CopyOwnershipUpload";
+    const GPUUploadBufferResult result =
+        uploadService.UploadBufferDataWithResult(
+            desc, source.data(), sizeof(source));
+    ASSERT_TRUE(result.succeeded);
+    ASSERT_TRUE(result.isPending);
+    EXPECT_EQ(result.finalAccess.domain, GPUQueueDomain::Graphics);
+    EXPECT_EQ(uploadService.FlushAndWaitForUploads(), 1U);
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+
+    uploadService.Shutdown();
+    device->WaitIdle();
+    EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
+}
+
+TEST(DX12Validation, LargeMipTextureUploadKeepsCrossQueueTimelineAlive)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    auto* dx12Device = static_cast<DX12Device*>(device.get());
+
+    constexpr uint32 Width = 2048;
+    constexpr uint32 Height = 2048;
+    constexpr uint32 MipLevels = 12;
+    size_t byteCount = 0;
+    uint32 mipWidth = Width;
+    uint32 mipHeight = Height;
+    for (uint32 mip = 0; mip < MipLevels; ++mip)
+    {
+        byteCount += static_cast<size_t>(mipWidth) * mipHeight * 4U;
+        mipWidth = mipWidth > 1U ? mipWidth / 2U : 1U;
+        mipHeight = mipHeight > 1U ? mipHeight / 2U : 1U;
+    }
+    std::vector<uint8> pixels(byteCount, 127U);
+
+    GPUUploadService uploadService;
+    uploadService.Initialize(device.get());
+    ASSERT_TRUE(uploadService.IsInitialized());
+
+    GPUUploadTextureDesc desc;
+    desc.textureDesc =
+        RHITextureDesc::Texture2D(Width, Height, RHIFormat::RGBA8_UNORM);
+    desc.textureDesc.mipLevels = MipLevels;
+    desc.textureDesc.debugName = "DX12LargeMipOwnershipUpload";
+    desc.dataSize = pixels.size();
+    const GPUUploadTextureResult result =
+        uploadService.UploadTextureDataWithResult(desc, pixels.data());
+    ASSERT_TRUE(result.succeeded);
+    ASSERT_TRUE(result.isPending);
+    EXPECT_EQ(result.finalAccess.domain, GPUQueueDomain::Graphics);
+    EXPECT_EQ(uploadService.FlushAndWaitForUploads(), 1U);
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+
+    uploadService.Shutdown();
+    device->WaitIdle();
+    EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(
+        *dx12Device,
+        "LargeMipTextureUploadKeepsCrossQueueTimelineAlive"));
+}
+
+TEST(DX12Validation, BlockCompressedSmallMipsUseLegalCopyFootprints)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+    auto* dx12Device = static_cast<DX12Device*>(device.get());
+
+    // BC7 stores one 16-byte block for every 4x4 texel region. The final 2x2
+    // and 1x1 logical mips still require a 4x4-aligned D3D12 footprint.
+    constexpr uint32 Width = 8;
+    constexpr uint32 Height = 8;
+    constexpr uint32 MipLevels = 4;
+    constexpr size_t ByteCount = 64u + 16u + 16u + 16u;
+    std::array<uint8, ByteCount> blocks{};
+
+    GPUUploadService uploadService;
+    uploadService.Initialize(device.get());
+    ASSERT_TRUE(uploadService.IsInitialized());
+
+    GPUUploadTextureDesc desc;
+    desc.textureDesc =
+        RHITextureDesc::Texture2D(Width, Height, RHIFormat::BC7_UNORM);
+    desc.textureDesc.mipLevels = MipLevels;
+    desc.textureDesc.debugName = "DX12BC7SmallMipUpload";
+    desc.dataSize = blocks.size();
+    const GPUUploadTextureResult result =
+        uploadService.UploadTextureDataWithResult(desc, blocks.data());
+    ASSERT_TRUE(result.succeeded);
+    ASSERT_TRUE(result.isPending);
+    EXPECT_EQ(uploadService.FlushAndWaitForUploads(), 1U);
+    EXPECT_TRUE(uploadService.IsUploadComplete(result.uploadId));
+
+    uploadService.Shutdown();
+    device->WaitIdle();
+    EXPECT_EQ(device->QueryRuntimeStatus(), RHIDeviceRuntimeStatus::Ready);
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(
+        *dx12Device,
+        "BlockCompressedSmallMipsUseLegalCopyFootprints"));
+}
+
+TEST(DX12Validation, RenderContextSubmitsTrackedGraphicsFrameWithoutSurface)
+{
+    RenderContextConfig config;
+    config.backendType = RHIBackendType::DX12;
+    config.enableValidation = false;
+    config.frameBuffering = 2;
+    config.appName = "DX12RenderContextValidation";
+
+    RenderContext context;
+    if (!context.Initialize(config))
+    {
+        GTEST_SKIP() << "DX12 RenderContext is not available";
+    }
+    if (RVX::Test::IsSoftwareAdapterName(
+            context.GetDevice()->GetCapabilities().adapterName))
+    {
+        context.Shutdown();
+        GTEST_SKIP() << "DX12 RenderContext uses a software adapter";
+    }
+
+    const uint32 frameSlot = context.GetFrameIndex();
+    ASSERT_TRUE(context.BeginFrame());
+    const GPUCompletionPoint submittedPoint = context.EndFrame();
+
+    EXPECT_EQ(submittedPoint.domain, GPUQueueDomain::Graphics);
+    EXPECT_GT(submittedPoint.value, 0u);
+    ASSERT_NE(context.GetFrameSynchronizer(), nullptr);
+    EXPECT_EQ(context.GetFrameSynchronizer()->GetFrameCompletionPoint(frameSlot),
+              submittedPoint);
+
+    context.WaitIdle();
+    EXPECT_TRUE(context.GetFrameSynchronizer()->IsFrameComplete(frameSlot));
+    context.Shutdown();
+}
+
+TEST(DX12Validation, RenderContextFramesQueueDagWithRecordingGraphicsGateway)
+{
+    RenderContextConfig config;
+    config.backendType = RHIBackendType::DX12;
+    config.enableValidation = true;
+    config.frameBuffering = 2;
+    config.appName = "DX12RenderContextQueueGatewayValidation";
+
+    RenderContext context;
+    if (!context.Initialize(config))
+    {
+        GTEST_SKIP() << "DX12 RenderContext is not available";
+    }
+    if (RVX::Test::IsSoftwareAdapterName(
+            context.GetDevice()->GetCapabilities().adapterName))
+    {
+        context.Shutdown();
+        GTEST_SKIP() << "DX12 RenderContext uses a software adapter";
+    }
+
+    ASSERT_TRUE(
+        context.GetDevice()->GetCapabilities().supportsQueueSubmissionPlan);
+    RHICommandContextRef computeContext =
+        context.GetDevice()->CreateCommandContext(
+            RHICommandQueueType::Compute);
+    RHICommandContextRef graphTerminalContext =
+        context.GetDevice()->CreateCommandContext(
+            RHICommandQueueType::Graphics);
+    ASSERT_NE(computeContext.Get(), nullptr);
+    ASSERT_NE(graphTerminalContext.Get(), nullptr);
+    computeContext->Reset();
+    computeContext->Begin();
+    computeContext->SetMarker("QueueGatewayCompute");
+    computeContext->End();
+    graphTerminalContext->Reset();
+    graphTerminalContext->Begin();
+    graphTerminalContext->SetMarker("QueueGatewayGraphTerminal");
+    graphTerminalContext->End();
+
+    RHIQueueSubmissionPlan plan;
+    plan.batches.push_back(
+        {RHICommandQueueType::Compute, {computeContext.Get()}, {}});
+    plan.batches.push_back(
+        {RHICommandQueueType::Graphics,
+         {graphTerminalContext.Get()},
+         {0u}});
+    plan.terminalGraphicsBatchIndex = 1u;
+    ASSERT_TRUE(ValidateRHIQueueSubmissionPlan(plan));
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 256u;
+    bufferDesc.usage = RHIBufferUsage::CopyDst;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.debugName = "DX12QueueGatewayBarrierBuffer";
+    RHIBufferRef barrierBuffer = context.GetDevice()->CreateBuffer(bufferDesc);
+    ASSERT_NE(barrierBuffer.Get(), nullptr);
+
+    ASSERT_TRUE(context.BeginFrame());
+    RHICommandContext* graphicsPrelude = context.GetGraphicsContext();
+    ASSERT_NE(graphicsPrelude, nullptr);
+    std::vector<RHICommandContextRef> ownedContexts;
+    ownedContexts.push_back(std::move(computeContext));
+    ownedContexts.push_back(std::move(graphTerminalContext));
+    ASSERT_TRUE(context.AdoptQueueSubmission(std::move(plan),
+                                             std::move(ownedContexts)));
+
+    RHICommandContext* graphicsGateway = context.GetGraphicsContext();
+    ASSERT_NE(graphicsGateway, nullptr);
+    EXPECT_NE(graphicsGateway, graphicsPrelude);
+    EXPECT_EQ(graphicsGateway->GetQueueType(),
+              RHICommandQueueType::Graphics);
+    graphicsGateway->BufferBarrier(barrierBuffer.Get(),
+                                   RHIResourceState::Common,
+                                   RHIResourceState::CopyDest);
+    graphicsGateway->BufferBarrier(barrierBuffer.Get(),
+                                   RHIResourceState::CopyDest,
+                                   RHIResourceState::Common);
+
+    const GPUCompletionPoint submittedPoint = context.EndFrame();
+    EXPECT_EQ(submittedPoint.domain, GPUQueueDomain::Graphics);
+    EXPECT_GT(submittedPoint.value, 0u);
+    context.WaitIdle();
+    EXPECT_EQ(context.GetDevice()->QueryRuntimeStatus(),
+              RHIDeviceRuntimeStatus::Ready);
+    barrierBuffer.Reset();
+    context.Shutdown();
 }
 
 TEST(DX12Validation, DescriptorAndBarrierCapabilities)
@@ -552,6 +2187,7 @@ TEST(DX12Validation, DescriptorAndBarrierCapabilities)
     EXPECT_TRUE(caps.supportsDynamicDescriptorOffsets);
     EXPECT_GE(caps.maxDescriptorSets, 4u);
     EXPECT_TRUE(caps.supportsExplicitResourceBarriers);
+    EXPECT_TRUE(caps.supportsExplicitAliasingBarriers);
     EXPECT_FALSE(caps.emulatesResourceBarriers);
     EXPECT_TRUE(caps.supportsSplitBarrier);
 }
@@ -580,7 +2216,13 @@ TEST(DX12Validation, DescriptorValidationRejectsInvalidInputs)
     EXPECT_EQ(device->CreatePipelineLayout(invalidPipelineLayout).Get(), nullptr);
 
     RHIDescriptorSetDesc validSetDesc;
-    validSetDesc.SetLayout(layout.Get());
+    RHIBufferDesc bufferDesc;
+    bufferDesc.SetSize(256)
+        .SetUsage(RHIBufferUsage::Constant)
+        .SetMemoryType(RHIMemoryType::Upload);
+    auto buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(nullptr, buffer.Get());
+    validSetDesc.SetLayout(layout.Get()).BindBuffer(0, buffer.Get(), 0, 256);
     auto set = device->CreateDescriptorSet(validSetDesc);
     ASSERT_NE(nullptr, set.Get());
     EXPECT_TRUE(set->Update({}));
@@ -637,7 +2279,7 @@ TEST(DX12Validation, BarrierNoWorkInputsAreSafe)
 
     RHIBufferDesc bufferDesc;
     bufferDesc.size = 256;
-    bufferDesc.usage = RHIBufferUsage::Vertex;
+    bufferDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::UnorderedAccess;
     bufferDesc.memoryType = RHIMemoryType::Default;
     bufferDesc.stride = sizeof(float);
     auto buffer = device->CreateBuffer(bufferDesc);
@@ -645,10 +2287,812 @@ TEST(DX12Validation, BarrierNoWorkInputsAreSafe)
     ctx->BufferBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
     ctx->BeginBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
     ctx->EndBarrier({buffer.Get(), RHIResourceState::Common, RHIResourceState::Common});
+    const RHIAccessSnapshot unorderedAccess = MakeRHIAccessSnapshot(
+        RHIResourceState::UnorderedAccess,
+        RHIShaderStage::Compute,
+        GPUQueueDomain::Graphics,
+        RHIContentValidity::Valid);
+    ctx->BufferBarrier(buffer.Get(),
+                       RHIResourceState::Common,
+                       RHIResourceState::UnorderedAccess);
+    ctx->BufferBarrier(MakeRHIBufferBarrier(
+        buffer.Get(), unorderedAccess, unorderedAccess));
 
     ctx->End();
     EXPECT_EQ(device->SubmitCommandContext(ctx.Get(), nullptr), 0u);
     device->WaitIdle();
+}
+
+TEST(DX12Validation, IndirectRawValidationIsFailClosedAndPreservesZeroStrideCompatibility)
+{
+    const uint32 indexedStride =
+        GetDX12IndirectCommandStride(RHIIndirectCommandSemantic::DrawIndexed);
+    EXPECT_EQ(sizeof(IndirectDrawIndexedCommand), indexedStride);
+    EXPECT_EQ(indexedStride,
+              NormalizeDX12IndirectCommandStride(
+                  RHIIndirectCommandSemantic::DrawIndexed, 0));
+
+    RHIBufferDesc validDesc;
+    validDesc.size = static_cast<uint64>(indexedStride) * 2u;
+    validDesc.usage = RHIBufferUsage::IndirectArgs;
+    IndirectValidationBuffer validBuffer(validDesc);
+
+    EXPECT_EQ(DX12IndirectValidationCode::Success,
+              ValidateDX12IndirectArgumentRange(
+                  nullptr,
+                  0,
+                  0,
+                  0,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::Success,
+              ValidateDX12IndirectArgumentRange(
+                  &validBuffer,
+                  0,
+                  2,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::MissingArgumentBuffer,
+              ValidateDX12IndirectArgumentRange(
+                  nullptr,
+                  0,
+                  1,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+
+    RHIBufferDesc wrongUsageDesc = validDesc;
+    wrongUsageDesc.usage = RHIBufferUsage::Structured;
+    IndirectValidationBuffer wrongUsageBuffer(wrongUsageDesc);
+    EXPECT_EQ(DX12IndirectValidationCode::ArgumentUsageMissing,
+              ValidateDX12IndirectArgumentRange(
+                  &wrongUsageBuffer,
+                  0,
+                  1,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::ArgumentOffsetMisaligned,
+              ValidateDX12IndirectArgumentRange(
+                  &validBuffer,
+                  2,
+                  1,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::CommandStrideInvalid,
+              ValidateDX12IndirectArgumentRange(
+                  &validBuffer,
+                  0,
+                  1,
+                  indexedStride + 4u,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::ArgumentRangeOutOfBounds,
+              ValidateDX12IndirectArgumentRange(
+                  &validBuffer,
+                  indexedStride,
+                  2,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+    EXPECT_EQ(DX12IndirectValidationCode::ArgumentRangeOverflow,
+              ValidateDX12IndirectArgumentRange(
+                  &validBuffer,
+                  std::numeric_limits<uint64>::max() - 3u,
+                  1,
+                  indexedStride,
+                  RHIIndirectCommandSemantic::DrawIndexed).code);
+
+    RHIBufferDesc countDesc;
+    countDesc.size = sizeof(uint32);
+    countDesc.usage = RHIBufferUsage::IndirectArgs;
+    IndirectValidationBuffer countBuffer(countDesc);
+    EXPECT_EQ(DX12IndirectValidationCode::Success,
+              ValidateDX12IndirectCountRange(&countBuffer, 0).code);
+    EXPECT_EQ(DX12IndirectValidationCode::MissingCountBuffer,
+              ValidateDX12IndirectCountRange(nullptr, 0).code);
+    EXPECT_EQ(DX12IndirectValidationCode::CountOffsetMisaligned,
+              ValidateDX12IndirectCountRange(&countBuffer, 2).code);
+    EXPECT_EQ(DX12IndirectValidationCode::CountRangeOutOfBounds,
+              ValidateDX12IndirectCountRange(&countBuffer, sizeof(uint32)).code);
+    EXPECT_EQ(DX12IndirectValidationCode::CountRangeOverflow,
+              ValidateDX12IndirectCountRange(
+                  &countBuffer,
+                  std::numeric_limits<uint64>::max() - 3u).code);
+
+    const RHIIndirectCommandLayout standardLayout{
+        RHIIndirectCommandSemantic::DrawIndexed,
+        indexedStride,
+        RHIIndirectCommandStateInvalidation::None};
+    EXPECT_EQ(DX12IndirectValidationCode::Success,
+              ValidateDX12IndirectCommandLayout(standardLayout).code);
+    RHIIndirectCommandLayout rootInvalidatingLayout = standardLayout;
+    rootInvalidatingLayout.stateInvalidation =
+        RHIIndirectCommandStateInvalidation::RootConstants;
+    EXPECT_EQ(DX12IndirectValidationCode::StateInvalidationUnsupported,
+              ValidateDX12IndirectCommandLayout(rootInvalidatingLayout).code);
+
+    RHICapabilities capabilities;
+    capabilities.indexedIndirectExecution.supportsFixedCount = true;
+    capabilities.indexedIndirectExecution.supportsCountBuffer = false;
+    capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+    capabilities.indexedIndirectExecution.requiresExactCommandStride = true;
+    capabilities.indexedIndirectExecution.indexedCommandSize = indexedStride;
+    capabilities.indexedIndirectExecution.minCommandStride = indexedStride;
+    capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+    capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+    capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+    capabilities.indexedIndirectExecution.maxDrawCount = 1;
+    capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+
+    RHIIndexedIndirectExecutionDesc execution;
+    execution.argumentBuffer = &validBuffer;
+    execution.commandStride = indexedStride;
+    execution.maxDrawCount = 2;
+    EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::DrawCountExceedsCapability,
+              ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution).code);
+    execution.mode = RHIIndirectExecutionMode::CountBuffer;
+    execution.countBuffer = &countBuffer;
+    execution.maxDrawCount = 1;
+    EXPECT_EQ(RHIIndexedIndirectExecutionValidationCode::CapabilityUnsupported,
+              ValidateRHIIndexedIndirectExecutionDesc(capabilities, execution).code);
+}
+
+TEST(DX12Validation, IndexedIndirectZeroCountExecutesNoDraw)
+{
+    const NativeIndexedIndirectReadback readback = ExecuteNativeIndexedIndirectScenario(
+        0u,
+        3u,
+        "IndexedIndirectZeroCountExecutesNoDraw");
+    ASSERT_TRUE(readback.completed);
+
+    EXPECT_FALSE(IsNativeIndirectRegionRed(readback, 16u, 16u));
+    EXPECT_FALSE(IsNativeIndirectRegionRed(readback, 48u, 16u));
+    EXPECT_FALSE(IsNativeIndirectRegionRed(readback, 80u, 16u));
+}
+
+TEST(DX12Validation, IndexedIndirectMaximumCountStaysWithinValidatedRanges)
+{
+    const NativeIndexedIndirectReadback readback = ExecuteNativeIndexedIndirectScenario(
+        3u,
+        2u,
+        "IndexedIndirectMaximumCountStaysWithinValidatedRanges");
+    ASSERT_TRUE(readback.completed);
+
+    EXPECT_TRUE(IsNativeIndirectRegionRed(readback, 16u, 16u));
+    EXPECT_TRUE(IsNativeIndirectRegionRed(readback, 48u, 16u));
+    EXPECT_FALSE(IsNativeIndirectRegionRed(readback, 80u, 16u));
+}
+
+TEST(DX12Validation,
+     IndexedIndirectCountFirstInstanceRasterMatchesDirectInstanceInput)
+{
+    constexpr const char* kGateName =
+        "IndexedIndirectCountFirstInstanceRasterMatchesDirectInstanceInput";
+    constexpr uint32 kWidth = 64;
+    constexpr uint32 kHeight = 32;
+    constexpr uint32 kRowPitch = kWidth * 4;
+    constexpr uint32 kFirstInstance = 2;
+
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+    ASSERT_NE(dx12Device->GetD3DDevice(), nullptr);
+    ASSERT_TRUE(ClearDX12InfoQueue(*dx12Device, kGateName));
+
+    const RHIIndexedIndirectExecutionCapabilities& indirectCapabilities =
+        device->GetCapabilities().indexedIndirectExecution;
+    ASSERT_TRUE(indirectCapabilities.supportsCountBuffer);
+    ASSERT_TRUE(indirectCapabilities.supportsFirstInstance);
+    ASSERT_GE(indirectCapabilities.maxDrawCount, 3u);
+
+    constexpr const char* kVertexShaderSource = R"(
+        struct VertexInput
+        {
+            uint instanceIndex : INSTANCEINDEX;
+            uint instancePadding : INSTANCEPADDING;
+            uint vertexId : SV_VertexID;
+        };
+        struct VertexOutput
+        {
+            float4 position : SV_Position;
+            nointerpolation float4 color : TEXCOORD0;
+        };
+        VertexOutput VSMain(VertexInput input)
+        {
+            const float2 localPosition = input.vertexId == 0
+                ? float2(-0.17, -0.28)
+                : (input.vertexId == 1
+                    ? float2(0.17, -0.28)
+                    : float2(0.00, 0.28));
+            VertexOutput output;
+            if (input.instanceIndex == 2u)
+            {
+                output.position = float4(localPosition + float2(-0.45, 0.0),
+                                         0.0,
+                                         1.0);
+                output.color = float4(1.0, 0.0, 0.0, 1.0);
+            }
+            else if (input.instanceIndex == 3u)
+            {
+                output.position = float4(localPosition + float2(0.45, 0.0),
+                                         0.0,
+                                         1.0);
+                output.color = float4(0.0, 1.0, 0.0, 1.0);
+            }
+            else if (input.instanceIndex == 4u)
+            {
+                // This row belongs to the second command in both paths. Its
+                // center pixel proves the indirect command stride selected the
+                // intended second payload rather than an adjacent field.
+                output.position = float4(localPosition, 0.0, 1.0);
+                output.color = float4(0.0, 0.0, 1.0, 1.0);
+            }
+            else if (input.instanceIndex == 5u)
+            {
+                // This row belongs only to the third indirect command. A
+                // correct count of two must never expose it.
+                output.position = float4(localPosition + float2(0.0, 0.60),
+                                         0.0,
+                                         1.0);
+                output.color = float4(1.0, 0.0, 1.0, 1.0);
+            }
+            else
+            {
+                // The two rows before firstInstance are deliberate sentinels.
+                // A backend that ignores firstInstance therefore cannot paint
+                // either required foreground sample below.
+                output.position = float4(4.0, 4.0, 0.0, 1.0);
+                output.color = float4(0.0, 0.0, 1.0, 1.0);
+            }
+            if (input.instancePadding != 0u)
+            {
+                // The fixture initializes this production-ABI padding to zero.
+                // A non-zero value must be visibly wrong, so the compiler keeps
+                // the second slot-6 attribute live and validates the full stride.
+                output.position = float4(localPosition + float2(0.0, -0.60),
+                                         0.0,
+                                         1.0);
+                output.color = float4(1.0, 1.0, 0.0, 1.0);
+            }
+            return output;
+        }
+    )";
+    constexpr const char* kPixelShaderSource = R"(
+        struct VertexOutput
+        {
+            float4 position : SV_Position;
+            nointerpolation float4 color : TEXCOORD0;
+        };
+        float4 PSMain(VertexOutput input) : SV_Target0
+        {
+            return input.color * saturate(input.position.w);
+        }
+    )";
+
+    RHIShaderRef vertexShader = CompileInlineDX12GraphicsShader(
+        *device, RHIShaderStage::Vertex, "VSMain", kVertexShaderSource,
+        "vs_6_0", "DX12FirstInstanceParityVS");
+    RHIShaderRef pixelShader = CompileInlineDX12GraphicsShader(
+        *device, RHIShaderStage::Pixel, "PSMain", kPixelShaderSource,
+        "ps_6_0", "DX12FirstInstanceParityPS");
+    ASSERT_NE(vertexShader.Get(), nullptr);
+    ASSERT_NE(pixelShader.Get(), nullptr);
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "DX12FirstInstanceParityLayout";
+    RHIPipelineLayoutRef pipelineLayout = device->CreatePipelineLayout(layoutDesc);
+    ASSERT_NE(pipelineLayout.Get(), nullptr);
+
+    RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.vertexShader = vertexShader.Get();
+    pipelineDesc.pixelShader = pixelShader.Get();
+    pipelineDesc.pipelineLayout = pipelineLayout.Get();
+    pipelineDesc.inputLayout.AddElement("INSTANCEINDEX", RHIFormat::R32_UINT, 6);
+    pipelineDesc.inputLayout.elements.back().alignedByteOffset =
+        static_cast<uint32>(offsetof(GPUInstanceData, sourceIndex));
+    pipelineDesc.inputLayout.elements.back().perInstance = true;
+    pipelineDesc.inputLayout.elements.back().instanceDataStepRate = 1;
+    // Keep the native vertex-input stride equal to the production ABI instead
+    // of letting a lone sourceIndex element truncate it to 200 bytes.
+    pipelineDesc.inputLayout.AddElement("INSTANCEPADDING", RHIFormat::R32_UINT, 6);
+    pipelineDesc.inputLayout.elements.back().alignedByteOffset =
+        static_cast<uint32>(offsetof(GPUInstanceData, padding) + sizeof(uint32));
+    pipelineDesc.inputLayout.elements.back().perInstance = true;
+    pipelineDesc.inputLayout.elements.back().instanceDataStepRate = 1;
+    pipelineDesc.rasterizerState = RHIRasterizerState::NoCull();
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = RHIFormat::RGBA8_UNORM;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+    pipelineDesc.debugName = "DX12FirstInstanceParityPipeline";
+    RHIPipelineRef pipeline = device->CreateGraphicsPipeline(pipelineDesc);
+    ASSERT_NE(pipeline.Get(), nullptr);
+
+    const std::array<uint32, 3> indices{0u, 1u, 2u};
+    const std::array<GPUInstanceData, 6> instanceRows = []
+    {
+        std::array<GPUInstanceData, 6> rows{};
+        rows[0].sourceIndex = 0xA11CE001u;
+        rows[1].sourceIndex = 0xA11CE002u;
+        rows[2].sourceIndex = 2u;
+        rows[3].sourceIndex = 3u;
+        rows[4].sourceIndex = 4u;
+        rows[5].sourceIndex = 5u;
+        return rows;
+    }();
+    RHIBufferRef indexBuffer = CreateUploadBufferWithData(
+        *device, sizeof(indices), RHIBufferUsage::Index, sizeof(uint32),
+        indices.data(), sizeof(indices), "DX12FirstInstanceParityIndices");
+    RHIBufferRef instanceBuffer = CreateUploadBufferWithData(
+        *device, sizeof(instanceRows), RHIBufferUsage::Vertex,
+        sizeof(GPUInstanceData), instanceRows.data(), sizeof(instanceRows),
+        "DX12FirstInstanceParityGPUInstanceData");
+
+    struct IndirectArgumentPayload
+    {
+        uint32 prefix = 0u;
+        IndirectDrawIndexedCommand command{3u, 2u, 0u, 0, kFirstInstance};
+        IndirectDrawIndexedCommand visibleSentinel{3u, 1u, 0u, 0, 4u};
+        IndirectDrawIndexedCommand overflowSentinel{3u, 1u, 0u, 0, 5u};
+    };
+    static_assert(offsetof(IndirectArgumentPayload, command) == sizeof(uint32));
+    static_assert(offsetof(IndirectArgumentPayload, visibleSentinel) ==
+                  sizeof(uint32) + sizeof(IndirectDrawIndexedCommand));
+    static_assert(offsetof(IndirectArgumentPayload, overflowSentinel) ==
+                  sizeof(uint32) + 2u * sizeof(IndirectDrawIndexedCommand));
+    const IndirectArgumentPayload argumentPayload;
+    // argumentOffset zero decodes indexCount = 0 from prefix, so it cannot
+    // paint. countOffset = sizeof(uint32) selects the first two real commands;
+    // ignoring it reaches overflowSentinel.
+    const std::array<uint32, 2> countPayload{0u, 2u};
+    RHIBufferRef argumentUpload = CreateUploadBufferWithData(
+        *device, sizeof(argumentPayload), RHIBufferUsage::CopySrc,
+        sizeof(IndirectDrawIndexedCommand), &argumentPayload,
+        sizeof(argumentPayload), "DX12FirstInstanceParityArgumentUpload");
+    RHIBufferRef countUpload = CreateUploadBufferWithData(
+        *device, sizeof(countPayload), RHIBufferUsage::CopySrc, sizeof(uint32),
+        countPayload.data(), sizeof(countPayload),
+        "DX12FirstInstanceParityCountUpload");
+
+    RHIBufferDesc argumentDesc;
+    argumentDesc.size = sizeof(argumentPayload);
+    argumentDesc.usage = RHIBufferUsage::IndirectArgs | RHIBufferUsage::CopyDst;
+    argumentDesc.memoryType = RHIMemoryType::Default;
+    argumentDesc.stride = sizeof(IndirectDrawIndexedCommand);
+    argumentDesc.debugName = "DX12FirstInstanceParityArguments";
+    RHIBufferRef argumentBuffer = device->CreateBuffer(argumentDesc);
+    RHIBufferDesc countDesc;
+    countDesc.size = sizeof(countPayload);
+    countDesc.usage = RHIBufferUsage::IndirectArgs | RHIBufferUsage::CopyDst;
+    countDesc.memoryType = RHIMemoryType::Default;
+    countDesc.stride = sizeof(uint32);
+    countDesc.debugName = "DX12FirstInstanceParityCount";
+    RHIBufferRef countBuffer = device->CreateBuffer(countDesc);
+
+    const auto createTarget = [device = device.get()](const char* name)
+    {
+        RHITextureDesc desc = RHITextureDesc::Texture2D(
+            kWidth, kHeight, RHIFormat::RGBA8_UNORM,
+            RHITextureUsage::RenderTarget | RHITextureUsage::CopySrc);
+        desc.debugName = name;
+        return device->CreateTexture(desc);
+    };
+    RHITextureRef directTarget = createTarget("DX12FirstInstanceParityDirectTarget");
+    RHITextureRef indirectTarget = createTarget("DX12FirstInstanceParityIndirectTarget");
+    RHITextureViewRef directTargetView = CreateTestTextureView(
+        *device, directTarget.Get(), RHITextureViewType::RenderTarget,
+        RHIFormat::RGBA8_UNORM, "DX12FirstInstanceParityDirectRTV");
+    RHITextureViewRef indirectTargetView = CreateTestTextureView(
+        *device, indirectTarget.Get(), RHITextureViewType::RenderTarget,
+        RHIFormat::RGBA8_UNORM, "DX12FirstInstanceParityIndirectRTV");
+    RHIBufferDesc readbackDesc;
+    readbackDesc.size = static_cast<uint64>(kRowPitch) * kHeight;
+    readbackDesc.usage = RHIBufferUsage::CopyDst;
+    readbackDesc.memoryType = RHIMemoryType::Readback;
+    readbackDesc.debugName = "DX12FirstInstanceParityReadback";
+    RHIBufferRef directReadback = device->CreateBuffer(readbackDesc);
+    RHIBufferRef indirectReadback = device->CreateBuffer(readbackDesc);
+    ASSERT_NE(indexBuffer.Get(), nullptr);
+    ASSERT_NE(instanceBuffer.Get(), nullptr);
+    ASSERT_NE(argumentUpload.Get(), nullptr);
+    ASSERT_NE(countUpload.Get(), nullptr);
+    ASSERT_NE(argumentBuffer.Get(), nullptr);
+    ASSERT_NE(countBuffer.Get(), nullptr);
+    ASSERT_NE(directTarget.Get(), nullptr);
+    ASSERT_NE(indirectTarget.Get(), nullptr);
+    ASSERT_NE(directTargetView.Get(), nullptr);
+    ASSERT_NE(indirectTargetView.Get(), nullptr);
+    ASSERT_NE(directReadback.Get(), nullptr);
+    ASSERT_NE(indirectReadback.Get(), nullptr);
+
+    RHICommandContextRef context = device->CreateCommandContext(
+        RHICommandQueueType::Graphics);
+    RHIFenceRef fence = device->CreateFence(0);
+    ASSERT_NE(context.Get(), nullptr);
+    ASSERT_NE(fence.Get(), nullptr);
+
+    context->Begin();
+    context->BufferBarrier(argumentBuffer.Get(), RHIResourceState::Common,
+                           RHIResourceState::CopyDest);
+    context->BufferBarrier(countBuffer.Get(), RHIResourceState::Common,
+                           RHIResourceState::CopyDest);
+    context->CopyBuffer(argumentUpload.Get(), argumentBuffer.Get(), 0, 0,
+                        sizeof(argumentPayload));
+    context->CopyBuffer(countUpload.Get(), countBuffer.Get(), 0, 0,
+                        sizeof(countPayload));
+    context->BufferBarrier(argumentBuffer.Get(), RHIResourceState::CopyDest,
+                           RHIResourceState::IndirectArgument);
+    context->BufferBarrier(countBuffer.Get(), RHIResourceState::CopyDest,
+                           RHIResourceState::IndirectArgument);
+
+    const auto beginTarget = [&context, &pipeline, &indexBuffer, &instanceBuffer](
+                                 RHITexture* target,
+                                 RHITextureView* targetView)
+    {
+        context->TextureBarrier(target, RHIResourceState::Common,
+                                RHIResourceState::RenderTarget);
+        RHIRenderPassDesc renderPass;
+        renderPass.AddColorAttachment(targetView, RHILoadOp::Clear,
+                                      RHIStoreOp::Store,
+                                      {0.0f, 0.0f, 0.0f, 1.0f});
+        context->BeginRenderPass(renderPass);
+        context->SetViewport({0.0f, 0.0f, static_cast<float>(kWidth),
+                              static_cast<float>(kHeight), 0.0f, 1.0f});
+        context->SetScissor({0, 0, kWidth, kHeight});
+        context->SetPipeline(pipeline.Get());
+        context->SetVertexBuffer(6, instanceBuffer.Get());
+        context->SetIndexBuffer(indexBuffer.Get(), RHIFormat::R32_UINT);
+    };
+
+    beginTarget(directTarget.Get(), directTargetView.Get());
+    context->DrawIndexed(3, 2, 0, 0, kFirstInstance);
+    context->DrawIndexed(3, 1, 0, 0, 4u);
+    context->EndRenderPass();
+    context->TextureBarrier(directTarget.Get(), RHIResourceState::RenderTarget,
+                            RHIResourceState::CopySource);
+
+    beginTarget(indirectTarget.Get(), indirectTargetView.Get());
+    context->DrawIndexedIndirectCount(
+        argumentBuffer.Get(), offsetof(IndirectArgumentPayload, command),
+        countBuffer.Get(), sizeof(uint32), 3,
+        sizeof(IndirectDrawIndexedCommand));
+    context->EndRenderPass();
+    context->TextureBarrier(indirectTarget.Get(), RHIResourceState::RenderTarget,
+                            RHIResourceState::CopySource);
+
+    RHIBufferTextureCopyDesc copyDesc;
+    copyDesc.bufferRowPitch = kRowPitch;
+    copyDesc.textureRegion = {0, 0, kWidth, kHeight};
+    context->CopyTextureToBuffer(directTarget.Get(), directReadback.Get(), copyDesc);
+    context->CopyTextureToBuffer(indirectTarget.Get(), indirectReadback.Get(), copyDesc);
+    context->End();
+
+    const uint64 submittedValue = device->SubmitCommandContext(context.Get(), fence.Get());
+    ASSERT_NE(submittedValue, 0u);
+    device->WaitForFence(fence.Get(), submittedValue);
+    ASSERT_GE(fence->GetCompletedValue(), submittedValue);
+
+    const auto* directPixels = static_cast<const uint8*>(directReadback->Map());
+    const auto* indirectPixels = static_cast<const uint8*>(indirectReadback->Map());
+    ASSERT_NE(directPixels, nullptr);
+    ASSERT_NE(indirectPixels, nullptr);
+    EXPECT_EQ(std::memcmp(directPixels, indirectPixels,
+                          static_cast<size_t>(readbackDesc.size)),
+              0);
+
+    const auto pixelAt = [](const uint8* pixels, uint32 x, uint32 y)
+    {
+        return pixels + static_cast<size_t>(y) * kRowPitch +
+            static_cast<size_t>(x) * 4u;
+    };
+    const uint8* redForeground = pixelAt(directPixels, 18u, 16u);
+    const uint8* greenForeground = pixelAt(directPixels, 46u, 16u);
+    const uint8* blueSecondCommand = pixelAt(directPixels, 32u, 16u);
+    const uint8* clearBackground = pixelAt(directPixels, 32u, 2u);
+    EXPECT_GT(redForeground[0], 200u);
+    EXPECT_LT(redForeground[1], 32u);
+    EXPECT_GT(greenForeground[1], 200u);
+    EXPECT_LT(greenForeground[0], 32u);
+    EXPECT_LT(blueSecondCommand[0], 32u);
+    EXPECT_LT(blueSecondCommand[1], 32u);
+    EXPECT_GT(blueSecondCommand[2], 200u);
+    EXPECT_EQ(blueSecondCommand[3], 255u);
+    EXPECT_EQ(clearBackground[0], 0u);
+    EXPECT_EQ(clearBackground[1], 0u);
+    EXPECT_EQ(clearBackground[2], 0u);
+    EXPECT_EQ(clearBackground[3], 255u);
+    directReadback->Unmap();
+    indirectReadback->Unmap();
+
+    device->WaitIdle();
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(*dx12Device, kGateName));
+}
+
+TEST(DX12Validation, IndexedIndirectResourcesRetireAfterFenceCompletion)
+{
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+    ASSERT_NE(dx12Device->GetD3DDevice(), nullptr);
+    ASSERT_NE(dx12Device->GetGraphicsQueue(), nullptr);
+    ASSERT_TRUE(ClearDX12InfoQueue(*dx12Device,
+                                   "IndexedIndirectResourcesRetireAfterFenceCompletion"));
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(device.get()));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+
+    ComPtr<ID3D12Fence> blocker;
+    ASSERT_TRUE(SUCCEEDED(dx12Device->GetD3DDevice()->CreateFence(
+        0,
+        D3D12_FENCE_FLAG_NONE,
+        IID_PPV_ARGS(&blocker))));
+    ASSERT_TRUE(SUCCEEDED(dx12Device->GetGraphicsQueue()->Wait(blocker.Get(), 1u)));
+
+    RHICommandContextRef context = device->CreateCommandContext(
+        RHICommandQueueType::Graphics);
+    ASSERT_NE(context.Get(), nullptr);
+    context->Begin();
+    context->End();
+    const GPUCompletionPoint point = tracker.Submit(context.Get());
+    ASSERT_EQ(point.domain, GPUQueueDomain::Graphics);
+    ASSERT_NE(point.value, 0u);
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = 256;
+    bufferDesc.usage = RHIBufferUsage::IndirectArgs;
+    bufferDesc.memoryType = RHIMemoryType::Default;
+    bufferDesc.debugName = "NativeIndexedIndirectRetirementBuffer";
+    RHIBufferRef buffer = device->CreateBuffer(bufferDesc);
+    ASSERT_NE(buffer.Get(), nullptr);
+
+    auto state = std::make_shared<NativeBufferRetirementProbe::State>();
+    GPUCompletionToken token;
+    ASSERT_TRUE(InsertGPUCompletionPoint(token, point));
+    RenderRetirementEntry entry;
+    entry.completion = token;
+    entry.object = Ref<RefCounted>(new NativeBufferRetirementProbe(
+        std::move(buffer), state));
+    entry.estimatedBytes = bufferDesc.size;
+    ASSERT_TRUE(retirement.Enqueue(std::move(entry)));
+
+    EXPECT_EQ(retirement.Poll(), GPUCompletionStatus::Pending);
+    EXPECT_FALSE(state->destroyed.load(std::memory_order_acquire));
+    EXPECT_EQ(retirement.GetDiagnostics().entryCount, 1u);
+
+    ASSERT_TRUE(SUCCEEDED(blocker->Signal(1u)));
+    EXPECT_EQ(tracker.Wait(token), GPUCompletionStatus::Completed);
+    EXPECT_EQ(retirement.Poll(), GPUCompletionStatus::Completed);
+    EXPECT_TRUE(state->destroyed.load(std::memory_order_acquire));
+    EXPECT_TRUE(state->releasedNativeBuffer.load(std::memory_order_acquire));
+    EXPECT_EQ(retirement.GetDiagnostics().entryCount, 0u);
+
+    device->WaitIdle();
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(
+        *dx12Device,
+        "IndexedIndirectResourcesRetireAfterFenceCompletion"));
+    tracker.Shutdown();
+}
+
+TEST(DX12Validation, GPUSceneExactLeaseRetirementAndFailureClosure)
+{
+    constexpr const char* kGateName =
+        "GPUSceneExactLeaseRetirementAndFailureClosure";
+    RHIDeviceDesc deviceDesc;
+    deviceDesc.enableDebugLayer = true;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    auto* dx12Device = dynamic_cast<DX12Device*>(device.get());
+    ASSERT_NE(dx12Device, nullptr);
+    ASSERT_NE(dx12Device->GetD3DDevice(), nullptr);
+    ASSERT_NE(dx12Device->GetGraphicsQueue(), nullptr);
+    ASSERT_TRUE(ClearDX12InfoQueue(*dx12Device, kGateName));
+
+    RenderSubmissionTracker tracker;
+    ASSERT_TRUE(tracker.Initialize(device.get()));
+    RenderRetirementQueue retirement;
+    ASSERT_TRUE(retirement.Initialize(&tracker));
+    GPUSceneUploader uploader;
+    ASSERT_TRUE(uploader.Initialize(device.get(), &tracker));
+    GPUSceneDatabase database;
+    GPUSceneTransaction add;
+    add.Add(MakeGPUSceneLeaseObject(1, 1.0F));
+    ASSERT_TRUE(database.Commit(add).Succeeded());
+    const uint64 versionOne = database.GetCommittedVersion();
+    uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+    GPUCompletionToken initialUpload;
+    ASSERT_TRUE(SubmitGPUSceneUpload(
+        uploader, *device, tracker, retirement, initialUpload));
+    ASSERT_EQ(tracker.Wait(initialUpload), GPUCompletionStatus::Completed);
+    EXPECT_EQ(retirement.Poll(), GPUCompletionStatus::Completed);
+    ASSERT_TRUE(uploader.QueryExactVersionReadiness(versionOne).IsReady());
+
+    // First prove that a graph rejected before recording releases an exact lease.
+    RenderGraph rejectedGraph;
+    RenderGraphValidationAccess::SetDevice(rejectedGraph, device.get());
+    ASSERT_TRUE(uploader.AcquireCurrentGraphLease(
+        rejectedGraph, nullptr, versionOne).has_value());
+    uploader.ReleaseUnsubmittedFrame();
+    ASSERT_TRUE(uploader.QueryExactVersionReadiness(versionOne).IsReady());
+
+    ComPtr<ID3D12Fence> blocker;
+    ASSERT_TRUE(SUCCEEDED(dx12Device->GetD3DDevice()->CreateFence(
+        0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&blocker))));
+    ASSERT_TRUE(SUCCEEDED(dx12Device->GetGraphicsQueue()->Wait(blocker.Get(), 1u)));
+
+    GPUCompletionToken versionOneRead;
+    const std::optional<GPUSceneResidentGraphLease> versionOneLease =
+        SubmitGPUSceneLeaseRead(uploader,
+                                *device,
+                                tracker,
+                                retirement,
+                                versionOne,
+                                versionOneRead);
+    ASSERT_TRUE(versionOneLease.has_value());
+    ASSERT_TRUE(versionOneLease->IsValid());
+    EXPECT_EQ(tracker.Query(versionOneRead), GPUCompletionStatus::Pending);
+    EXPECT_EQ(uploader.PollSafeReclaimVersion(), 0u);
+
+    GPUSceneTransaction update;
+    update.Update(database.FindPrimitive(1).value(),
+                  MakeGPUSceneLeaseObject(1, 2.0F));
+    ASSERT_TRUE(database.Commit(update).Succeeded());
+    const uint64 versionTwo = database.GetCommittedVersion();
+    uploader.Observe(database.GetCommittedMirror(), database.GetLastChangeSet());
+
+    GPUCompletionToken versionTwoUpload;
+    ASSERT_TRUE(SubmitGPUSceneUpload(
+        uploader, *device, tracker, retirement, versionTwoUpload));
+    EXPECT_EQ(tracker.Query(versionTwoUpload), GPUCompletionStatus::Pending);
+    EXPECT_EQ(uploader.PollSafeReclaimVersion(), 0u);
+
+    // A stalled V1 reader prevents in-place overwrite and retirement. Once the
+    // real queue completes, V2 must be ready from a distinct six-table set.
+    ASSERT_TRUE(SUCCEEDED(blocker->Signal(1u)));
+    ASSERT_EQ(tracker.Wait(versionOneRead), GPUCompletionStatus::Completed);
+    ASSERT_EQ(tracker.Wait(versionTwoUpload), GPUCompletionStatus::Completed);
+    EXPECT_EQ(retirement.Poll(), GPUCompletionStatus::Completed);
+    ASSERT_TRUE(uploader.QueryExactVersionReadiness(versionTwo).IsReady());
+    EXPECT_GE(uploader.PollSafeReclaimVersion(), versionOne);
+
+    RenderGraph versionTwoGraph;
+    RenderGraphValidationAccess::SetDevice(versionTwoGraph, device.get());
+    const std::optional<GPUSceneResidentGraphLease> versionTwoLease =
+        uploader.AcquireCurrentGraphLease(versionTwoGraph, nullptr, versionTwo);
+    ASSERT_TRUE(versionTwoLease.has_value());
+    ASSERT_TRUE(versionTwoLease->IsValid());
+    for (uint32 tableIndex = 0;
+         tableIndex < GPU_SCENE_RESIDENT_TABLE_COUNT;
+         ++tableIndex)
+    {
+        EXPECT_NE(versionOneLease->buffers[tableIndex].Get(),
+                  versionTwoLease->buffers[tableIndex].Get());
+    }
+    uploader.ReleaseUnsubmittedFrame();
+
+    // Invalid and omitted completion evidence must permanently close each
+    // independent exact-lease uploader, even on the real DX12 submission path.
+    const auto prepareReadyUploader = [&device, &tracker, &retirement](uint64 objectId)
+        -> std::pair<std::unique_ptr<GPUSceneUploader>, std::unique_ptr<GPUSceneDatabase>>
+    {
+        auto preparedUploader = std::make_unique<GPUSceneUploader>();
+        auto preparedDatabase = std::make_unique<GPUSceneDatabase>();
+        if (!preparedUploader->Initialize(device.get(), &tracker))
+        {
+            return {};
+        }
+        GPUSceneTransaction transaction;
+        transaction.Add(MakeGPUSceneLeaseObject(objectId, 1.0F));
+        if (!preparedDatabase->Commit(transaction).Succeeded())
+        {
+            return {};
+        }
+        preparedUploader->Observe(preparedDatabase->GetCommittedMirror(),
+                                  preparedDatabase->GetLastChangeSet());
+        GPUCompletionToken upload;
+        if (!SubmitGPUSceneUpload(*preparedUploader,
+                                  *device,
+                                  tracker,
+                                  retirement,
+                                  upload) ||
+            tracker.Wait(upload) != GPUCompletionStatus::Completed)
+        {
+            return {};
+        }
+        static_cast<void>(retirement.Poll());
+        return {std::move(preparedUploader), std::move(preparedDatabase)};
+    };
+
+    auto [invalidUploader, invalidDatabase] = prepareReadyUploader(2);
+    ASSERT_NE(invalidUploader, nullptr);
+    ASSERT_NE(invalidDatabase, nullptr);
+    RenderGraph invalidGraph;
+    RenderGraphValidationAccess::SetDevice(invalidGraph, device.get());
+    ASSERT_TRUE(invalidUploader->AcquireCurrentGraphLease(
+        invalidGraph, nullptr, invalidDatabase->GetCommittedVersion()).has_value());
+    GPUCompletionToken invalidToken;
+    invalidToken.count = 1;
+    invalidToken.points[0] = {GPUQueueDomain::Graphics, 0};
+    invalidUploader->NotifySubmission(invalidToken);
+    EXPECT_EQ(invalidUploader->GetDiagnostics().failureReason,
+              GPUSceneUploadFailureReason::InvalidCompletionToken);
+    RenderGraph afterInvalid;
+    RenderGraphValidationAccess::SetDevice(afterInvalid, device.get());
+    EXPECT_FALSE(invalidUploader->AcquireCurrentGraphLease(
+        afterInvalid, nullptr, invalidDatabase->GetCommittedVersion()).has_value());
+
+    auto [omittedUploader, omittedDatabase] = prepareReadyUploader(3);
+    ASSERT_NE(omittedUploader, nullptr);
+    ASSERT_NE(omittedDatabase, nullptr);
+    RenderGraph omittedGraph;
+    RenderGraphValidationAccess::SetDevice(omittedGraph, device.get());
+    ASSERT_TRUE(omittedUploader->AcquireCurrentGraphLease(
+        omittedGraph, nullptr, omittedDatabase->GetCommittedVersion()).has_value());
+    RHICommandContextRef omittedContext = device->CreateCommandContext(
+        RHICommandQueueType::Graphics);
+    ASSERT_NE(omittedContext, nullptr);
+    omittedContext->Begin();
+    omittedContext->End();
+    GPUCompletionToken omittedToken;
+    ASSERT_TRUE(InsertGPUCompletionPoint(
+        omittedToken, tracker.Submit(omittedContext.Get())));
+    // The graph lease was never realized; accepting its real submission token
+    // would conceal missing ownership/state propagation and must fail closed.
+    omittedUploader->NotifySubmission(omittedToken);
+    EXPECT_EQ(omittedUploader->GetDiagnostics().failureReason,
+              GPUSceneUploadFailureReason::InvalidCompletionToken);
+    RenderGraph afterOmitted;
+    RenderGraphValidationAccess::SetDevice(afterOmitted, device.get());
+    EXPECT_FALSE(omittedUploader->AcquireCurrentGraphLease(
+        afterOmitted, nullptr, omittedDatabase->GetCommittedVersion()).has_value());
+
+    // A real device reset is intentionally not induced by a validation test.
+    // The tracker loss channel models unavailable completion evidence and must
+    // still make a warm, resident uploader fail closed before reuse.
+    RenderSubmissionTracker lostTracker;
+    ASSERT_TRUE(lostTracker.Initialize(device.get()));
+    RenderRetirementQueue lostRetirement;
+    ASSERT_TRUE(lostRetirement.Initialize(&lostTracker));
+    GPUSceneUploader lostUploader;
+    ASSERT_TRUE(lostUploader.Initialize(device.get(), &lostTracker));
+    GPUSceneDatabase lostDatabase;
+    GPUSceneTransaction lostAdd;
+    lostAdd.Add(MakeGPUSceneLeaseObject(4, 1.0F));
+    ASSERT_TRUE(lostDatabase.Commit(lostAdd).Succeeded());
+    lostUploader.Observe(lostDatabase.GetCommittedMirror(),
+                         lostDatabase.GetLastChangeSet());
+    GPUCompletionToken lostUpload;
+    ASSERT_TRUE(SubmitGPUSceneUpload(
+        lostUploader, *device, lostTracker, lostRetirement, lostUpload));
+    ASSERT_EQ(lostTracker.Wait(lostUpload), GPUCompletionStatus::Completed);
+    EXPECT_EQ(lostRetirement.Poll(), GPUCompletionStatus::Completed);
+    lostTracker.MarkDeviceLost();
+    GPUSceneTransaction lostUpdate;
+    lostUpdate.Update(lostDatabase.FindPrimitive(4).value(),
+                      MakeGPUSceneLeaseObject(4, 2.0F));
+    ASSERT_TRUE(lostDatabase.Commit(lostUpdate).Succeeded());
+    lostUploader.Observe(lostDatabase.GetCommittedMirror(),
+                         lostDatabase.GetLastChangeSet());
+    RenderGraph lostGraph;
+    RenderGraphValidationAccess::SetDevice(lostGraph, device.get());
+    lostUploader.BuildRenderGraph(lostGraph, nullptr);
+    EXPECT_EQ(lostUploader.GetDiagnostics().failureReason,
+              GPUSceneUploadFailureReason::DeviceLost);
+    EXPECT_FALSE(lostUploader.AcquireCurrentGraphLease(
+        lostGraph, nullptr, lostDatabase.GetCommittedVersion()).has_value());
+
+    device->WaitIdle();
+    EXPECT_TRUE(VerifyDX12InfoQueueClean(*dx12Device, kGateName));
+    lostTracker.Shutdown();
+    tracker.Shutdown();
 }
 
 TEST(DX12Validation, Heap)
@@ -686,6 +3130,7 @@ TEST(DX12Validation, PlacedTexture)
 
     // Create placed texture
     auto textureDesc = RHITextureDesc::RenderTarget(1024, 1024, RHIFormat::RGBA16_FLOAT);
+    textureDesc.SetOptimizedClearColor({0.1f, 0.1f, 0.15f, 1.0f});
     textureDesc.debugName = "PlacedRenderTarget";
 
     auto memReq = device->GetTextureMemoryRequirements(textureDesc);
@@ -696,6 +3141,59 @@ TEST(DX12Validation, PlacedTexture)
     ASSERT_NE(nullptr, texture.Get());
     EXPECT_EQ(texture->GetWidth(), 1024u);
     EXPECT_EQ(texture->GetHeight(), 1024u);
+    EXPECT_TRUE(static_cast<DX12Texture*>(texture.Get())
+                    ->GetDesc()
+                    .optimizedClearValue.IsPresent());
+}
+
+TEST(DX12Validation, PlacedTextureAliasingBarrierRecordsOnNativeCommandList)
+{
+    RHIDeviceDesc deviceDesc;
+    auto device = CreateRHIDevice(RHIBackendType::DX12, deviceDesc);
+    RVX_GTEST_REQUIRE_GPU_DEVICE(device, RHIBackendType::DX12);
+
+    RHITextureDesc textureDesc = RHITextureDesc::RenderTarget(
+        64, 64, RHIFormat::RGBA16_FLOAT);
+    textureDesc.SetOptimizedClearColor({0.1f, 0.1f, 0.15f, 1.0f});
+
+    const IRHIDevice::MemoryRequirements requirements =
+        device->GetTextureMemoryRequirements(textureDesc);
+    ASSERT_GT(requirements.size, 0u);
+
+    RHIHeapDesc heapDesc;
+    heapDesc.size = requirements.size;
+    heapDesc.alignment = requirements.alignment;
+    heapDesc.type = RHIHeapType::Default;
+    heapDesc.flags = RHIHeapFlags::AllowRenderTargets;
+    heapDesc.debugName = "AliasingBarrierHeap";
+    RHIHeapRef heap = device->CreateHeap(heapDesc);
+    ASSERT_NE(heap.Get(), nullptr);
+
+    RHITextureRef before = device->CreatePlacedTexture(
+        heap.Get(), 0, textureDesc);
+    RHITextureRef after = device->CreatePlacedTexture(
+        heap.Get(), 0, textureDesc);
+    ASSERT_NE(before.Get(), nullptr);
+    ASSERT_NE(after.Get(), nullptr);
+
+    RHICommandContextRef context = device->CreateCommandContext(
+        RHICommandQueueType::Graphics);
+    ASSERT_NE(context.Get(), nullptr);
+    context->Begin();
+    const RHIResourceAliasingBarrier aliasingBarrier = {
+        before.Get(),
+        after.Get()};
+    context->AliasingBarriers(
+        std::span<const RHIResourceAliasingBarrier>(&aliasingBarrier, 1));
+    context->End();
+    RHIFenceRef fence = device->CreateFence(0);
+    ASSERT_NE(fence.Get(), nullptr);
+    const uint64 submittedValue =
+        device->SubmitCommandContext(context.Get(), fence.Get());
+    ASSERT_GT(submittedValue, 0u);
+    device->WaitForFence(fence.Get(), submittedValue);
+    EXPECT_GE(fence->GetCompletedValue(), submittedValue);
+    device->WaitIdle();
 }
 
 TEST(DX12Validation, PlacedBuffer)

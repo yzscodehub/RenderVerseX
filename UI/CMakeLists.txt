@@ -35,7 +35,6 @@ target_include_directories(RVX_UI PRIVATE
 target_link_libraries(RVX_UI PUBLIC
     RVX::Core
     RVX::RHI
-    RVX::Render
 )
 
 add_library(RVX::UI ALIAS RVX_UI)

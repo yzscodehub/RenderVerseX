@@ -1,0 +1,10 @@
+SPDX-License-Identifier: CC0-1.0
+
+The catalog entries referencing this file identify HDRI assets published by
+Poly Haven under CC0 1.0 Universal.
+
+License information: https://polyhaven.com/license
+CC0 legal code: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+Attribution is not required by CC0, but RenderVerseX records the source and
+authors for provenance and reproducibility.

@@ -5,10 +5,16 @@
 
 #include "Render/PipelineCache.h"
 #include "Core/Log.h"
+#include "Render/GPUDriven/GPUCulling.h"
+#include "Render/GPUScene/GPUSceneSchema.h"
 #include "Render/Lighting/ClusteredLighting.h"
 #include "Render/Lighting/LightManager.h"
 #include "Render/RayTracing/RayTracingResourceBindings.h"
 #include "Render/Renderer/ViewData.h"
+#include "Resources/FrameConstantUploadArena.h"
+#include "Resources/RenderOwnerSnapshotRetirement.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
+#include "Resources/RenderSubmissionTracker.h"
 #include "ShaderCompiler/ShaderCompiler.h"
 #include "ShaderCompiler/ShaderLayout.h"
 #include "ShaderCompiler/ShaderManager.h"
@@ -34,16 +40,48 @@ namespace
     constexpr uint64 RVX_MAX_DRAW_CONSTANTS_PER_FRAME = 8192;
     constexpr uint64 RVX_PIPELINE_HASH_OFFSET_BASIS = 0xcbf29ce484222325ull;
     constexpr uint64 RVX_PIPELINE_HASH_PRIME = 0x100000001b3ull;
-    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 11;
+    constexpr uint32 RVX_PIPELINE_MANIFEST_VERSION = 16;
     constexpr uint32 RVX_PIPELINE_PURPOSE_DEFAULT = 0x50445354u; // PDST
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEFAULT = 0x47444546u; // GDEF
+    constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_MATERIAL = 0x494D4154u; // IMAT
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_DEFAULT = 0x47534446u; // GSDF
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_INSTANCED_MATERIAL = 0x4753494Du; // GSIM
     constexpr uint32 RVX_PIPELINE_PURPOSE_SHADOW_DEPTH = 0x53484457u; // SHDW
+    constexpr uint32 RVX_PIPELINE_PURPOSE_RIGID_SHADOW_DEPTH = 0x52534844u; // RSHD
+    constexpr uint32 RVX_PIPELINE_PURPOSE_INSTANCED_SHADOW_DEPTH = 0x49534844u; // ISHD
     constexpr uint32 RVX_PIPELINE_PURPOSE_OBJECT_VELOCITY = 0x4F56454Cu; // OVEL
     constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_DRIVEN_DEPTH = 0x47444550u; // GDEP
+    constexpr uint32 RVX_PIPELINE_PURPOSE_RIGID_DEPTH = 0x52444550u; // RDEP
+    constexpr uint32 RVX_PIPELINE_PURPOSE_GPU_SCENE_DEPTH = 0x47534450u; // GSDP
+    constexpr uint32 RVX_PIPELINE_PURPOSE_MASKED_DEPTH = 0x4D444550u; // MDEP
     constexpr uint32 RVX_PIPELINE_PURPOSE_UI = 0x5549504Cu; // UIPL
     constexpr float RVX_MAX_SHADOW_CASTER_DEPTH_BIAS = 10000.0f;
     constexpr float RVX_MAX_SHADOW_CASTER_SLOPE_BIAS = 16.0f;
     constexpr const char* RVX_PIPELINE_MANIFEST_MAGIC = "RVX_PIPELINE_CACHE_MANIFEST";
+
+    bool PrepareVulkanSampledTexture(IRHIDevice* device, RHITexture* texture)
+    {
+        if (!device || !texture ||
+            device->GetBackendType() != RHIBackendType::Vulkan)
+        {
+            return device != nullptr && texture != nullptr;
+        }
+
+        RHICommandContextRef context =
+            device->CreateCommandContext(RHICommandQueueType::Graphics);
+        if (!context)
+        {
+            return !device->GetCapabilities().supportsExplicitResourceBarriers;
+        }
+        context->Begin();
+        context->TextureBarrier(texture,
+                                RHIResourceState::Undefined,
+                                RHIResourceState::ShaderResource);
+        context->End();
+        device->SubmitCommandContext(context.Get());
+        device->WaitIdle();
+        return device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready;
+    }
 
     struct PipelineCacheManifest
     {
@@ -55,10 +93,14 @@ namespace
         uint64 toneMappingPixelShaderHash = 0;
         uint64 bloomVertexShaderHash = 0;
         uint64 bloomPixelShaderHash = 0;
+        uint64 ssaoVertexShaderHash = 0;
+        uint64 ssaoPixelShaderHash = 0;
         uint64 colorGradingVertexShaderHash = 0;
         uint64 colorGradingPixelShaderHash = 0;
         uint64 chromaticAberrationVertexShaderHash = 0;
         uint64 chromaticAberrationPixelShaderHash = 0;
+        uint64 filmGrainVertexShaderHash = 0;
+        uint64 filmGrainPixelShaderHash = 0;
         uint64 fxaaVertexShaderHash = 0;
         uint64 fxaaPixelShaderHash = 0;
         uint64 vignetteVertexShaderHash = 0;
@@ -78,8 +120,10 @@ namespace
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
+        uint64 ssaoPipelineHash = 0;
         uint64 colorGradingPipelineHash = 0;
         uint64 chromaticAberrationPipelineHash = 0;
+        uint64 filmGrainPipelineHash = 0;
         uint64 fxaaPipelineHash = 0;
         uint64 vignettePipelineHash = 0;
         uint64 uiPipelineHash = 0;
@@ -168,7 +212,7 @@ namespace
 
     bool IsRequiredDefaultLitBinding(uint32 set, uint32 binding)
     {
-        if (set == 0 && binding <= 9)
+        if (set == 0 && binding <= 13)
         {
             return true;
         }
@@ -178,7 +222,7 @@ namespace
             return true;
         }
 
-        return set == 2 && binding <= 9;
+        return set == 2 && binding <= 11;
     }
 
     bool BindingTypeMatches(RHIBindingType actual, RHIBindingType expected)
@@ -209,6 +253,10 @@ namespace
         frameLayout.AddBinding(7, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
         frameLayout.AddBinding(8, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
         frameLayout.AddBinding(9, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(10, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(11, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(12, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        frameLayout.AddBinding(13, RHIBindingType::Sampler, RHIShaderStage::Pixel);
 
         auto& objectLayout = outLayouts[1];
         objectLayout.debugName = "DefaultObjectSetLayout";
@@ -224,9 +272,11 @@ namespace
         materialLayout.AddBinding(4, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         materialLayout.AddBinding(5, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
         materialLayout.AddBinding(6, RHIBindingType::Sampler, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(7, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(8, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
-        materialLayout.AddBinding(9, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(7, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(8, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(9, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(10, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+        materialLayout.AddBinding(11, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     }
 
     Mat4 ApplyBackendClipConvention(const Mat4& matrix, RHIBackendType backend)
@@ -234,9 +284,95 @@ namespace
         Mat4 result = matrix;
         if (backend == RHIBackendType::Vulkan)
         {
-            result[1] = -result[1];
+            // GLM indexes matrices as [column][row]. Vulkan's positive-height
+            // viewport maps clip-space +Y downward, so negate the output Y
+            // row. Negating result[1] would instead mirror the input/world Y
+            // column and move geometry relative to the camera.
+            for (uint32 column = 0; column < 4; ++column)
+            {
+                result[column][1] = -result[column][1];
+            }
         }
         return result;
+    }
+
+    ViewConstants BuildViewConstantsSnapshot(const ViewData& view,
+                                              RHIBackendType backend,
+                                              bool reverseZ)
+    {
+        ViewConstants constants{};
+        constants.viewProjection = ApplyBackendClipConvention(view.viewProjectionMatrix, backend);
+        constants.cameraPosition = view.cameraPosition;
+        constants.time = view.time;
+        constants.lightDirection = NormalizeOr(view.directionalLightDirection, Vec3(0.5f, -0.8f, 0.3f));
+        const Vec3 cameraForward = NormalizeOr(view.cameraForward, Vec3(0.0f, 0.0f, -1.0f));
+        constants.directionalLightIntensity = ClampFiniteNonNegative(view.directionalLightIntensity, 4.0f);
+        constants.directionalLightColor = SanitizeLightColor(view.directionalLightColor);
+        const bool iblAmbientEnabled = view.iblAmbientEnabled != 0;
+        constants.iblDiffuseAmbient = Vec4(view.iblDiffuseColor,
+                                           iblAmbientEnabled ? view.iblDiffuseIntensity : 0.0f);
+        constants.iblSpecularAmbient = Vec4(view.iblSpecularColor,
+                                            iblAmbientEnabled ? view.iblSpecularIntensity : 0.0f);
+        constants.iblTextureParams = Vec4(
+            view.textureIBLEnabled != 0 ? 1.0f : 0.0f,
+            static_cast<float>(std::max(1u, view.textureIBLPrefilteredMipLevels)),
+            ClampFiniteNonNegative(view.textureIBLIntensity, 1.0f),
+            ClampFiniteNonNegative(view.ambientFloorIntensity, 0.08f));
+
+        uint32 shadowCascadeCount = view.directionalShadowEnabled != 0
+            ? view.directionalShadowCascadeCount : 0;
+        if (view.directionalShadowEnabled != 0 && shadowCascadeCount == 0)
+        {
+            shadowCascadeCount = 1;
+        }
+        shadowCascadeCount = std::min(shadowCascadeCount, RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
+        constants.cameraForwardAndShadowCascadeCount =
+            Vec4(cameraForward, static_cast<float>(shadowCascadeCount));
+        for (uint32 i = 0; i < RVX_MAX_DIRECTIONAL_SHADOW_CASCADES; ++i)
+        {
+            const Mat4& sourceMatrix = view.directionalShadowCascadeCount > 0
+                ? view.directionalShadowViewProjections[i]
+                : (i == 0 ? view.directionalShadowViewProjection : Mat4Identity());
+            // Shadow rendering applies the backend clip convention through the
+            // cascade viewProjection used by the shadow pass. DefaultLit then
+            // maps this engine-space matrix to top-left texture UVs explicitly;
+            // applying the Vulkan Y flip here as well would mirror the sampled
+            // shadow-map row a second time.
+            constants.directionalShadowViewProjections[i] = sourceMatrix;
+        }
+        constants.directionalShadowCascadeSplits = Vec4(
+            ClampFiniteNonNegative(view.directionalShadowCascadeSplits.x, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeSplits.y, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeSplits.z, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeSplits.w, 0.0f));
+        constants.directionalShadowCascadeFadeDistances = Vec4(
+            ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.x, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.y, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.z, 0.0f),
+            ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.w, 0.0f));
+        const bool directionalShadowEnabled = view.directionalShadowEnabled != 0 &&
+                                              shadowCascadeCount > 0 && !reverseZ;
+        const float shadowInvMapSize = ClampFiniteNonNegative(view.directionalShadowInvMapSize, 0.0f);
+        const float shadowFilterRadiusTexels =
+            ClampFiniteNonNegative(view.directionalShadowFilterRadiusTexels, 1.0f);
+        const float unclampedShadowFilterStep = shadowInvMapSize * shadowFilterRadiusTexels;
+        const float shadowFilterStep = std::isfinite(unclampedShadowFilterStep)
+            ? std::max(0.0f, unclampedShadowFilterStep) : shadowInvMapSize;
+        constants.directionalShadowParams = Vec4(
+            directionalShadowEnabled ? 1.0f : 0.0f,
+            ClampFiniteNonNegative(view.directionalShadowDepthBias, 0.005f),
+            std::min(ClampFiniteNonNegative(view.directionalShadowStrength, 1.0f), 1.0f),
+            shadowFilterStep);
+        constants.directionalShadowReceiverParams = Vec4(
+            ClampFiniteNonNegative(view.directionalShadowNormalBias, 0.02f),
+            0.0f, 0.0f, 0.0f);
+        const float rayTracedShadowMode =
+            view.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster ? 1.0f : 0.0f;
+        constants.rayTracedShadowParams = Vec4(
+            view.rayTracedShadowEnabled != 0 ? 1.0f : 0.0f,
+            std::min(ClampFiniteNonNegative(view.rayTracedShadowFilterRadiusPixels, 1.0f), 3.0f),
+            rayTracedShadowMode, 0.0f);
+        return constants;
     }
 
     std::filesystem::path GetManifestPath(const std::filesystem::path& directory)
@@ -254,10 +390,14 @@ namespace
                key == "toneMappingPixelShaderHash" ||
                key == "bloomVertexShaderHash" ||
                key == "bloomPixelShaderHash" ||
+               key == "ssaoVertexShaderHash" ||
+               key == "ssaoPixelShaderHash" ||
                key == "colorGradingVertexShaderHash" ||
                key == "colorGradingPixelShaderHash" ||
                key == "chromaticAberrationVertexShaderHash" ||
                key == "chromaticAberrationPixelShaderHash" ||
+               key == "filmGrainVertexShaderHash" ||
+               key == "filmGrainPixelShaderHash" ||
                key == "fxaaVertexShaderHash" ||
                key == "fxaaPixelShaderHash" ||
                key == "vignetteVertexShaderHash" ||
@@ -277,8 +417,10 @@ namespace
                key == "skyboxPipelineHash" ||
                key == "toneMappingPipelineHash" ||
                key == "bloomPipelineHash" ||
+               key == "ssaoPipelineHash" ||
                key == "colorGradingPipelineHash" ||
                key == "chromaticAberrationPipelineHash" ||
+               key == "filmGrainPipelineHash" ||
                key == "fxaaPipelineHash" ||
                key == "vignettePipelineHash" ||
                key == "uiPipelineHash";
@@ -371,7 +513,7 @@ namespace
             fields.emplace(std::move(key), std::move(value));
         }
 
-        if (fields.size() != 36)
+        if (fields.size() != 42)
         {
             return false;
         }
@@ -384,10 +526,14 @@ namespace
             !ReadRequiredManifestUint64(fields, "toneMappingPixelShaderHash", manifest.toneMappingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomVertexShaderHash", manifest.bloomVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPixelShaderHash", manifest.bloomPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "ssaoVertexShaderHash", manifest.ssaoVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "ssaoPixelShaderHash", manifest.ssaoPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingVertexShaderHash", manifest.colorGradingVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingPixelShaderHash", manifest.colorGradingPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationVertexShaderHash", manifest.chromaticAberrationVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationPixelShaderHash", manifest.chromaticAberrationPixelShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "filmGrainVertexShaderHash", manifest.filmGrainVertexShaderHash) ||
+            !ReadRequiredManifestUint64(fields, "filmGrainPixelShaderHash", manifest.filmGrainPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaVertexShaderHash", manifest.fxaaVertexShaderHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaPixelShaderHash", manifest.fxaaPixelShaderHash) ||
             !ReadRequiredManifestUint64(fields, "vignetteVertexShaderHash", manifest.vignetteVertexShaderHash) ||
@@ -407,8 +553,10 @@ namespace
             !ReadRequiredManifestUint64(fields, "skyboxPipelineHash", manifest.skyboxPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "toneMappingPipelineHash", manifest.toneMappingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "bloomPipelineHash", manifest.bloomPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "ssaoPipelineHash", manifest.ssaoPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "colorGradingPipelineHash", manifest.colorGradingPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "chromaticAberrationPipelineHash", manifest.chromaticAberrationPipelineHash) ||
+            !ReadRequiredManifestUint64(fields, "filmGrainPipelineHash", manifest.filmGrainPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "fxaaPipelineHash", manifest.fxaaPipelineHash) ||
             !ReadRequiredManifestUint64(fields, "vignettePipelineHash", manifest.vignettePipelineHash) ||
             !ReadRequiredManifestUint64(fields, "uiPipelineHash", manifest.uiPipelineHash))
@@ -445,10 +593,14 @@ namespace
             file << "toneMappingPixelShaderHash=" << manifest.toneMappingPixelShaderHash << '\n';
             file << "bloomVertexShaderHash=" << manifest.bloomVertexShaderHash << '\n';
             file << "bloomPixelShaderHash=" << manifest.bloomPixelShaderHash << '\n';
+            file << "ssaoVertexShaderHash=" << manifest.ssaoVertexShaderHash << '\n';
+            file << "ssaoPixelShaderHash=" << manifest.ssaoPixelShaderHash << '\n';
             file << "colorGradingVertexShaderHash=" << manifest.colorGradingVertexShaderHash << '\n';
             file << "colorGradingPixelShaderHash=" << manifest.colorGradingPixelShaderHash << '\n';
             file << "chromaticAberrationVertexShaderHash=" << manifest.chromaticAberrationVertexShaderHash << '\n';
             file << "chromaticAberrationPixelShaderHash=" << manifest.chromaticAberrationPixelShaderHash << '\n';
+            file << "filmGrainVertexShaderHash=" << manifest.filmGrainVertexShaderHash << '\n';
+            file << "filmGrainPixelShaderHash=" << manifest.filmGrainPixelShaderHash << '\n';
             file << "fxaaVertexShaderHash=" << manifest.fxaaVertexShaderHash << '\n';
             file << "fxaaPixelShaderHash=" << manifest.fxaaPixelShaderHash << '\n';
             file << "vignetteVertexShaderHash=" << manifest.vignetteVertexShaderHash << '\n';
@@ -468,8 +620,10 @@ namespace
             file << "skyboxPipelineHash=" << manifest.skyboxPipelineHash << '\n';
             file << "toneMappingPipelineHash=" << manifest.toneMappingPipelineHash << '\n';
             file << "bloomPipelineHash=" << manifest.bloomPipelineHash << '\n';
+            file << "ssaoPipelineHash=" << manifest.ssaoPipelineHash << '\n';
             file << "colorGradingPipelineHash=" << manifest.colorGradingPipelineHash << '\n';
             file << "chromaticAberrationPipelineHash=" << manifest.chromaticAberrationPipelineHash << '\n';
+            file << "filmGrainPipelineHash=" << manifest.filmGrainPipelineHash << '\n';
             file << "fxaaPipelineHash=" << manifest.fxaaPipelineHash << '\n';
             file << "vignettePipelineHash=" << manifest.vignettePipelineHash << '\n';
             file << "uiPipelineHash=" << manifest.uiPipelineHash << '\n';
@@ -535,10 +689,14 @@ namespace
                a.toneMappingPixelShaderHash == b.toneMappingPixelShaderHash &&
                a.bloomVertexShaderHash == b.bloomVertexShaderHash &&
                a.bloomPixelShaderHash == b.bloomPixelShaderHash &&
+               a.ssaoVertexShaderHash == b.ssaoVertexShaderHash &&
+               a.ssaoPixelShaderHash == b.ssaoPixelShaderHash &&
                a.colorGradingVertexShaderHash == b.colorGradingVertexShaderHash &&
                a.colorGradingPixelShaderHash == b.colorGradingPixelShaderHash &&
                a.chromaticAberrationVertexShaderHash == b.chromaticAberrationVertexShaderHash &&
                a.chromaticAberrationPixelShaderHash == b.chromaticAberrationPixelShaderHash &&
+               a.filmGrainVertexShaderHash == b.filmGrainVertexShaderHash &&
+               a.filmGrainPixelShaderHash == b.filmGrainPixelShaderHash &&
                a.fxaaVertexShaderHash == b.fxaaVertexShaderHash &&
                a.fxaaPixelShaderHash == b.fxaaPixelShaderHash &&
                a.vignetteVertexShaderHash == b.vignetteVertexShaderHash &&
@@ -558,15 +716,58 @@ namespace
                a.skyboxPipelineHash == b.skyboxPipelineHash &&
                a.toneMappingPipelineHash == b.toneMappingPipelineHash &&
                a.bloomPipelineHash == b.bloomPipelineHash &&
+               a.ssaoPipelineHash == b.ssaoPipelineHash &&
                a.colorGradingPipelineHash == b.colorGradingPipelineHash &&
                a.chromaticAberrationPipelineHash == b.chromaticAberrationPipelineHash &&
+               a.filmGrainPipelineHash == b.filmGrainPipelineHash &&
                a.fxaaPipelineHash == b.fxaaPipelineHash &&
                a.vignettePipelineHash == b.vignettePipelineHash &&
                a.uiPipelineHash == b.uiPipelineHash;
     }
 } // namespace
 
+bool GPUSceneRasterBindingSnapshot::IsReadyForBinding() const
+{
+    return objectConstantBuffer && candidateBuffer && primitiveBuffer &&
+           transformBuffer && objectDescriptorSet && frameSetLayout &&
+           objectSetLayout && materialSetLayout && pipelineLayout &&
+           opaquePipeline && instancedMaterialOpaquePipeline &&
+           maskedPipeline && depthPipeline &&
+           leaseVersion != 0 && candidateCount != 0 &&
+           primitiveCapacity != 0 && transformCapacity != 0 &&
+           objectDescriptorSet->IsReadyForBinding(objectSetLayout.Get());
+}
+
+bool GPUSceneRasterBindingSnapshot::RetainSubmissionResources(
+    RenderSubmissionResourceBatch& batch) const
+{
+    if (!IsReadyForBinding())
+    {
+        return false;
+    }
+
+    const auto retain = [&batch]<typename T>(const Ref<T>& object,
+                                             uint64 estimatedBytes = 0)
+    {
+        return object && batch.Retain(object, estimatedBytes);
+    };
+    return retain(objectConstantBuffer, objectConstantBuffer->GetSize()) &&
+           retain(candidateBuffer, candidateBuffer->GetSize()) &&
+           retain(primitiveBuffer, primitiveBuffer->GetSize()) &&
+           retain(transformBuffer, transformBuffer->GetSize()) &&
+           retain(objectDescriptorSet) && retain(frameSetLayout) &&
+           retain(objectSetLayout) && retain(materialSetLayout) &&
+           retain(pipelineLayout) && retain(opaquePipeline) &&
+           retain(instancedMaterialOpaquePipeline) &&
+           retain(maskedPipeline) && retain(depthPipeline);
+}
+
 PipelineCache::PipelineCache() = default;
+
+PipelineCache::PipelineCache(ShaderCompilerFactory shaderCompilerFactory)
+    : m_shaderCompilerFactory(std::move(shaderCompilerFactory))
+{
+}
 
 PipelineCache::~PipelineCache()
 {
@@ -629,6 +830,8 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
     m_lastError.clear();
     m_stats = {};
     m_pipelineCache.clear();
+    ResetGPUSceneRasterState();
+    m_gpuSceneRasterUnavailableReason.clear();
 
     if (!device)
     {
@@ -642,7 +845,24 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
     ShaderManagerConfig shaderConfig;
     shaderConfig.cacheDirectory = std::filesystem::current_path() / "ShaderCache";
     shaderConfig.shaderDirectories.push_back(std::filesystem::path(shaderDir));
-    m_shaderManager = std::make_unique<ShaderManager>(shaderConfig);
+    if (m_shaderCompilerFactory)
+    {
+        std::unique_ptr<IShaderCompiler> compiler = m_shaderCompilerFactory();
+        if (!compiler)
+        {
+            SetLastError("Shader compiler factory returned no compiler");
+            return false;
+        }
+
+        shaderConfig.enableMemoryCache = false;
+        shaderConfig.enableDiskCache = false;
+        m_shaderManager = std::make_unique<ShaderManager>(
+            shaderConfig, std::move(compiler));
+    }
+    else
+    {
+        m_shaderManager = std::make_unique<ShaderManager>(shaderConfig);
+    }
 
     if (!CompileShaders())
     {
@@ -660,6 +880,16 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
             SetLastError("Failed to create pipeline layout");
         }
         return false;
+    }
+
+    if (m_gpuSceneVertexShader && m_gpuSceneInstancedMaterialVertexShader &&
+        m_gpuSceneDepthOnlyVertexShader &&
+        !CreateGPUSceneRasterPipelineLayout())
+    {
+        if (m_gpuSceneRasterUnavailableReason.empty())
+        {
+            DisableGPUSceneRaster("Failed to create GPU-scene raster pipeline layout");
+        }
     }
 
     if (!CreatePostProcessPipelineLayout())
@@ -754,28 +984,53 @@ bool PipelineCache::Initialize(IRHIDevice* device, const std::string& shaderDir)
 void PipelineCache::Shutdown()
 {
     if (!m_initialized)
+    {
+        ResetGPUSceneRasterState();
+        m_gpuSceneRasterUnavailableReason.clear();
         return;
+    }
+
+    ResetGPUSceneRasterState();
 
     m_opaquePipeline.Reset();
     m_maskedPipeline.Reset();
     m_transparentPipeline.Reset();
     m_depthOnlyPipeline.Reset();
+    m_rigidDepthOnlyPipeline.Reset();
+    m_maskedDepthOnlyPipeline.Reset();
+    m_rigidMaskedDepthOnlyPipeline.Reset();
     m_gpuDrivenDepthOnlyPipeline.Reset();
+    m_gpuSceneOpaquePipeline.Reset();
+    m_gpuSceneInstancedMaterialOpaquePipeline.Reset();
+    m_gpuSceneMaskedPipeline.Reset();
+    m_gpuSceneDepthOnlyPipeline.Reset();
     m_skyboxPipeline.Reset();
     m_toneMappingPipeline.Reset();
     m_bloomPipeline.Reset();
     m_bloomAdditivePipeline.Reset();
     m_cameraVelocityPipeline.Reset();
     m_objectVelocityPipeline.Reset();
+    m_rigidObjectVelocityPipeline.Reset();
     m_maskedObjectVelocityPipeline.Reset();
+    m_rigidMaskedObjectVelocityPipeline.Reset();
+    m_ssaoPipeline.Reset();
     m_colorGradingPipeline.Reset();
     m_chromaticAberrationPipeline.Reset();
+    m_filmGrainPipeline.Reset();
     m_fxaaPipeline.Reset();
     m_vignettePipeline.Reset();
     m_uiPipeline.Reset();
     m_pipelineCache.clear();
     m_frameDescriptorSet.Reset();
+    m_frameDescriptorBindingOwners.Reset();
     m_objectDescriptorSet.Reset();
+    m_objectPageDescriptorCache.clear();
+    if (m_objectConstantUploadArena)
+    {
+        m_objectConstantUploadArena->Shutdown();
+        m_objectConstantUploadArena.reset();
+    }
+    m_pendingOwnerRetirements.clear();
     m_viewConstantBuffer.Reset();
     m_objectConstantBuffer.Reset();
     m_objectInstanceFallbackBuffer.Reset();
@@ -784,6 +1039,11 @@ void PipelineCache::Shutdown()
     m_fallbackRayTracedShadowMaskView.Reset();
     m_fallbackRayTracedShadowMaskTexture.Reset();
     m_directionalShadowSampler.Reset();
+    m_fallbackEnvironmentIBLCubemapView.Reset();
+    m_fallbackEnvironmentIBLCubemapTexture.Reset();
+    m_fallbackEnvironmentIBLBRDFLUTView.Reset();
+    m_fallbackEnvironmentIBLBRDFLUTTexture.Reset();
+    m_environmentIBLSampler.Reset();
     m_fallbackLightConstantsBuffer.Reset();
     m_fallbackPointLightsBuffer.Reset();
     m_fallbackSpotLightsBuffer.Reset();
@@ -793,6 +1053,9 @@ void PipelineCache::Shutdown()
     m_currentDirectionalShadowView = nullptr;
     m_currentRayTracedShadowMaskView = nullptr;
     m_currentDirectionalShadowSampler = nullptr;
+    m_currentEnvironmentIBLIrradianceView = nullptr;
+    m_currentEnvironmentIBLPrefilteredView = nullptr;
+    m_currentEnvironmentIBLBRDFLUTView = nullptr;
     m_currentLightConstantsBuffer = nullptr;
     m_currentPointLightsBuffer = nullptr;
     m_currentSpotLightsBuffer = nullptr;
@@ -802,6 +1065,7 @@ void PipelineCache::Shutdown()
     m_frameResourceBindingsDirty = false;
     m_lastFrameLightBindingResult = {};
     m_lastRayTracedShadowFrameBindingResult = {};
+    m_lastEnvironmentIBLFrameBindingResult = {};
     m_postProcessPipelineLayout.Reset();
     m_postProcessSetLayout.Reset();
     m_uiPipelineLayout.Reset();
@@ -814,23 +1078,38 @@ void PipelineCache::Shutdown()
     m_rayTracedShadowSetLayout.Reset();
     m_rayTracedReflectionPipelineLayout.Reset();
     m_rayTracedReflectionSetLayout.Reset();
+    m_gpuSceneRasterPipelineLayout.Reset();
+    m_gpuSceneRasterObjectSetLayout.Reset();
     m_pipelineLayout.Reset();
     m_setLayouts.clear();
     m_vertexShader.Reset();
+    m_rigidVertexShader.Reset();
     m_gpuDrivenVertexShader.Reset();
+    m_instancedMaterialVertexShader.Reset();
+    m_gpuSceneVertexShader.Reset();
+    m_gpuSceneInstancedMaterialVertexShader.Reset();
     m_pixelShader.Reset();
     m_depthOnlyVertexShader.Reset();
+    m_rigidDepthOnlyVertexShader.Reset();
+    m_maskedDepthOnlyVertexShader.Reset();
+    m_rigidMaskedDepthOnlyVertexShader.Reset();
+    m_maskedDepthOnlyPixelShader.Reset();
     m_gpuDrivenDepthOnlyVertexShader.Reset();
+    m_gpuSceneDepthOnlyVertexShader.Reset();
     m_skyboxVertexShader.Reset();
     m_skyboxPixelShader.Reset();
     m_toneMappingVertexShader.Reset();
     m_toneMappingPixelShader.Reset();
     m_bloomVertexShader.Reset();
     m_bloomPixelShader.Reset();
+    m_ssaoVertexShader.Reset();
+    m_ssaoPixelShader.Reset();
     m_cameraVelocityPixelShader.Reset();
     m_objectVelocityVertexShader.Reset();
+    m_rigidObjectVelocityVertexShader.Reset();
     m_objectVelocityPixelShader.Reset();
     m_maskedObjectVelocityVertexShader.Reset();
+    m_rigidMaskedObjectVelocityVertexShader.Reset();
     m_maskedObjectVelocityPixelShader.Reset();
     m_rayTracedReflectionCompositeVertexShader.Reset();
     m_rayTracedReflectionCompositePixelShader.Reset();
@@ -840,6 +1119,8 @@ void PipelineCache::Shutdown()
     m_colorGradingPixelShader.Reset();
     m_chromaticAberrationVertexShader.Reset();
     m_chromaticAberrationPixelShader.Reset();
+    m_filmGrainVertexShader.Reset();
+    m_filmGrainPixelShader.Reset();
     m_fxaaVertexShader.Reset();
     m_fxaaPixelShader.Reset();
     m_vignetteVertexShader.Reset();
@@ -855,20 +1136,33 @@ void PipelineCache::Shutdown()
     m_rayTracedReflectionClosestHitShader.Reset();
     m_rayTracedReflectionAnyHitShader.Reset();
     m_vsCompileResult.reset();
+    m_rigidVsCompileResult.reset();
     m_gpuDrivenVsCompileResult.reset();
+    m_instancedMaterialVsCompileResult.reset();
+    m_gpuSceneVsCompileResult.reset();
+    m_gpuSceneInstancedMaterialVsCompileResult.reset();
     m_psCompileResult.reset();
     m_depthOnlyVsCompileResult.reset();
+    m_rigidDepthOnlyVsCompileResult.reset();
+    m_maskedDepthOnlyVsCompileResult.reset();
+    m_rigidMaskedDepthOnlyVsCompileResult.reset();
+    m_maskedDepthOnlyPsCompileResult.reset();
     m_gpuDrivenDepthOnlyVsCompileResult.reset();
+    m_gpuSceneDepthOnlyVsCompileResult.reset();
     m_skyboxVsCompileResult.reset();
     m_skyboxPsCompileResult.reset();
     m_toneMappingVsCompileResult.reset();
     m_toneMappingPsCompileResult.reset();
     m_bloomVsCompileResult.reset();
     m_bloomPsCompileResult.reset();
+    m_ssaoVsCompileResult.reset();
+    m_ssaoPsCompileResult.reset();
     m_cameraVelocityPsCompileResult.reset();
     m_objectVelocityVsCompileResult.reset();
+    m_rigidObjectVelocityVsCompileResult.reset();
     m_objectVelocityPsCompileResult.reset();
     m_maskedObjectVelocityVsCompileResult.reset();
+    m_rigidMaskedObjectVelocityVsCompileResult.reset();
     m_maskedObjectVelocityPsCompileResult.reset();
     m_rayTracedReflectionCompositeVsCompileResult.reset();
     m_rayTracedReflectionCompositePsCompileResult.reset();
@@ -878,6 +1172,8 @@ void PipelineCache::Shutdown()
     m_colorGradingPsCompileResult.reset();
     m_chromaticAberrationVsCompileResult.reset();
     m_chromaticAberrationPsCompileResult.reset();
+    m_filmGrainVsCompileResult.reset();
+    m_filmGrainPsCompileResult.reset();
     m_fxaaVsCompileResult.reset();
     m_fxaaPsCompileResult.reset();
     m_vignetteVsCompileResult.reset();
@@ -896,7 +1192,9 @@ void PipelineCache::Shutdown()
     m_rayTracedShadowShaderTable.Reset();
     m_cameraVelocityPipeline.Reset();
     m_objectVelocityPipeline.Reset();
+    m_rigidObjectVelocityPipeline.Reset();
     m_maskedObjectVelocityPipeline.Reset();
+    m_rigidMaskedObjectVelocityPipeline.Reset();
     m_rayTracedReflectionPipeline.Reset();
     m_rayTracedReflectionShaderTable.Reset();
     m_rayTracedReflectionCompositePipeline.Reset();
@@ -904,8 +1202,17 @@ void PipelineCache::Shutdown()
     m_shaderManager.reset();
     m_device = nullptr;
     m_initialized = false;
+    m_gpuSceneRasterUnavailableReason.clear();
 
     RVX_CORE_DEBUG("PipelineCache shutdown");
+}
+
+void PipelineCache::RetireOwnerSnapshots(
+    const GPUCompletionToken& completion,
+    RenderRetirementQueue& retirement)
+{
+    FlushRenderOwnerRetirements(
+        m_pendingOwnerRetirements, completion, retirement);
 }
 
 bool PipelineCache::CompileShaders()
@@ -914,6 +1221,7 @@ bool PipelineCache::CompileShaders()
     std::string depthOnlyShaderPath = m_shaderDir + "/DepthOnly.hlsl";
     std::string toneMappingShaderPath = m_shaderDir + "/PostProcess/ToneMapping.hlsl";
     std::string bloomShaderPath = m_shaderDir + "/PostProcess/Bloom.hlsl";
+    std::string ssaoShaderPath = m_shaderDir + "/PostProcess/SSAO.hlsl";
     std::string cameraVelocityShaderPath = m_shaderDir + "/PostProcess/CameraVelocity.hlsl";
     std::string objectVelocityShaderPath = m_shaderDir + "/ObjectVelocity.hlsl";
     std::string rayTracedReflectionCompositeShaderPath =
@@ -922,6 +1230,7 @@ bool PipelineCache::CompileShaders()
         m_shaderDir + "/PostProcess/RayTracedReflectionDenoise.hlsl";
     std::string colorGradingShaderPath = m_shaderDir + "/PostProcess/ColorGrading.hlsl";
     std::string chromaticAberrationShaderPath = m_shaderDir + "/PostProcess/ChromaticAberration.hlsl";
+    std::string filmGrainShaderPath = m_shaderDir + "/PostProcess/FilmGrain.hlsl";
     std::string fxaaShaderPath = m_shaderDir + "/PostProcess/FXAA.hlsl";
     std::string vignetteShaderPath = m_shaderDir + "/PostProcess/Vignette.hlsl";
     std::string uiShaderPath = m_shaderDir + "/UI.hlsl";
@@ -946,6 +1255,11 @@ bool PipelineCache::CompileShaders()
     RVX_CORE_INFO("  Shader file found!");
 
     RHIBackendType backend = m_device->GetBackendType();
+    const ShaderMacro fullscreenUVYMappingDefine{
+        "RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y",
+        backend == RHIBackendType::Vulkan || backend == RHIBackendType::OpenGL
+            ? "1"
+            : "0"};
     const bool compileRayTracingShaders =
         backend == RHIBackendType::DX12 && m_device->GetCapabilities().supportsRaytracingPipeline;
     RVX_CORE_INFO("  Backend type: {}", static_cast<int>(backend));
@@ -998,6 +1312,16 @@ bool PipelineCache::CompileShaders()
         return false;
     }
 
+    if (!std::filesystem::exists(ssaoShaderPath))
+    {
+        SetLastError("SSAO shader file not found: " + ssaoShaderPath);
+
+        std::filesystem::path absPath = std::filesystem::absolute(ssaoShaderPath);
+        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
+        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
+        return false;
+    }
+
     if (!std::filesystem::exists(cameraVelocityShaderPath))
     {
         SetLastError("CameraVelocity shader file not found: " + cameraVelocityShaderPath);
@@ -1033,6 +1357,16 @@ bool PipelineCache::CompileShaders()
         SetLastError("ChromaticAberration shader file not found: " + chromaticAberrationShaderPath);
 
         std::filesystem::path absPath = std::filesystem::absolute(chromaticAberrationShaderPath);
+        RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
+        RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
+        return false;
+    }
+
+    if (!std::filesystem::exists(filmGrainShaderPath))
+    {
+        SetLastError("FilmGrain shader file not found: " + filmGrainShaderPath);
+
+        std::filesystem::path absPath = std::filesystem::absolute(filmGrainShaderPath);
         RVX_CORE_ERROR("  Absolute path tried: {}", absPath.string());
         RVX_CORE_ERROR("  Current working directory: {}", std::filesystem::current_path().string());
         return false;
@@ -1128,6 +1462,24 @@ bool PipelineCache::CompileShaders()
     m_vertexShader = vsResult.shader;
     m_vsCompileResult = std::make_unique<ShaderCompileResult>(std::move(vsResult.compileResult));
 
+    ShaderLoadDesc rigidVsDesc = vsDesc;
+    rigidVsDesc.entryPoint = "VSMainRigid";
+    auto rigidVsResult = m_shaderManager->LoadFromFile(m_device, rigidVsDesc);
+    if (!rigidVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile rigid direct vertex shader: " +
+                     rigidVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!rigidVsResult.shader)
+    {
+        SetLastError("Failed to create rigid direct vertex shader");
+        return false;
+    }
+    m_rigidVertexShader = rigidVsResult.shader;
+    m_rigidVsCompileResult =
+        std::make_unique<ShaderCompileResult>(std::move(rigidVsResult.compileResult));
+
     ShaderLoadDesc gpuDrivenVsDesc = vsDesc;
     gpuDrivenVsDesc.entryPoint = "VSMainGPUDriven";
     auto gpuDrivenVsResult = m_shaderManager->LoadFromFile(m_device, gpuDrivenVsDesc);
@@ -1145,6 +1497,26 @@ bool PipelineCache::CompileShaders()
     m_gpuDrivenVertexShader = gpuDrivenVsResult.shader;
     m_gpuDrivenVsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(gpuDrivenVsResult.compileResult));
+
+    ShaderLoadDesc instancedMaterialVsDesc = vsDesc;
+    instancedMaterialVsDesc.entryPoint = "VSMainInstancedMaterial";
+    auto instancedMaterialVsResult = m_shaderManager->LoadFromFile(
+        m_device, instancedMaterialVsDesc);
+    if (!instancedMaterialVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile instanced-material vertex shader: " +
+                     instancedMaterialVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!instancedMaterialVsResult.shader)
+    {
+        SetLastError("Failed to create instanced-material vertex shader");
+        return false;
+    }
+    m_instancedMaterialVertexShader = instancedMaterialVsResult.shader;
+    m_instancedMaterialVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(instancedMaterialVsResult.compileResult));
 
     ShaderLoadDesc psDesc = vsDesc;
     psDesc.entryPoint = "PSMain";
@@ -1191,6 +1563,94 @@ bool PipelineCache::CompileShaders()
     m_depthOnlyVertexShader = depthVsResult.shader;
     m_depthOnlyVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(depthVsResult.compileResult));
 
+    ShaderLoadDesc rigidDepthVsDesc = depthVsDesc;
+    rigidDepthVsDesc.entryPoint = "VSMainRigid";
+    auto rigidDepthVsResult =
+        m_shaderManager->LoadFromFile(m_device, rigidDepthVsDesc);
+    if (!rigidDepthVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile rigid depth-only vertex shader: " +
+                     rigidDepthVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!rigidDepthVsResult.shader)
+    {
+        SetLastError("Failed to create rigid depth-only vertex shader");
+        return false;
+    }
+    m_rigidDepthOnlyVertexShader = rigidDepthVsResult.shader;
+    m_rigidDepthOnlyVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(rigidDepthVsResult.compileResult));
+
+    ShaderLoadDesc maskedDepthVsDesc = depthVsDesc;
+    maskedDepthVsDesc.entryPoint = "VSMainMasked";
+    auto maskedDepthVsResult =
+        m_shaderManager->LoadFromFile(m_device, maskedDepthVsDesc);
+    if (!maskedDepthVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile masked depth-only vertex shader: " +
+                     maskedDepthVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!maskedDepthVsResult.shader)
+    {
+        SetLastError("Failed to create masked depth-only vertex shader");
+        return false;
+    }
+    m_maskedDepthOnlyVertexShader = maskedDepthVsResult.shader;
+    m_maskedDepthOnlyVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(maskedDepthVsResult.compileResult));
+
+    ShaderLoadDesc rigidMaskedDepthVsDesc = depthVsDesc;
+    rigidMaskedDepthVsDesc.entryPoint = "VSMainMaskedRigid";
+    auto rigidMaskedDepthVsResult =
+        m_shaderManager->LoadFromFile(m_device, rigidMaskedDepthVsDesc);
+    if (!rigidMaskedDepthVsResult.compileResult.success)
+    {
+        SetLastError(
+            "Failed to compile rigid masked depth-only vertex shader: " +
+            rigidMaskedDepthVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!rigidMaskedDepthVsResult.shader)
+    {
+        SetLastError(
+            "Failed to create rigid masked depth-only vertex shader");
+        return false;
+    }
+    m_rigidMaskedDepthOnlyVertexShader =
+        rigidMaskedDepthVsResult.shader;
+    m_rigidMaskedDepthOnlyVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(rigidMaskedDepthVsResult.compileResult));
+
+    ShaderLoadDesc maskedDepthPsDesc = depthVsDesc;
+    maskedDepthPsDesc.entryPoint = "PSMainMasked";
+    maskedDepthPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        maskedDepthPsDesc.targetProfile = "ps_5_0";
+    }
+    auto maskedDepthPsResult =
+        m_shaderManager->LoadFromFile(m_device, maskedDepthPsDesc);
+    if (!maskedDepthPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile masked depth-only pixel shader: " +
+                     maskedDepthPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!maskedDepthPsResult.shader)
+    {
+        SetLastError("Failed to create masked depth-only pixel shader");
+        return false;
+    }
+    m_maskedDepthOnlyPixelShader = maskedDepthPsResult.shader;
+    m_maskedDepthOnlyPsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(maskedDepthPsResult.compileResult));
+
     ShaderLoadDesc gpuDrivenDepthVsDesc = depthVsDesc;
     gpuDrivenDepthVsDesc.entryPoint = "VSMainGPUDriven";
     auto gpuDrivenDepthVsResult = m_shaderManager->LoadFromFile(m_device, gpuDrivenDepthVsDesc);
@@ -1209,10 +1669,90 @@ bool PipelineCache::CompileShaders()
     m_gpuDrivenDepthOnlyVsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(gpuDrivenDepthVsResult.compileResult));
 
+    const bool compileGPUSceneRasterShaders =
+        backend == RHIBackendType::DX12 ||
+        backend == RHIBackendType::Vulkan ||
+        backend == RHIBackendType::Metal;
+    if (!compileGPUSceneRasterShaders)
+    {
+        DisableGPUSceneRaster(
+            "GPU-scene raster shaders are not qualified for this compatibility backend");
+    }
+    else
+    {
+        ShaderLoadDesc gpuSceneVsDesc = vsDesc;
+        gpuSceneVsDesc.entryPoint = "VSMainGPUScene";
+        gpuSceneVsDesc.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
+        auto gpuSceneVsResult = m_shaderManager->LoadFromFile(m_device, gpuSceneVsDesc);
+        if (!gpuSceneVsResult.compileResult.success)
+        {
+            DisableGPUSceneRaster("Failed to compile GPU-scene DefaultLit vertex shader: " +
+                                  gpuSceneVsResult.compileResult.errorMessage);
+        }
+        else if (!gpuSceneVsResult.shader)
+        {
+            DisableGPUSceneRaster("Failed to create GPU-scene DefaultLit vertex shader");
+        }
+        else
+        {
+            ShaderLoadDesc gpuSceneInstancedMaterialVsDesc = gpuSceneVsDesc;
+            gpuSceneInstancedMaterialVsDesc.entryPoint =
+                "VSMainGPUSceneInstancedMaterial";
+            auto gpuSceneInstancedMaterialVsResult = m_shaderManager->LoadFromFile(
+                m_device, gpuSceneInstancedMaterialVsDesc);
+            if (!gpuSceneInstancedMaterialVsResult.compileResult.success)
+            {
+                DisableGPUSceneRaster(
+                    "Failed to compile GPU-scene instanced-material vertex shader: " +
+                    gpuSceneInstancedMaterialVsResult.compileResult.errorMessage);
+            }
+            else if (!gpuSceneInstancedMaterialVsResult.shader)
+            {
+                DisableGPUSceneRaster(
+                    "Failed to create GPU-scene instanced-material vertex shader");
+            }
+            else
+            {
+                ShaderLoadDesc gpuSceneDepthVsDesc = depthVsDesc;
+                gpuSceneDepthVsDesc.entryPoint = "VSMainGPUScene";
+                gpuSceneDepthVsDesc.defines.push_back({"RVX_GPU_SCENE_RASTER", "1"});
+                auto gpuSceneDepthVsResult = m_shaderManager->LoadFromFile(
+                    m_device, gpuSceneDepthVsDesc);
+                if (!gpuSceneDepthVsResult.compileResult.success)
+                {
+                    DisableGPUSceneRaster(
+                        "Failed to compile GPU-scene DepthOnly vertex shader: " +
+                        gpuSceneDepthVsResult.compileResult.errorMessage);
+                }
+                else if (!gpuSceneDepthVsResult.shader)
+                {
+                    DisableGPUSceneRaster(
+                        "Failed to create GPU-scene DepthOnly vertex shader");
+                }
+                else
+                {
+                    m_gpuSceneVertexShader = gpuSceneVsResult.shader;
+                    m_gpuSceneVsCompileResult = std::make_unique<ShaderCompileResult>(
+                        std::move(gpuSceneVsResult.compileResult));
+                    m_gpuSceneInstancedMaterialVertexShader =
+                        gpuSceneInstancedMaterialVsResult.shader;
+                    m_gpuSceneInstancedMaterialVsCompileResult =
+                        std::make_unique<ShaderCompileResult>(std::move(
+                            gpuSceneInstancedMaterialVsResult.compileResult));
+                    m_gpuSceneDepthOnlyVertexShader = gpuSceneDepthVsResult.shader;
+                    m_gpuSceneDepthOnlyVsCompileResult =
+                        std::make_unique<ShaderCompileResult>(
+                            std::move(gpuSceneDepthVsResult.compileResult));
+                }
+            }
+        }
+    }
+
     ShaderLoadDesc toneMappingVsDesc = vsDesc;
     toneMappingVsDesc.path = toneMappingShaderPath;
     toneMappingVsDesc.entryPoint = "VSMain";
     toneMappingVsDesc.stage = RHIShaderStage::Vertex;
+    toneMappingVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         toneMappingVsDesc.targetProfile = "vs_5_0";
@@ -1260,6 +1800,7 @@ bool PipelineCache::CompileShaders()
     bloomVsDesc.path = bloomShaderPath;
     bloomVsDesc.entryPoint = "VSMain";
     bloomVsDesc.stage = RHIShaderStage::Vertex;
+    bloomVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         bloomVsDesc.targetProfile = "vs_5_0";
@@ -1300,6 +1841,52 @@ bool PipelineCache::CompileShaders()
     }
     m_bloomPixelShader = bloomPsResult.shader;
     m_bloomPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(bloomPsResult.compileResult));
+
+    ShaderLoadDesc ssaoVsDesc = vsDesc;
+    ssaoVsDesc.path = ssaoShaderPath;
+    ssaoVsDesc.entryPoint = "VSMain";
+    ssaoVsDesc.stage = RHIShaderStage::Vertex;
+    ssaoVsDesc.defines.push_back(fullscreenUVYMappingDefine);
+    if (backend == RHIBackendType::DX11)
+    {
+        ssaoVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto ssaoVsResult = m_shaderManager->LoadFromFile(m_device, ssaoVsDesc);
+    if (!ssaoVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile SSAO vertex shader: " + ssaoVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!ssaoVsResult.shader)
+    {
+        SetLastError("Failed to create SSAO vertex shader");
+        return false;
+    }
+    m_ssaoVertexShader = ssaoVsResult.shader;
+    m_ssaoVsCompileResult = std::make_unique<ShaderCompileResult>(std::move(ssaoVsResult.compileResult));
+
+    ShaderLoadDesc ssaoPsDesc = ssaoVsDesc;
+    ssaoPsDesc.entryPoint = "PSMain";
+    ssaoPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        ssaoPsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto ssaoPsResult = m_shaderManager->LoadFromFile(m_device, ssaoPsDesc);
+    if (!ssaoPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile SSAO pixel shader: " + ssaoPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!ssaoPsResult.shader)
+    {
+        SetLastError("Failed to create SSAO pixel shader");
+        return false;
+    }
+    m_ssaoPixelShader = ssaoPsResult.shader;
+    m_ssaoPsCompileResult = std::make_unique<ShaderCompileResult>(std::move(ssaoPsResult.compileResult));
 
     ShaderLoadDesc cameraVelocityPsDesc = vsDesc;
     cameraVelocityPsDesc.path = cameraVelocityShaderPath;
@@ -1351,6 +1938,26 @@ bool PipelineCache::CompileShaders()
     m_objectVelocityVsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(objectVelocityVsResult.compileResult));
 
+    ShaderLoadDesc rigidObjectVelocityVsDesc = objectVelocityVsDesc;
+    rigidObjectVelocityVsDesc.entryPoint = "VSMainRigid";
+    auto rigidObjectVelocityVsResult =
+        m_shaderManager->LoadFromFile(m_device, rigidObjectVelocityVsDesc);
+    if (!rigidObjectVelocityVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile rigid ObjectVelocity vertex shader: " +
+                     rigidObjectVelocityVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!rigidObjectVelocityVsResult.shader)
+    {
+        SetLastError("Failed to create rigid ObjectVelocity vertex shader");
+        return false;
+    }
+    m_rigidObjectVelocityVertexShader = rigidObjectVelocityVsResult.shader;
+    m_rigidObjectVelocityVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(rigidObjectVelocityVsResult.compileResult));
+
     ShaderLoadDesc objectVelocityPsDesc = objectVelocityVsDesc;
     objectVelocityPsDesc.entryPoint = "PSMain";
     objectVelocityPsDesc.stage = RHIShaderStage::Pixel;
@@ -1393,6 +2000,30 @@ bool PipelineCache::CompileShaders()
     m_maskedObjectVelocityVsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(maskedObjectVelocityVsResult.compileResult));
 
+    ShaderLoadDesc rigidMaskedObjectVelocityVsDesc = objectVelocityVsDesc;
+    rigidMaskedObjectVelocityVsDesc.entryPoint = "VSMainMaskedRigid";
+    auto rigidMaskedObjectVelocityVsResult =
+        m_shaderManager->LoadFromFile(
+            m_device, rigidMaskedObjectVelocityVsDesc);
+    if (!rigidMaskedObjectVelocityVsResult.compileResult.success)
+    {
+        SetLastError(
+            "Failed to compile rigid masked ObjectVelocity vertex shader: " +
+            rigidMaskedObjectVelocityVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!rigidMaskedObjectVelocityVsResult.shader)
+    {
+        SetLastError(
+            "Failed to create rigid masked ObjectVelocity vertex shader");
+        return false;
+    }
+    m_rigidMaskedObjectVelocityVertexShader =
+        rigidMaskedObjectVelocityVsResult.shader;
+    m_rigidMaskedObjectVelocityVsCompileResult =
+        std::make_unique<ShaderCompileResult>(
+            std::move(rigidMaskedObjectVelocityVsResult.compileResult));
+
     ShaderLoadDesc maskedObjectVelocityPsDesc = objectVelocityPsDesc;
     maskedObjectVelocityPsDesc.entryPoint = "PSMainMasked";
     auto maskedObjectVelocityPsResult = m_shaderManager->LoadFromFile(m_device, maskedObjectVelocityPsDesc);
@@ -1415,6 +2046,7 @@ bool PipelineCache::CompileShaders()
     reflectionCompositeVsDesc.path = rayTracedReflectionCompositeShaderPath;
     reflectionCompositeVsDesc.entryPoint = "VSMain";
     reflectionCompositeVsDesc.stage = RHIShaderStage::Vertex;
+    reflectionCompositeVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         reflectionCompositeVsDesc.targetProfile = "vs_5_0";
@@ -1464,6 +2096,7 @@ bool PipelineCache::CompileShaders()
     reflectionDenoiseVsDesc.path = rayTracedReflectionDenoiseShaderPath;
     reflectionDenoiseVsDesc.entryPoint = "VSMain";
     reflectionDenoiseVsDesc.stage = RHIShaderStage::Vertex;
+    reflectionDenoiseVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         reflectionDenoiseVsDesc.targetProfile = "vs_5_0";
@@ -1513,6 +2146,7 @@ bool PipelineCache::CompileShaders()
     colorGradingVsDesc.path = colorGradingShaderPath;
     colorGradingVsDesc.entryPoint = "VSMain";
     colorGradingVsDesc.stage = RHIShaderStage::Vertex;
+    colorGradingVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         colorGradingVsDesc.targetProfile = "vs_5_0";
@@ -1560,6 +2194,7 @@ bool PipelineCache::CompileShaders()
     chromaticAberrationVsDesc.path = chromaticAberrationShaderPath;
     chromaticAberrationVsDesc.entryPoint = "VSMain";
     chromaticAberrationVsDesc.stage = RHIShaderStage::Vertex;
+    chromaticAberrationVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         chromaticAberrationVsDesc.targetProfile = "vs_5_0";
@@ -1605,10 +2240,59 @@ bool PipelineCache::CompileShaders()
     m_chromaticAberrationPsCompileResult =
         std::make_unique<ShaderCompileResult>(std::move(chromaticAberrationPsResult.compileResult));
 
+    ShaderLoadDesc filmGrainVsDesc = vsDesc;
+    filmGrainVsDesc.path = filmGrainShaderPath;
+    filmGrainVsDesc.entryPoint = "VSMain";
+    filmGrainVsDesc.stage = RHIShaderStage::Vertex;
+    filmGrainVsDesc.defines.push_back(fullscreenUVYMappingDefine);
+    if (backend == RHIBackendType::DX11)
+    {
+        filmGrainVsDesc.targetProfile = "vs_5_0";
+    }
+
+    auto filmGrainVsResult = m_shaderManager->LoadFromFile(m_device, filmGrainVsDesc);
+    if (!filmGrainVsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile FilmGrain vertex shader: " + filmGrainVsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!filmGrainVsResult.shader)
+    {
+        SetLastError("Failed to create FilmGrain vertex shader");
+        return false;
+    }
+    m_filmGrainVertexShader = filmGrainVsResult.shader;
+    m_filmGrainVsCompileResult =
+        std::make_unique<ShaderCompileResult>(std::move(filmGrainVsResult.compileResult));
+
+    ShaderLoadDesc filmGrainPsDesc = filmGrainVsDesc;
+    filmGrainPsDesc.entryPoint = "PSMain";
+    filmGrainPsDesc.stage = RHIShaderStage::Pixel;
+    if (backend == RHIBackendType::DX11)
+    {
+        filmGrainPsDesc.targetProfile = "ps_5_0";
+    }
+
+    auto filmGrainPsResult = m_shaderManager->LoadFromFile(m_device, filmGrainPsDesc);
+    if (!filmGrainPsResult.compileResult.success)
+    {
+        SetLastError("Failed to compile FilmGrain pixel shader: " + filmGrainPsResult.compileResult.errorMessage);
+        return false;
+    }
+    if (!filmGrainPsResult.shader)
+    {
+        SetLastError("Failed to create FilmGrain pixel shader");
+        return false;
+    }
+    m_filmGrainPixelShader = filmGrainPsResult.shader;
+    m_filmGrainPsCompileResult =
+        std::make_unique<ShaderCompileResult>(std::move(filmGrainPsResult.compileResult));
+
     ShaderLoadDesc fxaaVsDesc = vsDesc;
     fxaaVsDesc.path = fxaaShaderPath;
     fxaaVsDesc.entryPoint = "VSMain";
     fxaaVsDesc.stage = RHIShaderStage::Vertex;
+    fxaaVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         fxaaVsDesc.targetProfile = "vs_5_0";
@@ -1654,6 +2338,7 @@ bool PipelineCache::CompileShaders()
     vignetteVsDesc.path = vignetteShaderPath;
     vignetteVsDesc.entryPoint = "VSMain";
     vignetteVsDesc.stage = RHIShaderStage::Vertex;
+    vignetteVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         vignetteVsDesc.targetProfile = "vs_5_0";
@@ -1746,6 +2431,7 @@ bool PipelineCache::CompileShaders()
     skyboxVsDesc.path = skyboxShaderPath;
     skyboxVsDesc.entryPoint = "VSMain";
     skyboxVsDesc.stage = RHIShaderStage::Vertex;
+    skyboxVsDesc.defines.push_back(fullscreenUVYMappingDefine);
     if (backend == RHIBackendType::DX11)
     {
         skyboxVsDesc.targetProfile = "vs_5_0";
@@ -1986,6 +2672,78 @@ bool PipelineCache::CreatePipelineLayout()
     return true;
 }
 
+void PipelineCache::SetObjectConstantSubmissionTracker(
+    RenderSubmissionTracker* tracker) noexcept
+{
+    if (m_objectConstantUploadArena)
+    {
+        m_objectConstantUploadArena->SetSubmissionTracker(tracker);
+    }
+}
+
+bool PipelineCache::NotifyObjectConstantSubmission(
+    const GPUCompletionToken& completion) noexcept
+{
+    return !m_objectConstantUploadArena ||
+           m_objectConstantUploadArena->NotifySubmission(completion);
+}
+
+void PipelineCache::ReleaseUnsubmittedObjectConstants() noexcept
+{
+    if (m_objectConstantUploadArena)
+    {
+        m_objectConstantUploadArena->ReleaseUnsubmittedFrame();
+    }
+}
+
+bool PipelineCache::CreateGPUSceneRasterPipelineLayout()
+{
+    if (m_setLayouts.size() != 3 || !m_setLayouts[0] || !m_setLayouts[2])
+    {
+        DisableGPUSceneRaster(
+            "Cannot create GPU-scene raster layout without frame/material layouts");
+        return false;
+    }
+
+    RHIDescriptorSetLayoutDesc objectSetDesc;
+    objectSetDesc.debugName = "GPUSceneRasterObjectSetLayout";
+    // b0 deliberately preserves the complete ObjectConstants prefix for the
+    // DefaultLit pixel shader. The three VS SRVs remain stable for one bound
+    // execution but can be updated or transition between later submissions.
+    objectSetDesc
+        .AddDynamicBinding(0, RHIBindingType::UniformBuffer,
+                           RHIShaderStage::Vertex | RHIShaderStage::Pixel)
+        .AddBinding(1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex,
+                    1, RHIResourceDataVolatility::StableWhileBound)
+        .AddBinding(2, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex,
+                    1, RHIResourceDataVolatility::StableWhileBound)
+        .AddBinding(3, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex,
+                    1, RHIResourceDataVolatility::StableWhileBound);
+    m_gpuSceneRasterObjectSetLayout =
+        m_device->CreateDescriptorSetLayout(objectSetDesc);
+    if (!m_gpuSceneRasterObjectSetLayout)
+    {
+        DisableGPUSceneRaster(
+            "Failed to create GPU-scene raster object descriptor layout");
+        return false;
+    }
+
+    RHIPipelineLayoutDesc layoutDesc;
+    layoutDesc.debugName = "GPUSceneRasterPipelineLayout";
+    layoutDesc.setLayouts = {
+        m_setLayouts[0].Get(),
+        m_gpuSceneRasterObjectSetLayout.Get(),
+        m_setLayouts[2].Get()};
+    m_gpuSceneRasterPipelineLayout = m_device->CreatePipelineLayout(layoutDesc);
+    if (!m_gpuSceneRasterPipelineLayout)
+    {
+        DisableGPUSceneRaster("Failed to create GPU-scene raster pipeline layout");
+        return false;
+    }
+
+    return true;
+}
+
 bool PipelineCache::CreatePostProcessPipelineLayout()
 {
     RHIDescriptorSetLayoutDesc setLayoutDesc;
@@ -1993,6 +2751,7 @@ bool PipelineCache::CreatePostProcessPipelineLayout()
     setLayoutDesc.AddBinding(0, RHIBindingType::UniformBuffer, RHIShaderStage::Pixel);
     setLayoutDesc.AddBinding(1, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
     setLayoutDesc.AddBinding(2, RHIBindingType::Sampler, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(3, RHIBindingType::SampledTexture, RHIShaderStage::Pixel);
 
     m_postProcessSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
     if (!m_postProcessSetLayout)
@@ -2020,7 +2779,14 @@ bool PipelineCache::CreateUIPipelineLayout()
 {
     RHIDescriptorSetLayoutDesc setLayoutDesc;
     setLayoutDesc.debugName = "UITextureSetLayout";
-    setLayoutDesc.AddBinding(0, RHIBindingType::CombinedTextureSampler, RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(
+        0,
+        RHIBindingType::SampledTexture,
+        RHIShaderStage::Pixel);
+    setLayoutDesc.AddBinding(
+        1,
+        RHIBindingType::Sampler,
+        RHIShaderStage::Pixel);
 
     m_uiTextureSetLayout = m_device->CreateDescriptorSetLayout(setLayoutDesc);
     if (!m_uiTextureSetLayout)
@@ -2279,6 +3045,7 @@ bool PipelineCache::BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSet
     ensureBinding(outLayouts[0], 8, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[0], 9, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
     ensureBinding(outLayouts[1], 1, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Vertex);
+    ensureBinding(outLayouts[2], 11, RHIBindingType::ShaderResourceBuffer, RHIShaderStage::Pixel);
 
     for (uint32 setIndex = 0; setIndex < static_cast<uint32>(outLayouts.size()); ++setIndex)
     {
@@ -2374,6 +3141,13 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
         return false;
     if (!requireBinding(0, 9, RHIBindingType::ShaderResourceBuffer))
         return false;
+    for (uint32 binding = 10; binding <= 12; ++binding)
+    {
+        if (!requireBinding(0, binding, RHIBindingType::SampledTexture))
+            return false;
+    }
+    if (!requireBinding(0, 13, RHIBindingType::Sampler))
+        return false;
     if (!requireBinding(1, 0, RHIBindingType::DynamicUniformBuffer))
         return false;
     if (!requireBinding(1, 1, RHIBindingType::ShaderResourceBuffer))
@@ -2390,11 +3164,8 @@ bool PipelineCache::ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSet
     if (!requireBinding(2, 6, RHIBindingType::Sampler))
         return false;
 
-    for (uint32 binding = 7; binding <= 9; ++binding)
-    {
-        if (!requireBinding(2, binding, RHIBindingType::SampledTexture))
-            return false;
-    }
+    if (!requireBinding(2, 11, RHIBindingType::ShaderResourceBuffer))
+        return false;
 
     return true;
 }
@@ -2415,10 +3186,14 @@ void PipelineCache::ProcessPipelineManifest()
     expected.toneMappingPixelShaderHash = ComputeShaderHash(m_toneMappingPsCompileResult.get());
     expected.bloomVertexShaderHash = ComputeShaderHash(m_bloomVsCompileResult.get());
     expected.bloomPixelShaderHash = ComputeShaderHash(m_bloomPsCompileResult.get());
+    expected.ssaoVertexShaderHash = ComputeShaderHash(m_ssaoVsCompileResult.get());
+    expected.ssaoPixelShaderHash = ComputeShaderHash(m_ssaoPsCompileResult.get());
     expected.colorGradingVertexShaderHash = ComputeShaderHash(m_colorGradingVsCompileResult.get());
     expected.colorGradingPixelShaderHash = ComputeShaderHash(m_colorGradingPsCompileResult.get());
     expected.chromaticAberrationVertexShaderHash = ComputeShaderHash(m_chromaticAberrationVsCompileResult.get());
     expected.chromaticAberrationPixelShaderHash = ComputeShaderHash(m_chromaticAberrationPsCompileResult.get());
+    expected.filmGrainVertexShaderHash = ComputeShaderHash(m_filmGrainVsCompileResult.get());
+    expected.filmGrainPixelShaderHash = ComputeShaderHash(m_filmGrainPsCompileResult.get());
     expected.fxaaVertexShaderHash = ComputeShaderHash(m_fxaaVsCompileResult.get());
     expected.fxaaPixelShaderHash = ComputeShaderHash(m_fxaaPsCompileResult.get());
     expected.vignetteVertexShaderHash = ComputeShaderHash(m_vignetteVsCompileResult.get());
@@ -2438,8 +3213,10 @@ void PipelineCache::ProcessPipelineManifest()
     expected.skyboxPipelineHash = m_stats.skyboxPipelineHash;
     expected.toneMappingPipelineHash = m_stats.toneMappingPipelineHash;
     expected.bloomPipelineHash = m_stats.bloomPipelineHash;
+    expected.ssaoPipelineHash = m_stats.ssaoPipelineHash;
     expected.colorGradingPipelineHash = m_stats.colorGradingPipelineHash;
     expected.chromaticAberrationPipelineHash = m_stats.chromaticAberrationPipelineHash;
+    expected.filmGrainPipelineHash = m_stats.filmGrainPipelineHash;
     expected.fxaaPipelineHash = m_stats.fxaaPipelineHash;
     expected.vignettePipelineHash = m_stats.vignettePipelineHash;
     expected.uiPipelineHash = m_stats.uiPipelineHash;
@@ -2483,6 +3260,10 @@ void PipelineCache::BeginFrame()
 {
     m_objectConstantCursor = 0;
     m_currentObjectConstantOffset = 0;
+    if (m_objectConstantUploadArena)
+    {
+        m_objectConstantUploadArena->PollCompletions();
+    }
 
     if (m_frameResourceBindingsDirty && m_frameDescriptorSet)
     {
@@ -2492,17 +3273,24 @@ void PipelineCache::BeginFrame()
 
 void PipelineCache::ResetFrameResourceBindings()
 {
-    m_currentDirectionalShadowView = m_fallbackDirectionalShadowView.Get();
-    m_currentRayTracedShadowMaskView = m_fallbackRayTracedShadowMaskView.Get();
-    m_currentDirectionalShadowSampler = m_directionalShadowSampler.Get();
-    m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
-    m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
-    m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
-    m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer.Get();
-    m_currentClusterBuffer = m_fallbackClusterBuffer.Get();
-    m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
+    m_currentDirectionalShadowView = m_fallbackDirectionalShadowView;
+    m_currentRayTracedShadowMaskView = m_fallbackRayTracedShadowMaskView;
+    m_currentDirectionalShadowSampler = m_directionalShadowSampler;
+    m_currentEnvironmentIBLIrradianceView =
+        m_fallbackEnvironmentIBLCubemapView;
+    m_currentEnvironmentIBLPrefilteredView =
+        m_fallbackEnvironmentIBLCubemapView;
+    m_currentEnvironmentIBLBRDFLUTView =
+        m_fallbackEnvironmentIBLBRDFLUTView;
+    m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer;
+    m_currentPointLightsBuffer = m_fallbackPointLightsBuffer;
+    m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer;
+    m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer;
+    m_currentClusterBuffer = m_fallbackClusterBuffer;
+    m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer;
     m_lastDirectionalShadowFrameBindingResult = {};
     m_lastRayTracedShadowFrameBindingResult = {};
+    m_lastEnvironmentIBLFrameBindingResult = {};
     m_lastFrameLightBindingResult = {};
     m_frameResourceBindingsDirty = true;
 }
@@ -2565,8 +3353,8 @@ DirectionalShadowFrameBindingResult PipelineCache::UpdateDirectionalShadowFrameR
         return result;
     }
 
-    RHITextureView* textureView = m_fallbackDirectionalShadowView.Get();
-    RHISampler* sampler = m_directionalShadowSampler.Get();
+    RHITextureViewRef textureView = m_fallbackDirectionalShadowView;
+    RHISamplerRef sampler = m_directionalShadowSampler;
 
     if (!sampler)
     {
@@ -2586,7 +3374,7 @@ DirectionalShadowFrameBindingResult PipelineCache::UpdateDirectionalShadowFrameR
     }
     else
     {
-        textureView = resources.shadowMapView;
+        textureView.Reset(resources.shadowMapView);
         result.shadowSamplingEnabled = true;
         result.fallbackReason = DirectionalShadowFallbackReason::None;
     }
@@ -2618,7 +3406,7 @@ RayTracedShadowFrameBindingResult PipelineCache::UpdateRayTracedShadowFrameResou
         return result;
     }
 
-    RHITextureView* textureView = m_fallbackRayTracedShadowMaskView.Get();
+    RHITextureViewRef textureView = m_fallbackRayTracedShadowMaskView;
     if (!resources.enabled)
     {
         result.fallbackReason = RayTracedShadowFallbackReason::Disabled;
@@ -2629,7 +3417,7 @@ RayTracedShadowFrameBindingResult PipelineCache::UpdateRayTracedShadowFrameResou
     }
     else
     {
-        textureView = resources.shadowMaskView;
+        textureView.Reset(resources.shadowMaskView);
         result.shadowMaskSamplingEnabled = true;
         result.fallbackReason = RayTracedShadowFallbackReason::None;
     }
@@ -2643,6 +3431,67 @@ RayTracedShadowFrameBindingResult PipelineCache::UpdateRayTracedShadowFrameResou
     }
 
     m_lastRayTracedShadowFrameBindingResult = result;
+    return result;
+}
+
+EnvironmentIBLFrameBindingResult PipelineCache::UpdateEnvironmentIBLFrameResources(
+    const EnvironmentIBLFrameResources& resources)
+{
+    EnvironmentIBLFrameBindingResult result;
+
+    if (!m_frameDescriptorSet || !m_viewConstantBuffer ||
+        !EnsureFrameEnvironmentIBLFallbackResources())
+    {
+        result.fallbackReason = EnvironmentIBLFallbackReason::FallbackUnavailable;
+        m_lastEnvironmentIBLFrameBindingResult = result;
+        return result;
+    }
+
+    RHITextureViewRef irradianceView = m_fallbackEnvironmentIBLCubemapView;
+    RHITextureViewRef prefilteredView = m_fallbackEnvironmentIBLCubemapView;
+    RHITextureViewRef brdfLUTView = m_fallbackEnvironmentIBLBRDFLUTView;
+
+    if (!m_environmentIBLSampler)
+    {
+        result.fallbackReason = EnvironmentIBLFallbackReason::MissingSampler;
+    }
+    else if (!resources.enabled)
+    {
+        result.fallbackReason = EnvironmentIBLFallbackReason::Disabled;
+    }
+    else if (!resources.irradianceView)
+    {
+        result.fallbackReason = EnvironmentIBLFallbackReason::MissingIrradianceSRV;
+    }
+    else if (!resources.prefilteredEnvironmentView)
+    {
+        result.fallbackReason =
+            EnvironmentIBLFallbackReason::MissingPrefilteredEnvironmentSRV;
+    }
+    else if (!resources.brdfLUTView)
+    {
+        result.fallbackReason = EnvironmentIBLFallbackReason::MissingBRDFLUTSRV;
+    }
+    else
+    {
+        irradianceView.Reset(resources.irradianceView);
+        prefilteredView.Reset(resources.prefilteredEnvironmentView);
+        brdfLUTView.Reset(resources.brdfLUTView);
+        result.textureIBLSamplingEnabled = true;
+        result.fallbackReason = EnvironmentIBLFallbackReason::None;
+    }
+
+    m_currentEnvironmentIBLIrradianceView = irradianceView;
+    m_currentEnvironmentIBLPrefilteredView = prefilteredView;
+    m_currentEnvironmentIBLBRDFLUTView = brdfLUTView;
+
+    if (!UpdateDefaultFrameDescriptorSet())
+    {
+        result.textureIBLSamplingEnabled = false;
+        result.fallbackReason = EnvironmentIBLFallbackReason::FallbackUnavailable;
+    }
+
+    m_lastEnvironmentIBLFrameBindingResult = result;
     return result;
 }
 
@@ -2660,22 +3509,22 @@ FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLigh
     }
 
     result.fallbackReason = FrameLightFallbackReason::None;
-    m_currentLightConstantsBuffer = resources.lightConstantsBuffer;
-    m_currentPointLightsBuffer = resources.pointLightsBuffer;
-    m_currentSpotLightsBuffer = resources.spotLightsBuffer;
-    m_currentClusterConstantsBuffer = resources.clusterConstantsBuffer;
-    m_currentClusterBuffer = resources.clusterBuffer;
-    m_currentClusterLightIndexBuffer = resources.clusterLightIndexBuffer;
+    m_currentLightConstantsBuffer.Reset(resources.lightConstantsBuffer);
+    m_currentPointLightsBuffer.Reset(resources.pointLightsBuffer);
+    m_currentSpotLightsBuffer.Reset(resources.spotLightsBuffer);
+    m_currentClusterConstantsBuffer.Reset(resources.clusterConstantsBuffer);
+    m_currentClusterBuffer.Reset(resources.clusterBuffer);
+    m_currentClusterLightIndexBuffer.Reset(resources.clusterLightIndexBuffer);
 
     if (!m_currentLightConstantsBuffer)
     {
-        m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
+        m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer;
         result.fallbackReason = FrameLightFallbackReason::MissingLightConstants;
     }
 
     if (!m_currentPointLightsBuffer)
     {
-        m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
+        m_currentPointLightsBuffer = m_fallbackPointLightsBuffer;
         if (result.fallbackReason == FrameLightFallbackReason::None)
         {
             result.fallbackReason = FrameLightFallbackReason::MissingPointLights;
@@ -2684,7 +3533,7 @@ FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLigh
 
     if (!m_currentSpotLightsBuffer)
     {
-        m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
+        m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer;
         if (result.fallbackReason == FrameLightFallbackReason::None)
         {
             result.fallbackReason = FrameLightFallbackReason::MissingSpotLights;
@@ -2694,13 +3543,13 @@ FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLigh
     result.clusteredFallbackReason = FrameClusteredLightFallbackReason::None;
     if (!m_currentClusterConstantsBuffer)
     {
-        m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer.Get();
+        m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer;
         result.clusteredFallbackReason = FrameClusteredLightFallbackReason::MissingClusterConstants;
     }
 
     if (!m_currentClusterBuffer)
     {
-        m_currentClusterBuffer = m_fallbackClusterBuffer.Get();
+        m_currentClusterBuffer = m_fallbackClusterBuffer;
         if (result.clusteredFallbackReason == FrameClusteredLightFallbackReason::None)
         {
             result.clusteredFallbackReason = FrameClusteredLightFallbackReason::MissingClusterData;
@@ -2709,7 +3558,7 @@ FrameLightBindingResult PipelineCache::UpdateFrameLightResources(const FrameLigh
 
     if (!m_currentClusterLightIndexBuffer)
     {
-        m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
+        m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer;
         if (result.clusteredFallbackReason == FrameClusteredLightFallbackReason::None)
         {
             result.clusteredFallbackReason = FrameClusteredLightFallbackReason::MissingClusterLightIndices;
@@ -2766,6 +3615,8 @@ bool PipelineCache::UpdateObjectInstanceBuffer(RHIBuffer* instanceBuffer)
     }
 
     RHIDescriptorSetDesc desc;
+    desc.layout = objectLayout;
+    desc.debugName = "DefaultObjectDescriptorSet";
     desc.BindBuffer(0, m_objectConstantBuffer.Get(), 0, m_objectConstantStride);
     if (FindRHIBindingLayoutEntry(*objectLayout, 1))
     {
@@ -2776,7 +3627,163 @@ bool PipelineCache::UpdateObjectInstanceBuffer(RHIBuffer* instanceBuffer)
         desc.BindBuffer(1, instanceBinding);
     }
 
-    return m_objectDescriptorSet->Update(desc.bindings);
+    RHIDescriptorSetRef replacement = m_device->CreateDescriptorSet(desc);
+    if (!replacement)
+    {
+        return false;
+    }
+
+    QueueRenderOwnerRetirement(
+        m_objectDescriptorSet, m_pendingOwnerRetirements);
+    m_objectDescriptorSet = std::move(replacement);
+    return true;
+}
+
+RHIDescriptorSetRef PipelineCache::CreateObjectConstantPageDescriptor(
+    uint64 pageIdentity,
+    RHIBuffer* constantBuffer,
+    RHIBuffer* instanceBuffer,
+    bool cacheFallbackInstance)
+{
+    if (pageIdentity == 0 || constantBuffer == nullptr || m_device == nullptr)
+    {
+        return {};
+    }
+    RHIDescriptorSetLayout* objectLayout = GetObjectSetLayout();
+    if (objectLayout == nullptr)
+    {
+        return {};
+    }
+
+    const ObjectPageDescriptorKey key{pageIdentity, instanceBuffer};
+    if (cacheFallbackInstance)
+    {
+        if (const auto existing = m_objectPageDescriptorCache.find(key);
+            existing != m_objectPageDescriptorCache.end())
+        {
+            return existing->second;
+        }
+    }
+
+    RHIDescriptorSetDesc descriptorDesc;
+    descriptorDesc.layout = objectLayout;
+    descriptorDesc.debugName = "PagedObjectConstantDescriptorSet";
+    descriptorDesc.BindBuffer(0, constantBuffer, 0, m_objectConstantStride);
+    if (FindRHIBindingLayoutEntry(*objectLayout, 1))
+    {
+        if (instanceBuffer == nullptr)
+        {
+            return {};
+        }
+        descriptorDesc.BindBuffer(1, instanceBuffer);
+    }
+    RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptorSet)
+    {
+        return {};
+    }
+    if (cacheFallbackInstance)
+    {
+        m_objectPageDescriptorCache.emplace(key, descriptorSet);
+    }
+    return descriptorSet;
+}
+
+bool PipelineCache::CreateObjectConstantBinding(
+    const Mat4& worldMatrix,
+    const Mat4& normalMatrix,
+    const Mat4& previousWorldMatrix,
+    const Mat4& previousViewProjectionMatrix,
+    bool previousWorldViewProjectionValid,
+    bool receivesShadow,
+    std::span<const Mat4> skinningMatrices,
+    RHIBuffer* instanceBuffer,
+    ObjectConstantBinding& outBinding)
+{
+    outBinding = {};
+    if (!m_objectConstantUploadArena || !m_initialized)
+    {
+        return false;
+    }
+
+    RHIDescriptorSetLayout* const objectLayout = GetObjectSetLayout();
+    if (objectLayout == nullptr)
+    {
+        return false;
+    }
+
+    const bool requiresInstanceBuffer =
+        FindRHIBindingLayoutEntry(*objectLayout, 1) != nullptr;
+    RHIBufferRef resolvedInstanceBuffer;
+    if (requiresInstanceBuffer)
+    {
+        if (instanceBuffer != nullptr)
+        {
+            resolvedInstanceBuffer = RHIBufferRef(instanceBuffer);
+        }
+        else
+        {
+            if (!EnsureObjectInstanceFallbackBuffer())
+            {
+                return false;
+            }
+            resolvedInstanceBuffer = m_objectInstanceFallbackBuffer;
+        }
+
+        if (!resolvedInstanceBuffer)
+        {
+            return false;
+        }
+    }
+
+    ObjectConstants constants{};
+    constants.world = worldMatrix;
+    constants.normalMatrix = normalMatrix;
+    const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
+    constants.previousWorldViewProjection = previousWorldViewProjectionValid
+        ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) * previousWorldMatrix
+        : Mat4Identity();
+    constants.objectVelocityParams = Vec4(previousWorldViewProjectionValid ? 1.0f : 0.0f,
+                                          receivesShadow ? 1.0f : 0.0f,
+                                          0.0f,
+                                          0.0f);
+    const uint32 skinningMatrixCount = static_cast<uint32>(
+        std::min<size_t>(skinningMatrices.size(), RVX_MAX_OBJECT_SKINNING_MATRICES));
+    constants.skinningParams = Vec4(skinningMatrixCount != 0 ? 1.0f : 0.0f,
+                                    static_cast<float>(skinningMatrixCount),
+                                    0.0f,
+                                    0.0f);
+    for (uint32 index = 0; index < skinningMatrixCount; ++index)
+    {
+        constants.skinningMatrices[index] = skinningMatrices[index];
+    }
+
+    FrameConstantUploadAllocation allocation;
+    if (!m_objectConstantUploadArena->Allocate(
+            &constants, sizeof(constants), allocation))
+    {
+        return false;
+    }
+    RHIDescriptorSetRef descriptorSet = CreateObjectConstantPageDescriptor(
+        allocation.pageIdentity,
+        allocation.buffer.Get(),
+        resolvedInstanceBuffer.Get(),
+        instanceBuffer == nullptr);
+    if (!descriptorSet)
+    {
+        // This page cannot safely be handed to a later frame after descriptor
+        // creation failed during recording.  Keep it in the recording set so
+        // ReleaseUnsubmittedFrame() frees it only if the enclosing frame aborts.
+        return false;
+    }
+
+    outBinding.constantBuffer = std::move(allocation.buffer);
+    outBinding.instanceBuffer = std::move(resolvedInstanceBuffer);
+    outBinding.descriptorSet = std::move(descriptorSet);
+    outBinding.pageIdentity = allocation.pageIdentity;
+    outBinding.dynamicOffsets = {allocation.dynamicOffset};
+    outBinding.requiresInstanceBuffer = requiresInstanceBuffer;
+    return outBinding.IsValid();
 }
 
 RHIDescriptorSetLayout* PipelineCache::GetMaterialSetLayout() const
@@ -2790,6 +3797,723 @@ RHIDescriptorSetLayout* PipelineCache::GetMaterialSetLayout() const
 std::array<uint32, 1> PipelineCache::GetCurrentObjectDynamicOffset() const
 {
     return BuildSingleDynamicOffset(m_currentObjectConstantOffset);
+}
+
+bool PipelineCache::CreateRasterDrawBindingSnapshot(
+    const ViewData& view,
+    uint32 objectCapacity,
+    RasterDrawBindingSnapshot& outSnapshot) const
+{
+    return CreateRasterDrawBindingSnapshotInternal(
+        view, objectCapacity, nullptr, outSnapshot);
+}
+
+bool PipelineCache::CreateDirectionalShadowCascadeBindingSnapshot(
+    std::span<const ViewData> cascadeViews,
+    DirectionalShadowCascadeBindingSnapshot& outSnapshot) const
+{
+    outSnapshot = {};
+    if (!m_device || !m_initialized || cascadeViews.empty() ||
+        !m_frameDescriptorSet || m_setLayouts.empty() || !m_setLayouts[0] ||
+        !m_frameDescriptorSet->IsReadyForBinding(m_setLayouts[0].Get()))
+    {
+        return false;
+    }
+
+    const uint64 viewConstantStride =
+        AlignConstantBufferSize(sizeof(ViewConstants));
+    if (viewConstantStride == 0 ||
+        cascadeViews.size() >
+            std::numeric_limits<uint64>::max() / viewConstantStride)
+    {
+        return false;
+    }
+
+    RHIBufferDesc pageDesc;
+    pageDesc.size = viewConstantStride * cascadeViews.size();
+    pageDesc.usage = RHIBufferUsage::Constant;
+    pageDesc.memoryType = RHIMemoryType::Upload;
+    pageDesc.debugName = "DirectionalShadowCascadeViewConstants";
+    RHIBufferRef viewConstantPageBuffer = m_device->CreateBuffer(pageDesc);
+    if (!viewConstantPageBuffer)
+    {
+        return false;
+    }
+
+    // Complete the page before any graph command can bind it. Keeping one
+    // immutable copy per cascade avoids the old record-time overwrite of the
+    // cache-global view constant buffer.
+    void* mapped = viewConstantPageBuffer->Map();
+    if (!mapped)
+    {
+        return false;
+    }
+    const RHIBackendType backend = m_device->GetBackendType();
+    for (size_t cascadeIndex = 0; cascadeIndex < cascadeViews.size(); ++cascadeIndex)
+    {
+        const ViewConstants constants = BuildViewConstantsSnapshot(
+            cascadeViews[cascadeIndex], backend, m_config.reverseZ);
+        std::memcpy(static_cast<uint8*>(mapped) +
+                        cascadeIndex * viewConstantStride,
+                    &constants,
+                    sizeof(constants));
+    }
+    viewConstantPageBuffer->Unmap();
+
+    const Ref<FrameDescriptorBindingOwners> baseOwners =
+        m_frameDescriptorBindingOwners;
+    if (!baseOwners || !baseOwners->IsComplete())
+    {
+        return false;
+    }
+    const std::vector<RHIDescriptorBinding> baseBindings =
+        BuildFrameDescriptorBindings(*baseOwners);
+
+    std::vector<RHIDescriptorSetRef> frameDescriptorSets;
+    frameDescriptorSets.reserve(cascadeViews.size());
+    for (size_t cascadeIndex = 0; cascadeIndex < cascadeViews.size(); ++cascadeIndex)
+    {
+        RHIDescriptorSetDesc frameSetDesc;
+        frameSetDesc.layout = m_setLayouts[0].Get();
+        frameSetDesc.bindings = baseBindings;
+        frameSetDesc.debugName = "DirectionalShadowCascadeFrameDescriptorSet";
+
+        bool replacedViewBinding = false;
+        for (RHIDescriptorBinding& binding : frameSetDesc.bindings)
+        {
+            if (binding.binding == 0 && binding.arrayElement == 0)
+            {
+                binding.buffer = viewConstantPageBuffer.Get();
+                binding.offset = cascadeIndex * viewConstantStride;
+                binding.range = viewConstantStride;
+                binding.textureView = nullptr;
+                binding.sampler = nullptr;
+                binding.accelerationStructure = nullptr;
+                replacedViewBinding = true;
+                break;
+            }
+        }
+        if (!replacedViewBinding)
+        {
+            return false;
+        }
+
+        RHIDescriptorSetRef frameSet =
+            m_device->CreateDescriptorSet(frameSetDesc);
+        if (!frameSet ||
+            !frameSet->IsReadyForBinding(m_setLayouts[0].Get()))
+        {
+            return false;
+        }
+        frameDescriptorSets.push_back(std::move(frameSet));
+    }
+
+    std::vector<Ref<RefCounted>> retainedResources;
+    retainedResources.reserve(2 + frameDescriptorSets.size() +
+                              baseBindings.size() * cascadeViews.size());
+    retainedResources.emplace_back(viewConstantPageBuffer.Get());
+    retainedResources.emplace_back(m_setLayouts[0].Get());
+    retainedResources.emplace_back(baseOwners.Get());
+    for (const RHIDescriptorSetRef& frameSet : frameDescriptorSets)
+    {
+        retainedResources.emplace_back(frameSet.Get());
+    }
+    for (const RHIDescriptorBinding& binding : baseBindings)
+    {
+        if (binding.binding == 0 && binding.arrayElement == 0)
+        {
+            continue;
+        }
+        if (binding.buffer)
+            retainedResources.emplace_back(binding.buffer);
+        if (binding.textureView)
+        {
+            retainedResources.emplace_back(binding.textureView);
+            if (RHITexture* texture = binding.textureView->GetTexture())
+            {
+                retainedResources.emplace_back(texture);
+            }
+        }
+        if (binding.sampler)
+            retainedResources.emplace_back(binding.sampler);
+        if (binding.accelerationStructure)
+            retainedResources.emplace_back(binding.accelerationStructure);
+    }
+
+    outSnapshot.viewConstantPageBuffer = std::move(viewConstantPageBuffer);
+    outSnapshot.frameDescriptorSets = std::move(frameDescriptorSets);
+    outSnapshot.retainedResources = std::move(retainedResources);
+    outSnapshot.viewConstantStride = viewConstantStride;
+    return outSnapshot.IsValid() &&
+           outSnapshot.frameDescriptorSets.size() == cascadeViews.size();
+}
+
+bool PipelineCache::CreateGPUSceneRasterBindingSnapshot(
+    const GPUSceneRasterResourceSnapshot& resources,
+    const ObjectConstants& objectConstants,
+    GPUSceneRasterBindingSnapshot& outSnapshot)
+{
+    outSnapshot = {};
+    if (!m_device || !IsGPUSceneRasterReady() || m_setLayouts.size() != 3 ||
+        !m_setLayouts[0] || !m_setLayouts[2] || !resources.IsValid() ||
+        resources.m_leaseVersion != resources.m_exactLeaseVersion ||
+        resources.m_candidateCapacity < resources.m_candidateCount)
+    {
+        return false;
+    }
+
+    const auto hasExactStructuredStorage = [](const RHIBufferRef& buffer,
+                                               uint32 capacity,
+                                               uint32 stride)
+    {
+        return buffer && capacity != 0 && buffer->GetStride() == stride &&
+               capacity <= std::numeric_limits<uint64>::max() / stride &&
+               buffer->GetSize() == static_cast<uint64>(capacity) * stride;
+    };
+    if (!hasExactStructuredStorage(resources.m_candidates,
+                                   resources.m_candidateCapacity,
+                                   sizeof(GPUSceneCullingCandidate)) ||
+        !hasExactStructuredStorage(resources.m_primitives,
+                                   resources.m_primitiveCapacity,
+                                   sizeof(GPUScenePrimitiveRow)) ||
+        !hasExactStructuredStorage(resources.m_transforms,
+                                   resources.m_transformCapacity,
+                                   sizeof(GPUSceneTransformRow)))
+    {
+        return false;
+    }
+
+    RHIPipeline* opaquePipeline = GetGPUScenePipelineForVariant(
+        MaterialPipelineVariant::Opaque, m_renderTargetFormat);
+    RHIPipeline* instancedMaterialOpaquePipeline =
+        GetGPUSceneInstancedMaterialPipelineForVariant(
+            MaterialPipelineVariant::Opaque, m_renderTargetFormat);
+    RHIPipeline* maskedPipeline = GetGPUScenePipelineForVariant(
+        MaterialPipelineVariant::Masked, m_renderTargetFormat);
+    RHIPipeline* depthPipeline = GetGPUSceneDepthOnlyPipeline();
+    if (!opaquePipeline || !instancedMaterialOpaquePipeline ||
+        !maskedPipeline || !depthPipeline)
+    {
+        return false;
+    }
+
+    GPUSceneRasterObjectConstants constants;
+    constants.objectConstants = objectConstants;
+    constants.gpuSceneRasterCounts = {
+        resources.m_candidateCount,
+        resources.m_primitiveCapacity,
+        resources.m_transformCapacity,
+        0u};
+    const uint64 constantBufferSize =
+        AlignConstantBufferSize(sizeof(GPUSceneRasterObjectConstants));
+    RHIBufferDesc constantBufferDesc;
+    constantBufferDesc.size = constantBufferSize;
+    constantBufferDesc.usage = RHIBufferUsage::Constant;
+    constantBufferDesc.memoryType = RHIMemoryType::Upload;
+    constantBufferDesc.debugName = "GPUSceneRasterObjectConstants";
+    RHIBufferRef constantBuffer = m_device->CreateBuffer(constantBufferDesc);
+    if (!constantBuffer)
+    {
+        return false;
+    }
+    void* mapped = constantBuffer->Map();
+    if (!mapped)
+    {
+        return false;
+    }
+    std::memcpy(mapped, &constants, sizeof(constants));
+    constantBuffer->Unmap();
+
+    RHIDescriptorSetDesc descriptorDesc;
+    descriptorDesc.debugName = "GPUSceneRasterObjectDescriptorSet";
+    descriptorDesc.SetLayout(m_gpuSceneRasterObjectSetLayout.Get())
+        .BindBuffer(0, constantBuffer.Get(), 0, constantBufferSize)
+        .BindBuffer(1, resources.m_candidates.Get())
+        .BindBuffer(2, resources.m_primitives.Get())
+        .BindBuffer(3, resources.m_transforms.Get());
+    RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptorSet ||
+        !descriptorSet->IsReadyForBinding(m_gpuSceneRasterObjectSetLayout.Get()))
+    {
+        return false;
+    }
+
+    GPUSceneRasterBindingSnapshot snapshot;
+    snapshot.objectConstantBuffer = std::move(constantBuffer);
+    snapshot.candidateBuffer = resources.m_candidates;
+    snapshot.primitiveBuffer = resources.m_primitives;
+    snapshot.transformBuffer = resources.m_transforms;
+    snapshot.objectDescriptorSet = std::move(descriptorSet);
+    snapshot.frameSetLayout = m_setLayouts[0];
+    snapshot.objectSetLayout = m_gpuSceneRasterObjectSetLayout;
+    snapshot.materialSetLayout = m_setLayouts[2];
+    snapshot.pipelineLayout = m_gpuSceneRasterPipelineLayout;
+    snapshot.opaquePipeline = m_gpuSceneOpaquePipeline;
+    snapshot.instancedMaterialOpaquePipeline =
+        m_gpuSceneInstancedMaterialOpaquePipeline;
+    snapshot.maskedPipeline = m_gpuSceneMaskedPipeline;
+    snapshot.depthPipeline = m_gpuSceneDepthOnlyPipeline;
+    snapshot.leaseVersion = resources.m_leaseVersion;
+    snapshot.candidateCount = resources.m_candidateCount;
+    snapshot.primitiveCapacity = resources.m_primitiveCapacity;
+    snapshot.transformCapacity = resources.m_transformCapacity;
+    if (!snapshot.IsReadyForBinding())
+    {
+        return false;
+    }
+
+    outSnapshot = std::move(snapshot);
+    return true;
+}
+
+bool PipelineCache::CreateTransparentRasterDrawBindingSnapshot(
+    const ViewData& view,
+    uint32 objectCapacity,
+    const FrameLightResources& lightResources,
+    RasterDrawBindingSnapshot& outSnapshot) const
+{
+    return CreateRasterDrawBindingSnapshotInternal(
+        view, objectCapacity, &lightResources, outSnapshot);
+}
+
+bool PipelineCache::CreateRasterDrawBindingSnapshotInternal(
+    const ViewData& view,
+    uint32 objectCapacity,
+    const FrameLightResources* transparentLightResources,
+    RasterDrawBindingSnapshot& outSnapshot) const
+{
+    outSnapshot = {};
+    if (!m_device || !m_initialized || !m_pipelineLayout || m_setLayouts.size() < 3 ||
+        !m_setLayouts[0] || !m_setLayouts[1] || !m_setLayouts[2])
+    {
+        return false;
+    }
+    if (transparentLightResources == nullptr &&
+        (!m_frameDescriptorSet || !m_frameDescriptorBindingOwners ||
+         !m_frameDescriptorBindingOwners->IsComplete() || !m_objectDescriptorSet))
+    {
+        return false;
+    }
+
+    const uint32 capacity = std::max(1u, objectCapacity);
+    const uint64 objectStride = m_objectConstantStride != 0
+        ? m_objectConstantStride : AlignConstantBufferSize(sizeof(ObjectConstants));
+    if (capacity > 1 &&
+        objectStride > static_cast<uint64>(std::numeric_limits<uint32>::max()) /
+                           static_cast<uint64>(capacity - 1) ||
+        objectStride > std::numeric_limits<uint64>::max() /
+                           static_cast<uint64>(capacity))
+    {
+        return false;
+    }
+    RHIBufferDesc viewDesc;
+    viewDesc.size = AlignConstantBufferSize(sizeof(ViewConstants));
+    viewDesc.usage = RHIBufferUsage::Constant;
+    viewDesc.memoryType = RHIMemoryType::Upload;
+    viewDesc.debugName = transparentLightResources != nullptr
+        ? "TransparentRecordViewConstants"
+        : "ObjectVelocityRecordViewConstants";
+    RHIBufferRef viewBuffer = m_device->CreateBuffer(viewDesc);
+    if (!viewBuffer)
+    {
+        return false;
+    }
+    ViewData recordedView = view;
+    if (transparentLightResources != nullptr)
+    {
+        // Transparent shading is deliberately outside directional/ray-traced
+        // shadow sampling scope. Match the fallback descriptor bindings with
+        // matching shader constants without mutating the caller's ViewData.
+        recordedView.directionalShadowViewProjection = Mat4Identity();
+        recordedView.directionalShadowViewProjections = {};
+        recordedView.directionalShadowCascadeSplits = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        recordedView.directionalShadowCascadeFadeDistances =
+            Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        recordedView.directionalShadowCascadeCount = 0;
+        recordedView.directionalShadowDepthBias = 0.0f;
+        recordedView.directionalShadowStrength = 0.0f;
+        recordedView.directionalShadowInvMapSize = 0.0f;
+        recordedView.directionalShadowFilterRadiusTexels = 0.0f;
+        recordedView.directionalShadowNormalBias = 0.0f;
+        recordedView.directionalShadowEnabled = 0;
+        recordedView.rayTracedShadowEnabled = 0;
+        recordedView.rayTracedShadowFilterRadiusPixels = 0.0f;
+        recordedView.rayTracedShadowMode = RayTracedShadowMode::ComplementRaster;
+    }
+    const ViewConstants viewConstants = BuildViewConstantsSnapshot(
+        recordedView, m_device->GetBackendType(), m_config.reverseZ);
+    void* viewMapped = viewBuffer->Map();
+    if (!viewMapped)
+    {
+        return false;
+    }
+    std::memcpy(viewMapped, &viewConstants, sizeof(ViewConstants));
+    viewBuffer->Unmap();
+
+    RHIBufferDesc objectDesc;
+    objectDesc.size = objectStride * capacity;
+    objectDesc.usage = RHIBufferUsage::Constant;
+    objectDesc.memoryType = RHIMemoryType::Upload;
+    objectDesc.debugName = transparentLightResources != nullptr
+        ? "TransparentRecordObjectConstants"
+        : "ObjectVelocityRecordObjectConstants";
+    RHIBufferRef objectBuffer = m_device->CreateBuffer(objectDesc);
+    if (!objectBuffer)
+    {
+        return false;
+    }
+
+    RHIDescriptorSetDesc frameSetDesc;
+    frameSetDesc.layout = m_setLayouts[0].Get();
+    frameSetDesc.debugName = transparentLightResources != nullptr
+        ? "TransparentRecordFrameDescriptorSet"
+        : "ObjectVelocityRecordFrameDescriptorSet";
+    if (transparentLightResources == nullptr)
+    {
+        frameSetDesc.bindings =
+            BuildFrameDescriptorBindings(*m_frameDescriptorBindingOwners);
+        bool replacedFrameBinding = false;
+        for (RHIDescriptorBinding& binding : frameSetDesc.bindings)
+        {
+            if (binding.binding == 0 && binding.arrayElement == 0)
+            {
+                binding.buffer = viewBuffer.Get();
+                binding.offset = 0;
+                binding.range = AlignConstantBufferSize(sizeof(ViewConstants));
+                binding.textureView = nullptr;
+                binding.sampler = nullptr;
+                binding.accelerationStructure = nullptr;
+                replacedFrameBinding = true;
+                break;
+            }
+        }
+        if (!replacedFrameBinding)
+        {
+            frameSetDesc.BindBuffer(0, viewBuffer.Get(), 0,
+                                    AlignConstantBufferSize(sizeof(ViewConstants)));
+        }
+    }
+
+    std::array<RHIBufferRef, 6> transparentFrameBufferCopies;
+    if (transparentLightResources != nullptr)
+    {
+        // LightManager and ClusteredLighting each expose a mutable upload
+        // allocation that is overwritten by the next frame. Strong references
+        // alone would preserve the allocation but not the contents. Clone the
+        // actual bound bytes while the graph is registered, then point the
+        // private descriptor set at the recording-owned copies.
+        if (!m_fallbackDirectionalShadowView || !m_directionalShadowSampler ||
+            !m_fallbackRayTracedShadowMaskView || !m_fallbackLightConstantsBuffer ||
+            !m_fallbackPointLightsBuffer || !m_fallbackSpotLightsBuffer ||
+            !m_fallbackClusterConstantsBuffer || !m_fallbackClusterBuffer ||
+            !m_fallbackClusterLightIndexBuffer ||
+            !m_fallbackEnvironmentIBLCubemapView ||
+            !m_fallbackEnvironmentIBLBRDFLUTView || !m_environmentIBLSampler)
+        {
+            return false;
+        }
+
+        const auto resolveSource = [](RHIBuffer* supplied,
+                                      const RHIBufferRef& fallback) -> RHIBuffer*
+        {
+            return supplied != nullptr ? supplied : fallback.Get();
+        };
+        const std::array<RHIBuffer*, 6> sources = {
+            resolveSource(transparentLightResources->lightConstantsBuffer,
+                          m_fallbackLightConstantsBuffer),
+            resolveSource(transparentLightResources->pointLightsBuffer,
+                          m_fallbackPointLightsBuffer),
+            resolveSource(transparentLightResources->spotLightsBuffer,
+                          m_fallbackSpotLightsBuffer),
+            resolveSource(transparentLightResources->clusterConstantsBuffer,
+                          m_fallbackClusterConstantsBuffer),
+            resolveSource(transparentLightResources->clusterBuffer,
+                          m_fallbackClusterBuffer),
+            resolveSource(transparentLightResources->clusterLightIndexBuffer,
+                          m_fallbackClusterLightIndexBuffer)};
+        constexpr std::array<const char*, 6> copyNames = {
+            "TransparentRecordLightConstants",
+            "TransparentRecordPointLights",
+            "TransparentRecordSpotLights",
+            "TransparentRecordClusterConstants",
+            "TransparentRecordClusterData",
+            "TransparentRecordClusterLightIndices"};
+        const auto cloneUploadBuffer = [this](RHIBuffer* source,
+                                               const char* debugName) -> RHIBufferRef
+        {
+            if (source == nullptr || source->GetSize() == 0 ||
+                source->GetMemoryType() != RHIMemoryType::Upload)
+            {
+                return {};
+            }
+
+            RHIBufferDesc desc;
+            desc.size = source->GetSize();
+            desc.usage = source->GetUsage();
+            desc.memoryType = RHIMemoryType::Upload;
+            desc.stride = source->GetStride();
+            desc.debugName = debugName;
+            RHIBufferRef copy = m_device->CreateBuffer(desc);
+            if (!copy)
+            {
+                return {};
+            }
+
+            void* sourceMapped = source->Map();
+            if (!sourceMapped)
+            {
+                return {};
+            }
+            void* copyMapped = copy->Map();
+            if (!copyMapped)
+            {
+                source->Unmap();
+                return {};
+            }
+            std::memcpy(copyMapped, sourceMapped,
+                        static_cast<size_t>(source->GetSize()));
+            copy->Unmap();
+            source->Unmap();
+            return copy;
+        };
+        for (uint32 index = 0; index < transparentFrameBufferCopies.size(); ++index)
+        {
+            transparentFrameBufferCopies[index] = cloneUploadBuffer(
+                sources[index], copyNames[index]);
+            if (!transparentFrameBufferCopies[index])
+            {
+                return false;
+            }
+        }
+
+        // Do not clone the cache's current frame descriptor. It is a mutable
+        // owner snapshot and some backends deliberately do not expose an
+        // executable descriptor snapshot there. Build the complete reflected
+        // set explicitly so this private recording set has no global frame
+        // descriptor dependency.
+        frameSetDesc.bindings.clear();
+        frameSetDesc.BindBuffer(0, viewBuffer.Get(), 0,
+                                AlignConstantBufferSize(sizeof(ViewConstants)));
+        frameSetDesc.BindTexture(1, m_fallbackDirectionalShadowView.Get());
+        frameSetDesc.BindSampler(2, m_directionalShadowSampler.Get());
+        frameSetDesc.BindBuffer(3, transparentFrameBufferCopies[0].Get(), 0,
+                                AlignConstantBufferSize(sizeof(LightConstants)));
+        frameSetDesc.BindBuffer(4, transparentFrameBufferCopies[1].Get());
+        frameSetDesc.BindBuffer(5, transparentFrameBufferCopies[2].Get());
+        frameSetDesc.BindTexture(6, m_fallbackRayTracedShadowMaskView.Get());
+        frameSetDesc.BindBuffer(7, transparentFrameBufferCopies[3].Get(), 0,
+                                AlignConstantBufferSize(sizeof(GPUClusterConstants)));
+        frameSetDesc.BindBuffer(8, transparentFrameBufferCopies[4].Get());
+        frameSetDesc.BindBuffer(9, transparentFrameBufferCopies[5].Get());
+        frameSetDesc.BindTexture(
+            10,
+            m_currentEnvironmentIBLIrradianceView
+                ? m_currentEnvironmentIBLIrradianceView.Get()
+                : m_fallbackEnvironmentIBLCubemapView.Get());
+        frameSetDesc.BindTexture(
+            11,
+            m_currentEnvironmentIBLPrefilteredView
+                ? m_currentEnvironmentIBLPrefilteredView.Get()
+                : m_fallbackEnvironmentIBLCubemapView.Get());
+        frameSetDesc.BindTexture(
+            12,
+            m_currentEnvironmentIBLBRDFLUTView
+                ? m_currentEnvironmentIBLBRDFLUTView.Get()
+                : m_fallbackEnvironmentIBLBRDFLUTView.Get());
+        frameSetDesc.BindSampler(13, m_environmentIBLSampler.Get());
+    }
+    RHIDescriptorSetRef frameSet = m_device->CreateDescriptorSet(frameSetDesc);
+    if (!frameSet || !frameSet->IsReadyForBinding(m_setLayouts[0].Get()))
+    {
+        return false;
+    }
+
+    // The object layout exposes an optional structured instance-data binding.
+    // Transparent recording cannot point at the cache-owned fallback because
+    // the record must remain self-contained until submission retirement.
+    // Allocate a zeroed record-local equivalent when reflection requires it.
+    RHIBufferRef transparentObjectInstanceFallback;
+    if (transparentLightResources != nullptr &&
+        FindRHIBindingLayoutEntry(*m_setLayouts[1], 1))
+    {
+        RHIBufferDesc instanceDesc;
+        instanceDesc.size = 256;
+        instanceDesc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+        instanceDesc.memoryType = RHIMemoryType::Upload;
+        instanceDesc.stride = 16;
+        instanceDesc.debugName = "TransparentRecordObjectInstanceFallback";
+        transparentObjectInstanceFallback = m_device->CreateBuffer(instanceDesc);
+        if (!transparentObjectInstanceFallback)
+        {
+            return false;
+        }
+
+        void* instanceMapped = transparentObjectInstanceFallback->Map();
+        if (!instanceMapped)
+        {
+            return false;
+        }
+        std::memset(instanceMapped, 0, static_cast<size_t>(instanceDesc.size));
+        transparentObjectInstanceFallback->Unmap();
+    }
+
+    RHIDescriptorSetDesc objectSetDesc;
+    objectSetDesc.layout = m_setLayouts[1].Get();
+    if (transparentLightResources != nullptr)
+    {
+        objectSetDesc.BindBuffer(0, objectBuffer.Get(), 0, objectStride);
+        if (FindRHIBindingLayoutEntry(*m_setLayouts[1], 1))
+        {
+            if (!transparentObjectInstanceFallback)
+            {
+                return false;
+            }
+            objectSetDesc.BindBuffer(1, transparentObjectInstanceFallback.Get());
+        }
+    }
+    else
+    {
+        objectSetDesc.bindings = m_objectDescriptorSet->GetDescriptorSnapshot();
+    }
+    objectSetDesc.debugName = transparentLightResources != nullptr
+        ? "TransparentRecordObjectDescriptorSet"
+        : "ObjectVelocityRecordObjectDescriptorSet";
+    bool replacedObjectBinding = transparentLightResources != nullptr;
+    for (RHIDescriptorBinding& binding : objectSetDesc.bindings)
+    {
+        if (binding.binding == 0 && binding.arrayElement == 0)
+        {
+            binding.buffer = objectBuffer.Get();
+            binding.offset = 0;
+            binding.range = objectStride;
+            binding.textureView = nullptr;
+            binding.sampler = nullptr;
+            binding.accelerationStructure = nullptr;
+            replacedObjectBinding = true;
+            break;
+        }
+    }
+    if (!replacedObjectBinding)
+    {
+        objectSetDesc.BindBuffer(0, objectBuffer.Get(), 0, objectStride);
+    }
+    RHIDescriptorSetRef objectSet = m_device->CreateDescriptorSet(objectSetDesc);
+    if (!objectSet || !objectSet->IsReadyForBinding(m_setLayouts[1].Get()))
+    {
+        return false;
+    }
+
+    std::vector<Ref<RefCounted>> retainedResources;
+    retainedResources.emplace_back(viewBuffer.Get());
+    retainedResources.emplace_back(objectBuffer.Get());
+    for (const RHIBufferRef& copy : transparentFrameBufferCopies)
+    {
+        if (copy)
+        {
+            retainedResources.emplace_back(copy.Get());
+        }
+    }
+    if (transparentObjectInstanceFallback)
+    {
+        retainedResources.emplace_back(transparentObjectInstanceFallback.Get());
+    }
+    retainedResources.emplace_back(frameSet.Get());
+    retainedResources.emplace_back(objectSet.Get());
+    // Backend descriptor sets and pipelines currently retain only raw layout
+    // identities. Keep the complete DefaultLit layout family alive through
+    // graph execution and submission retirement.
+    retainedResources.emplace_back(m_pipelineLayout.Get());
+    retainedResources.emplace_back(m_setLayouts[0].Get());
+    retainedResources.emplace_back(m_setLayouts[1].Get());
+    retainedResources.emplace_back(m_setLayouts[2].Get());
+    if (transparentLightResources == nullptr)
+    {
+        retainedResources.emplace_back(m_frameDescriptorBindingOwners.Get());
+    }
+    const auto retainBindingResources = [&retainedResources](
+                                            const std::vector<RHIDescriptorBinding>& bindings)
+    {
+        for (const RHIDescriptorBinding& binding : bindings)
+        {
+            if (binding.buffer)
+                retainedResources.emplace_back(binding.buffer);
+            if (binding.textureView)
+            {
+                retainedResources.emplace_back(binding.textureView);
+                if (RHITexture* texture = binding.textureView->GetTexture())
+                {
+                    retainedResources.emplace_back(texture);
+                }
+            }
+            if (binding.sampler)
+                retainedResources.emplace_back(binding.sampler);
+            if (binding.accelerationStructure)
+                retainedResources.emplace_back(binding.accelerationStructure);
+        }
+    };
+    retainBindingResources(frameSetDesc.bindings);
+    retainBindingResources(objectSetDesc.bindings);
+
+    outSnapshot.viewConstantBuffer = std::move(viewBuffer);
+    outSnapshot.objectConstantBuffer = std::move(objectBuffer);
+    outSnapshot.frameDescriptorSet = std::move(frameSet);
+    outSnapshot.objectDescriptorSet = std::move(objectSet);
+    outSnapshot.retainedResources = std::move(retainedResources);
+    outSnapshot.objectConstantStride = objectStride;
+    outSnapshot.objectCapacity = capacity;
+    outSnapshot.objectCursor = 0;
+    return outSnapshot.IsValid();
+}
+
+bool PipelineCache::UpdateRasterDrawBindingSnapshotObject(
+    RasterDrawBindingSnapshot& snapshot,
+    const Mat4& worldMatrix,
+    const Mat4& normalMatrix,
+    const Mat4& previousWorldMatrix,
+    const Mat4& previousViewProjectionMatrix,
+    bool previousWorldViewProjectionValid,
+    bool receivesShadow,
+    std::span<const Mat4> skinningMatrices) const
+{
+    if (!snapshot.IsValid() || snapshot.objectCursor >= snapshot.objectCapacity)
+    {
+        return false;
+    }
+
+    ObjectConstants constants{};
+    constants.world = worldMatrix;
+    constants.normalMatrix = normalMatrix;
+    const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
+    constants.previousWorldViewProjection = previousWorldViewProjectionValid
+        ? ApplyBackendClipConvention(previousViewProjectionMatrix, backend) * previousWorldMatrix
+        : Mat4Identity();
+    constants.objectVelocityParams = Vec4(
+        previousWorldViewProjectionValid ? 1.0f : 0.0f,
+        receivesShadow ? 1.0f : 0.0f,
+        0.0f, 0.0f);
+    const uint32 skinningMatrixCount = static_cast<uint32>(
+        std::min<size_t>(skinningMatrices.size(), RVX_MAX_OBJECT_SKINNING_MATRICES));
+    constants.skinningParams = Vec4(
+        skinningMatrixCount > 0 ? 1.0f : 0.0f,
+        static_cast<float>(skinningMatrixCount), 0.0f, 0.0f);
+    for (uint32 i = 0; i < skinningMatrixCount; ++i)
+    {
+        constants.skinningMatrices[i] = skinningMatrices[i];
+    }
+
+    const uint64 offset = static_cast<uint64>(snapshot.objectCursor) *
+                          snapshot.objectConstantStride;
+    void* mapped = snapshot.objectConstantBuffer->Map();
+    if (!mapped)
+    {
+        return false;
+    }
+    std::memcpy(static_cast<uint8*>(mapped) + offset,
+                &constants,
+                sizeof(ObjectConstants));
+    snapshot.objectConstantBuffer->Unmap();
+    ++snapshot.objectCursor;
+    return true;
 }
 
 RHIPipeline* PipelineCache::GetPipelineForVariant(MaterialPipelineVariant variant) const
@@ -2813,36 +4537,73 @@ RHIPipeline* PipelineCache::GetPipelineForVariant(MaterialPipelineVariant varian
         return GetPipelineForVariant(variant);
     }
 
+    return GetPipelineForVariant(
+        variant, renderTargetFormat, DefaultLitDirectVertexInputMode::Skinned);
+}
+
+RHIPipeline* PipelineCache::GetPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat,
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    if (inputMode != DefaultLitDirectVertexInputMode::Rigid &&
+        inputMode != DefaultLitDirectVertexInputMode::Skinned)
+    {
+        SetLastError("Invalid DefaultLit direct vertex input mode");
+        return nullptr;
+    }
+
+    if (renderTargetFormat == RHIFormat::Unknown)
+    {
+        renderTargetFormat = m_renderTargetFormat;
+    }
+
     const RHIDepthStencilState writableDepthState = BuildDepthStencilState(m_config.reverseZ, true);
     const RHIDepthStencilState readOnlyDepthState = BuildDepthStencilState(m_config.reverseZ, false);
+
+    const char* maskedDebugName =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? "DefaultMaskedRigidPipeline"
+            : "DefaultMaskedPipeline";
+    const char* transparentDebugName =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? "DefaultTransparentRigidPipeline"
+            : "DefaultTransparentPipeline";
+    const char* opaqueDebugName =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? "DefaultOpaqueRigidPipeline"
+            : "DefaultOpaquePipeline";
 
     switch (variant)
     {
         case MaterialPipelineVariant::Masked:
             return GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Masked,
-                                                 "DefaultMaskedPipeline",
+                                                 maskedDebugName,
                                                  writableDepthState,
                                                  RHIBlendState::Default(),
                                                  renderTargetFormat,
+                                                 inputMode,
                                                  false).Get();
         case MaterialPipelineVariant::Transparent:
         {
             RHIBlendState transparentBlend = RHIBlendState::Default();
             transparentBlend.renderTargets[0] = RHIRenderTargetBlendState::AlphaBlend();
             return GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Transparent,
-                                                 "DefaultTransparentPipeline",
+                                                 transparentDebugName,
                                                  readOnlyDepthState,
                                                  transparentBlend,
                                                  renderTargetFormat,
+                                                 inputMode,
                                                  false).Get();
         }
         case MaterialPipelineVariant::Opaque:
         default:
             return GetOrCreateDefaultLitPipeline(MaterialPipelineVariant::Opaque,
-                                                 "DefaultOpaquePipeline",
+                                                 opaqueDebugName,
                                                  writableDepthState,
                                                  RHIBlendState::Default(),
                                                  renderTargetFormat,
+                                                 inputMode,
                                                  false).Get();
     }
 }
@@ -2896,6 +4657,231 @@ RHIPipeline* PipelineCache::GetGPUDrivenDepthOnlyPipeline()
     return m_gpuDrivenDepthOnlyPipeline.Get();
 }
 
+RHIPipeline* PipelineCache::GetInstancedMaterialPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat)
+{
+    if (renderTargetFormat == RHIFormat::Unknown)
+    {
+        renderTargetFormat = m_renderTargetFormat;
+    }
+    if (variant != MaterialPipelineVariant::Opaque)
+    {
+        SetLastError(
+            "Instanced material parameters currently support opaque materials only");
+        return nullptr;
+    }
+    return GetOrCreateInstancedMaterialDefaultLitPipeline(
+        variant,
+        "InstancedMaterialOpaquePipeline",
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(),
+        renderTargetFormat).Get();
+}
+
+RHIPipeline* PipelineCache::GetDepthOnlyPipeline(
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        return m_depthOnlyPipeline.Get();
+    }
+    if (!m_rigidDepthOnlyPipeline)
+    {
+        m_rigidDepthOnlyPipeline = GetOrCreateRigidDepthOnlyPipeline();
+    }
+    return m_rigidDepthOnlyPipeline.Get();
+}
+
+RHIPipeline* PipelineCache::GetMaskedDepthOnlyPipeline(
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        return m_maskedDepthOnlyPipeline.Get();
+    }
+    if (!m_rigidMaskedDepthOnlyPipeline)
+    {
+        m_rigidMaskedDepthOnlyPipeline =
+            GetOrCreateMaskedDepthOnlyPipeline(inputMode);
+    }
+    return m_rigidMaskedDepthOnlyPipeline.Get();
+}
+
+bool PipelineCache::IsGPUSceneRasterReady() const
+{
+    return m_initialized && m_gpuSceneRasterObjectSetLayout &&
+           m_gpuSceneRasterPipelineLayout && m_gpuSceneVertexShader &&
+           m_gpuSceneInstancedMaterialVertexShader &&
+           m_gpuSceneDepthOnlyVertexShader &&
+           m_gpuSceneRasterUnavailableReason.empty();
+}
+
+RHIPipeline* PipelineCache::GetGPUScenePipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat)
+{
+    if (!IsGPUSceneRasterReady())
+    {
+        return nullptr;
+    }
+    if (renderTargetFormat == RHIFormat::Unknown)
+    {
+        renderTargetFormat = m_renderTargetFormat;
+    }
+
+    const RHIDepthStencilState writableDepthState =
+        BuildDepthStencilState(m_config.reverseZ, true);
+    switch (variant)
+    {
+        case MaterialPipelineVariant::Masked:
+        {
+            RHIPipelineRef pipeline = GetOrCreateGPUSceneDefaultLitPipeline(
+                MaterialPipelineVariant::Masked,
+                "GPUSceneMaskedPipeline",
+                writableDepthState,
+                RHIBlendState::Default(),
+                renderTargetFormat);
+            if (!pipeline)
+            {
+                DisableGPUSceneRaster("Failed to create GPU-scene masked pipeline");
+                return nullptr;
+            }
+            m_gpuSceneMaskedPipeline = std::move(pipeline);
+            return m_gpuSceneMaskedPipeline.Get();
+        }
+        case MaterialPipelineVariant::Transparent:
+            // D2 does not establish transparent GPU-scene raster semantics.
+            return nullptr;
+        case MaterialPipelineVariant::Opaque:
+        default:
+        {
+            RHIPipelineRef pipeline = GetOrCreateGPUSceneDefaultLitPipeline(
+                MaterialPipelineVariant::Opaque,
+                "GPUSceneOpaquePipeline",
+                writableDepthState,
+                RHIBlendState::Default(),
+                renderTargetFormat);
+            if (!pipeline)
+            {
+                DisableGPUSceneRaster("Failed to create GPU-scene opaque pipeline");
+                return nullptr;
+            }
+            m_gpuSceneOpaquePipeline = std::move(pipeline);
+            return m_gpuSceneOpaquePipeline.Get();
+        }
+    }
+}
+
+RHIPipeline* PipelineCache::GetGPUSceneInstancedMaterialPipelineForVariant(
+    MaterialPipelineVariant variant,
+    RHIFormat renderTargetFormat)
+{
+    if (!IsGPUSceneRasterReady() ||
+        variant != MaterialPipelineVariant::Opaque)
+    {
+        return nullptr;
+    }
+    if (renderTargetFormat == RHIFormat::Unknown)
+    {
+        renderTargetFormat = m_renderTargetFormat;
+    }
+    RHIPipelineRef pipeline = GetOrCreateGPUSceneDefaultLitPipeline(
+        MaterialPipelineVariant::Opaque,
+        "GPUSceneInstancedMaterialOpaquePipeline",
+        BuildDepthStencilState(m_config.reverseZ, true),
+        RHIBlendState::Default(),
+        renderTargetFormat,
+        true);
+    if (!pipeline)
+    {
+        DisableGPUSceneRaster(
+            "Failed to create GPU-scene instanced-material pipeline");
+        return nullptr;
+    }
+    m_gpuSceneInstancedMaterialOpaquePipeline = std::move(pipeline);
+    return m_gpuSceneInstancedMaterialOpaquePipeline.Get();
+}
+
+const char* PipelineCache::GetEnvironmentIBLFallbackReasonName(
+    EnvironmentIBLFallbackReason reason)
+{
+    switch (reason)
+    {
+        case EnvironmentIBLFallbackReason::None: return "None";
+        case EnvironmentIBLFallbackReason::Disabled: return "Disabled";
+        case EnvironmentIBLFallbackReason::MissingIrradianceSRV: return "MissingIrradianceSRV";
+        case EnvironmentIBLFallbackReason::MissingPrefilteredEnvironmentSRV: return "MissingPrefilteredEnvironmentSRV";
+        case EnvironmentIBLFallbackReason::MissingBRDFLUTSRV: return "MissingBRDFLUTSRV";
+        case EnvironmentIBLFallbackReason::MissingSampler: return "MissingSampler";
+        case EnvironmentIBLFallbackReason::FallbackUnavailable: return "FallbackUnavailable";
+        default: return "Unknown";
+    }
+}
+
+void PipelineCache::ResetGPUSceneRasterState()
+{
+    const auto isGPUScenePipeline = [this](const RHIPipelineRef& pipeline)
+    {
+        const RHIPipeline* const candidate = pipeline.Get();
+        return candidate && (candidate == m_gpuSceneOpaquePipeline.Get() ||
+                             candidate == m_gpuSceneInstancedMaterialOpaquePipeline.Get() ||
+                             candidate == m_gpuSceneMaskedPipeline.Get() ||
+                             candidate == m_gpuSceneDepthOnlyPipeline.Get());
+    };
+    for (auto it = m_pipelineCache.begin(); it != m_pipelineCache.end();)
+    {
+        if (isGPUScenePipeline(it->second))
+        {
+            it = m_pipelineCache.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    m_gpuSceneOpaquePipeline.Reset();
+    m_gpuSceneInstancedMaterialOpaquePipeline.Reset();
+    m_gpuSceneMaskedPipeline.Reset();
+    m_gpuSceneDepthOnlyPipeline.Reset();
+    m_gpuSceneRasterPipelineLayout.Reset();
+    m_gpuSceneRasterObjectSetLayout.Reset();
+    m_gpuSceneVertexShader.Reset();
+    m_gpuSceneInstancedMaterialVertexShader.Reset();
+    m_gpuSceneDepthOnlyVertexShader.Reset();
+    m_gpuSceneVsCompileResult.reset();
+    m_gpuSceneInstancedMaterialVsCompileResult.reset();
+    m_gpuSceneDepthOnlyVsCompileResult.reset();
+}
+
+void PipelineCache::DisableGPUSceneRaster(std::string reason)
+{
+    ResetGPUSceneRasterState();
+    m_gpuSceneRasterUnavailableReason = std::move(reason);
+    RVX_RENDER_WARN("PipelineCache: GPU-scene raster unavailable: {}",
+                    m_gpuSceneRasterUnavailableReason);
+}
+
+RHIPipeline* PipelineCache::GetGPUSceneDepthOnlyPipeline()
+{
+    if (!IsGPUSceneRasterReady())
+    {
+        return nullptr;
+    }
+    if (!m_gpuSceneDepthOnlyPipeline)
+    {
+        RHIPipelineRef pipeline = GetOrCreateGPUSceneDepthOnlyPipeline();
+        if (!pipeline)
+        {
+            DisableGPUSceneRaster("Failed to create GPU-scene depth-only pipeline");
+            return nullptr;
+        }
+        m_gpuSceneDepthOnlyPipeline = std::move(pipeline);
+    }
+    return m_gpuSceneDepthOnlyPipeline.Get();
+}
+
 ShadowDepthBiasState PipelineCache::SanitizeShadowDepthBiasState(const ShadowDepthBiasState& biasState)
 {
     const auto sanitize = [](float value, float maxValue)
@@ -2916,7 +4902,21 @@ ShadowDepthBiasState PipelineCache::SanitizeShadowDepthBiasState(const ShadowDep
 
 RHIPipeline* PipelineCache::GetShadowDepthPipeline(const ShadowDepthBiasState& biasState)
 {
-    return GetOrCreateShadowDepthPipeline(biasState).Get();
+    return GetShadowDepthPipeline(
+        biasState, DefaultLitDirectVertexInputMode::Skinned);
+}
+
+RHIPipeline* PipelineCache::GetShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    return GetOrCreateShadowDepthPipeline(biasState, inputMode).Get();
+}
+
+RHIPipeline* PipelineCache::GetInstancedShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState)
+{
+    return GetOrCreateInstancedShadowDepthPipeline(biasState).Get();
 }
 
 RHIPipeline* PipelineCache::GetSkyboxPipeline(RHIFormat outputFormat)
@@ -2973,6 +4973,22 @@ RHIPipeline* PipelineCache::GetBloomAdditivePipeline(RHIFormat outputFormat)
     return GetOrCreateBloomAdditivePipeline(resolvedFormat).Get();
 }
 
+RHIPipeline* PipelineCache::GetSSAOPipeline(RHIFormat outputFormat)
+{
+    const RHIFormat resolvedFormat =
+        outputFormat == RHIFormat::Unknown ? m_postProcessIntermediateFormat : outputFormat;
+    if (resolvedFormat == m_postProcessIntermediateFormat)
+    {
+        if (!m_ssaoPipeline)
+        {
+            m_ssaoPipeline = GetOrCreateSSAOPipeline(resolvedFormat);
+        }
+        return m_ssaoPipeline.Get();
+    }
+
+    return GetOrCreateSSAOPipeline(resolvedFormat).Get();
+}
+
 RHIPipeline* PipelineCache::GetCameraVelocityPipeline(RHIFormat outputFormat)
 {
     const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
@@ -2990,32 +5006,60 @@ RHIPipeline* PipelineCache::GetCameraVelocityPipeline(RHIFormat outputFormat)
 
 RHIPipeline* PipelineCache::GetObjectVelocityPipeline(RHIFormat outputFormat)
 {
-    const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
-    if (resolvedFormat == RHIFormat::RG16_FLOAT)
-    {
-        if (!m_objectVelocityPipeline)
-        {
-            m_objectVelocityPipeline = GetOrCreateObjectVelocityPipeline(resolvedFormat);
-        }
-        return m_objectVelocityPipeline.Get();
-    }
-
-    return GetOrCreateObjectVelocityPipeline(resolvedFormat).Get();
+    return GetObjectVelocityPipeline(
+        outputFormat, DefaultLitDirectVertexInputMode::Skinned);
 }
 
-RHIPipeline* PipelineCache::GetMaskedObjectVelocityPipeline(RHIFormat outputFormat)
+RHIPipeline* PipelineCache::GetObjectVelocityPipeline(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode)
 {
     const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
     if (resolvedFormat == RHIFormat::RG16_FLOAT)
     {
-        if (!m_maskedObjectVelocityPipeline)
+        RHIPipelineRef& cached =
+            inputMode == DefaultLitDirectVertexInputMode::Rigid
+                ? m_rigidObjectVelocityPipeline
+                : m_objectVelocityPipeline;
+        if (!cached)
         {
-            m_maskedObjectVelocityPipeline = GetOrCreateMaskedObjectVelocityPipeline(resolvedFormat);
+            cached = GetOrCreateObjectVelocityPipeline(
+                resolvedFormat, inputMode);
         }
-        return m_maskedObjectVelocityPipeline.Get();
+        return cached.Get();
     }
 
-    return GetOrCreateMaskedObjectVelocityPipeline(resolvedFormat).Get();
+    return GetOrCreateObjectVelocityPipeline(
+        resolvedFormat, inputMode).Get();
+}
+
+RHIPipeline* PipelineCache::GetMaskedObjectVelocityPipeline(RHIFormat outputFormat)
+{
+    return GetMaskedObjectVelocityPipeline(
+        outputFormat, DefaultLitDirectVertexInputMode::Skinned);
+}
+
+RHIPipeline* PipelineCache::GetMaskedObjectVelocityPipeline(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    const RHIFormat resolvedFormat = outputFormat == RHIFormat::Unknown ? RHIFormat::RG16_FLOAT : outputFormat;
+    if (resolvedFormat == RHIFormat::RG16_FLOAT)
+    {
+        RHIPipelineRef& cached =
+            inputMode == DefaultLitDirectVertexInputMode::Rigid
+                ? m_rigidMaskedObjectVelocityPipeline
+                : m_maskedObjectVelocityPipeline;
+        if (!cached)
+        {
+            cached = GetOrCreateMaskedObjectVelocityPipeline(
+                resolvedFormat, inputMode);
+        }
+        return cached.Get();
+    }
+
+    return GetOrCreateMaskedObjectVelocityPipeline(
+        resolvedFormat, inputMode).Get();
 }
 
 RHIPipeline* PipelineCache::GetRayTracedReflectionCompositePipeline(RHIFormat outputFormat)
@@ -3082,6 +5126,16 @@ RHIPipeline* PipelineCache::GetFXAAPipeline(RHIFormat outputFormat)
     return GetOrCreateFXAAPipeline(outputFormat).Get();
 }
 
+RHIPipeline* PipelineCache::GetFilmGrainPipeline(RHIFormat outputFormat)
+{
+    if (outputFormat == RHIFormat::Unknown)
+    {
+        return GetFilmGrainPipeline();
+    }
+
+    return GetOrCreateFilmGrainPipeline(outputFormat).Get();
+}
+
 RHIPipeline* PipelineCache::GetVignettePipeline(RHIFormat outputFormat)
 {
     if (outputFormat == RHIFormat::Unknown)
@@ -3144,6 +5198,20 @@ bool PipelineCache::CreateObjectConstantBuffer()
         return false;
     }
 
+    // The legacy buffer remains available to compatibility callers, while
+    // graph-recorded Direct and Tier1 work uses completion-tracked pages.
+    m_objectConstantUploadArena = std::make_unique<FrameConstantUploadArena>();
+    if (!m_objectConstantUploadArena->Initialize(
+            m_device,
+            m_objectConstantStride,
+            static_cast<uint32>(RVX_MAX_DRAW_CONSTANTS_PER_FRAME),
+            "ObjectConstantUpload"))
+    {
+        m_objectConstantUploadArena.reset();
+        RVX_CORE_ERROR("PipelineCache: Failed to initialize paged object constant upload arena");
+        return false;
+    }
+
     return true;
 }
 
@@ -3187,7 +5255,9 @@ bool PipelineCache::EnsureFrameShadowFallbackResources()
         textureDesc.arraySize = RVX_MAX_DIRECTIONAL_SHADOW_CASCADES;
         textureDesc.debugName = "FallbackDirectionalShadowMap";
         m_fallbackDirectionalShadowTexture = m_device->CreateTexture(textureDesc);
-        if (!m_fallbackDirectionalShadowTexture)
+        if (!m_fallbackDirectionalShadowTexture ||
+            !PrepareVulkanSampledTexture(
+                m_device, m_fallbackDirectionalShadowTexture.Get()))
         {
             return false;
         }
@@ -3233,7 +5303,9 @@ bool PipelineCache::EnsureFrameRayTracedShadowFallbackResources()
         RHITextureDesc textureDesc = RHITextureDesc::Texture2D(1, 1, RHIFormat::R8_UNORM);
         textureDesc.debugName = "FallbackRayTracedShadowMask";
         m_fallbackRayTracedShadowMaskTexture = m_device->CreateTexture(textureDesc);
-        if (!m_fallbackRayTracedShadowMaskTexture)
+        if (!m_fallbackRayTracedShadowMaskTexture ||
+            !PrepareVulkanSampledTexture(
+                m_device, m_fallbackRayTracedShadowMaskTexture.Get()))
         {
             return false;
         }
@@ -3255,6 +5327,106 @@ bool PipelineCache::EnsureFrameRayTracedShadowFallbackResources()
         }
     }
 
+    return true;
+}
+
+bool PipelineCache::EnsureFrameEnvironmentIBLFallbackResources()
+{
+    if (!m_device)
+    {
+        return false;
+    }
+
+    if (!m_fallbackEnvironmentIBLCubemapTexture)
+    {
+        RHITextureDesc textureDesc = RHITextureDesc::Texture2D(
+            1, 1, RHIFormat::RGBA8_UNORM);
+        textureDesc.dimension = RHITextureDimension::TextureCube;
+        textureDesc.arraySize = 1;
+        textureDesc.debugName = "FallbackEnvironmentIBLCubemap";
+        m_fallbackEnvironmentIBLCubemapTexture =
+            m_device->CreateTexture(textureDesc);
+        if (!m_fallbackEnvironmentIBLCubemapTexture ||
+            !PrepareVulkanSampledTexture(
+                m_device, m_fallbackEnvironmentIBLCubemapTexture.Get()))
+        {
+            return false;
+        }
+    }
+
+    if (!m_fallbackEnvironmentIBLCubemapView)
+    {
+        RHITextureViewDesc viewDesc;
+        viewDesc.format = m_fallbackEnvironmentIBLCubemapTexture->GetFormat();
+        viewDesc.dimension = RHITextureDimension::TextureCube;
+        viewDesc.subresourceRange = RHISubresourceRange::All();
+        viewDesc.type = RHITextureViewType::ShaderResource;
+        viewDesc.debugName = "FallbackEnvironmentIBLCubemapSRV";
+        m_fallbackEnvironmentIBLCubemapView = m_device->CreateTextureView(
+            m_fallbackEnvironmentIBLCubemapTexture.Get(), viewDesc);
+        if (!m_fallbackEnvironmentIBLCubemapView)
+        {
+            return false;
+        }
+    }
+
+    if (!m_fallbackEnvironmentIBLBRDFLUTTexture)
+    {
+        RHITextureDesc textureDesc = RHITextureDesc::Texture2D(
+            1, 1, RHIFormat::RGBA8_UNORM);
+        textureDesc.debugName = "FallbackEnvironmentIBLBRDFLUT";
+        m_fallbackEnvironmentIBLBRDFLUTTexture =
+            m_device->CreateTexture(textureDesc);
+        if (!m_fallbackEnvironmentIBLBRDFLUTTexture ||
+            !PrepareVulkanSampledTexture(
+                m_device, m_fallbackEnvironmentIBLBRDFLUTTexture.Get()))
+        {
+            return false;
+        }
+    }
+
+    if (!m_fallbackEnvironmentIBLBRDFLUTView)
+    {
+        RHITextureViewDesc viewDesc;
+        viewDesc.format = m_fallbackEnvironmentIBLBRDFLUTTexture->GetFormat();
+        viewDesc.dimension = RHITextureDimension::Texture2D;
+        viewDesc.subresourceRange = RHISubresourceRange::All();
+        viewDesc.type = RHITextureViewType::ShaderResource;
+        viewDesc.debugName = "FallbackEnvironmentIBLBRDFLUTSRV";
+        m_fallbackEnvironmentIBLBRDFLUTView = m_device->CreateTextureView(
+            m_fallbackEnvironmentIBLBRDFLUTTexture.Get(), viewDesc);
+        if (!m_fallbackEnvironmentIBLBRDFLUTView)
+        {
+            return false;
+        }
+    }
+
+    if (!m_environmentIBLSampler)
+    {
+        RHISamplerDesc samplerDesc = RHISamplerDesc::LinearClamp();
+        samplerDesc.debugName = "EnvironmentIBLLinearClampSampler";
+        m_environmentIBLSampler = m_device->CreateSampler(samplerDesc);
+        if (!m_environmentIBLSampler)
+        {
+            return false;
+        }
+    }
+
+    if (!m_currentEnvironmentIBLIrradianceView)
+    {
+        m_currentEnvironmentIBLIrradianceView =
+            m_fallbackEnvironmentIBLCubemapView;
+    }
+    if (!m_currentEnvironmentIBLPrefilteredView)
+    {
+        m_currentEnvironmentIBLPrefilteredView =
+            m_fallbackEnvironmentIBLCubemapView;
+    }
+    if (!m_currentEnvironmentIBLBRDFLUTView)
+    {
+        m_currentEnvironmentIBLBRDFLUTView =
+            m_fallbackEnvironmentIBLBRDFLUTView;
+    }
     return true;
 }
 
@@ -3320,11 +5492,11 @@ bool PipelineCache::EnsureFrameLightFallbackResources()
     m_fallbackSpotLightsBuffer = std::move(spotLights);
 
     if (!m_currentLightConstantsBuffer)
-        m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
+        m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer;
     if (!m_currentPointLightsBuffer)
-        m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
+        m_currentPointLightsBuffer = m_fallbackPointLightsBuffer;
     if (!m_currentSpotLightsBuffer)
-        m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
+        m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer;
 
     return true;
 }
@@ -3391,117 +5563,151 @@ bool PipelineCache::EnsureFrameClusteredLightFallbackResources()
     m_fallbackClusterLightIndexBuffer = std::move(indices);
 
     if (!m_currentClusterConstantsBuffer)
-        m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer.Get();
+        m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer;
     if (!m_currentClusterBuffer)
-        m_currentClusterBuffer = m_fallbackClusterBuffer.Get();
+        m_currentClusterBuffer = m_fallbackClusterBuffer;
     if (!m_currentClusterLightIndexBuffer)
-        m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
+        m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer;
 
     return true;
 }
 
 bool PipelineCache::UpdateDefaultFrameDescriptorSet()
 {
-    if (!m_frameDescriptorSet || !m_viewConstantBuffer ||
+    if (!m_viewConstantBuffer || m_setLayouts.empty() || !m_setLayouts[0] ||
         !EnsureFrameShadowFallbackResources() || !EnsureFrameRayTracedShadowFallbackResources() ||
+        !EnsureFrameEnvironmentIBLFallbackResources() ||
         !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources())
     {
         return false;
     }
 
-    RHITextureView* shadowView = m_currentDirectionalShadowView
-                                     ? m_currentDirectionalShadowView
-                                     : m_fallbackDirectionalShadowView.Get();
-    RHISampler* shadowSampler = m_currentDirectionalShadowSampler
-                                    ? m_currentDirectionalShadowSampler
-                                    : m_directionalShadowSampler.Get();
-    RHIBuffer* lightConstants = m_currentLightConstantsBuffer
-                                    ? m_currentLightConstantsBuffer
-                                    : m_fallbackLightConstantsBuffer.Get();
-    RHIBuffer* pointLights = m_currentPointLightsBuffer
-                                 ? m_currentPointLightsBuffer
-                                 : m_fallbackPointLightsBuffer.Get();
-    RHIBuffer* spotLights = m_currentSpotLightsBuffer
-                                ? m_currentSpotLightsBuffer
-                                : m_fallbackSpotLightsBuffer.Get();
-    RHIBuffer* clusterConstants = m_currentClusterConstantsBuffer
-                                      ? m_currentClusterConstantsBuffer
-                                      : m_fallbackClusterConstantsBuffer.Get();
-    RHIBuffer* clusters = m_currentClusterBuffer
-                              ? m_currentClusterBuffer
-                              : m_fallbackClusterBuffer.Get();
-    RHIBuffer* clusterLightIndices = m_currentClusterLightIndexBuffer
-                                         ? m_currentClusterLightIndexBuffer
-                                         : m_fallbackClusterLightIndexBuffer.Get();
-    RHITextureView* rayTracedShadowMask = m_currentRayTracedShadowMaskView
-                                              ? m_currentRayTracedShadowMaskView
-                                              : m_fallbackRayTracedShadowMaskView.Get();
-
-    if (!shadowView || !shadowSampler || !lightConstants || !pointLights || !spotLights ||
-        !clusterConstants || !clusters || !clusterLightIndices || !rayTracedShadowMask)
+    Ref<FrameDescriptorBindingOwners> replacementOwners =
+        CreateFrameDescriptorBindingOwners();
+    if (!replacementOwners)
     {
         return false;
     }
 
-    std::vector<RHIDescriptorBinding> bindings;
-    bindings.reserve(10);
-    bindings.push_back({0, m_viewConstantBuffer.Get(), 0, AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
-    bindings.push_back({1, nullptr, 0, 0, shadowView, nullptr});
-    bindings.push_back({2, nullptr, 0, 0, nullptr, shadowSampler});
-    bindings.push_back({3, lightConstants, 0, AlignConstantBufferSize(sizeof(LightConstants)), nullptr, nullptr});
-    bindings.push_back({4, pointLights, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
-    bindings.push_back({5, spotLights, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
-    bindings.push_back({6, nullptr, 0, 0, rayTracedShadowMask, nullptr});
-    bindings.push_back({7, clusterConstants, 0, AlignConstantBufferSize(sizeof(GPUClusterConstants)), nullptr, nullptr});
-    bindings.push_back({8, clusters, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
-    bindings.push_back({9, clusterLightIndices, 0, RVX_WHOLE_SIZE, nullptr, nullptr});
-
-    const bool updated = m_frameDescriptorSet->Update(bindings);
-    if (updated)
+    RHIDescriptorSetDesc desc;
+    desc.layout = m_setLayouts[0].Get();
+    desc.bindings = BuildFrameDescriptorBindings(*replacementOwners);
+    desc.debugName = "DefaultFrameDescriptorSet";
+    RHIDescriptorSetRef replacement = m_device->CreateDescriptorSet(desc);
+    if (!replacement)
     {
-        m_frameResourceBindingsDirty = false;
+        return false;
     }
-    return updated;
+
+    QueueRenderOwnerRetirement(
+        m_frameDescriptorSet, m_pendingOwnerRetirements);
+    QueueRenderOwnerRetirement(
+        m_frameDescriptorBindingOwners, m_pendingOwnerRetirements);
+    m_frameDescriptorSet = std::move(replacement);
+    m_frameDescriptorBindingOwners = std::move(replacementOwners);
+    m_frameResourceBindingsDirty = false;
+    return true;
+}
+
+Ref<PipelineCache::FrameDescriptorBindingOwners>
+PipelineCache::CreateFrameDescriptorBindingOwners() const
+{
+    Ref<FrameDescriptorBindingOwners> owners =
+        MakeRef<FrameDescriptorBindingOwners>();
+    owners->viewConstantBuffer = m_viewConstantBuffer;
+    owners->directionalShadowView = m_currentDirectionalShadowView
+        ? m_currentDirectionalShadowView : m_fallbackDirectionalShadowView;
+    owners->directionalShadowSampler = m_currentDirectionalShadowSampler
+        ? m_currentDirectionalShadowSampler : m_directionalShadowSampler;
+    owners->lightConstantsBuffer = m_currentLightConstantsBuffer
+        ? m_currentLightConstantsBuffer : m_fallbackLightConstantsBuffer;
+    owners->pointLightsBuffer = m_currentPointLightsBuffer
+        ? m_currentPointLightsBuffer : m_fallbackPointLightsBuffer;
+    owners->spotLightsBuffer = m_currentSpotLightsBuffer
+        ? m_currentSpotLightsBuffer : m_fallbackSpotLightsBuffer;
+    owners->rayTracedShadowMaskView = m_currentRayTracedShadowMaskView
+        ? m_currentRayTracedShadowMaskView : m_fallbackRayTracedShadowMaskView;
+    owners->clusterConstantsBuffer = m_currentClusterConstantsBuffer
+        ? m_currentClusterConstantsBuffer : m_fallbackClusterConstantsBuffer;
+    owners->clusterBuffer = m_currentClusterBuffer
+        ? m_currentClusterBuffer : m_fallbackClusterBuffer;
+    owners->clusterLightIndexBuffer = m_currentClusterLightIndexBuffer
+        ? m_currentClusterLightIndexBuffer : m_fallbackClusterLightIndexBuffer;
+    owners->environmentIBLIrradianceView = m_currentEnvironmentIBLIrradianceView
+        ? m_currentEnvironmentIBLIrradianceView : m_fallbackEnvironmentIBLCubemapView;
+    owners->environmentIBLPrefilteredView = m_currentEnvironmentIBLPrefilteredView
+        ? m_currentEnvironmentIBLPrefilteredView : m_fallbackEnvironmentIBLCubemapView;
+    owners->environmentIBLBRDFLUTView = m_currentEnvironmentIBLBRDFLUTView
+        ? m_currentEnvironmentIBLBRDFLUTView : m_fallbackEnvironmentIBLBRDFLUTView;
+    owners->environmentIBLSampler = m_environmentIBLSampler;
+    return owners->IsComplete() ? owners : Ref<FrameDescriptorBindingOwners>{};
+}
+
+std::vector<RHIDescriptorBinding> PipelineCache::BuildFrameDescriptorBindings(
+    const FrameDescriptorBindingOwners& owners) const
+{
+    RVX_ASSERT(owners.IsComplete());
+
+    std::vector<RHIDescriptorBinding> bindings;
+    bindings.reserve(14);
+    bindings.push_back({0, owners.viewConstantBuffer.Get(), 0,
+                        AlignConstantBufferSize(sizeof(ViewConstants)), nullptr, nullptr});
+    bindings.push_back({1, nullptr, 0, 0, owners.directionalShadowView.Get(), nullptr});
+    bindings.push_back({2, nullptr, 0, 0, nullptr, owners.directionalShadowSampler.Get()});
+    bindings.push_back({3, owners.lightConstantsBuffer.Get(), 0,
+                        AlignConstantBufferSize(sizeof(LightConstants)), nullptr, nullptr});
+    bindings.push_back({4, owners.pointLightsBuffer.Get(), 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({5, owners.spotLightsBuffer.Get(), 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({6, nullptr, 0, 0, owners.rayTracedShadowMaskView.Get(), nullptr});
+    bindings.push_back({7, owners.clusterConstantsBuffer.Get(), 0,
+                        AlignConstantBufferSize(sizeof(GPUClusterConstants)), nullptr, nullptr});
+    bindings.push_back({8, owners.clusterBuffer.Get(), 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({9, owners.clusterLightIndexBuffer.Get(), 0, RVX_WHOLE_SIZE, nullptr, nullptr});
+    bindings.push_back({10, nullptr, 0, 0, owners.environmentIBLIrradianceView.Get(), nullptr});
+    bindings.push_back({11, nullptr, 0, 0, owners.environmentIBLPrefilteredView.Get(), nullptr});
+    bindings.push_back({12, nullptr, 0, 0, owners.environmentIBLBRDFLUTView.Get(), nullptr});
+    bindings.push_back({13, nullptr, 0, 0, nullptr, owners.environmentIBLSampler.Get()});
+    return bindings;
 }
 
 RHIDescriptorSetRef PipelineCache::CreateFrameDescriptorSet()
 {
     if (m_setLayouts.empty() || !m_setLayouts[0] || !m_viewConstantBuffer ||
         !EnsureFrameShadowFallbackResources() || !EnsureFrameRayTracedShadowFallbackResources() ||
+        !EnsureFrameEnvironmentIBLFallbackResources() ||
         !EnsureFrameLightFallbackResources() || !EnsureFrameClusteredLightFallbackResources())
         return {};
 
-    m_currentDirectionalShadowView = m_fallbackDirectionalShadowView.Get();
-    m_currentRayTracedShadowMaskView = m_fallbackRayTracedShadowMaskView.Get();
-    m_currentDirectionalShadowSampler = m_directionalShadowSampler.Get();
-    m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer.Get();
-    m_currentPointLightsBuffer = m_fallbackPointLightsBuffer.Get();
-    m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer.Get();
-    m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer.Get();
-    m_currentClusterBuffer = m_fallbackClusterBuffer.Get();
-    m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
-    m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer.Get();
-    m_currentClusterBuffer = m_fallbackClusterBuffer.Get();
-    m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer.Get();
+    m_currentDirectionalShadowView = m_fallbackDirectionalShadowView;
+    m_currentRayTracedShadowMaskView = m_fallbackRayTracedShadowMaskView;
+    m_currentDirectionalShadowSampler = m_directionalShadowSampler;
+    m_currentEnvironmentIBLIrradianceView = m_fallbackEnvironmentIBLCubemapView;
+    m_currentEnvironmentIBLPrefilteredView = m_fallbackEnvironmentIBLCubemapView;
+    m_currentEnvironmentIBLBRDFLUTView = m_fallbackEnvironmentIBLBRDFLUTView;
+    m_currentLightConstantsBuffer = m_fallbackLightConstantsBuffer;
+    m_currentPointLightsBuffer = m_fallbackPointLightsBuffer;
+    m_currentSpotLightsBuffer = m_fallbackSpotLightsBuffer;
+    m_currentClusterConstantsBuffer = m_fallbackClusterConstantsBuffer;
+    m_currentClusterBuffer = m_fallbackClusterBuffer;
+    m_currentClusterLightIndexBuffer = m_fallbackClusterLightIndexBuffer;
+
+    Ref<FrameDescriptorBindingOwners> owners =
+        CreateFrameDescriptorBindingOwners();
+    if (!owners)
+    {
+        return {};
+    }
 
     RHIDescriptorSetDesc descSetDesc;
     descSetDesc.layout = m_setLayouts[0].Get();
+    descSetDesc.bindings = BuildFrameDescriptorBindings(*owners);
     descSetDesc.debugName = "DefaultFrameDescriptorSet";
-    descSetDesc.BindBuffer(0, m_viewConstantBuffer.Get(), 0, AlignConstantBufferSize(sizeof(ViewConstants)));
-    descSetDesc.BindTexture(1, m_fallbackDirectionalShadowView.Get());
-    descSetDesc.BindSampler(2, m_directionalShadowSampler.Get());
-    descSetDesc.BindBuffer(3, m_fallbackLightConstantsBuffer.Get(), 0, AlignConstantBufferSize(sizeof(LightConstants)));
-    descSetDesc.BindBuffer(4, m_fallbackPointLightsBuffer.Get());
-    descSetDesc.BindBuffer(5, m_fallbackSpotLightsBuffer.Get());
-    descSetDesc.BindTexture(6, m_fallbackRayTracedShadowMaskView.Get());
-    descSetDesc.BindBuffer(7,
-                           m_fallbackClusterConstantsBuffer.Get(),
-                           0,
-                           AlignConstantBufferSize(sizeof(GPUClusterConstants)));
-    descSetDesc.BindBuffer(8, m_fallbackClusterBuffer.Get());
-    descSetDesc.BindBuffer(9, m_fallbackClusterLightIndexBuffer.Get());
-
-    return m_device->CreateDescriptorSet(descSetDesc);
+    RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descSetDesc);
+    if (descriptorSet)
+    {
+        m_frameDescriptorBindingOwners = std::move(owners);
+    }
+    return descriptorSet;
 }
 
 RHIDescriptorSetRef PipelineCache::CreateObjectDescriptorSet()
@@ -3536,6 +5742,7 @@ bool PipelineCache::CreatePipeline()
                                                      writableDepthState,
                                                      RHIBlendState::Default(),
                                                      m_renderTargetFormat,
+                                                     DefaultLitDirectVertexInputMode::Skinned,
                                                      true);
     if (!m_opaquePipeline)
     {
@@ -3551,6 +5758,7 @@ bool PipelineCache::CreatePipeline()
                                                      writableDepthState,
                                                      RHIBlendState::Default(),
                                                      m_renderTargetFormat,
+                                                     DefaultLitDirectVertexInputMode::Skinned,
                                                      true);
     if (!m_maskedPipeline)
     {
@@ -3569,6 +5777,7 @@ bool PipelineCache::CreatePipeline()
                                                           readOnlyDepthState,
                                                           transparentBlend,
                                                           m_renderTargetFormat,
+                                                          DefaultLitDirectVertexInputMode::Skinned,
                                                           true);
     if (!m_transparentPipeline)
     {
@@ -3641,12 +5850,32 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
+    m_ssaoPipeline = GetOrCreateSSAOPipeline(m_postProcessIntermediateFormat);
+    if (!m_ssaoPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create SSAO pipeline");
+        }
+        return false;
+    }
+
     m_vignettePipeline = GetOrCreateVignettePipeline(m_toneMappingOutputFormat);
     if (!m_vignettePipeline)
     {
         if (m_lastError.empty())
         {
             SetLastError("Failed to create Vignette pipeline");
+        }
+        return false;
+    }
+
+    m_filmGrainPipeline = GetOrCreateFilmGrainPipeline(m_toneMappingOutputFormat);
+    if (!m_filmGrainPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create FilmGrain pipeline");
         }
         return false;
     }
@@ -3691,6 +5920,19 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
+    // Keep the long-established default-pipeline creation order stable for
+    // diagnostics and backend validation while still making masked depth a
+    // predictable initialization-time capability for frame-plan compilation.
+    m_maskedDepthOnlyPipeline = GetOrCreateMaskedDepthOnlyPipeline();
+    if (!m_maskedDepthOnlyPipeline)
+    {
+        if (m_lastError.empty())
+        {
+            SetLastError("Failed to create masked depth-only pipeline");
+        }
+        return false;
+    }
+
     if (!CreateRayTracedShadowPipeline())
     {
         if (m_lastError.empty())
@@ -3709,7 +5951,7 @@ bool PipelineCache::CreatePipeline()
         return false;
     }
 
-    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, Vignette pipeline, FXAA pipeline, ColorGrading pipeline, ChromaticAberration pipeline, UI pipeline, and optional ray tracing pipelines");
+    RVX_CORE_DEBUG("PipelineCache: Created material pipeline variants, depth-only pipeline, Skybox pipeline, ToneMapping pipeline, Bloom pipeline, SSAO pipeline, Vignette pipeline, FilmGrain pipeline, FXAA pipeline, ColorGrading pipeline, ChromaticAberration pipeline, UI pipeline, and optional ray tracing pipelines");
     return true;
 }
 
@@ -3854,12 +6096,14 @@ RHIPipelineRef PipelineCache::GetOrCreateDefaultLitPipeline(MaterialPipelineVari
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState,
                                                             RHIFormat renderTargetFormat,
+                                                            DefaultLitDirectVertexInputMode inputMode,
                                                             bool updatePrimaryStats)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildDefaultLitPipelineDesc(debugName,
                                                                        depthStencilState,
                                                                        blendState,
-                                                                       renderTargetFormat);
+                                                                       renderTargetFormat,
+                                                                       inputMode);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create pipeline without vertex shader");
@@ -4017,6 +6261,193 @@ RHIPipelineRef PipelineCache::GetOrCreateDepthOnlyPipeline()
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateInstancedMaterialDefaultLitPipeline(
+    MaterialPipelineVariant variant,
+    const char* debugName,
+    const RHIDepthStencilState& depthStencilState,
+    const RHIBlendState& blendState,
+    RHIFormat renderTargetFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildInstancedMaterialDefaultLitPipelineDesc(
+            debugName,
+            depthStencilState,
+            blendState,
+            renderTargetFormat);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets == 0 ||
+        pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown ||
+        pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create instanced-material pipeline from incomplete state");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, variant, RVX_PIPELINE_PURPOSE_INSTANCED_MATERIAL);
+    m_stats.lastPipelineStateHash = stateHash;
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create instanced-material pipeline '" +
+                     std::string(debugName ? debugName : "") + "'");
+        return {};
+    }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateRigidDepthOnlyPipeline()
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildRigidDepthOnlyPipelineDesc();
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError(
+            "Cannot create rigid depth-only pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError(
+            "Cannot create rigid depth-only pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError(
+            "Cannot create rigid depth-only pipeline with invalid depth format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Opaque,
+        RVX_PIPELINE_PURPOSE_RIGID_DEPTH);
+    m_stats.lastPipelineStateHash = stateHash;
+    const auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create rigid depth-only pipeline");
+        return {};
+    }
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDefaultLitPipeline(
+    MaterialPipelineVariant variant,
+    const char* debugName,
+    const RHIDepthStencilState& depthStencilState,
+    const RHIBlendState& blendState,
+    RHIFormat renderTargetFormat,
+    bool instancedMaterial)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUSceneDefaultLitPipelineDesc(
+        debugName,
+        depthStencilState,
+        blendState,
+        renderTargetFormat,
+        instancedMaterial);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader ||
+        !pipelineDesc.pipelineLayout || pipelineDesc.numRenderTargets == 0 ||
+        pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown ||
+        pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        variant,
+        instancedMaterial
+            ? RVX_PIPELINE_PURPOSE_GPU_SCENE_INSTANCED_MATERIAL
+            : RVX_PIPELINE_PURPOSE_GPU_SCENE_DEFAULT);
+    m_stats.lastPipelineStateHash = stateHash;
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateMaskedDepthOnlyPipeline(
+    DefaultLitDirectVertexInputMode inputMode)
+{
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildMaskedDepthOnlyPipelineDesc(inputMode);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pixelShader)
+    {
+        SetLastError(
+            "Cannot create masked depth-only pipeline without shaders");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create masked depth-only pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create masked depth-only pipeline with invalid depth stencil format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Masked,
+        RVX_PIPELINE_PURPOSE_MASKED_DEPTH);
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create masked depth-only pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIPipelineRef PipelineCache::GetOrCreateGPUDrivenDepthOnlyPipeline()
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildGPUDrivenDepthOnlyPipelineDesc();
@@ -4061,10 +6492,46 @@ RHIPipelineRef PipelineCache::GetOrCreateGPUDrivenDepthOnlyPipeline()
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(const ShadowDepthBiasState& biasState)
+RHIPipelineRef PipelineCache::GetOrCreateGPUSceneDepthOnlyPipeline()
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUSceneDepthOnlyPipelineDesc();
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pipelineLayout ||
+        pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Opaque,
+        RVX_PIPELINE_PURPOSE_GPU_SCENE_DEPTH);
+    m_stats.lastPipelineStateHash = stateHash;
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode)
 {
     const ShadowDepthBiasState sanitizedBias = SanitizeShadowDepthBiasState(biasState);
-    RHIGraphicsPipelineDesc pipelineDesc = BuildShadowDepthPipelineDesc(sanitizedBias);
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildShadowDepthPipelineDesc(sanitizedBias, inputMode);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create shadow depth pipeline without vertex shader");
@@ -4081,9 +6548,12 @@ RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(const ShadowDepthBi
         return {};
     }
 
-    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc,
-                                                      MaterialPipelineVariant::Opaque,
-                                                      RVX_PIPELINE_PURPOSE_SHADOW_DEPTH);
+    const uint32 purposeSalt =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? RVX_PIPELINE_PURPOSE_RIGID_SHADOW_DEPTH
+            : RVX_PIPELINE_PURPOSE_SHADOW_DEPTH;
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc, MaterialPipelineVariant::Opaque, purposeSalt);
     m_stats.lastPipelineStateHash = stateHash;
 
     auto cached = m_pipelineCache.find(stateHash);
@@ -4101,6 +6571,42 @@ RHIPipelineRef PipelineCache::GetOrCreateShadowDepthPipeline(const ShadowDepthBi
         return {};
     }
 
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
+RHIPipelineRef PipelineCache::GetOrCreateInstancedShadowDepthPipeline(
+    const ShadowDepthBiasState& biasState)
+{
+    const ShadowDepthBiasState sanitizedBias =
+        SanitizeShadowDepthBiasState(biasState);
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildInstancedShadowDepthPipelineDesc(sanitizedBias);
+    if (!pipelineDesc.vertexShader || !pipelineDesc.pipelineLayout ||
+        pipelineDesc.depthStencilFormat == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create instanced shadow depth pipeline");
+        return {};
+    }
+    const uint64 stateHash = ComputePipelineStateHash(
+        pipelineDesc,
+        MaterialPipelineVariant::Opaque,
+        RVX_PIPELINE_PURPOSE_INSTANCED_SHADOW_DEPTH);
+    m_stats.lastPipelineStateHash = stateHash;
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create instanced shadow depth pipeline");
+        return {};
+    }
     ++m_stats.pipelineCreateCount;
     m_pipelineCache[stateHash] = pipeline;
     return pipeline;
@@ -4302,6 +6808,54 @@ RHIPipelineRef PipelineCache::GetOrCreateBloomAdditivePipeline(RHIFormat outputF
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateSSAOPipeline(RHIFormat outputFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildSSAOPipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create SSAO pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create SSAO pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create SSAO pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create SSAO pipeline with invalid render target format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.ssaoPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create SSAO pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIPipelineRef PipelineCache::GetOrCreateCameraVelocityPipeline(RHIFormat outputFormat)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildCameraVelocityPipelineDesc(outputFormat);
@@ -4349,9 +6903,12 @@ RHIPipelineRef PipelineCache::GetOrCreateCameraVelocityPipeline(RHIFormat output
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateObjectVelocityPipeline(RHIFormat outputFormat)
+RHIPipelineRef PipelineCache::GetOrCreateObjectVelocityPipeline(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildObjectVelocityPipelineDesc(outputFormat);
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildObjectVelocityPipelineDesc(outputFormat, inputMode);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create ObjectVelocity pipeline without vertex shader");
@@ -4403,9 +6960,12 @@ RHIPipelineRef PipelineCache::GetOrCreateObjectVelocityPipeline(RHIFormat output
     return pipeline;
 }
 
-RHIPipelineRef PipelineCache::GetOrCreateMaskedObjectVelocityPipeline(RHIFormat outputFormat)
+RHIPipelineRef PipelineCache::GetOrCreateMaskedObjectVelocityPipeline(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode)
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildMaskedObjectVelocityPipelineDesc(outputFormat);
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildMaskedObjectVelocityPipelineDesc(outputFormat, inputMode);
     if (!pipelineDesc.vertexShader)
     {
         SetLastError("Cannot create masked ObjectVelocity pipeline without vertex shader");
@@ -4695,6 +7255,54 @@ RHIPipelineRef PipelineCache::GetOrCreateVignettePipeline(RHIFormat outputFormat
     return pipeline;
 }
 
+RHIPipelineRef PipelineCache::GetOrCreateFilmGrainPipeline(RHIFormat outputFormat)
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildFilmGrainPipelineDesc(outputFormat);
+    if (!pipelineDesc.vertexShader)
+    {
+        SetLastError("Cannot create FilmGrain pipeline without vertex shader");
+        return {};
+    }
+    if (!pipelineDesc.pixelShader)
+    {
+        SetLastError("Cannot create FilmGrain pipeline without pixel shader");
+        return {};
+    }
+    if (!pipelineDesc.pipelineLayout)
+    {
+        SetLastError("Cannot create FilmGrain pipeline without pipeline layout");
+        return {};
+    }
+    if (pipelineDesc.numRenderTargets != 1 || pipelineDesc.renderTargetFormats[0] == RHIFormat::Unknown)
+    {
+        SetLastError("Cannot create FilmGrain pipeline with invalid render target format");
+        return {};
+    }
+
+    const uint64 stateHash = ComputePipelineStateHash(pipelineDesc, MaterialPipelineVariant::Transparent);
+    m_stats.filmGrainPipelineHash = stateHash;
+    m_stats.lastPipelineStateHash = stateHash;
+
+    auto cached = m_pipelineCache.find(stateHash);
+    if (cached != m_pipelineCache.end())
+    {
+        ++m_stats.pipelineCacheHitCount;
+        return cached->second;
+    }
+
+    ++m_stats.pipelineCacheMissCount;
+    RHIPipelineRef pipeline = m_device->CreateGraphicsPipeline(pipelineDesc);
+    if (!pipeline)
+    {
+        SetLastError("Backend failed to create FilmGrain pipeline");
+        return {};
+    }
+
+    ++m_stats.pipelineCreateCount;
+    m_pipelineCache[stateHash] = pipeline;
+    return pipeline;
+}
+
 RHIPipelineRef PipelineCache::GetOrCreateFXAAPipeline(RHIFormat outputFormat)
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildFXAAPipelineDesc(outputFormat);
@@ -4796,11 +7404,14 @@ RHIPipelineRef PipelineCache::GetOrCreateUIPipeline(RHIFormat outputFormat)
 RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* debugName,
                                                                    const RHIDepthStencilState& depthStencilState,
                                                                    const RHIBlendState& blendState,
-                                                                   RHIFormat renderTargetFormat) const
+                                                                   RHIFormat renderTargetFormat,
+                                                                   DefaultLitDirectVertexInputMode inputMode) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
-    pipelineDesc.vertexShader = m_vertexShader.Get();
+    pipelineDesc.vertexShader = inputMode == DefaultLitDirectVertexInputMode::Rigid
+        ? m_rigidVertexShader.Get()
+        : m_vertexShader.Get();
     pipelineDesc.pixelShader = m_pixelShader.Get();
     pipelineDesc.pipelineLayout = m_pipelineLayout.Get();
     pipelineDesc.debugName = debugName;
@@ -4809,8 +7420,11 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDefaultLitPipelineDesc(const char* d
     pipelineDesc.inputLayout.AddElement("NORMAL", RHIFormat::RGB32_FLOAT, 1);
     pipelineDesc.inputLayout.AddElement("TEXCOORD", RHIFormat::RG32_FLOAT, 2);
     pipelineDesc.inputLayout.AddElement("TANGENT", RHIFormat::RGBA32_FLOAT, 3);
-    pipelineDesc.inputLayout.AddElement("BLENDINDICES", RHIFormat::RGBA32_UINT, 4);
-    pipelineDesc.inputLayout.AddElement("BLENDWEIGHT", RHIFormat::RGBA32_FLOAT, 5);
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        pipelineDesc.inputLayout.AddElement("BLENDINDICES", RHIFormat::RGBA32_UINT, 4);
+        pipelineDesc.inputLayout.AddElement("BLENDWEIGHT", RHIFormat::RGBA32_FLOAT, 5);
+    }
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();
     pipelineDesc.rasterizerState.frontFace = RHIFrontFace::Clockwise;
@@ -4834,8 +7448,21 @@ RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDefaultLitPipelineDesc(
     RHIFormat renderTargetFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc =
-        BuildDefaultLitPipelineDesc(debugName, depthStencilState, blendState, renderTargetFormat);
+        BuildDefaultLitPipelineDesc(debugName,
+                                    depthStencilState,
+                                    blendState,
+                                    renderTargetFormat,
+                                    DefaultLitDirectVertexInputMode::Rigid);
     pipelineDesc.vertexShader = m_gpuDrivenVertexShader.Get();
+    std::erase_if(pipelineDesc.inputLayout.elements,
+                  [](const RHIInputElement& element)
+                  {
+                      return element.inputSlot == 4 || element.inputSlot == 5;
+                  });
+    pipelineDesc.inputLayout.AddElement("INSTANCE_INDEX", RHIFormat::R32_UINT, 6);
+    RHIInputElement& instanceIndexElement = pipelineDesc.inputLayout.elements.back();
+    instanceIndexElement.perInstance = true;
+    instanceIndexElement.instanceDataStepRate = 1;
     return pipelineDesc;
 }
 
@@ -4869,17 +7496,101 @@ RHIGraphicsPipelineDesc PipelineCache::BuildDepthOnlyPipelineDesc() const
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildInstancedMaterialDefaultLitPipelineDesc(
+    const char* debugName,
+    const RHIDepthStencilState& depthStencilState,
+    const RHIBlendState& blendState,
+    RHIFormat renderTargetFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildGPUDrivenDefaultLitPipelineDesc(
+            debugName,
+            depthStencilState,
+            blendState,
+            renderTargetFormat);
+    pipelineDesc.vertexShader = m_instancedMaterialVertexShader.Get();
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildRigidDepthOnlyPipelineDesc() const
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    pipelineDesc.vertexShader = m_rigidDepthOnlyVertexShader.Get();
+    pipelineDesc.debugName = "RigidDepthOnlyPipeline";
+    std::erase_if(pipelineDesc.inputLayout.elements,
+                  [](const RHIInputElement& element)
+                  {
+                      return element.inputSlot == 4 || element.inputSlot == 5;
+                  });
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDefaultLitPipelineDesc(
+    const char* debugName,
+    const RHIDepthStencilState& depthStencilState,
+    const RHIBlendState& blendState,
+    RHIFormat renderTargetFormat,
+    bool instancedMaterial) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUDrivenDefaultLitPipelineDesc(
+        debugName, depthStencilState, blendState, renderTargetFormat);
+    pipelineDesc.vertexShader = instancedMaterial
+        ? m_gpuSceneInstancedMaterialVertexShader.Get()
+        : m_gpuSceneVertexShader.Get();
+    pipelineDesc.pipelineLayout = m_gpuSceneRasterPipelineLayout.Get();
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildMaskedDepthOnlyPipelineDesc(
+    DefaultLitDirectVertexInputMode inputMode) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    pipelineDesc.vertexShader =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? m_rigidMaskedDepthOnlyVertexShader.Get()
+            : m_maskedDepthOnlyVertexShader.Get();
+    pipelineDesc.pixelShader = m_maskedDepthOnlyPixelShader.Get();
+    pipelineDesc.debugName = "MaskedDepthOnlyPipeline";
+    pipelineDesc.inputLayout.elements.clear();
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        0, "POSITION", 0, RHIFormat::RGB32_FLOAT, 0);
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        1, "TEXCOORD", 0, RHIFormat::RG32_FLOAT, 2);
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        pipelineDesc.inputLayout.AddElementAtLocation(
+            2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
+        pipelineDesc.inputLayout.AddElementAtLocation(
+            3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
+    }
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildGPUDrivenDepthOnlyPipelineDesc() const
 {
     RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
     pipelineDesc.vertexShader = m_gpuDrivenDepthOnlyVertexShader.Get();
     pipelineDesc.debugName = "GPUDrivenDepthOnlyPipeline";
+    std::erase_if(pipelineDesc.inputLayout.elements,
+                  [](const RHIInputElement& element)
+                  {
+                      return element.inputSlot == 4 || element.inputSlot == 5;
+                  });
+    pipelineDesc.inputLayout.AddElement("INSTANCE_INDEX", RHIFormat::R32_UINT, 6);
+    RHIInputElement& instanceIndexElement = pipelineDesc.inputLayout.elements.back();
+    instanceIndexElement.perInstance = true;
+    instanceIndexElement.instanceDataStepRate = 1;
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildShadowDepthPipelineDesc(const ShadowDepthBiasState& biasState) const
+RHIGraphicsPipelineDesc PipelineCache::BuildShadowDepthPipelineDesc(
+    const ShadowDepthBiasState& biasState,
+    DefaultLitDirectVertexInputMode inputMode) const
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildDepthOnlyPipelineDesc();
+    RHIGraphicsPipelineDesc pipelineDesc =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? BuildRigidDepthOnlyPipelineDesc()
+            : BuildDepthOnlyPipelineDesc();
     const ShadowDepthBiasState sanitizedBias = SanitizeShadowDepthBiasState(biasState);
     pipelineDesc.debugName = "ShadowDepthPipeline";
     pipelineDesc.rasterizerState.depthBias = sanitizedBias.constantBias;
@@ -4968,6 +7679,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildBloomAdditivePipelineDesc(RHIFormat 
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildSSAOPipelineDesc(RHIFormat outputFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+
+    pipelineDesc.vertexShader = m_ssaoVertexShader.Get();
+    pipelineDesc.pixelShader = m_ssaoPixelShader.Get();
+    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
+    pipelineDesc.debugName = "SSAOPipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildCameraVelocityPipelineDesc(RHIFormat outputFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
@@ -4990,18 +7723,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildCameraVelocityPipelineDesc(RHIFormat
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildObjectVelocityPipelineDesc(RHIFormat outputFormat) const
+RHIGraphicsPipelineDesc PipelineCache::BuildObjectVelocityPipelineDesc(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
 
-    pipelineDesc.vertexShader = m_objectVelocityVertexShader.Get();
+    pipelineDesc.vertexShader =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? m_rigidObjectVelocityVertexShader.Get()
+            : m_objectVelocityVertexShader.Get();
     pipelineDesc.pixelShader = m_objectVelocityPixelShader.Get();
     pipelineDesc.pipelineLayout = m_pipelineLayout.Get();
     pipelineDesc.debugName = "ObjectVelocityPipeline";
 
     pipelineDesc.inputLayout.AddElement("POSITION", RHIFormat::RGB32_FLOAT, 0);
-    pipelineDesc.inputLayout.AddElement("BLENDINDICES", RHIFormat::RGBA32_UINT, 4);
-    pipelineDesc.inputLayout.AddElement("BLENDWEIGHT", RHIFormat::RGBA32_FLOAT, 5);
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        pipelineDesc.inputLayout.AddElement(
+            "BLENDINDICES", RHIFormat::RGBA32_UINT, 4);
+        pipelineDesc.inputLayout.AddElement(
+            "BLENDWEIGHT", RHIFormat::RGBA32_FLOAT, 5);
+    }
 
     pipelineDesc.rasterizerState = RHIRasterizerState::Default();
     pipelineDesc.rasterizerState.frontFace = RHIFrontFace::Clockwise;
@@ -5019,13 +7762,54 @@ RHIGraphicsPipelineDesc PipelineCache::BuildObjectVelocityPipelineDesc(RHIFormat
     return pipelineDesc;
 }
 
-RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(RHIFormat outputFormat) const
+RHIGraphicsPipelineDesc PipelineCache::BuildMaskedObjectVelocityPipelineDesc(
+    RHIFormat outputFormat,
+    DefaultLitDirectVertexInputMode inputMode) const
 {
-    RHIGraphicsPipelineDesc pipelineDesc = BuildObjectVelocityPipelineDesc(outputFormat);
-    pipelineDesc.vertexShader = m_maskedObjectVelocityVertexShader.Get();
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildObjectVelocityPipelineDesc(outputFormat, inputMode);
+    pipelineDesc.vertexShader =
+        inputMode == DefaultLitDirectVertexInputMode::Rigid
+            ? m_rigidMaskedObjectVelocityVertexShader.Get()
+            : m_maskedObjectVelocityVertexShader.Get();
     pipelineDesc.pixelShader = m_maskedObjectVelocityPixelShader.Get();
     pipelineDesc.debugName = "MaskedObjectVelocityPipeline";
-    pipelineDesc.inputLayout.AddElement("TEXCOORD", RHIFormat::RG32_FLOAT, 2);
+    pipelineDesc.inputLayout.elements.clear();
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        0, "POSITION", 0, RHIFormat::RGB32_FLOAT, 0);
+    pipelineDesc.inputLayout.AddElementAtLocation(
+        1, "TEXCOORD", 0, RHIFormat::RG32_FLOAT, 2);
+    if (inputMode == DefaultLitDirectVertexInputMode::Skinned)
+    {
+        pipelineDesc.inputLayout.AddElementAtLocation(
+            2, "BLENDINDICES", 0, RHIFormat::RGBA32_UINT, 4);
+        pipelineDesc.inputLayout.AddElementAtLocation(
+            3, "BLENDWEIGHT", 0, RHIFormat::RGBA32_FLOAT, 5);
+    }
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildInstancedShadowDepthPipelineDesc(
+    const ShadowDepthBiasState& biasState) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc =
+        BuildGPUDrivenDepthOnlyPipelineDesc();
+    const ShadowDepthBiasState sanitizedBias =
+        SanitizeShadowDepthBiasState(biasState);
+    pipelineDesc.debugName = "InstancedShadowDepthPipeline";
+    pipelineDesc.rasterizerState.depthBias = sanitizedBias.constantBias;
+    pipelineDesc.rasterizerState.slopeScaledDepthBias =
+        sanitizedBias.slopeScaledBias;
+    pipelineDesc.rasterizerState.depthBiasClamp = sanitizedBias.biasClamp;
+    return pipelineDesc;
+}
+
+RHIGraphicsPipelineDesc PipelineCache::BuildGPUSceneDepthOnlyPipelineDesc() const
+{
+    RHIGraphicsPipelineDesc pipelineDesc = BuildGPUDrivenDepthOnlyPipelineDesc();
+    pipelineDesc.vertexShader = m_gpuSceneDepthOnlyVertexShader.Get();
+    pipelineDesc.pipelineLayout = m_gpuSceneRasterPipelineLayout.Get();
+    pipelineDesc.debugName = "GPUSceneDepthOnlyPipeline";
     return pipelineDesc;
 }
 
@@ -5166,6 +7950,28 @@ RHIGraphicsPipelineDesc PipelineCache::BuildVignettePipelineDesc(RHIFormat outpu
     return pipelineDesc;
 }
 
+RHIGraphicsPipelineDesc PipelineCache::BuildFilmGrainPipelineDesc(RHIFormat outputFormat) const
+{
+    RHIGraphicsPipelineDesc pipelineDesc;
+
+    pipelineDesc.vertexShader = m_filmGrainVertexShader.Get();
+    pipelineDesc.pixelShader = m_filmGrainPixelShader.Get();
+    pipelineDesc.pipelineLayout = m_postProcessPipelineLayout.Get();
+    pipelineDesc.debugName = "FilmGrainPipeline";
+
+    pipelineDesc.rasterizerState = RHIRasterizerState::Default();
+    pipelineDesc.rasterizerState.cullMode = RHICullMode::None;
+
+    pipelineDesc.depthStencilState = RHIDepthStencilState::Disabled();
+    pipelineDesc.blendState = RHIBlendState::Default();
+    pipelineDesc.numRenderTargets = 1;
+    pipelineDesc.renderTargetFormats[0] = outputFormat;
+    pipelineDesc.depthStencilFormat = RHIFormat::Unknown;
+    pipelineDesc.primitiveTopology = RHIPrimitiveTopology::TriangleList;
+
+    return pipelineDesc;
+}
+
 RHIGraphicsPipelineDesc PipelineCache::BuildUIPipelineDesc(RHIFormat outputFormat) const
 {
     RHIGraphicsPipelineDesc pipelineDesc;
@@ -5259,14 +8065,34 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
     {
         if (shader == m_vertexShader.Get())
             return ComputeShaderHash(m_vsCompileResult.get());
+        if (shader == m_rigidVertexShader.Get())
+            return ComputeShaderHash(m_rigidVsCompileResult.get());
         if (shader == m_gpuDrivenVertexShader.Get())
             return ComputeShaderHash(m_gpuDrivenVsCompileResult.get());
+        if (shader == m_instancedMaterialVertexShader.Get())
+            return ComputeShaderHash(m_instancedMaterialVsCompileResult.get());
+        if (shader == m_gpuSceneVertexShader.Get())
+            return ComputeShaderHash(m_gpuSceneVsCompileResult.get());
+        if (shader == m_gpuSceneInstancedMaterialVertexShader.Get())
+            return ComputeShaderHash(
+                m_gpuSceneInstancedMaterialVsCompileResult.get());
         if (shader == m_pixelShader.Get())
             return ComputeShaderHash(m_psCompileResult.get());
         if (shader == m_depthOnlyVertexShader.Get())
             return ComputeShaderHash(m_depthOnlyVsCompileResult.get());
+        if (shader == m_rigidDepthOnlyVertexShader.Get())
+            return ComputeShaderHash(m_rigidDepthOnlyVsCompileResult.get());
+        if (shader == m_maskedDepthOnlyVertexShader.Get())
+            return ComputeShaderHash(m_maskedDepthOnlyVsCompileResult.get());
+        if (shader == m_rigidMaskedDepthOnlyVertexShader.Get())
+            return ComputeShaderHash(
+                m_rigidMaskedDepthOnlyVsCompileResult.get());
+        if (shader == m_maskedDepthOnlyPixelShader.Get())
+            return ComputeShaderHash(m_maskedDepthOnlyPsCompileResult.get());
         if (shader == m_gpuDrivenDepthOnlyVertexShader.Get())
             return ComputeShaderHash(m_gpuDrivenDepthOnlyVsCompileResult.get());
+        if (shader == m_gpuSceneDepthOnlyVertexShader.Get())
+            return ComputeShaderHash(m_gpuSceneDepthOnlyVsCompileResult.get());
         if (shader == m_toneMappingVertexShader.Get())
             return ComputeShaderHash(m_toneMappingVsCompileResult.get());
         if (shader == m_toneMappingPixelShader.Get())
@@ -5275,14 +8101,24 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_bloomVsCompileResult.get());
         if (shader == m_bloomPixelShader.Get())
             return ComputeShaderHash(m_bloomPsCompileResult.get());
+        if (shader == m_ssaoVertexShader.Get())
+            return ComputeShaderHash(m_ssaoVsCompileResult.get());
+        if (shader == m_ssaoPixelShader.Get())
+            return ComputeShaderHash(m_ssaoPsCompileResult.get());
         if (shader == m_cameraVelocityPixelShader.Get())
             return ComputeShaderHash(m_cameraVelocityPsCompileResult.get());
         if (shader == m_objectVelocityVertexShader.Get())
             return ComputeShaderHash(m_objectVelocityVsCompileResult.get());
+        if (shader == m_rigidObjectVelocityVertexShader.Get())
+            return ComputeShaderHash(
+                m_rigidObjectVelocityVsCompileResult.get());
         if (shader == m_objectVelocityPixelShader.Get())
             return ComputeShaderHash(m_objectVelocityPsCompileResult.get());
         if (shader == m_maskedObjectVelocityVertexShader.Get())
             return ComputeShaderHash(m_maskedObjectVelocityVsCompileResult.get());
+        if (shader == m_rigidMaskedObjectVelocityVertexShader.Get())
+            return ComputeShaderHash(
+                m_rigidMaskedObjectVelocityVsCompileResult.get());
         if (shader == m_maskedObjectVelocityPixelShader.Get())
             return ComputeShaderHash(m_maskedObjectVelocityPsCompileResult.get());
         if (shader == m_rayTracedReflectionCompositeVertexShader.Get())
@@ -5301,6 +8137,10 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             return ComputeShaderHash(m_chromaticAberrationVsCompileResult.get());
         if (shader == m_chromaticAberrationPixelShader.Get())
             return ComputeShaderHash(m_chromaticAberrationPsCompileResult.get());
+        if (shader == m_filmGrainVertexShader.Get())
+            return ComputeShaderHash(m_filmGrainVsCompileResult.get());
+        if (shader == m_filmGrainPixelShader.Get())
+            return ComputeShaderHash(m_filmGrainPsCompileResult.get());
         if (shader == m_fxaaVertexShader.Get())
             return ComputeShaderHash(m_fxaaVsCompileResult.get());
         if (shader == m_fxaaPixelShader.Get())
@@ -5322,6 +8162,31 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
 
     HashValue(hash, shaderHashFor(desc.vertexShader));
     HashValue(hash, shaderHashFor(desc.pixelShader));
+    HashValue(
+        hash,
+        desc.vertexShader
+            ? desc.vertexShader->GetInterface().hash
+            : 0ull);
+    HashValue(
+        hash,
+        desc.pixelShader
+            ? desc.pixelShader->GetInterface().hash
+            : 0ull);
+    HashValue(
+        hash,
+        desc.geometryShader
+            ? desc.geometryShader->GetInterface().hash
+            : 0ull);
+    HashValue(
+        hash,
+        desc.hullShader
+            ? desc.hullShader->GetInterface().hash
+            : 0ull);
+    HashValue(
+        hash,
+        desc.domainShader
+            ? desc.domainShader->GetInterface().hash
+            : 0ull);
 
     if (desc.pipelineLayout == m_skyboxPipelineLayout.Get() && m_skyboxSetLayout)
     {
@@ -5334,6 +8199,22 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
             HashValue(hash, entry.visibility);
             HashValue(hash, entry.count);
             HashValue(hash, entry.isDynamic);
+        }
+    }
+
+    if (desc.pipelineLayout == m_gpuSceneRasterPipelineLayout.Get() &&
+        m_gpuSceneRasterObjectSetLayout)
+    {
+        const auto& entries = m_gpuSceneRasterObjectSetLayout->GetEntries();
+        HashValue(hash, static_cast<uint32>(entries.size()));
+        for (const RHIBindingLayoutEntry& entry : entries)
+        {
+            HashValue(hash, entry.binding);
+            HashValue(hash, entry.type);
+            HashValue(hash, entry.visibility);
+            HashValue(hash, entry.count);
+            HashValue(hash, entry.isDynamic);
+            HashValue(hash, entry.resourceDataVolatility);
         }
     }
 
@@ -5412,6 +8293,7 @@ uint64 PipelineCache::ComputePipelineStateHash(const RHIGraphicsPipelineDesc& de
     {
         HashString(hash, element.semanticName);
         HashValue(hash, element.semanticIndex);
+        HashValue(hash, element.location);
         HashValue(hash, element.format);
         HashValue(hash, element.inputSlot);
         HashValue(hash, element.alignedByteOffset);
@@ -5430,12 +8312,11 @@ uint64 PipelineCache::AllocateObjectConstantSlot()
     if (m_objectConstantCursor >= RVX_MAX_DRAW_CONSTANTS_PER_FRAME)
     {
         RVX_VERIFY(false,
-                   "PipelineCache: Object constant buffer exhausted for this frame (max {} draws). "
-                   "Reusing the final slot to avoid wrapping over earlier draw constants.",
+                   "PipelineCache: legacy object constant buffer exhausted for this frame (max {} draws). "
+                   "Recording must use completion-tracked object pages.",
                    RVX_MAX_DRAW_CONSTANTS_PER_FRAME);
-        const uint64 offset = (RVX_MAX_DRAW_CONSTANTS_PER_FRAME - 1) * m_objectConstantStride;
-        m_currentObjectConstantOffset = offset;
-        return offset;
+        m_currentObjectConstantOffset = std::numeric_limits<uint64>::max();
+        return m_currentObjectConstantOffset;
     }
 
     const uint64 offset = m_objectConstantCursor * m_objectConstantStride;
@@ -5449,79 +8330,9 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
     if (!m_viewConstantBuffer)
         return;
 
-    ViewConstants constants{};
     const RHIBackendType backend = m_device ? m_device->GetBackendType() : RHIBackendType::None;
-    constants.viewProjection = ApplyBackendClipConvention(view.viewProjectionMatrix, backend);
-
-    constants.cameraPosition = view.cameraPosition;
-    constants.time = view.time;
-    constants.lightDirection = NormalizeOr(view.directionalLightDirection, Vec3(0.5f, -0.8f, 0.3f));
-    const Vec3 cameraForward = NormalizeOr(view.cameraForward, Vec3(0.0f, 0.0f, -1.0f));
-    constants.directionalLightIntensity = ClampFiniteNonNegative(view.directionalLightIntensity, 4.0f);
-    constants.directionalLightColor = SanitizeLightColor(view.directionalLightColor);
-    const bool iblAmbientEnabled = view.iblAmbientEnabled != 0;
-    const float iblDiffuseIntensity = iblAmbientEnabled ? view.iblDiffuseIntensity : 0.0f;
-    const float iblSpecularIntensity = iblAmbientEnabled ? view.iblSpecularIntensity : 0.0f;
-    constants.iblDiffuseAmbient = Vec4(view.iblDiffuseColor, iblDiffuseIntensity);
-    constants.iblSpecularAmbient = Vec4(view.iblSpecularColor, iblSpecularIntensity);
-    constants.iblTextureParams = Vec4(
-        view.textureIBLEnabled != 0 ? 1.0f : 0.0f,
-        static_cast<float>(std::max(1u, view.textureIBLPrefilteredMipLevels)),
-        ClampFiniteNonNegative(view.textureIBLIntensity, 1.0f),
-        ClampFiniteNonNegative(view.ambientFloorIntensity, 0.08f));
-    uint32 shadowCascadeCount = view.directionalShadowEnabled != 0 ? view.directionalShadowCascadeCount : 0;
-    if (view.directionalShadowEnabled != 0 && shadowCascadeCount == 0)
-    {
-        shadowCascadeCount = 1;
-    }
-    shadowCascadeCount = std::min(shadowCascadeCount, RVX_MAX_DIRECTIONAL_SHADOW_CASCADES);
-
-    constants.cameraForwardAndShadowCascadeCount =
-        Vec4(cameraForward, static_cast<float>(shadowCascadeCount));
-    for (uint32 i = 0; i < RVX_MAX_DIRECTIONAL_SHADOW_CASCADES; ++i)
-    {
-        const Mat4& sourceMatrix = view.directionalShadowCascadeCount > 0
-                                       ? view.directionalShadowViewProjections[i]
-                                       : (i == 0 ? view.directionalShadowViewProjection : Mat4Identity());
-        constants.directionalShadowViewProjections[i] = ApplyBackendClipConvention(sourceMatrix, backend);
-    }
-    constants.directionalShadowCascadeSplits = Vec4(
-        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.x, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.y, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.z, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeSplits.w, 0.0f));
-    constants.directionalShadowCascadeFadeDistances = Vec4(
-        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.x, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.y, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.z, 0.0f),
-        ClampFiniteNonNegative(view.directionalShadowCascadeFadeDistances.w, 0.0f));
-    const bool directionalShadowEnabled = view.directionalShadowEnabled != 0 &&
-                                          shadowCascadeCount > 0 &&
-                                          !m_config.reverseZ;
-    const float shadowInvMapSize = ClampFiniteNonNegative(view.directionalShadowInvMapSize, 0.0f);
-    const float shadowFilterRadiusTexels =
-        ClampFiniteNonNegative(view.directionalShadowFilterRadiusTexels, 1.0f);
-    const float unclampedShadowFilterStep = shadowInvMapSize * shadowFilterRadiusTexels;
-    const float shadowFilterStep = std::isfinite(unclampedShadowFilterStep)
-                                       ? std::max(0.0f, unclampedShadowFilterStep)
-                                       : shadowInvMapSize;
-    constants.directionalShadowParams = Vec4(
-        directionalShadowEnabled ? 1.0f : 0.0f,
-        ClampFiniteNonNegative(view.directionalShadowDepthBias, 0.005f),
-        std::min(ClampFiniteNonNegative(view.directionalShadowStrength, 1.0f), 1.0f),
-        shadowFilterStep);
-    constants.directionalShadowReceiverParams = Vec4(
-        ClampFiniteNonNegative(view.directionalShadowNormalBias, 0.02f),
-        0.0f,
-        0.0f,
-        0.0f);
-    const float rayTracedShadowMode =
-        view.rayTracedShadowMode == RayTracedShadowMode::ReplaceRaster ? 1.0f : 0.0f;
-    constants.rayTracedShadowParams = Vec4(
-        view.rayTracedShadowEnabled != 0 ? 1.0f : 0.0f,
-        std::min(ClampFiniteNonNegative(view.rayTracedShadowFilterRadiusPixels, 1.0f), 3.0f),
-        rayTracedShadowMode,
-        0.0f);
+    const ViewConstants constants = BuildViewConstantsSnapshot(
+        view, backend, m_config.reverseZ);
 
     void* mapped = m_viewConstantBuffer->Map();
     if (mapped)
@@ -5531,28 +8342,28 @@ void PipelineCache::UpdateViewConstants(const ViewData& view)
     }
 }
 
-void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix)
+bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix)
 {
-    UpdateObjectConstants(worldMatrix, normalMatrix, Mat4Identity(), Mat4Identity(), false);
+    return UpdateObjectConstants(worldMatrix, normalMatrix, Mat4Identity(), Mat4Identity(), false);
 }
 
-void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
+bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
                                           const Mat4& normalMatrix,
                                           const Mat4& previousWorldMatrix,
                                           const Mat4& previousViewProjectionMatrix,
                                           bool previousWorldViewProjectionValid,
                                           std::span<const Mat4> skinningMatrices)
 {
-    UpdateObjectConstants(worldMatrix,
-                          normalMatrix,
-                          previousWorldMatrix,
-                          previousViewProjectionMatrix,
-                          previousWorldViewProjectionValid,
-                          true,
-                          skinningMatrices);
+    return UpdateObjectConstants(worldMatrix,
+                                 normalMatrix,
+                                 previousWorldMatrix,
+                                 previousViewProjectionMatrix,
+                                 previousWorldViewProjectionValid,
+                                 true,
+                                 skinningMatrices);
 }
 
-void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
+bool PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
                                           const Mat4& normalMatrix,
                                           const Mat4& previousWorldMatrix,
                                           const Mat4& previousViewProjectionMatrix,
@@ -5561,7 +8372,7 @@ void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
                                           std::span<const Mat4> skinningMatrices)
 {
     if (!m_objectConstantBuffer)
-        return;
+        return false;
 
     ObjectConstants constants{};
     constants.world = worldMatrix;
@@ -5587,12 +8398,19 @@ void PipelineCache::UpdateObjectConstants(const Mat4& worldMatrix,
     }
 
     const uint64 offset = AllocateObjectConstantSlot();
-    void* mapped = m_objectConstantBuffer->Map();
-    if (mapped)
+    if (offset == std::numeric_limits<uint64>::max())
     {
-        std::memcpy(static_cast<uint8*>(mapped) + offset, &constants, sizeof(ObjectConstants));
-        m_objectConstantBuffer->Unmap();
+        return false;
     }
+    void* mapped = m_objectConstantBuffer->Map();
+    if (mapped == nullptr)
+    {
+        return false;
+    }
+
+    std::memcpy(static_cast<uint8*>(mapped) + offset, &constants, sizeof(ObjectConstants));
+    m_objectConstantBuffer->Unmap();
+    return true;
 }
 
 } // namespace RVX

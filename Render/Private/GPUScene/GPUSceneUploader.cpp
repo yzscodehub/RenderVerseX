@@ -1,0 +1,1793 @@
+/**
+ * @file GPUSceneUploader.cpp
+ * @brief Persistent RenderGraph-copy uploader for resident GPUScene tables.
+ */
+
+#include "GPUScene/GPUSceneUploader.h"
+
+#include "Render/Graph/RenderGraph.h"
+#include "Resources/RenderSubmissionResourceBatch.h"
+#include "Resources/RenderSubmissionTracker.h"
+#include "RHI/RHIBuffer.h"
+#include "RHI/RHICommandContext.h"
+#include "RHI/RHIDevice.h"
+
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <limits>
+#include <optional>
+#include <utility>
+#include <vector>
+
+namespace RVX
+{
+namespace
+{
+    enum class GPUSceneUploadTable : uint8
+    {
+        Primitives = 0,
+        Bounds,
+        Transforms,
+        Materials,
+        Geometries,
+        Draws,
+        Count,
+    };
+
+    constexpr uint32 GPU_SCENE_UPLOAD_TABLE_COUNT =
+        static_cast<uint32>(GPUSceneUploadTable::Count);
+
+    void SaturatingAdd(uint64& total, uint64 value, bool& saturated) noexcept
+    {
+        const uint64 maximum = std::numeric_limits<uint64>::max();
+        if (saturated || value > maximum - total)
+        {
+            total = maximum;
+            saturated = true;
+            return;
+        }
+        total += value;
+    }
+
+    static_assert(GPU_SCENE_UPLOAD_TABLE_COUNT ==
+                  GPU_SCENE_RESIDENT_TABLE_COUNT);
+    static_assert(GPU_SCENE_UPLOAD_TABLE_COUNT ==
+                  GPU_SCENE_DIAGNOSTICS_TABLE_COUNT);
+
+    struct TableSource
+    {
+        const void* rows = nullptr;
+        uint32 rowCount = 0;
+        uint32 stride = 0;
+        const char* debugName = nullptr;
+        bool rowCountValid = false;
+    };
+
+    template <typename T>
+    TableSource MakeTableSource(const std::vector<T>& rows, const char* debugName)
+    {
+        if (rows.size() > std::numeric_limits<uint32>::max())
+        {
+            return {nullptr, 0, static_cast<uint32>(sizeof(T)), debugName, false};
+        }
+        return {rows.empty() ? nullptr : rows.data(),
+                static_cast<uint32>(rows.size()),
+                static_cast<uint32>(sizeof(T)),
+                debugName,
+                true};
+    }
+
+    TableSource GetTableSource(
+        const GPUSceneCommittedMirror& mirror,
+        GPUSceneUploadTable table)
+    {
+        switch (table)
+        {
+            case GPUSceneUploadTable::Primitives:
+                return MakeTableSource(mirror.primitives, "GPUScene.Primitives");
+            case GPUSceneUploadTable::Bounds:
+                return MakeTableSource(mirror.bounds, "GPUScene.Bounds");
+            case GPUSceneUploadTable::Transforms:
+                return MakeTableSource(mirror.transforms, "GPUScene.Transforms");
+            case GPUSceneUploadTable::Materials:
+                return MakeTableSource(mirror.materials, "GPUScene.Materials");
+            case GPUSceneUploadTable::Geometries:
+                return MakeTableSource(mirror.geometries, "GPUScene.Geometries");
+            case GPUSceneUploadTable::Draws:
+                return MakeTableSource(mirror.draws, "GPUScene.Draws");
+            case GPUSceneUploadTable::Count:
+            default:
+                return {};
+        }
+    }
+
+    bool HasValidTableSources(const GPUSceneCommittedMirror& mirror) noexcept
+    {
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+             ++tableIndex)
+        {
+            if (!GetTableSource(
+                    mirror,
+                    static_cast<GPUSceneUploadTable>(tableIndex)).rowCountValid)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief Resolve the physical domain that RenderGraph assigns to a Copy pass.
+     *
+     * GPUScene staging buffers are CPU-written and have no prior GPU owner. The
+     * graph is recorded before its immutable submission plan exists, so mirror
+     * RenderGraph's capability-based Copy-pass routing here. In particular, a
+     * device without queue submission plans must stay on Graphics even if its
+     * topology advertises a distinct Copy mapping.
+     */
+    GPUQueueDomain ResolveCopyPassDomain(const IRHIDevice* device) noexcept
+    {
+        if (!device)
+        {
+            return GPUQueueDomain::Graphics;
+        }
+
+        const RHICapabilities& capabilities = device->GetCapabilities();
+        if (!capabilities.supportsQueueSubmissionPlan)
+        {
+            return GPUQueueDomain::Graphics;
+        }
+
+        GPUQueueDomain domain = GPUQueueDomain::Graphics;
+        return TryGetGPUQueueDomain(capabilities.queueTopology,
+                                    RHICommandQueueType::Copy,
+                                    domain)
+            ? domain
+            : GPUQueueDomain::Graphics;
+    }
+
+    bool IsTrackerIssuedCompletionToken(
+        const RenderSubmissionTracker& tracker,
+        const GPUCompletionToken& token) noexcept
+    {
+        const RHIQueueTopology& topology = tracker.GetTopology();
+        for (uint8 pointIndex = 0; pointIndex < token.count; ++pointIndex)
+        {
+            const GPUCompletionPoint point = token.points[pointIndex];
+            const bool activeDomain = std::find(
+                topology.logicalQueueDomains.begin(),
+                topology.logicalQueueDomains.end(),
+                point.domain) != topology.logicalQueueDomains.end();
+            if (!activeDomain || point.value == 0 ||
+                point.value > tracker.GetLastSubmittedValue(point.domain))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    uint64 GetCompletionTokenValue(
+        const GPUCompletionToken& token,
+        GPUQueueDomain domain) noexcept
+    {
+        for (uint8 pointIndex = 0; pointIndex < token.count; ++pointIndex)
+        {
+            if (token.points[pointIndex].domain == domain)
+            {
+                return token.points[pointIndex].value;
+            }
+        }
+        return 0;
+    }
+
+    // A graph recording is owned by the final Graphics gateway.  The gateway
+    // joins every queue batch in the RenderContext DAG, so its exact current
+    // point proves completion for multi-domain upload copies without requiring
+    // callers to manufacture a token for every intermediate queue.  Extra
+    // points remain valid when they are also exact current tracker points.
+    bool IsExactPostRecordingSubmissionToken(
+        const RenderSubmissionTracker& tracker,
+        const GPUCompletionToken& recordingBoundary,
+        const GPUCompletionToken& token) noexcept
+    {
+        if (!IsTrackerIssuedCompletionToken(tracker, token) ||
+            tracker.Query(token) == GPUCompletionStatus::Lost)
+        {
+            return false;
+        }
+
+        for (uint8 pointIndex = 0; pointIndex < token.count; ++pointIndex)
+        {
+            const GPUCompletionPoint point = token.points[pointIndex];
+            if (point.value != tracker.GetLastSubmittedValue(point.domain))
+            {
+                return false;
+            }
+        }
+
+        const uint64 graphicsPoint = GetCompletionTokenValue(
+            token, GPUQueueDomain::Graphics);
+        const uint64 recordingGraphicsPoint = GetCompletionTokenValue(
+            recordingBoundary, GPUQueueDomain::Graphics);
+        return graphicsPoint != 0 && graphicsPoint > recordingGraphicsPoint;
+    }
+
+    const GPUSceneTableChangeSet& GetTableChangeSet(
+        const GPUSceneChangeSet& changes,
+        GPUSceneUploadTable table)
+    {
+        switch (table)
+        {
+            case GPUSceneUploadTable::Primitives: return changes.primitives;
+            case GPUSceneUploadTable::Bounds: return changes.bounds;
+            case GPUSceneUploadTable::Transforms: return changes.transforms;
+            case GPUSceneUploadTable::Materials: return changes.materials;
+            case GPUSceneUploadTable::Geometries: return changes.geometries;
+            case GPUSceneUploadTable::Draws: return changes.draws;
+            case GPUSceneUploadTable::Count:
+            default: return changes.primitives;
+        }
+    }
+
+    bool HasDirtyWork(const GPUSceneTableChangeSet& changes) noexcept
+    {
+        return changes.fullTableDirty || !changes.dirtyRanges.empty();
+    }
+
+    [[nodiscard]] uint32 GetHostWriteSynchronizationScopeIndex(
+        RHIHostWriteSynchronization synchronization) noexcept
+    {
+        const uint32 scope = static_cast<uint32>(synchronization);
+        return scope < RVX_RENDER_HOST_WRITE_SYNCHRONIZATION_SCOPE_COUNT
+            ? scope
+            : static_cast<uint32>(
+                  RenderHostWriteSynchronizationScope::Unavailable);
+    }
+
+    void RecordMappedUploadRange(RenderUploadWorkDiagnostics& diagnostics,
+                                 uint64 copiedBytes) noexcept
+    {
+        ++diagnostics.mappedRangeCount;
+        diagnostics.cpuCopiedPayloadBytes += copiedBytes;
+    }
+
+    void RecordCommittedUploadRange(
+        RenderUploadWorkDiagnostics& diagnostics,
+        const RHIHostWriteReceipt& receipt,
+        uint64 copiedBytes) noexcept
+    {
+        if (!receipt.IsPublished())
+        {
+            return;
+        }
+
+        const bool hadCommittedRanges = diagnostics.committedRangeCount != 0;
+        ++diagnostics.committedRangeCount;
+        diagnostics.committedPayloadBytes += copiedBytes;
+        const uint32 scope = GetHostWriteSynchronizationScopeIndex(
+            receipt.synchronization);
+        ++diagnostics.hostVisibilitySynchronizationScopeRangeCounts[scope];
+        const bool coherent = receipt.synchronization ==
+            RHIHostWriteSynchronization::CoherentNoExplicitSync;
+        const bool quantitativeEvidence = coherent || receipt.HasSynchronizedRange();
+        const uint64 synchronizedBytes = receipt.HasSynchronizedRange()
+            ? receipt.synchronizedSize
+            : (coherent ? copiedBytes : 0);
+        diagnostics.hostVisibilitySynchronizationScopeBytes[scope] +=
+            synchronizedBytes;
+        if (!quantitativeEvidence || scope == static_cast<uint32>(
+                RenderHostWriteSynchronizationScope::Unavailable))
+        {
+            diagnostics.hostVisibilitySynchronizedBytes =
+                DiagnosticValue<uint64>::Unavailable(
+                    "A committed mapped range did not report quantitative host-visibility evidence");
+            return;
+        }
+        if (hadCommittedRanges &&
+            !diagnostics.hostVisibilitySynchronizedBytes.IsAvailable())
+        {
+            // Receipt aggregation is monotonic: later quantitative evidence
+            // cannot repair an earlier committed range whose visibility was
+            // not quantitatively evidenced.
+            return;
+        }
+        if (diagnostics.hostVisibilitySynchronizationScopeRangeCounts[
+                static_cast<uint32>(RenderHostWriteSynchronizationScope::Unavailable)] != 0)
+        {
+            return;
+        }
+        const uint64 prior = diagnostics.hostVisibilitySynchronizedBytes
+            .GetValue()
+            .value_or(0);
+        diagnostics.hostVisibilitySynchronizedBytes =
+            DiagnosticValue<uint64>::Available(prior + synchronizedBytes);
+    }
+
+    void CoalesceRanges(std::vector<GPUSceneDirtyRowRange>& ranges) noexcept
+    {
+        if (ranges.size() < 2)
+        {
+            return;
+        }
+
+        std::sort(ranges.begin(), ranges.end(), [](const auto& lhs, const auto& rhs)
+        {
+            return lhs.firstRow < rhs.firstRow;
+        });
+        size_t output = 0;
+        for (const GPUSceneDirtyRowRange range : ranges)
+        {
+            if (range.rowCount == 0)
+            {
+                continue;
+            }
+            if (output == 0)
+            {
+                ranges[output++] = range;
+                continue;
+            }
+
+            GPUSceneDirtyRowRange& previous = ranges[output - 1U];
+            const uint64 previousEnd =
+                static_cast<uint64>(previous.firstRow) + previous.rowCount;
+            const uint64 rangeEnd =
+                static_cast<uint64>(range.firstRow) + range.rowCount;
+            if (range.firstRow <= previousEnd)
+            {
+                previous.rowCount = static_cast<uint32>(
+                    std::min<uint64>(std::numeric_limits<uint32>::max(),
+                                     std::max(previousEnd, rangeEnd) - previous.firstRow));
+            }
+            else
+            {
+                ranges[output++] = range;
+            }
+        }
+        ranges.resize(output);
+    }
+
+    uint32 GrowCapacity(uint32 required) noexcept
+    {
+        uint32 capacity = 1;
+        while (capacity < required)
+        {
+            if (capacity > std::numeric_limits<uint32>::max() / 2U)
+            {
+                return required;
+            }
+            capacity *= 2U;
+        }
+        return capacity;
+    }
+
+} // namespace
+
+class GPUSceneUploader::Impl
+{
+public:
+    struct TableState
+    {
+        RHIBufferRef buffer;
+        RHIBufferAccessSnapshot access = MakeRHIBufferAccessSnapshot(
+            RHIResourceState::Undefined,
+            RHIShaderStage::None,
+            GPUQueueDomain::Graphics,
+            RHIContentValidity::Invalid);
+        uint32 capacity = 0;
+        uint32 stride = 0;
+        bool fullDirty = true;
+        std::vector<GPUSceneDirtyRowRange> dirtyRanges;
+    };
+
+    struct BufferSet
+    {
+        std::array<TableState, GPU_SCENE_UPLOAD_TABLE_COUNT> tables;
+        /** Last committed CPU delta generation represented by dirty state. */
+        uint64 coveredVersion = 0;
+        /** Latest CPU mirror version this set is intended to reach. */
+        uint64 desiredVersion = 0;
+        /** Actual version whose bytes were submitted to the GPU. */
+        uint64 residentVersion = 0;
+        GPUCompletionToken lastUse;
+        bool hasLastUse = false;
+        bool frameReadUse = false;
+        bool frameReadAccessCommitted = false;
+        std::array<RGBufferHandle, GPU_SCENE_UPLOAD_TABLE_COUNT> frameReadHandles;
+        std::array<RHIBufferAccessSnapshot, GPU_SCENE_UPLOAD_TABLE_COUNT>
+            frameReadPreviousAccess;
+        bool unusable = false;
+    };
+
+    struct CopyRange
+    {
+        uint64 sourceOffset = 0;
+        uint64 destinationOffset = 0;
+        uint64 size = 0;
+    };
+
+    struct TableUploadPlan
+    {
+        uint32 tableIndex = 0;
+        RHIBufferRef target;
+        RHIBufferRef staging;
+        RGBufferHandle targetHandle;
+        RHIBufferAccessSnapshot previousAccess;
+        std::vector<GPUSceneDirtyRowRange> consumedRanges;
+        std::vector<CopyRange> copies;
+        bool consumedFull = false;
+        RenderUploadWorkDiagnostics uploadWork{};
+    };
+
+    struct PendingUpload
+    {
+        uint32 setIndex = RVX_INVALID_INDEX;
+        uint64 version = 0;
+        std::vector<TableUploadPlan> tables;
+        bool graphExecuted = false;
+        bool fullUpload = false;
+        RenderUploadWorkDiagnostics uploadWork{};
+    };
+
+    IRHIDevice* device = nullptr;
+    RenderSubmissionTracker* tracker = nullptr;
+    const GPUSceneCommittedMirror* observedMirror = nullptr;
+    uint64 observedVersion = 0;
+    uint64 reclaimedThrough = 0;
+    std::vector<BufferSet> sets;
+    std::optional<PendingUpload> pending;
+    // Captured only after graph access realization.  A later NotifySubmission
+    // must prove a new Graphics gateway submission beyond this boundary; a
+    // prior frame's still-current token is never sufficient.
+    GPUCompletionToken recordingSubmissionBoundary;
+    bool hasRecordingSubmissionBoundary = false;
+    bool initialized = false;
+    bool deviceLost = false;
+    GPUSceneUploadMutationTotals mutationTotals{};
+    bool mutationTotalsSaturated = false;
+
+    [[nodiscard]] bool HasOutstandingFrameReadUse() const noexcept
+    {
+        return std::any_of(sets.begin(), sets.end(), [](const BufferSet& set)
+        {
+            return set.frameReadUse;
+        });
+    }
+
+    [[nodiscard]] uint64 GetHighestResidentVersion() const noexcept
+    {
+        uint64 residentVersion = 0;
+        for (const BufferSet& set : sets)
+        {
+            residentVersion = std::max(residentVersion, set.residentVersion);
+        }
+        return residentVersion;
+    }
+
+    /**
+     * @brief Locate one set that exactly represents the frozen version.
+     *
+     * The predicate deliberately performs no retention, graph import, device
+     * query, or diagnostics update. QueryExactVersionReadiness() and
+     * AcquireCurrentGraphLease() both use it so a lease can never be borrowed
+     * from a different observed generation.
+     */
+    [[nodiscard]] std::optional<uint32>
+        FindExactResidentSet(uint64 requiredVersion) const noexcept
+    {
+        if (requiredVersion == 0 || observedMirror == nullptr ||
+            observedVersion != requiredVersion ||
+            observedMirror->version != requiredVersion ||
+            !HasValidTableSources(*observedMirror) ||
+            HasOutstandingFrameReadUse())
+        {
+            return std::nullopt;
+        }
+
+        for (uint32 setIndex = 0; setIndex < sets.size(); ++setIndex)
+        {
+            const BufferSet& set = sets[setIndex];
+            if (set.unusable || set.frameReadUse ||
+                set.residentVersion != requiredVersion ||
+                set.coveredVersion != requiredVersion ||
+                set.desiredVersion != requiredVersion)
+            {
+                continue;
+            }
+
+            bool complete = true;
+            for (uint32 tableIndex = 0;
+                 tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+                 ++tableIndex)
+            {
+                const TableState& table = set.tables[tableIndex];
+                const TableSource source = GetTableSource(
+                    *observedMirror,
+                    static_cast<GPUSceneUploadTable>(tableIndex));
+                complete &= table.buffer && table.capacity >= source.rowCount &&
+                            table.stride == source.stride && !table.fullDirty &&
+                            table.dirtyRanges.empty();
+            }
+            if (complete)
+            {
+                return setIndex;
+            }
+        }
+        return std::nullopt;
+    }
+};
+
+GPUSceneUploader::GPUSceneUploader()
+    : m_impl(std::make_unique<Impl>())
+{
+}
+
+GPUSceneUploader::~GPUSceneUploader()
+{
+    Shutdown();
+}
+
+const GPUSceneUploadDiagnostics& GPUSceneUploader::GetDiagnostics() const noexcept
+{
+    RefreshDiagnostics();
+    return m_diagnostics;
+}
+
+const GPUSceneUploadMutationTotals&
+GPUSceneUploader::GetMutationTotals() const noexcept
+{
+    static const GPUSceneUploadMutationTotals unavailableTotals{};
+    return m_impl ? m_impl->mutationTotals : unavailableTotals;
+}
+
+bool GPUSceneUploader::IsMutationTotalsSaturated() const noexcept
+{
+    return m_impl && m_impl->mutationTotalsSaturated;
+}
+
+void GPUSceneUploader::RefreshDiagnostics() const noexcept
+{
+    if (!m_impl)
+    {
+        return;
+    }
+
+    m_diagnostics.mutationTotals = m_impl->mutationTotals;
+
+    m_diagnostics.bufferSetCount = static_cast<uint32>(m_impl->sets.size());
+    m_diagnostics.peakBufferSetCount = std::max(
+        m_diagnostics.peakBufferSetCount, m_diagnostics.bufferSetCount);
+    m_diagnostics.pendingSetCount = m_impl->pending ? 1U : 0U;
+    m_diagnostics.inFlightSetCount = 0;
+    m_diagnostics.unusableSetCount = 0;
+    m_diagnostics.gpuAllocationBytes = 0;
+    m_diagnostics.persistentBytes = 0;
+    m_diagnostics.cpuPayloadBytes = 0;
+    m_diagnostics.cpuReservedBytes = 0;
+
+    const Impl::BufferSet* newestResidentSet = nullptr;
+    for (const Impl::BufferSet& set : m_impl->sets)
+    {
+        if (set.unusable)
+        {
+            ++m_diagnostics.unusableSetCount;
+        }
+        if (set.frameReadUse)
+        {
+            ++m_diagnostics.pendingSetCount;
+        }
+        if (set.hasLastUse && m_impl->tracker &&
+            m_impl->tracker->Query(set.lastUse) == GPUCompletionStatus::Pending)
+        {
+            ++m_diagnostics.inFlightSetCount;
+        }
+        if (!set.unusable && set.residentVersion != 0 &&
+            (newestResidentSet == nullptr ||
+             newestResidentSet->residentVersion < set.residentVersion))
+        {
+            newestResidentSet = &set;
+        }
+        for (const Impl::TableState& table : set.tables)
+        {
+            const uint64 bytes = static_cast<uint64>(table.capacity) * table.stride;
+            m_diagnostics.gpuAllocationBytes += bytes;
+            m_diagnostics.persistentBytes += bytes;
+        }
+    }
+
+    if (m_impl->observedMirror != nullptr)
+    {
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+             ++tableIndex)
+        {
+            GPUSceneTableDiagnostics& diagnostics =
+                m_diagnostics.tables[tableIndex];
+            const TableSource source = GetTableSource(
+                *m_impl->observedMirror,
+                static_cast<GPUSceneUploadTable>(tableIndex));
+            diagnostics.payloadRowCount = source.rowCount;
+            diagnostics.stride = source.stride;
+            diagnostics.cpuPayloadBytes =
+                static_cast<uint64>(source.rowCount) * source.stride;
+            // The committed mirror vector capacity is not exposed through the
+            // table-source view.  CPU reserved bytes therefore remain a
+            // database-owned value rather than an uploader estimate.
+            diagnostics.cpuReservedBytes = 0;
+            m_diagnostics.cpuPayloadBytes += diagnostics.cpuPayloadBytes;
+            if (newestResidentSet != nullptr)
+            {
+                const Impl::TableState& table = newestResidentSet->tables[tableIndex];
+                diagnostics.residentCapacity = table.capacity;
+                diagnostics.stride = table.stride;
+                diagnostics.residentBytes =
+                    static_cast<uint64>(table.capacity) * table.stride;
+                diagnostics.resident = table.buffer != nullptr &&
+                    !newestResidentSet->unusable;
+            }
+            else
+            {
+                diagnostics.residentCapacity = 0;
+                diagnostics.residentBytes = 0;
+                diagnostics.resident = false;
+            }
+        }
+    }
+    m_diagnostics.residentVersion = newestResidentSet != nullptr
+        ? newestResidentSet->residentVersion
+        : 0;
+    m_diagnostics.peakFrameUploadBytes = std::max(
+        m_diagnostics.peakFrameUploadBytes, m_diagnostics.frameUploadBytes);
+    for (GPUSceneTableDiagnostics& table : m_diagnostics.tables)
+    {
+        table.peakFrameUploadBytes = std::max(
+            table.peakFrameUploadBytes, table.frameUploadBytes);
+    }
+}
+
+bool GPUSceneUploader::Initialize(
+    IRHIDevice* device,
+    RenderSubmissionTracker* submissionTracker) noexcept
+{
+    if (!m_impl || !device || !submissionTracker)
+    {
+        m_diagnostics.failureReason = GPUSceneUploadFailureReason::NotInitialized;
+        return false;
+    }
+
+    m_impl->device = device;
+    m_impl->tracker = submissionTracker;
+    m_impl->initialized = true;
+    m_diagnostics = {};
+    return true;
+}
+
+void GPUSceneUploader::Shutdown() noexcept
+{
+    if (!m_impl)
+    {
+        return;
+    }
+
+    m_impl->pending.reset();
+    m_impl->sets.clear();
+    m_impl->observedMirror = nullptr;
+    m_impl->device = nullptr;
+    m_impl->tracker = nullptr;
+    m_impl->initialized = false;
+    m_diagnostics = {};
+}
+
+void GPUSceneUploader::Observe(
+    const GPUSceneCommittedMirror& mirror,
+    const GPUSceneChangeSet& changes) noexcept
+{
+    if (!m_impl || !m_impl->initialized || m_impl->deviceLost)
+    {
+        return;
+    }
+
+    m_impl->observedMirror = &mirror;
+    m_diagnostics.observedVersion = mirror.version;
+    if (mirror.version == m_impl->observedVersion)
+    {
+        return;
+    }
+
+    const bool continuous = changes.committedVersion == mirror.version &&
+                            changes.baseVersion == m_impl->observedVersion;
+    if (!continuous)
+    {
+        m_diagnostics.continuityLost = true;
+        m_diagnostics.failureReason = GPUSceneUploadFailureReason::ContinuityLost;
+        for (Impl::BufferSet& set : m_impl->sets)
+        {
+            set.coveredVersion = mirror.version;
+            set.desiredVersion = mirror.version;
+            for (Impl::TableState& table : set.tables)
+            {
+                table.fullDirty = true;
+                table.dirtyRanges.clear();
+            }
+        }
+    }
+    else
+    {
+        try
+        {
+            for (Impl::BufferSet& set : m_impl->sets)
+            {
+                const bool setContinuous =
+                    set.coveredVersion == changes.baseVersion;
+                set.desiredVersion = mirror.version;
+                for (uint32 tableIndex = 0;
+                     tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+                     ++tableIndex)
+                {
+                    Impl::TableState& table = set.tables[tableIndex];
+                    const GPUSceneTableChangeSet& delta = GetTableChangeSet(
+                        changes,
+                        static_cast<GPUSceneUploadTable>(tableIndex));
+                    if (!setContinuous)
+                    {
+                        table.fullDirty = true;
+                        table.dirtyRanges.clear();
+                        continue;
+                    }
+                    if (table.fullDirty || !HasDirtyWork(delta))
+                    {
+                        continue;
+                    }
+                    if (delta.fullTableDirty)
+                    {
+                        table.fullDirty = true;
+                        table.dirtyRanges.clear();
+                        continue;
+                    }
+                    table.dirtyRanges.insert(table.dirtyRanges.end(),
+                                             delta.dirtyRanges.begin(),
+                                             delta.dirtyRanges.end());
+                    CoalesceRanges(table.dirtyRanges);
+                }
+                set.coveredVersion = mirror.version;
+            }
+        }
+        catch (const std::bad_alloc&)
+        {
+            m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
+            for (Impl::BufferSet& set : m_impl->sets)
+            {
+                set.coveredVersion = mirror.version;
+                set.desiredVersion = mirror.version;
+                for (Impl::TableState& table : set.tables)
+                {
+                    table.fullDirty = true;
+                    table.dirtyRanges.clear();
+                }
+            }
+        }
+        catch (...)
+        {
+            m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
+            return;
+        }
+    }
+
+    m_impl->observedVersion = mirror.version;
+}
+
+void GPUSceneUploader::BuildRenderGraph(
+    RenderGraph& graph,
+    RenderSubmissionResourceBatch* submissionBatch) noexcept
+{
+    if (!m_impl)
+    {
+        return;
+    }
+
+    // A rejected completion may refer to an older token even though this graph
+    // has already reached the GPU.  Keep that realized plan and its host-write
+    // attempt evidence intact until the caller provides the exact current
+    // token (or explicitly proves the frame was never submitted).  Starting a
+    // second graph while it is retained must not look like a fresh zero-work
+    // attempt or erase the receipts that explain the pending ownership.
+    if (m_impl->pending)
+    {
+        return;
+    }
+
+    // Frame counters describe this new recording attempt or a clean resident
+    // no-op. A retained pending plan above deliberately keeps its evidence.
+    m_diagnostics.frameUploadBytes = 0;
+    m_diagnostics.frameUploadRangeCount = 0;
+    m_diagnostics.fullUpload = false;
+    m_diagnostics.rollbackPending = false;
+    m_diagnostics.uploadWork = {};
+    for (GPUSceneTableDiagnostics& table : m_diagnostics.tables)
+    {
+        table.frameUploadBytes = 0;
+        table.frameUploadRangeCount = 0;
+        table.fullUpload = false;
+        table.uploadWork = {};
+    }
+    if (!m_impl->initialized || !m_impl->observedMirror)
+    {
+        return;
+    }
+
+    // A warm static set is only a no-op while the device itself remains
+    // usable. Check this before the clean fast path so device loss is never
+    // misreported as a successful zero-copy frame.
+    if (m_impl->deviceLost || !m_impl->device ||
+        m_impl->device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+    {
+        m_impl->deviceLost = true;
+        m_diagnostics.deviceLost = true;
+        m_diagnostics.failureReason = GPUSceneUploadFailureReason::DeviceLost;
+        return;
+    }
+    const GPUSceneCommittedMirror& mirror = *m_impl->observedMirror;
+    if (!HasValidTableSources(mirror))
+    {
+        // The public GPU-scene row index is uint32. Refuse a mirror that
+        // cannot be represented by the upload ABI instead of truncating it.
+        m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
+        return;
+    }
+    const auto satisfiesCapacity = [&mirror](const Impl::BufferSet& set)
+    {
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+             ++tableIndex)
+        {
+            if (set.tables[tableIndex].capacity <
+                GetTableSource(mirror, static_cast<GPUSceneUploadTable>(tableIndex)).rowCount)
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // A static resident set is a read-only no-op. Do this before querying
+    // completion, so an in-flight read cannot turn a warm frame into a copy.
+    for (const Impl::BufferSet& set : m_impl->sets)
+    {
+        if (!satisfiesCapacity(set) ||
+            set.residentVersion != mirror.version ||
+            set.coveredVersion != mirror.version ||
+            set.desiredVersion != mirror.version)
+        {
+            continue;
+        }
+        bool cleanCurrent = true;
+        for (const Impl::TableState& table : set.tables)
+        {
+            cleanCurrent &= !table.fullDirty && table.dirtyRanges.empty();
+        }
+        if (cleanCurrent)
+        {
+            m_diagnostics.residentVersion = set.residentVersion;
+            return;
+        }
+    }
+    static_cast<void>(PollSafeReclaimVersion());
+    if (m_impl->deviceLost)
+    {
+        return;
+    }
+
+    const auto safeForWrite = [this](Impl::BufferSet& set)
+    {
+        if (set.unusable)
+        {
+            return false;
+        }
+        if (!set.hasLastUse)
+        {
+            return true;
+        }
+        const GPUCompletionStatus status = m_impl->tracker->Query(set.lastUse);
+        if (status == GPUCompletionStatus::Lost)
+        {
+            set.unusable = true;
+            m_impl->deviceLost = true;
+            m_diagnostics.deviceLost = true;
+            m_diagnostics.failureReason = GPUSceneUploadFailureReason::DeviceLost;
+            return false;
+        }
+        return status == GPUCompletionStatus::Completed ||
+               status == GPUCompletionStatus::CompatibilityWaitIdle;
+    };
+
+    uint32 selectedSet = RVX_INVALID_INDEX;
+    for (uint32 index = 0; index < m_impl->sets.size(); ++index)
+    {
+        Impl::BufferSet& set = m_impl->sets[index];
+        if (!satisfiesCapacity(set) || !safeForWrite(set))
+        {
+            continue;
+        }
+        if (selectedSet == RVX_INVALID_INDEX)
+        {
+            selectedSet = index;
+        }
+    }
+    if (m_impl->deviceLost)
+    {
+        return;
+    }
+
+    if (selectedSet == RVX_INVALID_INDEX)
+    {
+        try
+        {
+            Impl::BufferSet set;
+            set.coveredVersion = mirror.version;
+            set.desiredVersion = mirror.version;
+            for (uint32 tableIndex = 0;
+                 tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+                 ++tableIndex)
+            {
+                Impl::TableState& table = set.tables[tableIndex];
+                const TableSource source = GetTableSource(
+                    mirror, static_cast<GPUSceneUploadTable>(tableIndex));
+                table.capacity = GrowCapacity(std::max(1U, source.rowCount));
+                table.stride = source.stride;
+                RHIBufferDesc desc;
+                desc.size = static_cast<uint64>(table.capacity) * source.stride;
+                desc.usage = RHIBufferUsage::Structured |
+                             RHIBufferUsage::ShaderResource |
+                             RHIBufferUsage::CopyDst;
+                desc.memoryType = RHIMemoryType::Default;
+                desc.stride = source.stride;
+                desc.debugName = source.debugName;
+                table.buffer = m_impl->device->CreateBuffer(desc);
+                if (!table.buffer)
+                {
+                    m_diagnostics.failureReason =
+                        GPUSceneUploadFailureReason::BufferCreationFailed;
+                    return;
+                }
+                // Every newly allocated set is fully initialized; dirty-only
+                // writes into an uninitialized set are never permitted.
+                table.fullDirty = true;
+            }
+            m_impl->sets.push_back(std::move(set));
+            selectedSet = static_cast<uint32>(m_impl->sets.size() - 1U);
+        }
+        catch (const std::bad_alloc&)
+        {
+            m_diagnostics.failureReason = GPUSceneUploadFailureReason::BufferCreationFailed;
+            return;
+        }
+        catch (...)
+        {
+            m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
+            return;
+        }
+    }
+
+    Impl::BufferSet& set = m_impl->sets[selectedSet];
+    Impl::PendingUpload pending;
+    pending.setIndex = selectedSet;
+    pending.version = mirror.version;
+    const auto invalidateSetForFullRetry = [&]() noexcept
+    {
+        // A partial multi-range host transaction must never leave this
+        // physical set eligible as a mixed-generation resident snapshot.
+        set.coveredVersion = 0;
+        set.desiredVersion = mirror.version;
+        set.residentVersion = 0;
+        for (Impl::TableState& table : set.tables)
+        {
+            table.fullDirty = true;
+            table.dirtyRanges.clear();
+        }
+    };
+    const auto failPendingHostTransaction =
+        [&](GPUSceneUploadFailureReason failure) noexcept
+    {
+        if (pending.uploadWork.committedRangeCount != 0)
+        {
+            invalidateSetForFullRetry();
+        }
+        m_diagnostics.uploadWork = pending.uploadWork;
+        for (const Impl::TableUploadPlan& plan : pending.tables)
+        {
+            m_diagnostics.tables[plan.tableIndex].uploadWork =
+                plan.uploadWork;
+        }
+        m_diagnostics.failureReason = failure;
+    };
+    try
+    {
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+             ++tableIndex)
+        {
+            Impl::TableState& table = set.tables[tableIndex];
+            const TableSource source = GetTableSource(
+                mirror, static_cast<GPUSceneUploadTable>(tableIndex));
+            std::vector<GPUSceneDirtyRowRange> ranges;
+            const bool fullUpload = table.fullDirty;
+            if (fullUpload)
+            {
+                // Initialize the whole allocated capacity, not merely the live
+                // rows. This makes the exported ShaderResource contents valid
+                // while retaining the schema sentinel at row zero.
+                ranges.push_back({0, table.capacity});
+            }
+            else
+            {
+                ranges = table.dirtyRanges;
+                ranges.erase(std::remove_if(ranges.begin(), ranges.end(),
+                                            [source](const GPUSceneDirtyRowRange& range)
+                {
+                    return range.rowCount == 0 || range.firstRow >= source.rowCount;
+                }), ranges.end());
+                for (GPUSceneDirtyRowRange& range : ranges)
+                {
+                    range.rowCount = std::min(range.rowCount, source.rowCount - range.firstRow);
+                }
+            }
+            ranges.erase(std::remove_if(ranges.begin(), ranges.end(),
+                                        [](const GPUSceneDirtyRowRange& range)
+            {
+                return range.rowCount == 0;
+            }), ranges.end());
+            if (ranges.empty())
+            {
+                continue;
+            }
+
+            uint64 stagingSize = 0;
+            for (const GPUSceneDirtyRowRange range : ranges)
+            {
+                stagingSize += static_cast<uint64>(range.rowCount) * source.stride;
+            }
+            RHIBufferDesc stagingDesc;
+            stagingDesc.size = stagingSize;
+            stagingDesc.usage = RHIBufferUsage::CopySrc;
+            stagingDesc.memoryType = RHIMemoryType::Upload;
+            stagingDesc.debugName = "GPUScene.UploadStaging";
+            RHIBufferRef staging = m_impl->device->CreateBuffer(stagingDesc);
+            if (!staging)
+            {
+                failPendingHostTransaction(
+                    GPUSceneUploadFailureReason::StagingCreationFailed);
+                return;
+            }
+
+            Impl::TableUploadPlan plan;
+            plan.tableIndex = tableIndex;
+            plan.target = table.buffer;
+            plan.staging = staging;
+            plan.previousAccess = table.access;
+            plan.consumedFull = fullUpload;
+            plan.consumedRanges = ranges;
+            uint64 stagingOffset = 0;
+            for (const GPUSceneDirtyRowRange range : ranges)
+            {
+                const uint64 bytes = static_cast<uint64>(range.rowCount) * source.stride;
+                RHIMappedWriteAccess access = staging->MapWriteRange(
+                    stagingOffset, bytes);
+                if (!access.IsValid())
+                {
+                    m_diagnostics.tables[tableIndex].uploadWork =
+                        plan.uploadWork;
+                    failPendingHostTransaction(
+                        GPUSceneUploadFailureReason::StagingMapFailed);
+                    return;
+                }
+                std::memset(access.GetData(), 0, static_cast<size_t>(bytes));
+                if (source.rows != nullptr && range.firstRow < source.rowCount)
+                {
+                    const uint32 sourceRows = std::min(
+                        range.rowCount, source.rowCount - range.firstRow);
+                    std::memcpy(access.GetData(),
+                                static_cast<const uint8*>(source.rows) +
+                                    static_cast<uint64>(range.firstRow) * source.stride,
+                                static_cast<size_t>(sourceRows) * source.stride);
+                }
+                RecordMappedUploadRange(plan.uploadWork, bytes);
+                RecordMappedUploadRange(pending.uploadWork, bytes);
+                const RHIHostWriteReceipt receipt =
+                    staging->CommitMappedWriteRange(std::move(access));
+                if (!receipt.IsPublished())
+                {
+                    m_diagnostics.tables[tableIndex].uploadWork =
+                        plan.uploadWork;
+                    failPendingHostTransaction(
+                        GPUSceneUploadFailureReason::StagingCommitFailed);
+                    return;
+                }
+                RecordCommittedUploadRange(plan.uploadWork, receipt, bytes);
+                RecordCommittedUploadRange(pending.uploadWork, receipt, bytes);
+                plan.copies.push_back({stagingOffset,
+                                       static_cast<uint64>(range.firstRow) * source.stride,
+                                       bytes});
+                stagingOffset += bytes;
+            }
+            pending.fullUpload |= fullUpload;
+            pending.tables.push_back(std::move(plan));
+        }
+    }
+    catch (const std::bad_alloc&)
+    {
+        failPendingHostTransaction(
+            GPUSceneUploadFailureReason::StagingCreationFailed);
+        return;
+    }
+    catch (...)
+    {
+        failPendingHostTransaction(GPUSceneUploadFailureReason::UnexpectedFailure);
+        return;
+    }
+
+    if (pending.tables.empty())
+    {
+        m_diagnostics.residentVersion = set.residentVersion;
+        return;
+    }
+
+    // Do not retain any staging allocation until every host write has been
+    // committed. A later commit failure leaves the table set dirty and no
+    // resource from this incomplete transaction is attached to a submission.
+    for (const Impl::TableUploadPlan& plan : pending.tables)
+    {
+        const Impl::TableState& table = set.tables[plan.tableIndex];
+        const uint64 persistentBufferBytes =
+            static_cast<uint64>(table.capacity) * table.stride;
+        uint64 stagingSize = 0;
+        for (const Impl::CopyRange& copy : plan.copies)
+        {
+            stagingSize += copy.size;
+        }
+        if (!RetainRenderSubmissionResource(submissionBatch, plan.target,
+                                            persistentBufferBytes) ||
+            !RetainRenderSubmissionResource(submissionBatch, plan.staging,
+                                            stagingSize))
+        {
+            failPendingHostTransaction(
+                GPUSceneUploadFailureReason::SubmissionRetentionFailed);
+            return;
+        }
+    }
+
+    try
+    {
+        struct UploadPassData
+        {
+            std::vector<Impl::TableUploadPlan> tables;
+            std::vector<RGBufferHandle> stagingHandles;
+        };
+
+        const GPUQueueDomain stagingDomain = ResolveCopyPassDomain(
+            m_impl->device);
+        std::vector<RGBufferHandle> stagingHandles;
+        stagingHandles.reserve(pending.tables.size());
+        for (Impl::TableUploadPlan& plan : pending.tables)
+        {
+            Impl::TableState& table = set.tables[plan.tableIndex];
+            plan.targetHandle = graph.ImportBuffer(table.buffer, table.access);
+            stagingHandles.push_back(graph.ImportBuffer(
+                plan.staging,
+                MakeRHIBufferAccessSnapshot(
+                    RHIResourceState::CopySource,
+                    RHIShaderStage::None,
+                    stagingDomain,
+                    RHIContentValidity::Valid)));
+        }
+
+        graph.AddPass<UploadPassData>(
+            "GPUScene.Upload",
+            RenderGraphPassType::Copy,
+            [plans = pending.tables, stagingHandles](
+                RenderGraphBuilder& builder,
+                UploadPassData& data)
+            {
+                data.tables = plans;
+                data.stagingHandles = stagingHandles;
+                for (uint32 index = 0; index < data.tables.size(); ++index)
+                {
+                    const Impl::TableUploadPlan& plan = data.tables[index];
+                    for (const Impl::CopyRange& copy : plan.copies)
+                    {
+                        static_cast<void>(builder.Read(
+                            data.stagingHandles[index].Range(copy.sourceOffset, copy.size),
+                            RHIResourceState::CopySource,
+                            RHIShaderStage::None));
+                        static_cast<void>(builder.Write(
+                            plan.targetHandle.Range(copy.destinationOffset, copy.size),
+                            RHIResourceState::CopyDest));
+                    }
+                }
+            },
+            [](const UploadPassData& data, RHICommandContext& context)
+            {
+                for (const Impl::TableUploadPlan& plan : data.tables)
+                {
+                    for (const Impl::CopyRange& copy : plan.copies)
+                    {
+                        context.CopyBuffer(plan.staging.Get(), plan.target.Get(),
+                                           copy.sourceOffset,
+                                           copy.destinationOffset,
+                                           copy.size);
+                    }
+                }
+            });
+        for (const Impl::TableUploadPlan& plan : pending.tables)
+        {
+            graph.SetExportAccess(
+                plan.targetHandle,
+                MakeRHIAccessSnapshot(
+                    RHIResourceState::ShaderResource,
+                    RHIShaderStage::All,
+                    GPUQueueDomain::Graphics,
+                    RHIContentValidity::Valid));
+        }
+    }
+    catch (const std::bad_alloc&)
+    {
+        failPendingHostTransaction(GPUSceneUploadFailureReason::UnexpectedFailure);
+        return;
+    }
+    catch (...)
+    {
+        failPendingHostTransaction(GPUSceneUploadFailureReason::UnexpectedFailure);
+        return;
+    }
+
+    // Host receipt evidence describes this recording attempt.  GPU-copy
+    // counters, full-upload state, and all committed frame/cumulative values
+    // remain unpublished until NotifySubmission accepts the exact post-record
+    // completion boundary below.
+    m_diagnostics.uploadWork = pending.uploadWork;
+    for (const Impl::TableUploadPlan& plan : pending.tables)
+    {
+        GPUSceneTableDiagnostics& tableDiagnostics =
+            m_diagnostics.tables[plan.tableIndex];
+        tableDiagnostics.uploadWork = plan.uploadWork;
+    }
+    // The plan now owns an immutable dirty snapshot. Later Observe calls may
+    // append newer deltas directly to the set while this upload is pending.
+    for (const Impl::TableUploadPlan& plan : pending.tables)
+    {
+        Impl::TableState& table = set.tables[plan.tableIndex];
+        table.fullDirty = false;
+        table.dirtyRanges.clear();
+    }
+    m_impl->pending = std::move(pending);
+}
+
+GPUSceneResidentReadiness GPUSceneUploader::QueryExactVersionReadiness(
+    uint64 requiredVersion) const noexcept
+{
+    GPUSceneResidentReadiness readiness;
+    readiness.requiredVersion = requiredVersion;
+    if (m_impl)
+    {
+        readiness.observedVersion = m_impl->observedVersion;
+        readiness.residentVersion = m_impl->GetHighestResidentVersion();
+    }
+    if (!m_impl || !m_impl->initialized || m_impl->deviceLost ||
+        !m_impl->device || !m_impl->tracker || requiredVersion == 0)
+    {
+        return readiness;
+    }
+    if (m_impl->device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready ||
+        !m_impl->observedMirror ||
+        m_impl->observedVersion != requiredVersion ||
+        m_impl->observedMirror->version != requiredVersion ||
+        !HasValidTableSources(*m_impl->observedMirror))
+    {
+        return readiness;
+    }
+
+    if (m_impl->pending || m_impl->HasOutstandingFrameReadUse())
+    {
+        readiness.status = GPUSceneResidentReadinessStatus::Pending;
+        return readiness;
+    }
+
+    if (m_impl->FindExactResidentSet(requiredVersion).has_value())
+    {
+        readiness.status = GPUSceneResidentReadinessStatus::Ready;
+        readiness.residentVersion = requiredVersion;
+    }
+    else
+    {
+        readiness.status = GPUSceneResidentReadinessStatus::Pending;
+    }
+    return readiness;
+}
+
+std::optional<GPUSceneResidentGraphLease>
+GPUSceneUploader::AcquireCurrentGraphLease(
+    RenderGraph& graph,
+    RenderSubmissionResourceBatch* submissionBatch,
+    uint64 requiredVersion) noexcept
+{
+    if (!QueryExactVersionReadiness(requiredVersion).IsReady())
+    {
+        if (m_impl && m_impl->device &&
+            m_impl->device->QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            m_impl->deviceLost = true;
+            m_diagnostics.deviceLost = true;
+            m_diagnostics.failureReason = GPUSceneUploadFailureReason::DeviceLost;
+        }
+        return std::nullopt;
+    }
+
+    // Re-run the same exact-set predicate after the readiness query. This is
+    // the only point that converts a side-effect-free observation into a
+    // graph lease, and it cannot select a different observed version.
+    const std::optional<uint32> selectedSetIndex =
+        m_impl->FindExactResidentSet(requiredVersion);
+    if (!selectedSetIndex)
+    {
+        return std::nullopt;
+    }
+
+    Impl::BufferSet& set = m_impl->sets[*selectedSetIndex];
+    GPUSceneResidentGraphLease lease;
+    lease.version = requiredVersion;
+    lease.m_bufferSetIndex = *selectedSetIndex;
+    try
+    {
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+             ++tableIndex)
+        {
+            const Impl::TableState& table = set.tables[tableIndex];
+            const uint64 bytes = static_cast<uint64>(table.capacity) * table.stride;
+            if (!RetainRenderSubmissionResource(
+                    submissionBatch, table.buffer, bytes))
+            {
+                m_diagnostics.failureReason =
+                    GPUSceneUploadFailureReason::SubmissionRetentionFailed;
+                return std::nullopt;
+            }
+            lease.buffers[tableIndex] = table.buffer;
+            lease.capacities[tableIndex] = table.capacity;
+        }
+
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+             ++tableIndex)
+        {
+            lease.handles[tableIndex] = graph.ImportBuffer(
+                lease.buffers[tableIndex], set.tables[tableIndex].access);
+        }
+    }
+    catch (const std::bad_alloc&)
+    {
+        m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
+        return std::nullopt;
+    }
+    catch (...)
+    {
+        m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
+        return std::nullopt;
+    }
+
+    if (!lease.IsValid())
+    {
+        m_diagnostics.failureReason = GPUSceneUploadFailureReason::UnexpectedFailure;
+        return std::nullopt;
+    }
+
+    // One lease maps to one concrete set. Store the imported handles and the
+    // pre-recording snapshots so Commit/Release can be symmetric even when the
+    // graph executes but the enclosing submission is abandoned.
+    set.frameReadPreviousAccess = {};
+    for (uint32 tableIndex = 0;
+         tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+         ++tableIndex)
+    {
+        set.frameReadHandles[tableIndex] = lease.handles[tableIndex];
+        set.frameReadPreviousAccess[tableIndex] = set.tables[tableIndex].access;
+    }
+    set.frameReadAccessCommitted = false;
+    set.frameReadUse = true;
+    return lease;
+}
+
+bool GPUSceneUploader::CancelCurrentGraphLease() noexcept
+{
+    if (!m_impl || !m_impl->initialized || m_impl->deviceLost || m_impl->pending)
+    {
+        return false;
+    }
+
+    Impl::BufferSet* leasedSet = nullptr;
+    for (Impl::BufferSet& set : m_impl->sets)
+    {
+        if (!set.frameReadUse)
+        {
+            continue;
+        }
+        if (leasedSet != nullptr || set.frameReadAccessCommitted)
+        {
+            return false;
+        }
+        leasedSet = &set;
+    }
+
+    if (leasedSet == nullptr)
+    {
+        return false;
+    }
+
+    for (uint32 tableIndex = 0;
+         tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+         ++tableIndex)
+    {
+        leasedSet->tables[tableIndex].access =
+            leasedSet->frameReadPreviousAccess[tableIndex];
+    }
+    leasedSet->frameReadUse = false;
+    leasedSet->frameReadAccessCommitted = false;
+    leasedSet->frameReadHandles = {};
+    leasedSet->frameReadPreviousAccess = {};
+    return true;
+}
+
+void GPUSceneUploader::CommitRealizedAccess(const RenderGraph& graph) noexcept
+{
+    if (!m_impl)
+    {
+        return;
+    }
+
+    bool recordedSubmissionWork = false;
+    if (m_impl->pending && m_impl->pending->setIndex < m_impl->sets.size())
+    {
+        Impl::PendingUpload& pending = *m_impl->pending;
+        Impl::BufferSet& set = m_impl->sets[pending.setIndex];
+        for (const Impl::TableUploadPlan& plan : pending.tables)
+        {
+            set.tables[plan.tableIndex].access = graph.GetRealizedAccess(plan.targetHandle);
+        }
+        pending.graphExecuted = true;
+        recordedSubmissionWork = true;
+    }
+
+    for (Impl::BufferSet& set : m_impl->sets)
+    {
+        if (!set.frameReadUse)
+        {
+            continue;
+        }
+        for (uint32 tableIndex = 0;
+             tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+             ++tableIndex)
+        {
+            if (!set.frameReadHandles[tableIndex].IsValid())
+            {
+                continue;
+            }
+            set.tables[tableIndex].access = graph.GetRealizedAccess(
+                set.frameReadHandles[tableIndex]);
+        }
+        set.frameReadAccessCommitted = true;
+        recordedSubmissionWork = true;
+    }
+
+    if (recordedSubmissionWork && m_impl->tracker)
+    {
+        m_impl->recordingSubmissionBoundary =
+            m_impl->tracker->CaptureLastSubmittedToken();
+        m_impl->hasRecordingSubmissionBoundary = true;
+    }
+}
+
+bool GPUSceneUploader::NotifySubmission(const GPUCompletionToken& completion) noexcept
+{
+    if (!m_impl)
+    {
+        return false;
+    }
+
+    bool hasFrameReadUse = false;
+    for (const Impl::BufferSet& set : m_impl->sets)
+    {
+        hasFrameReadUse |= set.frameReadUse;
+    }
+    if (!m_impl->pending && !hasFrameReadUse)
+    {
+        return true;
+    }
+
+    GPUCompletionToken normalized;
+    const bool validToken = m_impl->tracker &&
+                            MergeGPUCompletionToken(normalized, completion) &&
+                            normalized.count != 0 &&
+                            m_impl->hasRecordingSubmissionBoundary &&
+                            IsExactPostRecordingSubmissionToken(
+                                *m_impl->tracker,
+                                m_impl->recordingSubmissionBoundary,
+                                normalized);
+    const bool validPending = !m_impl->pending ||
+        (m_impl->pending->graphExecuted &&
+         m_impl->pending->setIndex < m_impl->sets.size());
+    bool validReadAccess = true;
+    for (const Impl::BufferSet& set : m_impl->sets)
+    {
+        validReadAccess &= !set.frameReadUse || set.frameReadAccessCommitted;
+    }
+    if (!validToken || !validPending || !validReadAccess)
+    {
+        // Do not roll back or abandon an already-realized graph on rejected
+        // evidence.  The graph may have reached the GPU with a newer point
+        // than the caller supplied; restoring accesses or releasing retained
+        // staging here would turn that ownership mistake into a GPU UAF.
+        // Preserve the immutable pending plan so the caller can retry with
+        // the exact current token, or explicitly ReleaseUnsubmittedFrame()
+        // only when no submission occurred.
+        m_diagnostics.failureReason = GPUSceneUploadFailureReason::InvalidCompletionToken;
+        m_diagnostics.rollbackPending = false;
+        return false;
+    }
+
+    uint32 pendingSetIndex = RVX_INVALID_INDEX;
+    uint64 submittedBytes = 0;
+    uint64 submittedRangeCount = 0;
+    bool submittedFullUpload = false;
+    if (m_impl->pending)
+    {
+        pendingSetIndex = m_impl->pending->setIndex;
+        Impl::BufferSet& set = m_impl->sets[pendingSetIndex];
+        set.residentVersion = m_impl->pending->version;
+        // A failed multi-range transaction deliberately invalidates the
+        // set's covered generation so it can only be retried as a full
+        // materialization. Once that retry is owned by an exact submission,
+        // restore the covered generation only if Observe has not already
+        // appended a newer delta while this plan was pending.
+        if (set.desiredVersion == m_impl->pending->version)
+        {
+            set.coveredVersion = m_impl->pending->version;
+        }
+        m_diagnostics.residentVersion = set.residentVersion;
+        m_diagnostics.fullUpload = m_impl->pending->fullUpload;
+        submittedFullUpload = m_impl->pending->fullUpload;
+        for (const Impl::TableUploadPlan& plan : m_impl->pending->tables)
+        {
+            GPUSceneTableDiagnostics& tableDiagnostics =
+                m_diagnostics.tables[plan.tableIndex];
+            tableDiagnostics.fullUpload = plan.consumedFull;
+            uint64 tableCopyBytes = 0;
+            for (const Impl::CopyRange& copy : plan.copies)
+            {
+                tableCopyBytes += copy.size;
+                submittedBytes += copy.size;
+                ++submittedRangeCount;
+                m_diagnostics.frameUploadBytes += copy.size;
+                m_diagnostics.cumulativeUploadBytes += copy.size;
+                tableDiagnostics.frameUploadBytes += copy.size;
+                tableDiagnostics.cumulativeUploadBytes += copy.size;
+                ++m_diagnostics.frameUploadRangeCount;
+                ++m_diagnostics.cumulativeUploadRangeCount;
+                ++tableDiagnostics.frameUploadRangeCount;
+                ++tableDiagnostics.cumulativeUploadRangeCount;
+                ++tableDiagnostics.uploadWork.gpuCopyRangeCount;
+                ++m_diagnostics.uploadWork.gpuCopyRangeCount;
+            }
+            tableDiagnostics.uploadWork.gpuCopyBytes += tableCopyBytes;
+            m_diagnostics.uploadWork.gpuCopyBytes += tableCopyBytes;
+        }
+        // A pending residency transaction normally has one or more copy
+        // ranges. Keep the cumulative owner evidence strict even if a future
+        // planning path represents a metadata-only pending transaction.
+        if (submittedRangeCount != 0)
+        {
+            SaturatingAdd(m_impl->mutationTotals.submittedUploadCount,
+                          1,
+                          m_impl->mutationTotalsSaturated);
+            SaturatingAdd(m_impl->mutationTotals.uploadBytes,
+                          submittedBytes,
+                          m_impl->mutationTotalsSaturated);
+            SaturatingAdd(m_impl->mutationTotals.uploadRangeCount,
+                          submittedRangeCount,
+                          m_impl->mutationTotalsSaturated);
+            if (submittedFullUpload)
+            {
+                SaturatingAdd(m_impl->mutationTotals.fullUploadCount,
+                              1,
+                              m_impl->mutationTotalsSaturated);
+            }
+            // Copy ranges were materialized from exact row ranges using this
+            // table's fixed resident stride. Count their rows only after the
+            // completion token has accepted the entire pending transaction.
+            for (const Impl::TableUploadPlan& plan : m_impl->pending->tables)
+            {
+                const uint32 stride = set.tables[plan.tableIndex].stride;
+                if (stride == 0)
+                {
+                    continue;
+                }
+                for (const Impl::CopyRange& copy : plan.copies)
+                {
+                    SaturatingAdd(
+                        m_impl->mutationTotals
+                            .submittedUploadedRowCount[plan.tableIndex],
+                        copy.size / stride,
+                        m_impl->mutationTotalsSaturated);
+                }
+            }
+        }
+        m_diagnostics.mutationTotals = m_impl->mutationTotals;
+        m_diagnostics.peakFrameUploadBytes = std::max(
+            m_diagnostics.peakFrameUploadBytes, m_diagnostics.frameUploadBytes);
+        for (GPUSceneTableDiagnostics& table : m_diagnostics.tables)
+        {
+            table.peakFrameUploadBytes = std::max(
+                table.peakFrameUploadBytes, table.frameUploadBytes);
+        }
+    }
+
+    for (uint32 index = 0; index < m_impl->sets.size(); ++index)
+    {
+        Impl::BufferSet& set = m_impl->sets[index];
+        if (!set.frameReadUse && index != pendingSetIndex)
+        {
+            continue;
+        }
+        GPUCompletionToken merged = set.hasLastUse ? set.lastUse : GPUCompletionToken{};
+        if (!MergeGPUCompletionToken(merged, normalized))
+        {
+            set.unusable = true;
+            m_diagnostics.failureReason = GPUSceneUploadFailureReason::InvalidCompletionToken;
+            continue;
+        }
+        set.lastUse = merged;
+        set.hasLastUse = true;
+        set.frameReadUse = false;
+        set.frameReadAccessCommitted = false;
+        set.frameReadHandles = {};
+    }
+
+    m_diagnostics.failureReason = GPUSceneUploadFailureReason::None;
+    m_impl->recordingSubmissionBoundary = {};
+    m_impl->hasRecordingSubmissionBoundary = false;
+    m_impl->pending.reset();
+    static_cast<void>(PollSafeReclaimVersion());
+    return true;
+}
+
+void GPUSceneUploader::ReleaseUnsubmittedFrame() noexcept
+{
+    if (!m_impl)
+    {
+        return;
+    }
+
+    // RenderGraph has recorded a new access snapshot, but no GPU submission
+    // owns that transition. Restore the last snapshot and merge the immutable
+    // consumed delta back with any later Observe delta.
+    if (m_impl->pending &&
+        m_impl->pending->setIndex < m_impl->sets.size())
+    {
+        Impl::BufferSet& set = m_impl->sets[m_impl->pending->setIndex];
+        for (const Impl::TableUploadPlan& plan : m_impl->pending->tables)
+        {
+            Impl::TableState& table = set.tables[plan.tableIndex];
+            table.access = plan.previousAccess;
+            if (plan.consumedFull)
+            {
+                table.fullDirty = true;
+                table.dirtyRanges.clear();
+            }
+            else if (!table.fullDirty)
+            {
+                table.dirtyRanges.insert(table.dirtyRanges.end(),
+                                         plan.consumedRanges.begin(),
+                                         plan.consumedRanges.end());
+                CoalesceRanges(table.dirtyRanges);
+            }
+        }
+    }
+    for (Impl::BufferSet& set : m_impl->sets)
+    {
+        if (set.frameReadUse && set.frameReadAccessCommitted)
+        {
+            for (uint32 tableIndex = 0;
+                 tableIndex < GPU_SCENE_UPLOAD_TABLE_COUNT;
+                 ++tableIndex)
+            {
+                set.tables[tableIndex].access =
+                    set.frameReadPreviousAccess[tableIndex];
+            }
+        }
+        set.frameReadUse = false;
+        set.frameReadAccessCommitted = false;
+        set.frameReadHandles = {};
+    }
+    m_diagnostics.rollbackPending = true;
+    m_impl->recordingSubmissionBoundary = {};
+    m_impl->hasRecordingSubmissionBoundary = false;
+    m_impl->pending.reset();
+}
+
+uint64 GPUSceneUploader::PollSafeReclaimVersion() noexcept
+{
+    if (!m_impl || !m_impl->initialized || !m_impl->tracker ||
+        m_impl->deviceLost || m_impl->pending)
+    {
+        return 0;
+    }
+
+    uint64 safeVersion = m_impl->observedVersion;
+    uint32 pendingSetCount = 0;
+    for (Impl::BufferSet& set : m_impl->sets)
+    {
+        if (set.unusable)
+        {
+            m_impl->deviceLost = true;
+            m_diagnostics.deviceLost = true;
+            m_diagnostics.failureReason = GPUSceneUploadFailureReason::DeviceLost;
+            return 0;
+        }
+        if (set.frameReadUse)
+        {
+            ++pendingSetCount;
+            m_diagnostics.pendingSetCount = pendingSetCount;
+            return 0;
+        }
+        if (!set.hasLastUse)
+        {
+            continue;
+        }
+
+        const GPUCompletionStatus status = m_impl->tracker->Query(set.lastUse);
+        if (status == GPUCompletionStatus::Lost)
+        {
+            set.unusable = true;
+            m_impl->deviceLost = true;
+            m_diagnostics.deviceLost = true;
+            m_diagnostics.failureReason = GPUSceneUploadFailureReason::DeviceLost;
+            return 0;
+        }
+        if (status == GPUCompletionStatus::Pending)
+        {
+            ++pendingSetCount;
+            // A submitted version can still read identities retired by that
+            // same commit. Reclaim only through the immediately preceding
+            // committed version until every domain of the token completes.
+            const uint64 beforeResident = set.residentVersion > 0
+                ? set.residentVersion - 1U
+                : 0;
+            safeVersion = std::min(safeVersion, beforeResident);
+        }
+    }
+
+    m_diagnostics.pendingSetCount = pendingSetCount;
+    m_diagnostics.safeReclaimVersion = safeVersion;
+    m_diagnostics.bufferSetCount = static_cast<uint32>(m_impl->sets.size());
+    uint64 persistentBytes = 0;
+    for (const Impl::BufferSet& set : m_impl->sets)
+    {
+        for (const Impl::TableState& table : set.tables)
+        {
+            persistentBytes += static_cast<uint64>(table.capacity) * table.stride;
+        }
+    }
+    m_diagnostics.persistentBytes = persistentBytes;
+    return safeVersion > m_impl->reclaimedThrough ? safeVersion : 0;
+}
+
+void GPUSceneUploader::ConfirmReclaimedThrough(uint64 version) noexcept
+{
+    if (!m_impl || version <= m_impl->reclaimedThrough ||
+        version > m_diagnostics.safeReclaimVersion)
+    {
+        return;
+    }
+    m_impl->reclaimedThrough = version;
+}
+
+} // namespace RVX

@@ -341,6 +341,11 @@ namespace RVX
                     shaderDesc.stage = entry->baseDesc.stage;
                     shaderDesc.entryPoint = entry->baseDesc.entryPoint.c_str();
                     shaderDesc.debugName = shaderPath.c_str();
+                    RHIShaderInterface shaderInterface =
+                        BuildRHIShaderInterface(
+                            entry->baseDesc.stage,
+                            result.reflection);
+                    shaderDesc.shaderInterface = &shaderInterface;
 
                     std::string shaderError;
                     if (!PopulateShaderDescBytecode(result, entry->baseDesc.backend, shaderDesc, shaderError))
@@ -387,6 +392,11 @@ namespace RVX
         shaderDesc.stage = entry->baseDesc.stage;
         shaderDesc.entryPoint = entry->baseDesc.entryPoint.c_str();
         shaderDesc.debugName = shaderPath.c_str();
+        RHIShaderInterface shaderInterface =
+            BuildRHIShaderInterface(
+                entry->baseDesc.stage,
+                result.reflection);
+        shaderDesc.shaderInterface = &shaderInterface;
 
         std::string shaderError;
         if (!PopulateShaderDescBytecode(result, entry->baseDesc.backend, shaderDesc, shaderError))
@@ -478,6 +488,11 @@ namespace RVX
                     shaderDesc.stage = entryPtr->baseDesc.stage;
                     shaderDesc.entryPoint = entryPtr->baseDesc.entryPoint.c_str();
                     shaderDesc.debugName = shaderPathCopy.c_str();
+                    RHIShaderInterface shaderInterface =
+                        BuildRHIShaderInterface(
+                            entryPtr->baseDesc.stage,
+                            result.reflection);
+                    shaderDesc.shaderInterface = &shaderInterface;
 
                     std::string shaderError;
                     if (!PopulateShaderDescBytecode(result, entryPtr->baseDesc.backend, shaderDesc, shaderError))

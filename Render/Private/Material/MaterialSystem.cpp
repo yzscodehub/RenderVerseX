@@ -5,15 +5,21 @@
 
 #include "Render/Material/MaterialSystem.h"
 #include "Core/Log.h"
-#include "Render/GPUResourceManager.h"
 #include "Render/GPUUploadService.h"
 #include "Render/Graph/ResourceViewCache.h"
-#include "Resource/Types/MaterialResource.h"
-#include "Resource/Types/TextureResource.h"
-#include "Scene/Material.h"
+#include "Render/Material/MaterialBinder.h"
+#include "Resources/FrameConstantUploadArena.h"
+#include "Resources/RenderResourceRegistry.h"
+#include "Resources/RenderOwnerSnapshotRetirement.h"
+#include "Resources/RenderSubmissionTracker.h"
+#include "RHI/RHICommandContext.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
+#include <limits>
+#include <type_traits>
+#include <unordered_map>
 #include <utility>
 
 namespace RVX
@@ -28,6 +34,119 @@ namespace
     {
         seed ^= value + 0x9e3779b9u + (seed << 6) + (seed >> 2);
     }
+
+    constexpr uint64 FNV_OFFSET = 14695981039346656037ULL;
+    constexpr uint64 FNV_PRIME = 1099511628211ULL;
+    constexpr uint64 RASTER_MATERIAL_SEMANTIC_DOMAIN =
+        0x5256534D41544B31ull; // "RVSMATK1"
+    constexpr uint64 RASTER_MATERIAL_MISSING_ASSET_TOKEN =
+        0x4D4953534D41544Cull; // "MISSMATL"
+    constexpr uint64 RASTER_DEFAULT_SAMPLER_TOKEN =
+        0x44454653414D504Cull; // "DEFSAMPL"
+
+    void HashBindingByte(uint64& hash, uint8 value) noexcept
+    {
+        hash ^= value;
+        hash *= FNV_PRIME;
+    }
+
+    template <typename TValue>
+    void HashBindingValue(uint64& hash, TValue value) noexcept
+    {
+        static_assert(std::is_integral_v<TValue> || std::is_enum_v<TValue>);
+        uint64 bits = 0;
+        uint32 bitCount = 0;
+        if constexpr (std::is_enum_v<TValue>)
+        {
+            using ValueType = std::underlying_type_t<TValue>;
+            using UnsignedType = std::make_unsigned_t<ValueType>;
+            bits = static_cast<uint64>(static_cast<UnsignedType>(value));
+            bitCount = sizeof(UnsignedType) * 8U;
+        }
+        else
+        {
+            using UnsignedType = std::make_unsigned_t<TValue>;
+            bits = static_cast<uint64>(static_cast<UnsignedType>(value));
+            bitCount = sizeof(UnsignedType) * 8U;
+        }
+        for (uint32 shift = 0; shift < bitCount; shift += 8U)
+        {
+            HashBindingByte(hash, static_cast<uint8>(bits >> shift));
+        }
+    }
+
+    void HashBindingFloat(uint64& hash, float32 value) noexcept
+    {
+        uint32 bits = std::bit_cast<uint32>(value);
+        // GPU material semantics do not distinguish the two IEEE encodings
+        // of zero. Keep the transcript key stable across either spelling.
+        if ((bits & 0x7FFFFFFFu) == 0)
+        {
+            bits = 0;
+        }
+        HashBindingValue(hash, bits);
+    }
+
+    [[nodiscard]] uint64 GetRasterFallbackTextureToken(
+        MaterialUploadTextureSlot slot) noexcept
+    {
+        switch (slot)
+        {
+            case MaterialUploadTextureSlot::BaseColor:
+                return 0x46424B5F42415345ull;
+            case MaterialUploadTextureSlot::Normal:
+                return 0x46424B5F4E4F524Dull;
+            case MaterialUploadTextureSlot::MetallicRoughness:
+                return 0x46424B5F4D45524Full;
+            case MaterialUploadTextureSlot::Occlusion:
+                return 0x46424B5F4F43434Cull;
+            case MaterialUploadTextureSlot::Emissive:
+                return 0x46424B5F454D4953ull;
+        }
+        return 0;
+    }
+
+    void HashRasterMaterialConstants(uint64& hash,
+                                    MaterialGPUConstants constants) noexcept
+    {
+        const uint32 hasNormal = static_cast<uint32>(MaterialTextureFlags::HasNormal);
+        // A disabled/omitted/fallback normal map makes normalScale
+        // unobservable to the shader. Do not create transcript drift from
+        // source values that were not selected for this draw.
+        if ((constants.textureFlags & hasNormal) == 0)
+        {
+            constants.normalScale = 0.0f;
+        }
+        HashBindingFloat(hash, constants.baseColorFactor.x);
+        HashBindingFloat(hash, constants.baseColorFactor.y);
+        HashBindingFloat(hash, constants.baseColorFactor.z);
+        HashBindingFloat(hash, constants.baseColorFactor.w);
+        HashBindingFloat(hash, constants.metallicFactor);
+        HashBindingFloat(hash, constants.roughnessFactor);
+        HashBindingFloat(hash, constants.normalScale);
+        HashBindingFloat(hash, constants.occlusionStrength);
+        HashBindingFloat(hash, constants.emissiveColor.x);
+        HashBindingFloat(hash, constants.emissiveColor.y);
+        HashBindingFloat(hash, constants.emissiveColor.z);
+        HashBindingFloat(hash, constants.emissiveStrength);
+        HashBindingValue(hash, constants.textureFlags);
+        HashBindingValue(hash, constants.alphaMode);
+        HashBindingFloat(hash, constants.alphaCutoff);
+        HashBindingValue(hash, constants.workflow);
+        HashBindingValue(hash, constants.doubleSided);
+    }
+
+    void SetSuccessfulMaterialBindingIdentity(
+        MaterialBindingResult& result,
+        RenderResourceHandle material,
+        uint64 contentRevision) noexcept
+    {
+        if (result.IsDrawable() && material.IsValid() && contentRevision != 0)
+        {
+            result.material = material;
+            result.contentRevision = contentRevision;
+        }
+    }
 } // namespace
 
 MaterialSystem::MaterialSystem() = default;
@@ -37,8 +156,10 @@ MaterialSystem::~MaterialSystem()
     Shutdown();
 }
 
-bool MaterialSystem::Initialize(IRHIDevice* device, GPUResourceManager* gpuResources,
-                                RHIDescriptorSetLayout* materialSetLayout)
+bool MaterialSystem::Initialize(IRHIDevice* device,
+                                RHIDescriptorSetLayout* materialSetLayout,
+                                RenderResourceRegistry* resourceRegistry,
+                                ResourceViewCache* resourceViewCache)
 {
     if (m_initialized)
     {
@@ -46,14 +167,15 @@ bool MaterialSystem::Initialize(IRHIDevice* device, GPUResourceManager* gpuResou
         return true;
     }
 
-    if (!device || !gpuResources || !materialSetLayout)
+    if (!device || !resourceRegistry || !materialSetLayout)
     {
         RVX_CORE_ERROR("MaterialSystem: Invalid initialization parameters");
         return false;
     }
 
     m_device = device;
-    m_gpuResources = gpuResources;
+    m_resourceRegistry = resourceRegistry;
+    m_resourceViewCache = resourceViewCache;
     m_materialSetLayout = materialSetLayout;
 
     if (!CreateConstantBuffer())
@@ -74,11 +196,16 @@ bool MaterialSystem::Initialize(IRHIDevice* device, GPUResourceManager* gpuResou
     defaultTextures.metallicRoughness = m_defaultWhiteTextureView.Get();
     defaultTextures.occlusion = m_defaultWhiteTextureView.Get();
     defaultTextures.emissive = m_defaultBlackTextureView.Get();
-    defaultTextures.irradiance = m_defaultBlackCubemapView.Get();
-    defaultTextures.prefilteredEnvironment = m_defaultBlackCubemapView.Get();
-    defaultTextures.brdfLUT = m_defaultBlackTextureView.Get();
+    defaultTextures.baseColorSampler = m_defaultSampler.Get();
+    defaultTextures.normalSampler = m_defaultSampler.Get();
+    defaultTextures.metallicRoughnessSampler = m_defaultSampler.Get();
+    defaultTextures.occlusionSampler = m_defaultSampler.Get();
+    defaultTextures.emissiveSampler = m_defaultSampler.Get();
+    defaultTextures.materialParameterTable =
+        m_defaultMaterialParameterTable.Get();
 
-    m_defaultMaterialSet = CreateMaterialDescriptorSet(defaultTextures);
+    m_defaultMaterialSet = CreateMaterialDescriptorSet(
+        defaultTextures, m_materialConstantBuffer.Get());
     if (!m_defaultMaterialSet)
     {
         RVX_CORE_ERROR("MaterialSystem: Failed to create default material descriptor set");
@@ -96,20 +223,26 @@ void MaterialSystem::Shutdown()
         return;
 
     m_materialDescriptorCache.clear();
+    m_semanticDescriptorStates.clear();
+    m_pendingOwnerRetirements.clear();
     m_defaultMaterialSet.Reset();
     m_defaultSampler.Reset();
     m_defaultWhiteTextureView.Reset();
     m_defaultNormalTextureView.Reset();
     m_defaultBlackTextureView.Reset();
-    m_defaultBlackCubemapView.Reset();
     m_defaultWhiteTexture.Reset();
     m_defaultNormalTexture.Reset();
     m_defaultBlackTexture.Reset();
-    m_defaultBlackCubemap.Reset();
     m_materialConstantBuffer.Reset();
-    m_environmentIBL = {};
+    m_defaultMaterialParameterTable.Reset();
+    if (m_materialConstantUploadArena)
+    {
+        m_materialConstantUploadArena->Shutdown();
+        m_materialConstantUploadArena.reset();
+    }
     m_materialSetLayout = nullptr;
-    m_gpuResources = nullptr;
+    m_resourceViewCache = nullptr;
+    m_resourceRegistry = nullptr;
     m_device = nullptr;
     m_initialized = false;
 
@@ -121,11 +254,255 @@ void MaterialSystem::BeginFrame()
     m_materialConstantCursor = 0;
     m_currentMaterialConstantOffset = 0;
     m_lastBindingResult = {};
+
+    // Recording-owned material tables are rebuilt from the current immutable
+    // frame plan. They must not remain in the persistent descriptor cache:
+    // after submission retirement the allocator may reuse the same C++ buffer
+    // address while the cached native descriptor still targets the old GPU
+    // resource. Retire those descriptor snapshots once per frame and retain
+    // their table owners until the next completion token.
+    for (auto it = m_materialDescriptorCache.begin();
+         it != m_materialDescriptorCache.end();)
+    {
+        MaterialDescriptorCacheEntry& entry = it->second;
+        if (!entry.materialParameterTable ||
+            entry.materialParameterTable.Get() ==
+                m_defaultMaterialParameterTable.Get())
+        {
+            ++it;
+            continue;
+        }
+        QueueRenderOwnerRetirement(
+            entry.descriptorSet, m_pendingOwnerRetirements);
+        for (RHISamplerRef& sampler : entry.samplers)
+        {
+            QueueRenderOwnerRetirement(
+                sampler, m_pendingOwnerRetirements);
+        }
+        QueueRenderOwnerRetirement(
+            entry.materialParameterTable, m_pendingOwnerRetirements);
+        it = m_materialDescriptorCache.erase(it);
+    }
+    if (m_materialConstantUploadArena)
+    {
+        m_materialConstantUploadArena->PollCompletions();
+    }
 }
 
-MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::MaterialResource* materialResource,
-                                                             ResourceViewCache* viewCache,
-                                                             MaterialBindingOptions options)
+void MaterialSystem::RetireOwnerSnapshots(
+    const GPUCompletionToken& completion,
+    RenderRetirementQueue& retirement)
+{
+    FlushRenderOwnerRetirements(
+        m_pendingOwnerRetirements, completion, retirement);
+}
+
+void MaterialSystem::SetMaterialConstantSubmissionTracker(
+    RenderSubmissionTracker* tracker) noexcept
+{
+    if (m_materialConstantUploadArena)
+    {
+        m_materialConstantUploadArena->SetSubmissionTracker(tracker);
+    }
+}
+
+bool MaterialSystem::NotifyMaterialConstantSubmission(
+    const GPUCompletionToken& completion) noexcept
+{
+    return !m_materialConstantUploadArena ||
+           m_materialConstantUploadArena->NotifySubmission(completion);
+}
+
+void MaterialSystem::ReleaseUnsubmittedMaterialConstants() noexcept
+{
+    if (m_materialConstantUploadArena)
+    {
+        m_materialConstantUploadArena->ReleaseUnsubmittedFrame();
+    }
+}
+
+void MaterialSystem::QueueMaterialDescriptorCacheRetirement()
+{
+    for (auto& [key, entry] : m_materialDescriptorCache)
+    {
+        static_cast<void>(key);
+        QueueRenderOwnerRetirement(
+            entry.descriptorSet, m_pendingOwnerRetirements);
+        for (RHISamplerRef& sampler : entry.samplers)
+        {
+            QueueRenderOwnerRetirement(
+                sampler, m_pendingOwnerRetirements);
+        }
+        QueueRenderOwnerRetirement(
+            entry.materialParameterTable, m_pendingOwnerRetirements);
+    }
+    m_materialDescriptorCache.clear();
+}
+
+MaterialInstanceBindingKey MaterialSystem::ResolveInstanceBindingKey(
+    RenderResourceHandle material) const noexcept
+{
+    MaterialInstanceBindingKey result;
+    const RenderMaterialResourceData* materialData =
+        m_resourceRegistry ? m_resourceRegistry->ResolveMaterial(material)
+                           : nullptr;
+    if (!material.IsValid() || material.slot >= RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME ||
+        materialData == nullptr || !materialData->metadataValid ||
+        materialData->sourceData.alphaMode != MaterialSourceAlphaMode::Opaque ||
+        materialData->samplers.size() != materialData->textureBindings.size())
+    {
+        return result;
+    }
+
+    std::vector<MaterialUploadTextureBinding> bindings =
+        materialData->textureBindings;
+    std::sort(bindings.begin(), bindings.end(),
+        [](const MaterialUploadTextureBinding& lhs,
+           const MaterialUploadTextureBinding& rhs)
+        {
+            return static_cast<uint8>(lhs.slot) < static_cast<uint8>(rhs.slot);
+        });
+
+    uint64 hash = FNV_OFFSET;
+    HashBindingValue(hash, static_cast<uint32>(bindings.size()));
+    MaterialUploadTextureSlot previousSlot = MaterialUploadTextureSlot::BaseColor;
+    bool hasPrevious = false;
+    for (const MaterialUploadTextureBinding& binding : bindings)
+    {
+        if (binding.isDefaultFallback || !binding.texture.IsValid() ||
+            (hasPrevious && binding.slot == previousSlot))
+        {
+            return {};
+        }
+        previousSlot = binding.slot;
+        hasPrevious = true;
+        const AssetId textureAssetId =
+            m_resourceRegistry->GetExactAssetId(binding.texture);
+        if (!textureAssetId.IsValid())
+        {
+            return {};
+        }
+        HashBindingValue(hash, binding.slot);
+        HashBindingValue(hash, textureAssetId.value);
+        HashBindingValue(hash, binding.uvSet);
+        HashBindingFloat(hash, binding.offset.x);
+        HashBindingFloat(hash, binding.offset.y);
+        HashBindingFloat(hash, binding.scale.x);
+        HashBindingFloat(hash, binding.scale.y);
+        HashBindingFloat(hash, binding.rotation);
+        HashBindingValue(hash, binding.wrapS);
+        HashBindingValue(hash, binding.wrapT);
+        HashBindingValue(hash, binding.minFilter);
+        HashBindingValue(hash, binding.magFilter);
+    }
+
+    result.textureBindingHash = hash;
+    result.parameterTableCompatible = true;
+    return result;
+}
+
+bool MaterialSystem::CreateMaterialParameterTableSnapshot(
+    std::span<const MaterialParameterTableEntryRequest> requests,
+    ResourceViewCache* viewCache,
+    MaterialParameterTableSnapshot& outSnapshot) const
+{
+    outSnapshot = {};
+    if (!m_initialized || !m_device || requests.empty())
+    {
+        return false;
+    }
+
+    ResourceViewCache* const resolvedViewCache = viewCache
+        ? viewCache : m_resourceViewCache;
+
+    struct UniqueRequest
+    {
+        RenderResourceHandle material;
+        bool allowNormalMap = true;
+    };
+    std::unordered_map<uint32, UniqueRequest> unique;
+    uint32 maxSlot = 0;
+    for (const MaterialParameterTableEntryRequest& request : requests)
+    {
+        if (!request.material.IsValid() ||
+            request.material.slot >= RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME)
+        {
+            return false;
+        }
+        const auto [it, inserted] = unique.emplace(
+            request.material.slot,
+            UniqueRequest{request.material, request.allowNormalMap});
+        if (!inserted &&
+            (it->second.material.generation != request.material.generation ||
+             it->second.allowNormalMap != request.allowNormalMap))
+        {
+            return false;
+        }
+        maxSlot = std::max(maxSlot, request.material.slot);
+    }
+
+    const MaterialGPUConstants defaultConstants =
+        MaterialBinder::ConvertToGPU(MaterialSourceData{});
+    std::vector<MaterialGPUConstants> table(
+        static_cast<size_t>(maxSlot) + 1U, defaultConstants);
+    std::vector<uint64> rasterMaterialSemanticKeysBySlot(table.size(), 0);
+    for (const auto& [slot, request] : unique)
+    {
+        const RenderMaterialResourceData* materialData =
+            m_resourceRegistry->ResolveMaterial(request.material);
+        if (materialData == nullptr || !materialData->metadataValid ||
+            !ResolveInstanceBindingKey(request.material).parameterTableCompatible)
+        {
+            return false;
+        }
+        MaterialBindingOptions options;
+        options.allowNormalMap = request.allowNormalMap;
+        const ResolvedMaterialTextures textures = ResolveMaterialTextures(
+            request.material, resolvedViewCache, options);
+        if (textures.usedFallback)
+        {
+            return false;
+        }
+        MaterialSourceData source = materialData->sourceData;
+        source.textureFlags = textures.textureFlags;
+        const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(source);
+        const uint64 semanticKey = BuildSemanticDescriptorContentKey(
+            request.material, constants, textures.textureEntries);
+        table[slot] = constants;
+        rasterMaterialSemanticKeysBySlot[slot] = semanticKey;
+    }
+
+    RHIBufferDesc desc;
+    desc.size = static_cast<uint64>(table.size()) *
+                sizeof(MaterialGPUConstants);
+    desc.usage = RHIBufferUsage::Structured | RHIBufferUsage::ShaderResource;
+    desc.memoryType = RHIMemoryType::Upload;
+    desc.stride = sizeof(MaterialGPUConstants);
+    desc.debugName = "MaterialParameterTable";
+    RHIBufferRef buffer = m_device->CreateBuffer(desc);
+    void* mapped = buffer ? buffer->Map() : nullptr;
+    if (mapped == nullptr)
+    {
+        return false;
+    }
+    std::memcpy(mapped, table.data(), static_cast<size_t>(desc.size));
+    if (!buffer->CommitMappedWrite())
+    {
+        return false;
+    }
+
+    outSnapshot.buffer = std::move(buffer);
+    outSnapshot.slotCount = static_cast<uint32>(table.size());
+    outSnapshot.materialCount = static_cast<uint32>(unique.size());
+    outSnapshot.rasterMaterialSemanticKeysBySlot =
+        std::move(rasterMaterialSemanticKeysBySlot);
+    return outSnapshot.IsValid();
+}
+
+MaterialBindingResult MaterialSystem::PrepareMaterialBinding(
+    RenderResourceHandle material,
+    ResourceViewCache* viewCache,
+    MaterialBindingOptions options)
 {
     if (!m_initialized)
     {
@@ -143,12 +520,181 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
         return SetLastBindingResult(std::move(result));
     }
 
-    const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache, options);
-    const MaterialGPUConstants constants = BuildConstants(materialResource, textures);
-    const std::string materialName = materialResource ? materialResource->GetMaterialName() : std::string();
+    const RenderMaterialResourceData* materialData =
+        m_resourceRegistry ? m_resourceRegistry->ResolveMaterial(material)
+                           : nullptr;
+    const uint64 contentRevision = materialData != nullptr &&
+            m_resourceRegistry != nullptr
+        ? m_resourceRegistry->GetContentRevision(material)
+        : 0;
+    MaterialSourceData source;
+    if (materialData && materialData->metadataValid)
+    {
+        source = materialData->sourceData;
+    }
+    ResourceViewCache* const resolvedViewCache = viewCache
+        ? viewCache : m_resourceViewCache;
+    const ResolvedMaterialTextures textures =
+        ResolveMaterialTextures(material, resolvedViewCache, options);
+    const std::string materialName = material.IsValid()
+        ? "render-material[" + std::to_string(material.slot) + ":" +
+              std::to_string(material.generation) + "]"
+        : std::string();
+    return PrepareResolvedMaterialBinding(material,
+                                          contentRevision,
+                                          std::move(source),
+                                          textures,
+                                          materialName);
+}
 
-    void* mapped = m_materialConstantBuffer->Map();
+bool MaterialSystem::CreateMaterialBindingSnapshot(
+    RenderResourceHandle material,
+    ResourceViewCache* viewCache,
+    MaterialBindingOptions options,
+    MaterialBindingSnapshot& outSnapshot)
+{
+    outSnapshot = {};
+    if (!m_initialized || !m_device || !m_materialSetLayout || !m_defaultSampler)
+    {
+        return false;
+    }
+
+    const RenderMaterialResourceData* materialData =
+        m_resourceRegistry ? m_resourceRegistry->ResolveMaterial(material) : nullptr;
+    MaterialSourceData source;
+    if (materialData && materialData->metadataValid)
+    {
+        source = materialData->sourceData;
+    }
+    ResourceViewCache* const resolvedViewCache = viewCache
+        ? viewCache : m_resourceViewCache;
+    const ResolvedMaterialTextures textures =
+        ResolveMaterialTextures(material, resolvedViewCache, options);
+    if (!textures.baseColor || !textures.normal || !textures.metallicRoughness ||
+        !textures.occlusion || !textures.emissive ||
+        !textures.baseColorSampler || !textures.normalSampler ||
+        !textures.metallicRoughnessSampler || !textures.occlusionSampler ||
+        !textures.emissiveSampler || !textures.materialParameterTable)
+    {
+        return false;
+    }
+
+    source.textureFlags = textures.textureFlags;
+    const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(source);
+    const uint64 stride = m_materialConstantStride != 0
+        ? m_materialConstantStride : AlignConstantBufferSize(sizeof(MaterialGPUConstants));
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = stride;
+    bufferDesc.usage = RHIBufferUsage::Constant;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    bufferDesc.debugName = "ObjectVelocityRecordMaterialConstants";
+    RHIBufferRef constantBuffer = m_device->CreateBuffer(bufferDesc);
+    if (!constantBuffer)
+    {
+        return false;
+    }
+    void* mapped = constantBuffer->Map();
     if (!mapped)
+    {
+        return false;
+    }
+    std::memcpy(mapped, &constants, sizeof(MaterialGPUConstants));
+    if (!constantBuffer->CommitMappedWrite())
+    {
+        return false;
+    }
+
+    RHIDescriptorSetDesc descriptorDesc;
+    descriptorDesc.layout = m_materialSetLayout;
+    descriptorDesc.debugName = "ObjectVelocityRecordMaterialDescriptorSet";
+    descriptorDesc.BindBuffer(0, constantBuffer.Get(), 0, stride);
+    descriptorDesc.BindTexture(1, textures.baseColor);
+    descriptorDesc.BindTexture(2, textures.normal);
+    descriptorDesc.BindTexture(3, textures.metallicRoughness);
+    descriptorDesc.BindTexture(4, textures.occlusion);
+    descriptorDesc.BindTexture(5, textures.emissive);
+    descriptorDesc.BindSampler(6, textures.baseColorSampler);
+    descriptorDesc.BindSampler(7, textures.normalSampler);
+    descriptorDesc.BindSampler(8, textures.metallicRoughnessSampler);
+    descriptorDesc.BindSampler(9, textures.occlusionSampler);
+    descriptorDesc.BindSampler(10, textures.emissiveSampler);
+    descriptorDesc.BindBuffer(11, textures.materialParameterTable);
+    RHIDescriptorSetRef descriptorSet = m_device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptorSet)
+    {
+        return false;
+    }
+
+    MaterialBindingResult binding;
+    binding.status = textures.usedFallback ? MaterialBindingStatus::Fallback
+                                            : MaterialBindingStatus::Ready;
+    binding.descriptorSet = descriptorSet.Get();
+    binding.dynamicOffsets = {0};
+    binding.textureFlags = constants.textureFlags;
+    binding.fallbackTextureFlags = textures.fallbackTextureFlags;
+    binding.constantsUpdated = true;
+    binding.usedFallback = textures.usedFallback;
+    binding.materialName = material.IsValid()
+        ? "render-material[" + std::to_string(material.slot) + ":" +
+              std::to_string(material.generation) + "]"
+        : std::string();
+    binding.message = textures.usedFallback
+        ? "Material binding used explicit fallback resources"
+        : "Material binding ready";
+    SetSuccessfulMaterialBindingIdentity(
+        binding,
+        material,
+        materialData != nullptr && m_resourceRegistry != nullptr
+            ? m_resourceRegistry->GetContentRevision(material)
+            : 0);
+    FinalizeSemanticDescriptorEvidence(
+        binding, material, constants, textures);
+
+    outSnapshot.constantBuffer = std::move(constantBuffer);
+    outSnapshot.descriptorSet = std::move(descriptorSet);
+    outSnapshot.layout = RHIDescriptorSetLayoutRef(m_materialSetLayout);
+    outSnapshot.textureViews.reserve(5);
+    outSnapshot.textureViews.emplace_back(textures.baseColor);
+    outSnapshot.textureViews.emplace_back(textures.normal);
+    outSnapshot.textureViews.emplace_back(textures.metallicRoughness);
+    outSnapshot.textureViews.emplace_back(textures.occlusion);
+    outSnapshot.textureViews.emplace_back(textures.emissive);
+    outSnapshot.textures.reserve(outSnapshot.textureViews.size());
+    for (const RHITextureViewRef& view : outSnapshot.textureViews)
+    {
+        RHITexture* texture = view ? view->GetTexture() : nullptr;
+        if (!texture)
+        {
+            outSnapshot = {};
+            return false;
+        }
+        outSnapshot.textures.emplace_back(texture);
+    }
+    outSnapshot.samplers = {
+        RHISamplerRef(textures.baseColorSampler),
+        RHISamplerRef(textures.normalSampler),
+        RHISamplerRef(textures.metallicRoughnessSampler),
+        RHISamplerRef(textures.occlusionSampler),
+        RHISamplerRef(textures.emissiveSampler)};
+    outSnapshot.binding = std::move(binding);
+    outSnapshot.binding.descriptorSet = outSnapshot.descriptorSet.Get();
+    return outSnapshot.IsDrawable();
+}
+
+MaterialBindingResult MaterialSystem::PrepareResolvedMaterialBinding(
+    RenderResourceHandle material,
+    uint64 contentRevision,
+    MaterialSourceData source,
+    const ResolvedMaterialTextures& textures,
+    std::string materialName)
+{
+    source.textureFlags = textures.textureFlags;
+    const MaterialGPUConstants constants = MaterialBinder::ConvertToGPU(source);
+
+    FrameConstantUploadAllocation allocation;
+    if (!m_materialConstantUploadArena ||
+        !m_materialConstantUploadArena->Allocate(
+            &constants, sizeof(constants), allocation))
     {
         MaterialBindingResult result;
         result.status = MaterialBindingStatus::Error;
@@ -156,15 +702,14 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
         result.fallbackTextureFlags = textures.fallbackTextureFlags;
         result.usedFallback = textures.usedFallback;
         result.materialName = materialName;
-        result.message = "Failed to map material constant buffer";
+        result.message = "Failed to allocate a completion-tracked material constant page";
         return SetLastBindingResult(std::move(result));
     }
 
-    const uint64 offset = AllocateMaterialConstantSlot();
-    std::memcpy(static_cast<uint8*>(mapped) + offset, &constants, sizeof(MaterialGPUConstants));
-    m_materialConstantBuffer->Unmap();
-
-    MaterialSetResolveResult setResult = GetOrCreateMaterialSetForResolved(textures);
+    ResolvedMaterialTextures pageTextures = textures;
+    pageTextures.pageIdentity = allocation.pageIdentity;
+    MaterialSetResolveResult setResult = GetOrCreateMaterialSetForResolved(
+        pageTextures, allocation.buffer);
     if (!setResult.descriptorSet)
     {
         MaterialBindingResult result;
@@ -184,7 +729,9 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
     result.status = (textures.usedFallback || setResult.usedFallback) ? MaterialBindingStatus::Fallback
                                                                       : MaterialBindingStatus::Ready;
     result.descriptorSet = setResult.descriptorSet;
-    result.dynamicOffsets = GetCurrentMaterialDynamicOffset();
+    result.constantBuffer = std::move(allocation.buffer);
+    result.descriptorSetRef = std::move(setResult.descriptorSetRef);
+    result.dynamicOffsets = {allocation.dynamicOffset};
     result.constantsUpdated = true;
     result.textureFlags = constants.textureFlags;
     result.fallbackTextureFlags = textures.fallbackTextureFlags;
@@ -206,87 +753,123 @@ MaterialBindingResult MaterialSystem::PrepareMaterialBinding(const Resource::Mat
     {
         result.message = "Material binding ready";
     }
+    SetSuccessfulMaterialBindingIdentity(result, material, contentRevision);
+    FinalizeSemanticDescriptorEvidence(
+        result, material, constants, textures);
 
     return SetLastBindingResult(std::move(result));
 }
 
-bool MaterialSystem::UpdateMaterialConstants(const Resource::MaterialResource* materialResource,
-                                             ResourceViewCache* viewCache,
-                                             MaterialBindingOptions options)
+void MaterialSystem::FinalizeSemanticDescriptorEvidence(
+    MaterialBindingResult& result,
+    RenderResourceHandle requestedMaterial,
+    const MaterialGPUConstants& constants,
+    const ResolvedMaterialTextures& textures)
 {
-    const MaterialBindingResult result = PrepareMaterialBinding(materialResource, viewCache, options);
-    return result.constantsUpdated && !result.IsError();
-}
-
-RHIDescriptorSet* MaterialSystem::GetOrCreateMaterialSet(const Resource::MaterialResource* materialResource,
-                                                         ResourceViewCache* viewCache,
-                                                         MaterialBindingOptions options)
-{
-    if (!m_initialized)
+    result.textureEntries = textures.textureEntries;
+    if (!result.IsDrawable())
     {
-        MaterialBindingResult result;
-        result.status = MaterialBindingStatus::NotInitialized;
-        result.message = "MaterialSystem is not initialized";
-        SetLastBindingResult(std::move(result));
-        return nullptr;
+        return;
     }
 
-    const ResolvedMaterialTextures textures = ResolveMaterialTextures(materialResource, viewCache, options);
-    MaterialSetResolveResult setResult = GetOrCreateMaterialSetForResolved(textures);
-    const std::string materialName = materialResource ? materialResource->GetMaterialName() : std::string();
-
-    MaterialBindingResult result;
-    result.status = setResult.descriptorSet
-        ? ((textures.usedFallback || setResult.usedFallback) ? MaterialBindingStatus::Fallback
-                                                             : MaterialBindingStatus::Ready)
-        : (setResult.status == MaterialBindingStatus::None ? MaterialBindingStatus::Error : setResult.status);
-    result.descriptorSet = setResult.descriptorSet;
-    result.dynamicOffsets = GetCurrentMaterialDynamicOffset();
-    result.textureFlags = textures.textureFlags;
-    result.fallbackTextureFlags = textures.fallbackTextureFlags;
-    result.usedFallback = textures.usedFallback || setResult.usedFallback;
-    result.materialName = materialName;
-    if (textures.normalMapDisabled)
+    result.descriptorContentKey = BuildSemanticDescriptorContentKey(
+        requestedMaterial, constants, result.textureEntries);
+    if (result.descriptorContentKey == 0 || !result.material.IsValid() ||
+        result.contentRevision == 0)
     {
-        result.message = "Material normal map disabled because mesh tangent basis is unavailable";
+        return;
+    }
+    SemanticDescriptorState& state =
+        m_semanticDescriptorStates[result.material];
+    if (state.revision == 0)
+    {
+        state.contentKey = result.descriptorContentKey;
+        state.revision = 1;
+    }
+    else if (state.contentKey != result.descriptorContentKey)
+    {
+        state.contentKey = result.descriptorContentKey;
+        if (state.revision != std::numeric_limits<uint64>::max())
+        {
+            ++state.revision;
+        }
+    }
+    result.descriptorRevision = state.revision;
+}
+
+uint64 MaterialSystem::BuildSemanticDescriptorContentKey(
+    RenderResourceHandle requestedMaterial,
+    const MaterialGPUConstants& constants,
+    const std::vector<MaterialBindingTextureEntry>& textureEntries) const noexcept
+{
+    uint64 hash = FNV_OFFSET;
+    HashBindingValue(hash, RASTER_MATERIAL_SEMANTIC_DOMAIN);
+    if (requestedMaterial.IsValid())
+    {
+        const AssetId materialAsset = m_resourceRegistry != nullptr
+            ? m_resourceRegistry->GetExactAssetId(requestedMaterial)
+            : AssetId{};
+        if (!materialAsset.IsValid())
+        {
+            return 0;
+        }
+        HashBindingValue(hash, materialAsset.value);
     }
     else
     {
-        result.message = setResult.message.empty()
-            ? (result.usedFallback ? "Material descriptor used explicit fallback resources"
-                                   : "Material descriptor ready")
-            : std::move(setResult.message);
+        HashBindingValue(hash, RASTER_MATERIAL_MISSING_ASSET_TOKEN);
     }
-    SetLastBindingResult(std::move(result));
+    HashRasterMaterialConstants(hash, constants);
 
-    return setResult.descriptorSet;
+    for (uint8 slotValue =
+             static_cast<uint8>(MaterialUploadTextureSlot::BaseColor);
+         slotValue <= static_cast<uint8>(MaterialUploadTextureSlot::Emissive);
+         ++slotValue)
+    {
+        const MaterialUploadTextureSlot slot =
+            static_cast<MaterialUploadTextureSlot>(slotValue);
+        const MaterialBindingTextureEntry* selected = nullptr;
+        for (const MaterialBindingTextureEntry& entry : textureEntries)
+        {
+            if (entry.slot != slot)
+            {
+                continue;
+            }
+            if (selected != nullptr)
+            {
+                return 0;
+            }
+            selected = &entry;
+        }
+
+        HashBindingValue(hash, slot);
+        if (selected == nullptr || selected->fallbackUsed)
+        {
+            HashBindingValue(hash, GetRasterFallbackTextureToken(slot));
+            HashBindingValue(hash, RASTER_DEFAULT_SAMPLER_TOKEN);
+            continue;
+        }
+
+        const AssetId textureAsset = m_resourceRegistry != nullptr
+            ? m_resourceRegistry->GetExactAssetId(selected->texture)
+            : AssetId{};
+        if (!textureAsset.IsValid())
+        {
+            return 0;
+        }
+        HashBindingValue(hash, textureAsset.value);
+        HashBindingValue(hash, selected->sampler.wrapS);
+        HashBindingValue(hash, selected->sampler.wrapT);
+        HashBindingValue(hash, selected->sampler.minFilter);
+        HashBindingValue(hash, selected->sampler.magFilter);
+    }
+    // Zero denotes unavailable evidence at the public boundary.
+    return hash == 0 ? 1 : hash;
 }
 
 RHIDescriptorSet* MaterialSystem::GetDefaultMaterialSet()
 {
     return m_defaultMaterialSet.Get();
-}
-
-void MaterialSystem::SetEnvironmentIBLResources(const EnvironmentIBLResources& resources)
-{
-    const bool changed =
-        m_environmentIBL.irradianceMap != resources.irradianceMap ||
-        m_environmentIBL.prefilteredMap != resources.prefilteredMap ||
-        m_environmentIBL.brdfLUT != resources.brdfLUT ||
-        m_environmentIBL.textureIBLEnabled != resources.textureIBLEnabled;
-
-    m_environmentIBL = resources;
-    m_environmentIBL.prefilteredMipLevels = std::max(1u, m_environmentIBL.prefilteredMipLevels);
-
-    if (changed)
-    {
-        m_materialDescriptorCache.clear();
-    }
-}
-
-void MaterialSystem::ClearEnvironmentIBLResources()
-{
-    SetEnvironmentIBLResources({});
 }
 
 std::array<uint32, 1> MaterialSystem::GetCurrentMaterialDynamicOffset() const
@@ -307,11 +890,14 @@ size_t MaterialSystem::MaterialDescriptorKeyHash::operator()(const MaterialDescr
     HashCombine(seed, std::hash<RHITextureView*>{}(key.metallicRoughness));
     HashCombine(seed, std::hash<RHITextureView*>{}(key.occlusion));
     HashCombine(seed, std::hash<RHITextureView*>{}(key.emissive));
-    HashCombine(seed, std::hash<RHITextureView*>{}(key.irradiance));
-    HashCombine(seed, std::hash<RHITextureView*>{}(key.prefilteredEnvironment));
-    HashCombine(seed, std::hash<RHITextureView*>{}(key.brdfLUT));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.baseColorSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.normalSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.metallicRoughnessSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.occlusionSampler));
+    HashCombine(seed, std::hash<RHISampler*>{}(key.emissiveSampler));
+    HashCombine(seed, std::hash<RHIBuffer*>{}(key.materialParameterTable));
     HashCombine(seed, std::hash<uint64>{}(key.viewGeneration));
-    HashCombine(seed, std::hash<bool>{}(key.textureIBLEnabled));
+    HashCombine(seed, std::hash<uint64>{}(key.pageIdentity));
     return seed;
 }
 
@@ -326,7 +912,36 @@ bool MaterialSystem::CreateConstantBuffer()
     cbDesc.debugName = "MaterialConstantBuffer";
 
     m_materialConstantBuffer = m_device->CreateBuffer(cbDesc);
-    return m_materialConstantBuffer != nullptr;
+    if (!m_materialConstantBuffer)
+    {
+        return false;
+    }
+
+    RHIBufferDesc tableDesc;
+    tableDesc.size = sizeof(MaterialGPUConstants);
+    tableDesc.usage = RHIBufferUsage::Structured |
+                      RHIBufferUsage::ShaderResource;
+    tableDesc.memoryType = RHIMemoryType::Upload;
+    tableDesc.stride = sizeof(MaterialGPUConstants);
+    tableDesc.debugName = "DefaultMaterialParameterTable";
+    m_defaultMaterialParameterTable = m_device->CreateBuffer(tableDesc);
+    if (!m_defaultMaterialParameterTable)
+    {
+        m_materialConstantBuffer.Reset();
+        return false;
+    }
+
+    m_materialConstantUploadArena = std::make_unique<FrameConstantUploadArena>();
+    if (!m_materialConstantUploadArena->Initialize(
+            m_device,
+            m_materialConstantStride,
+            static_cast<uint32>(RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME),
+            "MaterialConstantUpload"))
+    {
+        m_materialConstantUploadArena.reset();
+        return false;
+    }
+    return true;
 }
 
 bool MaterialSystem::CreateDefaultResources()
@@ -368,26 +983,6 @@ bool MaterialSystem::CreateDefaultResources()
         *defaultTexture.texture = uploadResult.resource;
     }
 
-    const uint32 blackCubePixels[6] = {};
-    RHITextureDesc blackCubemapDesc = RHITextureDesc::Texture2D(1, 1, RHIFormat::RGBA8_UNORM);
-    blackCubemapDesc.dimension = RHITextureDimension::TextureCube;
-    blackCubemapDesc.arraySize = 1;
-    blackCubemapDesc.debugName = "DefaultBlackIBLCubemap";
-
-    GPUUploadTextureDesc blackCubemapUploadDesc;
-    blackCubemapUploadDesc.textureDesc = blackCubemapDesc;
-    blackCubemapUploadDesc.dataSize = sizeof(blackCubePixels);
-
-    GPUUploadTextureResult blackCubemapUploadResult =
-        uploadService.UploadTextureDataWithResult(blackCubemapUploadDesc, blackCubePixels);
-    if (!blackCubemapUploadResult)
-    {
-        RVX_CORE_ERROR("MaterialSystem: Failed to upload DefaultBlackIBLCubemap");
-        return false;
-    }
-
-    m_defaultBlackCubemap = blackCubemapUploadResult.resource;
-
     uploadService.FlushAndWaitForUploads();
 
     auto commandContext = m_device->CreateCommandContext(RHICommandQueueType::Graphics);
@@ -403,8 +998,6 @@ bool MaterialSystem::CreateDefaultResources()
         commandContext->TextureBarrier(defaultTexture.texture->Get(), RHIResourceState::Common,
                                        RHIResourceState::ShaderResource);
     }
-    commandContext->TextureBarrier(m_defaultBlackCubemap.Get(), RHIResourceState::Common,
-                                   RHIResourceState::ShaderResource);
     commandContext->End();
     m_device->SubmitCommandContext(commandContext.Get());
     m_device->WaitIdle();
@@ -421,17 +1014,6 @@ bool MaterialSystem::CreateDefaultResources()
             RVX_CORE_ERROR("MaterialSystem: Failed to create view for {}", defaultTexture.name);
             return false;
         }
-    }
-
-    RHITextureViewDesc blackCubemapViewDesc;
-    blackCubemapViewDesc.dimension = RHITextureDimension::TextureCube;
-    blackCubemapViewDesc.type = RHITextureViewType::ShaderResource;
-    blackCubemapViewDesc.debugName = "DefaultBlackIBLCubemap";
-    m_defaultBlackCubemapView = m_device->CreateTextureView(m_defaultBlackCubemap.Get(), blackCubemapViewDesc);
-    if (!m_defaultBlackCubemapView)
-    {
-        RVX_CORE_ERROR("MaterialSystem: Failed to create view for DefaultBlackIBLCubemap");
-        return false;
     }
 
     RHISamplerDesc samplerDesc = RHISamplerDesc::Anisotropic(8.0f);
@@ -460,49 +1042,8 @@ bool MaterialSystem::CreateDefaultResources()
     return true;
 }
 
-RHITextureView* MaterialSystem::ResolveTextureView(const Resource::TextureResource* textureResource,
-                                                   RHITextureView* fallbackView,
-                                                   ResourceViewCache* viewCache,
-                                                   uint32 textureFlag,
-                                                   uint32& textureFlags,
-                                                   uint32& fallbackTextureFlags,
-                                                   bool& usedFallback) const
-{
-    if (!textureResource)
-    {
-        return fallbackView;
-    }
-
-    if (textureResource->IsDefaultFallback() || !m_gpuResources || !viewCache ||
-        !m_gpuResources->IsGPUReady(textureResource->GetId()))
-    {
-        usedFallback = true;
-        fallbackTextureFlags |= textureFlag;
-        return fallbackView;
-    }
-
-    RHITexture* texture = m_gpuResources->GetTexture(textureResource->GetId());
-    if (!texture)
-    {
-        usedFallback = true;
-        fallbackTextureFlags |= textureFlag;
-        return fallbackView;
-    }
-
-    RHITextureView* view = viewCache->GetDefaultSRV(texture);
-    if (!view)
-    {
-        usedFallback = true;
-        fallbackTextureFlags |= textureFlag;
-        return fallbackView;
-    }
-
-    textureFlags |= textureFlag;
-    return view;
-}
-
 MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures(
-    const Resource::MaterialResource* materialResource,
+    RenderResourceHandle material,
     ResourceViewCache* viewCache,
     MaterialBindingOptions options) const
 {
@@ -512,151 +1053,131 @@ MaterialSystem::ResolvedMaterialTextures MaterialSystem::ResolveMaterialTextures
     textures.metallicRoughness = m_defaultWhiteTextureView.Get();
     textures.occlusion = m_defaultWhiteTextureView.Get();
     textures.emissive = m_defaultBlackTextureView.Get();
-    textures.irradiance = m_defaultBlackCubemapView.Get();
-    textures.prefilteredEnvironment = m_defaultBlackCubemapView.Get();
-    textures.brdfLUT = m_defaultBlackTextureView.Get();
+    textures.baseColorSampler = m_defaultSampler.Get();
+    textures.normalSampler = m_defaultSampler.Get();
+    textures.metallicRoughnessSampler = m_defaultSampler.Get();
+    textures.occlusionSampler = m_defaultSampler.Get();
+    textures.emissiveSampler = m_defaultSampler.Get();
+    textures.materialParameterTable = options.materialParameterTable
+        ? options.materialParameterTable
+        : m_defaultMaterialParameterTable.Get();
     textures.viewGeneration = viewCache ? viewCache->GetGeneration() : 0;
 
-    if (!materialResource)
+    const RenderMaterialResourceData* materialData =
+        m_resourceRegistry ? m_resourceRegistry->ResolveMaterial(material)
+                           : nullptr;
+    if (materialData == nullptr || !materialData->metadataValid)
     {
         textures.usedFallback = true;
     }
     else
     {
-        textures.baseColor = ResolveTextureView(materialResource->GetAlbedoTexture().Get(), textures.baseColor,
-                                                viewCache,
-                                                static_cast<uint32>(MaterialTextureFlags::HasBaseColor),
-                                                textures.textureFlags,
-                                                textures.fallbackTextureFlags,
-                                                textures.usedFallback);
-        const Resource::TextureResource* normalTexture = materialResource->GetNormalTexture().Get();
-        if (!options.allowNormalMap && normalTexture)
+        for (size_t bindingIndex = 0;
+             bindingIndex < materialData->textureBindings.size();
+             ++bindingIndex)
         {
-            textures.usedFallback = true;
-            textures.normalMapDisabled = true;
-            textures.fallbackTextureFlags |= static_cast<uint32>(MaterialTextureFlags::HasNormal);
-        }
-        else
-        {
-            textures.normal = ResolveTextureView(normalTexture, textures.normal,
-                                                 viewCache,
-                                                 static_cast<uint32>(MaterialTextureFlags::HasNormal),
-                                                 textures.textureFlags,
-                                                 textures.fallbackTextureFlags,
-                                                 textures.usedFallback);
-        }
-        textures.metallicRoughness =
-            ResolveTextureView(materialResource->GetMetallicRoughnessTexture().Get(), textures.metallicRoughness,
-                               viewCache,
-                               static_cast<uint32>(MaterialTextureFlags::HasMetallicRoughness),
-                               textures.textureFlags,
-                               textures.fallbackTextureFlags,
-                               textures.usedFallback);
-        textures.occlusion = ResolveTextureView(materialResource->GetAOTexture().Get(), textures.occlusion,
-                                                viewCache,
-                                                static_cast<uint32>(MaterialTextureFlags::HasOcclusion),
-                                                textures.textureFlags,
-                                                textures.fallbackTextureFlags,
-                                                textures.usedFallback);
-        textures.emissive = ResolveTextureView(materialResource->GetEmissiveTexture().Get(), textures.emissive,
-                                               viewCache,
-                                               static_cast<uint32>(MaterialTextureFlags::HasEmissive),
-                                               textures.textureFlags,
-                                               textures.fallbackTextureFlags,
-                                               textures.usedFallback);
-    }
+            const MaterialUploadTextureBinding& binding =
+                materialData->textureBindings[bindingIndex];
+            uint32 textureFlag = 0;
+            RHITextureView** destination = nullptr;
+            RHISampler** samplerDestination = nullptr;
+            switch (binding.slot)
+            {
+                case MaterialUploadTextureSlot::BaseColor:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasBaseColor);
+                    destination = &textures.baseColor;
+                    samplerDestination = &textures.baseColorSampler;
+                    break;
+                case MaterialUploadTextureSlot::Normal:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasNormal);
+                    destination = &textures.normal;
+                    samplerDestination = &textures.normalSampler;
+                    break;
+                case MaterialUploadTextureSlot::MetallicRoughness:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasMetallicRoughness);
+                    destination = &textures.metallicRoughness;
+                    samplerDestination = &textures.metallicRoughnessSampler;
+                    break;
+                case MaterialUploadTextureSlot::Occlusion:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasOcclusion);
+                    destination = &textures.occlusion;
+                    samplerDestination = &textures.occlusionSampler;
+                    break;
+                case MaterialUploadTextureSlot::Emissive:
+                    textureFlag = static_cast<uint32>(
+                        MaterialTextureFlags::HasEmissive);
+                    destination = &textures.emissive;
+                    samplerDestination = &textures.emissiveSampler;
+                    break;
+                default:
+                    continue;
+            }
 
-    if (m_environmentIBL.textureIBLEnabled)
-    {
-        bool iblUsedFallback = false;
-        textures.irradiance = ResolveTextureView(m_environmentIBL.irradianceMap,
-                                                 textures.irradiance,
-                                                 viewCache,
-                                                 0,
-                                                 textures.textureFlags,
-                                                 textures.fallbackTextureFlags,
-                                                 iblUsedFallback);
-        textures.prefilteredEnvironment = ResolveTextureView(m_environmentIBL.prefilteredMap,
-                                                             textures.prefilteredEnvironment,
-                                                             viewCache,
-                                                             0,
-                                                             textures.textureFlags,
-                                                             textures.fallbackTextureFlags,
-                                                             iblUsedFallback);
-        textures.brdfLUT = ResolveTextureView(m_environmentIBL.brdfLUT,
-                                              textures.brdfLUT,
-                                              viewCache,
-                                              0,
-                                              textures.textureFlags,
-                                              textures.fallbackTextureFlags,
-                                              iblUsedFallback);
+            MaterialBindingTextureEntry entry;
+            entry.slot = binding.slot;
+            entry.texture = binding.texture;
+            entry.contentRevision = m_resourceRegistry != nullptr
+                ? m_resourceRegistry->GetContentRevision(binding.texture)
+                : 0;
+            entry.fallbackUsed = binding.isDefaultFallback;
+            entry.sampler = {
+                binding.wrapS,
+                binding.wrapT,
+                binding.minFilter,
+                binding.magFilter};
+            if (binding.slot == MaterialUploadTextureSlot::Normal &&
+                !options.allowNormalMap)
+            {
+                textures.usedFallback = true;
+                textures.normalMapDisabled = true;
+                textures.fallbackTextureFlags |= textureFlag;
+                entry.fallbackUsed = true;
+                textures.textureEntries.push_back(entry);
+                continue;
+            }
 
-        if (iblUsedFallback)
-        {
-            textures.usedFallback = true;
+            RHITexture* texture =
+                m_resourceRegistry->ResolveTextureObject(binding.texture);
+            RHITextureView* textureView =
+                texture && viewCache ? viewCache->GetDefaultSRV(texture)
+                                     : nullptr;
+            RHISampler* sampler =
+                bindingIndex < materialData->samplers.size()
+                    ? materialData->samplers[bindingIndex].Get()
+                    : nullptr;
+            if (binding.isDefaultFallback || textureView == nullptr ||
+                sampler == nullptr)
+            {
+                textures.usedFallback = true;
+                textures.fallbackTextureFlags |= textureFlag;
+                entry.fallbackUsed = true;
+                textures.textureEntries.push_back(entry);
+                continue;
+            }
+            *destination = textureView;
+            *samplerDestination = sampler;
+            textures.textureFlags |= textureFlag;
+            textures.textureEntries.push_back(entry);
         }
-        else
-        {
-            textures.textureIBLEnabled = true;
-        }
+
+        std::sort(textures.textureEntries.begin(), textures.textureEntries.end(),
+            [](const MaterialBindingTextureEntry& lhs,
+               const MaterialBindingTextureEntry& rhs)
+            {
+                return lhs.slot < rhs.slot;
+            });
     }
 
     return textures;
 }
 
-MaterialGPUConstants MaterialSystem::BuildConstants(const Resource::MaterialResource* materialResource,
-                                                    const ResolvedMaterialTextures& textures) const
-{
-    MaterialGPUConstants constants;
-    constants.textureFlags = textures.textureFlags;
-
-    if (!materialResource || !materialResource->GetMaterial())
-        return constants;
-
-    const Material& material = *materialResource->GetMaterial();
-    constants.baseColorFactor = material.GetBaseColor();
-    constants.metallicFactor = material.GetMetallicFactor();
-    constants.roughnessFactor = material.GetRoughnessFactor();
-    constants.normalScale = material.GetNormalScale();
-    constants.occlusionStrength = material.GetOcclusionStrength();
-    constants.emissiveColor = material.GetEmissiveColor();
-    constants.emissiveStrength = material.GetEmissiveStrength();
-    constants.alphaCutoff = material.GetAlphaCutoff();
-    constants.doubleSided = material.IsDoubleSided() ? 1u : 0u;
-
-    switch (material.GetAlphaMode())
-    {
-        case Material::AlphaMode::Mask:
-            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Mask);
-            break;
-        case Material::AlphaMode::Blend:
-            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Blend);
-            break;
-        case Material::AlphaMode::Opaque:
-        default:
-            constants.alphaMode = static_cast<uint32>(MaterialGPUAlphaMode::Opaque);
-            break;
-    }
-
-    switch (material.GetWorkflow())
-    {
-        case MaterialWorkflow::SpecularGlossiness:
-            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::SpecularGlossiness);
-            break;
-        case MaterialWorkflow::Unlit:
-            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::Unlit);
-            break;
-        case MaterialWorkflow::MetallicRoughness:
-        default:
-            constants.workflow = static_cast<uint32>(MaterialGPUWorkflow::MetallicRoughness);
-            break;
-    }
-
-    return constants;
-}
-
 MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetForResolved(
-    const ResolvedMaterialTextures& textures)
+    const ResolvedMaterialTextures& textures,
+    const RHIBufferRef& constantBuffer)
 {
     MaterialSetResolveResult result;
 
@@ -673,22 +1194,26 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
     key.metallicRoughness = textures.metallicRoughness;
     key.occlusion = textures.occlusion;
     key.emissive = textures.emissive;
-    key.irradiance = textures.irradiance;
-    key.prefilteredEnvironment = textures.prefilteredEnvironment;
-    key.brdfLUT = textures.brdfLUT;
+    key.baseColorSampler = textures.baseColorSampler;
+    key.normalSampler = textures.normalSampler;
+    key.metallicRoughnessSampler = textures.metallicRoughnessSampler;
+    key.occlusionSampler = textures.occlusionSampler;
+    key.emissiveSampler = textures.emissiveSampler;
+    key.materialParameterTable = textures.materialParameterTable;
     key.viewGeneration = textures.viewGeneration;
-    key.textureIBLEnabled = textures.textureIBLEnabled;
+    key.pageIdentity = textures.pageIdentity;
 
     if (m_materialDescriptorCacheGeneration != textures.viewGeneration)
     {
         m_materialDescriptorCacheGeneration = textures.viewGeneration;
-        m_materialDescriptorCache.clear();
+        QueueMaterialDescriptorCacheRetirement();
     }
 
     auto it = m_materialDescriptorCache.find(key);
     if (it != m_materialDescriptorCache.end())
     {
-        result.descriptorSet = it->second.Get();
+        result.descriptorSet = it->second.descriptorSet.Get();
+        result.descriptorSetRef = it->second.descriptorSet;
         result.usedFallback = textures.usedFallback;
         result.status = textures.usedFallback ? MaterialBindingStatus::Fallback
                                               : MaterialBindingStatus::Ready;
@@ -697,40 +1222,49 @@ MaterialSystem::MaterialSetResolveResult MaterialSystem::GetOrCreateMaterialSetF
         return result;
     }
 
-    RHIDescriptorSetRef descriptorSet = CreateMaterialDescriptorSet(textures);
+    RHIDescriptorSetRef descriptorSet = CreateMaterialDescriptorSet(
+        textures, constantBuffer.Get());
     if (!descriptorSet)
     {
-        result.usedFallback = true;
-        result.descriptorSet = GetDefaultMaterialSet();
-        if (result.descriptorSet)
-        {
-            result.status = MaterialBindingStatus::Fallback;
-            result.message = "Material descriptor creation failed; default material set used as explicit fallback";
-        }
-        else
-        {
-            result.status = MaterialBindingStatus::Error;
-            result.message = "Material descriptor creation failed and default material set is unavailable";
-        }
+        // A legacy default set is bound to its legacy upload buffer. Pairing
+        // it with this page's dynamic offset would silently read unrelated
+        // constants, so recording fails closed instead of changing buffers.
+        result.status = MaterialBindingStatus::Error;
+        result.message = "Material page descriptor creation failed";
         return result;
     }
 
     result.descriptorSet = descriptorSet.Get();
+    result.descriptorSetRef = descriptorSet;
     result.usedFallback = textures.usedFallback;
     result.status = textures.usedFallback ? MaterialBindingStatus::Fallback
                                           : MaterialBindingStatus::Ready;
     result.message = textures.usedFallback ? "Material descriptor used explicit fallback resources"
                                            : "Material descriptor ready";
-    m_materialDescriptorCache.emplace(key, std::move(descriptorSet));
+    MaterialDescriptorCacheEntry cacheEntry;
+    cacheEntry.descriptorSet = std::move(descriptorSet);
+    cacheEntry.samplers = {
+        RHISamplerRef(textures.baseColorSampler),
+        RHISamplerRef(textures.normalSampler),
+        RHISamplerRef(textures.metallicRoughnessSampler),
+        RHISamplerRef(textures.occlusionSampler),
+        RHISamplerRef(textures.emissiveSampler)};
+    cacheEntry.materialParameterTable =
+        RHIBufferRef(textures.materialParameterTable);
+    m_materialDescriptorCache.emplace(key, std::move(cacheEntry));
     return result;
 }
 
-RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(const ResolvedMaterialTextures& textures)
+RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(
+    const ResolvedMaterialTextures& textures,
+    RHIBuffer* constantBuffer)
 {
-    if (!m_materialSetLayout || !m_materialConstantBuffer || !m_defaultSampler ||
+    if (!m_materialSetLayout || constantBuffer == nullptr ||
         !textures.baseColor || !textures.normal || !textures.metallicRoughness ||
-        !textures.occlusion || !textures.emissive || !textures.irradiance ||
-        !textures.prefilteredEnvironment || !textures.brdfLUT)
+        !textures.occlusion || !textures.emissive ||
+        !textures.baseColorSampler || !textures.normalSampler ||
+        !textures.metallicRoughnessSampler || !textures.occlusionSampler ||
+        !textures.emissiveSampler || !textures.materialParameterTable)
     {
         return {};
     }
@@ -738,16 +1272,18 @@ RHIDescriptorSetRef MaterialSystem::CreateMaterialDescriptorSet(const ResolvedMa
     RHIDescriptorSetDesc descSetDesc;
     descSetDesc.layout = m_materialSetLayout;
     descSetDesc.debugName = "MaterialDescriptorSet";
-    descSetDesc.BindBuffer(0, m_materialConstantBuffer.Get(), 0, m_materialConstantStride);
+    descSetDesc.BindBuffer(0, constantBuffer, 0, m_materialConstantStride);
     descSetDesc.BindTexture(1, textures.baseColor);
     descSetDesc.BindTexture(2, textures.normal);
     descSetDesc.BindTexture(3, textures.metallicRoughness);
     descSetDesc.BindTexture(4, textures.occlusion);
     descSetDesc.BindTexture(5, textures.emissive);
-    descSetDesc.BindSampler(6, m_defaultSampler.Get());
-    descSetDesc.BindTexture(7, textures.irradiance);
-    descSetDesc.BindTexture(8, textures.prefilteredEnvironment);
-    descSetDesc.BindTexture(9, textures.brdfLUT);
+    descSetDesc.BindSampler(6, textures.baseColorSampler);
+    descSetDesc.BindSampler(7, textures.normalSampler);
+    descSetDesc.BindSampler(8, textures.metallicRoughnessSampler);
+    descSetDesc.BindSampler(9, textures.occlusionSampler);
+    descSetDesc.BindSampler(10, textures.emissiveSampler);
+    descSetDesc.BindBuffer(11, textures.materialParameterTable);
 
     return m_device->CreateDescriptorSet(descSetDesc);
 }
@@ -766,12 +1302,11 @@ uint64 MaterialSystem::AllocateMaterialConstantSlot()
     if (m_materialConstantCursor >= RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME)
     {
         RVX_VERIFY(false,
-                   "MaterialSystem: Material constant buffer exhausted for this frame (max {} material updates). "
-                   "Reusing the final slot to avoid wrapping over earlier material constants.",
+                   "MaterialSystem: legacy material constant buffer exhausted for this frame (max {} material updates). "
+                   "Recording must use completion-tracked material pages.",
                    RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME);
-        const uint64 offset = (RVX_MAX_MATERIAL_CONSTANTS_PER_FRAME - 1) * m_materialConstantStride;
-        m_currentMaterialConstantOffset = offset;
-        return offset;
+        m_currentMaterialConstantOffset = std::numeric_limits<uint64>::max();
+        return m_currentMaterialConstantOffset;
     }
 
     const uint64 offset = m_materialConstantCursor * m_materialConstantStride;

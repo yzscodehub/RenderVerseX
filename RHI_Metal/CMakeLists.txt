@@ -25,7 +25,6 @@ target_include_directories(RVX_RHI_Metal PRIVATE
 
 target_link_libraries(RVX_RHI_Metal PUBLIC
     RVX::RHI
-    RVX::ShaderCompiler
 )
 
 # Link Apple frameworks

@@ -11,11 +11,25 @@
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/TextureResource.h"
 #include "Resource/Loader/TextureReference.h"
+#include <functional>
 #include <string>
 #include <memory>
 
 namespace RVX::Resource
 {
+    struct DecodedTextureData
+    {
+        std::shared_ptr<const std::vector<uint8_t>> bytes;
+        TextureMetadata metadata;
+        std::string sourceKey;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return bytes && !bytes->empty() && metadata.width != 0 &&
+                   metadata.height != 0;
+        }
+    };
+
     enum class TextureLoadStatus : uint8_t
     {
         None,
@@ -37,7 +51,7 @@ namespace RVX::Resource
     class TextureLoader : public IResourceLoader
     {
     public:
-        explicit TextureLoader(ResourceManager* manager);
+        explicit TextureLoader(ResourceManager* manager, bool prepareOnly = false);
         ~TextureLoader() override = default;
 
         // =====================================================================
@@ -47,6 +61,10 @@ namespace RVX::Resource
         ResourceType GetResourceType() const override { return ResourceType::Texture; }
         std::vector<std::string> GetSupportedExtensions() const override;
         IResource* Load(const std::string& path) override;
+        bool Prepare(const ResourceLoadPreparationContext& context,
+                     PreparedResourceBundle& outBundle,
+                     ResourceLoadError& outError) override;
+        bool SupportsPreparedLoading() const override { return true; }
         bool CanLoad(const std::string& path) const override;
 
         // =====================================================================
@@ -64,7 +82,35 @@ namespace RVX::Resource
          * @return TextureResource pointer (ownership handled by ResourceManager)
          */
         TextureResource* LoadFromReference(const TextureReference& ref, 
-                                            const std::string& modelPath);
+                                            const std::string& modelPath,
+                                            const Diagnostics::TraceContext& traceContext = {},
+                                            const std::string& resourceIdentityBase = {});
+
+        /** @brief Create one stable logical texture initialized from engine fallback bytes. */
+        TextureResource* CreateStreamingPlaceholder(
+            TextureReference& ref,
+            const std::string& modelPath,
+            const std::string& resourceIdentityBase);
+
+        /** @brief True only for encoded source images that require runtime decode. */
+        [[nodiscard]] bool RequiresDeferredDecode(
+            const TextureReference& ref) const;
+
+        /** @brief Header-only decoded-size estimate used before budget admission. */
+        bool EstimateDecodedByteSize(
+            const TextureReference& ref,
+            const std::string& modelPath,
+            uint64& outBytes,
+            std::string& outError) const;
+
+        /** @brief Decode captured source bytes without cache/registry publication. */
+        bool DecodeReference(
+            const TextureReference& ref,
+            const std::string& modelPath,
+            const Diagnostics::TraceContext& traceContext,
+            DecodedTextureData& outData,
+            std::string& outError,
+            const std::function<bool()>& isCancellationRequested = {});
 
         TextureLoadStatus GetLastLoadStatus() const { return m_lastLoadStatus; }
         const std::string& GetLastLoadError() const { return m_lastLoadError; }
@@ -80,7 +126,9 @@ namespace RVX::Resource
          * @param absolutePath Absolute path to the texture file
          * @return TextureResource pointer
          */
-        TextureResource* LoadFromFile(const std::string& absolutePath);
+        TextureResource* LoadFromFile(
+            const std::string& absolutePath,
+            const Diagnostics::TraceContext& traceContext = {});
 
         /**
          * @brief Load a texture from memory
@@ -98,7 +146,8 @@ namespace RVX::Resource
                                          const std::string& uniqueKey,
                                          TextureUsage usage = TextureUsage::Color,
                                          bool isRawRGBA = false,
-                                         uint32_t width = 0, uint32_t height = 0);
+                                         uint32_t width = 0, uint32_t height = 0,
+                                         const Diagnostics::TraceContext& traceContext = {});
 
         // =====================================================================
         // Default Textures
@@ -132,12 +181,16 @@ namespace RVX::Resource
         bool DecodeImage(const void* data, size_t size,
                          std::vector<uint8_t>& outPixels,
                          uint32_t& outWidth, uint32_t& outHeight,
-                         int& outChannels);
+                         int& outChannels,
+                         const std::string& sourcePath,
+                         const Diagnostics::TraceContext& traceContext,
+                         const std::function<bool()>& isCancellationRequested = {});
 
         TextureResource* LoadFromFileWithPolicy(const std::string& absolutePath,
                                                  TextureUsage usage,
                                                  bool isSRGB,
-                                                 const std::string& cacheKey);
+                                                 const std::string& cacheKey,
+                                                 const Diagnostics::TraceContext& traceContext);
         TextureResource* LoadFromMemoryWithPolicy(const void* data,
                                                    size_t size,
                                                    const std::string& sourceKey,
@@ -146,7 +199,8 @@ namespace RVX::Resource
                                                    bool isSRGB,
                                                    bool isRawRGBA,
                                                    uint32_t width,
-                                                   uint32_t height);
+                                                   uint32_t height,
+                                                   const Diagnostics::TraceContext& traceContext);
 
         /// Create texture resource from decoded data
         TextureResource* CreateTextureResource(std::vector<uint8_t> pixels,
@@ -167,6 +221,7 @@ namespace RVX::Resource
         ResourceId GenerateTextureId(const std::string& uniqueKey);
 
         ResourceManager* m_manager;
+        bool m_prepareOnly = false;
         TextureLoadStatus m_lastLoadStatus = TextureLoadStatus::None;
         std::string m_lastLoadError;
 

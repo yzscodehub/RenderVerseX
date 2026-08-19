@@ -2,41 +2,56 @@
 #include "VulkanDevice.h"
 #include "VulkanResources.h"
 
+#include <GLFW/glfw3.h>
+
 #include <algorithm>
+#include <mutex>
 
 namespace RVX
 {
     VulkanSwapChain::VulkanSwapChain(VulkanDevice* device, const RHISwapChainDesc& desc)
         : m_device(device)
-        , m_width(desc.width)
-        , m_height(desc.height)
-        , m_format(desc.format)
-        , m_vsync(desc.vsync)
-        , m_windowHandle(desc.windowHandle)
+        , m_width(desc.surface.width)
+        , m_height(desc.surface.height)
+        , m_format(desc.surface.preferredFormat)
+        , m_vsync(desc.surface.vsync)
+        , m_backendWindow(
+              reinterpret_cast<GLFWwindow*>(desc.surface.backendWindow))
     {
-        if (m_device)
+        if (!m_device || !desc.surface.IsValidFor(RHIBackendType::Vulkan))
         {
-            m_device->SetPrimarySwapChain(this);
-        }
-        // Create surface
-#ifdef _WIN32
-        VkWin32SurfaceCreateInfoKHR surfaceInfo = {VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
-        surfaceInfo.hwnd = static_cast<HWND>(desc.windowHandle);
-        surfaceInfo.hinstance = GetModuleHandle(nullptr);
-        VK_CHECK(vkCreateWin32SurfaceKHR(device->GetInstance(), &surfaceInfo, nullptr, &m_surface));
-#endif
-
-        // Verify present support
-        VkBool32 presentSupport = VK_FALSE;
-        vkGetPhysicalDeviceSurfaceSupportKHR(device->GetPhysicalDevice(), 
-            device->GetGraphicsQueueFamily(), m_surface, &presentSupport);
-        
-        if (!presentSupport)
-        {
-            RVX_RHI_ERROR("Graphics queue does not support present");
+            RVX_RHI_ERROR("VulkanSwapChain: Invalid GLFW-backed native surface");
             return;
         }
 
+        // Create surface
+        const VkResult surfaceResult = glfwCreateWindowSurface(
+            device->GetInstance(), m_backendWindow, nullptr, &m_surface);
+        if (surfaceResult != VK_SUCCESS || m_surface == VK_NULL_HANDLE)
+        {
+            RVX_RHI_ERROR("glfwCreateWindowSurface failed: {} ({})",
+                          VkResultToString(surfaceResult),
+                          static_cast<int32>(surfaceResult));
+            return;
+        }
+
+        // Verify present support
+        VkBool32 presentSupport = VK_FALSE;
+        const VkResult presentSupportResult = vkGetPhysicalDeviceSurfaceSupportKHR(
+            device->GetPhysicalDevice(),
+            device->GetGraphicsQueueFamily(),
+            m_surface,
+            &presentSupport);
+
+        if (presentSupportResult != VK_SUCCESS || !presentSupport)
+        {
+            RVX_RHI_ERROR("Graphics queue present support query failed: {} ({})",
+                          VkResultToString(presentSupportResult),
+                          static_cast<int32>(presentSupportResult));
+            return;
+        }
+
+        m_device->SetPrimarySwapChain(this);
         CreateSwapchain();
         CreateImageViews();
 
@@ -46,12 +61,17 @@ namespace RVX
 
     VulkanSwapChain::~VulkanSwapChain()
     {
-        m_device->WaitIdle();
-
+        // The owning RenderContext resolves the surface generation first.
         CleanupSwapchain();
 
-        if (m_surface)
+        // VkSurfaceKHR is an instance child, not a device child. It must be
+        // released even when queue retirement reported VK_ERROR_DEVICE_LOST;
+        // otherwise instance teardown observes a live surface.
+        if (m_device && m_surface)
+        {
             vkDestroySurfaceKHR(m_device->GetInstance(), m_surface, nullptr);
+            m_surface = VK_NULL_HANDLE;
+        }
 
         if (m_device && m_device->GetPrimarySwapChain() == this)
         {
@@ -160,8 +180,34 @@ namespace RVX
         }
     }
 
-    void VulkanSwapChain::CleanupSwapchain()
+    bool VulkanSwapChain::CleanupSwapchain()
     {
+        if (!m_device || m_device->GetDevice() == VK_NULL_HANDLE)
+        {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(m_device->GetGraphicsQueueMutex());
+        bool canRecreate =
+            m_device->QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready;
+        if (canRecreate &&
+            (m_swapchain != VK_NULL_HANDLE ||
+             !m_renderFinishedSemaphores.empty()))
+        {
+            const VkResult idleResult = vkQueueWaitIdle(m_device->GetGraphicsQueue());
+            if (idleResult != VK_SUCCESS)
+            {
+                m_device->ReportRuntimeFailure(
+                    idleResult,
+                    RHIDeviceFaultOperation::SurfaceResize,
+                    "Vulkan present queue idle wait failed while retiring swap-chain generation");
+                canRecreate = false;
+            }
+        }
+
+        // Vulkan permits direct child destruction after device loss. Cleanup
+        // is therefore unconditional once the host owns the queue mutex; only
+        // creation of a replacement generation depends on successful idle.
         for (auto semaphore : m_renderFinishedSemaphores)
         {
             if (semaphore != VK_NULL_HANDLE)
@@ -180,6 +226,9 @@ namespace RVX
             vkDestroySwapchainKHR(m_device->GetDevice(), m_swapchain, nullptr);
             m_swapchain = VK_NULL_HANDLE;
         }
+        m_hasAcquiredImage = false;
+
+        return canRecreate;
     }
 
     VkSurfaceFormatKHR VulkanSwapChain::ChooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats)
@@ -274,6 +323,10 @@ namespace RVX
         else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
         {
             RVX_RHI_ERROR("Failed to acquire swapchain image: {}", VkResultToString(result));
+            m_device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::SurfaceAcquire,
+                "Vulkan swap-chain image acquisition failed");
             return false;
         }
 
@@ -283,7 +336,17 @@ namespace RVX
             VkFence currentFrameFence = m_device->GetCurrentFrameFence();
             if (inFlightFence != VK_NULL_HANDLE && inFlightFence != currentFrameFence)
             {
-                VK_CHECK(vkWaitForFences(m_device->GetDevice(), 1, &inFlightFence, VK_TRUE, UINT64_MAX));
+                const VkResult waitResult = vkWaitForFences(
+                    m_device->GetDevice(), 1, &inFlightFence,
+                    VK_TRUE, UINT64_MAX);
+                if (waitResult != VK_SUCCESS)
+                {
+                    m_device->ReportRuntimeFailure(
+                        waitResult,
+                        RHIDeviceFaultOperation::FenceWait,
+                        "Vulkan swap-chain image fence wait failed");
+                    return false;
+                }
             }
             inFlightFence = currentFrameFence;
         }
@@ -308,7 +371,11 @@ namespace RVX
         presentInfo.pSwapchains = &m_swapchain;
         presentInfo.pImageIndices = &m_currentImageIndex;
 
-        VkResult result = vkQueuePresentKHR(m_device->GetGraphicsQueue(), &presentInfo);
+        VkResult result = VK_SUCCESS;
+        {
+            std::lock_guard<std::mutex> lock(m_device->GetGraphicsQueueMutex());
+            result = vkQueuePresentKHR(m_device->GetGraphicsQueue(), &presentInfo);
+        }
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
         {
@@ -317,6 +384,10 @@ namespace RVX
         else if (result != VK_SUCCESS)
         {
             RVX_RHI_ERROR("Failed to present: {}", VkResultToString(result));
+            m_device->ReportRuntimeFailure(
+                result,
+                RHIDeviceFaultOperation::Present,
+                "Vulkan queue present failed");
         }
 
         m_hasAcquiredImage = false;
@@ -353,8 +424,12 @@ namespace RVX
         m_width = width;
         m_height = height;
 
-        m_device->WaitIdle();
-        CleanupSwapchain();
+        // RenderContext has already resolved the old surface-generation token.
+        if (!CleanupSwapchain())
+        {
+            RVX_RHI_ERROR("Vulkan SwapChain resize aborted because the previous generation could not retire");
+            return;
+        }
         CreateSwapchain();
         CreateImageViews();
 
@@ -399,7 +474,12 @@ namespace RVX
     // Factory
     RHISwapChainRef CreateVulkanSwapChain(VulkanDevice* device, const RHISwapChainDesc& desc)
     {
-        return Ref<VulkanSwapChain>(new VulkanSwapChain(device, desc));
+        Ref<VulkanSwapChain> swapChain(new VulkanSwapChain(device, desc));
+        if (!swapChain->IsValid())
+        {
+            return nullptr;
+        }
+        return swapChain;
     }
 
 } // namespace RVX

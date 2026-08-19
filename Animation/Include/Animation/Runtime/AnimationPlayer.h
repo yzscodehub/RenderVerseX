@@ -205,6 +205,15 @@ public:
     void Update(float deltaTime);
 
     /**
+     * @brief Advance direct clip playback by an exact microsecond delta.
+     *
+     * This deterministic path accepts only non-negative deltas and active
+     * instances whose combined instance/global speed is exactly one.
+     * @return False when the update cannot be applied without changing state.
+     */
+    bool UpdateTimeUs(TimeUs deltaTimeUs);
+
+    /**
      * @brief Get the current evaluated pose
      */
     const SkeletonPose& GetPose() const { return m_currentPose; }
@@ -276,6 +285,8 @@ public:
 
 private:
     void UpdateInstance(PlaybackInstance& instance, float deltaTime);
+    void UpdateInstanceTimeUs(PlaybackInstance& instance, TimeUs deltaTimeUs);
+    bool CanUpdateTimeUs(TimeUs deltaTimeUs) const;
     void EvaluateAndBlend();
     void CleanupFinishedInstances();
     uint32_t GenerateInstanceId();

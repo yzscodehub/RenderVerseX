@@ -7,7 +7,6 @@
 
 #include "Render/Passes/IRenderPass.h"
 
-#include <deque>
 
 namespace RVX
 {
@@ -55,6 +54,8 @@ namespace RVX
         void OnRemove() override;
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void Execute(RenderGraphPassContext& context,
+                     const ViewData& view) override;
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
         bool IsRequestedEnabled() const override { return m_enabled; }
@@ -85,9 +86,11 @@ namespace RVX
 
         RGTextureHandle m_reflectionReadHandle;
         RGTextureHandle m_colorTargetHandle;
+        RGTextureViewHandle m_reflectionViewHandle;
+        RGTextureViewHandle m_colorTargetViewHandle;
+        RHIFormat m_outputFormat = RHIFormat::Unknown;
         RHIBufferRef m_constantBuffer;
         RHISamplerRef m_sampler;
-        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
         RayTracedReflectionCompositePassStats m_stats;
 
         bool EnsureRuntimeResources();

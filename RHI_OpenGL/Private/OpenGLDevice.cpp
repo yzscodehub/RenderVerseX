@@ -8,9 +8,14 @@
 #include "OpenGLSync.h"
 #include "OpenGLQuery.h"
 #include "OpenGLUpload.h"
+#include "RHI/RHIPipelineValidation.h"
+
+#include <limits>
 
 namespace RVX
 {
+    static_assert(sizeof(IndirectDrawIndexedCommand) == sizeof(uint32) * 5,
+                  "OpenGL indexed indirect execution requires the shared 20-byte command layout.");
     // =============================================================================
     // Debug Callback
     // =============================================================================
@@ -80,12 +85,25 @@ namespace RVX
     // =============================================================================
     OpenGLDevice::OpenGLDevice(const RHIDeviceDesc& desc)
     {
+        m_runtimeStatus.store(RHIDeviceRuntimeStatus::Ready,
+                              std::memory_order_release);
+        m_faultClaimed.store(false, std::memory_order_release);
         RVX_RHI_INFO("Creating OpenGL Device...");
+
+        if (!desc.initialSurface.IsValidFor(RHIBackendType::OpenGL))
+        {
+            RVX_RHI_ERROR("OpenGL requires a valid GLFW backend surface at device creation");
+            return;
+        }
+
+        m_contextWindow =
+            reinterpret_cast<GLFWwindow*>(desc.initialSurface.backendWindow);
+        glfwMakeContextCurrent(m_contextWindow);
 
         // Store the GL thread ID
         m_glThreadId = std::this_thread::get_id();
 
-        // Initialize OpenGL context (assumes GLFW window already exists with context)
+        // Initialize OpenGL functions after this thread has claimed the GLFW context.
         if (!InitializeContext())
         {
             RVX_RHI_ERROR("Failed to initialize OpenGL context");
@@ -121,7 +139,8 @@ namespace RVX
 
     OpenGLDevice::~OpenGLDevice()
     {
-        if (m_initialized)
+        if (m_initialized &&
+            QueryRuntimeStatus() == RHIDeviceRuntimeStatus::Ready)
         {
             WaitIdle();
 
@@ -137,6 +156,61 @@ namespace RVX
 
             RVX_RHI_INFO("OpenGL Device destroyed");
         }
+    }
+
+    RHIDeviceRuntimeStatus OpenGLDevice::QueryRuntimeStatus() const noexcept
+    {
+        return m_runtimeStatus.load(std::memory_order_acquire);
+    }
+
+    RHIDeviceFault OpenGLDevice::GetLastDeviceFault() const
+    {
+        RHIDeviceFault fault;
+        fault.status = QueryRuntimeStatus();
+        fault.operation =
+            m_lastFaultOperation.load(std::memory_order_acquire);
+        fault.backend = RHIBackendType::OpenGL;
+        fault.nativeError =
+            m_lastFaultNativeError.load(std::memory_order_acquire);
+        fault.sequence = m_faultSequence.load(std::memory_order_acquire);
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            fault.message = m_deviceFaultMessage;
+        }
+        return fault;
+    }
+
+    void OpenGLDevice::ReportRuntimeFailure(
+        uint32 nativeError,
+        RHIDeviceRuntimeStatus status,
+        RHIDeviceFaultOperation operation,
+        const char* message) noexcept
+    {
+        if (status == RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
+        bool expected = false;
+        if (!m_faultClaimed.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel))
+        {
+            return;
+        }
+        m_lastFaultNativeError.store(nativeError,
+                                     std::memory_order_release);
+        m_lastFaultOperation.store(operation, std::memory_order_release);
+        m_faultSequence.store(1, std::memory_order_release);
+        try
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            m_deviceFaultMessage = message != nullptr
+                                       ? message
+                                       : "OpenGL context failed terminally";
+        }
+        catch (...)
+        {
+        }
+        m_runtimeStatus.store(status, std::memory_order_release);
     }
 
     bool OpenGLDevice::InitializeContext()
@@ -229,6 +303,27 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = true;       // OpenGL supports glStencilFuncSeparate
         m_capabilities.supportsSplitBarrier = false;            // OpenGL doesn't support split barriers
         m_capabilities.supportsSecondaryCommandBuffer = false;  // OpenGL is immediate mode
+        m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
+        m_capabilities.indexedIndirectExecution.supportsCountBuffer = false;
+        m_capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+        m_capabilities.indexedIndirectExecution.requiresExactCommandStride = false;
+        m_capabilities.indexedIndirectExecution.indexedCommandSize = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.minCommandStride = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+        m_capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+        const uint64 openGLMaxDrawCount =
+            static_cast<uint64>(std::numeric_limits<GLsizei>::max());
+        m_capabilities.indexedIndirectExecution.maxDrawCount =
+            openGLMaxDrawCount > std::numeric_limits<uint32>::max()
+                ? std::numeric_limits<uint32>::max()
+                : static_cast<uint32>(openGLMaxDrawCount);
+        m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+        m_capabilities.indexedIndirectExecution.requiredArgumentState = RHIResourceState::IndirectArgument;
+        m_capabilities.indexedIndirectExecution.requiredCountState = RHIResourceState::IndirectArgument;
+        m_capabilities.supportsIndirectDrawCount =
+            m_capabilities.indexedIndirectExecution.supportsCountBuffer;
+        m_capabilities.supportsComputePipeline = m_capabilities.opengl.hasComputeShader;
         m_capabilities.supportsAsyncCompute = false;            // OpenGL single queue
         m_capabilities.supportsDescriptorSets = true;           // Implemented through binding point remapping
         m_capabilities.supportsDynamicDescriptorOffsets = true; // Dynamic buffer offsets are applied during bind
@@ -238,16 +333,26 @@ namespace RVX
         m_capabilities.supportsMemoryBudgetQuery = false;       // OpenGL doesn't support memory budget
         m_capabilities.supportsPersistentMapping = m_capabilities.opengl.hasBufferStorage;
         m_capabilities.supportsExplicitHeapManagement = false;  // OpenGL backend has no explicit heap API
-        m_capabilities.supportsTimestampQueries = true;
+        // GL_TIMESTAMP exposes no backend-verified conversion frequency or
+        // counter valid-bit width in the current RHI implementation.  Do not
+        // publish guessed nanosecond timing as a portable Graphics contract.
+        m_capabilities.supportsTimestampQueries = false;
         m_capabilities.supportsOcclusionQueries = true;
         m_capabilities.supportsPipelineStatisticsQueries = false; // OpenGL only provides partial primitive counters here
-        m_capabilities.timestampFrequency = 1000000000;          // OpenGL timestamps are nanosecond-based in this backend
+        m_capabilities.timestampFrequency = 0;
         m_capabilities.supportsHostFenceSignal = false;
         m_capabilities.supportsDefaultQueueFenceSignal = true;
         m_capabilities.supportsExplicitQueueFenceSignal = false;
         m_capabilities.supportsQueueFenceWait = false;
         m_capabilities.supportsMultiQueueBatchSubmit = false;
         m_capabilities.emulatesQueueFences = true;
+        m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::CompatibilityWaitIdle;
+        m_capabilities.queueTopology.logicalQueueDomains = {
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Graphics,
+        };
+        m_capabilities.queueTopology.activeDomainCount = 1;
     }
 
     void OpenGLDevice::LoadExtensions()
@@ -430,7 +535,9 @@ namespace RVX
     RHIDescriptorSetLayoutRef OpenGLDevice::CreateDescriptorSetLayout(const RHIDescriptorSetLayoutDesc& desc)
     {
         GL_DEBUG_SCOPE("CreateDescriptorSetLayout");
-        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        auto validation = ValidateRHIDescriptorSetLayoutCapabilities(
+            desc,
+            GetCapabilities());
         if (!validation)
         {
             RVX_RHI_ERROR("OpenGL descriptor set layout creation failed: {} (binding {})",
@@ -457,6 +564,15 @@ namespace RVX
     {
         GL_DEBUG_SCOPE("CreateGraphicsPipeline");
 
+        const RHIPipelineValidationResult validation =
+            ValidateRHIGraphicsPipelineDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "OpenGL graphics pipeline preflight failed: {}",
+                FormatRHIPipelineValidationResult(validation));
+            return nullptr;
+        }
         auto pipeline = MakeRef<OpenGLGraphicsPipeline>(this, desc);
         if (!pipeline->IsValid())
         {
@@ -504,6 +620,13 @@ namespace RVX
         if (!validation)
         {
             RVX_RHI_ERROR("OpenGL query pool creation failed: {}", validation.message);
+            return nullptr;
+        }
+
+        if (desc.type == RHIQueryType::Timestamp &&
+            !m_capabilities.supportsTimestampQueries)
+        {
+            RVX_RHI_ERROR("OpenGL timestamp query creation rejected because verified Graphics timestamp metadata is unavailable");
             return nullptr;
         }
 
@@ -578,10 +701,42 @@ namespace RVX
     // =============================================================================
     // SwapChain
     // =============================================================================
+    bool OpenGLDevice::IsSurfaceContextCurrent(
+        const NativeSurfaceDesc& surface) const
+    {
+        auto* targetWindow =
+            reinterpret_cast<GLFWwindow*>(surface.backendWindow);
+        return m_initialized && IsOnGLThread() &&
+               targetWindow == m_contextWindow &&
+               glfwGetCurrentContext() == m_contextWindow;
+    }
+
     RHISwapChainRef OpenGLDevice::CreateSwapChain(const RHISwapChainDesc& desc)
     {
+        if (!IsSurfaceContextCurrent(desc.surface))
+        {
+            RVX_RHI_ERROR(
+                "OpenGL swap chain requires the device-owned context to be current on the GL thread");
+            return nullptr;
+        }
+
         GL_DEBUG_SCOPE("CreateSwapChain");
-        return MakeRef<OpenGLSwapChain>(this, desc);
+        auto swapChain = MakeRef<OpenGLSwapChain>(this, desc);
+        if (!swapChain->IsValid())
+        {
+            return nullptr;
+        }
+        return swapChain;
+    }
+
+    bool OpenGLDevice::SupportsSurfaceRebind(
+        const NativeSurfaceDesc& currentSurface,
+        const NativeSurfaceDesc& replacementSurface) const
+    {
+        const bool sameBackendWindow =
+            currentSurface.backendWindow == replacementSurface.backendWindow;
+        return sameBackendWindow &&
+               IsSurfaceContextCurrent(replacementSurface);
     }
 
     // =============================================================================
@@ -614,6 +769,10 @@ namespace RVX
     // =============================================================================
     void OpenGLDevice::BeginFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         OpenGLDebug::Get().BeginFrame(m_frameIndex);
 
         // Process deletion queue - delete resources that are safe to delete
@@ -624,6 +783,10 @@ namespace RVX
 
     void OpenGLDevice::EndFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         OpenGLDebug::Get().EndFrame();
 
         // Clean up unused cached resources

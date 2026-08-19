@@ -9,8 +9,12 @@
 
 #include "Render/PostProcess/PostProcessStack.h"
 
+
 namespace RVX
 {
+    class PipelineCache;
+    class ResourceViewCache;
+
     /**
      * @brief Film grain type
      */
@@ -35,7 +39,7 @@ namespace RVX
         float luminanceContribution = 1.0f; ///< Contribution to luminance
         float colorContribution = 0.0f;     ///< Contribution to color
         
-        bool animated = true;               ///< Animate grain over time
+        bool animated = false;              ///< Animate grain over time when explicitly requested
         float animationSpeed = 1.0f;        ///< Animation speed multiplier
     };
 
@@ -56,6 +60,11 @@ namespace RVX
 
         void Configure(const PostProcessSettings& settings) override;
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
+
+        /**
+         * @brief Provide GPU resources required by the fullscreen FilmGrain path
+         */
+        void SetResources(PipelineCache* pipelineCache, ResourceViewCache* viewCache);
 
         // =========================================================================
         // Configuration
@@ -82,8 +91,17 @@ namespace RVX
         void SetFrameTime(float time) { m_frameTime = time; }
 
     private:
+        bool EnsureRuntimeResources();
+        bool UpdateConstants(uint32 width, uint32 height, const FilmGrainConfig& config, float frameTime);
+        void RefreshSupportState();
+
         FilmGrainConfig m_config;
         float m_frameTime = 0.0f;
+        PipelineCache* m_pipelineCache = nullptr;
+        ResourceViewCache* m_viewCache = nullptr;
+        IRHIDevice* m_resourceDevice = nullptr;
+        RHIBufferRef m_constantBuffer;
+        RHISamplerRef m_sampler;
     };
 
 } // namespace RVX

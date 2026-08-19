@@ -338,7 +338,8 @@ namespace RVX
     // =============================================================================
 
     OpenGLTextureView::OpenGLTextureView(OpenGLDevice* device, OpenGLTexture* texture, const RHITextureViewDesc& desc)
-        : m_device(device)
+        : RHITextureView(RHITextureRef(texture))
+        , m_device(device)
         , m_texture(texture)
         , m_desc(desc)
     {

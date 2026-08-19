@@ -583,7 +583,7 @@ void BinaryArchive::EndArray()
 }
 
 // ============================================================================
-// JsonArchive (stub - would use rapidjson/nlohmann_json)
+// JsonArchive
 // ============================================================================
 
 JsonArchive::JsonArchive(ArchiveMode mode)
@@ -599,7 +599,24 @@ std::string JsonArchive::ToString() const
 bool JsonArchive::Parse(const std::string& json)
 {
     m_parseSucceeded = IsValidJsonSyntax(json);
+    m_unsupportedReadAttempted = false;
+    m_unsupportedReason = m_parseSucceeded
+        ? "JsonArchive read deserialization is unsupported; Parse only validates JSON syntax."
+        : "JsonArchive parse failed: input is not valid JSON.";
     return m_parseSucceeded;
+}
+
+void JsonArchive::MarkReadUnsupported(const char* operation)
+{
+    if (!IsReading())
+    {
+        return;
+    }
+
+    m_unsupportedReadAttempted = true;
+    m_unsupportedReason = "JsonArchive read deserialization is unsupported; ";
+    m_unsupportedReason += operation ? operation : "read operation";
+    m_unsupportedReason += " was not applied.";
 }
 
 void JsonArchive::Serialize(const char* name, bool& value)
@@ -607,8 +624,10 @@ void JsonArchive::Serialize(const char* name, bool& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + (value ? "true" : "false") + ",\n";
+        return;
     }
-    // TODO: Read from parsed JSON
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, int8& value)
@@ -616,7 +635,10 @@ void JsonArchive::Serialize(const char* name, int8& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + std::to_string(value) + ",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, int16& value)
@@ -624,7 +646,10 @@ void JsonArchive::Serialize(const char* name, int16& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + std::to_string(value) + ",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, int32& value)
@@ -632,7 +657,10 @@ void JsonArchive::Serialize(const char* name, int32& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + std::to_string(value) + ",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, int64& value)
@@ -640,7 +668,10 @@ void JsonArchive::Serialize(const char* name, int64& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + std::to_string(value) + ",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, uint8& value)
@@ -648,7 +679,10 @@ void JsonArchive::Serialize(const char* name, uint8& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + std::to_string(value) + ",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, uint16& value)
@@ -656,7 +690,10 @@ void JsonArchive::Serialize(const char* name, uint16& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + std::to_string(value) + ",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, uint32& value)
@@ -664,7 +701,10 @@ void JsonArchive::Serialize(const char* name, uint32& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + std::to_string(value) + ",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, uint64& value)
@@ -672,7 +712,10 @@ void JsonArchive::Serialize(const char* name, uint64& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + std::to_string(value) + ",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, float& value)
@@ -680,7 +723,10 @@ void JsonArchive::Serialize(const char* name, float& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + std::to_string(value) + ",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, double& value)
@@ -688,7 +734,10 @@ void JsonArchive::Serialize(const char* name, double& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": " + std::to_string(value) + ",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::Serialize(const char* name, std::string& value)
@@ -696,7 +745,10 @@ void JsonArchive::Serialize(const char* name, std::string& value)
     if (IsWriting())
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": \"" + value + "\",\n";
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::BeginObject(const char* name)
@@ -705,7 +757,10 @@ void JsonArchive::BeginObject(const char* name)
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": {\n";
         m_indent++;
+        return;
     }
+
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::EndObject()
@@ -714,7 +769,10 @@ void JsonArchive::EndObject()
     {
         m_indent--;
         m_output += std::string(m_indent * 2, ' ') + "},\n";
+        return;
     }
+
+    MarkReadUnsupported("EndObject");
 }
 
 void JsonArchive::BeginArray(const char* name, size_t& size)
@@ -723,7 +781,11 @@ void JsonArchive::BeginArray(const char* name, size_t& size)
     {
         m_output += std::string(m_indent * 2, ' ') + "\"" + name + "\": [\n";
         m_indent++;
+        return;
     }
+
+    (void)size;
+    MarkReadUnsupported(name);
 }
 
 void JsonArchive::EndArray()
@@ -732,7 +794,10 @@ void JsonArchive::EndArray()
     {
         m_indent--;
         m_output += std::string(m_indent * 2, ' ') + "],\n";
+        return;
     }
+
+    MarkReadUnsupported("EndArray");
 }
 
 } // namespace RVX

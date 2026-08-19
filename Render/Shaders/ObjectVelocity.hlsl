@@ -77,6 +77,17 @@ struct VSMaskedInput
     float4 BoneWeights : BLENDWEIGHT;
 };
 
+struct VSRigidInput
+{
+    float3 Position : POSITION;
+};
+
+struct VSMaskedRigidInput
+{
+    float3 Position : POSITION;
+    float2 TexCoord : TEXCOORD0;
+};
+
 struct VSOutput
 {
     float4 Position : SV_POSITION;
@@ -146,6 +157,11 @@ VSOutput VSMain(VSInput input)
     return BuildVelocityOutput(ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights));
 }
 
+VSOutput VSMainRigid(VSRigidInput input)
+{
+    return BuildVelocityOutput(float4(input.Position, 1.0f));
+}
+
 float2 PSMain(VSOutput input) : SV_TARGET
 {
     return ResolveVelocity(input.CurrentClip, input.PreviousClip, input.HistoryValid);
@@ -155,6 +171,20 @@ VSMaskedOutput VSMainMasked(VSMaskedInput input)
 {
     const VSOutput velocity =
         BuildVelocityOutput(ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights));
+
+    VSMaskedOutput output;
+    output.Position = velocity.Position;
+    output.CurrentClip = velocity.CurrentClip;
+    output.PreviousClip = velocity.PreviousClip;
+    output.HistoryValid = velocity.HistoryValid;
+    output.TexCoord = input.TexCoord;
+    return output;
+}
+
+VSMaskedOutput VSMainMaskedRigid(VSMaskedRigidInput input)
+{
+    const VSOutput velocity =
+        BuildVelocityOutput(float4(input.Position, 1.0f));
 
     VSMaskedOutput output;
     output.Position = velocity.Position;

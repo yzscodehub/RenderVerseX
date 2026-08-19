@@ -5,7 +5,20 @@
 
 #ifdef _WIN32
 #define GLFW_EXPOSE_NATIVE_WIN32
+#elif defined(__APPLE__)
+#include "Apple/GLFWMetalLayerBridge.h"
+#else
+#define GLFW_EXPOSE_NATIVE_X11
+#define GLFW_EXPOSE_NATIVE_WAYLAND
+#endif
+
+#if !defined(__APPLE__)
 #include <GLFW/glfw3native.h>
+#endif
+
+#include <limits>
+
+#ifdef _WIN32
 // Undefine Windows macros that conflict with our function names
 #ifdef CreateWindow
 #undef CreateWindow
@@ -87,6 +100,9 @@ namespace RVX::HAL
     {
         if (m_window)
         {
+#ifdef __APPLE__
+            DetachGLFWMetalLayer(m_window);
+#endif
             glfwDestroyWindow(m_window);
             m_window = nullptr;
         }
@@ -124,6 +140,21 @@ namespace RVX::HAL
         }
     }
 
+    bool GLFWWindow::RequestResize(uint32 width, uint32 height)
+    {
+        if (!m_window || width == 0 || height == 0 ||
+            width > static_cast<uint32>(std::numeric_limits<int>::max()) ||
+            height > static_cast<uint32>(std::numeric_limits<int>::max()))
+        {
+            LOG_ERROR("GLFW window resize request is invalid: {}x{}", width, height);
+            return false;
+        }
+
+        glfwSetWindowSize(
+            m_window, static_cast<int>(width), static_cast<int>(height));
+        return true;
+    }
+
     float GLFWWindow::GetDpiScale() const
     {
         if (m_window)
@@ -142,6 +173,52 @@ namespace RVX::HAL
 #else
         return m_window;
 #endif
+    }
+
+    WindowRenderSurfaceHandles GLFWWindow::CaptureRenderSurfaceHandles()
+    {
+        WindowRenderSurfaceHandles handles;
+        if (!m_window)
+        {
+            return handles;
+        }
+
+        handles.backendWindow = reinterpret_cast<uintptr_t>(m_window);
+        GetFramebufferSize(handles.width, handles.height);
+        handles.contentScale = GetDpiScale();
+
+#ifdef _WIN32
+        handles.nativeWindow =
+            reinterpret_cast<uintptr_t>(glfwGetWin32Window(m_window));
+#elif defined(__APPLE__)
+        handles.nativeLayer =
+            AttachGLFWMetalLayer(m_window, handles.nativeWindow);
+#else
+        if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND)
+        {
+            handles.nativeDisplay =
+                reinterpret_cast<uintptr_t>(glfwGetWaylandDisplay());
+            handles.nativeWindow =
+                reinterpret_cast<uintptr_t>(glfwGetWaylandWindow(m_window));
+        }
+        else
+        {
+            handles.nativeDisplay =
+                reinterpret_cast<uintptr_t>(glfwGetX11Display());
+            handles.nativeWindow =
+                static_cast<uintptr_t>(glfwGetX11Window(m_window));
+        }
+#endif
+
+        return handles;
+    }
+
+    void GLFWWindow::ReleaseGraphicsContextFromCurrentThread()
+    {
+        if (m_window && m_desc.graphicsApi == WindowGraphicsApi::OpenGL)
+        {
+            glfwMakeContextCurrent(nullptr);
+        }
     }
 
     void GLFWWindow::FramebufferSizeCallback(GLFWwindow* window, int width, int height)

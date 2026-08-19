@@ -5,30 +5,62 @@
  * @brief Model resource type - contains mesh hierarchy, materials, and skeleton
  * 
  * ModelResource represents a complete 3D model loaded from formats like
- * glTF, FBX, OBJ, etc. It stores the original node hierarchy as a template
- * that can be instantiated into the scene.
+ * glTF, FBX, OBJ, etc. It stores the original node hierarchy as immutable
+ * resource data consumed by the ECS model preparation pipeline.
  */
 
 #include "Resource/IResource.h"
 #include "Resource/ResourceHandle.h"
-#include "Resource/Types/MeshResource.h"
+#include "Resource/Types/AnimationResource.h"
 #include "Resource/Types/MaterialResource.h"
-#include "Scene/Node.h"
+#include "Resource/Types/MeshResource.h"
+#include "Core/Diagnostics/Trace.h"
+#include "Geometry/Asset/Node.h"
 #include <memory>
+#include <map>
+#include <mutex>
 #include <vector>
 #include <string>
 
-namespace RVX
-{
-    // Forward declarations
-    class Actor;
-    class SceneManager;
-    class SceneEntity;
-    class Skeleton;
-}
-
 namespace RVX::Resource
 {
+    enum class ModelTextureStreamingStage : uint8
+    {
+        None = 0,
+        AwaitingMinimumResident,
+        Decoding,
+        Uploading,
+        FullyResident,
+        Failed,
+        Cancelled
+    };
+
+    struct ModelTextureStreamingSource
+    {
+        ResourceHandle<TextureResource> texture;
+        TextureReference reference;
+        std::string sourceModelPath;
+        std::string resourceIdentityBase;
+        Diagnostics::TraceContext traceContext;
+        uint64 estimatedDecodedBytes = 0;
+        std::string preflightError;
+    };
+
+    struct ModelTextureStreamingSnapshot
+    {
+        ModelTextureStreamingStage stage = ModelTextureStreamingStage::None;
+        uint32 textureCount = 0;
+        uint32 decodedTextureCount = 0;
+        uint32 residentTextureCount = 0;
+        uint64 decodedBytes = 0;
+        std::string error;
+
+        [[nodiscard]] bool HasStreamingTextures() const noexcept
+        {
+            return textureCount != 0;
+        }
+    };
+
     /**
      * @brief Model resource - complete 3D model with hierarchy
      * 
@@ -38,18 +70,14 @@ namespace RVX::Resource
      * - Referenced MaterialResource list
      * - Optional Skeleton for skeletal animation
      * 
-     * Usage:
-     * @code
-     * auto model = resourceManager.Load<ModelResource>("models/helmet.gltf");
-     * 
-     * // Instantiate to scene (creates SceneEntity tree)
-     * auto* entity = model->Instantiate(world->GetSceneManager());
-     * entity->SetPosition(Vec3(0, 0, 0));
-     * @endcode
+     * Runtime adoption is performed by ResourceSceneAdapters' value-only
+     * PreparedModelBatch pipeline. ModelResource itself never mutates a Scene.
      */
     class ModelResource : public IResource
     {
     public:
+        static constexpr ResourceType StaticResourceType = ResourceType::Model;
+
         ModelResource();
         ~ModelResource() override;
 
@@ -63,6 +91,7 @@ namespace RVX::Resource
         size_t GetGPUMemoryUsage() const override;
 
         std::vector<ResourceId> GetRequiredDependencies() const override;
+        std::vector<ResourceId> GetOptionalDependencies() const override;
 
         // =====================================================================
         // Node Tree (Hierarchy Template)
@@ -116,41 +145,77 @@ namespace RVX::Resource
         void SetMaterials(std::vector<ResourceHandle<MaterialResource>> materials);
 
         // =====================================================================
+        // Progressive Texture Residency
+        // =====================================================================
+
+        void SetTextureStreamingSources(
+            std::vector<ModelTextureStreamingSource> sources);
+        [[nodiscard]] std::vector<ModelTextureStreamingSource>
+            BeginTextureStreaming();
+        void RebindTextureStreamingDependency(
+            ResourceId resourceId,
+            ResourceHandle<TextureResource> canonical);
+        void MarkTextureDecodeComplete(uint64 decodedBytes);
+        void MarkTexturePublicationComplete(ResourceId textureId);
+        void MarkTextureStreamingFailed(std::string error);
+        void CancelTextureStreaming() noexcept;
+        /** @brief Re-arm a cached model after its last Scene consumer stopped streaming. */
+        [[nodiscard]] bool RestartTextureStreamingAfterCancellation();
+        [[nodiscard]] ModelTextureStreamingSnapshot
+            GetTextureStreamingSnapshot() const;
+        [[nodiscard]] std::vector<ResourceHandle<TextureResource>>
+            GetStreamingTextures() const;
+
+        // =====================================================================
         // Skeleton (Optional)
         // =====================================================================
 
-        /// Get skeleton (may be null)
-        std::shared_ptr<Skeleton> GetSkeleton() const { return m_skeleton; }
+        /// Get immutable canonical skeleton (may be null).
+        Animation::Skeleton::ConstPtr GetSkeleton() const;
 
         /// Set skeleton
-        void SetSkeleton(std::shared_ptr<Skeleton> skeleton) { m_skeleton = std::move(skeleton); }
+        void SetSkeleton(Animation::Skeleton::ConstPtr skeleton);
 
         /// Check if model has skeleton
-        bool HasSkeleton() const { return m_skeleton != nullptr; }
+        bool HasSkeleton() const { return GetSkeleton() != nullptr; }
 
-        // =====================================================================
-        // Instantiation
-        // =====================================================================
+        /// Clips are stored in a lexical std::map so enumeration is canonical.
+        using AnimationClipMap = std::map<std::string, Animation::AnimationClip::ConstPtr>;
+        const AnimationClipMap& GetAnimationClips() const;
+        Animation::AnimationClip::ConstPtr GetAnimationClip(const std::string& name) const;
+        void SetAnimationClips(AnimationClipMap clips);
+        bool HasAnimationClips() const { return !GetAnimationClips().empty(); }
 
-        /// Instantiate the model into the scene
-        /// Creates a SceneEntity tree with StaticMeshComponents attached
-        SceneEntity* Instantiate(SceneManager* scene) const;
-
-        /// Instantiate the model into the scene and return the actor view.
-        /// Compatibility implementation currently creates SceneEntity instances.
-        Actor* InstantiateActor(SceneManager* scene) const;
+        /** @brief Associate the single immutable skeletal-animation dependency. */
+        void SetAnimationResource(AnimationHandle animation);
+        [[nodiscard]] AnimationHandle GetAnimationResource() const
+        {
+            return m_animationResource;
+        }
 
     private:
-        /// Recursive helper for instantiation
-        SceneEntity* InstantiateActorNode(const Node* node, SceneManager* scene, SceneEntity* parent) const;
-
         /// Count nodes recursively
         size_t CountNodes(const Node* node) const;
 
         Node::Ptr m_rootNode;
         std::vector<ResourceHandle<MeshResource>> m_meshes;
         std::vector<ResourceHandle<MaterialResource>> m_materials;
-        std::shared_ptr<Skeleton> m_skeleton;
+        AnimationHandle m_animationResource;
+        // Legacy direct payload fields are retained solely for callers that
+        // construct ModelResource manually. ModelLoader always uses the
+        // AnimationResource dependency above.
+        Animation::Skeleton::ConstPtr m_skeleton;
+        AnimationClipMap m_animationClips;
+        mutable std::mutex m_textureStreamingMutex;
+        std::vector<ModelTextureStreamingSource> m_textureStreamingSources;
+        std::vector<ModelTextureStreamingSource> m_textureStreamingTemplateSources;
+        std::vector<ResourceHandle<TextureResource>> m_streamingTextures;
+        ModelTextureStreamingStage m_textureStreamingStage =
+            ModelTextureStreamingStage::None;
+        uint32 m_decodedTextureCount = 0;
+        uint32 m_residentTextureCount = 0;
+        uint64 m_decodedTextureBytes = 0;
+        std::string m_textureStreamingError;
     };
 
 } // namespace RVX::Resource

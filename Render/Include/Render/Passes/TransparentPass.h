@@ -9,15 +9,15 @@
  */
 
 #include "Render/Passes/IRenderPass.h"
-#include "Render/GPUResourceManager.h"
-#include "Render/PipelineCache.h"
 #include "Render/Renderer/RenderDrawItem.h"
 
 namespace RVX
 {
+    class RenderResourceRegistry;
     class ClusteredLighting;
     class LightManager;
     class MaterialSystem;
+    class PipelineCache;
     class RenderScene;
 
     /**
@@ -49,6 +49,9 @@ namespace RVX
 
         void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
         void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
 
         // =========================================================================
         // Configuration
@@ -57,25 +60,14 @@ namespace RVX
         /**
          * @brief Set resources needed for rendering
          */
-        void SetResources(GPUResourceManager* gpuResources,
-                          PipelineCache* pipelineCache,
+        void SetResources(PipelineCache* pipelineCache,
                           MaterialSystem* materialSystem,
                           LightManager* lightManager = nullptr,
                           ClusteredLighting* clusteredLighting = nullptr);
-
-        /**
-         * @brief Set render scene and visible transparent objects
-         * @param scene The render scene
-         * @param transparentDrawItems Visible transparent submesh draw items (pre-sorted back-to-front)
-         */
-        void SetRenderScene(const RenderScene* scene, const std::vector<RenderDrawItem>* transparentDrawItems);
-
-        /**
-         * @brief Set the render targets
-         * @param colorTargetView Color target for blending
-         * @param depthTargetView Depth target for depth testing (read-only)
-         */
-        void SetRenderTargets(RHITextureView* colorTargetView, RHITextureView* depthTargetView);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
 
         /**
          * @brief Enable or disable this pass
@@ -85,21 +77,31 @@ namespace RVX
         bool IsRequestedEnabled() const override { return m_enabled; }
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
+        [[nodiscard]] const TransparentPassDrawStats& GetDrawStats() const
+        {
+            return m_publishedRecordResults != nullptr
+                ? m_publishedRecordResults->transparentStats
+                : m_drawStats;
+        }
+        void PublishRecordResults(
+            const std::shared_ptr<RenderPassRecordResults>& results,
+            const RenderPassRecordIdentity& expectedIdentity)
+        {
+            if (results != nullptr && results->identity == expectedIdentity)
+            {
+                m_publishedRecordResults = results;
+            }
+        }
+
     private:
         bool m_enabled = true;
-        GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         MaterialSystem* m_materialSystem = nullptr;
         LightManager* m_lightManager = nullptr;
         ClusteredLighting* m_clusteredLighting = nullptr;
-        const RenderScene* m_renderScene = nullptr;
-        const std::vector<RenderDrawItem>* m_transparentDrawItems = nullptr;
-        RHITextureView* m_colorTargetView = nullptr;
-        RHITextureView* m_depthTargetView = nullptr;
-
-        // RenderGraph handles
-        RGTextureHandle m_colorTargetHandle;
-        RGTextureHandle m_depthTargetHandle;
+        TransparentPassDrawStats m_drawStats{};
+        std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
     };
 
 } // namespace RVX

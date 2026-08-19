@@ -9,13 +9,63 @@
  */
 
 #include "RHI/RHI.h"
+#include "Render/Graph/RenderGraphExecution.h"
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 namespace RVX
 {
+    inline constexpr const char* RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID = "RVX.RenderGraph.Diagnostics";
+    inline constexpr uint32 RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION = 7;
+
+    class RenderGraph;
+    class RenderGraphCompiler;
+    class RenderGraphExecutor;
+    class RenderGraphValidationAccess;
     class TransientResourcePool;
+
+    /** @brief Logical graph access without a physical queue ownership domain. */
+    struct RGAccessDesc
+    {
+        RHIExecutionScope executionScope = RHIExecutionScope::None;
+        RHIMemoryAccess memoryAccess = RHIMemoryAccess::None;
+        RHIResourceLayout layout = RHIResourceLayout::Undefined;
+        RHIShaderStage shaderStages = RHIShaderStage::None;
+        RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve;
+
+        bool operator==(const RGAccessDesc&) const = default;
+    };
+
+    /** @brief Create a logical access declaration from the compatibility state vocabulary. */
+    RGAccessDesc MakeRGAccessDesc(
+        RHIResourceState state,
+        RHIShaderStage shaderStages = RHIShaderStage::All,
+        RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+
+    enum class RGQueuePolicy : uint8
+    {
+        GraphicsOnly = 0,
+        PreferMultiQueue,
+    };
+
+    /** @brief Value-only inputs consumed by the allocation-free compiler. */
+    struct RenderGraphCompileOptions
+    {
+        RGQueuePolicy queuePolicy = RGQueuePolicy::GraphicsOnly;
+        RHICapabilities capabilities;
+        bool hasCapabilitySnapshot = false;
+        bool enableMemoryAliasing = false;
+        bool enableParallelRecording = false;
+    };
+
+    /** @brief Execution-only dependencies; never consulted by graph compilation. */
+    struct RenderGraphExecutionEnvironment
+    {
+        IRHIDevice* device = nullptr;
+        TransientResourcePool* transientResourcePool = nullptr;
+        RHICommandContext* graphicsContext = nullptr;
+    };
 
     // =============================================================================
     // Render Graph Handle Types
@@ -25,6 +75,8 @@ namespace RVX
         uint32 index = RVX_INVALID_INDEX;
         bool hasSubresourceRange = false;
         RHISubresourceRange subresourceRange = RHISubresourceRange::All();
+        uint64 graphIdentity = 0;
+        uint64 recordingGeneration = 0;
 
         bool IsValid() const { return index != RVX_INVALID_INDEX; }
         
@@ -39,11 +91,23 @@ namespace RVX
         bool hasRange = false;
         uint64 rangeOffset = 0;
         uint64 rangeSize = RVX_WHOLE_SIZE;
+        uint64 graphIdentity = 0;
+        uint64 recordingGeneration = 0;
 
         bool IsValid() const { return index != RVX_INVALID_INDEX; }
 
         // Range access
         RGBufferHandle Range(uint64 offset, uint64 size) const;
+    };
+
+    /** @brief Generation-scoped handle for an explicitly declared texture view. */
+    struct RGTextureViewHandle
+    {
+        uint32 index = RVX_INVALID_INDEX;
+        uint64 graphIdentity = 0;
+        uint64 recordingGeneration = 0;
+
+        bool IsValid() const { return index != RVX_INVALID_INDEX; }
     };
 
     // =============================================================================
@@ -57,29 +121,112 @@ namespace RVX
         Copy,
     };
 
+    /** @brief Execution-only access to physical resources owned by one graph execution. */
+    class RenderGraphPassContext
+    {
+    public:
+        /** @brief Internal executor constructor; callers receive this in pass callbacks. */
+        RenderGraphPassContext(
+            RenderGraph& graph,
+            RHICommandContext& commands);
+        RHICommandContext& Commands() const;
+        RHITexture* GetTexture(RGTextureHandle handle) const;
+        RHIBuffer* GetBuffer(RGBufferHandle handle) const;
+        RHITextureView* GetTextureView(RGTextureViewHandle handle) const;
+        [[nodiscard]] bool RetainSubmissionResource(
+            Ref<RefCounted> resource) const;
+
+    private:
+        RenderGraph* m_graph = nullptr;
+        RHICommandContext* m_commands = nullptr;
+    };
+
     // =============================================================================
     // Render Graph Builder
     // =============================================================================
     class RenderGraphBuilder
     {
     public:
+        RGTextureHandle CreateTexture(const RHITextureDesc& desc);
+        RGBufferHandle CreateBuffer(const RHIBufferDesc& desc);
+        /** @brief Import a strongly-owned texture binding for this execution. */
+        RGTextureHandle ImportTexture(
+            RHITextureRef texture,
+            RHIResourceState initialState);
+        RGTextureHandle ImportTexture(
+            RHITextureRef texture,
+            const RHITextureAccessSnapshot& initialAccess);
+        /** @brief Import a strongly-owned buffer binding for this execution. */
+        RGBufferHandle ImportBuffer(
+            RHIBufferRef buffer,
+            RHIResourceState initialState);
+        RGBufferHandle ImportBuffer(
+            RHIBufferRef buffer,
+            const RHIBufferAccessSnapshot& initialAccess);
+        /** @brief Query an address-stable description for this recording generation. */
+        const RHITextureDesc* GetTextureDesc(
+            RGTextureHandle texture) const;
+        /** @brief Query an address-stable description for this recording generation. */
+        const RHIBufferDesc* GetBufferDesc(RGBufferHandle buffer) const;
+        void SetExportState(
+            RGTextureHandle texture,
+            RHIResourceState finalState);
+        void SetExportState(
+            RGBufferHandle buffer,
+            RHIResourceState finalState);
+        void SetExportAccess(
+            RGTextureHandle texture,
+            const RHIAccessSnapshot& finalAccess);
+        void SetExportAccess(
+            RGBufferHandle buffer,
+            const RHIAccessSnapshot& finalAccess);
+
         // Read resources
         RGTextureHandle Read(RGTextureHandle texture, RHIShaderStage stages = RHIShaderStage::AllGraphics);
         RGTextureHandle Read(RGTextureHandle texture,
                              RHIResourceState state,
                              RHIShaderStage stages = RHIShaderStage::AllGraphics);
+        RGTextureHandle Read(RGTextureHandle texture, const RHIAccessSnapshot& access);
+        RGTextureHandle Read(RGTextureHandle texture, const RGAccessDesc& access);
         RGBufferHandle Read(RGBufferHandle buffer, RHIShaderStage stages = RHIShaderStage::AllGraphics);
         RGBufferHandle Read(RGBufferHandle buffer,
                             RHIResourceState state,
                             RHIShaderStage stages = RHIShaderStage::AllGraphics);
+        RGBufferHandle Read(RGBufferHandle buffer, const RHIAccessSnapshot& access);
+        RGBufferHandle Read(RGBufferHandle buffer, const RGAccessDesc& access);
+        RGTextureViewHandle Read(
+            RGTextureViewHandle view,
+            const RGAccessDesc& access);
 
         // Write resources
-        RGTextureHandle Write(RGTextureHandle texture, RHIResourceState state = RHIResourceState::RenderTarget);
-        RGBufferHandle Write(RGBufferHandle buffer, RHIResourceState state = RHIResourceState::UnorderedAccess);
+        RGTextureHandle Write(RGTextureHandle texture,
+                              RHIResourceState state = RHIResourceState::RenderTarget,
+                              RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+        RGTextureHandle Write(RGTextureHandle texture,
+                              const RHIAccessSnapshot& access,
+                              RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+        RGTextureHandle Write(RGTextureHandle texture, const RGAccessDesc& access);
+        RGBufferHandle Write(RGBufferHandle buffer,
+                             RHIResourceState state = RHIResourceState::UnorderedAccess,
+                             RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+        RGBufferHandle Write(RGBufferHandle buffer,
+                             const RHIAccessSnapshot& access,
+                             RHIDiscardIntent discardIntent = RHIDiscardIntent::Preserve);
+        RGBufferHandle Write(RGBufferHandle buffer, const RGAccessDesc& access);
+        RGTextureViewHandle Write(
+            RGTextureViewHandle view,
+            const RGAccessDesc& access);
 
         // Read-write resources
         RGTextureHandle ReadWrite(RGTextureHandle texture);
+        RGTextureHandle ReadWrite(RGTextureHandle texture, const RHIAccessSnapshot& access);
+        RGTextureHandle ReadWrite(RGTextureHandle texture, const RGAccessDesc& access);
         RGBufferHandle ReadWrite(RGBufferHandle buffer);
+        RGBufferHandle ReadWrite(RGBufferHandle buffer, const RHIAccessSnapshot& access);
+        RGBufferHandle ReadWrite(RGBufferHandle buffer, const RGAccessDesc& access);
+        RGTextureViewHandle ReadWrite(
+            RGTextureViewHandle view,
+            const RGAccessDesc& access);
 
         // Subresource-level access
         RGTextureHandle ReadMip(RGTextureHandle texture, uint32 mipLevel);
@@ -87,6 +234,15 @@ namespace RVX
 
         // Depth-stencil
         void SetDepthStencil(RGTextureHandle texture, bool depthWrite = true, bool stencilWrite = false);
+
+        /** @brief Declare a texture view without realizing an RHI descriptor. */
+        RGTextureViewHandle CreateTextureView(
+            RGTextureHandle texture,
+            const RHITextureViewDesc& desc);
+
+        /** @brief Retain a setup-created resource until this graph execution completes. */
+        [[nodiscard]] bool RetainSubmissionResource(
+            Ref<RefCounted> resource);
 
     private:
         class Impl;
@@ -100,30 +256,72 @@ namespace RVX
     class RenderGraph
     {
     public:
+        enum class QueueExecutionMode : uint8
+        {
+            GraphicsOnly = 0,
+            /** @brief Record and submit an explicit Graphics/Compute/Copy DAG. */
+            MultiQueue,
+        };
+
         RenderGraph();
         ~RenderGraph();
 
-        void SetDevice(IRHIDevice* device);
-        void SetTransientResourcePool(TransientResourcePool* pool);
+        /**
+         * @brief Select the physical queue contract used while recording passes.
+         * @return False when passes have already been recorded and the mode cannot change.
+         *
+         * GraphicsOnly is the fail-closed default: Graphics, Compute, and Copy
+         * passes all declare Graphics-domain resource access. MultiQueue must
+         * be selected before AddPass so barriers and execution agree.
+         */
+        QueueExecutionMode GetQueueExecutionMode() const;
+
+        /** @brief Report whether the compiled plan enables parallel recording. */
+        [[nodiscard]] bool IsParallelRecordingEnabled() const noexcept;
+
+        /** @brief Stable non-zero identity for this graph instance. */
+        uint64 GetGraphIdentity() const;
+
+        /** @brief Non-zero resource-recording generation for this definition. */
+        uint64 GetRecordingGeneration() const;
 
         // Create transient resources
         RGTextureHandle CreateTexture(const RHITextureDesc& desc);
         RGBufferHandle CreateBuffer(const RHIBufferDesc& desc);
 
+        /** @brief Declare a graph-owned texture view. No RHI object is created here. */
+        RGTextureViewHandle CreateTextureView(
+            RGTextureHandle texture,
+            const RHITextureViewDesc& desc);
+
         // Import external resources
-        RGTextureHandle ImportTexture(RHITexture* texture, RHIResourceState initialState);
-        RGBufferHandle ImportBuffer(RHIBuffer* buffer, RHIResourceState initialState);
+        RGTextureHandle ImportTexture(
+            RHITextureRef texture,
+            RHIResourceState initialState);
+        RGBufferHandle ImportBuffer(
+            RHIBufferRef buffer,
+            RHIResourceState initialState);
+        RGTextureHandle ImportTexture(
+            RHITextureRef texture,
+            const RHITextureAccessSnapshot& initialAccess);
+        RGBufferHandle ImportBuffer(
+            RHIBufferRef buffer,
+            const RHIBufferAccessSnapshot& initialAccess);
 
         // Export final state for external usage
         void SetExportState(RGTextureHandle texture, RHIResourceState finalState);
         void SetExportState(RGBufferHandle buffer, RHIResourceState finalState);
+        void SetExportAccess(RGTextureHandle texture, const RHIAccessSnapshot& finalAccess);
+        void SetExportAccess(RGBufferHandle buffer, const RHIAccessSnapshot& finalAccess);
 
-        // Get actual RHI resources from handles (valid after Compile)
-        RHITexture* GetTexture(RGTextureHandle handle) const;
-        RHIBuffer* GetBuffer(RGBufferHandle handle) const;
+        /** @brief Get the realized snapshot after Execute, or the supplied initial snapshot otherwise. */
+        RHITextureAccessSnapshot GetRealizedAccess(RGTextureHandle texture) const;
+        RHIBufferAccessSnapshot GetRealizedAccess(RGBufferHandle buffer) const;
 
         // Get resource descriptions
+        /** @brief Pointer remains stable for the lifetime of this definition. */
         const RHITextureDesc* GetTextureDesc(RGTextureHandle handle) const;
+        /** @brief Pointer remains stable for the lifetime of this definition. */
         const RHIBufferDesc* GetBufferDesc(RGBufferHandle handle) const;
 
         // Add passes
@@ -134,34 +332,61 @@ namespace RVX
             std::function<void(RenderGraphBuilder&, Data&)> setup,
             std::function<void(const Data&, RHICommandContext&)> execute);
 
-        // Compile the graph
-        void Compile();
+        template<typename Data>
+        void AddPass(
+            const char* name,
+            RenderGraphPassType type,
+            std::function<void(RenderGraphBuilder&, Data&)> setup,
+            std::function<void(const Data&, RenderGraphPassContext&)> execute);
 
-        // Execute the graph (graphics only)
-        void Execute(RHICommandContext& ctx);
+        struct RecordedQueueSubmission
+        {
+            RHIQueueSubmissionPlan plan;
+            std::vector<RHICommandContextRef> ownedContexts;
+        };
 
-        /**
-         * @brief Execute the graph with async compute support
-         * @param graphicsCtx Graphics command context
-         * @param computeCtx Compute command context (can be nullptr to run compute on graphics)
-         * @param computeFence Fence for graphics-compute synchronization
-         * @param frameIndex Frame index used for fence value generation
-         *
-         * When computeCtx is provided, compute passes run asynchronously on the compute queue.
-         * Fences are automatically inserted to synchronize resource access between queues.
-         */
-        void ExecuteAsync(RHICommandContext& graphicsCtx,
-                          RHICommandContext* computeCtx,
-                          RHIFence* computeFence,
-                          uint64 frameIndex = 0);
+        enum class AsyncComputeFallbackReason : uint8
+        {
+            None,
+            GraphNotCompiled,
+            AsyncPlanningDisabled,
+            BackendUnsupported,
+            QueueFenceSignalUnsupported,
+            QueueFenceWaitUnsupported,
+            MissingComputeContext,
+            MissingFence,
+            NoEligibleComputePasses,
+        };
 
         struct CompileStats
         {
             // Compile validity / capability honesty
             bool compileValid = true;
+            /** @brief Deterministic hash of the final allocation-free plan. */
+            uint64 planHash = 0;
             bool executionOrderFallbackUsed = false;
             bool asyncComputeSupported = false;
             bool asyncFallbackUsed = false;
+            AsyncComputeFallbackReason asyncFallbackReason = AsyncComputeFallbackReason::None;
+            uint32 asyncComputeEligiblePasses = 0;
+            uint32 asyncComputeScheduledPasses = 0;
+            uint32 asyncGraphicsScheduledPasses = 0;
+            uint32 asyncFenceSignalCount = 0;
+            uint32 asyncFenceWaitCount = 0;
+            uint32 asyncCrossQueueDependencyCount = 0;
+            uint32 asyncFinalQueueJoinCount = 0;
+            uint32 executionQueueMismatchCount = 0;
+            uint32 lastExecutedPassCount = 0;
+            uint64 lastExecutionCpuDurationNanoseconds = 0;
+            bool parallelRecordingEnabled = false;
+            bool parallelRecordingUsed = false;
+            uint32 lastParallelRecordingLevelCount = 0;
+            uint32 lastParallelRecordingBatchCount = 0;
+            uint32 partialRealizationRollbackCount = 0;
+            uint32 physicalRealizationCount = 0;
+            RGQueuePolicy requestedQueuePolicy = RGQueuePolicy::GraphicsOnly;
+            RGQueuePolicy finalQueuePolicy = RGQueuePolicy::GraphicsOnly;
+            std::string queueFallbackReason;
             bool memoryAliasingEnabled = false;
             bool memoryAliasingUnsupportedRequested = false;
             bool explicitAliasingBarriersSupported = false;
@@ -179,11 +404,15 @@ namespace RVX
             uint32 shaderStageMismatchUsageCount = 0;
             uint32 readBeforeWriteHazardCount = 0;
             uint32 uninitializedExportCount = 0;
+            uint32 accessSnapshotMismatchCount = 0;
+            uint32 compatibilityStateProjectionCount = 0;
 
             // Barrier statistics
             uint32 barrierCount = 0;
             uint32 textureBarrierCount = 0;
             uint32 bufferBarrierCount = 0;
+            bool bufferRangeBarriersSupported = false;
+            uint32 bufferRangeBarrierCollapseCount = 0;
             uint32 mergedBarrierCount = 0;
             uint32 mergedTextureBarrierCount = 0;
             uint32 mergedBufferBarrierCount = 0;
@@ -206,26 +435,273 @@ namespace RVX
             }
         };
 
+        enum class DiagnosticResourceType : uint8
+        {
+            Texture,
+            Buffer,
+        };
+
+        enum class DiagnosticExecutionQueue : uint8
+        {
+            Unknown,
+            Graphics,
+            Compute,
+            Copy,
+        };
+
+        enum class DiagnosticSyncReason : uint8
+        {
+            CrossQueueDependency,
+            FinalQueueJoin,
+        };
+
+        enum class DiagnosticAccessType : uint8
+        {
+            Read,
+            Write,
+            ReadWrite,
+        };
+
+        struct ResourceUsageDiagnostic
+        {
+            DiagnosticResourceType type = DiagnosticResourceType::Texture;
+            DiagnosticAccessType access = DiagnosticAccessType::Read;
+            uint32 resourceIndex = RVX_INVALID_INDEX;
+            RHIResourceState desiredState = RHIResourceState::Common;
+            RHIAccessSnapshot desiredAccess;
+            RHIShaderStage stages = RHIShaderStage::None;
+            bool hasSubresourceRange = false;
+            RHISubresourceRange subresourceRange = RHISubresourceRange::All();
+            bool hasRange = false;
+            uint64 offset = 0;
+            uint64 size = RVX_WHOLE_SIZE;
+        };
+
+        struct PassDiagnostic
+        {
+            uint32 index = RVX_INVALID_INDEX;
+            std::string name;
+            RenderGraphPassType type = RenderGraphPassType::Graphics;
+            bool culled = false;
+            DiagnosticExecutionQueue plannedExecutionQueue =
+                DiagnosticExecutionQueue::Graphics;
+            bool executedLastRun = false;
+            DiagnosticExecutionQueue executionQueue = DiagnosticExecutionQueue::Unknown;
+            uint32 executionSerial = RVX_INVALID_INDEX;
+            uint64 cpuDurationNanoseconds = 0;
+            uint32 textureBarrierCount = 0;
+            uint32 bufferBarrierCount = 0;
+            uint32 aliasingBarrierCount = 0;
+            std::vector<uint32> dependencies;
+            std::vector<uint32> dependents;
+            std::vector<ResourceUsageDiagnostic> usages;
+        };
+
+        struct ResourceDiagnostic
+        {
+            DiagnosticResourceType type = DiagnosticResourceType::Texture;
+            uint32 index = RVX_INVALID_INDEX;
+            std::string name;
+            bool imported = false;
+            bool pooled = false;
+            bool used = false;
+            uint32 firstUsePass = RVX_INVALID_INDEX;
+            uint32 lastUsePass = RVX_INVALID_INDEX;
+            uint64 estimatedMemoryBytes = 0;
+            bool aliased = false;
+            uint32 aliasHeapIndex = RVX_INVALID_INDEX;
+            uint64 aliasHeapOffset = 0;
+            RHIResourceState initialState = RHIResourceState::Undefined;
+            RHIResourceState currentState = RHIResourceState::Undefined;
+            RHIAccessSnapshot initialAccess;
+            RHIAccessSnapshot currentAccess;
+            bool hasExportState = false;
+            RHIResourceState exportState = RHIResourceState::Undefined;
+            bool hasExportAccess = false;
+            RHIAccessSnapshot exportAccess;
+
+            // Texture fields
+            uint32 width = 0;
+            uint32 height = 0;
+            uint32 depth = 0;
+            uint32 mipLevels = 0;
+            uint32 arraySize = 0;
+            RHIFormat format = RHIFormat::Unknown;
+
+            // Buffer fields
+            uint64 bufferSize = 0;
+            uint32 stride = 0;
+        };
+
+        struct QueueBatchDiagnostic
+        {
+            uint32 batchIndex = RVX_INVALID_INDEX;
+            DiagnosticExecutionQueue queue = DiagnosticExecutionQueue::Unknown;
+            uint32 firstExecutionSerial = RVX_INVALID_INDEX;
+            uint32 lastExecutionSerial = RVX_INVALID_INDEX;
+            uint64 cpuDurationNanoseconds = 0;
+            std::vector<uint32> passIndices;
+        };
+
+        struct PlannedQueueBatchDiagnostic
+        {
+            uint32 batchIndex = RVX_INVALID_INDEX;
+            uint32 dependencyLevel = 0;
+            DiagnosticExecutionQueue queue = DiagnosticExecutionQueue::Unknown;
+            std::vector<uint32> passIndices;
+            std::vector<uint32> prerequisiteBatchIndices;
+            std::vector<uint32> prerequisiteSyncIndices;
+            bool syntheticInitialRelease = false;
+            bool syntheticTerminal = false;
+        };
+
+        struct PlannedQueueSyncDiagnostic
+        {
+            uint32 syncIndex = RVX_INVALID_INDEX;
+            uint32 sourceBatchIndex = RVX_INVALID_INDEX;
+            uint32 targetBatchIndex = RVX_INVALID_INDEX;
+            DiagnosticExecutionQueue sourceQueue = DiagnosticExecutionQueue::Unknown;
+            DiagnosticExecutionQueue targetQueue = DiagnosticExecutionQueue::Unknown;
+            DiagnosticSyncReason reason = DiagnosticSyncReason::CrossQueueDependency;
+            uint32 sourcePassIndex = RVX_INVALID_INDEX;
+            uint32 targetPassIndex = RVX_INVALID_INDEX;
+            bool coveredByActualSync = false;
+            uint32 actualSyncIndex = RVX_INVALID_INDEX;
+        };
+
+        struct SubmissionPlan
+        {
+            std::vector<PlannedQueueBatchDiagnostic> queueBatches;
+            std::vector<PlannedQueueSyncDiagnostic> queueSyncs;
+            uint32 queueBatchCount = 0;
+            uint32 dependencyLevelCount = 0;
+            uint32 asyncOverlapCandidateLevelCount = 0;
+            uint32 computeBatchCount = 0;
+            uint32 copyBatchCount = 0;
+            uint32 queueSyncCount = 0;
+            uint32 crossQueueSyncCount = 0;
+            uint32 terminalGraphicsBatchIndex = RVX_INVALID_INDEX;
+        };
+
+        struct QueueSyncDiagnostic
+        {
+            uint32 syncIndex = RVX_INVALID_INDEX;
+            DiagnosticExecutionQueue sourceQueue = DiagnosticExecutionQueue::Unknown;
+            DiagnosticExecutionQueue targetQueue = DiagnosticExecutionQueue::Unknown;
+            DiagnosticSyncReason reason = DiagnosticSyncReason::CrossQueueDependency;
+            uint64 fenceValue = 0;
+            uint32 sourcePassIndex = RVX_INVALID_INDEX;
+            uint32 targetPassIndex = RVX_INVALID_INDEX;
+            bool coversPlannedSync = false;
+            uint32 plannedSyncIndex = RVX_INVALID_INDEX;
+        };
+
+        /** @brief Physical execution telemetry, separate from pure compile data. */
+        struct ExecutionDiagnostics
+        {
+            uint32 physicalRealizationCount = 0;
+            uint32 partialRollbackCount = 0;
+            uint32 recordingTextureLeases = 0;
+            uint32 recordingBufferLeases = 0;
+            uint32 inFlightTextureLeases = 0;
+            uint32 inFlightBufferLeases = 0;
+            uint64 leaseCommitCount = 0;
+            uint64 leaseAbortCount = 0;
+            uint64 leaseDeviceLostCount = 0;
+            uint64 leaseValidationFailureCount = 0;
+            uint32 transientViewCount = 0;
+            uint64 transientViewCreationFailures = 0;
+            RHIDescriptorDiagnostics descriptors;
+        };
+
+        struct Diagnostics
+        {
+            const char* schemaId = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_ID;
+            uint32 schemaVersion = RVX_RENDER_GRAPH_DIAGNOSTICS_SCHEMA_VERSION;
+            CompileStats compileStats;
+            ExecutionDiagnostics execution;
+            std::vector<PassDiagnostic> passes;
+            std::vector<ResourceDiagnostic> resources;
+            std::vector<QueueBatchDiagnostic> queueBatches;
+            std::vector<PlannedQueueBatchDiagnostic> plannedQueueBatches;
+            std::vector<PlannedQueueSyncDiagnostic> plannedQueueSyncs;
+            std::vector<QueueSyncDiagnostic> queueSyncs;
+            std::vector<uint32> executionOrder;
+            uint32 plannedQueueBatchCount = 0;
+            uint32 plannedDependencyLevelCount = 0;
+            uint32 plannedAsyncOverlapCandidateLevelCount = 0;
+            uint32 plannedComputeBatchCount = 0;
+            uint32 plannedCopyBatchCount = 0;
+            uint32 plannedQueueSyncCount = 0;
+            uint32 plannedCrossQueueSyncCount = 0;
+            uint32 plannedTerminalGraphicsBatchIndex = RVX_INVALID_INDEX;
+            uint32 plannedQueueSyncCoveredCount = 0;
+            uint32 plannedQueueSyncUncoveredCount = 0;
+            uint32 actualQueueBatchCount = 0;
+            uint32 actualQueueSwitchCount = 0;
+            uint32 actualQueueSyncCount = 0;
+            uint32 actualCrossQueueSyncCount = 0;
+            uint32 actualMatchedPlannedSyncCount = 0;
+            uint32 actualUnplannedQueueSyncCount = 0;
+            uint32 actualConservativeFinalJoinCount = 0;
+            uint64 estimatedTransientMemoryBytes = 0;
+            uint64 estimatedUsedTransientMemoryBytes = 0;
+            uint64 estimatedImportedMemoryBytes = 0;
+        };
+
         const CompileStats& GetCompileStats() const;
         const std::vector<std::string>& GetCompileDiagnostics() const;
+        SubmissionPlan GetSubmissionPlan() const;
+        Diagnostics GetDiagnostics() const;
+        std::string ExportDiagnosticsText() const;
+        std::string ExportDiagnosticsJson() const;
+        bool SaveDiagnosticsJson(const char* filename) const;
 
-        // Memory aliasing control
-        void SetMemoryAliasingEnabled(bool enabled);
+        // Compiled plan diagnostics
         bool IsMemoryAliasingEnabled() const;
 
         // Debug/Visualization
         std::string ExportGraphviz() const;
         bool SaveGraphviz(const char* filename) const;
 
-        // Clear for next frame
-        void Clear();
-
     private:
+        friend class RenderGraphPassContext;
+        friend class RenderGraphCompiler;
+        friend class RenderGraphExecutor;
+        friend class RenderGraphValidationAccess;
+        void ConfigureDeviceForValidation(IRHIDevice* device);
+        void ConfigurePoolForValidation(TransientResourcePool* pool);
+        void SetParallelRecordingEnabledForValidation(bool enabled) noexcept;
+        void SetMemoryAliasingEnabledForValidation(bool enabled);
+        bool SetQueueExecutionModeForValidation(QueueExecutionMode mode);
+        void CompilePlanInternal();
+        void CompilePlanInternal(const RenderGraphCompileOptions& options);
+        void RecordGraphicsPlanInternal(RHICommandContext& context);
+        bool RecordQueueSubmissionInternal(
+            RecordedQueueSubmission& submission);
+        [[nodiscard]] RenderGraphExecution TakeExecutionInternal();
+        [[nodiscard]] RenderGraphExecution TakeExecutionInternal(
+            RecordedQueueSubmission&& submission);
+        RHITexture* ResolveTexture(RGTextureHandle handle) const;
+        RHIBuffer* ResolveBuffer(RGBufferHandle handle) const;
+        void ResetDefinitionForValidation();
+        RGTextureHandle ImportTextureBorrowedForValidation(
+            RHITexture* texture,
+            const RHITextureAccessSnapshot& initialAccess);
+        RGBufferHandle ImportBufferBorrowedForValidation(
+            RHIBuffer* buffer,
+            const RHIBufferAccessSnapshot& initialAccess);
+        [[nodiscard]] bool FinalizeInternal(
+            const RenderGraphCompileOptions& options);
+        [[nodiscard]] RenderGraphExecution PrepareExecutionInternal(
+            const RenderGraphExecutionEnvironment& environment);
         void AddPassInternal(
             const char* name,
             RenderGraphPassType type,
             std::function<void(RenderGraphBuilder&)> setup,
-            std::function<void(RHICommandContext&)> execute);
+            std::function<void(RenderGraphPassContext&)> execute);
+        RHITextureView* ResolveTextureView(RGTextureViewHandle handle) const;
+        [[nodiscard]] bool RetainExecutionResource(Ref<RefCounted> resource);
 
         class Impl;
         std::unique_ptr<Impl> m_impl;
@@ -246,9 +722,30 @@ namespace RVX
             {
                 setup(builder, *data);
             },
-            [data, execute](RHICommandContext& ctx)
+            [data, execute](RenderGraphPassContext& context)
             {
-                execute(*data, ctx);
+                execute(*data, context.Commands());
+            });
+    }
+
+    template<typename Data>
+    void RenderGraph::AddPass(
+        const char* name,
+        RenderGraphPassType type,
+        std::function<void(RenderGraphBuilder&, Data&)> setup,
+        std::function<void(const Data&, RenderGraphPassContext&)> execute)
+    {
+        auto data = std::make_shared<Data>();
+        AddPassInternal(
+            name,
+            type,
+            [data, setup](RenderGraphBuilder& builder)
+            {
+                setup(builder, *data);
+            },
+            [data, execute](RenderGraphPassContext& context)
+            {
+                execute(*data, context);
             });
     }
 

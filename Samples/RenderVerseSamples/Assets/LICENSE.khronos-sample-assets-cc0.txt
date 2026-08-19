@@ -1,0 +1,26 @@
+Water Bottle
+============
+
+Copyright 2017, Public.
+Model contribution: Microsoft.
+License: CC0 1.0 Universal.
+
+Corset
+======
+
+Copyright 2017, UX3D.
+Model contribution: Microsoft.
+License: CC0 1.0 Universal.
+
+Source repository
+=================
+
+KhronosGroup/glTF-Sample-Assets
+Pinned revision: 2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf
+https://github.com/KhronosGroup/glTF-Sample-Assets
+
+The upstream model README files and generated model list are authoritative for
+the credits above. CC0 1.0 Universal text:
+https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+No modifications were made to the vendored GLB bytes.

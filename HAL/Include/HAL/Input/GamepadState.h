@@ -161,6 +161,11 @@ namespace RVX::HAL
         virtual void Poll(std::array<GamepadState, MAX_GAMEPADS>& states) = 0;
 
         /**
+         * @brief Advance backend-owned timers or platform feedback.
+         */
+        virtual void Tick(float deltaTime) { (void)deltaTime; }
+
+        /**
          * @brief Check if vibration is supported
          */
         virtual bool SupportsVibration() const = 0;

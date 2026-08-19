@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstring>
 
 namespace RVX
 {
@@ -96,7 +97,6 @@ void ToneMappingPass::SetResources(PipelineCache* pipelineCache, ResourceViewCac
     IRHIDevice* device = m_pipelineCache ? m_pipelineCache->GetDevice() : nullptr;
     if (device != m_resourceDevice)
     {
-        m_retainedDescriptorSets.clear();
         m_constantBuffer.Reset();
         m_sampler.Reset();
         m_resourceDevice = device;
@@ -131,6 +131,104 @@ void ToneMappingPass::SetResources(PipelineCache* pipelineCache, ResourceViewCac
     m_unsupportedReason.clear();
 }
 
+void ToneMappingPass::SetPixelProbeRequest(
+    const RenderFrameCaptureRequest& request,
+    uint64 frameSequence,
+    uint64 requiredSceneRevision,
+    uint64 runtimeSurfaceGeneration)
+{
+    m_pixelProbe = {};
+    if (!request.pixelProbeEnabled)
+    {
+        return;
+    }
+
+    m_pixelProbe.armed = true;
+    RenderFramePixelProbeResult& result = m_pixelProbe.result;
+    result.requestId = request.requestId;
+    result.frameSequence = frameSequence;
+    result.requiredSceneRevision = requiredSceneRevision;
+    result.runtimeSurfaceGeneration = runtimeSurfaceGeneration;
+    result.x = request.pixelProbeX;
+    result.y = request.pixelProbeY;
+    result.preToneFormat = RHIFormat::RGBA16_FLOAT;
+
+    if (request.kind != RenderFrameCaptureKind::Color || request.requestId == 0 ||
+        request.width == 0 || request.height == 0)
+    {
+        result.code = RenderFramePixelProbeResultCode::InvalidRequest;
+        result.message = "Pixel probe requires a complete color capture request";
+    }
+    else if (request.pixelProbeX >= request.width ||
+             request.pixelProbeY >= request.height)
+    {
+        result.code = RenderFramePixelProbeResultCode::OutOfBounds;
+        result.message = "Pixel probe coordinates are outside the capture extent";
+    }
+    else if (frameSequence == 0 || requiredSceneRevision == 0 ||
+             runtimeSurfaceGeneration == 0)
+    {
+        result.code = RenderFramePixelProbeResultCode::ForeignFrame;
+        result.message = "Pixel probe lacks an exact scene, runtime, or frame identity";
+    }
+}
+
+bool ToneMappingPass::CompletePixelProbe(
+    uint64 requestId,
+    uint64 frameSequence,
+    RenderFramePixelProbeResult& outResult)
+{
+    outResult = m_pixelProbe.result;
+    if (!m_pixelProbe.armed)
+    {
+        return false;
+    }
+    if (requestId != m_pixelProbe.result.requestId ||
+        frameSequence != m_pixelProbe.result.frameSequence)
+    {
+        outResult.code = RenderFramePixelProbeResultCode::ForeignFrame;
+        outResult.message = "Pixel probe completion did not match its carrying frame";
+        return true;
+    }
+    if (outResult.code != RenderFramePixelProbeResultCode::None)
+    {
+        m_pixelProbe = {};
+        return true;
+    }
+    if (!m_pixelProbe.recorded || !m_pixelProbe.buffer)
+    {
+        outResult.code = RenderFramePixelProbeResultCode::NotRecorded;
+        outResult.message = "ToneMapping input probe was not recorded for the carrying frame";
+        m_pixelProbe = {};
+        return true;
+    }
+    if (m_pixelProbe.buffer->GetSize() <
+        sizeof(outResult.preToneRGBA16FloatBits))
+    {
+        outResult.code = RenderFramePixelProbeResultCode::NotRecorded;
+        outResult.message = "ToneMapping input probe readback is smaller than RGBA16_FLOAT";
+        m_pixelProbe = {};
+        return true;
+    }
+
+    const void* mapped = m_pixelProbe.buffer->Map();
+    if (mapped == nullptr)
+    {
+        outResult.code = RenderFramePixelProbeResultCode::MapFailed;
+        outResult.message = "ToneMapping input probe readback mapping failed";
+        m_pixelProbe = {};
+        return true;
+    }
+    std::memcpy(outResult.preToneRGBA16FloatBits.data(),
+                mapped,
+                sizeof(outResult.preToneRGBA16FloatBits));
+    m_pixelProbe.buffer->Unmap();
+    outResult.code = RenderFramePixelProbeResultCode::Completed;
+    outResult.message.clear();
+    m_pixelProbe = {};
+    return true;
+}
+
 void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output)
 {
     if (!IsEnabled())
@@ -142,10 +240,145 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
         return;
     }
 
+    if (m_pixelProbe.armed &&
+        m_pixelProbe.result.code == RenderFramePixelProbeResultCode::None)
+    {
+        const RHITextureDesc* inputDesc = graph.GetTextureDesc(input);
+        IRHIDevice* const device = m_pipelineCache
+                                       ? m_pipelineCache->GetDevice()
+                                       : nullptr;
+        if (inputDesc == nullptr || inputDesc->format != RHIFormat::RGBA16_FLOAT)
+        {
+            m_pixelProbe.result.code =
+                RenderFramePixelProbeResultCode::UnsupportedFormat;
+            m_pixelProbe.result.message =
+                "ToneMapping input probe requires an RGBA16_FLOAT source";
+        }
+        else if (m_pixelProbe.result.x >= inputDesc->width ||
+                 m_pixelProbe.result.y >= inputDesc->height)
+        {
+            m_pixelProbe.result.code =
+                RenderFramePixelProbeResultCode::OutOfBounds;
+            m_pixelProbe.result.message =
+                "Pixel probe coordinates are outside the ToneMapping input";
+        }
+        else if (device == nullptr)
+        {
+            m_pixelProbe.result.code =
+                RenderFramePixelProbeResultCode::ResourceCreationFailed;
+            m_pixelProbe.result.message =
+                "ToneMapping input probe has no RHI device";
+        }
+        else
+        {
+            const uint32 alignment =
+                device->GetBackendType() == RHIBackendType::DX12 ||
+                        device->GetBackendType() == RHIBackendType::Metal
+                    ? 256U
+                    : 1U;
+            m_pixelProbe.rowPitch =
+                (static_cast<uint32>(sizeof(uint16) * 4U) + alignment - 1U) &
+                ~(alignment - 1U);
+
+            RHIBufferDesc bufferDesc;
+            bufferDesc.size = m_pixelProbe.rowPitch;
+            bufferDesc.usage = RHIBufferUsage::CopyDst;
+            bufferDesc.memoryType = RHIMemoryType::Readback;
+            bufferDesc.debugName = "ToneMappingPixelProbeReadback";
+            m_pixelProbe.buffer = device->CreateBuffer(bufferDesc);
+            if (!m_pixelProbe.buffer)
+            {
+                m_pixelProbe.result.code =
+                    RenderFramePixelProbeResultCode::ResourceCreationFailed;
+                m_pixelProbe.result.message =
+                    "ToneMapping input probe readback allocation failed";
+            }
+            else
+            {
+                struct PixelProbeData
+                {
+                    RGTextureHandle input;
+                    RGBufferHandle readback;
+                    uint32 x = 0;
+                    uint32 y = 0;
+                    uint32 rowPitch = 0;
+                };
+
+                const uint32 sourceY =
+                    device->GetBackendType() == RHIBackendType::OpenGL
+                        ? inputDesc->height - 1U - m_pixelProbe.result.y
+                        : m_pixelProbe.result.y;
+                const RHIBufferRef readback = m_pixelProbe.buffer;
+                const uint64 requestId = m_pixelProbe.result.requestId;
+                const uint64 frameSequence = m_pixelProbe.result.frameSequence;
+                graph.AddPass<PixelProbeData>(
+                    "ToneMapping.PixelProbe",
+                    RenderGraphPassType::Copy,
+                    [input, readback, requestId, frameSequence, sourceY, this](
+                        RenderGraphBuilder& builder,
+                        PixelProbeData& data)
+                    {
+                        data.input = builder.Read(
+                            input,
+                            RHIResourceState::CopySource,
+                            RHIShaderStage::None);
+                        data.readback = builder.ImportBuffer(
+                            readback,
+                            MakeRHIBufferAccessSnapshot(
+                                RHIResourceState::CopyDest,
+                                RHIShaderStage::None,
+                                GPUQueueDomain::Graphics,
+                                RHIContentValidity::Invalid));
+                        data.readback = builder.Write(
+                            data.readback,
+                            RHIResourceState::CopyDest);
+                        data.x = m_pixelProbe.result.x;
+                        data.y = sourceY;
+                        data.rowPitch = m_pixelProbe.rowPitch;
+                        if (m_pixelProbe.result.requestId != requestId ||
+                            m_pixelProbe.result.frameSequence != frameSequence)
+                        {
+                            data.input = {};
+                            data.readback = {};
+                        }
+                    },
+                    [this, requestId, frameSequence](
+                        const PixelProbeData& data,
+                        RenderGraphPassContext& context)
+                    {
+                        if (!data.input.IsValid() || !data.readback.IsValid() ||
+                            m_pixelProbe.result.requestId != requestId ||
+                            m_pixelProbe.result.frameSequence != frameSequence)
+                        {
+                            return;
+                        }
+                        RHITexture* const source = context.GetTexture(data.input);
+                        RHIBuffer* const readback = context.GetBuffer(data.readback);
+                        if (source == nullptr || readback == nullptr)
+                        {
+                            return;
+                        }
+                        RHIBufferTextureCopyDesc copyDesc;
+                        copyDesc.bufferRowPitch = data.rowPitch;
+                        copyDesc.textureRegion = {
+                            static_cast<int32>(data.x),
+                            static_cast<int32>(data.y),
+                            1,
+                            1};
+                        context.Commands().CopyTextureToBuffer(source, readback, copyDesc);
+                        m_pixelProbe.recorded = true;
+                    });
+            }
+        }
+    }
+
     struct ToneMappingData
     {
         RGTextureHandle input;
         RGTextureHandle output;
+        RGTextureViewHandle inputView;
+        RGTextureViewHandle outputView;
+        RHIFormat outputFormat = RHIFormat::Unknown;
         ToneMappingOperator op;
         ToneMappingOutputColorSpace outputColorSpace;
         float exposure;
@@ -158,29 +391,57 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
         RenderGraphPassType::Graphics,
         [this, input, output](RenderGraphBuilder& builder, ToneMappingData& data)
         {
-            data.input = builder.Read(input, RHIShaderStage::Pixel);
-            data.output = builder.Write(output, RHIResourceState::RenderTarget);
+            data.input = input;
+            data.output = output;
+            const RHITextureDesc* inputDesc = builder.GetTextureDesc(input);
+            const RHITextureDesc* outputDesc = builder.GetTextureDesc(output);
+            if (inputDesc)
+            {
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = inputDesc->format;
+                viewDesc.dimension = inputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                if (IsDepthFormat(viewDesc.format))
+                    viewDesc.subresourceRange.aspect = RHITextureAspect::Depth;
+                viewDesc.type = RHITextureViewType::ShaderResource;
+                viewDesc.debugName = "ToneMappingInputSRV";
+                data.inputView = builder.Read(
+                    builder.CreateTextureView(input, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::ShaderResource,
+                        RHIShaderStage::Pixel));
+            }
+            if (outputDesc)
+            {
+                data.outputFormat = outputDesc->format;
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = outputDesc->format;
+                viewDesc.dimension = outputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::RenderTarget;
+                viewDesc.debugName = "ToneMappingOutputRTV";
+                data.outputView = builder.Write(
+                    builder.CreateTextureView(output, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::RenderTarget,
+                        RHIShaderStage::Pixel,
+                        RHIDiscardIntent::Discard));
+            }
             data.op = m_operator;
             data.outputColorSpace = m_outputColorSpace;
             data.exposure = m_exposure;
             data.gamma = m_gamma;
             data.whitePoint = m_whitePoint;
         },
-        [this, &graph](const ToneMappingData& data, RHICommandContext& ctx)
+        [this](const ToneMappingData& data, RenderGraphPassContext& context)
         {
-            if (!m_pipelineCache || !m_viewCache)
+            if (!m_pipelineCache)
             {
                 RVX_CORE_WARN("ToneMapping: missing resources during execution");
                 return;
             }
 
-            RHIFormat outputFormat = RHIFormat::Unknown;
-            if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(data.output))
-            {
-                outputFormat = outputDesc->format;
-            }
-
-            RHIPipeline* pipeline = m_pipelineCache->GetToneMappingPipeline(outputFormat);
+            RHIPipeline* pipeline = m_pipelineCache->GetToneMappingPipeline(data.outputFormat);
             RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
             IRHIDevice* device = m_pipelineCache->GetDevice();
             if (!pipeline || !setLayout || !device)
@@ -189,16 +450,16 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
                 return;
             }
 
-            RHITexture* inputTexture = graph.GetTexture(data.input);
-            RHITexture* outputTexture = graph.GetTexture(data.output);
+            RHITexture* inputTexture = context.GetTexture(data.input);
+            RHITexture* outputTexture = context.GetTexture(data.output);
             if (!inputTexture || !outputTexture)
             {
                 RVX_CORE_WARN("ToneMapping: input or output texture is unavailable");
                 return;
             }
 
-            RHITextureView* inputView = m_viewCache->GetDefaultSRV(inputTexture);
-            RHITextureView* outputView = m_viewCache->GetDefaultRTV(outputTexture);
+            RHITextureView* inputView = context.GetTextureView(data.inputView);
+            RHITextureView* outputView = context.GetTextureView(data.outputView);
             if (!inputView || !outputView)
             {
                 RVX_CORE_WARN("ToneMapping: failed to resolve input SRV or output RTV");
@@ -226,6 +487,7 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
                                       AlignPostProcessConstantBufferSize(sizeof(ToneMappingGPUConstants)));
             descriptorDesc.BindTexture(1, inputView);
             descriptorDesc.BindSampler(2, m_sampler.Get());
+            descriptorDesc.BindTexture(3, inputView);
 
             RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet)
@@ -233,16 +495,18 @@ void ToneMappingPass::AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTe
                 RVX_CORE_WARN("ToneMapping: failed to create descriptor set");
                 return;
             }
-            m_retainedDescriptorSets.push_back(descriptorSet);
-            while (m_retainedDescriptorSets.size() > RVX_MAX_FRAME_COUNT + 1)
+            if (!context.RetainSubmissionResource(
+                    Ref<RefCounted>(descriptorSet)))
             {
-                m_retainedDescriptorSets.pop_front();
+                RVX_CORE_WARN("ToneMapping: submission ownership rejected descriptor set");
+                return;
             }
 
             RHIRenderPassDesc renderPassDesc;
             renderPassDesc.AddColorAttachment(outputView, RHILoadOp::DontCare, RHIStoreOp::Store);
             renderPassDesc.SetRenderArea(0, 0, outputTexture->GetWidth(), outputTexture->GetHeight());
 
+            RHICommandContext& ctx = context.Commands();
             ctx.BeginRenderPass(renderPassDesc);
             ctx.SetPipeline(pipeline);
             ctx.SetDescriptorSet(0, descriptorSet.Get());

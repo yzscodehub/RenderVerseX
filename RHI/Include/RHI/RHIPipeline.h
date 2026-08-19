@@ -12,6 +12,7 @@ namespace RVX
     {
         const char* semanticName = "POSITION";
         uint32 semanticIndex = 0;
+        uint32 location = RVX_INVALID_INDEX;
         RHIFormat format = RHIFormat::RGB32_FLOAT;
         uint32 inputSlot = 0;
         uint32 alignedByteOffset = 0;
@@ -33,6 +34,24 @@ namespace RVX
             elem.format = format;
             elem.inputSlot = slot;
             elem.alignedByteOffset = 0xFFFFFFFF;  // Append
+            elements.push_back(elem);
+            return *this;
+        }
+
+        RHIInputLayoutDesc& AddElementAtLocation(
+            uint32 location,
+            const char* semantic,
+            uint32 semanticIndex,
+            RHIFormat format,
+            uint32 slot = 0)
+        {
+            RHIInputElement elem;
+            elem.semanticName = semantic;
+            elem.semanticIndex = semanticIndex;
+            elem.location = location;
+            elem.format = format;
+            elem.inputSlot = slot;
+            elem.alignedByteOffset = 0xFFFFFFFF;
             elements.push_back(elem);
             return *this;
         }

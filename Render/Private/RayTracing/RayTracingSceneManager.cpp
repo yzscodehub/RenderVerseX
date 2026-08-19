@@ -1,6 +1,7 @@
 #include "Render/RayTracing/RayTracingSceneManager.h"
 
 #include "RHI/RHICommandContext.h"
+#include "Resources/RenderOwnerSnapshotRetirement.h"
 
 #include <algorithm>
 #include <cstring>
@@ -82,11 +83,11 @@ namespace
     }
 
     uint32 FindOrAddAlphaTextureIndex(
-        std::vector<Resource::ResourceId>& textureIds,
-        std::unordered_map<Resource::ResourceId, uint32>& textureIndexLookup,
-        Resource::ResourceId textureId)
+        std::vector<uint64>& textureIds,
+        std::unordered_map<uint64, uint32>& textureIndexLookup,
+        uint64 textureId)
     {
-        if (textureId == Resource::InvalidResourceId)
+        if (textureId == 0)
         {
             return RVX_INVALID_INDEX;
         }
@@ -104,11 +105,11 @@ namespace
     }
 
     uint32 FindOrAddMaterialTextureIndex(
-        std::vector<Resource::ResourceId>& textureIds,
-        std::unordered_map<Resource::ResourceId, uint32>& textureIndexLookup,
-        Resource::ResourceId textureId)
+        std::vector<uint64>& textureIds,
+        std::unordered_map<uint64, uint32>& textureIndexLookup,
+        uint64 textureId)
     {
-        if (textureId == Resource::InvalidResourceId)
+        if (textureId == 0)
         {
             return RVX_INVALID_INDEX;
         }
@@ -307,11 +308,19 @@ void RayTracingSceneManager::Shutdown()
     m_topLevelSizes = {};
     m_topLevelScratchBuffer.Reset();
     m_topLevelBuildDesc = {};
+    m_pendingOwnerRetirements.clear();
     m_stats = {};
     m_frameCounter = 0;
     m_trackedResourceBudget = 0;
-    m_blasScratchReleaseFrameDelay = 2;
     m_device = nullptr;
+}
+
+void RayTracingSceneManager::RetireOwnerSnapshots(
+    const GPUCompletionToken& completion,
+    RenderRetirementQueue& retirement)
+{
+    FlushRenderOwnerRetirements(
+        m_pendingOwnerRetirements, completion, retirement);
 }
 
 bool RayTracingSceneManager::IsSupported() const
@@ -333,19 +342,22 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
 
     if (!m_device)
     {
-        SetFallback("ray tracing scene manager has no RHI device");
+        SetFallback(RayTracingSceneFallbackCode::MissingDevice,
+                    "ray tracing scene manager has no RHI device");
         return false;
     }
 
     if (!m_stats.supported)
     {
-        SetFallback("RHI device does not support ray tracing");
+        SetFallback(RayTracingSceneFallbackCode::RayTracingUnsupported,
+                    "RHI device does not support ray tracing");
         return false;
     }
 
     if (!plan.HasWork())
     {
-        SetFallback("ray tracing scene plan has no buildable work");
+        SetFallback(RayTracingSceneFallbackCode::EmptyBuildPlan,
+                    "ray tracing scene plan has no buildable work");
         return false;
     }
 
@@ -357,7 +369,8 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
         BLASCacheEntry* entry = GetOrCreateBLAS(build);
         if (!entry)
         {
-            SetFallback("failed to create bottom-level acceleration structure");
+            SetFallback(RayTracingSceneFallbackCode::BottomLevelASCreationFailed,
+                        "failed to create bottom-level acceleration structure");
             return false;
         }
 
@@ -402,7 +415,8 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
     std::vector<RHIAccelerationStructure*> blasResources;
     if (!collectFrameBLAS(&blasResources))
     {
-        SetFallback("failed to create bottom-level acceleration structure");
+        SetFallback(RayTracingSceneFallbackCode::BottomLevelASCreationFailed,
+                    "failed to create bottom-level acceleration structure");
         return false;
     }
 
@@ -411,21 +425,23 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
         std::span<RHIAccelerationStructure* const>(blasResources.data(), blasResources.size()));
     if (cpuTopLevelDesc.instances.size() != plan.instances.size())
     {
-        SetFallback("failed to map all ray tracing TLAS instances");
+        SetFallback(RayTracingSceneFallbackCode::TopLevelInstanceMappingFailed,
+                    "failed to map all ray tracing TLAS instances");
         return false;
     }
 
     if (!ValidateRHITopLevelASDesc(cpuTopLevelDesc))
     {
-        SetFallback("failed to build a valid CPU TLAS description");
+        SetFallback(RayTracingSceneFallbackCode::InvalidTopLevelDescription,
+                    "failed to build a valid CPU TLAS description");
         return false;
     }
 
     m_instanceRecords.reserve(cpuTopLevelDesc.instances.size());
     m_instanceMaterialMetadataRecords.reserve(cpuTopLevelDesc.instances.size());
     m_instanceAlphaMetadataRecords.reserve(cpuTopLevelDesc.instances.size());
-    std::unordered_map<Resource::ResourceId, uint32> alphaTextureIndexLookup;
-    std::unordered_map<Resource::ResourceId, uint32> materialTextureIndexLookup;
+    std::unordered_map<uint64, uint32> alphaTextureIndexLookup;
+    std::unordered_map<uint64, uint32> materialTextureIndexLookup;
     std::unordered_map<RHIBuffer*, uint32> alphaIndexBufferLookup;
     std::unordered_map<RHIBuffer*, uint32> alphaUVBufferLookup;
     std::unordered_map<RHIBuffer*, uint32> alphaNormalBufferLookup;
@@ -435,14 +451,16 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
         const uint32 expectedInstanceId = static_cast<uint32>(m_instanceRecords.size());
         if (instance.instanceId != expectedInstanceId)
         {
-            SetFallback("ray tracing TLAS instance IDs must match metadata order");
+            SetFallback(RayTracingSceneFallbackCode::InstanceMetadataOrderMismatch,
+                        "ray tracing TLAS instance IDs must match metadata order");
             return false;
         }
 
         const uint64 address = instance.bottomLevel ? instance.bottomLevel->GetGPUVirtualAddress() : 0;
         if (address == 0)
         {
-            SetFallback("BLAS GPU address is unavailable");
+            SetFallback(RayTracingSceneFallbackCode::MissingBottomLevelASAddress,
+                        "BLAS GPU address is unavailable");
             return false;
         }
 
@@ -537,19 +555,22 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
 
     if (!EnsureInstanceBuffer(m_instanceRecords))
     {
-        SetFallback("failed to update TLAS instance buffer");
+        SetFallback(RayTracingSceneFallbackCode::InstanceBufferUpdateFailed,
+                    "failed to update TLAS instance buffer");
         return false;
     }
 
     if (!EnsureInstanceMaterialMetadataBuffer(m_instanceMaterialMetadataRecords))
     {
-        SetFallback("failed to update ray tracing instance material metadata buffer");
+        SetFallback(RayTracingSceneFallbackCode::MaterialMetadataBufferUpdateFailed,
+                    "failed to update ray tracing instance material metadata buffer");
         return false;
     }
 
     if (!EnsureInstanceAlphaMetadataBuffer(m_instanceAlphaMetadataRecords))
     {
-        SetFallback("failed to update ray tracing instance alpha metadata buffer");
+        SetFallback(RayTracingSceneFallbackCode::AlphaMetadataBufferUpdateFailed,
+                    "failed to update ray tracing instance alpha metadata buffer");
         return false;
     }
 
@@ -561,7 +582,8 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
 
     if (!EnsureTopLevelAS(m_topLevelBuildDesc))
     {
-        SetFallback("failed to create top-level acceleration structure");
+        SetFallback(RayTracingSceneFallbackCode::TopLevelASCreationFailed,
+                    "failed to create top-level acceleration structure");
         return false;
     }
 
@@ -585,10 +607,12 @@ bool RayTracingSceneManager::Prepare(const RayTracingSceneBuildPlan& plan)
     EvictUnusedBLASForResourceBudget(plan.blasBuilds);
     if (!collectFrameBLAS(nullptr))
     {
-        SetFallback("failed to create bottom-level acceleration structure");
+        SetFallback(RayTracingSceneFallbackCode::BottomLevelASCreationFailed,
+                    "failed to create bottom-level acceleration structure");
         return false;
     }
     m_stats.pendingBLASBuildCount = m_pendingBLASBuilds.size();
+    m_stats.fallbackCode = RayTracingSceneFallbackCode::None;
     m_stats.fallbackReason = "";
     return m_stats.prepared;
 }
@@ -695,9 +719,14 @@ RayTracingSceneManager::BLASCacheEntry* RayTracingSceneManager::GetOrCreateBLAS(
             asDesc.type = RHIAccelerationStructureType::BottomLevel;
             asDesc.size = sizes.accelerationStructureSize;
             asDesc.debugName = "RayTracingSceneBLAS";
-            entry->accelerationStructure = m_device->CreateAccelerationStructure(asDesc);
-            if (!entry->accelerationStructure)
+            RHIAccelerationStructureRef replacement =
+                m_device->CreateAccelerationStructure(asDesc);
+            if (!replacement)
                 return nullptr;
+
+            QueueRenderOwnerRetirement(
+                entry->accelerationStructure, m_pendingOwnerRetirements);
+            entry->accelerationStructure = std::move(replacement);
 
             ++m_stats.createdBLASCount;
         }
@@ -720,17 +749,12 @@ void RayTracingSceneManager::ReleaseRetiredBLASScratchBuffers()
         if (!entry.scratchBuffer || !entry.scratchReleasePending || entry.needsBuild)
             continue;
 
-        if (m_frameCounter < entry.scratchLastUsedFrame ||
-            (m_frameCounter - entry.scratchLastUsedFrame) < m_blasScratchReleaseFrameDelay)
-        {
-            continue;
-        }
-
         m_stats.releasedBLASScratchBytes = AddSaturatingUint64(
             m_stats.releasedBLASScratchBytes,
             entry.scratchBuffer->GetSize(),
             m_stats.resourceByteAccountingOverflowed);
-        entry.scratchBuffer.Reset();
+        QueueRenderOwnerRetirement(
+            entry.scratchBuffer, m_pendingOwnerRetirements);
         entry.scratchReleasePending = false;
         entry.scratchLastUsedFrame = 0;
         ++m_stats.releasedBLASScratchCount;
@@ -761,6 +785,10 @@ void RayTracingSceneManager::EvictUnusedBLAS(const std::vector<RayTracingBLASBui
 
         if (!requestedThisFrame && unusedLongEnough)
         {
+            QueueRenderOwnerRetirement(
+                it->accelerationStructure, m_pendingOwnerRetirements);
+            QueueRenderOwnerRetirement(
+                it->scratchBuffer, m_pendingOwnerRetirements);
             it = m_blasCache.erase(it);
             ++m_stats.evictedBLASCount;
             continue;
@@ -824,6 +852,12 @@ void RayTracingSceneManager::EvictUnusedBLASForResourceBudget(
             break;
 
         m_stats.resourceBudgetEvictionAttempted = true;
+        QueueRenderOwnerRetirement(
+            evictionCandidate->accelerationStructure,
+            m_pendingOwnerRetirements);
+        QueueRenderOwnerRetirement(
+            evictionCandidate->scratchBuffer,
+            m_pendingOwnerRetirements);
         m_blasCache.erase(evictionCandidate);
         ++m_stats.evictedBLASCount;
         ++m_stats.resourceBudgetEvictedBLASCount;
@@ -844,8 +878,13 @@ bool RayTracingSceneManager::EnsureScratchBuffer(RHIBufferRef& buffer, uint64 si
     desc.usage = RHIBufferUsage::UnorderedAccess | RHIBufferUsage::DeviceAddress;
     desc.memoryType = RHIMemoryType::Default;
     desc.debugName = debugName;
-    buffer = m_device->CreateBuffer(desc);
-    return buffer != nullptr;
+    RHIBufferRef replacement = m_device->CreateBuffer(desc);
+    if (!replacement)
+        return false;
+
+    QueueRenderOwnerRetirement(buffer, m_pendingOwnerRetirements);
+    buffer = std::move(replacement);
+    return true;
 }
 
 bool RayTracingSceneManager::EnsureInstanceBuffer(const std::vector<RHIRayTracingInstanceRecord>& records)
@@ -870,8 +909,13 @@ bool RayTracingSceneManager::EnsureInstanceBuffer(const std::vector<RHIRayTracin
         desc.memoryType = RHIMemoryType::Upload;
         desc.stride = sizeof(RHIRayTracingInstanceRecord);
         desc.debugName = "RayTracingTLASInstances";
-        m_instanceBuffer = m_device->CreateBuffer(desc);
-        m_instanceBufferSize = m_instanceBuffer ? requiredSize : 0;
+        RHIBufferRef replacement = m_device->CreateBuffer(desc);
+        if (!replacement)
+            return false;
+        QueueRenderOwnerRetirement(
+            m_instanceBuffer, m_pendingOwnerRetirements);
+        m_instanceBuffer = std::move(replacement);
+        m_instanceBufferSize = requiredSize;
     }
 
     if (!m_instanceBuffer)
@@ -882,8 +926,7 @@ bool RayTracingSceneManager::EnsureInstanceBuffer(const std::vector<RHIRayTracin
         return false;
 
     std::memcpy(mapped, records.data(), static_cast<size_t>(dataSize));
-    m_instanceBuffer->Unmap();
-    return true;
+    return m_instanceBuffer->CommitMappedWrite();
 }
 
 bool RayTracingSceneManager::EnsureInstanceMaterialMetadataBuffer(
@@ -903,8 +946,13 @@ bool RayTracingSceneManager::EnsureInstanceMaterialMetadataBuffer(
         desc.memoryType = RHIMemoryType::Upload;
         desc.stride = sizeof(RayTracingInstanceMaterialMetadata);
         desc.debugName = "RayTracingInstanceMaterialMetadata";
-        m_instanceMaterialMetadataBuffer = m_device->CreateBuffer(desc);
-        m_instanceMaterialMetadataBufferSize = m_instanceMaterialMetadataBuffer ? dataSize : 0;
+        RHIBufferRef replacement = m_device->CreateBuffer(desc);
+        if (!replacement)
+            return false;
+        QueueRenderOwnerRetirement(
+            m_instanceMaterialMetadataBuffer, m_pendingOwnerRetirements);
+        m_instanceMaterialMetadataBuffer = std::move(replacement);
+        m_instanceMaterialMetadataBufferSize = dataSize;
     }
 
     if (!m_instanceMaterialMetadataBuffer)
@@ -915,8 +963,7 @@ bool RayTracingSceneManager::EnsureInstanceMaterialMetadataBuffer(
         return false;
 
     std::memcpy(mapped, records.data(), static_cast<size_t>(dataSize));
-    m_instanceMaterialMetadataBuffer->Unmap();
-    return true;
+    return m_instanceMaterialMetadataBuffer->CommitMappedWrite();
 }
 
 bool RayTracingSceneManager::EnsureInstanceAlphaMetadataBuffer(
@@ -936,8 +983,13 @@ bool RayTracingSceneManager::EnsureInstanceAlphaMetadataBuffer(
         desc.memoryType = RHIMemoryType::Upload;
         desc.stride = sizeof(RayTracingInstanceAlphaMetadata);
         desc.debugName = "RayTracingInstanceAlphaMetadata";
-        m_instanceAlphaMetadataBuffer = m_device->CreateBuffer(desc);
-        m_instanceAlphaMetadataBufferSize = m_instanceAlphaMetadataBuffer ? dataSize : 0;
+        RHIBufferRef replacement = m_device->CreateBuffer(desc);
+        if (!replacement)
+            return false;
+        QueueRenderOwnerRetirement(
+            m_instanceAlphaMetadataBuffer, m_pendingOwnerRetirements);
+        m_instanceAlphaMetadataBuffer = std::move(replacement);
+        m_instanceAlphaMetadataBufferSize = dataSize;
     }
 
     if (!m_instanceAlphaMetadataBuffer)
@@ -948,8 +1000,7 @@ bool RayTracingSceneManager::EnsureInstanceAlphaMetadataBuffer(
         return false;
 
     std::memcpy(mapped, records.data(), static_cast<size_t>(dataSize));
-    m_instanceAlphaMetadataBuffer->Unmap();
-    return true;
+    return m_instanceAlphaMetadataBuffer->CommitMappedWrite();
 }
 
 bool RayTracingSceneManager::EnsureTopLevelAS(const RHITopLevelASDesc& desc)
@@ -967,9 +1018,13 @@ bool RayTracingSceneManager::EnsureTopLevelAS(const RHITopLevelASDesc& desc)
         asDesc.type = RHIAccelerationStructureType::TopLevel;
         asDesc.size = sizes.accelerationStructureSize;
         asDesc.debugName = "RayTracingSceneTLAS";
-        m_topLevelAS = m_device->CreateAccelerationStructure(asDesc);
-        if (!m_topLevelAS)
+        RHIAccelerationStructureRef replacement =
+            m_device->CreateAccelerationStructure(asDesc);
+        if (!replacement)
             return false;
+        QueueRenderOwnerRetirement(
+            m_topLevelAS, m_pendingOwnerRetirements);
+        m_topLevelAS = std::move(replacement);
     }
 
     m_topLevelSizes = sizes;
@@ -1101,19 +1156,24 @@ void RayTracingSceneManager::InvalidateFrameOutputs()
     m_instanceAlphaUVBuffers.clear();
     m_instanceAlphaNormalBuffers.clear();
     m_instanceAlphaTangentBuffers.clear();
-    m_instanceBuffer.Reset();
+    QueueRenderOwnerRetirement(
+        m_instanceBuffer, m_pendingOwnerRetirements);
     m_instanceBufferSize = 0;
-    m_instanceMaterialMetadataBuffer.Reset();
+    QueueRenderOwnerRetirement(
+        m_instanceMaterialMetadataBuffer, m_pendingOwnerRetirements);
     m_instanceMaterialMetadataBufferSize = 0;
-    m_instanceAlphaMetadataBuffer.Reset();
+    QueueRenderOwnerRetirement(
+        m_instanceAlphaMetadataBuffer, m_pendingOwnerRetirements);
     m_instanceAlphaMetadataBufferSize = 0;
-    m_topLevelAS.Reset();
+    QueueRenderOwnerRetirement(
+        m_topLevelAS, m_pendingOwnerRetirements);
     m_topLevelSizes = {};
-    m_topLevelScratchBuffer.Reset();
+    QueueRenderOwnerRetirement(
+        m_topLevelScratchBuffer, m_pendingOwnerRetirements);
     m_topLevelBuildDesc = {};
 }
 
-void RayTracingSceneManager::SetFallback(const char* reason)
+void RayTracingSceneManager::SetFallback(RayTracingSceneFallbackCode code, const char* reason)
 {
     InvalidateFrameOutputs();
     m_stats.prepared = false;
@@ -1130,6 +1190,7 @@ void RayTracingSceneManager::SetFallback(const char* reason)
     m_stats.alphaNormalBufferCount = 0;
     m_stats.alphaTangentBufferCount = 0;
     UpdateResourceStats();
+    m_stats.fallbackCode = code;
     m_stats.fallbackReason = reason ? reason : "unknown ray tracing scene fallback";
 }
 

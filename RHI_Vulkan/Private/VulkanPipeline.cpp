@@ -1,7 +1,7 @@
 #include "VulkanPipeline.h"
 #include "VulkanDevice.h"
 #include "VulkanResources.h"
-#include <unordered_map>
+#include "RHI/RHIPipelineValidation.h"
 
 namespace RVX
 {
@@ -64,7 +64,8 @@ namespace RVX
     // Vulkan Pipeline Layout
     // =============================================================================
     VulkanPipelineLayout::VulkanPipelineLayout(VulkanDevice* device, const RHIPipelineLayoutDesc& desc)
-        : m_device(device)
+        : RHIPipelineLayout(desc)
+        , m_device(device)
     {
         if (desc.debugName)
         {
@@ -115,6 +116,7 @@ namespace RVX
     // =============================================================================
     VulkanPipeline::VulkanPipeline(VulkanDevice* device, const RHIGraphicsPipelineDesc& desc)
         : m_device(device)
+        , m_descriptorPipelineLayout(static_cast<VulkanPipelineLayout*>(desc.pipelineLayout))
         , m_isCompute(false)
     {
         if (desc.debugName)
@@ -126,6 +128,7 @@ namespace RVX
 
     VulkanPipeline::VulkanPipeline(VulkanDevice* device, const RHIComputePipelineDesc& desc)
         : m_device(device)
+        , m_descriptorPipelineLayout(static_cast<VulkanPipelineLayout*>(desc.pipelineLayout))
         , m_isCompute(true)
     {
         if (desc.debugName)
@@ -208,47 +211,36 @@ namespace RVX
         // Vertex input
         std::vector<VkVertexInputBindingDescription> bindingDescs;
         std::vector<VkVertexInputAttributeDescription> attributeDescs;
-        
-        // Track per-binding offsets and strides for separate vertex buffer slots
-        std::unordered_map<uint32, uint32> bindingOffsets;  // Current offset per binding
-        std::unordered_map<uint32, uint32> bindingStrides;  // Total stride per binding
-        std::unordered_map<uint32, bool> bindingPerInstance; // Per-instance rate per binding
+        const RHIVertexInputTranslation vertexInputTranslation =
+            BuildRHIVertexInputTranslation(desc.inputLayout);
+        attributeDescs.reserve(
+            vertexInputTranslation.attributes.size());
+        bindingDescs.reserve(
+            vertexInputTranslation.bindings.size());
 
-        for (const auto& elem : desc.inputLayout.elements)
+        for (const RHIVertexInputAttributeTranslation& attribute :
+             vertexInputTranslation.attributes)
         {
-            uint32 bindingSlot = elem.inputSlot;
-            
-            // Initialize binding tracking if this is a new slot
-            if (bindingOffsets.find(bindingSlot) == bindingOffsets.end())
-            {
-                bindingOffsets[bindingSlot] = 0;
-                bindingStrides[bindingSlot] = 0;
-                bindingPerInstance[bindingSlot] = elem.perInstance;
-            }
+            const RHIInputElement& elem =
+                desc.inputLayout.elements[attribute.elementIndex];
 
             VkVertexInputAttributeDescription attr = {};
-            attr.location = static_cast<uint32>(attributeDescs.size());
-            attr.binding = bindingSlot;
+            attr.location = attribute.location;
+            attr.binding = attribute.inputSlot;
             attr.format = ToVkFormat(elem.format);
-            
-            // Calculate offset within this binding
-            uint32& currentOffset = bindingOffsets[bindingSlot];
-            attr.offset = (elem.alignedByteOffset == 0xFFFFFFFF) ? currentOffset : elem.alignedByteOffset;
+            attr.offset = attribute.alignedByteOffset;
             attributeDescs.push_back(attr);
-            
-            // Update stride for this binding
-            uint32 elemSize = GetFormatBytesPerPixel(elem.format);
-            currentOffset = attr.offset + elemSize;
-            bindingStrides[bindingSlot] = currentOffset;
         }
 
-        // Create a binding description for each unique input slot
-        for (const auto& [slot, stride] : bindingStrides)
+        for (const RHIVertexInputBindingTranslation& translatedBinding :
+             vertexInputTranslation.bindings)
         {
             VkVertexInputBindingDescription binding = {};
-            binding.binding = slot;
-            binding.stride = stride;
-            binding.inputRate = bindingPerInstance[slot] ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+            binding.binding = translatedBinding.inputSlot;
+            binding.stride = translatedBinding.stride;
+            binding.inputRate = translatedBinding.perInstance
+                ? VK_VERTEX_INPUT_RATE_INSTANCE
+                : VK_VERTEX_INPUT_RATE_VERTEX;
             bindingDescs.push_back(binding);
         }
 
@@ -424,7 +416,8 @@ namespace RVX
     // Vulkan Descriptor Set
     // =============================================================================
     VulkanDescriptorSet::VulkanDescriptorSet(VulkanDevice* device, const RHIDescriptorSetDesc& desc)
-        : m_device(device)
+        : RHIDescriptorSet(desc)
+        , m_device(device)
     {
         if (desc.debugName)
         {
@@ -447,9 +440,9 @@ namespace RVX
             m_device->SetObjectName(VK_OBJECT_TYPE_DESCRIPTOR_SET, reinterpret_cast<uint64>(m_descriptorSet), desc.debugName);
         }
 
-        if (!desc.bindings.empty())
+        if (!IsReadyForBinding() || !InitializeNativeSnapshot())
         {
-            Update(desc.bindings);
+            InvalidateDescriptorSnapshot();
         }
     }
 
@@ -461,22 +454,15 @@ namespace RVX
         }
     }
 
-    bool VulkanDescriptorSet::Update(const std::vector<RHIDescriptorBinding>& bindings)
+    bool VulkanDescriptorSet::InitializeNativeSnapshot()
     {
         if (!m_layoutWrapper || m_descriptorSet == VK_NULL_HANDLE)
         {
-            RVX_RHI_ERROR("VulkanDescriptorSet::Update failed: descriptor set has no valid layout");
+            RVX_RHI_ERROR("VulkanDescriptorSet initialization failed: descriptor set has no valid layout");
             return false;
         }
 
-        auto validation = ValidateRHIDescriptorBindings(*m_layoutWrapper, bindings);
-        if (!validation)
-        {
-            RVX_RHI_ERROR("VulkanDescriptorSet::Update failed: {} (binding {})",
-                          validation.message,
-                          validation.binding);
-            return false;
-        }
+        const auto& bindings = GetDescriptorSnapshot();
 
         std::vector<VkWriteDescriptorSet> writes;
         std::vector<VkDescriptorBufferInfo> bufferInfos;
@@ -490,8 +476,8 @@ namespace RVX
             const RHIBindingLayoutEntry* entry = m_layoutWrapper ? m_layoutWrapper->FindEntry(binding.binding) : nullptr;
             if (!entry)
             {
-                RVX_RHI_WARN("VulkanDescriptorSet: binding {} not found in layout", binding.binding);
-                continue;
+                RVX_RHI_ERROR("VulkanDescriptorSet: binding {} not found in layout", binding.binding);
+                return false;
             }
 
             VkWriteDescriptorSet write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -503,6 +489,11 @@ namespace RVX
             if (binding.buffer)
             {
                 auto* vkBuffer = static_cast<VulkanBuffer*>(binding.buffer);
+                if (vkBuffer->GetBuffer() == VK_NULL_HANDLE)
+                {
+                    RVX_RHI_ERROR("VulkanDescriptorSet: buffer binding {} has no native buffer", binding.binding);
+                    return false;
+                }
                 
                 VkDescriptorBufferInfo bufferInfo = {};
                 bufferInfo.buffer = vkBuffer->GetBuffer();
@@ -528,8 +519,8 @@ namespace RVX
                         write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
                         break;
                     default:
-                        RVX_RHI_WARN("VulkanDescriptorSet: binding {} expects non-buffer type", binding.binding);
-                        continue;
+                        RVX_RHI_ERROR("VulkanDescriptorSet: binding {} expects non-buffer type", binding.binding);
+                        return false;
                 }
 
                 write.pBufferInfo = &bufferInfos.back();
@@ -537,6 +528,11 @@ namespace RVX
             else if (binding.textureView)
             {
                 auto* vkView = static_cast<VulkanTextureView*>(binding.textureView);
+                if (vkView->GetImageView() == VK_NULL_HANDLE)
+                {
+                    RVX_RHI_ERROR("VulkanDescriptorSet: texture binding {} has no native image view", binding.binding);
+                    return false;
+                }
                 
                 VkDescriptorImageInfo imageInfo = {};
                 imageInfo.imageView = vkView->GetImageView();
@@ -557,18 +553,24 @@ namespace RVX
                         if (binding.sampler)
                         {
                             auto* vkSampler = static_cast<VulkanSampler*>(binding.sampler);
+                            if (vkSampler->GetSampler() == VK_NULL_HANDLE)
+                            {
+                                RVX_RHI_ERROR("VulkanDescriptorSet: combined binding {} has no native sampler", binding.binding);
+                                return false;
+                            }
                             imageInfo.sampler = vkSampler->GetSampler();
                         }
                         else
                         {
-                            RVX_RHI_WARN("VulkanDescriptorSet: combined binding {} missing sampler", binding.binding);
+                            RVX_RHI_ERROR("VulkanDescriptorSet: combined binding {} missing sampler", binding.binding);
+                            return false;
                         }
                         write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                         break;
                     }
                     default:
-                        RVX_RHI_WARN("VulkanDescriptorSet: binding {} expects non-texture type", binding.binding);
-                        continue;
+                        RVX_RHI_ERROR("VulkanDescriptorSet: binding {} expects non-texture type", binding.binding);
+                        return false;
                 }
                 
                 imageInfos.push_back(imageInfo);
@@ -578,11 +580,16 @@ namespace RVX
             {
                 if (entry->type != RHIBindingType::Sampler)
                 {
-                    RVX_RHI_WARN("VulkanDescriptorSet: binding {} expects non-sampler type", binding.binding);
-                    continue;
+                    RVX_RHI_ERROR("VulkanDescriptorSet: binding {} expects non-sampler type", binding.binding);
+                    return false;
                 }
 
                 auto* vkSampler = static_cast<VulkanSampler*>(binding.sampler);
+                if (vkSampler->GetSampler() == VK_NULL_HANDLE)
+                {
+                    RVX_RHI_ERROR("VulkanDescriptorSet: sampler binding {} has no native sampler", binding.binding);
+                    return false;
+                }
                 
                 VkDescriptorImageInfo imageInfo = {};
                 imageInfo.sampler = vkSampler->GetSampler();
@@ -598,10 +605,17 @@ namespace RVX
             }
             else
             {
-                continue;  // Skip empty bindings
+                RVX_RHI_ERROR("VulkanDescriptorSet: binding {} has no native resource", binding.binding);
+                return false;
             }
 
             writes.push_back(write);
+        }
+
+        if (writes.size() != bindings.size())
+        {
+            RVX_RHI_ERROR("VulkanDescriptorSet: native snapshot is incomplete");
+            return false;
         }
 
         if (!writes.empty())
@@ -617,7 +631,9 @@ namespace RVX
     // =============================================================================
     RHIDescriptorSetLayoutRef CreateVulkanDescriptorSetLayout(VulkanDevice* device, const RHIDescriptorSetLayoutDesc& desc)
     {
-        auto validation = ValidateRHIDescriptorSetLayoutDesc(desc);
+        auto validation = ValidateRHIDescriptorSetLayoutCapabilities(
+            desc,
+            device->GetCapabilities());
         if (!validation)
         {
             RVX_RHI_ERROR("Vulkan descriptor set layout creation failed: {} (binding {})",
@@ -659,7 +675,13 @@ namespace RVX
                           validation.binding);
             return nullptr;
         }
-        return Ref<VulkanDescriptorSet>(new VulkanDescriptorSet(device, desc));
+        auto descriptorSet = Ref<VulkanDescriptorSet>(new VulkanDescriptorSet(device, desc));
+        if (!descriptorSet->IsReadyForBinding())
+        {
+            RVX_RHI_ERROR("Vulkan descriptor set creation failed: native snapshot initialization failed");
+            return nullptr;
+        }
+        return descriptorSet;
     }
 
 } // namespace RVX

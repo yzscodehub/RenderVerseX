@@ -5,12 +5,17 @@
  * @brief Base resource class and common types
  */
 
+#include "Core/AssetResource.h"
 #include "Core/RefCounted.h"
 #include "Core/Types.h"
+#include "Resource/ResourceContentIdentity.h"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
-#include <atomic>
-#include <functional>
 
 namespace RVX::Resource
 {
@@ -47,6 +52,7 @@ namespace RVX::Resource
         Model,
         Prefab,
         Script,
+        Environment,
         // Extensible...
         Custom = 1000
     };
@@ -60,7 +66,7 @@ namespace RVX::Resource
      * - Dependency tracking
      * - Memory usage reporting
      */
-    class IResource : public RefCounted
+    class IResource : public RefCounted, public IAssetResource
     {
     public:
         IResource();
@@ -83,6 +89,17 @@ namespace RVX::Resource
         const std::string& GetName() const { return m_name; }
         void SetName(const std::string& name) { m_name = name; }
 
+        uint64 GetAssetResourceId() const override { return GetId(); }
+        std::string_view GetAssetResourceName() const override { return GetName(); }
+        bool IsAssetResourceLoaded() const override { return IsLoaded(); }
+
+        /** @brief Read-only owner-thread receipt for prepared content verification. */
+        [[nodiscard]] const ResourceContentVerificationReceipt&
+        GetContentVerificationReceipt() const noexcept
+        {
+            return m_contentVerificationReceipt;
+        }
+
         // =====================================================================
         // Type
         // =====================================================================
@@ -98,6 +115,16 @@ namespace RVX::Resource
         bool IsLoaded() const { return GetState() == ResourceState::Loaded; }
         bool IsLoading() const { return GetState() == ResourceState::Loading; }
         bool IsFailed() const { return GetState() == ResourceState::Failed; }
+
+        // =====================================================================
+        // Async Wait
+        // =====================================================================
+
+        /** @brief Wait until a currently loading resource reaches a terminal state. */
+        void WaitForLoad() const;
+
+        /** @brief Wait for loading to finish, returning false on timeout. */
+        bool WaitForLoadFor(uint32 timeoutMs) const;
 
         // =====================================================================
         // Dependencies
@@ -139,12 +166,23 @@ namespace RVX::Resource
         void NotifyLoaded();
         void NotifyUnloaded();
 
+        /** @brief Commit Loaded visibility without invoking user observers. */
+        void CommitLoadedState() noexcept;
+
+        /** @brief Invoke the on-loaded observer after publication is visible. */
+        void NotifyLoadedObserver();
+
+        /** @brief Called only by ResourceManager after its publication transaction commits. */
+        void SetContentVerificationReceipt(ResourceContentVerificationReceipt receipt) noexcept;
+
         friend class ResourceManager;
+        friend class ResourceCache;
         friend class ResourceLoader;
         friend class TextureLoader;
         friend class MeshLoader;
         friend class ShaderLoader;
         friend class ModelLoader;
+        friend class AnimationLoader;
         friend class DefaultResources;
 
     private:
@@ -152,9 +190,12 @@ namespace RVX::Resource
         std::string m_path;
         std::string m_name;
         std::atomic<ResourceState> m_state{ResourceState::Unloaded};
+        mutable std::mutex m_stateMutex;
+        mutable std::condition_variable m_stateCondition;
 
         LoadCallback m_onLoaded;
         LoadCallback m_onUnloaded;
+        ResourceContentVerificationReceipt m_contentVerificationReceipt;
     };
 
     // =========================================================================

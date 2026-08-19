@@ -26,6 +26,19 @@ namespace RVX
     // =============================================================================
     constexpr uint32_t kMetalMaxFramesInFlight = 3;
 
+    // Metal exposes 31 vertex-stage buffer bindings, indexed 0 through 30.
+    // Descriptor buffers occupy the low indices, so vertex streams are mapped
+    // downwards from the highest legal index. This keeps every stream used by
+    // the renderer (including the instancing stream at RHI slot 6) in range
+    // without overlapping the descriptor-buffer range.
+    constexpr uint32 kMetalHighestBufferIndex = 30;
+
+    [[nodiscard]] constexpr uint32 MetalVertexBufferIndex(uint32 inputSlot)
+    {
+        RVX_ASSERT(inputSlot < RVX_MAX_VERTEX_BUFFERS);
+        return kMetalHighestBufferIndex - inputSlot;
+    }
+
     // =============================================================================
     // Metal Error Checking
     // =============================================================================

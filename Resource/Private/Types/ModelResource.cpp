@@ -1,16 +1,16 @@
 #include "Resource/Types/ModelResource.h"
-#include "Scene/Actor.h"
-#include "Scene/ComponentFactory.h"
-#include "Scene/Components/StaticMeshComponent.h"
-#include "Scene/Node.h"
-#include "Scene/SceneEntity.h"
-#include "Scene/SceneManager.h"
+
+#include <algorithm>
+#include <utility>
 
 namespace RVX::Resource
 {
 
 ModelResource::ModelResource() = default;
-ModelResource::~ModelResource() = default;
+ModelResource::~ModelResource()
+{
+    CancelTextureStreaming();
+}
 
 size_t ModelResource::GetMemoryUsage() const
 {
@@ -31,6 +31,43 @@ size_t ModelResource::GetMemoryUsage() const
         if (mat.IsValid())
         {
             total += mat->GetMemoryUsage();
+        }
+    }
+
+    if (m_animationResource)
+    {
+        total += m_animationResource->GetMemoryUsage();
+    }
+    else if (m_skeleton)
+    {
+        total += sizeof(Animation::Skeleton);
+        for (const Animation::Bone& bone : m_skeleton->bones)
+        {
+            total += sizeof(Animation::Bone) + bone.name.capacity() +
+                     bone.childIndices.capacity() * sizeof(int);
+        }
+    }
+    if (!m_animationResource)
+    {
+        for (const auto& [name, clip] : m_animationClips)
+        {
+            total += name.capacity();
+            if (!clip)
+                continue;
+            total += sizeof(Animation::AnimationClip) + clip->name.capacity() +
+                     clip->description.capacity();
+            for (const Animation::TransformTrack& track : clip->transformTracks)
+            {
+                total += sizeof(Animation::TransformTrack) + track.targetName.capacity();
+                total += track.translationKeyframes.capacity() *
+                         sizeof(Animation::KeyframeVec3);
+                total += track.rotationKeyframes.capacity() *
+                         sizeof(Animation::KeyframeQuat);
+                total += track.scaleKeyframes.capacity() *
+                         sizeof(Animation::KeyframeVec3);
+                total += track.matrixKeyframes.capacity() *
+                         sizeof(Animation::KeyframeMat4);
+            }
         }
     }
     
@@ -71,8 +108,28 @@ std::vector<ResourceId> ModelResource::GetRequiredDependencies() const
             deps.push_back(mat.GetId());
         }
     }
-    
+
+    if (m_animationResource.IsValid())
+    {
+        deps.push_back(m_animationResource.GetId());
+    }
+
     return deps;
+}
+
+std::vector<ResourceId> ModelResource::GetOptionalDependencies() const
+{
+    std::vector<ResourceId> dependencies;
+    const std::vector<ResourceHandle<TextureResource>> textures =
+        GetStreamingTextures();
+    dependencies.reserve(textures.size());
+    for (const ResourceHandle<TextureResource>& texture : textures)
+    {
+        if (texture)
+            dependencies.push_back(texture.GetId());
+    }
+
+    return dependencies;
 }
 
 size_t ModelResource::GetNodeCount() const
@@ -133,96 +190,254 @@ void ModelResource::SetMaterials(std::vector<ResourceHandle<MaterialResource>> m
     m_materials = std::move(materials);
 }
 
-SceneEntity* ModelResource::Instantiate(SceneManager* scene) const
+Animation::Skeleton::ConstPtr ModelResource::GetSkeleton() const
 {
-    return dynamic_cast<SceneEntity*>(InstantiateActor(scene));
+    return m_animationResource ? m_animationResource->GetSkeleton() : m_skeleton;
 }
 
-Actor* ModelResource::InstantiateActor(SceneManager* scene) const
+void ModelResource::SetSkeleton(Animation::Skeleton::ConstPtr skeleton)
 {
-    if (!m_rootNode || !scene)
-    {
-        return nullptr;
-    }
-    
-    return InstantiateActorNode(m_rootNode.get(), scene, nullptr);
+    m_animationResource = nullptr;
+    m_skeleton = std::move(skeleton);
 }
 
-SceneEntity* ModelResource::InstantiateActorNode(const Node* node, SceneManager* scene, SceneEntity* parent) const
+const ModelResource::AnimationClipMap& ModelResource::GetAnimationClips() const
 {
-    if (!node)
-        return nullptr;
-    
-    const auto& transform = node->GetLocalTransform();
+    return m_animationResource ? m_animationResource->GetClips() : m_animationClips;
+}
 
-    ActorSpawnParams params;
-    params.name = node->GetName();
-    params.localPosition = transform.GetPosition();
-    params.localRotation = transform.GetRotation();
-    params.localScale = transform.GetScale();
-    params.parent = parent;
+Animation::AnimationClip::ConstPtr ModelResource::GetAnimationClip(const std::string& name) const
+{
+    return m_animationResource ? m_animationResource->GetClip(name)
+                               : (m_animationClips.contains(name)
+                                      ? m_animationClips.at(name)
+                                      : nullptr);
+}
 
-    SceneEntity* entity = scene->SpawnActor<SceneEntity>(params);
-    if (!entity)
-        return nullptr;
-    
-    // Use ComponentFactory if node uses index mode (preferred new approach)
-    if (node->UsesIndexMode())
+void ModelResource::SetAnimationClips(AnimationClipMap clips)
+{
+    m_animationResource = nullptr;
+    m_animationClips = std::move(clips);
+}
+
+void ModelResource::SetAnimationResource(AnimationHandle animation)
+{
+    m_animationResource = std::move(animation);
+    if (m_animationResource)
     {
-        // Use ComponentFactory to create components from node indices
-        ComponentFactory::CreateComponents(entity, node, this);
+        m_skeleton.reset();
+        m_animationClips.clear();
     }
-    else if (auto* meshComp = node->GetComponent<MeshComponent>())
+}
+
+void ModelResource::SetTextureStreamingSources(
+    std::vector<ModelTextureStreamingSource> sources)
+{
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    m_textureStreamingTemplateSources = sources;
+    m_textureStreamingSources = std::move(sources);
+    m_streamingTextures.clear();
+    m_streamingTextures.reserve(m_textureStreamingSources.size());
+    for (const ModelTextureStreamingSource& source : m_textureStreamingSources)
     {
-        // Legacy fallback: use MeshComponent pointer matching
-        Mesh::Ptr nodeMesh = meshComp->GetMesh();
-        
-        // Find matching MeshResource by comparing mesh pointers
-        ResourceHandle<MeshResource> meshHandle;
-        for (const auto& meshRes : m_meshes)
-        {
-            if (meshRes.IsValid() && meshRes->GetMesh() == nodeMesh)
+        if (source.texture)
+            m_streamingTextures.push_back(source.texture);
+    }
+    m_decodedTextureCount = 0;
+    m_residentTextureCount = 0;
+    m_decodedTextureBytes = 0;
+    m_textureStreamingError.clear();
+    m_textureStreamingStage = m_textureStreamingSources.empty()
+                                  ? ModelTextureStreamingStage::None
+                                  : ModelTextureStreamingStage::AwaitingMinimumResident;
+}
+
+std::vector<ModelTextureStreamingSource> ModelResource::BeginTextureStreaming()
+{
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    if (m_textureStreamingStage !=
+        ModelTextureStreamingStage::AwaitingMinimumResident)
+    {
+        return {};
+    }
+    m_textureStreamingStage = ModelTextureStreamingStage::Decoding;
+    std::vector<ModelTextureStreamingSource> sources;
+    sources.swap(m_textureStreamingSources);
+    if (sources.empty() &&
+        m_decodedTextureCount >= m_streamingTextures.size())
+    {
+        m_textureStreamingStage =
+            m_residentTextureCount >= m_streamingTextures.size()
+                ? ModelTextureStreamingStage::FullyResident
+                : ModelTextureStreamingStage::Uploading;
+    }
+    return sources;
+}
+
+void ModelResource::RebindTextureStreamingDependency(
+    ResourceId resourceId,
+    ResourceHandle<TextureResource> canonical)
+{
+    if (!canonical)
+        return;
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    if (m_textureStreamingStage !=
+        ModelTextureStreamingStage::AwaitingMinimumResident)
+    {
+        return;
+    }
+    for (ModelTextureStreamingSource& source : m_textureStreamingSources)
+    {
+        if (source.texture && source.texture.GetId() == resourceId)
+            source.texture = canonical;
+    }
+    for (ModelTextureStreamingSource& source : m_textureStreamingTemplateSources)
+    {
+        if (source.texture && source.texture.GetId() == resourceId)
+            source.texture = canonical;
+    }
+    for (ResourceHandle<TextureResource>& texture : m_streamingTextures)
+    {
+        if (texture && texture.GetId() == resourceId)
+            texture = canonical;
+    }
+    if (!canonical->IsStreamingPlaceholder())
+    {
+        const size_t before = m_textureStreamingSources.size();
+        std::erase_if(
+            m_textureStreamingSources,
+            [resourceId](const ModelTextureStreamingSource& source)
             {
-                meshHandle = meshRes;
-                break;
-            }
-        }
-        
-        if (meshHandle.IsValid())
+                return source.texture && source.texture.GetId() == resourceId;
+            });
+        m_decodedTextureCount += static_cast<uint32>(
+            before - m_textureStreamingSources.size());
+        m_residentTextureCount += static_cast<uint32>(
+            before - m_textureStreamingSources.size());
+    }
+}
+
+void ModelResource::MarkTextureDecodeComplete(uint64 decodedBytes)
+{
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    if (m_textureStreamingStage != ModelTextureStreamingStage::Decoding)
+        return;
+    ++m_decodedTextureCount;
+    m_decodedTextureBytes += decodedBytes;
+    if (m_decodedTextureCount >= m_streamingTextures.size())
+    {
+        m_textureStreamingStage =
+            m_residentTextureCount >= m_streamingTextures.size()
+                ? ModelTextureStreamingStage::FullyResident
+                : ModelTextureStreamingStage::Uploading;
+    }
+}
+
+void ModelResource::MarkTexturePublicationComplete(ResourceId textureId)
+{
+    if (textureId == InvalidResourceId)
+        return;
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    if (m_textureStreamingStage != ModelTextureStreamingStage::Decoding &&
+        m_textureStreamingStage != ModelTextureStreamingStage::Uploading)
+    {
+        return;
+    }
+    const bool belongsToModel = std::any_of(
+        m_streamingTextures.begin(),
+        m_streamingTextures.end(),
+        [textureId](const ResourceHandle<TextureResource>& texture)
         {
-            auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-            primitive->AttachToComponent(entity->GetRootComponent());
-            primitive->SetMesh(meshHandle);
-            
-            // Set materials for each submesh
-            auto* mesh = nodeMesh.get();
-            if (mesh)
-            {
-                const auto& submeshes = mesh->GetSubMeshes();
-                for (size_t i = 0; i < submeshes.size(); ++i)
-                {
-                    uint32_t matIndex = submeshes[i].materialId;
-                    if (matIndex < m_materials.size() && m_materials[matIndex].IsValid())
-                    {
-                        primitive->SetMaterial(i, m_materials[matIndex]);
-                    }
-                }
-            }
-            
-            // Copy visibility settings
-            primitive->SetVisible(meshComp->IsVisible());
-            primitive->SetCastsShadow(meshComp->CastsShadows());
-            primitive->SetReceivesShadow(meshComp->ReceivesShadows());
-        }
+            return texture && texture.GetId() == textureId;
+        });
+    if (!belongsToModel)
+        return;
+
+    ++m_residentTextureCount;
+    if (m_decodedTextureCount >= m_streamingTextures.size() &&
+        m_residentTextureCount >= m_streamingTextures.size())
+    {
+        m_textureStreamingStage = ModelTextureStreamingStage::FullyResident;
+    }
+}
+
+void ModelResource::MarkTextureStreamingFailed(std::string error)
+{
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    if (m_textureStreamingStage == ModelTextureStreamingStage::FullyResident ||
+        m_textureStreamingStage == ModelTextureStreamingStage::Cancelled)
+    {
+        return;
+    }
+    m_textureStreamingError = std::move(error);
+    m_textureStreamingSources.clear();
+    m_textureStreamingStage = ModelTextureStreamingStage::Failed;
+}
+
+void ModelResource::CancelTextureStreaming() noexcept
+{
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    if (m_textureStreamingStage == ModelTextureStreamingStage::None ||
+        m_textureStreamingStage == ModelTextureStreamingStage::FullyResident ||
+        m_textureStreamingStage == ModelTextureStreamingStage::Failed)
+    {
+        return;
+    }
+    m_textureStreamingSources.clear();
+    m_textureStreamingStage = ModelTextureStreamingStage::Cancelled;
+}
+
+bool ModelResource::RestartTextureStreamingAfterCancellation()
+{
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    if (m_textureStreamingStage != ModelTextureStreamingStage::Cancelled)
+    {
+        return false;
     }
 
-    // Recursively instantiate children
-    for (const auto& child : node->GetChildren())
+    m_textureStreamingSources.clear();
+    m_decodedTextureCount = 0;
+    m_residentTextureCount = 0;
+    m_decodedTextureBytes = 0;
+    m_textureStreamingError.clear();
+    for (const ModelTextureStreamingSource& source :
+         m_textureStreamingTemplateSources)
     {
-        InstantiateActorNode(child.get(), scene, entity);
+        if (!source.texture)
+        {
+            continue;
+        }
+        if (!source.texture->IsStreamingPlaceholder())
+        {
+            ++m_decodedTextureCount;
+            ++m_residentTextureCount;
+            continue;
+        }
+        m_textureStreamingSources.push_back(source);
     }
-    
-    return entity;
+
+    m_textureStreamingStage = m_textureStreamingSources.empty()
+                                  ? ModelTextureStreamingStage::FullyResident
+                                  : ModelTextureStreamingStage::AwaitingMinimumResident;
+    return true;
+}
+
+ModelTextureStreamingSnapshot ModelResource::GetTextureStreamingSnapshot() const
+{
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    return {m_textureStreamingStage,
+            static_cast<uint32>(m_streamingTextures.size()),
+            m_decodedTextureCount,
+            m_residentTextureCount,
+            m_decodedTextureBytes,
+            m_textureStreamingError};
+}
+
+std::vector<ResourceHandle<TextureResource>>
+ModelResource::GetStreamingTextures() const
+{
+    std::lock_guard<std::mutex> lock(m_textureStreamingMutex);
+    return m_streamingTextures;
 }
 
 } // namespace RVX::Resource

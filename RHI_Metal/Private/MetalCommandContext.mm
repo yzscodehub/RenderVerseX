@@ -10,6 +10,48 @@
 
 namespace RVX
 {
+    namespace
+    {
+        bool RequiresMetalBarrier(bool hasScopedAccess,
+                                  RHIDependencyKind dependencyKind,
+                                  RHIResourceState before,
+                                  RHIResourceState after)
+        {
+            return before != after ||
+                   (hasScopedAccess && dependencyKind != RHIDependencyKind::None);
+        }
+
+        MTLRenderStages ToMTLRenderStages(RHIExecutionScope scope)
+        {
+            MTLRenderStages stages = 0;
+            const auto has = [scope](RHIExecutionScope value)
+            {
+                return static_cast<uint32>(scope & value) != 0;
+            };
+            if (scope == RHIExecutionScope::AllCommands ||
+                has(RHIExecutionScope::VertexInput) ||
+                has(RHIExecutionScope::VertexShader) ||
+                has(RHIExecutionScope::HullShader) ||
+                has(RHIExecutionScope::DomainShader) ||
+                has(RHIExecutionScope::GeometryShader) ||
+                has(RHIExecutionScope::MeshShader) ||
+                has(RHIExecutionScope::AmplificationShader))
+            {
+                stages |= MTLRenderStageVertex;
+            }
+            if (scope == RHIExecutionScope::AllCommands ||
+                has(RHIExecutionScope::PixelShader) ||
+                has(RHIExecutionScope::ColorOutput) ||
+                has(RHIExecutionScope::DepthStencil))
+            {
+                stages |= MTLRenderStageFragment;
+            }
+            return stages == 0
+                ? MTLRenderStageVertex | MTLRenderStageFragment
+                : stages;
+        }
+    } // namespace
+
     MetalCommandContext::MetalCommandContext(MetalDevice* device, RHICommandQueueType type)
         : m_device(device)
         , m_queueType(type)
@@ -137,7 +179,11 @@ namespace RVX
     // =============================================================================
     void MetalCommandContext::BufferBarrier(const RHIBufferBarrier& barrier)
     {
-        if (!barrier.buffer || barrier.stateBefore == barrier.stateAfter) return;
+        if (!barrier.buffer ||
+            !RequiresMetalBarrier(barrier.hasScopedAccess,
+                                  barrier.dependencyKind,
+                                  barrier.stateBefore,
+                                  barrier.stateAfter)) return;
 
         auto* metalBuffer = static_cast<MetalBuffer*>(barrier.buffer);
 
@@ -147,8 +193,12 @@ namespace RVX
             if (@available(macOS 10.14, iOS 12.0, *))
             {
                 // Determine stages based on resource states
-                MTLRenderStages afterStages = MTLRenderStageVertex | MTLRenderStageFragment;
-                MTLRenderStages beforeStages = MTLRenderStageVertex | MTLRenderStageFragment;
+                MTLRenderStages afterStages = barrier.hasScopedAccess
+                    ? ToMTLRenderStages(barrier.accessAfter.executionScope)
+                    : MTLRenderStageVertex | MTLRenderStageFragment;
+                MTLRenderStages beforeStages = barrier.hasScopedAccess
+                    ? ToMTLRenderStages(barrier.accessBefore.executionScope)
+                    : MTLRenderStageVertex | MTLRenderStageFragment;
 
                 id<MTLResource> resource = metalBuffer->GetMTLBuffer();
                 [m_renderEncoder memoryBarrierWithResources:&resource
@@ -169,7 +219,11 @@ namespace RVX
 
     void MetalCommandContext::TextureBarrier(const RHITextureBarrier& barrier)
     {
-        if (!barrier.texture || barrier.stateBefore == barrier.stateAfter) return;
+        if (!barrier.texture ||
+            !RequiresMetalBarrier(barrier.hasScopedAccess,
+                                  barrier.dependencyKind,
+                                  barrier.stateBefore,
+                                  barrier.stateAfter)) return;
 
         auto* metalTexture = static_cast<MetalTexture*>(barrier.texture);
 
@@ -178,16 +232,23 @@ namespace RVX
             if (@available(macOS 10.14, iOS 12.0, *))
             {
                 // Determine stages based on resource states
-                MTLRenderStages afterStages = MTLRenderStageFragment;
-                MTLRenderStages beforeStages = MTLRenderStageVertex | MTLRenderStageFragment;
+                MTLRenderStages afterStages = barrier.hasScopedAccess
+                    ? ToMTLRenderStages(barrier.accessAfter.executionScope)
+                    : MTLRenderStageFragment;
+                MTLRenderStages beforeStages = barrier.hasScopedAccess
+                    ? ToMTLRenderStages(barrier.accessBefore.executionScope)
+                    : MTLRenderStageVertex | MTLRenderStageFragment;
 
                 // Adjust stages based on transition
-                if (barrier.stateBefore == RHIResourceState::RenderTarget ||
+                if (!barrier.hasScopedAccess &&
+                    (barrier.stateBefore == RHIResourceState::RenderTarget ||
                     barrier.stateBefore == RHIResourceState::DepthWrite)
+                   )
                 {
                     afterStages = MTLRenderStageFragment;
                 }
-                if (barrier.stateAfter == RHIResourceState::ShaderResource)
+                if (!barrier.hasScopedAccess &&
+                    barrier.stateAfter == RHIResourceState::ShaderResource)
                 {
                     beforeStages = MTLRenderStageVertex | MTLRenderStageFragment;
                 }
@@ -220,7 +281,11 @@ namespace RVX
 
             for (const auto& barrier : bufferBarriers)
             {
-                if (barrier.buffer && barrier.stateBefore != barrier.stateAfter)
+                if (barrier.buffer &&
+                    RequiresMetalBarrier(barrier.hasScopedAccess,
+                                         barrier.dependencyKind,
+                                         barrier.stateBefore,
+                                         barrier.stateAfter))
                 {
                     auto* metalBuffer = static_cast<MetalBuffer*>(barrier.buffer);
                     resources.push_back(metalBuffer->GetMTLBuffer());
@@ -229,7 +294,11 @@ namespace RVX
 
             for (const auto& barrier : textureBarriers)
             {
-                if (barrier.texture && barrier.stateBefore != barrier.stateAfter)
+                if (barrier.texture &&
+                    RequiresMetalBarrier(barrier.hasScopedAccess,
+                                         barrier.dependencyKind,
+                                         barrier.stateBefore,
+                                         barrier.stateAfter))
                 {
                     auto* metalTexture = static_cast<MetalTexture*>(barrier.texture);
                     resources.push_back(metalTexture->GetMTLTexture());
@@ -352,12 +421,9 @@ namespace RVX
         if (m_renderEncoder && buffer)
         {
             auto* metalBuffer = static_cast<MetalBuffer*>(buffer);
-            // Use high index for vertex buffers to avoid conflict with constant buffers
-            // Constant buffers use indices 0-9, vertex buffers use 30+
-            constexpr uint32 kVertexBufferIndexBase = 30;
             [m_renderEncoder setVertexBuffer:metalBuffer->GetMTLBuffer()
                                       offset:offset
-                                     atIndex:kVertexBufferIndexBase + slot];
+                                     atIndex:MetalVertexBufferIndex(slot)];
         }
     }
 
@@ -388,8 +454,36 @@ namespace RVX
         if (!set) return;
 
         auto* metalSet = static_cast<MetalDescriptorSet*>(set);
+        MetalPipelineLayout* pipelineLayout = m_currentGraphicsPipeline
+            ? m_currentGraphicsPipeline->GetDescriptorPipelineLayout()
+            : (m_currentComputePipeline
+                ? m_currentComputePipeline->GetDescriptorPipelineLayout()
+                : nullptr);
+        if (!pipelineLayout)
+        {
+            RVX_RHI_ERROR("MetalCommandContext: descriptor binding requires a pipeline layout");
+            return;
+        }
+
+        const auto& expectedLayouts = pipelineLayout->GetDescriptorSetLayouts();
+        if (slot >= expectedLayouts.size() ||
+            !metalSet->IsReadyForBinding(expectedLayouts[slot]))
+        {
+            RVX_RHI_ERROR("MetalCommandContext: descriptor set layout does not match pipeline slot {}", slot);
+            return;
+        }
+
+        if (dynamicOffsets.size() != metalSet->GetRequiredDynamicOffsetCount())
+        {
+            RVX_RHI_ERROR(
+                "MetalCommandContext: descriptor set {} requires {} dynamic offsets, received {}",
+                slot,
+                metalSet->GetRequiredDynamicOffsetCount(),
+                dynamicOffsets.size());
+            return;
+        }
+
         const auto& bindings = metalSet->GetBindings();
-        const auto& desc = metalSet->GetDesc();
 
         // Calculate slot offset based on set index (each set gets a range of binding points)
         // Set 0: indices 0-15, Set 1: indices 16-31, etc.
@@ -400,40 +494,15 @@ namespace RVX
         size_t dynamicOffsetIndex = 0;
 
         // Direct binding approach - bind each resource at its designated slot
-        for (size_t i = 0; i < bindings.size(); ++i)
+        for (const auto& binding : bindings)
         {
-            const auto& binding = bindings[i];
-            
-            // Skip empty bindings
-            if (!binding.buffer && !binding.texture && !binding.sampler)
-            {
-                continue;
-            }
-
-            // Calculate the final binding index
-            uint32 bindingIndex = slotOffset + static_cast<uint32>(i);
+            const uint32 bindingIndex =
+                slotOffset + binding.binding + binding.arrayElement;
 
             // Calculate effective offset (base offset + dynamic offset if applicable)
             uint64 effectiveOffset = binding.offset;
             
-            // Check if this is a dynamic buffer (from layout info if available)
-            bool isDynamicBuffer = false;
-            if (desc.layout)
-            {
-                auto* metalLayout = static_cast<MetalDescriptorSetLayout*>(desc.layout);
-                const auto& layoutDesc = metalLayout->GetDesc();
-                for (const auto& entry : layoutDesc.entries)
-                {
-                    if (entry.binding == static_cast<uint32>(i))
-                    {
-                        isDynamicBuffer = (entry.type == RHIBindingType::DynamicUniformBuffer ||
-                                          entry.type == RHIBindingType::DynamicStorageBuffer);
-                        break;
-                    }
-                }
-            }
-
-            if (isDynamicBuffer && dynamicOffsetIndex < dynamicOffsets.size())
+            if (binding.isDynamic)
             {
                 effectiveOffset += dynamicOffsets[dynamicOffsetIndex++];
             }
@@ -479,6 +548,7 @@ namespace RVX
                 }
             }
         }
+        metalSet->MarkBound();
     }
 
     void MetalCommandContext::SetPushConstants(const void* data, uint32 size, uint32 offset)
@@ -1005,12 +1075,17 @@ namespace RVX
     {
         EndCurrentEncoder();
 
+        const RHIDeviceFaultOperation operation =
+            m_presentationDrawable != nil
+                ? RHIDeviceFaultOperation::Present
+                : RHIDeviceFaultOperation::CommandSubmission;
+
         // Present drawable through command buffer for optimal scheduling
         // This allows Metal to schedule the present at the optimal time
-        if (m_pendingDrawable)
+        if (m_presentationDrawable)
         {
-            [m_commandBuffer presentDrawable:m_pendingDrawable];
-            m_pendingDrawable = nil;
+            [m_commandBuffer presentDrawable:m_presentationDrawable];
+            m_presentationDrawable = nil;
         }
 
         uint64 submittedValue = 0;
@@ -1020,6 +1095,7 @@ namespace RVX
             submittedValue = metalFence->SignalFromCommandBuffer(m_commandBuffer);
         }
 
+        m_device->ObserveCommandBuffer(m_commandBuffer, operation);
         [m_commandBuffer commit];
         return submittedValue;
     }

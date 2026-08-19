@@ -2,28 +2,32 @@
 
 /**
  * @file ResourceViewCache.h
- * @brief Automatic resource view creation and caching for RenderGraph
+ * @brief Completion-safe views for imported and persistent resources
  * 
- * ResourceViewCache manages the creation and lifecycle of RHITextureView objects.
- * Views are cached by their description hash and automatically cleaned up when
- * no longer needed.
+ * Transient RenderGraph views live with their transient pool entries. This cache
+ * is only for imported/persistent resources and strongly owns every cached view.
  */
 
 #include "RHI/RHI.h"
-#include <unordered_map>
+#include <memory>
 
 namespace RVX
 {
+    struct GPUCompletionToken;
+    class RenderRetirementQueue;
+    class RenderSubmissionTracker;
+
     /**
      * @brief Cache for GPU resource views
      * 
-     * Provides automatic view creation and caching to avoid redundant view creation
-     * each frame. Views are indexed by a combination of resource pointer and view description.
+     * Provides automatic view creation and caching to avoid redundant persistent
+     * view creation. Views are indexed by the resource instance identity and the
+     * complete view description; a recycled C++ address can never alias an old key.
      */
     class ResourceViewCache
     {
     public:
-        ResourceViewCache() = default;
+        ResourceViewCache();
         ~ResourceViewCache();
 
         // Non-copyable
@@ -38,7 +42,9 @@ namespace RVX
          * @brief Initialize the cache with a device
          * @param device The RHI device for view creation
          */
-        void Initialize(IRHIDevice* device);
+        void Initialize(IRHIDevice* device,
+                        RenderSubmissionTracker* submissionTracker = nullptr,
+                        RenderRetirementQueue* retirementQueue = nullptr);
 
         /**
          * @brief Shutdown and release all cached views
@@ -48,12 +54,15 @@ namespace RVX
         /**
          * @brief Check if the cache is initialized
          */
-        bool IsInitialized() const { return m_device != nullptr; }
+        bool IsInitialized() const;
 
         /**
          * @brief Monotonic version incremented when cached view pointers may be invalidated
          */
-        uint64 GetGeneration() const { return m_generation; }
+        uint64 GetGeneration() const;
+
+        /** @brief Stamp views touched since the previous submission with its actual token. */
+        void NotifySubmission(const GPUCompletionToken& completion);
 
         // =========================================================================
         // View Acquisition
@@ -141,53 +150,8 @@ namespace RVX
         void ResetFrameStats();
 
     private:
-        // Cache identity uses GPU-visible view parameters. debugName is intentionally
-        // excluded because it does not change the created view semantics.
-        struct TextureViewKey
-        {
-            RHITexture* texture = nullptr;
-            RHIFormat format = RHIFormat::Unknown;
-            RHITextureDimension dimension = RHITextureDimension::Texture2D;
-            RHISubresourceRange subresourceRange;
-            RHITextureViewType type = RHITextureViewType::ShaderResource;
-
-            bool operator==(const TextureViewKey& other) const
-            {
-                return texture == other.texture &&
-                       format == other.format &&
-                       dimension == other.dimension &&
-                       type == other.type &&
-                       subresourceRange.baseMipLevel == other.subresourceRange.baseMipLevel &&
-                       subresourceRange.mipLevelCount == other.subresourceRange.mipLevelCount &&
-                       subresourceRange.baseArrayLayer == other.subresourceRange.baseArrayLayer &&
-                       subresourceRange.arrayLayerCount == other.subresourceRange.arrayLayerCount &&
-                       subresourceRange.aspect == other.subresourceRange.aspect;
-            }
-        };
-
-        struct TextureViewKeyHash
-        {
-            size_t operator()(const TextureViewKey& key) const;
-        };
-
-        static TextureViewKey MakeTextureViewKey(RHITexture* texture, const RHITextureViewDesc& desc);
-
-        struct CachedTextureView
-        {
-            RHITextureViewRef view;
-            RHITexture* texture = nullptr;
-            uint32 lastUsedFrame = 0;
-        };
-
-        IRHIDevice* m_device = nullptr;
-        uint32 m_currentFrame = 0;
-        uint64 m_generation = 0;
-
-        // Cache maps: hash -> cached view
-        std::unordered_map<TextureViewKey, CachedTextureView, TextureViewKeyHash> m_textureViews;
-
-        // Statistics
-        mutable Stats m_stats;
+        class Impl;
+        std::unique_ptr<Impl> m_impl;
     };
 
 } // namespace RVX

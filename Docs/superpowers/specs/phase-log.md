@@ -42174,66 +42174,5222 @@ ctest --test-dir build\win_x64_debug -C Debug -R "UIValidation|RVXEditorWorkspac
 
 ---
 
-### R-SP: `<id and title>`
+### R-SP313 M2 compact shader interface and graphics pipeline preflight
 
-**Date:**
-**Commit:**
-**Spark plan review agent:**
-**Spark code review agent:**
+**Date:** 2026-07-30
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
 
 **Plan source:**
 
 - Document:
-- Section:
-- Lines checked:
+  `Docs/superpowers/plans/2026-07-26-m2-tier1-rhi-proof-master-plan.md`
+- Section: Task 22 / shared-plan CH3
+- Lines checked: compact shader interface, graphics-pipeline preflight, rigid
+  GPU-driven signatures, and three-primary-backend translation checkpoint
 
-**Prerequisite status:** PASS / BLOCKED
+**Prerequisite status:** PASS
 
-- Previous R-SP:
-- Evidence:
+- Previous R-SP: M2 Task 21 CH2 normalized native validation message sink
+- Evidence: M1 entry gate and CH1-CH2 records are locked in the M2 plans.
 
 **Approved scope:**
 
--
+- Enrich shader reflection and retain only a compact owned RHI interface.
+- Fail invalid graphics pipeline descriptors before native PSO creation.
+- Split rigid GPU-driven and skinned direct-draw vertex signatures.
+- Complete DX12/Vulkan/Metal vertex translation structure checks.
 
 **Out of scope:**
 
--
+- Descriptor completeness and in-flight replacement (Task 23).
+- Scoped dependency/state handoff (Task 24).
+- Metal real-device closure (Task 27).
+- Editor implementation.
 
 **Files changed:**
 
--
+- `RHI/Include/RHI/RHIShader.h`
+- `RHI/Include/RHI/RHIPipelineValidation.h`
+- `RHI/Private/RHIShader.cpp`
+- `RHI/Private/RHIPipelineValidation.cpp`
+- `ShaderCompiler/`
+- `RHI_DX12/`, `RHI_Vulkan/`, `RHI_Metal/`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Render/Shaders/UI.hlsl`
+- `UI/Private/UIRenderer.cpp`
+- `Tests/RHIPipelineValidation/` and related regression tests
 
 **Validation commands:**
 
 ```powershell
-
+cmake --build build\win_x64_debug --config Debug --target `
+  RHIPipelineValidation ShaderCompilerValidation PipelineCacheValidation `
+  UIValidation CrossBackendValidation RHIConformanceValidation ModelViewer
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure `
+  -R "^(RHIPipelineValidation\.|ShaderCompilerValidationFixture\.|ModelViewerGPUDrivenSmoke$)"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure -j 4 `
+  -R "^(ShaderCompilerValidationFixture\.|PipelineCacheValidationFixture\.|CrossBackendValidation\.|RHIConformanceValidation\.|Architecture\.)"
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure `
+  -R "^(UIValidation\.|ModelViewerGPUDrivenDisabledSmoke$)"
 ```
 
 **Validation result:**
 
-- Build:
-- Tests:
-- Visual gate: PASS / BLOCKED / N/A
+- Build: PASS for RHI, ShaderCompiler, Render, ModelViewer, DX12, Vulkan,
+  DX11, and OpenGL targets on Windows.
+- Tests: PASS; focused pipeline/shader/DX12 smoke 25/25, combined
+  shader/pipeline/RHI/architecture 181/181, UI 43 passed with 2
+  environment-dependent skips, and disabled GPU-driven smoke passed.
+- Visual gate: N/A for Task 22. The bounded GPU-driven integration smoke
+  passed; the historical color golden remains a separately tracked baseline
+  review and was not updated.
 
 **Artifacts:**
 
-- Logs:
-- Screenshots:
-- Diffs:
+- Logs: CTest output in the local build tree.
+- Screenshots: No source artifact added.
+- Diffs: No generated golden checked in.
 
 **Spark plan review result:**
 
-- Verdict:
-- Blockers resolved:
+- Verdict: N/A
+- Blockers resolved: N/A
 
 **Spark code review result:**
 
-- Verdict:
-- Blockers resolved:
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: endian-independent interface hash, effective-location
+  collisions, portable input-rate validation, per-slot translation, complete
+  supported D3D resource mapping, and portable UI texture/sampler bindings.
 
 **Notes / follow-ups:**
 
--
+- Metal passed the structural source checkpoint only; macOS compile and
+  real-device validation remain Task 27 evidence.
+- Descriptor snapshot completeness and Metal binding-index allocation belong
+  to Task 23 and must be resolved before the shared descriptor contract is
+  frozen.
+
+---
+
+### R-SP314 M2 complete immutable descriptor snapshots
+
+**Date:** 2026-08-01
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-07-26-m2-tier1-rhi-proof-master-plan.md`
+- Section: Task 23 / shared-plan CH4
+- Lines checked: descriptor completeness, resource-data volatility,
+  replacement/retirement, and three-primary-backend translation checkpoint
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP313 M2 compact shader interface and graphics pipeline
+  preflight
+- Evidence: Task 22/CH3 is committed at `8c28d8f5` and its validation record
+  is complete.
+
+**Approved scope:**
+
+- Materialize one canonical, complete descriptor snapshot at creation.
+- Reject every missing/duplicate/invalid binding array element and incompatible
+  bind-time layout/dynamic-offset combination.
+- Keep referenced resource-data volatility independent from snapshot lifetime.
+- Require descriptor changes to use owner replacement and completion-point
+  retirement.
+- Translate the frozen contract through DX12, Vulkan, and Metal structures,
+  while retaining DX11/OpenGL compatibility behavior.
+
+**Out of scope:**
+
+- Partial/null descriptor binding as a base-tier capability.
+- Bindless descriptor indexing and residency policy.
+- Metal argument-buffer optimization and macOS real-device closure (Task 27).
+- Scoped access/state handoff and transient-pool lease closure (Task 24/CH5).
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHIDescriptor.h`
+- `RHI_DX12/`, `RHI_Vulkan/`, `RHI_Metal/`, `RHI_DX11/`, and `RHI_OpenGL/`
+- `Render/Private/Passes/RayTracedShadowPass.cpp`
+- `Render/Private/Passes/RayTracedReflectionPass.cpp`
+- RHI/backend/pipeline validation tests
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RHIContractValidation PipelineCacheValidation DX12Validation `
+  VulkanValidation DX11Validation CrossBackendValidation
+build\win_x64_debug\Tests\Debug\RHIContractValidation.exe
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+build\win_x64_debug\Tests\Debug\DX12Validation.exe
+build\win_x64_debug\Tests\Debug\VulkanValidation.exe
+build\win_x64_debug\Tests\Debug\DX11Validation.exe
+build\win_x64_debug\Tests\Debug\CrossBackendValidation.exe
+build\win_x64_debug\Tests\Debug\RenderLifetimeCutoverValidation.exe
+build\win_x64_debug\Tests\Debug\MaterialSystemValidation.exe
+build\win_x64_debug\Tests\Debug\GPUDrivenValidation.exe
+build\win_x64_debug\Tests\Debug\UIValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe `
+  --gtest_filter="*Descriptor*"
+```
+
+**Validation result:**
+
+- Build: PASS for the shared RHI, Render, DX12, Vulkan, DX11, OpenGL, and all
+  selected validation targets on Windows.
+- Tests: PASS; RHI contract 37/37, pipeline cache 126/126, DX12 30/30,
+  Vulkan 25/25, DX11 23/23, cross-backend 11/11, lifetime cutover 11/11,
+  material 32/32, GPU-driven 12/12, UI 43 passed with 2 environment-dependent
+  skips, RenderPass 139/139, and focused descriptor honesty 3/3.
+- Visual gate: N/A. Task 23 changes binding correctness and does not approve or
+  replace a visual golden.
+
+**Artifacts:**
+
+- Logs: validation executable output in the local build tree.
+- Screenshots: No source artifact added.
+- Diffs: complete ray-tracing arrays use explicit typed fallback resources; no
+  generated asset was checked in.
+
+**Spark plan review result:**
+
+- Verdict: N/A
+- Blockers resolved: device capability checks, complete array materialization,
+  atomic publication, bind-time readiness, and in-flight mutation refusal.
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: DX12 descriptor/data volatility conflation, partial RT
+  arrays, mutable backend sets, layout-identity drift, and dynamic-offset count
+  mismatch.
+
+**Notes / follow-ups:**
+
+- Metal is a structural checkpoint on Windows. Task 27 owns macOS compilation,
+  argument/resource binding ABI closure, and real-device evidence.
+- A full `RenderHonestyValidation` run had one unrelated host temporary-folder
+  permission failure in `CookDirectoryManifestRejectsSuccessWithoutOutput`;
+  all three descriptor-focused honesty cases passed.
+- The Vulkan suite still reports its pre-existing signaled-fence submission and
+  placed-buffer device-address allocation validation messages; neither path was
+  changed by Task 23 and both remain follow-up work for Task 26.
+- Task 24/CH5 is next and introduces scoped dependency snapshots plus persistent
+  state handoff for external and pooled resources.
+
+---
+
+### R-SP315 M2 scoped access and lifetime handoff closure
+
+**Date:** 2026-08-01
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-07-26-m2-tier1-rhi-proof-master-plan.md`
+- Section: Task 24 / shared-plan CH5
+- Lines checked: scoped dependency snapshots, owner import/export handoff,
+  transient leases, persistent GPU-culling state, and three-primary-backend
+  translation checkpoint
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP314 M2 complete immutable descriptor snapshots
+- Evidence: Task 23/CH4 is committed at `54defcd1` and its validation record
+  is complete.
+
+**Approved scope:**
+
+- Add a backend-neutral access snapshot separating execution scope, memory
+  access, layout, physical queue domain, content validity, and legacy state.
+- Preserve same-layout memory dependencies and explicit discard intent.
+- Carry realized snapshots through RenderGraph imports/exports, transient
+  texture/buffer leases, persistent owners, and non-graph producers.
+- Diagnose planned-before versus realized access and compatibility projections.
+- Establish DX12, Vulkan, and Metal translation-structure checkpoints while
+  retaining conservative DX11/OpenGL compatibility behavior.
+
+**Out of scope:**
+
+- DX12 optimized-clear and full native correctness closure (Task 25).
+- Vulkan paired queue-family release/acquire submission closure (Task 26).
+- Metal compilation and real-device validation (Task 27).
+- Editor implementation.
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHIAccess.h` and `RHI/Private/RHIAccess.cpp`
+- `RHI/Include/RHI/RHICommandContext.h`
+- `RHI_DX12/`, `RHI_Vulkan/`, `RHI_Metal/`, and `RHI_OpenGL/` command paths
+- `Render/Include/Render/Graph/` and `Render/Private/Graph/`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- GPU-culling, upload, and render-resource registry owners
+- RHI, RenderGraph, upload, GPU-driven, DX12, and Vulkan validation tests
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RenderGraphValidation RHIContractValidation `
+  RenderLifetimeCutoverValidation CrossBackendValidation `
+  DX12Validation VulkanValidation GPUUploadServiceValidation `
+  GPUDrivenValidation RenderHonestyValidation
+ctest --test-dir build\win_x64_debug -C Debug --output-on-failure `
+  -R "^(RHIContractValidation|RenderGraphValidation|RenderLifetimeCutoverValidation|CrossBackendValidation|DX12Validation|VulkanValidation)\."
+build\win_x64_debug\Tests\Debug\GPUUploadServiceValidation.exe
+build\win_x64_debug\Tests\Debug\GPUDrivenValidation.exe
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe
+```
+
+**Validation result:**
+
+- Build: PASS for shared RHI/Render, DX12, Vulkan, OpenGL, and all selected
+  validation targets on Windows.
+- Tests: PASS; combined RHI/RenderGraph/lifetime/DX12/Vulkan/cross-backend
+  selection 162/162, GPU upload 12/12, GPU-driven 12/12, and Render honesty
+  75/75.
+- Real-device barrier checkpoint: PASS under the DX12 Debug Layer and Vulkan
+  validation layer for same-state scoped UAV dependencies.
+- Visual gate: N/A. Task 24 changes dependency/lifetime correctness and does
+  not approve or replace a visual golden.
+
+**Artifacts:**
+
+- Logs: CTest and validation executable output in the local build tree.
+- Screenshots: No source artifact added.
+- Diffs: No generated golden or runtime asset was checked in.
+
+**Spark plan review result:**
+
+- Verdict: N/A
+- Blockers resolved: the approved Task 24/CH5 boundary was implemented without
+  expanding into backend-native closure tasks.
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: equal-state barrier elision, discard/state conflation,
+  pooled-resource reset to `Undefined`, GPU-culling reset to `Common`, stale
+  planned-before sources, and incomplete single-sided Vulkan ownership
+  transfer encoding.
+
+**Notes / follow-ups:**
+
+- Metal is a structural checkpoint on Windows; Task 27 owns macOS build and
+  real-device evidence.
+- The shared contract exposes physical ownership changes, but Vulkan keeps
+  native queue-family indices ignored until Task 26 emits the required source
+  release and destination acquire pair with submission synchronization.
+- Task 25 is next and closes DX12 native correctness, optimized clears,
+  GPU-driven fallback diagnostics, and bounded ModelViewer integration.
+
+---
+
+### R-SP316 M2 DX12 native correctness closure
+
+**Date:** 2026-08-01
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-07-26-m2-dx12-correctness-closure-implementation-plan.md`
+- Parent:
+  `Docs/superpowers/plans/2026-07-26-m2-tier1-rhi-proof-master-plan.md`
+- Section: Task 25 / DX1-DX8
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP315 M2 scoped access and lifetime handoff closure
+- Evidence: Task 24 is committed at `48216400`; Tasks 22-24 shared contracts
+  were present before native DX12 closure began.
+
+**Approved scope:**
+
+- Translate optional optimized clear metadata exactly for committed and placed
+  DX12 textures, including reverse-Z depth and pooled-resource identity.
+- Validate render-pass attachment format/sample compatibility before native PSO
+  binding.
+- Add explicit placed-resource alias ownership barriers and prevent reuse of a
+  byte range while any overlapping replacement remains live.
+- Preserve direct drawing on indirect-preparation failure and publish stable
+  requested/readiness/eligibility/submission/fallback diagnostics.
+- Close shared post-process descriptor tables with deterministic fallback
+  resources.
+- Add normal Debug Layer, visual, disabled-fallback, and dedicated GBV gates.
+
+**Out of scope:**
+
+- Vulkan synchronization2 and paired queue-family ownership transfer (Task 26).
+- Metal compilation and real-device evidence (Task 27).
+- DX11/OpenGL optimization beyond conservative compatibility behavior.
+- Editor implementation.
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHITexture.h`, `RHICommandContext.h`, and
+  `RHICapabilities.h`
+- `RHI_DX12/Private/DX12Resources.*`, `DX12Pipeline.*`,
+  `DX12CommandContext.*`, and `DX12Device.cpp`
+- RenderGraph compiler/executor/transient-pool implementation
+- SceneRenderer, OpaquePass, render diagnostics, and post-process pass bindings
+- ModelViewer smoke/GBV CLI and `Tests/CMakeLists.txt`
+- Focused RHI, RenderGraph, GPU-driven, RenderPass, DX12, particle guardrail,
+  architecture-gate, and golden artifacts
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RHIContractValidation PipelineCacheValidation RenderGraphValidation `
+  GPUDrivenValidation RenderPassValidation DX12Validation `
+  RHIConformanceValidation ModelViewer VisualGoldenValidation -- /m:1
+ctest --preset win_x64_debug_unit_lint
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File Scripts\run_architecture_baseline.ps1 `
+  -BuildDir build\win_x64_debug -Configuration Debug
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenGBVSmoke|GPUDrivenVisualGoldenValidation|ModelViewerGPUDrivenDisabledSmoke)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Build: PASS from a clean configure/build with DX11, DX12, Vulkan, and OpenGL
+  enabled; all Task 25 targets also pass after GBV registration.
+- Tests: PASS; full unit/lint 1386/1386 with three platform-condition skips,
+  architecture baseline 171/171 with one platform-condition skip, and the
+  focused RHI/Render/DX12 suites pass in the same CTest inventory.
+- Visual gate: PASS; normal GPU-driven smoke, zero-tolerance R7 golden,
+  disabled direct fallback, and dedicated one-frame GBV smoke are 4/4.
+- Native diagnostics: zero RHI/DX12 errors or warnings, `DATA_STATIC`
+  diagnostics, state mismatches, optimized-clear mismatches, and incomplete
+  descriptor diagnostics in the combined integration log.
+
+**Artifacts:**
+
+- Logs: `build/win_x64_debug/Testing/Temporary/LastTest.log` and local
+  `build/win_x64_debug/BuildTruth/` reports.
+- Golden: `Tests/Golden/ModelViewer/R11_GPUDriven_DX12_320x180.ppm`.
+- Diffs: generated visual diff is empty under zero tolerance and remains in the
+  ignored build artifact tree.
+
+**Spark plan review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: incomplete descriptor fallbacks, implicit optimized-clear
+  defaults, missing alias ownership barriers, and a validation regex that
+  omitted Fixture-named suites.
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: alias allocation now checks every overlapping live byte
+  range; schema assertions follow public constants; the particle depth guard
+  follows scoped `SetExportAccess`; and normal/GBV logs remain zero-error.
+
+**Notes / follow-ups:**
+
+- The first Fresh Build Truth configure required restoring the existing
+  `VCPKG_ROOT=E:\WorkSpace\vcpkg`. Its first full test pass then exposed one
+  stale Task 24 source guard; after correction the complete 1386-test inventory
+  passed.
+- Task 26 is next and must preserve the frozen shared semantics while adding
+  Vulkan-native synchronization2 and paired queue-family release/acquire.
+
+---
+
+### R-SP317 GPU-driven backend qualification policy
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-08-02-gpu-driven-backend-qualification-plan.md`
+- Section: Stage 1 / qualification infrastructure
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP316 M2 DX12 native correctness closure
+- Evidence: DX12 normal validation, deterministic visual golden, forced direct
+  fallback, and dedicated GPU-Based Validation gates are already green.
+
+**Approved scope:**
+
+- Make `Auto` the shipping policy while retaining forced development overrides.
+- Replace the backend qualification boolean with a reviewed, versioned evidence
+  record and derived maturity level.
+- Keep DX12 quarantined as Candidate until cross-path parity, real-asset, and
+  adapter/driver matrix gates close.
+- Export qualification revision and missing gates through render diagnostics.
+- Add a native DX12 smoke that validates either side of the unchanged Auto
+  policy as backend qualification evolves.
+
+**Out of scope:**
+
+- Promoting DX12 to Qualified before the three remaining gates exist.
+- Qualifying Vulkan or Metal without backend-native evidence.
+- Making GPU-driven a shipping user quality option.
+- Editor implementation.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUDriven/GPUDrivenQualification.h`
+- `Render/Include/Render/GPUDriven/GPUDrivenPolicy.h`
+- SceneRenderer feature/tool diagnostics
+- ModelViewer GPU-driven policy smoke CLI
+- GPU-driven, RenderPass, and ModelViewer CTest registration
+- Qualification plan and phase log
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  GPUDrivenValidation RenderPassValidation ModelViewer -- /m:1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(GPUDrivenValidationFixture\.|RenderPassValidationFixture\.(DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams|OpaquePassFallsBackToDirectDrawWhenGPUDrivenPipelineFails|OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)$)" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^ModelViewerGPUDrivenAutoPolicySmoke$" --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenGBVSmoke|GPUDrivenVisualGoldenValidation|ModelViewerGPUDrivenDisabledSmoke|GPUDrivenDisabledVisualDiffValidation)$" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^SceneRendererDiagnosticsValidation\." --output-on-failure
+```
+
+**Validation result:**
+
+- Build: PASS for GPUDrivenValidation, RenderPassValidation, and ModelViewer.
+- Tests: PASS; policy/unit/multi-batch selection 23/23, Auto-policy smoke 1/1,
+  forced-on/GBV/golden/forced-off suite 5/5, diagnostics 4/4.
+- Visual gate: PASS; forced GPU-driven retains the zero-tolerance golden and
+  the direct fallback remains observably distinct for the culling fixture.
+- Auto gate: PASS; DX12 Candidate resolves to the direct path with an explicit
+  `BackendNotQualified` reason and non-empty missing evidence.
+
+**Artifacts:**
+
+- Plan:
+  `Docs/superpowers/plans/2026-08-02-gpu-driven-backend-qualification-plan.md`
+- Existing golden: `Tests/Golden/ModelViewer/R11_GPUDriven_DX12_320x180.ppm`
+- CTest log: `build/win_x64_debug/Testing/Temporary/LastTest.log`
+
+**Spark plan review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: mutable qualification boolean, hidden evidence state,
+  and a default policy that could be promoted without an integration assertion.
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: maturity is derived from required/passed masks, forced-on
+  still respects capabilities and pipeline readiness, and Auto remains fail
+  closed while exposing the exact missing gate names.
+
+**Notes / follow-ups:**
+
+- Stage 2 is completed and recorded under R-SP318.
+- The existing R7 culling scene remains valuable for work-reduction proof but
+  is intentionally insufficient for production qualification.
+
+---
+
+### R-SP318 GPU-driven DX12 cross-path parity
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- Document:
+  `Docs/superpowers/plans/2026-08-02-gpu-driven-backend-qualification-plan.md`
+- Section: Stage 2 / Cross-path parity
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP317 GPU-driven backend qualification policy
+- Evidence: the versioned qualification policy and DX12 Candidate rev1 Auto
+  quarantine are active and covered by native smoke tests.
+
+**Approved scope:**
+
+- Capture the same deterministic visible set through forced GPU-driven and
+  forced direct paths.
+- Require compute culling plus indirect submission on the GPU-driven capture.
+- Require direct draws and zero indirect submission on the forced-off capture.
+- Compare both captures at zero per-channel tolerance and zero differing pixels.
+- Update the reviewed DX12 qualification manifest only after all gates pass.
+
+**Out of scope:**
+
+- Treating the single-object fixture as a real-asset regression.
+- Promoting DX12 to Qualified before real-asset and adapter/driver evidence.
+- Changing Auto behavior while DX12 remains Candidate.
+
+**Files changed:**
+
+- `Samples/Showcase/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Render/Include/Render/GPUDriven/GPUDrivenQualification.h`
+- GPU-driven qualification plan and phase log
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  GPUDrivenValidation ModelViewer VisualGoldenValidation -- /m:1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(GPUDrivenValidationFixture\.|RenderPassValidationFixture\.(DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams|OpaquePassFallsBackToDirectDrawWhenGPUDrivenPipelineFails|OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)$|SceneRendererDiagnosticsValidation\.|ModelViewerGPUDrivenSmoke$|ModelViewerGPUDrivenAutoPolicySmoke$|ModelViewerGPUDrivenParityGPUSmoke$|ModelViewerGPUDrivenParityDirectSmoke$|GPUDrivenCrossPathVisualParityValidation$|ModelViewerGPUDrivenGBVSmoke$|GPUDrivenVisualGoldenValidation$|ModelViewerGPUDrivenDisabledSmoke$|GPUDrivenDisabledVisualDiffValidation$)" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Build: PASS for GPUDrivenValidation, ModelViewer, and VisualGoldenValidation.
+- Focused parity gate: PASS 3/3 on the native DX12 adapter with validation.
+- Combined qualification regression: PASS 36/36.
+- Visual result: 320x180, tolerance 0, different pixels 0, MSE 0, PSNR 100.
+- Qualification result: DX12 advances to Candidate rev2 with 11/13 gates;
+  Auto remains on the direct path because two required gates remain open.
+
+**Artifacts:**
+
+- Report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json`
+- Captures: `R11_GPUDrivenParityGPU_DX12_320x180.ppm` and
+  `R11_GPUDrivenParityDirect_DX12_320x180.ppm` in the same artifact directory.
+
+**Spark plan review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: comparison no longer mixes visible-set changes with path
+  equivalence, and each capture proves the intended submission path.
+
+**Spark code review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: the manifest is updated only after generated evidence
+  passes, and the existing culling-effect test remains a separate invariant.
+
+**Notes / follow-ups:**
+
+- Stage 3 is the checked-in, redistributable multi-mesh/material real-asset
+  regression.
+
+---
+
+### R-SP319 Production asset onboarding and deterministic camera fit
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Spark plan review agent:** N/A
+**Spark code review agent:** N/A
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-production-asset-onboarding-plan.md`
+- `Docs/superpowers/plans/2026-08-02-gpu-driven-backend-qualification-plan.md`
+- Sections: Production asset Stages 1-3; GPU-driven qualification Stage 3A-C
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP318 GPU-driven DX12 cross-path parity
+- Evidence: DX12 remains Candidate rev2; the synthetic direct/GPU parity gate
+  passes exactly while real-asset and adapter/driver gates remain open.
+
+**Approved scope:**
+
+- Audit the developer model library and select a license-complete static
+  multi-mesh/material asset for stress validation.
+- Add deterministic bounds camera fitting without changing existing smoke
+  goldens by default.
+- Fail real-asset smokes when the final frame contains no visible model object.
+- Add an opt-in external-asset CTest layer and keep it separate from hermetic
+  production qualification evidence.
+
+**Out of scope:**
+
+- Committing the 70-130 MiB downloaded source assets unchanged.
+- Claiming support for glTF required specular-glossiness, skins, or animations.
+- Marking `RealAssetRegression` passed before a checked-in qualification asset
+  and native direct/GPU evidence exist.
+
+**Files changed:**
+
+- `Samples/Common/Include/Samples/ModelCameraFraming.h`
+- `Samples/Common/Private/ModelCameraFraming.cpp`
+- `Samples/Common/CMakeLists.txt`
+- `Samples/Showcase/ModelViewer/main.cpp`
+- `Tests/ModelCameraFramingValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `assets/README.md`
+- Production asset and GPU-driven qualification plans
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelCameraFramingValidation ModelViewer GPUDrivenValidation RenderPassValidation
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelCameraFramingValidation\.|GPUDrivenValidationFixture\.|RenderPassValidationFixture\.(DepthPrepassConsumesGPUDrivenMultiMeshIndirectStreams|OpaquePassFallsBackToDirectDrawWhenGPUDrivenPipelineFails|OpaquePassConsumesGPUDrivenMaterialGroupedIndirectStreams)$)" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug -N `
+  -R "ExternalPorsche|ModelViewerExternalPorsche"
+```
+
+**Validation result:**
+
+- Asset audit: PASS; seven external glTF packages have complete referenced
+  dependencies, and license/capability boundaries are recorded.
+- Porsche source identity: 30 files, 74,214,810 bytes, aggregate manifest
+  SHA-256 `54f715c0b6c12fc39326476f4cf6794c9720857fbaccde57326ad5e43c46b381`.
+- Pre-change native baseline: DamagedHelmet direct PASS with one draw; Porsche
+  and Spartan parse/instantiate but fail visibility with identical
+  background-only hashes and zero direct draws under the fixed camera.
+- Build: PASS for ModelCameraFramingValidation, ModelViewer,
+  GPUDrivenValidation, and RenderPassValidation.
+- CPU/unit regression: PASS 27/27, including camera framing 4/4.
+- External CTest registration: PASS; direct, GPU-driven multi-batch, and parity
+  tests register only with the explicit asset root.
+- Post-change native visual gate: PENDING; local GUI/DX12 execution was rejected
+  after the approval quota was exhausted, so no result is inferred.
+
+**Artifacts:**
+
+- Pre-change captures:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/UserAssets_*_Direct_DX12_320x180.ppm`
+- External post-change captures/report are configured under:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ExternalAssets/`
+
+**Spark plan review result:**
+
+- Verdict: PASS (local best-practice review)
+- Blockers resolved: fixed-camera false negatives, parse-success false positives,
+  missing license guard, and accidental mandatory dependency on large assets.
+
+**Spark code review result:**
+
+- Verdict: PASS for build/CPU/CMake registration; native visual evidence pending
+- Blockers resolved: smoke/golden default remains fixed, automatic fit is
+  explicit in real-asset tests, and external evidence cannot promote the
+  qualification manifest.
+
+**Notes / follow-ups:**
+
+- Run the three `ExternalPorsche` tests when native execution approval is
+  available. Keep DX12 Candidate until the hermetic asset and adapter matrix
+  gates close.
+
+---
+
+### R-SP320 Render-policy Task 0 real-asset baseline closure
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Spark plan review agent:** N/A; primary architect plus read-only explorer review
+**Spark code review agent:** N/A; terra implementation with primary review
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- Task 0 - Freeze and record the reference baseline
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP319 Production asset onboarding and deterministic camera fit
+- Evidence: the synthetic cross-path parity gate was green, while the external
+  Porsche gates and dedicated GPU-Based Validation smoke still exposed two
+  independent runtime defects.
+
+**Approved scope:**
+
+- Add an explicit bounded model render-resource readiness wait for external
+  smoke tests without changing normal Sample startup behavior.
+- Give dedicated GPU-Based Validation frames a matching bounded wait timeout.
+- Restore DX12 indirect instance addressing without requiring Shader Model 6.8.
+- Add the missing intra-pass UAV memory dependency and N+1 draw-counter capacity.
+- Preserve the failing pre-closure evidence and record the green post-fix baseline.
+
+**Out of scope:**
+
+- Promoting DX12 from Candidate or changing Auto policy.
+- Updating golden images, visual thresholds, or qualification masks.
+- Implementing Task 1 policy vocabulary or Task 2 draw packets.
+- Vulkan/Metal GPU-driven qualification and Editor work.
+
+**Files changed:**
+
+- `Samples/Showcase/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Tests/GPUDrivenValidation/main.cpp`
+
+**Root cause:**
+
+- DX12 `SV_InstanceID` does not include indirect `StartInstanceLocation`.
+  Every one-instance indirect draw therefore indexed `GPUDrivenInstances[0]`,
+  applying one node transform to all 51 Porsche draw items.
+- `CSFrustumCull` and `CSCompactDraws` also lacked an explicit same-pass UAV
+  dependency, and the draw-count allocation/dispatch did not cover the final
+  per-group counter at exact 64-instance boundaries.
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  GPUDrivenValidation RenderPassValidation ModelViewer -- /m:1
+build\win_x64_debug\Tests\Debug\GPUDrivenValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe `
+  --gtest_filter="*GPUDriven*:*RenderGraph*"
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Focused build: PASS for GPUDrivenValidation, RenderPassValidation, and ModelViewer.
+- Focused unit/pass review: PASS 23/23 and 8/8.
+- Independent regression matrix: PASS 359/359 with no failures, skips,
+  timeouts, or retries; includes RenderContracts 201/201, RenderPass 114/114,
+  and non-Porsche ModelViewer GPU/GBV/visual gates 9/9.
+- Porsche native DX12 gates: PASS 3/3; 75 visible objects, 51 direct draws,
+  and 51 GPU-driven graph inputs/batches/indirect draws.
+- Cross-path result: tolerance 0, different pixels 0, MSE 0, PSNR 100;
+  Direct and GPU captures share SHA-256
+  `FD02DDBB1305528680072C6DD15696CB27A44B89D3441571741CB8D4BBF2B2CA`.
+
+**Artifacts:**
+
+- Closure summary:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/Baseline/Task0_baseline_summary.json`
+- Preserved failing summary:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/Baseline/Task0_baseline_preclosure_summary.json`
+- Porsche parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ExternalAssets/Porsche_CrossPath_DX12_320x180.json`
+- Post-fix logs: `build/win_x64_debug/BaselineEvidence/10_task0_*_postfix.log`
+  through `16_task0_modelviewer_gpu_lasttest_postfix.log`.
+
+**Review result:**
+
+- Verdict: PASS.
+- The fix keeps `vs_6_0` and uses a portable identity per-instance vertex
+  stream, so indirect `firstInstance` selects an explicit structured-buffer
+  index through IA on DX12 and remains suitable for future Vulkan/Metal paths.
+- The identity stream is tracked as a RenderGraph vertex-buffer read; the
+  compute producer/consumer dependency uses the existing scoped RHI barrier API.
+
+**Notes / follow-ups:**
+
+- DX12 remains Candidate; this external developer asset does not satisfy the
+  checked-in hermetic asset or adapter/driver matrix qualification gates.
+- Task 0 is closed. The next implementation stage is Task 1 immutable policy
+  vocabulary and execution-plan contracts.
+
+---
+
+### R-SP321 Render-policy Task 1 immutable contracts
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Plan review agent:** Primary architect plus read-only explorer
+**Code implementation agent:** terra worker with primary review
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- Task 1 - Add vocabulary and immutable policy contracts
+- Architectural invariants 3.2, 3.3, and target contract 4.3
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP320 Render-policy Task 0 real-asset baseline closure
+- Evidence: focused and full CPU suites were green; DX12 Direct/GPU synthetic
+  and Porsche captures had zero-pixel parity before Task 1.
+
+**Approved scope:**
+
+- Add stable policy vocabulary for GPU-driven tier, visibility, submission,
+  semantic pass kind, execution status, and stable reason codes.
+- Separate the external request, selected value-only execution plan, and
+  observed value-only execution report.
+- Preserve planned GPU and Direct packet partitions and report both lanes
+  independently for future hybrid execution.
+- Publish an unconnected, stage-aware diagnostics value projection.
+- Add CPU-only contract validation without changing renderer selection or
+  command recording.
+
+**Out of scope:**
+
+- Runtime policy resolution, per-view plan compilation, packet construction,
+  or migration of the existing `GPUDrivenPolicyDecision`.
+- RHI capability expansion, RenderGraph scheduling changes, and backend work.
+- Qualification promotion, golden or threshold changes, and Editor work.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderPolicyTypes.h`
+- `Render/Include/Render/Policy/RenderFrameExecutionPlan.h`
+- `Render/Include/Render/Policy/RenderPolicyDiagnostics.h`
+- `Render/Include/Render/RenderDiagnostics.h`
+- `Tests/RenderPolicyValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+
+**Contract review corrections:**
+
+- Default selection remains fail-closed: Direct tier, CPU visibility, Direct
+  submission, no planned packets, and no observed execution.
+- Default qualification now carries the full required gate mask rather than a
+  misleading zero-requirement mask.
+- Request, plan, and report availability are independent, so one stage cannot
+  imply completion of a later stage.
+- Per-pass reports retain independent GPU-driven and Direct lane facts plus a
+  skipped count; a hybrid pass is not collapsed into one submission mode.
+- `fallbackSubmission` is explicitly a graph-compile-time planned partition,
+  never permission for a recording-time silent fallback.
+- Plans and reports contain only owned values, enums, counts, and vectors; no
+  RHI object, command context, RenderGraph handle, pointer, or callback appears.
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RenderPolicyValidation -- /m:1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^RenderPolicyValidation\." --output-on-failure
+
+cmake --build build\win_x64_debug --config Debug --target `
+  RenderContractsValidation GPUDrivenValidation RenderSceneValidation `
+  RenderPassValidation -- /m:1
+
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelViewer VisualGoldenValidation -- /m:1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Task-local contract tests: PASS 5/5, including every legal enum value/name,
+  invalid enum names, fail-closed defaults, stage separation, copy/move value
+  semantics, and independent hybrid execution lanes.
+- Independent regression: PASS 372/372; RenderContracts 201/201,
+  GPUDriven 23/23, RenderScene 8/8, and RenderPass 140/140.
+- Synthetic DX12 Direct/GPU visual gate: PASS 3/3; different pixels 0,
+  MSE 0, PSNR 100, tolerance 0.
+- Direct and GPU capture SHA-256 both remain exactly equal to the Task 0
+  baseline: `DD0FDD9B0FB7A6BA85E4350359B6358BCF2D051070F1615AEE822A18B079FB06`.
+- `git diff --check`: PASS; only existing LF-to-CRLF conversion warnings.
+
+**Artifacts:**
+
+- Visual parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json`
+- Task 0 comparison baseline:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/Baseline/Task0_baseline_summary.json`
+
+**Review result:**
+
+- Verdict: PASS after contract revision.
+- The first implementation was revised to remove ambiguous zero-gate defaults,
+  lifecycle availability conflation, and single-lane execution reporting.
+- No renderer producer or consumer is connected yet, so Task 1 cannot change
+  screenshot content, draw counts, backend selection, or qualification.
+
+**Notes / follow-ups:**
+
+- Task 2 introduces stable packet identity and packet construction; Task 5 adds
+  per-view plan compilation and is the correct stage to introduce a stable
+  view/plan key and validated freeze boundary.
+- Task 7 adds packet-level exactly-once partition/skip diagnostics once stable
+  packet IDs exist. Do not invent pointer/span-based packet identity earlier.
+- The existing `rvx_add_gtest` helper publishes only the first label from a
+  semicolon-separated label list; the new test is still registered and runs by
+  name. Treat multi-label propagation as a separate test-infrastructure fix.
+- Task 1 is closed. The next implementation stage is Task 2 MeshBatch and
+  RenderDrawPacket.
+
+---
+
+### R-SP322 Render-policy Task 2 MeshBatch and RenderDrawPacket
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Plan review agent:** Primary architect plus two read-only explorers
+**Code implementation agent:** terra worker with primary review; luna worker
+for independent regression
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- Task 2 - Introduce MeshBatch and RenderDrawPacket
+- Target contracts 4.1 and 4.2, while preserving the legacy Direct execution
+  path
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP321 Render-policy Task 1 immutable contracts
+- Evidence: policy contracts, CPU regression, synthetic Direct/GPU parity, and
+  Porsche Direct/GPU parity were green before Task 2.
+
+**Approved scope:**
+
+- Introduce value-only `MeshBatch` and `RenderDrawPacket` contracts with exact
+  resource-generation identity and deterministic geometry, material, and
+  pipeline keys.
+- Preserve all per-submesh material bindings through extraction and raise the
+  owned frame-packet schema from version 2 to version 3.
+- Build one authoritative batch per active mesh submesh from render-registry
+  CPU metadata, including canonical submesh-0 synthesis for indexed meshes
+  without an explicit submesh table.
+- Keep `RenderDrawItem` as a compatibility projection so existing Direct and
+  GPU-driven passes continue to execute without a Task 2 pass migration.
+- Preserve missing-material/default-material behavior and fail closed for
+  malformed bounds, missing geometry, invalid ordinals, invalid modes, or
+  overflowing index ranges.
+
+**Out of scope:**
+
+- Retained packet caching, invalidation, MeshPassProcessors, policy resolution,
+  and execution-plan integration.
+- Pass, RenderGraph, RHI, backend, qualification, threshold, or golden changes.
+- Repairing the separate glTF multi-primitive importer/instantiation limitation.
+- Editor work.
+
+**Files changed:**
+
+- `Render/Include/Render/Renderer/MeshBatch.h`
+- `Render/Include/Render/Renderer/RenderDrawPacket.h`
+- `Render/Private/Renderer/RenderDrawPacket.cpp`
+- `Render/Include/Render/Renderer/RenderDrawItem.h`
+- `Render/Private/Renderer/RenderDrawItem.cpp`
+- `Render/Include/Render/Renderer/RenderScene.h`
+- `Render/Private/Renderer/RenderScene.cpp`
+- `RenderContracts/Include/RenderContracts/RenderFramePacket.h`
+- `RenderExtraction/Private/RenderFramePacketBuilder.cpp`
+- `RenderExtraction/Private/RenderFrameExtractor.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/CMakeLists.txt`
+- `Tests/RenderDrawPacketValidation/main.cpp`
+- `Tests/RenderContractsValidation/main.cpp`
+- `Tests/RenderFrameExtractionValidation/main.cpp`
+- `Tests/RenderSceneValidation/main.cpp`
+
+**Contract review corrections:**
+
+- `RenderDrawPacket::pass` is independent from `PipelineKey`; a future group
+  key may combine pass and pipeline without making the pipeline identity
+  pass-specific.
+- Indexed arguments retain all five API-neutral values: index count, instance
+  count, first index, vertex offset, and first instance.
+- Stable key hashes use the standard FNV-1a 64-bit offset basis and full-field
+  equality; exact mesh and material generations participate in identity.
+- Masked, transparent, and missing-material flags are canonical derived values,
+  not trusted caller input, and submesh ranges reject unsigned overflow.
+- Preferred-mesh bindings must exactly match authoritative geometry metadata.
+  A selected fallback mesh instead uses its own actual submesh layout and the
+  legacy first-material projection, avoiding unsafe ordinal reuse.
+- An authoritative mesh with no drawable geometry produces no compatibility
+  item. Missing material remains a valid drawable batch with an explicit flag.
+- Skinning palettes remain dynamic object data and never enter static packet
+  keys; only a conservative skinned classification bit is carried.
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RenderDrawPacketValidation RenderContractsValidation `
+  RenderFrameExtractionValidation RenderSceneValidation `
+  RenderPolicyValidation GPUDrivenValidation RenderPassValidation --parallel 1
+
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelViewer VisualGoldenValidation -- /m:1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Task-local and focused regression: PASS 394/394; RenderDrawPacket 5/5,
+  RenderContracts 203/203, RenderFrameExtraction 5/5, RenderScene 13/13,
+  RenderPolicy 5/5, GPUDriven 23/23, and RenderPass 140/140.
+- Synthetic DX12 Direct/GPU visual gate: PASS 3/3; different pixels 0,
+  MSE 0, PSNR 100, tolerance 0. Both captures retain Task 0 SHA-256
+  `DD0FDD9B0FB7A6BA85E4350359B6358BCF2D051070F1615AEE822A18B079FB06`.
+- Porsche native DX12 gates: PASS 3/3; 75 visible objects, 51 Direct draws,
+  and 51 GPU-driven graph inputs/batches/indirect draws.
+- Porsche cross-path result: different pixels 0, MSE 0, PSNR 100,
+  tolerance 0. Both captures retain Task 0 SHA-256
+  `FD02DDBB1305528680072C6DD15696CB27A44B89D3441571741CB8D4BBF2B2CA`.
+- Build emitted only pre-existing validation/deprecation warnings. Validation
+  fixtures logged their expected failure/fallback paths but all processes
+  exited successfully.
+- `git diff --check`: PASS; only existing LF-to-CRLF conversion warnings.
+
+**Artifacts:**
+
+- Synthetic parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json`
+- Porsche parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ExternalAssets/Porsche_CrossPath_DX12_320x180.json`
+- Task 0 comparison baseline:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/Baseline/Task0_baseline_summary.json`
+
+**Review result:**
+
+- Verdict: PASS after primary contract review and added fallback/canonical
+  submesh boundary tests.
+- Task 2 restores per-submesh data continuity and stable packet identity while
+  leaving command recording on the proven compatibility path.
+- No Pass, RenderGraph, RHI, backend, qualification, threshold, or golden file
+  was changed by Task 2.
+
+**Notes / follow-ups:**
+
+- The approved immediate slice stops after Task 2. Do not start Task 3 without
+  a new explicit user instruction.
+- Task 3 is retained packet caching and invalidation; Task 4 is the first pass
+  migration through MeshPassProcessors.
+- The glTF importer currently has a separate multi-primitive instantiation gap.
+  It should be addressed as an asset-pipeline task and tested with a checked-in
+  multi-primitive fixture, not hidden inside packet construction.
+
+---
+
+### R-SP323 Render-policy Task 3 retained draw-packet cache
+
+**Date:** 2026-08-02
+**Commit:** `9f8f6de0 feat(render): retain draw packet templates`
+**Plan review agent:** Primary architect plus two read-only explorers
+**Code implementation agent:** terra worker with primary review
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- Task 3 - Retain static draw-packet state and define invalidation
+- Revised value-only cache and accepted-publication lifecycle contract
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP322 Render-policy Task 2 MeshBatch and RenderDrawPacket
+- Evidence: exact resource identities, authoritative per-submesh batches, CPU
+  regression, and synthetic/Porsche Direct/GPU parity were green before Task 3.
+
+**Approved scope:**
+
+- Add a RenderScene-owned retained cache of value-only legacy material packet
+  templates, addressed by process-unique object identity and submesh ordinal.
+- Require full equality of exact mesh/material generations, geometry state,
+  material mode, batch flags, pass-contract version, and applicable shader-layout
+  version before reuse.
+- Normalize frame-local primitive-data indices out of retained templates and
+  rebind them when compatibility draw lists are built.
+- Mutate and prune the cache only during an accepted publication after the
+  complete frame packet has passed validation; rejected and stale packets leave
+  entries, statistics, and output templates unchanged.
+- Provide explicit diagnostics for hit, miss, packet build, exact-generation
+  invalidation, static/contract/layout changes, removal, clear, inactive
+  publication, and future dynamic/deforming bypass.
+
+**Lifecycle correction:**
+
+- Cache entries own no RHI object, descriptor, pipeline, registry reference,
+  completion token, or retirement responsibility. They contain copied packet
+  values and exact handles only.
+- GPU resource lifetime remains protected by accepted scene references,
+  submission stamping, registry last-use closure, and the existing retirement
+  queue. Consequently stale cache values can be erased immediately.
+- A warmed cache hit performs no cache-owned entry creation or packet build.
+  This does not claim allocation-free full-frame extraction or RenderScene
+  publication, whose existing frame-local vectors are unchanged.
+- Skin-palette values remain dynamic and do not invalidate an otherwise static
+  skinned packet. Particles stay outside this cache; a future deforming-geometry
+  caller can select the explicit dynamic bypass.
+
+**Out of scope:**
+
+- MeshPassProcessors, policy resolution, execution-plan integration, command
+  recording migration, or changes to Direct/GPU-driven qualification policy.
+- RHI, backend, RenderGraph, pass, descriptor, pipeline, frame-schema, golden,
+  or asset-importer changes.
+- The pre-existing material dependency hot-reload propagation gap.
+- Editor work.
+
+**Files changed:**
+
+- `Render/Include/Render/Renderer/RenderDrawPacketCache.h`
+- `Render/Private/Renderer/RenderDrawPacketCache.cpp`
+- `Render/Include/Render/Renderer/RenderScene.h`
+- `Render/Private/Renderer/RenderScene.cpp`
+- `Render/Private/Renderer/RenderDrawItem.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/RenderDrawPacketCacheValidation/main.cpp`
+- `Tests/RenderSceneValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  RenderDrawPacketCacheValidation RenderDrawPacketValidation `
+  RenderSceneValidation RenderPolicyValidation RenderContractsValidation `
+  RenderFrameExtractionValidation GPUDrivenValidation RenderPassValidation `
+  --parallel 1
+
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelViewer VisualGoldenValidation --parallel 1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Task-local and focused regression: PASS 401/401; draw-packet cache 6/6,
+  RenderDrawPacket 5/5, RenderScene 14/14, RenderPolicy 5/5,
+  RenderContracts 203/203, RenderFrameExtraction 5/5, GPUDriven 23/23,
+  and RenderPass 140/140.
+- Cache coverage includes inactive-publication immutability, first-miss/warm-hit
+  behavior, frame-local primitive rebind, targeted mesh/material generation
+  invalidation, contract/layout/static-state reasons, removal, clear, and
+  dynamic bypass.
+- Synthetic DX12 Direct/GPU visual gate: PASS 3/3; different pixels 0,
+  MSE 0, PSNR 100, tolerance 0. Both SHA-256 values remain
+  `DD0FDD9B0FB7A6BA85E4350359B6358BCF2D051070F1615AEE822A18B079FB06`.
+- Porsche native DX12 gates: PASS 3/3; 75 visible objects, 51 Direct draws,
+  and 51 GPU-driven graph inputs/batches/indirect draws.
+- Porsche cross-path result: different pixels 0, MSE 0, PSNR 100,
+  tolerance 0. Both SHA-256 values remain
+  `FD02DDBB1305528680072C6DD15696CB27A44B89D3441571741CB8D4BBF2B2CA`.
+- Validation fixtures emitted only their expected failure/fallback diagnostics;
+  all processes exited successfully.
+- `git diff --check`: PASS; only existing LF-to-CRLF conversion warnings.
+
+**Artifacts:**
+
+- Synthetic parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json`
+- Porsche parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ExternalAssets/Porsche_CrossPath_DX12_320x180.json`
+
+**Review result:**
+
+- Verdict: PASS after lifecycle-contract revision and primary code review.
+- The initial retirement-queue proposal was removed because the cache owns no
+  GPU resource. Publication-inactive resolution was also tightened to guarantee
+  zero mutation of entries, diagnostics, and caller output.
+- Raster and ray-tracing consumers continue to share the same material draw-list
+  projection, so both receive the retained template path without duplicating
+  cache ownership.
+- No Pass, RenderGraph, RHI, backend, qualification threshold, frame schema, or
+  golden file changed in Task 3.
+
+**Notes / follow-ups:**
+
+- Task 3 is closed. Task 4 introduces pass-specific MeshPassProcessors and is
+  the next implementation stage; it has not started.
+- Explicit scene-side dynamic/deforming classification is intentionally deferred
+  until such geometry enters the MeshBatch path. The cache API already supports
+  the bypass without incorrectly treating skin-palette updates as static-state
+  changes.
+- Repair material-to-texture dependency replacement on hot reload as a separate
+  resource-lifecycle task rather than hiding it inside draw-packet caching.
+
+---
+
+### R-SP324 Render-policy Task 4 pass preparation and deterministic grouping
+
+**Date:** 2026-08-02
+**Commit:** Pending
+**Plan review agent:** Primary architect plus two read-only explorers
+**Code implementation agent:** Primary agent after a delegated implementation
+attempt produced no edits
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- Task 4 - Add pass-specific MeshPassProcessors
+- Revised pure-value processor, explicit availability, and exact-group-key
+  contract
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP323 Render-policy Task 3 retained draw-packet cache
+- Evidence: Task 3 commit `9f8f6de0`, 401/401 CPU validation, and exact
+  synthetic/Porsche Direct-versus-GPU pixel parity.
+
+**Approved scope:**
+
+- Add pure value-only Depth, Opaque, Transparent, and Shadow mesh-pass
+  processors with no scene, registry, pipeline, descriptor, RHI, or
+  RenderGraph ownership.
+- Use explicit `GPUCandidate`, `Direct`, and `Skip` outcomes with fixed reason
+  precedence and explicit Ready/Pending/Unavailable facts supplied by the
+  renderer.
+- Preserve missing material as a default-material binding, Transparent and
+  Skinned as Direct, and Shadow as a whole-scene Direct preparation stream.
+- Build exact deterministic group keys from pass, full pipeline state, exact
+  mesh generation/submesh/index type, exact material generation/mode, and
+  submission layout.
+- Prepare frame-owned value streams alongside compatibility draw lists and use
+  the Opaque stream's lexicographically sorted GPU candidates for current GPU
+  culling groups.
+- Replace quadratic group lookup with O(n log n) sorting plus linear grouping,
+  and remove OpaquePass representative-item scans.
+- Preserve the existing all-or-nothing indirect gate and every existing Pass
+  command-recording loop.
+
+**Out of scope:**
+
+- Task 5 policy resolution and final pipeline/residency decisions.
+- Task 6 DrawPacket command consumption, Task 7 hybrid/exactly-once partition
+  accounting, and Task 8 duplicate culling cleanup.
+- RHI/backend behavior, frame schema, qualification thresholds, Samples,
+  Editor work, golden files, or asset-importer changes.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/MeshPassProcessor.h`
+- `Render/Private/Passes/MeshPassProcessor.cpp`
+- `Render/Private/Passes/DepthMeshPassProcessor.cpp`
+- `Render/Private/Passes/OpaqueMeshPassProcessor.cpp`
+- `Render/Private/Passes/TransparentMeshPassProcessor.cpp`
+- `Render/Private/Passes/ShadowMeshPassProcessor.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/MeshPassProcessorValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  MeshPassProcessorValidation RenderDrawPacketCacheValidation `
+  RenderDrawPacketValidation RenderSceneValidation RenderPolicyValidation `
+  RenderContractsValidation RenderFrameExtractionValidation `
+  GPUDrivenValidation RenderPassValidation --parallel 1
+
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelViewer VisualGoldenValidation --parallel 1
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$" `
+  --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$" `
+  --output-on-failure
+```
+
+**Validation result:**
+
+- Focused CPU baseline: PASS 413/413; MeshPassProcessor 11/11,
+  RenderDrawPacketCache 6/6, RenderDrawPacket 5/5, RenderScene 14/14,
+  RenderPolicy 5/5, RenderContracts 203/203, RenderFrameExtraction 5/5,
+  GPUDriven 23/23, and RenderPass 141/141.
+- Synthetic DX12 Direct/GPU visual gate: PASS 3/3; different pixels 0,
+  MSE 0, PSNR 100, tolerance 0. Both SHA-256 values remain
+  `DD0FDD9B0FB7A6BA85E4350359B6358BCF2D051070F1615AEE822A18B079FB06`.
+- Porsche native DX12 visual gate: PASS 3/3, including visible-model,
+  Direct-ready, GPU-culling-ready, and multi-batch readiness assertions.
+- Porsche cross-path result: different pixels 0, MSE 0, PSNR 100,
+  tolerance 0. Both SHA-256 values remain
+  `FD02DDBB1305528680072C6DD15696CB27A44B89D3441571741CB8D4BBF2B2CA`.
+- The unfiltered CTest registry currently contains 811 entries, including many
+  intentionally unbuilt Samples/helper targets and two `*_NOT_BUILT` sentinels;
+  an unfiltered run is therefore not a valid gate for this partial build. The
+  same explicitly built CPU baseline used by R-SP323 is the recorded gate.
+- Validation fixtures emitted only their expected fallback diagnostics; all
+  selected processes exited successfully.
+- `git diff --check`: PASS; only existing LF-to-CRLF conversion warnings.
+
+**Artifacts:**
+
+- Synthetic parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ModelViewer/R11_GPUDrivenCrossPathParity_DX12_320x180.json`
+- Porsche parity report:
+  `build/win_x64_debug/Tests/VisualArtifacts/Debug/ExternalAssets/Porsche_CrossPath_DX12_320x180.json`
+
+**Review result:**
+
+- Verdict: PASS after primary architecture and integration review.
+- Pass preparation is now engine-owned and value-only; compatibility lists
+  remain the command-recording source until Task 6.
+- Opaque grouping is deterministic and collision-safe without quadratic lookup
+  or representative-item rescans.
+- Direct-only candidates are omitted from indirect groups, while the unchanged
+  source-count equality gate forces the whole pass back to Direct and prevents
+  dropped draws until Task 7 introduces a formally validated hybrid partition.
+- `OpaquePassFallsBackWholePassForMixedGPUAndDirectOnlyItems` verifies that a
+  mixed GPU-candidate/skinned-Direct source list records both source draws once
+  through Direct, records no GPU indirect draw, and reports
+  `DrawGroupsUnavailable` rather than dropping or double-submitting a packet.
+- No submission policy, RHI/backend behavior, frame schema, qualification
+  threshold, Sample control path, or visual golden changed in Task 4.
+
+**Notes / follow-ups:**
+
+- Task 4 is closed. Task 5 implements the engine-owned RenderPolicyResolver and
+  immutable frame-plan compilation; it has not started.
+- The pass streams currently coexist with compatibility draw lists by design.
+  Task 6, not Task 4, owns removal of duplicate command-consumer projections.
+- Repair the partial-build CTest registration so unbuilt targets do not appear
+  as runnable entries in a separate build-system hygiene task.
+
+---
+
+### R-SP325 Render-policy Task 5A contracts and pure policy resolver
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Plan review agents:** Primary architect plus two read-only explorers
+**Code implementation agent:** Terra worker, followed by primary corrections
+**Code review agent:** Independent Terra reviewer, followed by primary audit
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Task 5A contracts and Task 5B pure deterministic resolution
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP324 Render-policy Task 4 pass preparation
+- Evidence: Task 4 commit `80838c04`, deterministic pass streams, 413/413 CPU
+  validation, and exact synthetic/Porsche Direct-versus-GPU pixel parity.
+
+**Approved scope:**
+
+- Freeze the decision-probe ownership matrix and value-only resolver boundary.
+- Add stable per-view request/capability/qualification/readiness facts and
+  frame-local packet-reference/partition contracts without claiming Task 7
+  persistent packet identity.
+- Add a pure deterministic resolver with fail-closed gate precedence, explicit
+  Direct/GPU/Skip accounting, planned Direct fallback, and canonical pass
+  ordering.
+- Preserve the existing GPU-driven policy entry point while allowing explicit
+  qualification evidence injection.
+- Add stable distinct Pending reasons for shader, pipeline, resources, and
+  bindings while preserving all pre-existing reason values.
+- Validate submission capability, request/tier/reason relationships, packet
+  conservation, reference range coverage, and source Skip preservation.
+
+**Out of scope:**
+
+- `RenderFramePlanCompiler`, SceneRenderer integration, pass command-recording
+  changes, runtime packet-range consumption, or removal of legacy policy probes.
+- Task 6 Direct DrawPacket execution, Task 7 persistent IDs/hybrid submission,
+  Task 8 culling cleanup, Task 15 measured Auto policy, or Task 16 promotion.
+- RHI/backend behavior, qualification gate bits, Auto defaults, Samples,
+  Editor, asset import, visual goldens, or frame schema changes.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderPolicyTypes.h`
+- `Render/Include/Render/Policy/RenderFrameExecutionPlan.h`
+- `Render/Include/Render/Policy/RenderPolicyResolver.h`
+- `Render/Private/Policy/RenderPolicyResolver.cpp`
+- `Render/Include/Render/GPUDriven/GPUDrivenPolicy.h`
+- `Render/CMakeLists.txt`
+- `Tests/RenderPolicyValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Docs/superpowers/specs/2026-08-03-render-policy-resolver-contract.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build\win_x64_debug --config Debug --target `
+  MeshPassProcessorValidation RenderDrawPacketCacheValidation `
+  RenderDrawPacketValidation RenderSceneValidation RenderPolicyValidation `
+  RenderContractsValidation RenderFrameExtractionValidation `
+  GPUDrivenValidation RenderPassValidation
+
+cmake --build build\win_x64_debug --config Debug --target `
+  ModelViewer VisualGoldenValidation
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$" `
+  --output-on-failure
+
+cmake --build build\win_x64_debug --config Debug --target DX11Validation
+build\win_x64_debug\Tests\Debug\DX11Validation.exe
+ctest --test-dir build\win_x64_debug -C Debug `
+  -R "^ModelViewerOpenGLPBRMaterialSmoke$" --output-on-failure
+```
+
+**Validation result:**
+
+- Focused CPU baseline: PASS 421/421; MeshPassProcessor 11/11,
+  RenderDrawPacketCache 6/6, RenderDrawPacket 5/5, RenderScene 14/14,
+  RenderPolicy 12/12, RenderContracts 203/203, RenderFrameExtraction 5/5,
+  GPUDriven 24/24, and RenderPass 141/141.
+- Exhaustive policy gate matrix: PASS 16,384 combinations plus targeted
+  mutation tests for unsupported passes, source partition conservation,
+  fallback strategy, capability, range, and request/tier/reason invariants.
+- Synthetic DX12 Direct/GPU visual gate: PASS 3/3 with exact parity.
+- Porsche native DX12 Direct/GPU visual gate: PASS 3/3 with exact parity.
+- DX11 compatibility validation: PASS 23/23 with the debug layer enabled.
+- The OpenGL PBR material smoke guard is BLOCKED by a pre-existing
+  SPIRV-Cross ToneMapping constant-buffer layout translation failure. Task 5A
+  changes no ShaderCompiler, ToneMapping, OpenGL RHI, SceneRenderer, or runtime
+  policy-integration code, so this is recorded as a Task 14 compatibility
+  blocker rather than mixed into the pure-policy commit.
+- Task 5A validation fixtures emitted only their expected fallback diagnostics;
+  all selected Task 5A and DX11 processes exited successfully.
+- `git diff --check`: PASS; only existing LF-to-CRLF conversion warnings.
+
+**Review result:**
+
+- Initial independent verdict: BLOCKED by three P1 findings covering
+  ForceDisabled/pass-support precedence, source Skip conservation, and
+  submission/request/tier/reason cross-validation.
+- Primary audit accepted all three findings, corrected the implementation, and
+  added isolated mutation tests. The second review found one remaining
+  Auto/ForceEnabled plus `ForcedDirect` gap, which the primary also accepted
+  and closed.
+- Final independent verdict: PASS with no remaining blocker.
+- Primary architecture/integration verdict: PASS. Values remain owned and
+  backend-neutral; runtime behavior is unchanged; Task 7 exactly-once identity
+  is not claimed prematurely.
+
+**Notes / follow-ups:**
+
+- The next slice is execution-checklist Task 5C: compile one immutable plan per
+  view after pass preparation and before RenderGraph construction.
+- Pass command recording remains unchanged until the Task 6 migration gate.
+- Repair and re-run `ModelViewerOpenGLPBRMaterialSmoke` before Task 14
+  compatibility closure; do not claim OpenGL visual readiness meanwhile.
+- The existing partial-build CTest registration hygiene issue remains separate
+  from this renderer architecture stage.
+
+---
+
+### R-SP326 Render-policy Task 5C per-view frame-plan integration
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Implementation agents:** primary agent with bounded compiler assistance
+**Independent code review agent:** `task5c_independent_review` (`terra_worker`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Section: Task 5C and Task 5D
+- Contract: `Docs/superpowers/specs/2026-08-03-render-policy-resolver-contract.md`
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP325 Render-policy Task 5A contracts and pure policy resolver
+- Evidence: commit `8a878bf8`, pure resolver matrix, stable value contracts,
+  and Direct/GPU visual parity.
+
+**Approved scope:**
+
+- Compile exactly one owned value plan for the current view after mesh-pass
+  preparation and before RenderGraph construction.
+- Require the complete canonical Depth, Opaque, Shadow, Transparent pass set;
+  fail closed on malformed streams, source mappings, counts, ranges, omission,
+  or reordering.
+- Preserve deterministic group order for GPU candidates, source order for
+  Direct/Skip lanes, and conservative whole-pass Direct fallback for mixed
+  candidates until Task 7 introduces persistent packet identity.
+- Sample device capability, qualification, culling readiness, exact Depth and
+  Opaque GPU pipeline readiness before graph construction, then project the
+  selected pass decisions to the temporary legacy pass switches.
+- Own and invalidate policy diagnostics across frame acceptance/rejection,
+  resize, target/view/config/pass/callback replacement, mode change, and
+  shutdown boundaries.
+- Export the request, selected plan, per-pass partitions, reason counts,
+  capability snapshot, and qualification snapshot through frame and subsystem
+  diagnostics.
+
+**Out of scope:**
+
+- Direct packet-range command recording and removal of legacy Depth/Opaque
+  consumers; these are Task 6.
+- True mixed GPU/Direct submission, persistent exactly-once packet identity,
+  and late-lane failure policy; these are Task 7.
+- Visibility-provider separation, Vulkan/Metal GPU execution, measured Auto
+  policy, compatibility hardening, or promotion gates from Tasks 8-16.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderFramePlanCompiler.h`
+- `Render/Private/Policy/RenderFramePlanCompiler.cpp`
+- `Render/Include/Render/Policy/RenderFrameExecutionPlan.h`
+- `Render/Include/Render/Policy/RenderPolicyTypes.h`
+- `Render/Private/Policy/RenderPolicyResolver.cpp`
+- `Render/Include/Render/Passes/MeshPassProcessor.h`
+- `Render/Private/Passes/MeshPassProcessor.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/RenderSubsystem.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/RenderPolicyValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target `
+  RenderPolicyValidation GPUDrivenValidation RenderPassValidation
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "(RenderPolicyValidation|GPUDrivenValidation|RenderPassValidation|RenderSceneValidation|MeshPassProcessorValidation)"
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+```
+
+**Validation result:**
+
+- Focused builds: PASS for RenderPolicyValidation, GPUDrivenValidation, and
+  RenderPassValidation.
+- Standalone suites: PASS 17/17 RenderPolicy, 24/24 GPUDriven, and 142/142
+  RenderPass.
+- Adjacent Task 5C CTest gate: PASS 181/181 across RenderPolicy,
+  MeshPassProcessor, RenderScene, GPUDriven, and RenderPass.
+- Synthetic and Porsche Direct/GPU smoke plus pixel parity: PASS 6/6.
+- Source audit: Depth/Opaque pass execution contains no backend-type or
+  qualification probe; those decisions are sampled by SceneRenderer before
+  plan compilation.
+- `git diff --check`: PASS; only LF-to-CRLF conversion warnings.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for stale compatibility diagnostics after a
+  mode switch and acceptance of incomplete canonical pass resolutions.
+- Primary accepted both findings, reordered mode assignment/invalidation,
+  required exactly four canonical passes, and added fail-closed tests.
+- Follow-up requested direct regression assertions for both repairs; those
+  assertions were added and passed.
+- Final verdict: APPROVE; Task 5C is commit-ready.
+
+**Primary review result:**
+
+- Verdict: PASS. The compiler is value-only, deterministic, validates exact
+  source ownership and range conservation, and does not claim Task 7 identity.
+- SceneRenderer freezes the plan before graph construction and owns its
+  lifetime/diagnostics. Transparent and Shadow remain Direct-only.
+- The temporary recording-time validation/fallback path is retained only by
+  the stated Task 5C boundary. Task 6 must make plan ranges
+  execution-authoritative and report unexpected recording failures explicitly.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 6A Direct Depth packet-range execution with dual-build
+  comparison and legacy reference parity.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged; they are unrelated local artifacts.
+- The pre-existing OpenGL ToneMapping SPIRV-Cross constant-buffer issue remains
+  a Task 14 compatibility gate.
+
+---
+
+### R-SP327 Render-policy Task 6A Direct Depth packet execution
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Implementation agents:** primary agent with bounded `task5c_compiler_impl`
+assistance
+**Independent code review agent:** `task5c_independent_review`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Section: Task 6A
+- Contract: Task 5 canonical frame plan and packet-source mapping
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP326 Render-policy Task 5C per-view frame-plan integration
+- Evidence: commit `95076f92`, canonical value plan compilation, complete
+  source/range validation, and Direct/GPU visual parity.
+
+**Approved scope:**
+
+- Materialize a value-owned Direct Depth batch from the authoritative Task 5
+  plan using `sourcePacketIndex` as identity and `sourceOrdinal` only as an
+  ordering consistency check.
+- Preflight the complete Direct lane before `BeginRenderPass`, including exact
+  packet/layout parity, unique object resolution, geometry/submesh arguments,
+  pipelines, descriptors, masked material/UV requirements, skinning streams,
+  object-constant upload, and cached dynamic offsets.
+- Record opaque and masked Depth packets without reclassification or a second
+  legacy submission; preserve the legacy construction only as a temporary
+  value oracle for dual-build comparison.
+- Add the masked Depth shader/pipeline and bind alpha-test material state for
+  the Depth pass.
+- Report Direct/GPU lane completion or failure without same-frame replay after
+  a planned GPU recording failure.
+
+**Out of scope:**
+
+- Opaque packet-range recording and material/tangent-basis parity; Task 6B.
+- Removal of the temporary Depth/Opaque legacy construction or adapters still
+  used by other passes; Task 6C.
+- Persistent packet identity, mixed-lane execution, visibility separation, or
+  backend submission strategies; Tasks 7-13.
+
+**Files changed:**
+
+- `Render/CMakeLists.txt`
+- `Render/Include/Render/Passes/DirectDrawPacketBatch.h`
+- `Render/Private/Passes/DirectDrawPacketBatch.cpp`
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Include/Render/Passes/MeshPassProcessor.h`
+- `Render/Private/Passes/DepthMeshPassProcessor.cpp`
+- `Render/Private/Passes/MeshPassProcessor.cpp`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Include/Render/Renderer/ViewData.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Policy/RenderFramePlanCompiler.cpp`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Tests/MeshPassProcessorValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderPolicyValidation/main.cpp`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target `
+  PipelineCacheValidation RenderPassValidation ModelViewer
+
+PipelineCacheValidation.exe
+RenderPassValidation.exe
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "(RenderPolicyValidation|GPUDrivenValidation|RenderPassValidation|RenderSceneValidation|MeshPassProcessorValidation)"
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+```
+
+**Validation result:**
+
+- Focused builds: PASS for PipelineCacheValidation, RenderPassValidation, and
+  ModelViewer, including DX11, DX12, Vulkan, and OpenGL backend libraries.
+- Standalone suites: PASS 127/127 PipelineCache and 149/149 RenderPass.
+- Adjacent renderer contract CTest gate: PASS 189/189 across RenderPolicy,
+  MeshPassProcessor, GPUDriven, RenderScene, and RenderPass.
+- Synthetic and external Porsche Direct/GPU smoke plus pixel parity: PASS 6/6
+  on the configured DX12 host.
+- `git diff --check`: PASS; only line-ending conversion warnings.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for object constants uploaded after
+  `BeginRenderPass`, an invalid `TEXCOORD0` semantic name in the masked Depth
+  input layout, and missing planned-GPU late-failure coverage.
+- Primary accepted all findings, moved Direct object uploads into whole-lane
+  preflight with checked results and cached offsets, corrected the semantic to
+  `TEXCOORD` plus index 0, and added both pre-Begin upload-failure and
+  no-replay GPU late-failure tests.
+- Final verdict: APPROVE; no remaining P0/P1/P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. The Task 5 plan is execution-authoritative for Direct Depth;
+  malformed facts and unavailable bindings fail before recording, and the
+  legacy trace cannot submit commands.
+- Real DX12 validation confirms the masked shader reflection/input layout and
+  both synthetic and external-asset Direct/GPU parity.
+- `UpdateObjectConstants` now exposes upload failure as `bool`; legacy callers
+  that ignore it remain a tracked non-blocking migration item for their
+  planned-path tasks.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 6B Direct Opaque packet-range execution and exact legacy
+  parity for material, tangent-basis, shadow receiver, and motion constants.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged; they are unrelated local artifacts.
+- The pre-existing OpenGL ToneMapping SPIRV-Cross constant-buffer issue remains
+  a Task 14 compatibility gate.
+
+---
+
+### R-SP328 Render-policy Task 6B Direct Opaque packet execution
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Implementation agents:** primary agent with bounded `task6b_opaque_impl`,
+`task6b_rigid_pipeline`, and `task6b_tangent_fallback` assistance
+**Independent code review agent:** `task5c_independent_review`
+
+**Plan source:**
+
+- Document: `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Section: Task 6B
+- Contract: Task 5 canonical frame plan and Task 6A whole-lane preflight
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP327 Render-policy Task 6A Direct Depth packet execution.
+- Evidence: commit `94ece7c7`, packet-authoritative Direct Depth recording,
+  pre-recording validation, and synthetic/external DX12 parity.
+
+**Approved scope:**
+
+- Materialize the planned Opaque Direct packet range and compare it against a
+  value-only legacy trace before any command recording.
+- Preserve opaque-before-masked order, exact submesh arguments, missing-material
+  fallback, tangent-basis normal-map gating, shadow receiver state, skinning,
+  and previous-transform constants.
+- Preflight pipelines, descriptors, material bindings, object uploads, vertex
+  streams, and index data for the whole Direct lane before `BeginRenderPass`.
+- Select explicit Rigid slots 0-3 or Skinned slots 0-5 DefaultLit vertex-input
+  contracts. Upload a stable fallback tangent stream while keeping tangent-basis
+  provenance separate so fallback data cannot enable normal mapping.
+- Keep published GPU plans fail-closed without same-frame Direct replay and
+  preserve the no-plan GPU compatibility behavior.
+
+**Out of scope:**
+
+- Removing the Depth/Opaque legacy value or command consumers; Task 6C.
+- Migrating Transparent, Shadow, ObjectVelocity, or diagnostics adapters.
+- Hybrid packet identity/partitioning, visibility providers, pass record
+  contexts, or backend submission strategies; Tasks 7-13.
+- Fixing existing Vulkan/DX11 descriptor-layout validation or OpenGL
+  ToneMapping SPIRV-Cross failures; Tasks 12 and 14.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Private/Resources/RenderResourceRegistry.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `RenderContracts/Include/RenderContracts/ResourceUploadRequest.h`
+- `Resource/Private/RenderUploadRequestBuilder.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderResourceRuntimeValidation/main.cpp`
+- `Tests/ResourceRuntimePolicyValidation/main.cpp`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target `
+  PipelineCacheValidation RenderPassValidation `
+  RenderResourceRuntimeValidation ResourceRuntimePolicyValidation ModelViewer
+
+PipelineCacheValidation.exe
+RenderPassValidation.exe
+RenderResourceRuntimeValidation.exe
+ResourceRuntimePolicyValidation.exe
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "^(RenderPolicyValidation|GPUDrivenValidation|RenderSceneValidation|MeshPassProcessorValidation|RenderPassValidation|RenderPassStatusValidation|SceneRendererDiagnosticsValidation|SceneRendererExternalTargetValidation|RenderPostProcessStackValidation)"
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+
+cmake --build build/win_x64_debug --config Debug --target VulkanValidation
+VulkanValidation.exe
+```
+
+**Validation result:**
+
+- Focused builds: PASS for all four validation targets and ModelViewer,
+  including DX11, DX12, Vulkan, and OpenGL backend libraries.
+- Standalone suites: PASS 128/128 PipelineCache, 156/156 RenderPass, 17/17
+  RenderResourceRuntime, and 32/32 ResourceRuntimePolicy with one environment
+  privilege skip.
+- Adjacent renderer contract CTest gate: PASS 223/223.
+- Synthetic and external Porsche Direct/GPU smoke plus pixel parity: PASS 6/6
+  on the configured DX12 host.
+- VulkanValidation executable: PASS 25/25. Its validation output still reports
+  existing signaled-fence and placed-buffer device-address VUIDs.
+- Vulkan ModelViewer remains blocked before Opaque recording by the existing
+  DefaultLit set-0 binding-4 type mismatch. OpenGL and DX11 compile/create the
+  new Rigid VS successfully, then hit the existing ToneMapping layout and
+  DefaultLit binding-visibility gates respectively. These remain explicit
+  Task 12/14 coverage gates, not silent skips.
+- `git diff --check`: PASS; only line-ending conversion warnings.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for optional tangent/bone input streams on
+  static DefaultLit draws and an unintended no-plan object-upload behavior
+  change.
+- Primary accepted both findings. The final implementation adds explicit
+  Rigid/Skinned vertex factories, synthesized tangent upload with provenance,
+  strict published-plan upload handling, and a compatibility-mode parameter
+  plus failure-injection proof for the no-plan path.
+- Final verdict: APPROVE; no remaining P0/P1 findings. Non-blocking follow-ups
+  are removal of the old no-plan Skinned layout dependency in Task 6C and
+  explicit tangent provenance for any future external payload constructors.
+
+**Primary review result:**
+
+- Verdict: PASS. The frame plan is authoritative for Opaque lane selection and
+  packet values; the complete Direct lane is validated before recording and
+  GPU late failure cannot cause duplicate Direct submission.
+- The Rigid/Skinned shader, input-layout, bindings, and pipeline-state hashes
+  agree exactly, including explicit stable selector values and invalid-value
+  rejection.
+- Transparent remains untouched and the legacy Opaque construction is only a
+  temporary value oracle; it cannot submit a duplicate draw.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 6C reviewed removal of replaced Depth/Opaque command
+  consumers and M1 exit accounting.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged; they are unrelated local artifacts.
+- Carry the Vulkan/DX11/OpenGL runtime coverage failures as explicit open
+  backend milestones into Tasks 12 and 14.
+
+---
+
+### R-SP329 Render-policy Task 6C legacy consumer removal and M1 exit
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Implementation agents:** primary agent with bounded
+`task6c_legacy_inventory` and interrupted mechanical implementation/test
+assistance
+**Independent code review agent:** `task6c_independent_review` (`terra_worker`)
+
+**Plan source:**
+
+- Document: `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Section: Task 6C
+- Contract: published frame plans and prepared packet streams are authoritative;
+  unplanned work fails closed and never replays Direct commands.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP328 Render-policy Task 6B Direct Opaque packet execution.
+- Evidence: commits `94ece7c7` and `6d8efaa9`, reviewed Direct Depth/Opaque
+  packet execution, and synthetic plus Porsche DX12 parity.
+
+**Approved scope:**
+
+- Remove the replaced Depth/Opaque legacy value oracles, no-plan Direct command
+  loops, and Opaque pass-local indirect batching implementation.
+- Make no-plan GPU compatibility explicit opt-in and prevent disabled paths
+  from beginning a render pass or mutating targets.
+- Validate Task 5 whole-pass GPU packet ranges against the canonical frame plan
+  and exact prepared stream before recording.
+- Retain draw-list and pass-injection adapters still consumed by GPUCulling,
+  Transparent, Shadow, ObjectVelocity, and diagnostics, with Tasks 7-9 as their
+  explicit removal owners.
+
+**Out of scope:**
+
+- Hybrid packet identity and exactly-once partitioning, visibility providers,
+  frame-owned pass contexts, and formal backend submission strategies; Tasks
+  7-13.
+- Repairing the existing Vulkan descriptor/shader-extension validation or
+  OpenGL ToneMapping SPIRV-Cross layout gates; Tasks 12 and 14.
+- Metal runtime validation on the configured Windows host; Task 13 platform
+  coverage remains open.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Include/Render/Passes/DirectDrawPacketBatch.h`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/Policy/RenderFramePlanCompiler.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/DirectDrawPacketBatch.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Policy/RenderFramePlanCompiler.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/phase-log.md`
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target `
+  RenderPassValidation GPUDrivenValidation ModelViewer VulkanValidation
+
+RenderPassValidation.exe --gtest_brief=1
+GPUDrivenValidation.exe --gtest_brief=1
+VulkanValidation.exe --gtest_brief=1
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "RenderPolicyValidation|GPUDrivenValidation|RenderSceneValidation|MeshPassProcessorValidation|RenderPassValidation|RenderPassStatusValidation|SceneRendererDiagnosticsValidation|SceneRendererExternalTargetValidation|RenderPostProcessStackValidation"
+
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure `
+  -R "^(ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+```
+
+**Validation result:**
+
+- Focused builds: PASS, including DX11, DX12, Vulkan, and OpenGL backend
+  libraries plus ModelViewer.
+- Standalone suites: PASS 153/153 RenderPass and 24/24 GPUDriven.
+- Adjacent renderer contract CTest gate: PASS 220/220.
+- Synthetic and external Porsche DX12 Direct/GPU smoke and pixel parity: PASS
+  6/6.
+- DX11 ModelViewer Direct smoke: PASS 1/1.
+- VulkanValidation: PASS 25/25, with existing signaled-fence and placed-buffer
+  device-address VUID output. Vulkan ModelViewer completes its smoke process but
+  still fails PipelineCache initialization before Opaque because of the existing
+  DefaultLit set-0 binding-4 type mismatch and unsupported SPIR-V extension
+  declarations.
+- OpenGL smoke was executed: 0/2 because the existing ToneMapping SPIRV-Cross
+  buffer layout failure prevents PipelineCache initialization; the second test
+  also lacks its optional cooked fixture in this build tree.
+- Metal: unavailable on the configured Windows host and recorded as an open
+  Task 13 coverage gate.
+- `git diff --check`: PASS; only expected CRLF conversion warnings.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for two P1 issues: planned GPU branches did
+  not validate plan/preparation correspondence, and disabled no-plan paths still
+  cleared attachments.
+- Primary accepted both findings. A shared whole-pass GPU range validator now
+  checks the canonical plan, prepared stream, partition/group counts, sorted
+  candidate references, ordinals, and skipped references before recording.
+  Disabled no-plan paths return before resource or attachment mutation.
+- Final verdict: APPROVE; no remaining P0-P2 findings. New tests cover both
+  disabled defaults, a corrupt Depth GPU plan, and stale Opaque preparation.
+
+**Primary review result:**
+
+- Verdict: PASS. The reviewer findings are valid and fully resolved; production
+  paths fail closed before `BeginRenderPass`, planned Direct/GPU consumers both
+  validate their authoritative inputs, and no legacy Direct command consumer or
+  pass-local indirect batching implementation remains.
+- Adapter retention is intentional and assigned to Tasks 7-9. No Transparent,
+  Shadow, ObjectVelocity, or diagnostic consumer was removed prematurely.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 7A stable packet IDs and exactly-once partition accounting.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged; they are unrelated local artifacts.
+- Carry Vulkan, Metal, and OpenGL runtime gates into Tasks 12-14 without
+  reclassifying them as Task 6C regressions.
+
+---
+
+### R-SP330 Render-policy Task 7A stable packet identity and exactly-once accounting
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Plan review agent:** Primary architect with read-only identity/accounting inventory
+**Code review agent:** Independent terra worker; primary review of findings and revision
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Task 7A identity/accounting slice; Task 7B recording changes excluded.
+
+**Prerequisite status:** PASS
+
+- Task 6C/M1 exit is committed at `991e749e`.
+- Depth and Opaque Direct/GPU consumers already preflight their published plan
+  and prepared packet stream before command recording.
+
+**Approved scope:**
+
+- Add a collision-safe structured per-frame/view packet ID covering pass,
+  object/primitive, exact mesh generation, both submesh identities, source
+  index, and source ordinal.
+- Freeze a separate exact preparation signature so material, pipeline,
+  arguments, flags, grouping, layout, disposition, reason, or depth drift is
+  rejected without changing logical ID semantics.
+- Publish and independently validate expected/terminal/unique/duplicate/
+  unaccounted counts for every GPU, Direct, or deliberate-Skip partition.
+- Preserve Task 5 whole-pass Direct behavior for mixed candidate/Direct passes.
+
+**Out of scope:**
+
+- Mixed GPU and Direct command recording, pass load/depth sequencing, and late
+  lane failure policy; those remain Task 7B.
+- Candidate visibility redesign and frame-owned pass contexts; Tasks 8 and 9.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderFrameExecutionPlan.h`
+- `Render/Include/Render/Policy/RenderFramePlanCompiler.h`
+- `Render/Private/Policy/RenderFramePlanCompiler.cpp`
+- `Render/Private/Policy/RenderPolicyResolver.cpp`
+- `Render/Private/Passes/DirectDrawPacketBatch.cpp`
+- `Tests/RenderPolicyValidation/main.cpp`
+- resolver contract, execution ledger, and this phase log.
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderPolicyValidation RenderPassValidation GPUDrivenValidation
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/GPUDrivenValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(RenderPolicyValidation\\.|MeshPassProcessorValidation\\.|RenderDrawPacketValidation\\.)"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for all three targets and configured backend libraries.
+- Tests: RenderPolicy 19/19, RenderPass 153/153, GPUDriven 24/24, adjacent
+  identity/preparation CTest 35/35.
+- Visual gate: N/A; Task 7A changes no command selection or recording.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for one P1. Logical identity alone did not
+  detect material/pipeline/argument/flag/layout drift in the prepared source.
+- Primary accepted the finding but kept transient draw state out of logical
+  identity. A separate full-value `RenderPreparedDrawPacketSignature` now
+  freezes every `MeshPassProcessorResult` value and is checked by both Direct
+  and GPU consumers.
+- Final verdict: APPROVE; no remaining P0-P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. The reviewer finding was valid, the separation between stable
+  logical identity and exact preparation integrity is deliberate, and the
+  revised tests cover material generation, pipeline, arguments, flags, Direct
+  layout, GPU stale-source rejection, duplicate IDs, accounting tamper, empty
+  passes, repeated ordinals, view/frame separation, mesh generation, and
+  submesh changes.
+- Task 7B remains the only owner of mixed Depth/Opaque recording and removal of
+  whole-pass GPU completeness gates.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 7B hybrid Depth/Opaque execution and DX12 validation.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged.
+
+---
+
+### R-SP331 Render-policy Task 7B hybrid Depth/Opaque packet execution
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Plan review agent:** Primary architect with Task 7A contract and Task 7B acceptance review
+**Code review agent:** Independent terra worker; primary review of every finding and revision
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- Task 7B hybrid recording slice; Task 8 visibility redesign excluded.
+
+**Prerequisite status:** PASS
+
+- Task 7A stable identity/accounting is committed at `22db718f`.
+- Direct and GPU consumers already reject stale prepared sources before command
+  recording.
+
+**Approved scope:**
+
+- Preserve the compiler's mutually exclusive GPU, Direct, and deliberate-Skip
+  partitions instead of rewriting a mixed pass to whole-pass Direct.
+- Validate the complete plan/source relationship and record planned GPU then
+  planned Direct work inside one Depth/Opaque render pass with one clear.
+- Support hybrid, GPU-with-Direct-skipped, all-Direct, and all-Skip plan shapes.
+- On a late GPU failure, report the failed lane and its recorded prefix, execute
+  only the preplanned Direct lane, and never replay GPU packets as Direct.
+- Preserve Direct behavior for Transparent, skinned, special, and
+  missing-material work while retaining stable unavailable/pending reasons.
+
+**Out of scope:**
+
+- Candidate/final visibility separation and visibility-provider ownership;
+  Task 8.
+- Frame-owned pass contexts and removal of persistent compatibility setters;
+  Task 9.
+- Backend qualification promotion or changing the default runtime policy;
+  Task 16B.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Include/Render/Passes/DirectDrawPacketBatch.h`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/Policy/RenderFramePlanCompiler.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/DirectDrawPacketBatch.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Policy/RenderFramePlanCompiler.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderPolicyValidation/main.cpp`
+- resolver contract, execution ledger, and this phase log.
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderPolicyValidation RenderPassValidation GPUDrivenValidation ModelViewer VisualGoldenValidation
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/GPUDrivenValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^ModelViewerGPUDrivenGBVSmoke$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries)$"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for Render, policy/pass/GPU-driven validation targets,
+  ModelViewer, and visual-golden validation.
+- Standalone suites: PASS 22/22 RenderPolicy, 159/159 RenderPass, and 24/24
+  GPUDriven.
+- Synthetic DX12 Debug Layer/Auto/forced-mode/parity gate: PASS 5/5 with zero
+  Direct-versus-GPU image difference.
+- External Porsche Direct/GPU/parity gate: PASS 3/3; DX12 GBV smoke: PASS 1/1.
+- Resize, frame-plan lifetime, submission failure, and resource-retirement gate:
+  PASS 6/6.
+- `git diff --check`: PASS.
+
+**Independent code review result:**
+
+- First revision: REQUEST CHANGES for one P2. A GPU-only forced plan counted
+  Direct sources as skipped and lost the `ForcedGPUDriven` diagnostic reason.
+  Primary accepted the finding, limited Direct-skip accounting to a nonempty
+  Direct source partition, and added a forced-GPU reason regression.
+- Second revision: REQUEST CHANGES for one P2 coverage gap. Acceptance fixtures
+  did not yet prove special/missing/transparent routing, GPU plus deliberately
+  skipped Direct work, or Depth all-Skip symmetry end to end. Primary accepted
+  the finding and added all three runtime fixtures.
+- Final verdict: APPROVE; no remaining P0-P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. The reviewer findings were valid and are fully resolved. The
+  compiler preserves resolver partitions and global reason precedence; complete
+  plan/source validation is collision-safe; Depth and Opaque execute only the
+  preplanned lanes exactly once with honest partial-recording telemetry.
+- The Auto DX12 qualification remains Candidate. No maturity promotion or
+  default-policy change is hidden in this stage.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 8 candidate visibility separation.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged.
+
+---
+
+### R-SP332 Render-policy Task 8 candidate visibility separation
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Plan review agent:** Primary architect with the approved Task 8 contract
+**Code review agent:** Independent terra worker; primary review of all findings,
+revisions, runtime evidence, and final diff
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-visibility-contract.md`
+- Task 8 candidate visibility separation; Task 9 pass-context migration and
+  Task 10 submission-strategy/RHI redesign excluded.
+
+**Prerequisite status:** PASS
+
+- Task 7A identity/accounting is committed at `22db718f`.
+- Task 7B hybrid execution is committed at `6ce0fcac`.
+- Direct and GPU lanes already consume mutually exclusive planned packet
+  partitions with late-failure honesty.
+
+**Approved scope:**
+
+- Introduce frame/view-owned `RenderCandidateSet`, canonical CPU visibility,
+  and deferred/no-readback GPU visibility providers.
+- Evaluate scene-object bounds once, then project the resulting dense object
+  masks onto pass-aware packet candidates without a second frustum/distance
+  walk.
+- Feed Direct only CPU-visible packet sources while preserving every coarse
+  Depth/Opaque candidate for GPU fine visibility and stable compaction mapping.
+- Freeze `[0, 1]` clip-depth, world-AABB, boundary-inclusive, reverse-Z,
+  invalid-bounds/fail-open, and C++/HLSL instance-ABI rules.
+- Give Depth and Opaque independent GPUCulling owners, graph passes, resources,
+  failure domains, and execution reports.
+- Keep HZB occlusion unavailable and diagnostic-only.
+- Separate indirect submitted upper bounds from exact executed counts. Without
+  readback, GPU count-buffer execution is explicitly unavailable rather than
+  inferred from a capacity or CPU reference count.
+- Version CPU-writable GPU-culling inputs per in-flight RenderContext slot so a
+  later CPU frame cannot overwrite instance/constants data still read by the
+  GPU. Keep shared outputs on the ordered graphics queue; async compute remains
+  out of scope.
+
+**Files changed:**
+
+- `Core/Include/Core/Math/Frustum.h`
+- `Render/Include/Render/Visibility/RenderVisibility.h`
+- `Render/Private/Visibility/RenderVisibility.cpp`
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- Depth/Opaque/Direct packet pass contracts and implementations
+- render policy execution reports, diagnostics, tool artifacts, and frame
+  diagnostics publication
+- `Render/Shaders/Include/GPUInstanceData.hlsli`, DefaultLit, DepthOnly, and
+  GPUCulling shaders
+- RenderContracts frame schema and ModelViewer honest readiness assertions
+- RenderVisibility, GPUDriven, RHI contract, RenderPolicy, and pass validation
+  tests plus CMake registration
+- visibility contract, execution ledger, and this phase log.
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderVisibilityValidation GPUDrivenValidation RenderPolicyValidation RenderPassValidation RHIContractValidation SpatialComponentValidation SystemIntegrationTest ModelViewer VisualGoldenValidation
+build/win_x64_debug/Tests/Debug/RenderVisibilityValidation.exe
+build/win_x64_debug/Tests/Debug/GPUDrivenValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/RHIContractValidation.exe
+build/win_x64_debug/Tests/Debug/SpatialComponentValidation.exe
+build/win_x64_debug/Tests/Debug/SystemIntegrationTest.exe
+ctest --test-dir build/win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation)$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation)$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^ModelViewerGPUDrivenGBVSmoke$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries)$"
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerSmoke|ModelViewerOpenGLPBRMaterialSmoke)$"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for all listed targets, including configured DX11, DX12,
+  OpenGL, and Vulkan backend libraries.
+- Standalone suites: PASS 9/9 RenderVisibility, 28/28 GPUDriven, 22/22
+  RenderPolicy, 159/159 RenderPass, 41/41 RHIContract, 20/20 SpatialComponent,
+  and 4/4 SystemIntegration.
+- Repeated DX12 GPU-driven frame-slot soak: PASS 10/10 runs, eight frames per
+  run, after the slot-ring repair.
+- Synthetic DX12 Debug Layer/Auto/forced-mode/parity gate: PASS 5/5.
+- External Porsche Direct/GPU/parity gate: PASS 3/3.
+- DX12 GPU-Based Validation: PASS 1/1.
+- Resize, frame-plan lifetime, submission-failure, and retirement gate:
+  PASS 6/6.
+- DX11 Direct smoke: PASS. OpenGL shader compilation reaches the new shared
+  instance include, but the registered PBR smoke remains blocked by its known
+  ToneMapping SPIRV-Cross buffer-layout failure and consequent material-ready
+  failure; this is an explicit Task 14 compatibility gate, not a Task 8
+  GPU-visibility regression.
+- The dense 16,384-candidate regression and direct vector lookup contract
+  cover candidate-preparation linearity; the full visibility suite completes
+  within the focused standalone run.
+- `git diff --check`: PASS; line-ending notices only.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for two findings. GPU count-buffer execution
+  was reported as an actual count even though no readback existed, and pass
+  candidates repeated the CPU bounds/distance evaluation already performed for
+  scene candidates.
+- Primary accepted both. Reports now distinguish submitted upper bound from an
+  optional exact count, and pass candidates reuse canonical object masks.
+- Runtime follow-up found no extractor/upload-completion ABBA lock order. It
+  found a P1 lifetime defect: one persistent instance/constants upload pair
+  could be overwritten by frame N+1 while frame N remained in flight. Logging
+  altered timing and explained the earlier two-frame symptom.
+- Primary accepted the finding and required the production repair: per-slot
+  instance/constants buffers, descriptor sets, and input access snapshots,
+  selected only after `WaitForFrame`. A serialization fence wait was rejected.
+- Added behavior coverage proves two slots have independent pointer/content
+  versions, restore their own access snapshots, wrap only onto the selected
+  slot, and reject an invalid slot without changing active state.
+- Final verdict: APPROVE; no remaining P0-P2 findings. The reviewer confirmed
+  SceneRenderer does not use `ExecuteAsync`; future async-compute work must
+  revisit shared output ownership.
+
+**Primary review result:**
+
+- Verdict: PASS. Both initial review findings and the later P1 lifetime finding
+  are valid and fully resolved. The canonical CPU/GPU bounds math agrees,
+  Direct/GPU candidate ownership is separated, no-readback diagnostics are
+  honest, Depth/Opaque owners are isolated, and frame-slot input versions align
+  with RenderContext synchronization.
+- Temporary timing instrumentation was removed before the final build and
+  gates. No runtime artifact or cache is part of the commit scope.
+- Vulkan GPU visibility/submission and Metal ICB runtime qualification remain
+  Tasks 12 and 13. OpenGL ToneMapping compatibility remains Task 14.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 9 immutable frame-owned pass record contexts.
+- Keep `RenderRuntimeFatalDiagnostics.json` and `Scripts/__pycache__/`
+  unstaged.
+
+---
+
+### R-SP333 Render-policy Task 9A frame-owned Depth/Opaque recording
+
+**Date:** 2026-08-03
+**Commit:** Pending
+**Plan review agent:** Primary architect with the approved Task 9 contract
+**Code review agent:** Independent terra worker; primary review of every
+finding, remediation, test, final diff, and staged scope
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-pass-record-context-contract.md`
+- Task 9A common record contract plus Depth/Opaque; remaining scene passes and
+  binder removal are Task 9B.
+
+**Approved scope:**
+
+- Add stable RenderGraph identity and a nonzero recording generation to every
+  texture/buffer handle; `Clear()` advances the generation and foreign/stale
+  usage fails graph validation before resource access.
+- Capture plan, preparation, visibility, scene objects, draw lists, ViewData,
+  shadow values, and result storage in graph-owned recording data.
+- Register Depth/Opaque with graph-owned recorder clones so callbacks do not
+  read mutable per-frame state from the persistent pass objects.
+- Seal Depth/Opaque GPU-culling inputs into independent per-recording resources
+  and retain every command-referenced buffer, descriptor, shader, layout, and
+  pipeline through the actual submission completion token.
+- Publish execution reports and pass statistics only through identity-matched
+  shared recording results.
+- Keep main-chain execution on the graphics physical queue. Async compute,
+  remaining scene-pass migration, binder removal, and submission strategies
+  remain later tasks.
+
+**Files changed:**
+
+- RenderGraph public handle/identity contract and implementation
+- `Render/Include/Render/Passes/RenderPassRecordContext.h`
+- `IRenderPass`, `DepthPrepass`, and `OpaquePass` contracts/implementations
+- GPUCulling sealed recording state and submission retention
+- SceneRenderer context construction, sealed cull registration, result
+  publication, and access-snapshot commit
+- RenderGraph, RenderPass, GPUDriven, and RHI contract validations
+- Task 9 contract, execution ledger, implementation plan, and this phase log
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderGraphValidation RenderPassValidation GPUDrivenValidation RenderPolicyValidation RHIContractValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build/win_x64_debug/Tests/Debug/RenderGraphValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/GPUDrivenValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+build/win_x64_debug/Tests/Debug/RHIContractValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation|ModelViewerGPUDrivenGBVSmoke|RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries|RenderingShowcaseDX11Smoke)$"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for every listed target and configured DX11, DX12, OpenGL, and
+  Vulkan libraries reached by the dependency graph.
+- Standalone suites: PASS 50/50 RenderGraph, 168/168 RenderPass, 30/30
+  GPUDriven, 22/22 RenderPolicy, and 41/41 RHIContract.
+- Repeated DX12 GPU-driven soak: PASS 10/10.
+- DX12 Debug Layer/Auto/forced-mode/parity, Porsche Direct/GPU/parity, GBV,
+  resize, rejected/lifetime/retirement, and DX11 Direct smoke: PASS 16/16.
+- `git diff --check`: PASS; only line-ending and environment ignore warnings.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for three P1 findings. A valid context could
+  be registered into a different target graph, enabled shadow slices did not
+  validate handle provenance/completeness, and sealed imported GPU resources
+  were not retained beyond graph/state release.
+- Primary accepted every finding. Target-graph and ViewData handles now verify
+  graph identity/generation and fail closed with zero commands; directional
+  and ray-shadow slices validate current handles and cascade consistency; the
+  sealed state transfers all command-referenced RHI objects to the submission
+  batch.
+- Added real AddToGraph foreign/stale/invalid negatives plus a timeline/fence
+  test proving resources survive state release and retire only after GPU
+  completion.
+- Final verdict: APPROVE; no remaining P0-P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. The three independent findings are valid and fully resolved.
+  Graph callbacks consume recording-owned inputs, stale/foreign aliases are
+  rejected before command recording, lane failure reports remain honest, and
+  submission lifetime follows completion evidence rather than CPU frame age.
+- RHI source-contract validation was updated from mutable `owner` snapshots to
+  the sealed `recordedState` boundary and made robust to function size changes.
+- Per-recording culling resources intentionally trade allocation/memory for
+  correctness. Completion-aware pooling is a later optimization and must not
+  weaken recording isolation.
+
+**Notes / follow-ups:**
+
+- Next slice: Task 9B-1 shared result contract and Shadow producer/Opaque
+  consumer migration.
+- Keep `Engine/Private/Engine.cpp`, `RenderRuntimeFatalDiagnostics.json`, and
+  `Scripts/__pycache__/` unstaged.
+
+---
+
+### R-SP334 Render-policy Task 9B-1 graph-owned raster Shadow output
+
+**Date:** 2026-08-03
+**Commit:** pending `refactor(render): isolate raster shadow recording state`
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-pass-record-context-contract.md`
+
+**Prerequisite status:** PASS
+
+- Task 9A commit `8e07c504` is present and its focused/integration gates were
+  green before this slice.
+
+**Approved scope:**
+
+- Move raster Shadow Setup/Execute to a graph-owned recorder clone that
+  captures configuration, light state, requested-enabled state, scene snapshot,
+  services, identity, and result sink.
+- Publish a producer-neutral `DirectionalShadowRecordOutput` during synchronous
+  Setup and consume it from Opaque without querying the persistent ShadowPass.
+- Seed disabled/current-identity output and zero stats for disabled,
+  unsupported, and invalid contexts; publish completed stats only through the
+  active identity gate.
+- Preserve the explicit standalone `ViewData` compatibility path.
+
+**Out of scope:**
+
+- RayTracedShadow remains a documented stateful island for Task 9B-2. Its
+  graph handles, temporal-history reservation/commit, imported-resource
+  lifetime, output, and stats are not claimed complete here.
+- ObjectVelocity, Transparent, Skybox, binder removal, submission strategies,
+  async compute, Editor work, and Auto-policy promotion remain later slices.
+
+**Files changed:**
+
+- Render pass record context, Shadow/Opaque contracts and implementations
+- SceneRenderer raster Shadow producer/consumer wiring and result publication
+- RenderPass and PipelineCache validation coverage
+- Task 9 contract, implementation plan, execution ledger, and this phase log
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation RHIContractValidation RenderGraphValidation RenderPolicyValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/PipelineCacheValidation.exe
+build/win_x64_debug/Tests/Debug/RHIContractValidation.exe
+build/win_x64_debug/Tests/Debug/RenderGraphValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation|ModelViewerGPUDrivenGBVSmoke|RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries|RenderingShowcaseDX11Smoke)$"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for all listed targets and the configured DX11, DX12, OpenGL,
+  and Vulkan libraries reached by their dependency graphs.
+- Standalone suites: PASS 171/171 RenderPass, 129/129 PipelineCache, 41/41
+  RHIContract, 50/50 RenderGraph, and 22/22 RenderPolicy.
+- Repeated DX12 GPU-driven smoke: PASS 10/10.
+- DX12 Direct/GPU/Auto/parity/GBV, Porsche Direct/GPU/parity,
+  resize/lifetime/retirement, and DX11 smoke: PASS 16/16.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for one P1: the first patch lacked the
+  required same-pass, two-graph, inverse-execution runtime proof.
+- Added a real A/B registration and B-to-A execution test covering distinct
+  identities, handle provenance, configuration/cascades, Opaque consumers,
+  execution stats, caller mutation, and stale generation after Clear.
+- Final verdict: APPROVE; no remaining P0-P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. The graph owns the raster Shadow recorder and frame output;
+  the persistent pass retains only configuration/services and an
+  identity-gated diagnostic snapshot.
+- Two stale PipelineCache source assertions from prior Depth/Opaque recorder
+  migration were updated to the current typed names; the full suite is green.
+- Next slice is Task 9B-2 RayTracedShadow frame state plus completion-aware
+  temporal-history reservation/commit/rollback and imported-resource retain.
+
+---
+
+### R-SP335 Render-policy Task 9B-2 graph-owned ray-traced Shadow state
+
+**Date:** 2026-08-03
+**Commit:** pending `refactor(render): isolate ray-traced shadow recording state`
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-pass-record-context-contract.md`
+
+**Prerequisite status:** PASS
+
+- Task 9B-1 commit `e7c23a49` is present and its focused/integration gates
+  were green before this slice.
+
+**Approved scope:**
+
+- Move RayTracedShadow handles, output, statistics, constant/timing resources,
+  descriptor state, and command-referenced resource ownership into immutable
+  per-recording graph state.
+- Keep temporal history in a completion-aware owner with exclusive writer
+  reservations, submitted commit, unsubmitted rollback, identity ordering,
+  and exact realized `RHITextureAccessSnapshot` handoff.
+- Publish a graph-owned producer output to Opaque and fail closed when setup or
+  execution cannot produce a valid mask.
+- Retain Opaque frame descriptor snapshots and the selected shadow-mask view in
+  the matching submission batch.
+- Preserve the standalone no-identity adapter as a bounded, single-pending
+  compatibility path.
+
+**Out of scope:**
+
+- ObjectVelocity, Transparent, Skybox, binder removal, formal submission
+  strategies, async compute, Editor work, and Auto-policy promotion remain
+  later tasks.
+- Completion-aware pooling of per-record query/readback/constant resources is
+  a later performance optimization; correctness currently favors isolation.
+- PipelineCache view/object constant storage remains a wider recording-snapshot
+  concern for Task 9B cleanup and must not regress the ownership established
+  here.
+
+**Files changed:**
+
+- RayTracedShadow/Opaque record contracts, implementations, diagnostics, and
+  submission ownership
+- SceneRenderer identity-aware submission/rollback and budget timing refresh
+- PipelineCache frame descriptor snapshot accessor
+- RenderPass and PipelineCache validation coverage
+- Task 9 contract, implementation plan, execution ledger, and this phase log
+
+**Validation commands:**
+
+```powershell
+cmake --build build/win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation RHIContractValidation RenderGraphValidation RenderPolicyValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build/win_x64_debug/Tests/Debug/RenderPassValidation.exe
+build/win_x64_debug/Tests/Debug/PipelineCacheValidation.exe
+build/win_x64_debug/Tests/Debug/RHIContractValidation.exe
+build/win_x64_debug/Tests/Debug/RenderGraphValidation.exe
+build/win_x64_debug/Tests/Debug/RenderPolicyValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build/win_x64_debug -C Debug --output-on-failure -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation|ModelViewerGPUDrivenGBVSmoke|RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries|RenderingShowcaseDX11Smoke)$"
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for all listed targets and the configured DX11, DX12, OpenGL,
+  and Vulkan libraries reached by their dependency graphs.
+- Standalone suites: PASS 173/173 RenderPass, 129/129 PipelineCache, 41/41
+  RHIContract, 50/50 RenderGraph, and 22/22 RenderPolicy.
+- Repeated DX12 GPU-driven smoke: PASS 10/10.
+- DX12 Direct/GPU/Auto/parity/GBV, Porsche Direct/GPU/parity,
+  resize/lifetime/retirement, and DX11 smoke: PASS 16/16.
+
+**Independent code review result:**
+
+- Initial verdict: REQUEST CHANGES for two P1 and two P2 findings: rejected or
+  failed submissions did not advance diagnostics, legacy completion could
+  become ambiguous, history reduced access to bare resource state, and timing
+  polling could be skipped while the pass was disabled.
+- Final verdict: APPROVE; all four findings have production-path fixes and
+  focused regressions, with no remaining P0-P2 findings.
+
+**Primary review result:**
+
+- Verdict: PASS. RayTracedShadow recording data and Opaque consumption are
+  graph-owned, temporal state commits only from the newest submitted successful
+  dispatch, and all execution failure paths remain fail-closed.
+- The primary integration run additionally covered DX12/DX11 runtime,
+  cross-path parity, resize, submission retirement, external assets, and GBV.
+- Native Vulkan and Metal RT hardware execution remains a platform validation
+  item; Windows builds and cross-backend contracts are green.
+- Next slice is Task 9B-3 ObjectVelocity scene/list/target recording isolation
+  and identity-gated statistics.
+
+---
+
+### R-SP336 Render-policy Task 9B-3 ObjectVelocity recording isolation
+
+**Date:** 2026-08-03
+**Commit:** Pending `refactor(render): isolate object velocity recording state`
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-pass-record-context-contract.md`
+
+**Approved scope:**
+
+- Migrate ObjectVelocity scene, lists, targets, planned draws, results, and
+  per-draw bindings into graph-owned record data.
+- Introduce private PipelineCache frame/object CB + descriptor snapshots and
+  MaterialSystem masked-material snapshots with fixed dynamic offsets.
+- Retain every command/descriptor resource for submission, including texture
+  views and their parent textures, plus the DefaultLit pipeline and descriptor
+  set-layout owners, which are required by Vulkan view and cross-backend raw
+  layout-identity lifetime contracts.
+- Make velocity `ReadWrite(RenderTarget)`, depth `Read(DepthRead)`, reject
+  stale/foreign/adversarial records before helper-owned state can be mutated,
+  and publish diagnostics monotonically by recording identity.
+
+**Out of scope:**
+
+- Transparent and Skybox migration, binder removal, submission strategies,
+  async compute, Editor work, and GPU-driven ObjectVelocity execution.
+- General replacement of PipelineCache/MaterialSystem frame rings; only the
+  ObjectVelocity recording bridge is introduced here.
+
+**Focused validation:**
+
+- `RenderPassValidationFixture.ObjectVelocityPassDrawsMaskedItemsWithMaterialSet`
+- `RenderPassValidationFixture.ObjectVelocityPassOwnsRecordingBindingsAcrossReverseGraphs`
+- `RenderPassValidationFixture.ObjectVelocityPassFailsClosedForForeignStaleAndRejectedRecordingInputs`
+- `PipelineCacheValidationFixture.MaskedObjectVelocityAlphaTestContracts`
+
+**Primary acceptance evidence:**
+
+- A/B graphs register before B then A executes. Their distinct view/object/
+  material CBs, descriptor sets, target views, fixed dynamic offsets, and
+  uploaded values remain isolated after caller mutation; delayed A publication
+  cannot replace B diagnostics.
+- Empty, no-history, legacy, stale-handle, foreign-result, partial-identity,
+  forged-current-provenance/out-of-range-handle, and sealed-batch paths issue
+  zero render passes. A sealed batch fails before declaring velocity/depth
+  graph usage. A self-consistent graph-A context whose snapshot is absent is
+  also a graph-B no-op; its graph-A results are never initialized or rewritten
+  by the generic execution-data helper.
+- Submission batches gain attachment view + texture ownership at execute time
+  and retire only after the matching GPU completion token. Runtime layout
+  probes prove graph callbacks and the submission batches retain the DefaultLit
+  pipeline/set layouts across cache shutdown, then release B and A only as
+  their respective completion points retire.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/ObjectVelocityPass.h` and
+  `Render/Private/Passes/ObjectVelocityPass.cpp`: move executable state into
+  graph-owned pass data, add strict source/target identity gates, resource
+  retention, and monotonic statistics publication.
+- `Render/Include/Render/Passes/RenderPassRecordContext.h` and
+  `Render/Private/Renderer/SceneRenderer.cpp`: route ObjectVelocity through the
+  typed record context and publish only the active record result.
+- `Render/Include/Render/PipelineCache.h`,
+  `Render/Private/PipelineCache.cpp`,
+  `Render/Include/Render/Material/MaterialSystem.h`, and
+  `Render/Private/Material/MaterialSystem.cpp`: add private raster/material
+  binding snapshots with checked allocation, fixed offsets, and strong layout
+  ownership.
+- `Tests/RenderPassValidation/main.cpp` and
+  `Tests/PipelineCacheValidation/main.cpp`: cover reverse graph execution,
+  caller mutation, malformed identity/handle/batch inputs, completion-aware
+  retirement, and dynamic-offset overflow.
+- Task 9B execution plan, TODO, record-context contract, and this phase record:
+  synchronize the accepted implementation and validation evidence.
+
+**Validation commands:**
+
+```powershell
+[Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+& 'D:\Program Files\CMake\bin\cmake.exe' --build build\win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation RHIContractValidation RenderGraphValidation RenderPolicyValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+build\win_x64_debug\Tests\Debug\RHIContractValidation.exe
+build\win_x64_debug\Tests\Debug\RenderGraphValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPolicyValidation.exe
+ctest --test-dir build/win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build/win_x64_debug -C Debug -R "^(ModelViewerGPUDrivenSmoke|ModelViewerGPUDrivenAutoPolicySmoke|ModelViewerGPUDrivenParityGPUSmoke|ModelViewerGPUDrivenParityDirectSmoke|GPUDrivenCrossPathVisualParityValidation|ModelViewerExternalPorscheDirectSmoke|ModelViewerExternalPorscheGPUDrivenSmoke|ExternalPorscheGPUDrivenCrossPathParityValidation|ModelViewerGPUDrivenGBVSmoke|RenderThreadRuntimeValidation\.(TerminalSealWaitsForInFlightResizePublication|ResizeValidationAndCoalescingAreExplicit)|RenderResourceRuntimeFixture\.(NthCreationFailureRetiresPartialObjects|SubmissionFailureRetiresCreatedObjects|ReadyReleaseRetiresUntilRecordedTokenCompletes)|SceneRendererDiagnosticsValidation\.RenderPolicyPlanUsesFrameLifetimeAndInvalidatesAtOwnershipBoundaries|RenderingShowcaseDX11Smoke)$" --output-on-failure
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS for all eight requested targets.
+- Unit/contract tests: PASS -- RenderPass `175/175`, PipelineCache `130/130`,
+  RHIContract `41/41`, RenderGraph `50/50`, RenderPolicy `22/22`.
+- Focused independent rerun: PASS -- ObjectVelocity `3/3` and
+  ObjectVelocity/RasterDrawBindingSnapshot `4/4`.
+- Stability gate: PASS -- `ModelViewerGPUDrivenSmoke` repeated `10/10`.
+- Visual/integration gate: PASS -- `16/16`, including direct/GPU-driven parity,
+  external Porsche parity, GBV, resource retirement, resize, and DX11 smoke.
+- Diff integrity: PASS; only existing line-ending/global-ignore notices remain.
+
+**Independent architecture/code review result:**
+
+- Final implementation verdict: APPROVE; P0 `0`, P1 `0`.
+- Resolved review findings: parent-texture retention for views, strict
+  pre-helper identity gating, partial/foreign result rejection, pre-declaration
+  batch retention, forged current-provenance handle bounds, strong pipeline and
+  set-layout retention, and graph-A/null-snapshot injection into graph B.
+- The final P2 audit gap and P3 stale typed-context comment were closed before
+  commit by this record and the SceneRenderer comment update.
+
+**Primary-agent review result:**
+
+- APPROVE after source/diff inspection, full focused and integration gates,
+  independent review reconciliation, and verification that unrelated user and
+  runtime files remain outside the Task 9B-3 change set.
+
+**Residual risks / follow-ups:**
+
+- Per-record and per-masked-draw CB/descriptor allocation is a correctness-first
+  bridge; completion-aware pooling remains a later performance task.
+- Explicit pipeline/set-layout retention is a scoped ownership bridge until RHI
+  pipeline and descriptor wrappers own their native layout dependencies.
+- Native Vulkan and Metal runtime validation was unavailable on this Windows
+  host; backend-neutral contracts and the available Windows backend gates pass.
+
+---
+
+### R-SP337 Render-policy Task 9B-4 Transparent recording isolation
+
+**Date:** 2026-08-03
+**Commit:** Pending `refactor(render): isolate transparent recording state`
+
+**Plan source:**
+
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-implementation-plan.md`
+- `Docs/superpowers/plans/2026-08-02-render-policy-draw-packet-execution-todo.md`
+- `Docs/superpowers/specs/2026-08-03-render-pass-record-context-contract.md`
+
+**Approved scope:**
+
+- Move Transparent scene/list/target execution inputs into graph-owned typed
+  record data while preserving renderer-issued back-to-front ordering.
+- Give every record private view/object CBs, frame/object descriptors, six
+  copied mutable local-light/cluster uploads, required object-instance
+  fallback, material bindings, and completion-aware resource retention.
+- Resolve attachments only through current RenderGraph handles, declare color
+  `ReadWrite(RenderTarget)` and optional depth `Read(DepthRead)`, and fail
+  before declarations for invalid or unretainable work.
+- Preserve the existing Transparent shadow policy: fallback directional/ray
+  resources are paired with disabled private view constants, without changing
+  caller ViewData or global frame state.
+
+**Out of scope:**
+
+- Skybox migration, `RenderFrameResourceBinder` removal, alternative
+  transparency algorithms/OIT, GPU-driven Transparent, async compute, Editor,
+  backend policy promotion, and general per-record allocation pooling.
+
+**Focused validation:**
+
+- `RenderPassValidationFixture.TransparentPassBindsTransparentPipeline`
+- `RenderPassValidationFixture.TransparentPassTypedPathFailsClosedWhenRecordingBindingsCannotBeCreated`
+- `RenderPassValidationFixture.TransparentPassDrawsWhenMaterialBindingUsesFallback`
+- `RenderPassValidationFixture.TransparentPassOwnsReverseRecordingInputsAndSubmissionRetirement`
+- `RenderPassValidationFixture.TransparentPassFailsClosedForMalformedSealedAndEmptyRecordings`
+
+**Primary acceptance evidence:**
+
+- Register A then B, mutate all six source upload buffers and A caller inputs,
+  execute B then A, and prove each graph uses its own copied bytes, view/object
+  constants, target, ordered dynamic offsets, and material binding.
+- Color is graph `ReadWrite(RenderTarget)` and optional depth is graph
+  `Read(DepthRead)`. Attachment views plus parent textures are retained at
+  execution; pipeline/set-layout owners remain live across cache shutdown until
+  the matching completion token retires.
+- Empty, legacy, foreign, stale, forged, incomplete, and sealed-batch records
+  are compile-valid no-ops: they expose no graph usages, execute no pass/draw,
+  and cannot mutate a foreign result payload before the strict pre-helper gate.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/RenderPassRecordContext.h` and
+  `Render/Private/Renderer/SceneRenderer.cpp`: carry a value-owned transparent
+  draw list through the typed renderer record context.
+- `Render/Include/Render/Passes/TransparentPass.h` and
+  `Render/Private/Passes/TransparentPass.cpp`: replace mailbox/setter execution
+  with typed graph data, strict provenance gates, ordered direct recording,
+  graph-owned attachment resolution, and submission retention.
+- `Render/Include/Render/PipelineCache.h` and
+  `Render/Private/PipelineCache.cpp`: add transparent-private raster binding
+  snapshots, copied light/cluster uploads, matching shadow fallback constants,
+  descriptor readiness validation, and retained layout/resource ownership.
+- `Tests/RenderPassValidation/main.cpp` and
+  `Tests/PipelineCacheValidation/main.cpp`: correct fake descriptor-set base
+  contracts, keep the typed Transparent source contract explicit, and cover
+  normal, failure, reverse-recording, retirement, and malformed-input paths.
+- Task 9B plan, TODO, contract, and this phase record: synchronize accepted
+  scope, validation, residual risk, and the Task 9B-5 handoff.
+
+**Validation commands:**
+
+```powershell
+[Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+& 'D:\Program Files\CMake\bin\cmake.exe' --build build\win_x64_debug --config Debug --target RenderPassValidation PipelineCacheValidation RHIContractValidation RenderGraphValidation RenderPolicyValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe
+build\win_x64_debug\Tests\Debug\RHIContractValidation.exe
+build\win_x64_debug\Tests\Debug\RenderGraphValidation.exe
+build\win_x64_debug\Tests\Debug\RenderPolicyValidation.exe
+ctest --test-dir build\win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug -R "<Task 9B-4 integration matrix>" --output-on-failure
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS — all 8 affected validation/sample targets.
+- Focused Transparent tests: PASS — normal, binding-failure, fallback,
+  reverse-recording/retirement, and malformed/sealed/empty paths.
+  The reverse fixture also proves nonzero caller shadow inputs remain
+  unchanged while private ViewConstants disable them, and verifies every A/B
+  private set0/set1 binding, fallback identity, layout identity, and ready
+  state.
+- Full unit/contract suites: PASS — `RenderPassValidation` `177/177`,
+  `PipelineCacheValidation` `130/130`, `RHIContractValidation` `41/41`,
+  `RenderGraphValidation` `50/50`, and `RenderPolicyValidation` `22/22`
+  (`420/420` total).
+- GPU stability smoke: PASS `10/10` consecutive runs.
+- Integration/visual matrix: PASS `16/16`, covering Direct/GPU-driven parity,
+  external Porsche assets, DX12 GBV, resource retirement, resize ownership,
+  and the DX11 compatibility smoke.
+
+**Independent architecture/code review result:**
+
+- Self-review: PASS; P0 `0`, P1 `0`.
+- Resolved during focused validation: the fake descriptor test double failed to
+  initialize its `RHIDescriptorSet` base, so it incorrectly reported every
+  freshly-created descriptor not-ready and without a layout identity. The
+  fixture now preserves the real RHI readiness contract; no production
+  validation was weakened. The equivalent PipelineCache fixture defect was
+  corrected too. Its source-contract assertions now name the typed
+  Transparent implementation's `object` local while continuing to require the
+  same previous-world and skinning uploads.
+- Independent-review P2 coverage closure: `FakeDevice` captures created
+  descriptor-set objects alongside their immutable descriptions. The 9B-4
+  reverse-recording test checks both A/B `TransparentRecordFrame` and
+  `TransparentRecordObject` sets for ready/layout identity and exact private
+  and fallback bindings; this is test-only instrumentation.
+
+**Primary-agent review result:**
+
+- PASS after full source/diff review and independent-review adjudication;
+  unresolved P0/P1/P2/P3: `0/0/0/0`.
+- The independent P2 test-coverage finding was accepted and closed before the
+  commit gate. The primary agent independently rebuilt and reran the augmented
+  reverse-recording fixture plus the full `RenderPassValidation` suite.
+
+**Residual risks / follow-ups:**
+
+- Per-record copies of six upload buffers and descriptor allocations are a
+  correctness-first bridge; completion-aware pooling belongs to later work.
+- Transparent remains sorted Direct and deliberately does not sample
+  directional/ray-traced shadows in this pass; an explicit transparent-shadow
+  design is a separate feature decision.
+- Native Vulkan and Metal runtime execution remain unavailable on this Windows
+  host; the shared RHI/Render contract was validated only by available tests.
+- Next slice after this review/commit gate: Task 9B-5 Skybox recording
+  isolation.
+
+---
+
+### R-SP338 Render-policy Task 9B-5 Skybox recording isolation
+
+**Date:** 2026-08-03
+**Commit:** Included in the Task 9B-5 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP337 (Transparent recording isolation).
+- Evidence: the shared record-context contract already supplies an identity,
+  paired snapshot/results, graph provenance, and completion-aware submission
+  batch.
+
+**Approved scope:**
+
+- Copy `RenderScene::GetSky()` into `RenderPassFrameSnapshot::sky`.
+- Define the schema-v4 `RenderSkyMode` value contract and carry complete sky
+  controls (mode, texture, tint, sun, gradient, blur, and scattering) from
+  world extraction through sealing.
+- Make Skybox typed recording value-owned: snapshot sky, graph-only color/depth
+  handles, private constant buffer/descriptor set, exact-registry cubemap
+  resolution with packet-owned Cubemap/Procedural/SolidColor behavior,
+  Equirectangular tint fallback, Disabled no-op, and strong ownership of all
+  command resources through completion.
+- Keep SceneRenderer pre-graph setters only for current status compatibility;
+  route Skybox through the typed context and inject the resource registry.
+- Add focused exact-registry cubemap, reverse A/B, mutation, descriptor/layout,
+  provenance-negative, and retirement fixtures.
+
+**Out of scope:**
+
+- PipelineCache snapshot APIs, RHI contracts, RenderFrameResourceBinder/CMake,
+  Task 9B-6 binder deletion, Editor work, and backend-specific feature work.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/RenderPassRecordContext.h`
+- `RenderContracts/Include/RenderContracts/RenderFramePacket.h`
+- `RenderExtraction/Private/RenderFrameExtractor.cpp`
+- `RenderExtraction/Private/RenderFramePacketBuilder.cpp`
+- `Render/Include/Render/Passes/SkyboxPass.h`
+- `Render/Private/Passes/SkyboxPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderFrameExtractionValidation/main.cpp`
+- `Tests/RenderContractsValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/RenderHonestyValidation/main.cpp`
+- Task 9B plan/todo and record-context contract documents.
+
+**Validation commands:**
+
+```powershell
+[Environment]::SetEnvironmentVariable('PATH', $null, 'Process')
+& 'D:\Program Files\CMake\bin\cmake.exe' --build build\win_x64_debug --config Debug --target RenderContractsValidation RenderFrameExtractionValidation RenderSceneValidation RenderPassValidation PipelineCacheValidation RHIContractValidation RenderGraphValidation RenderPolicyValidation GPUDrivenValidation RenderHonestyValidation ModelViewer VisualGoldenValidation RenderingShowcase
+build\win_x64_debug\Tests\Debug\RenderContractsValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderFrameExtractionValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderSceneValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderPassValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\PipelineCacheValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RHIContractValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderGraphValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderPolicyValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\GPUDrivenValidation.exe --gtest_brief=1
+build\win_x64_debug\Tests\Debug\RenderHonestyValidation.exe --gtest_brief=1
+ctest --test-dir build\win_x64_debug -C Debug -R "^ModelViewerGPUDrivenSmoke$" --repeat until-fail:10 --output-on-failure
+ctest --test-dir build\win_x64_debug -C Debug -R "<Task 9B-5 integration matrix>" --output-on-failure
+git diff --check
+```
+
+**Validation result:**
+
+- Build: PASS, all 13 affected validation/sample targets.
+- RenderContractsValidation: PASS, 211/211.
+- RenderFrameExtractionValidation: PASS, 5/5.
+- RenderSceneValidation: PASS, 14/14.
+- Focused Skybox tests: PASS, 11/11.
+- Full RenderPassValidation: PASS, 181/181.
+- PipelineCacheValidation: PASS, 130/130.
+- RHIContractValidation: PASS, 41/41.
+- RenderGraphValidation: PASS, 50/50.
+- RenderPolicyValidation: PASS, 22/22.
+- GPUDrivenValidation: PASS, 30/30.
+- RenderHonestyValidation: PASS, 75/75.
+- Full unit/contract ledger: PASS, 759/759.
+- GPU stability smoke: PASS, 10/10 consecutive runs.
+- Integration/visual matrix: PASS, 16/16, including Direct/GPU parity,
+  external Porsche, DX12 GBV, completion-aware retirement, resize ownership,
+  and DX11 compatibility.
+
+**Artifacts:**
+
+- Logs: console output only; no generated capture retained.
+- Screenshots: none.
+- Diffs: reviewed; `git diff --check` PASS.
+
+**Independent review result:**
+
+- Initial review: one P1 and two P2 findings. The P1 identified lost
+  procedural/blur semantics at the frame-packet boundary. The P2 findings
+  required exact A/B descriptor proof plus reverse-Z and attachment
+  Load/Store evidence.
+- Re-review: PASS after schema-v4 mode/value transport and the exact fixtures;
+  unresolved P0/P1/P2/P3: `0/0/0/0`.
+- Incremental review of the GPUDriven/RenderHonesty source-contract updates:
+  PASS. The tests now assert typed packet ordering and provenance-sanitized
+  diagnostics rather than obsolete setter or raw-index behavior; no assertion
+  was weakened.
+
+**Primary review status:**
+
+- PASS after complete source/diff review, acceptance of all independent
+  findings, and closure of the additional registry-replacement defect.
+- The primary agent independently built all affected targets, ran the 759
+  unit/contract tests, repeated GPU smoke 10 times, and passed the 16-test
+  integration/visual matrix. Unresolved P0/P1/P2/P3: `0/0/0/0`.
+
+**Residual risks / follow-ups:**
+
+- Native Vulkan and Metal execution are unavailable on this Windows host; no
+  qualification claim is made beyond shared Render/RHI contract coverage.
+- Equirectangular input intentionally uses deterministic tint/intensity
+  fallback. Conversion to a cubemap needs a separately designed RHI/shader
+  feature and is not implied by this recording-isolation change.
+- Skybox compatibility setters remain status-only until Task 9B-6 removes the
+  binder and obsolete setter phase.
+
+---
+
+### R-SP339 Render-policy Task 9B-6A production binder and bypass closure
+
+**Date:** 2026-08-03
+**Commit:** Included in the Task 9B-6A stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP338 (Skybox recording isolation).
+- Evidence: Shadow/Depth/Opaque/RayTracedShadow/ObjectVelocity/Transparent/
+  Skybox already accept graph-owned record contexts, while the remaining
+  default `IRenderPass` adapter value-captures `ViewData` for unmigrated passes.
+
+**Approved scope:**
+
+- Delete `RenderFrameResourceBinder`, `UpdatePassResources`, and the unused
+  manual `SceneRenderer::ExecutePasses` path so RenderGraph is the sole
+  production scheduler and resource-state authority.
+- Route every registered pass through `RenderPassRecordContext`; retain the
+  default typed adapter for CameraVelocity, the reflection chain, Particle,
+  and external legacy passes that have not yet been individually migrated.
+- Remove Transparent's no-op scene/target setters and Skybox's target and
+  frame-configuration setters. Skybox support now reflects only long-lived
+  pipeline/device/runtime-resource readiness; the immutable frame snapshot
+  selects Cubemap/Procedural/SolidColor/Equirectangular/Disabled behavior.
+- Add source-contract and behavioral dispatch gates, including a real
+  SceneRenderer registry probe that rejects fallback to the `ViewData`
+  overload and verifies record-time value ownership through execution.
+
+**Out of scope:**
+
+- Depth/Opaque/Shadow standalone compatibility-setter removal and directional
+  light snapshot migration (Task 9B-6B), Particle snapshot migration, new RHI
+  capability contracts, Editor work, and backend feature promotion.
+
+**Files changed:**
+
+- `Render/CMakeLists.txt`
+- `Render/Include/Render/Passes/SkyboxPass.h`
+- `Render/Include/Render/Passes/TransparentPass.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Passes/SkyboxPass.cpp`
+- `Render/Private/Passes/TransparentPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- Deleted `Render/Private/Renderer/RenderFrameResourceBinder.h`
+- Deleted `Render/Private/Renderer/RenderFrameResourceBinder.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- Task 9B plan/todo and record-context contract documents.
+
+**Validation result:**
+
+- Build: PASS for `RVX_Render`, `RenderPassValidation`,
+  `RenderHonestyValidation`, `RenderPolicyValidation`,
+  `GPUDrivenValidation`, `ModelViewer`, and `RenderingShowcase`.
+- Focused SceneRenderer typed-dispatch fixture: PASS 1/1.
+- RenderPassValidation: PASS 183/183.
+- RenderPolicyValidation: PASS 22/22.
+- GPUDrivenValidation: PASS 30/30.
+- RenderHonestyValidation: PASS 75/75 with `TEMP`/`TMP` rooted in the build
+  tree; the first run's external `%TEMP%` access denial was environmental and
+  reproduced cleanly without changing a test assertion.
+- GPU stability smoke: PASS 10/10 consecutive runs.
+- Integration/visual matrix: PASS 16/16, covering Direct/GPU-driven parity,
+  external Porsche assets, DX12 GBV, completion-aware retirement, resize
+  ownership, and the DX11 compatibility smoke.
+- `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Initial review: P0/P1/P2/P3 `0/0/1/0`. The P2 found that production typed
+  dispatch was protected only by source strings and direct adapter tests.
+- Resolution: added a dual-overload probe driven by real SceneRenderer
+  AddPass/build/compile/execute. It requires typed `1`, legacy `0`, a
+  non-legacy current-graph identity, paired snapshot/results, exact target
+  provenance, and stable `401/73/7001` record-time values after caller
+  mutation.
+- Incremental re-review: PASS; unresolved P0/P1/P2/P3 `0/0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diff/reference review, independent finding adjudication,
+  and independent rebuild/test execution. No production binder, late update,
+  manual execution path, Skybox frame projection, or registry `m_viewData`
+  dispatch remains.
+
+**Residual risks / follow-ups:**
+
+- Native Vulkan and Metal execution remain unavailable on this Windows host;
+  no qualification claim is made beyond shared Render/RHI contract coverage.
+- Depth/Opaque/Shadow still expose standalone compatibility frame setters and
+  are the explicit Task 9B-6B follow-up. The 9B-6B audit also identified that
+  typed Opaque depth must resolve and retain the current graph DSV rather than
+  depend on a raw target view.
+
+---
+
+### R-SP340 Render-policy Task 9B-6B1 typed Opaque attachment ownership
+
+**Date:** 2026-08-03
+**Commit:** Included in the Task 9B-6B1 stage commit after the reviewed gate
+below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP339 (production binder and bypass closure).
+- Task 9B-6A identified typed Opaque depth as the remaining raw-view lifetime
+  island before the shared directional-light snapshot migration.
+
+**Approved scope:**
+
+- Validate the exact current graph source, plan, results, snapshot, color
+  target, and optional depth target before invoking execution-data helpers or
+  declaring graph usage.
+- Resolve typed Opaque RTV/DSV only from recorded graph handles; raw
+  `SetRenderTargets` views remain standalone-only and cannot be a typed
+  fallback.
+- Retain attachment views and parent textures in the submission resource batch
+  until GPU completion.
+- Add focused reverse-graph, result-isolation, provenance, view-creation,
+  RenderGraph declaration, render-pass semantic, and retirement coverage.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- Task 9B plan/todo, record-context contract, and this phase record.
+
+**Validation result:**
+
+- Build: PASS for `RVX_Render`, `RenderPassValidation`,
+  `GPUDrivenValidation`, `RenderPolicyValidation`, `ModelViewer`, and
+  `RenderingShowcase`.
+- RenderPassValidation: PASS 184/184.
+- GPUDrivenValidation: PASS 30/30.
+- RenderPolicyValidation: PASS 22/22.
+- Focused final ownership/provenance gate: PASS 2/2.
+- GPU-driven ModelViewer smoke/parity matrix: PASS 5/5.
+- `git diff --check`: PASS.
+- The separate DX11 `ModelViewerShadowSmoke` fails during pre-Opaque
+  PipelineCache initialization with `ResourceBindingVisibilityMismatch` for
+  DefaultLit set 1 binding 0; its golden consumer then has no capture. The
+  failure is preserved and no golden or tolerance was changed. It precedes the
+  Task 9B-6B1 execution path and is tracked for compatibility closure rather
+  than reported as a passing B1 gate.
+
+**Independent review result:**
+
+- Initial review: P0/P1/P2/P3 `0/2/2/0`. It found forged handles were accepted
+  on provenance alone, helper initialization could mutate foreign/stale
+  results, and negative coverage did not prove the intended branches.
+- First resolution added current-resource-description checks, guarded helper
+  staging/results ownership, null-results safety, source-state sanitization,
+  actual RTV/DSV failure coverage, and explicit attachment semantics.
+- Second review: `0/0/2/0`. Production closure was sound, but several sentinels
+  intentionally mismatched the report frame and therefore rejected before the
+  forged/stale attachment checks.
+- Final resolution kept source pairs valid and added a current identity/results/
+  snapshot with same-slot, old-generation attachments after `Clear()`.
+- Final incremental review: PASS; unresolved P0/P1/P2/P3 `0/0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diff/reference review, independent finding adjudication,
+  independent rebuild/test execution, and direct inspection that foreign,
+  forged-index, and stale-generation tests each reach their intended gate.
+- No public RHI, RenderGraph lifetime contract, shader ABI, golden, tolerance,
+  or backend-specific shortcut changed.
+
+**Residual risks / follow-ups:**
+
+- Native Vulkan and Metal runtime validation remain unavailable on this
+  Windows host; shared Render/RHI targets compile, but no promotion claim is
+  made.
+- Task 9B-6B2a must provide one value-owned primary directional-light selection
+  to DefaultLit, raster Shadow, and RayTracedShadow. Task 9B-6B2b then removes
+  the remaining standalone Depth/Opaque/Shadow frame setters.
+- The independent DX11 descriptor-visibility failure remains explicit for the
+  later compatibility-closure stage.
+
+---
+
+### R-SP341 Render-policy Task 9B-6B2a primary directional-light snapshot
+
+**Date:** 2026-08-03
+**Commit:** Included in the Task 9B-6B2a stage commit after the reviewed gate
+below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP340 (typed Opaque attachment ownership).
+- The production registry already records every pass through immutable
+  graph-owned contexts; this slice removes the remaining mutable directional
+  light selection shared by DefaultLit, raster Shadow, and RayTracedShadow.
+
+**Approved scope:**
+
+- Select the first strictly positive-intensity directional light in stable
+  scene order and value-copy it into `RenderPassFrameSnapshot`; NaN, zero, and
+  negative intensities cannot become primary or hide a later valid light.
+- Project that one record into DefaultLit `ViewData`, while raster and RT
+  shadow passes consume the same captured direction and eligibility.
+- Keep frame settings as the sole feature-enable source. A selected non-caster
+  may remain the primary lighting source but cannot produce either shadow path.
+- Publish an identity-correct disabled RT output and return before support,
+  TLAS/material-table, history, per-frame resource, graph, or dispatch work
+  when the feature is disabled or the primary light is ineligible.
+- Repair the pre-existing ModelViewer RT-shadow reset/resize readiness
+  predicate to reflect Task 9 history semantics: a reset write frame reads no
+  old mask/depth/normal history, and a subsequent submitted stable frame proves
+  recovery.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/RayTracedShadowPass.h`
+- `Render/Include/Render/Passes/RenderPassRecordContext.h`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Passes/RayTracedShadowPass.cpp`
+- `Render/Private/Passes/ShadowPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Samples/Showcase/ModelViewer/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- Task 9B plan/todo, record-context contract, and this phase record.
+
+**Validation result:**
+
+- Build: PASS for `RenderPassValidation`, `PipelineCacheValidation`,
+  `GPUDrivenValidation`, `RenderPolicyValidation`, `ModelViewer`, and
+  `VisualGoldenValidation`, including shared DX11/DX12/Vulkan/OpenGL targets.
+- RenderPassValidation: PASS 189/189.
+- PipelineCacheValidation: PASS 130/130.
+- GPUDrivenValidation: PASS 30/30.
+- RenderPolicyValidation: PASS 22/22.
+- Exact no-eligible, feature-disabled, NaN-selection, and typed history
+  lifecycle gates: PASS 4/4; GPU-driven smoke/parity matrix: PASS 5/5.
+- Native DX12 `ModelViewerRayTracedShadowSmoke`: PASS on NVIDIA GeForce RTX
+  4070 Ti with Debug Layer, including RT dispatch, reset/resize write frames,
+  and next-frame history recovery.
+- The dependent RT visual golden remains FAIL (MSE `458.535`, PSNR `21.5171`).
+  The checked-in golden dates to 2026-07-02. The pre-B2a actual artifact from
+  2026-08-02 and the freshly generated B2a capture compare pixel-identically
+  (`0` changed channel values, MSE `0`), proving this is an inherited stale
+  baseline rather than a B2a visual change. Capture/diff evidence is preserved;
+  no golden or tolerance was changed.
+- The independent DX11 `ModelViewerShadowSmoke` descriptor-visibility failure
+  remains unchanged and was not rerun after two prior identical failures.
+- `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Initial review found P0/P1/P2/P3 `0/1/1/0`: the RT feature/light gate was
+  after `IsSupported()` and table reads, and `<= 0` admitted NaN intensity.
+- Re-review also found a P2 exact-filter false green after the frozen
+  no-eligible test name was replaced. The implementation restored that exact
+  test and added a separate feature-disabled test.
+- The acceptance-gate repair received a separate read-only diagnosis and
+  independent review. Final unresolved P0/P1/P2/P3: `0/0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete production/test/Sample diff inspection, adjudication of
+  every review finding, independent rebuild and full test execution, and the
+  native DX12 smoke. No public RHI, shader ABI, backend shortcut, visual golden,
+  or tolerance changed.
+
+**Residual risks / follow-ups:**
+
+- Native Vulkan and Metal runtime validation remain unavailable on this
+  Windows host; shared contracts compile but no qualification claim is made.
+- Task 9B-6B2b removes the remaining standalone Depth/Opaque/Shadow frame-state
+  compatibility setters and completes the remaining inverse/rejected/resize
+  fixture ledger before Task 10A.
+- The stale RT visual golden and independent DX11 descriptor-visibility issue
+  remain explicit compatibility/visual-baseline gates; neither is hidden by
+  this stage.
+
+---
+
+### R-SP342 Render-policy Task 9B-6B2b standalone scene-pass input closure
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 9B-6B2b stage commit after the reviewed gate
+below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP341 (primary directional-light frame snapshot).
+- The shared light selection and graph-owned result bridge are stable, so the
+  last Depth/Opaque/Shadow per-frame compatibility inputs can be removed.
+
+**Approved scope:**
+
+- Remove standalone scene/list, raw target, GPU-culling/resource, shadow-source,
+  per-frame path-enable, public `ViewData` recording, and raw shadow-map access
+  surfaces from Depth/Opaque/Shadow.
+- Require an exact renderer-issued graph/record identity, plan, results,
+  self-consistent frame snapshot, current graph attachments, and compatible
+  shadow outputs before setup or execution-data materialization.
+- Execute through graph-owned recorder instances; rejected records declare no
+  usage, retain no foreign GPU state, and cannot mutate a foreign result sink.
+- Resolve attachments only from current graph handles and retain each view plus
+  its parent texture through submission completion.
+- Preserve Opaque setup-time shadow declaration diagnostics in the typed result
+  channel and add inverse, mutation, stale, empty, resize/target replacement,
+  base-adapter, and in-flight lifetime fixtures.
+
+**Files changed:**
+
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/Passes/ShadowPass.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Passes/ShadowPass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- Task 9 plan/todo, record-context contract, and this phase record.
+
+**Validation result:**
+
+- Build: PASS for `RenderPassValidation`, `GPUDrivenValidation`,
+  `PipelineCacheValidation`, `RenderPolicyValidation`, and `ModelViewer`,
+  including configured shared DX11/DX12/Vulkan/OpenGL targets.
+- RenderPassValidation: PASS 194/194.
+- GPUDrivenValidation: PASS 30/30.
+- PipelineCacheValidation: PASS 130/130.
+- RenderPolicyValidation: PASS 22/22.
+- GPU-driven ModelViewer smoke/Auto/direct/GPU parity matrix: PASS 5/5.
+- Native DX12 `ModelViewerRayTracedShadowSmoke`: PASS.
+- `git diff --check`: PASS.
+- The independent DX11 `ModelViewerShadowSmoke` descriptor-visibility failure
+  was not rerun after two unchanged prior failures. The inherited stale RT
+  visual golden was not regenerated or re-baselined.
+
+**Independent review result:**
+
+- Initial review found P0/P1/P2/P3 `0/2/2/0`: migrated fixtures supplied an
+  empty visibility snapshot, the reviewer questioned base-adapter dispatch,
+  the shadow stability proof had been weakened, and the missing-GPU fixture
+  rejected before its intended branch.
+- Remediation synthesized explicit all-visible fixture data, restored semantic
+  texel/UV assertions, made the missing-GPU context otherwise valid, and added
+  a runtime base-pointer adapter proof. Separate diagnosis also restored valid
+  packets and nonzero object identity in migrated execution fixtures.
+- Re-review confirmed virtual redispatch reaches the typed fail-closed override,
+  setup diagnostics publish at registration, invalid GPU inputs are not
+  retained, and all ownership/lifetime fixtures reach their intended branches.
+- Final unresolved P0/P1/P2/P3: `0/0/0/0`; verdict: ready to commit.
+
+**Primary review status:**
+
+- PASS after complete production/header/test diff inspection, adjudication of
+  every independent finding, exact runtime diagnosis of the remaining fixture
+  failures, full unit gates, Sample parity, DX12 RT smoke, API absence search,
+  and whitespace validation.
+- No public RHI contract, backend shortcut, shader ABI, visual golden,
+  tolerance, assertion strength, or rendering fallback changed.
+
+**Residual risks / follow-ups:**
+
+- Native Vulkan and Metal runtime coverage remains unavailable on this Windows
+  host; no backend promotion claim is made.
+- The stale RT golden and known DX11 descriptor-visibility issue remain explicit
+  later qualification/compatibility gates.
+- Task 10A must preserve this frame-owned ownership model while introducing the
+  semantic indirect-execution capability and descriptor contract.
+
+---
+
+### R-SP343 Render-policy Task 10A semantic indexed-indirect RHI contract
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 10A stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP342 (standalone scene-pass input closure).
+- Frame-owned pass recording and exact packet/result identity are stable, so
+  indirect execution can be described semantically before Task 10B introduces
+  backend execution strategies.
+
+**Approved scope:**
+
+- Add one public standard indexed-indirect command layout plus structured
+  fixed-count, count-buffer, first-instance, stride, alignment, limit, and
+  required-state capabilities.
+- Add a value descriptor and stable validation result/code for zero/no-op,
+  mode support, buffer usage/state, exact or aligned stride, first-instance,
+  maximum count, safe command/count ranges, overflow, and count clamping.
+- Make the structured record the Render/GPUDriven/diagnostics source of truth;
+  retain legacy booleans and report entries only as validated projections with
+  Task 16B as the named removal owner.
+- Populate current backend truth without implementing later stages: DX12
+  fixed/count, Vulkan fixed with logical-device-enabled first-instance and
+  physical draw-count limit, and Metal/DX11/OpenGL fixed only. Vulkan count,
+  Metal ICB, and the Task 10B strategy interface remain out of scope.
+- Bump the RHI capability report to schema 5, preserve existing public feature
+  enum values, add the structured report payload, and migrate architecture
+  gates without removing or weakening them.
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHIIndirectExecution.h`
+- `RHI/Private/RHIIndirectExecution.cpp`
+- `RHI/Include/RHI/RHICapabilities.h`
+- `RHI/Include/RHI/RHICommandContext.h`
+- `RHI/Private/RHIValidation.cpp`
+- `RHI/CMakeLists.txt`
+- DX12, Vulkan, Metal, DX11, and OpenGL device capability publication files.
+- Render policy, GPU-driven, renderer projection, and feature-diagnostics
+  consumers.
+- RHI contract, render-policy, GPU-driven, and render-pass validation tests.
+- Architecture phase gates, Task 10/16B plans, and this phase record.
+
+**Validation result:**
+
+- Build: PASS for `RHIContractValidation`, `RenderPolicyValidation`,
+  `GPUDrivenValidation`, and `RenderPassValidation`, including configured
+  DX11/DX12/Vulkan/OpenGL targets on Windows.
+- RHIContractValidation: PASS 44/44.
+- RenderPolicyValidation: PASS 22/22.
+- GPUDrivenValidation: PASS 30/30.
+- RenderPassValidation: PASS 194/194.
+- Focused CTest registration/execution: PASS 255/255.
+- Full architecture phase gate: PASS.
+- `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Initial review found P0/P1/P2/P3 `1/3/2/1`: a stale architecture gate,
+  dishonest OpenGL signed draw-count limit, invalid-mode fail-open behavior,
+  Vulkan available-versus-enabled ambiguity, public enum value drift, negative
+  test gaps, and avoidable public-header coupling.
+- Remediation migrated the gate and schema literals without weakening checks,
+  used the native OpenGL limit, made invalid mode resolve to zero, recorded the
+  Vulkan logical-device enabled feature, froze existing enum values, added the
+  missing negatives, and reduced header dependencies.
+- Re-review found final unresolved P0/P1/P2/P3 `0/0/0/0`; verdict: ready.
+
+**Primary review status:**
+
+- PASS after complete public RHI/backend/Render/test/script diff inspection,
+  adjudication of every independent finding, an independent four-target build,
+  direct execution of all four validation binaries, the full architecture
+  gate, and whitespace validation.
+- No raw virtual command API, Vulkan count path, Metal ICB object, Task 10B
+  strategy, visual golden, tolerance, or assertion strength changed.
+
+**Residual risks / follow-ups:**
+
+- Metal was not compiled on this Windows host; native Metal validation remains
+  a Task 13/platform gate.
+- Native Vulkan indirect execution and OpenGL driver behavior were not executed
+  in this slice; Task 10C/12/14 retain those runtime coverage obligations.
+- Task 10B must consume the validated descriptor before `ExecuteIndirect`,
+  cache DX12 signatures by semantic layout, and formalize state rebind behavior.
+
+---
+
+### R-SP344 Render-policy Task 10B submission strategies and DX12 Tier 1 execution
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 10B stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP343 (semantic indexed-indirect RHI contract).
+- Structured capabilities, descriptors, validation codes, and fixed/count
+  semantics are stable, so backend execution can consume one renderer-owned
+  strategy boundary without backend-name inference.
+
+**Approved scope:**
+
+- Add one stateless `IRenderSubmissionStrategy` request/result contract with
+  Direct indexed and validated standard indexed-indirect implementations.
+- Freeze a typed backend-native encoded-command-buffer request branch for Task
+  13 without adding a Metal object, execution implementation, or sample policy.
+- Make `GPUCulling` publish only semantic indirect descriptors; keep visibility,
+  grouping, bindings, policy, and result truth outside the culling producer.
+- Route Depth/Opaque Direct and Tier 1 recording through the strategy after the
+  pass has bound pipeline, descriptors, vertex streams, and index state.
+- Cache DX12 command signatures by backend-neutral semantic layout; retain the
+  public raw zero-stride compatibility normalization while rejecting invalid
+  capability, maximum-count, usage, alignment, exact-stride, overflow, range,
+  native-buffer, and count-buffer inputs before `ExecuteIndirect`.
+- State explicitly that the current standard Draw, DrawIndexed, and Dispatch
+  layouts contain no root arguments and therefore invalidate no root state.
+  Future invalidating layouts fail closed until precise replay is implemented.
+- Keep Vulkan count, Metal ICB execution, GPU Scene, compatibility closure,
+  Auto tuning, promotion, and Task 10C machine evidence out of this slice.
+
+**Files changed:**
+
+- `RHI/Include/RHI/RHIIndirectExecution.h`
+- `RHI_DX12/Private/DX12IndirectExecution.h`
+- `RHI_DX12/Private/DX12IndirectExecution.cpp`
+- `RHI_DX12/Private/DX12Device.h`
+- `RHI_DX12/Private/DX12Device.cpp`
+- `RHI_DX12/Private/DX12CommandContext.cpp`
+- `RHI_DX12/CMakeLists.txt`
+- `Render/Include/Render/Submission/RenderSubmissionStrategy.h`
+- `Render/Private/Submission/RenderSubmissionStrategy.cpp`
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/DX12Validation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Scripts/check_architecture_phase_gates.py`
+- Task 10 plans and this phase record.
+
+**Validation result:**
+
+- Serial build: PASS for `RVX_RHI_DX12`, `DX12Validation`,
+  `RHIContractValidation`, `GPUDrivenValidation`, `RenderPolicyValidation`, and
+  `RenderPassValidation`. An initial broad MSVC build hit transient `D8040`;
+  the unchanged serial retry passed.
+- Focused DX12 raw indirect validation: PASS 1/1.
+- RHIContractValidation: PASS 44/44.
+- GPUDrivenValidation: PASS 34/34.
+- RenderPolicyValidation: PASS 22/22.
+- RenderPassValidation: PASS 194/194.
+- Focused CTest registration/execution: PASS 256/256.
+- Full architecture phase gate including the M2 Task 10B cut: PASS.
+- `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Initial review found P0/P1/P2/P3 `0/4/1/0`: the encoded request was not wired
+  into the shared strategy, public RHI exposed a Metal-only enum, raw DX12
+  zero-stride compatibility regressed, culling published unvalidated result
+  metadata, and the highest-risk DX12 raw path lacked executable coverage.
+- Remediation froze the typed encoded request in the shared interface, reused
+  generic `RHIBackendType`, restored normalization, removed result metadata,
+  moved signature hashing to DX12 private code, made raw indexed entries consume
+  Task 10A capability/max-count validation, and extracted production-shared
+  DX12 validation helpers with runtime coverage.
+- Re-review found final unresolved P0/P1/P2/P3 `0/0/0/0`; verdict: ready.
+
+**Primary review status:**
+
+- PASS after complete public RHI, backend, Render, test, CMake, script, and plan
+  diff inspection; adjudication of every review finding; independent serial
+  builds; direct execution of all focused binaries; the 256-test CTest set;
+  the full architecture gate; and whitespace validation.
+- No `RenderSubmissionMode` value, visual golden, tolerance, assertion strength,
+  shader ABI, Vulkan count implementation, Metal ICB implementation, or sample
+  rendering policy changed.
+
+**Residual risks / follow-ups:**
+
+- This slice validates the DX12 raw contract and compiles the native backend,
+  but does not yet claim a full Debug Layer/GBV hardware `ExecuteIndirect`
+  matrix; Task 10C owns that runtime evidence and the M2 aggregate artifact.
+- Native Vulkan and Metal runtime coverage remains unavailable on this Windows
+  host and cannot be promoted by the DX12 result.
+- Task 13 may implement a Metal-private encoded command buffer behind the frozen
+  typed request; any shared contract revision requires a new cross-backend
+  freeze rather than a backend-local shortcut.
+
+---
+
+### R-SP345 Render-policy Task 10C M2 validation and evidence freeze
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 10C stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP344 (submission strategies and DX12 Tier 1 execution).
+- The renderer-facing strategy and semantic indirect RHI contracts are frozen;
+  this slice validates them on native backends and records the M2 evidence
+  baseline before persistent GPU Scene work begins.
+
+**Approved scope:**
+
+- Repair Vulkan Direct shader compilation, reflection, vertex layouts,
+  optional-stage barriers, and enabled-capability reporting needed for honest
+  native validation; do not add Vulkan indirect-count execution here.
+- Add public non-gating plan/submission CPU-time and group-occupancy
+  measurements. The values are diagnostic only and cannot affect Auto.
+- Add native DX12 zero-count, maximum-count/range, and completion-aware
+  indirect-resource retirement fixtures using the public RHI execution path.
+- Drain the DX12 InfoQueue after idle and before device destruction, fail closed
+  when Debug Layer/InfoQueue/readback evidence is unavailable, and emit a
+  schema-versioned report plus stable clean marker.
+- Add resize, zero-visible, Vulkan Direct, and exact Task 7/8/9 gate coverage to
+  one machine-recorded PowerShell 5.1-compatible M2 exit runner.
+- Keep Metal unsupported/open on this Windows host, keep metrics non-gating,
+  and make no Auto, promotion, Tier 2, compatibility, or visual-golden change.
+
+**Files changed:**
+
+- DX12 device shutdown diagnostics and command-context validation support.
+- Vulkan command context, capability truth, and shared shader/reflection fixes.
+- Render policy diagnostics, Depth/Opaque measurement and failure propagation,
+  SceneRenderer aggregation, pipeline layouts, and Bloom access declaration.
+- ModelViewer measurement/report, generic resize, and zero-visible fixtures.
+- RHI, shader compiler, pipeline, render-pass, render-policy, DX12, and Vulkan
+  validation tests plus CTest registration.
+- `Scripts/run_m2_render_policy_exit.ps1`, this phase record, and the execution
+  ledger.
+
+**Validation result:**
+
+- Formal M2 runner: PASS with status `passed`, source revision
+  `1e3c447034607bf0681a935b77702989d436d121`, dirty-tree provenance, 21 gate
+  inventory groups, 29 passed aggregate results, and 298/298 CTests.
+- Native DX12: PASS for zero-count/no-draw, maximum-count bounded execution,
+  and completion-aware retirement; Debug Layer and InfoQueue available/read
+  completely with zero error/corruption messages. Direct, GPU-driven, and GBV
+  shutdown evidence also passed.
+- Native Vulkan: PASS for Direct ModelViewer smoke and 26 validation fixtures
+  with zero validation-layer errors.
+- Metrics: three non-gating samples. GPU-driven resize and zero-visible samples
+  reported numeric occupancy; Direct explicitly reported unavailable/null.
+- Metal: `HostPlatformUnsupported` and non-required on the Windows host; no
+  Metal runtime or promotion claim.
+- `git diff --check`: PASS before documentation finalization.
+
+**Independent review result:**
+
+- Review found and remediation closed an ignored Direct-strategy failure result,
+  incomplete fail-closed DX12 evidence fields, resize-frame-zero ambiguity,
+  unavailable-occupancy encoding, and runner gate-selection/provenance issues.
+- Final unresolved P0/P1/P2/P3: `0/0/0/0`; verdict: ready for the full M2 run.
+- The full expanded runner then passed unchanged after relinking the native
+  DX12 validation target against the final InfoQueue-report implementation.
+
+**Primary review status:**
+
+- PASS after complete RHI/backend/Render/Sample/shader/test/runner diff review,
+  adjudication of every independent finding, targeted rebuilds, native gate
+  execution, machine-report inspection, process cleanup check, and whitespace
+  validation.
+- The stage does not weaken a tolerance/assertion, regenerate a golden, hide a
+  diagnostic, silently fall back, or change the selected rendering policy.
+
+**Residual risks / follow-ups:**
+
+- Metal runtime validation remains open until a macOS host is available.
+- Measurements are intentionally observational; Task 15 owns thresholds,
+  hysteresis, delayed GPU timing, and any Auto use.
+- Task 11 must preserve Direct/Tier 1 scene meaning while adding stable GPU
+  Scene identity, publication, upload, lifetime, and eventual Tier 2 execution.
+
+---
+
+### R-SP346 Render-policy Task 11A GPU Scene schema and transactional CPU mirror
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11A stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP345 (M2 validation and renderer/RHI evidence freeze).
+- Task 10 contracts remain unchanged; this slice is CPU-only and introduces no
+  GPU binding, upload, visibility, submission, policy, or backend behavior.
+
+**Approved scope:**
+
+- Freeze backend-neutral GPU Scene rows for primitive, bounds, transform,
+  material, geometry, and draw metadata using fixed-width, explicitly aligned
+  POD values and typed generation-checked refs.
+- Represent logical 64-bit values as low/high 32-bit words and define explicit
+  row-major affine pack/unpack values rather than inheriting GLM layout.
+- Preserve exact resource slot/generation identity, layer/pass/pipeline/material
+  semantics, conservative bounds flags, previous/normal transforms, and
+  multi-draw object structure.
+- Add a Render-private independent-table CPU database with atomic transactions,
+  nonzero/unique object IDs, stable unchanged refs, stale-ref rejection,
+  tombstones, capacity/version failure, and max-generation retirement.
+- Reserve slot zero, keep every retired slot quarantined, and defer actual
+  completion-aware reuse to Task 11C. No CPU frame number or fake completion is
+  accepted as a reuse condition.
+- Freeze each primitive's draw range as one contiguous atomic generation block;
+  future reclamation must retire/reuse the entire block with one advanced,
+  non-wrapping generation.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUScene/GPUSceneSchema.h`
+- `Render/Private/GPUScene/GPUSceneDatabase.h`
+- `Render/Private/GPUScene/GPUSceneDatabase.cpp`
+- `Render/CMakeLists.txt`
+- `Tests/GPUSceneValidation/main.cpp`
+- `Tests/CMakeLists.txt`
+- Task execution ledger and this phase record.
+
+**Validation result:**
+
+- Serial build: PASS for `GPUSceneValidation`, `RenderSceneValidation`,
+  `GPUDrivenValidation`, and `RenderSubmissionValidation`.
+- GPUSceneValidation: PASS 13/13 after remediation.
+- Combined GPU Scene, RenderScene, and submission-lifetime set: PASS 49/49
+  before the five added remediation cases; the final GPU Scene set was rerun
+  independently at 13/13.
+- GPUDrivenValidationFixture: PASS 30/30.
+- Module/public-header/architecture boundary gates: PASS 8/8.
+- Final architecture phase gates: PASS 2/2.
+- `git diff --check`: PASS before documentation finalization.
+
+**Independent review result:**
+
+- Initial review verdict NOT READY with two P2 findings: committed version could
+  wrap to zero, and the contiguous draw range did not validate the generation
+  stored by `firstDraw` for every row.
+- Remediation added `VersionExhausted`, a terminal-version test seam, the atomic
+  draw-block generation contract, full per-row range validation, and five
+  additional zero-draw/count-change/capacity/contradiction tests.
+- Re-review verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after public ABI, independent table allocation, overflow arithmetic,
+  transaction rollback, multi-draw range, tombstone, CMake, and test inspection;
+  independent focused builds; 13/13, 49/49, 30/30, 8/8, and 2/2 gates; and
+  explicit preservation of unrelated worktree changes.
+- The reserved-zero table-ref invariant is intentional and consistent with the
+  approved GPU Scene design; refs are not interchangeable with resource handles
+  or frame-local candidate indices.
+
+**Residual risks / mandatory follow-ups:**
+
+- `State candidate = m_state` gives straightforward strong atomicity but copies
+  the whole scene for every non-empty transaction. Task 11B must replace it with
+  touched-row journaling, copy-on-write pages, or equivalent incremental
+  publication before any per-frame integration.
+- Task 11B owns accepted-scene diffs, duplicate-ID rejection at the RenderScene
+  boundary, exact residency/publication, temporal-value population, and
+  reload/evict behavior.
+- Task 11C owns multi-domain completion-token reclamation, whole draw-block
+  generation advancement, persistent buffers, dirty journals, and retirement.
+
+---
+
+### R-SP347 Render-policy Task 11B accepted-scene incremental shadow publication
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11B stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP346 (GPU Scene schema and transactional CPU mirror).
+- Task 10 submission contracts and Direct/Tier 1 behavior remain frozen. This
+  slice is a non-executable CPU shadow and owns no RHI or backend object.
+
+**Approved scope:**
+
+- Replace whole-state database copying with a prepared touched-row transaction:
+  validate, allocate, reserve, and prebuild map nodes before an allocation-free
+  `noexcept` finalize.
+- Derive normalized Add/Update/Remove/No-op diffs from the authoritative accepted
+  `RenderScene` after it commits; shadow failure must retain the prior mirror and
+  cannot reject or alter the accepted frame, Direct, Tier 1, or packet cache.
+- Reject duplicate object IDs before retained scene/cache mutation and preserve
+  previous transforms from the last actually rendered frame.
+- Publish only exact selected resource generations whose recursive dependencies
+  are ready. Missing or metadata-invalid materials use one canonical default;
+  stale/reused handles are never rebound to a newer generation implicitly.
+- Define Depth/Opaque/Shadow/Transparent eligibility, material/geometry flags,
+  row-major affine packing, conservative invalid bounds, and invalid-transform
+  exclusion without adding shader or backend execution.
+- Keep attempted/candidate diagnostics separate from the actual committed mirror
+  version, counts, and source sequence. Partial publication remains incomplete
+  until a later accepted-scene Publish restores every excluded object.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUScene/GPUSceneSchema.h`
+- `Render/Include/Render/GPUScene/GPUScenePublication.h`
+- `Render/Private/GPUScene/GPUSceneDatabase.h`
+- `Render/Private/GPUScene/GPUSceneDatabase.cpp`
+- `Render/Private/GPUScene/GPUSceneUpdate.h`
+- `Render/Private/GPUScene/GPUSceneUpdate.cpp`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Private/Renderer/RenderScene.cpp`
+- Render/Test CMake registration, `GPUSceneValidation`, `RenderSceneValidation`,
+  the execution ledger, and this phase record.
+
+**Validation result:**
+
+- Primary serial build: PASS for `GPUSceneValidation`, `RenderSceneValidation`,
+  `RenderDrawPacketCacheValidation`, `GPUDrivenValidation`, and
+  `RenderSubmissionValidation`.
+- Focused CTest set: PASS 74/74 (GPU Scene 24, RenderScene 17, draw-packet cache
+  6, and submission-lifetime 27).
+- GPU-driven executable: PASS 34/34, including four Task 10 strategy fixtures.
+- Focused architecture gates: PASS 12/12; phase gate: PASS 1/1.
+- `Architecture.RHIOwnershipInventory` remains FAIL with 91 existing findings in
+  DX12, GPUDriven, Material/Pipeline, and pass inventory entries. No Task 11B
+  GPU Scene file appears in the findings; the inventory was not weakened or
+  edited in this slice.
+- `git diff --check`: PASS before documentation finalization.
+
+**Independent review result:**
+
+- Initial verdict NOT READY found stale identity reuse after `Clear`, allocation
+  paths inside mutation/finalize, candidate/committed diagnostics mixing, and a
+  Masked pseudo-pass that omitted real Depth/Opaque eligibility.
+- Remediation introduced append-only tombstone clear, prepared node-handle
+  finalization, deterministic allocation-failure coverage, double exception
+  isolation, committed source identity, semantic-only comparisons, and correct
+  pass masks.
+- Second verdict found one remaining P2: partial publication could be promoted
+  to complete by revalidation without rebuilding an excluded object.
+- Final remediation preserved excluded/attempted coverage and added a stale
+  generation reuse regression. Final verdict READY; unresolved P0/P1/P2:
+  `0/0/0`.
+
+**Primary review status:**
+
+- PASS after full Task 11B diff review, adjudication of every independent
+  finding, inspection of prepare/finalize allocation boundaries and shadow
+  identity, serial rebuild, independent 108/108 focused executable tests,
+  12/12 architecture checks, phase gate, known-failure inventory audit, and
+  whitespace validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, and Python
+  cache changes remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- This is intentionally a CPU diagnostics shadow: no persistent GPU buffer,
+  upload, binding, visibility, command generation, or backend runtime path is
+  claimed. Task 11C/11D own those steps.
+- Material and geometry rows remain per draw; no global deduplication is claimed.
+  Task 11E must measure memory/cost before any schema-level canonicalization.
+- Task 11C must use real multi-domain completion tokens, reclaim an entire draw
+  block at once, advance one non-wrapping block generation, and prove unchanged
+  warm scenes do not upload the full scene.
+- Add a focused diagnostic test for the exact-ready-but-unresolvable mesh branch
+  when a suitable registry corruption seam exists; current production code
+  distinguishes it from ordinary resource unavailability.
+- Real DX12/Vulkan/Metal GPU Scene runtime validation remains open because this
+  slice intentionally creates no GPU path.
+
+---
+
+### R-SP348 Render-policy Task 11C-1 completion-aware GPU Scene allocator
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11C-1 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP347 (accepted-scene incremental CPU shadow publication).
+- Task 11B publication remains authoritative for CPU mirror contents. This
+  slice adds no RHI buffer, shader consumption, policy branch, or backend path.
+
+**Approved scope:**
+
+- Publish one value-only `GPUSceneChangeSet` for each successful non-empty
+  database commit, including exact sorted/coalesced dirty row ranges for the
+  primitive, bounds, transform, material, geometry, and draw tables.
+- Preserve the prior mirror, version, change set, and reusable allocator state
+  on empty, invalid, capacity, version, and injected-allocation failures.
+- Record the committed retirement version on every tombstoned slot and accept
+  only an externally proven safe-version watermark for reclamation. The
+  database never treats frame count, wall-clock time, or CPU progress as GPU
+  completion.
+- Reuse primitive/bounds/transform slots independently. Reclaim and reuse
+  draw/material/geometry only as one matching-count contiguous block with one
+  shared strict generation increment; generation exhaustion permanently
+  retires the complete affected identity.
+- Keep `Clear()` allocation-free, publish full-table dirtiness, and fail closed
+  without mutation when a new committed version cannot be represented.
+
+**Files changed:**
+
+- `Render/Private/GPUScene/GPUSceneDatabase.h`
+- `Render/Private/GPUScene/GPUSceneDatabase.cpp`
+- `Tests/GPUSceneValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial build of `GPUSceneValidation`: PASS.
+- Primary focused executable: PASS 30/30.
+- All 19 actual prepared-transaction allocation checkpoints are injected; every
+  failed checkpoint preserves the complete logical database state and the next
+  checkpoint proves the success boundary.
+- Targeted `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+- The reviewer verified first-`Clear` retirement capacity, allocation-before-
+  mutation reclaim behavior, inclusive `retireVersion <= safeVersion`
+  semantics, idempotent reclaim, complete three-table block reuse, generation
+  exhaustion, stale-reference rejection, and Task 11B regression coverage.
+- A review suggestion to extend failure injection beyond the former fixed
+  `0..10` range was accepted before the final verdict; the resulting test walks
+  all 19 current checkpoints and fails if no successful boundary is reached.
+
+**Primary review status:**
+
+- PASS after complete diff inspection, independent review/remediation,
+  allocator-boundary adjudication, serial rebuild, 30/30 execution, and
+  whitespace validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, and Python
+  cache changes remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- `GPUSceneChangeSet` intentionally stores only the latest committed delta.
+  Task 11C-2 must consume every successful `Commit`/`Clear` synchronously and
+  verify the base-version chain; a missed generation requires a full upload or
+  a future multi-generation journal, never an unsafe partial upload.
+- Task 11C-2 owns the real multi-domain completion-token to safe-version mapping,
+  versioned persistent GPU buffer sets, RenderGraph copy declarations,
+  unsubmitted rollback, capacity growth, and warm-static zero-upload proof.
+- No execution eligibility is claimed. Task 11D remains the first GPU Scene
+  visibility/command-generation consumer.
+
+---
+
+### R-SP349 Render-policy Task 11C-2 persistent GPU Scene upload lifecycle
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11C-2 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP348 (completion-aware GPU Scene allocator).
+- Task 11B remains the authoritative accepted-scene CPU mirror and Task 11C-1
+  remains the only source of stable indices, exact deltas, and retirement
+  versions. This slice consumes those contracts without changing scene meaning.
+
+**Approved scope:**
+
+- Allocate six renderer-private persistent Default-memory structured buffers,
+  retain matching Upload-memory staging resources through the submission batch,
+  and declare all copy ranges through RenderGraph.
+- Fully initialize each new or capacity-grown allocation, including zeroed tail
+  capacity, then export only ShaderResource/Valid access snapshots. Default
+  buffers are never CPU mapped.
+- Track covered, desired, and resident versions per buffer set. Accumulate exact
+  dirty ranges across continuous generations, preserve later deltas while a
+  prior upload is pending, and force full initialization after any missed base.
+- Keep a clean current resident set zero-copy even while its prior use is in
+  flight. Reuse for writes only after real completion; otherwise select or
+  allocate another set.
+- Restore consumed dirty ranges and prior access state for recorded-but-
+  unsubmitted work. Promote residency only after graph execution and a
+  structurally valid completion token that was actually issued by the active
+  submission tracker.
+- Merge upload and future-consumer read uses across queue domains. Translate
+  completed/compatibility-wait-idle evidence into a safe version, fail closed on
+  lost evidence, and confirm the watermark only after database reclamation
+  succeeds.
+- Reject mirrors beyond the uint32 row-index ABI and calculate persistent
+  resource retention sizes in uint64. Expose value-only diagnostics without RHI
+  handles or backend policy.
+
+**Files changed:**
+
+- `Render/Private/GPUScene/GPUSceneUploader.h`
+- `Render/Private/GPUScene/GPUSceneUploader.cpp`
+- `Render/Private/GPUScene/GPUSceneUpdate.h`
+- `Render/Include/Render/GPUScene/GPUScenePublication.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- Render and test CMake registration plus
+  `Tests/GPUSceneUploadValidation/main.cpp`.
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial build of `GPUSceneUploadValidation`, `GPUSceneValidation`,
+  `RenderGraphValidation`, and `RenderSubmissionValidation`: PASS.
+- Primary focused executables: PASS 12/12, 30/30, 50/50, and 27/27.
+- Coverage includes full/incremental copies, warm-static zero upload, in-flight
+  clean reuse, pending-delta preservation, multi-generation coalescing,
+  capacity growth, missed continuity, multi-domain completion, future read-use,
+  invalid/unissued/future tokens, creation/map failures, compatibility wait-idle,
+  and device loss.
+
+**Independent review result:**
+
+- Initial verdict NOT READY found warm-static writes blocked by an unnecessary
+  completion probe, loss of a later delta while an earlier upload was pending,
+  insufficient token provenance validation, and missing lifetime/coverage
+  fixtures.
+- First remediation separated immutable pending snapshots from later dirty
+  state, added the future-read seam and tracker-issued token validation, and
+  expanded the focused suite.
+- Second verdict NOT READY found device loss could be hidden by the warm-static
+  fast path and inactive/future-domain completion points could be accepted.
+- Final remediation moved device status ahead of the fast path, validated every
+  point against active topology and last-submitted values, and rejected row
+  counts beyond the public uint32 ABI.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`. The reviewer also accepted
+  the primary audit's explicit uint64 retained-byte calculation.
+
+**Primary review status:**
+
+- PASS after complete diff inspection, adjudication of every independent
+  finding, one additional uint32 multiplication-overflow correction, serial
+  rebuild, independent 119/119 focused executable tests, and whitespace/scope
+  validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, and Python
+  cache changes remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- This remains deliberately non-executing: buffers are uploaded but not bound
+  to visibility or drawing, and `executionEligible` remains false. Task 11D
+  owns the first GPU consumer, visible-index/command compaction, and Task 10
+  strategy handoff.
+- Task 11D must call `MarkResidentVersionUsed` for every recorded consumer and
+  preserve the uploader's Notify/Release symmetry; otherwise completion-aware
+  reuse must fail closed.
+- Task 11E still owns full memory/capacity/churn diagnostics, the 100/1k/10k/50k
+  benchmark matrix, and measured evidence. No Auto threshold is tuned here.
+- DX12 Tier 2 runtime qualification remains open until Task 11D/11E. Vulkan and
+  Metal strategy qualification remain Tasks 12 and 13.
+
+---
+
+### R-SP350 Render-policy Task 11D-D1a exact GPU Scene consumer foundation
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D1a stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP349 (persistent GPU Scene upload lifecycle).
+- The uploader owns multiple versioned buffer sets and real completion tokens,
+  but its former version-only read marker could not identify the exact set a
+  future graph consumer would read. GPU Scene publication also lacked an exact
+  accepted-packet to stable-table-reference lookup.
+
+**Approved scope:**
+
+- Add one renderer-private exact resident lease containing the current version,
+  all six strong buffer references, their imported RenderGraph handles, and
+  table capacities. No RHI object is exposed through the public Render API.
+- Grant a lease only with no pending upload and when one clean complete set has
+  `resident == covered == desired == observed == committed mirror version`.
+  Device loss, stale/mismatched state, incomplete tables, or an outstanding
+  lease fails closed.
+- Retain the leased buffers in the submission batch, commit their realized read
+  access only after graph execution, require that access commit before accepting
+  the submission token, and restore prior snapshots for invalid or unsubmitted
+  work.
+- Remove the ambiguous version-only read-use API. Completion/lifetime state is
+  now attached only to the exact set selected by the lease.
+- Resolve one accepted candidate/packet to a committed-version-tagged primitive
+  and draw reference only after live/schema/generation, contiguous draw-block,
+  primitive back-reference, geometry/material identity, arguments, and pass-mask
+  checks all succeed.
+- Keep the slice non-executing: no GPU culling or raster shader consumes the
+  lease yet, and no RHI, backend, Task 10 strategy, policy tier, or Auto behavior
+  changes.
+
+**Files changed:**
+
+- `Render/Private/GPUScene/GPUSceneUploader.h`
+- `Render/Private/GPUScene/GPUSceneUploader.cpp`
+- `Render/Private/GPUScene/GPUSceneUpdate.h`
+- `Render/Private/GPUScene/GPUSceneUpdate.cpp`
+- `Tests/GPUSceneUploadValidation/main.cpp`
+- `Tests/GPUSceneValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial builds: PASS for `GPUSceneUploadValidation`,
+  `GPUSceneValidation`, `RenderGraphValidation`, and
+  `RenderSubmissionValidation`.
+- Primary focused executables: PASS 16/16, 31/31, 50/50, and 27/27.
+- Coverage includes exact six-table retention/import, one outstanding lease,
+  pending/version mismatch, realized-access commit, valid and invalid tokens,
+  omitted commit, unsubmitted rollback, multi-domain read completion, accepted
+  lookup, pass/packet mismatch, clear/tombstone, reclaim, and generation reuse.
+
+**Independent review result:**
+
+- Initial verdict NOT READY found three P1 issues: the old version-only marking
+  API remained available, a valid token could resolve a lease without realized
+  access having been committed, and lookup refs were not tied to a committed
+  mirror version. It also noted the global one-lease invariant lacked a true
+  implementation guard.
+- Remediation removed the ambiguous API, made committed realized access a token
+  prerequisite, tagged lookup results with committed version, expanded stale/
+  reuse and valid/invalid/omitted-commit coverage, and globally rejected a
+  second outstanding lease.
+- Final verdict READY; unresolved P0/P1: `0/0`. One P2 remains: the fake
+  multi-domain test records one lease after a synthetic token submission, so its
+  ordering is less production-faithful than the dedicated normal lease test.
+
+**Primary review status:**
+
+- PASS after full six-file diff inspection, independent finding adjudication,
+  serial rebuild, independent 124/124 focused executable tests, and whitespace/
+  scope validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, and Python
+  cache changes remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- D1b must compare `GPUSceneAcceptedDrawLookup::committedVersion` with the exact
+  lease version and must not recover a stale candidate by CPU ordinal guessing.
+- D1b owns the HLSL row ABI, generation/tombstone validation, stable-ref
+  candidate buffer, exact lease binding, and GPU Scene bounds/draw-argument
+  consumption while preserving existing per-group Task 10 submission.
+- D1a/D1b do not justify public `GPUResidentScene` selection. D3 must first
+  freeze a backend-neutral dynamic resource-table and geometry-execution
+  capability; D4 must implement and qualify it on DX12.
+- Partial submission-batch retention on an injected mid-retain failure may keep
+  extra references alive until batch release. This is conservative and safe but
+  remains a Task 11E diagnostics/pressure-fixture opportunity.
+
+---
+
+### R-SP351 Render-policy Task 11D-D1b-a stable GPU Scene culling ABI and sealed inputs
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D1b-a stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP350 (exact GPU Scene consumer lease and accepted-draw
+  lookup).
+- D1a exposed one exact current six-table lease and stable accepted references,
+  but no compute ABI could consume them and no sealed GPU culling state owned
+  their descriptors or candidate stream.
+
+**Approved scope:**
+
+- Add one 40-byte renderer-facing candidate ABI carrying exact primitive/draw
+  slots and generations, object identity, one pass bit, draw-group placement,
+  and the matching raster-instance ordinal.
+- Add one fixed 240-byte C++/HLSL constants ABI. Use integer candidate/group
+  counts and exact six-table capacities, with normal Tier 1 writes clearing all
+  GPU Scene-only words deterministically.
+- Mirror the frozen primitive, bounds, transform, material, geometry, and draw
+  rows in a shared HLSL include. Reject stale, tombstoned, mismatched,
+  out-of-range, multi-pass, or non-single-instance rows before command output.
+- Compile separate GPU Scene frustum/compaction entries and descriptor/pipeline
+  objects, but keep them unreachable from normal `Cull` and SceneRenderer.
+- Seal GPU Scene state only when candidate version, exact resident lease,
+  capacities, structured strides, backing sizes, and pipeline resources all
+  agree. Upload candidate/constants buffers and retain every referenced RHI
+  object through submission ownership.
+- Keep the slice non-executing: no graph pass, dispatch, raster transform,
+  strategy selection, public RHI capability, policy tier, or Auto behavior
+  changes.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Shaders/GPUDriven/GPUCulling.hlsl`
+- `Render/Shaders/GPUDriven/GPUSceneCulling.hlsl`
+- `Render/Shaders/GPUDriven/GPUSceneCulling.hlsli`
+- `Tests/GPUDrivenValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial builds: PASS for `GPUDrivenValidation`,
+  `GPUSceneUploadValidation`, `GPUSceneValidation`, `RenderGraphValidation`,
+  and `RenderSubmissionValidation`.
+- Primary focused executables: PASS 38/38, 16/16, 31/31, 50/50, and 27/27.
+- `Architecture.PhaseGates`: PASS 1/1. Both normal and GPU Scene compute entries
+  compile for DX12 Shader Model 6.0.
+- Runtime fake-backed coverage proves successful exact-version sealing,
+  candidate/constants upload, access validity, strong six-table retention, and
+  stale, zero-capacity, oversized, wrong-stride, invalid, multi-pass, and
+  version-mismatch rejection.
+
+**Independent review result:**
+
+- Initial verdict NOT READY found one P0: HLSL read two capacity blocks that the
+  old 208-byte C++ constants upload never wrote. It also requested real seal and
+  retention behavior coverage plus complete single-instance draw validation.
+- First remediation introduced the 240-byte integer ABI, exact capacity upload,
+  physical buffer-size validation, and behavior tests, but primary diff review
+  caught the actual GPU Scene shader still declaring `float4 Counts` despite the
+  implementation report.
+- Final remediation changed both shaders to exact `uint4 Counts`, required
+  schema strides and one pass bit, and added regressions against either ABI
+  mismatch. Final independent verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete tracked and untracked diff inspection, rejection and
+  correction of the remaining real shader ABI mismatch, independent re-review,
+  serial rebuild, independent 162/162 focused executable tests, phase gate,
+  and whitespace/scope validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, Python
+  cache, and generated shader-cache contents remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- D1b-b must create candidates from `GPUSceneAcceptedDrawLookup`, acquire one
+  exact lease for the recorded view, declare all graph reads/writes, dispatch
+  Depth/Opaque compute, and preserve lease commit/rollback/submission symmetry.
+- No GPU Scene compute pipeline is scheduled yet, and raster shaders still use
+  the established per-recording instance stream. D2 owns the stable-table
+  transform fetch and parity gate.
+- D1/D2 remain an internal stable-input evolution of the existing per-group
+  `IndirectGrouped` strategy. D3/D4 are still required before public
+  `GPUResidentScene` selection or a Tier 2 qualification claim.
+- GPU Scene pipeline creation is eager during culler initialization so planning
+  can observe deterministic readiness. Pipeline-cache integration and memory/
+  pressure diagnostics remain Task 11E work.
+
+---
+
+### R-SP352 Render-policy Task 11D-D1b-b GPU Scene culling graph execution
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D1b-b stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP351 (stable GPU Scene culling ABI and sealed inputs).
+- D1b-a could validate and retain exact stable candidates and a six-table lease,
+  but SceneRenderer never constructed that candidate stream, acquired a graph
+  lease, declared its reads, or dispatched the separate GPU Scene pipelines.
+
+**Approved scope:**
+
+- Resolve optional GPU Scene candidates immediately after authoritative Tier 1
+  instance insertion. Preserve exact committed versions and draw-group command
+  offsets; invalidate the optional stream without guessing CPU ordinals.
+- Acquire one exact current resident lease per graph/view, share it between
+  Depth and Opaque, and declare the candidate plus all six resident tables as
+  compute reads for every GPU Scene consumer.
+- Dispatch the separately sealed GPU Scene frustum and compaction kernels, with
+  exact per-view constants and lease capacities, into the established culling
+  outputs consumed by Task 10 per-group indirect-count submission.
+- Commit candidate/table realized accesses only for successfully recorded work.
+  Cancel a zero-consumer lease and retain the existing exact rollback and
+  completion-token ownership rules for unsubmitted work.
+- Treat callback-time GPU Scene culling failure as a failed frame recording.
+  Do not replay normal GPU, CPU, or Direct work, do not commit realized access,
+  and let the existing runtime release and abort the frame before submission.
+- Keep raster transform fetch, public `GPUResidentScene` selection, shared RHI
+  capabilities, backend implementations, and Auto behavior unchanged.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Private/GPUScene/GPUSceneUploader.cpp`
+- `Render/Private/GPUScene/GPUSceneUploader.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/GPUSceneUploadValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial builds: PASS for `GPUDrivenValidation`,
+  `GPUSceneUploadValidation`, `GPUSceneValidation`, `RenderGraphValidation`,
+  `RenderSubmissionValidation`, and `RenderPassValidation`.
+- Primary focused executables: PASS 40/40, 17/17, 31/31, 50/50, 27/27,
+  and 194/194 (359/359 total).
+- `Architecture.PhaseGates`: PASS 1/1. Both GPU Scene compute entries continue
+  to compile for the current DX12 Shader Model 6.0 architecture gate.
+- Fault coverage forces candidate-constant mapping failure and proves false
+  return, zero dispatch, and no CPU/normal fallback. Integration guards verify
+  single-lease scheduling, dual table consumers, fail-before-commit ordering,
+  and runtime release/abort before any `EndFrame` submission.
+
+**Independent review result:**
+
+- Initial verdict NOT READY found one P1: the graph callback discarded a legal
+  `CullGPUScene(false)` result after constant Map/staging failure, so the frame
+  could be reported and submitted as rendered despite missing GPU-only draws.
+- Remediation added one private frame-local recording-failure state, propagated
+  callback failure before both realized-access commits, moved the accepted-frame
+  success gate before submission retention, and added focused fault/regression
+  coverage without a same-frame fallback.
+- Final independent verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diff and lifetime review, independent rejection and final
+  re-review, serial rebuild, independent 359/359 focused executable tests,
+  architecture phase gate, and whitespace/scope validation.
+- Unrelated `Engine/Private/Engine.cpp`, runtime diagnostics output, Python
+  cache, and generated shader-cache contents remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- The constant Map fault is executable at the culling boundary; the concrete
+  SceneRenderer has no device-injection seam, so the renderer/runtime handoff is
+  additionally guarded structurally rather than by a full end-to-end fault test.
+- Raster shaders still fetch transforms from the per-recording instance stream.
+  D2 must bind the exact resident transform identity used by culling and prove
+  Depth/Opaque semantic and visual parity without changing Task 10 submission.
+- D3/D4 remain required before public `GPUResidentScene` selection or Tier 2
+  qualification. D1/D2 are still an internal stable-input evolution of the
+  established grouped-indirect strategy.
+
+---
+
+### R-SP353 Render-policy Task 11D-D2a stable GPU Scene raster substrate
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D2a stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP352 (GPU Scene culling graph execution).
+- D1b-b generated exact stable-ref commands but raster still fetched world and
+  normal transforms from the transient per-recording instance buffer.
+
+**Approved scope:**
+
+- Preserve the established compact/indirect ABI and use its identity instance
+  index to resolve the sealed candidate, primitive, and transform rows.
+- Add independent DefaultLit and DepthOnly GPU Scene vertex permutations. Use
+  explicit row-dot affine transforms and fail closed on range, schema,
+  generation, object-id, live/tombstone, transform, or normal-valid mismatch.
+- Preserve the complete `ObjectConstants` b0 prefix used by the shared pixel
+  shader, append only sealed raster counts, and define an independent set 1
+  containing b0 plus candidate/primitive/transform Vertex SRVs.
+- Create an immutable renderer-private binding snapshot that strongly owns its
+  b0, descriptor, three table buffers, set layouts, pipeline layout, opaque/
+  masked/depth pipelines, exact version, counts, and submission retention.
+- Keep D2a unselected. Treat shader, layout, or partial graphics-pipeline
+  creation failure as optional unavailability with complete D2a cleanup,
+  independent diagnostics, and unchanged Direct/Tier1 initialization.
+- Do not change SceneRenderer, Depth/Opaque production passes, RenderGraph
+  scheduling, Task 10 submission, public RHI capabilities, backend code, or
+  public `GPUResidentScene` policy selection.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Include/Render/PipelineCache.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Private/PipelineCache.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Render/Shaders/GPUDriven/GPUSceneCulling.hlsli`
+- `Render/Shaders/GPUDriven/GPUSceneRaster.hlsli`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial builds: PASS for `PipelineCacheValidation`,
+  `GPUDrivenValidation`, and `RenderPassValidation`.
+- Primary focused executables: PASS 133/133, 41/41, and 196/196
+  (370/370 total).
+- `Architecture.PhaseGates`: PASS 1/1. Both GPU Scene raster vertex entries
+  compile for DX12 Shader Model 6.0 and report the raster/schema includes in
+  their actual compile source information.
+- Executable negative fixtures prove optional shader/layout failure leaves the
+  base cache usable and a masked-pipeline failure after opaque creation removes
+  partial D2a cache state while preserving Direct/Tier1 and retry behavior.
+
+**Independent review result:**
+
+- Initial design review found four P1 requirements: retain the complete b0
+  prefix used by DefaultLit's pixel stage, keep a distinct three-set layout and
+  purpose hash, freeze all recording-owned resources, and use the shared schema
+  with finite fail-closed shader outputs.
+- Code review then found one P1: the unselected substrate was a mandatory
+  PipelineCache initialization dependency. Remediation isolated shader/layout/
+  pipeline failure behind optional readiness and independent diagnostics.
+- Final P2 closure added partial graphics-pipeline cleanup behavior and actual
+  compiler include-tracking tests. Final verdict READY; unresolved P0/P1/P2:
+  `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diff/ABI/lifetime review, independent rejection and
+  re-review, serial rebuild, independent 370/370 tests, architecture phase
+  gate, and whitespace/scope validation.
+- The new `GPUSceneRaster.hlsli` is included in this stage commit. Unrelated
+  `Engine/Private/Engine.cpp`, runtime diagnostics output, and Python cache
+  remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- D2b must carry the same exact graph handles and immutable binding snapshot
+  into Depth/Opaque, declare Vertex SRV reads without a second lease acquisition,
+  and select the path only after an actual successful GPU Scene seal.
+- Actual raster output and invalid-row suppression have not yet run on a real
+  GPU. DX12 warm-frame visual/depth/normal/tangent parity remains D2b/D4 evidence;
+  Vulkan and Metal shader/pipeline qualification remain Tasks 12 and 13.
+- D3/D4 are still required before public `GPUResidentScene` selection. D2a
+  changes no current frame-plan or sample behavior.
+
+---
+
+### R-SP354 Render-policy Task 11D-D2b GPU Scene raster pass integration
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D2b stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP353 (stable GPU Scene raster substrate).
+- D2a supplied validated shaders, layouts, pipelines, descriptors, and an
+  immutable binding snapshot, but Depth/Opaque still consumed the transient
+  Tier 1 instance transform stream.
+
+**Approved scope:**
+
+- Form an immutable raster binding only after an actual successful GPU Scene
+  seal. Verify its exact lease version and underlying candidate, primitive, and
+  transform resources before graph mutation; otherwise preserve the normal
+  Tier 1 seal path.
+- Carry the sealed candidate handle and the same already-acquired lease's
+  primitive/transform handles into Depth and Opaque. Declare all three as
+  Vertex SRVs without re-importing buffers or acquiring a second lease.
+- Bind the GPU Scene descriptor and opaque/masked/depth pipelines while keeping
+  the established identity instance-index input, mesh/index/material binding,
+  and Task 10 per-group indirect-count request unchanged.
+- Preserve current mesh-pass eligibility. Opaque depth groups may use the GPU
+  Scene depth pipeline; masked depth remains Direct, so no unreachable fourth
+  masked-depth GPU Scene pipeline or shader entry is introduced.
+- Publish `receivesShadow` through primitive flag bit 2 and deliver it as a
+  non-interpolated vertex output to the shared pixel shader. Direct and Tier 1
+  continue to source the same semantic from object constants.
+- Abort the complete frame recording whenever a registered GPU Scene culling
+  or raster callback fails, including a failure in a mixed Direct lane. Do not
+  submit partial commands, commit realized access, or replay another path.
+- Keep public RHI capabilities, backend implementations, public
+  `GPUResidentScene` selection, qualification, Auto policy, and Samples out of
+  D2b; D3/D4 own the capability and DX12 qualification boundary.
+
+**Files changed:**
+
+- `Render/Include/Render/GPUScene/GPUSceneSchema.h`
+- `Render/Include/Render/Passes/DepthPrepass.h`
+- `Render/Include/Render/Passes/OpaquePass.h`
+- `Render/Include/Render/Passes/RenderPassRecordContext.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Passes/DepthPrepass.cpp`
+- `Render/Private/Passes/OpaquePass.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Render/Shaders/DefaultLit.hlsl`
+- `Render/Shaders/DepthOnly.hlsl`
+- `Render/Shaders/GPUDriven/GPUSceneRaster.hlsli`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/GPUSceneUploadValidation/main.cpp`
+- `Tests/GPUSceneValidation/main.cpp`
+- `Tests/PipelineCacheValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial builds: PASS for `GPUDrivenValidation`,
+  `PipelineCacheValidation`, `RenderPassValidation`,
+  `GPUSceneUploadValidation`, `GPUSceneValidation`, and
+  `RenderSubmissionValidation`.
+- Primary focused executables: PASS 42/42, 133/133, 198/198, 17/17, 32/32,
+  and 27/27 (449/449 total).
+- `Architecture.PhaseGates`: PASS 1/1. The actual GPU Scene DefaultLit and
+  DepthOnly vertex entries continue to compile for DX12 Shader Model 6.0.
+- Executable coverage proves typed input/version rejection, dependency failure
+  propagation, Graphics/Vertex final access on the exact candidate/primitive/
+  transform resources, unsubmitted rollback and lease reacquisition, and
+  receives-shadow preservation through publication and commit.
+
+**Independent review result:**
+
+- Initial review required actual Graphics/Vertex lease-consumer coverage and a
+  publication-chain receives-shadow fixture; both were added and passed.
+- Final review confirmed that removing the proposed fourth masked-depth GPU
+  Scene path matches `DepthMeshPassProcessor::PassRequiresDirect` and preserves
+  the existing Direct masked-depth pipeline without changing Task 10 semantics.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diff, shader semantic, graph provenance, lease lifetime,
+  failure-propagation, and submission-scope review. The primary remediation
+  also closes the mixed-lane case by aborting when either GPU or Direct
+  recording fails after GPU Scene registration.
+- Serial rebuild, independent 449/449 focused executable tests, architecture
+  phase gate, and whitespace/scope checks pass. Unrelated
+  `Engine/Private/Engine.cpp`, runtime diagnostics output, Python cache, and
+  generated shader-cache contents remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- Fake-RHI and DXC tests cannot prove real DX12 descriptor-table contents,
+  row-major DXIL loads, indirect base-instance behavior, or visual/depth/
+  normal/tangent parity. D4 must collect warm-frame real-device evidence.
+- First upload frames legitimately remain Tier 1 until a fully current resident
+  lease exists; D4 diagnostics must distinguish this from a failed Tier 2 path.
+- D3 must define the backend-neutral table-indexing/capability contract before
+  D4 selects public `GPUResidentScene`. Vulkan and Metal qualification remain
+  isolated to Tasks 12 and 13.
+
+---
+
+### R-SP355 Render-policy Task 11D-D3 GPU-resident scene policy contract
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D3 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP354 (GPU Scene raster pass integration).
+- D2b provided an optional, exact-lease GPU Scene execution path, but the
+  frozen frame policy could not represent or validate public Tier 2 selection.
+
+**Approved scope:**
+
+- Add a renderer-owned, value-only Tier 2 base-capability predicate using only
+  compute visibility, descriptor-resource bindings, `maxDescriptorSets >= 3`,
+  counted indexed indirect, and first-instance support.
+- Exclude backend identity, bindless, compatibility projections, dynamic
+  readiness, graph handles, and lease ownership from that static predicate.
+- Capture five resident-scene readiness values and a required resident version
+  in resolver input. Evaluate them only after canonical Tier 1 packet decisions
+  have selected GPU work, without repartitioning packets or changing their
+  preferred submission.
+- Select `GPUResidentScene` only for a fully ready nonzero version. Preserve
+  `IndirectGrouped` for Tier 2 pending/unavailable state, and keep Candidate
+  `Auto` Direct behind the existing qualification gate.
+- Define `immediateFallbackTier` as one step in the stable chain: Direct to
+  Direct, IndirectGrouped to Direct, and GPUResidentScene to IndirectGrouped.
+- Validate impossible tier, reason, capability, readiness, version, and fallback
+  combinations fail closed in both policy-resolution and frame-plan contracts.
+- Keep public RHI, backend feature probing, the SceneRenderer live producer,
+  execution-path enforcement, Samples, and qualification evidence out of D3;
+  those are D4 responsibilities.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderPolicyTypes.h`
+- `Render/Include/Render/Policy/RenderPolicyResolver.h`
+- `Render/Private/Policy/RenderPolicyResolver.cpp`
+- `Tests/RenderPolicyValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial build: PASS for `RenderPolicyValidation` and
+  `GPUDrivenValidation`.
+- Primary focused executables: PASS 29/29 and 42/42 (71/71 total).
+- Scoped `git diff --check`: PASS apart from the repository's existing CRLF
+  conversion notices.
+- Tests cover all five pending/unavailable reason families, zero resident
+  version, base-capability gaps, exact fallback pairs, Candidate Auto warm
+  facts, invalid enums, Meshlet rejection, and no-GPU forged Tier 2 state.
+
+**Independent review result:**
+
+- Initial review found that Tier 1 validation accepted resident reasons the
+  resolver could never emit and identified two missing negative tests.
+- Remediation made `CapabilityUnavailable` equivalent to a failed base
+  predicate for Tier 1 and added Candidate Auto plus forged Tier 2 coverage.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete scoped diff, gate-order, capability-predicate, reason,
+  version, fallback-pair, and packet/submission invariance review.
+- The primary agent independently rebuilt and reran all 71 focused tests.
+  Unrelated Engine/PipelineCache worktree entries, runtime diagnostics, and
+  Python cache output remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- The contract is deliberately dormant until D4 propagates the live device's
+  `maxDescriptorSets` and resident readiness/version facts before plan freeze.
+- D4 must stop Tier 1 plans from opportunistically entering the existing GPU
+  Scene path, and must treat an exact Tier 2 lease as execution confirmation
+  rather than a same-frame policy rewrite.
+- DX12 remains Candidate, so `Auto` stays Direct. Real-device first-upload
+  Tier 1 and warm-resident Tier 2 evidence, including validation diagnostics,
+  remains mandatory before qualification can advance.
+
+---
+
+### R-SP356 Render-policy Task 11D-D4a DX12 capability honesty
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D4a stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP355 (GPU-resident scene policy contract).
+- D3 defined a backend-neutral Tier 2 predicate, while DX12 still ignored two
+  native feature-query results and generated Root Signature 1.1 unconditionally.
+
+**Approved scope:**
+
+- Treat `D3D12_FEATURE_D3D12_OPTIONS` as a baseline capability query and fail
+  device initialization when it cannot be established. Do not report a zeroed
+  structure as a real binding tier.
+- Probe Shader Model 6.6 and retry 6.0 only for the documented old-runtime
+  `E_INVALIDARG` case. Derive SM6.0/SM6.6 flags from a successful result and
+  otherwise leave them false with a diagnostic.
+- Probe Root Signature 1.1 honestly and convert descriptor ranges, root
+  descriptors, and constants to a Root Signature 1.0 versioned description
+  when 1.1 is unavailable. Keep 1.1 descriptor-data volatility semantics
+  unchanged on capable devices.
+- Return `nullptr` for a pipeline layout whose native root signature was not
+  created. Guard Graphics and Compute setup after explicit/default layout
+  selection so a failed default layout cannot be dereferenced or used.
+- Keep `supportsBindless` as the existing Resource Binding Tier projection only;
+  do not add it to the GPU Scene predicate or alter policy/qualification.
+- Keep public RHI schema, Render, SceneRenderer, Samples, and qualification
+  manifests outside D4a.
+
+**Files changed:**
+
+- `RHI_DX12/Private/DX12Device.cpp`
+- `RHI_DX12/Private/DX12Pipeline.cpp`
+- `Tests/DX12Validation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial Debug builds: PASS for `RVX_RHI_DX12` and `DX12Validation`.
+- Primary real-device execution: PASS 37/37 on NVIDIA GeForce RTX 4070 Ti with
+  the DX12 Debug Layer; DXC compiled `vs_6_0` and the descriptor-table/push-
+  constant pipeline layout created a non-null native root signature.
+- The focused test independently re-queries binding tier, Root Signature, and
+  Shader Model values before comparing them with `RHICapabilities`; SM6.6 is
+  constrained to imply SM6.0.
+- Scoped `git diff --check`: PASS apart from the repository's CRLF conversion
+  notices.
+
+**Independent review result:**
+
+- Initial review found that root-signature construction failures could still
+  escape through a non-null layout and be dereferenced by default Graphics or
+  Compute pipeline setup.
+- Remediation rejects the invalid layout in the factory and adds post-selection
+  guards for both pipeline types; RayTracing already had the equivalent guard.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete capability-query, version-conversion, range-pointer
+  lifetime, error-propagation, factory, pipeline guard, and test-honesty review.
+- The primary agent independently rebuilt both targets and reran all 37 tests.
+  Public capability schema, Render policy, qualification, and unrelated
+  worktree entries remain unchanged and unstaged.
+
+**Residual risks / mandatory follow-ups:**
+
+- The available device supports Root Signature 1.1. The 1.0 conversion branch
+  is compiled and structurally reviewed but still requires an actual 1.0
+  runtime/device or an injectable native-feature test seam for execution proof.
+- D4b must populate live renderer policy facts and enforce the frozen selected
+  tier. D4a alone does not enable `GPUResidentScene` or change Candidate Auto.
+- D4c remains responsible for first-frame Tier 1 versus warm-frame Tier 2
+  real-device execution, validation, parity, and qualification evidence.
+
+---
+
+### R-SP357 Render-policy Task 11D-D4b1 exact GPU Scene readiness evidence
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D4b1 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP356 (DX12 capability honesty).
+- D3 had frozen an exact required resident version, but the uploader lease API
+  still selected its current observed version implicitly and GPU-culling had no
+  exact-version companion-candidate query.
+
+**Approved scope:**
+
+- Add renderer-private, value-only exact-version uploader readiness evidence.
+  Repeated queries must not modify diagnostics, create work, import resources,
+  or acquire frame-read ownership.
+- Share one exact-set predicate between Query and Acquire. It verifies the
+  observed/committed/resident/covered/desired versions, the six resident table
+  buffers and layouts, dirty/pending state, unusable sets, and outstanding read
+  leases.
+- Make graph lease acquisition explicit about the required version and make
+  GPU Scene candidate completeness version-aware without changing Tier 1
+  instances or groups.
+- Validate the renderer's required version only from the complete accepted
+  publication and matching committed mirror. Keep live policy facts, frozen
+  tier enforcement, fallback reporting, public RHI, backends, Samples, and
+  qualification outside D4b1.
+
+**Files changed:**
+
+- `Render/Private/GPUScene/GPUSceneUploader.h`
+- `Render/Private/GPUScene/GPUSceneUploader.cpp`
+- `Render/Include/Render/GPUDriven/GPUCulling.h`
+- `Render/Private/GPUDriven/GPUCulling.cpp`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/GPUSceneUploadValidation/main.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary focused executables: PASS for GPU Scene upload 18/18, GPU-driven
+  42/42, and Render Pass 198/198 (258/258 total).
+- The focused tests cover side-effect-free repeated queries, wrong versions,
+  pending/dirty/no-clean-set state, device loss, outstanding read leases,
+  cancellation recovery, exact acquisition, and candidate-version mismatch.
+- Scoped `git diff --check`: PASS apart from the repository's existing CRLF
+  conversion notices.
+
+**Independent review result:**
+
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+- The reviewer confirmed Query is value-only, Query and Acquire share the same
+  exact-set predicate, all six tables are validated, publication sourcing is
+  fail-closed, and a candidate mismatch does not disturb Tier 1 semantics.
+
+**Primary review status:**
+
+- PASS after complete scoped diff, classification, exact-version, publication,
+  lease, candidate, and test-honesty review.
+- Unrelated Engine/PipelineCache worktree entries, runtime diagnostics, and
+  Python cache output remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- D4b2 must populate the live plan facts, enforce one frozen selected tier and
+  one whole-view actual tier, and distinguish an allowed pre-graph companion
+  fallback from a graph-stage frame failure.
+- D4c still owns real-device first-frame Tier 1 versus warm-frame Tier 2
+  validation, parity, and qualification evidence.
+
+---
+
+### R-SP358 Render-policy Task 11D-D4b2 frozen GPU Scene execution tier
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D4b2 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP357 (exact GPU Scene readiness evidence).
+- D4b1 supplied side-effect-free exact-version readiness and acquisition, but
+  live plan facts, the one-plan/one-tier execution boundary, and failure closure
+  were not yet wired through `SceneRenderer`.
+
+**Approved scope:**
+
+- Build canonical pass facts before compiling one immutable frame plan. Treat a
+  pass as a Tier 1 lane only when it is requested, supported, GPU-driven allowed,
+  and has candidates; a missing unrelated lane must not disable a valid lane.
+- Determine potential Tier 2 lanes without filtering on their live GPU Scene
+  owner/binding readiness, then apply owner, binding, uploader, pipeline, exact
+  resident version, and descriptor-limit requirements to the full set.
+- Confirm one whole-view actual tier before RenderGraph mutation. Permit only a
+  complete Tier 1 companion mismatch to produce a pre-graph planned fallback;
+  graph-stage Tier 2 failures fail the frame and never replay Tier 1.
+- Selected Tier 1 must acquire and seal no GPU Scene state. Selected Tier 2 must
+  share one exact-version resident lease across Depth and Opaque and preflight
+  all planned lanes before pass registration.
+- Extend the value-only execution report with actual tier and tier-fallback
+  reason. Keep Candidate Auto as Direct and leave public RHI, backend contracts,
+  Samples, and qualification unchanged.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderFrameExecutionPlan.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Tests/GPUDrivenValidation/main.cpp`
+- `Tests/RenderPassValidation/main.cpp`
+- `Tests/RenderPolicyValidation/main.cpp`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary focused executables: PASS for Render Policy 29/29, GPU-driven 42/42,
+  GPU Scene upload 18/18, and Render Pass 203/203 (292/292 total).
+- The focused D4b2 gate passed 5/5: Tier 1 has zero GPU Scene lease/seal use,
+  companion mismatch falls back before graph mutation, Tier 2 graph failures
+  fail closed without replay, Depth and Opaque share one exact resident lease,
+  and a missing Depth candidate/owner does not disable valid Opaque Tier 1.
+- Scoped `git diff --check`: PASS apart from the repository's existing CRLF
+  conversion notices.
+
+**Independent review result:**
+
+- Initial review found one P1: all-of Depth/Opaque owner aggregation could
+  suppress a valid Opaque Tier 1 lane when Depth had no candidate or owner.
+- Remediation moved pass-fact construction ahead of view aggregation and split
+  Tier 1 any-relevant readiness from Tier 2 all-required readiness.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete scoped diff, plan-freeze, lane-membership, exact-lease,
+  preflight, failure-closure, execution-report, and test-honesty review.
+- Unrelated Engine/PipelineCache worktree entries, runtime diagnostics, and
+  Python cache output remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- The accepted D4b2 execution proof uses validation fakes plus real renderer,
+  uploader, culling, and pipeline code; it is not real-device Tier 2 evidence.
+- D4c owns real-DX12 cold Tier 1 to warm Tier 2 execution, exact-version
+  lifetime, validation-layer, parity, resize, repeat, and failure-closure proof.
+- Vulkan and Metal Tier 2 qualification remain open; no Candidate or Auto
+  qualification state changes in D4b2.
+
+---
+
+### R-SP359 Render-policy Task 11D-D4c real DX12 Tier 2 candidate evidence
+
+**Date:** 2026-08-04
+**Commit:** Included in the Task 11D-D4c stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP358 (frozen GPU Scene execution tier).
+- D4b2 froze and enforced the selected Tier 2 path, but its proof used
+  validation devices and did not yet qualify real DX12 execution, exact-lease
+  lifetime, resize recovery, validation-layer cleanliness, or image parity.
+
+**Approved scope:**
+
+- Add value-only resident/lease versions to frame policy diagnostics and clear
+  them with every new or invalidated plan; acquire no diagnostic ownership.
+- Report a frame completed when the graph executed and at least one planned
+  pass completed, while preserving legal per-pass `NotAttempted` records and
+  leaving an unexecuted graph unavailable.
+- Add ModelViewer schema-v3 evidence with smoke ordinal, presented frame
+  sequence, resize boundary, accepted count, selected/executed tier, fallback,
+  and exact resident/lease versions.
+- Add a fail-closed C++ state machine and an independently implemented runner
+  parser. Both require initial cold Tier 1 to warm Tier 2 and the same ordered
+  transition after resize. Runner regressions cover early Tier 2, missing
+  post-resize cold state, and an unaccepted Tier 2 record.
+- Validate one exact GPU Scene lease shared by two graph readers on the native
+  DX12 queue, with completion-aware replacement, retirement, rejected-frame
+  rollback, invalid/omitted completion, and tracker/device-loss closure.
+- Keep DX12 at Candidate and keep `Auto` Direct. Do not edit public RHI,
+  backend qualification, golden images, or tolerances.
+
+**Files changed:**
+
+- `Render/Include/Render/Policy/RenderPolicyDiagnostics.h`
+- `Render/Include/Render/Renderer/SceneRenderer.h`
+- `Render/Private/Renderer/SceneRenderer.cpp`
+- `Samples/Showcase/ModelViewer/main.cpp`
+- `Tests/CMakeLists.txt`
+- `Tests/DX12Validation/main.cpp`
+- `Tests/GPUSceneUploadValidation/main.cpp`
+- `Tests/RenderSceneValidation/main.cpp`
+- `Scripts/run_d4c_dx12_tier2_candidate.ps1`
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary focused build: PASS for ModelViewer, VisualGoldenValidation,
+  RenderSceneValidation, GPUSceneUploadValidation, and DX12Validation.
+- Primary focused tests: PASS 6/6, including value-only reset, mixed
+  Completed/NotAttempted aggregation, unexecuted-report honesty, mock
+  multi-reader lifetime, and the real-DX12 exact-lease closure gate.
+- Primary complete hardware runner: PASS in 96.5 seconds on NVIDIA GeForce RTX
+  4070 Ti, driver 610.62. Main candidate accepted 16/16 frames and repeated
+  cold-to-warm after resize frame 6; GBV accepted 10/10 frames.
+- Direct/GPU parity: PASS at tolerance 0 with 0 different pixels. Four raw
+  InfoQueue reports are available and read-complete with zero error/corruption;
+  no failure marker remains.
+- Scoped `git diff --check`: PASS apart from existing CRLF conversion notices.
+
+**Independent review result:**
+
+- First review found one P1: evidence observed cold and warm tiers but did not
+  enforce their order or require a new post-resize transition.
+- Second review found one P1: the independent runner parser skipped unaccepted
+  records and therefore did not reject unaccepted Tier 2 evidence itself.
+- Both were remediated with explicit fail-closed state machines and executable
+  negative regressions. Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete scoped diff, frame-report, evidence-schema, ordered
+  transition, exact-version, native lifetime, raw InfoQueue, GBV, parity,
+  provenance, and test-honesty review.
+- Unrelated Engine/PipelineCache changes, runtime diagnostics, and Python cache
+  output remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- D4c qualifies a hermetic DX12 candidate path on one NVIDIA adapter; it does
+  not close the adapter/driver matrix or promote `Auto`.
+- Task 11E must expose truthful memory/capacity/dirty-upload/publication and
+  retirement diagnostics and gather non-gating workload evidence before Task
+  15 derives any measured policy.
+- Vulkan and Metal remain unqualified and are owned by Tasks 12 and 13.
+
+---
+
+### R-SP360 Render-policy Task 11E GPU Scene M3 diagnostics and workload exit
+
+**Date:** 2026-08-05
+**Commit:** Included in the Task 11E stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP359 (real DX12 Tier 2 candidate evidence).
+- D4c proved one hermetic Tier 2 candidate path, but the engine still lacked a
+  complete value-only GPU Scene accounting contract, completion-tracked
+  material/object constant pages, and deterministic 100/1k/10k/50k exit
+  evidence.
+
+**Approved scope:**
+
+- Expose backend-neutral publication, table capacity/bytes, dirty upload,
+  buffer-set, slot/draw retirement, exact-version, and optional timing
+  diagnostics. Keep them informational, non-gating, and disconnected from
+  policy and `Auto` decisions.
+- Replace fixed material/object constant overwrite limits with paged upload
+  arenas whose reuse requires the exact current Graphics completion point.
+  Invalid, stale, multi-domain, unissued, or lost evidence fails closed.
+- Preflight draw bindings and retain exact page, descriptor, and instance
+  resources through the submission batch. Treat any failed planned pass as an
+  atomic failed frame; roll back provisional depth/backbuffer access state on
+  abort and confirm it only after actual submission.
+- Cache object page descriptors only for the stable fallback instance buffer.
+  External per-frame GPU-culling instance buffers receive fresh immutable
+  descriptors and strong ownership.
+- Add deterministic ModelViewer workload/evidence switches and a runner for
+  100/1k/10k/50k Direct/GPU execution, exact pixel parity, engine error scan,
+  raw DX12 InfoQueue checks, lifecycle/accounting validation, and provenance.
+  Do not add guessed thresholds or promote Candidate/`Auto`.
+
+**Files changed:**
+
+- GPU Scene diagnostics/publication/database/uploader implementation under
+  `Render/Include/Render/GPUScene` and `Render/Private/GPUScene`.
+- Completion-tracked constants and binding ownership in `Render/Private/Resources`,
+  `MaterialSystem`, `PipelineCache`, `DepthPrepass`, `OpaquePass`, and
+  `ShadowPass`.
+- Frame failure/access-state closure in `SceneRenderer` and diagnostics
+  projection through `RenderSubsystem`.
+- `Samples/Showcase/ModelViewer/main.cpp`,
+  `Scripts/run_m3_gpu_scene_exit.ps1`, focused validation executables, CMake,
+  the execution ledger, and this phase record.
+
+**Validation result:**
+
+- Primary serial build: PASS for MaterialSystemValidation,
+  PipelineCacheValidation, RenderPassValidation, RenderSceneValidation,
+  GPUSceneValidation, GPUSceneUploadValidation, GPUDrivenValidation, and
+  ModelViewer.
+- Primary focused tests: PASS 495/495: Material 37, Pipeline 137, Render Pass
+  203, Render Scene 23, GPU Scene 33, GPU Scene Upload 20, and GPU-driven 42.
+  One initial aggregate invocation reported the upload capacity-growth case;
+  its immediate filtered rerun and complete 20-test rerun both passed, and the
+  full native gate remained clean.
+- Architecture.PhaseGates: PASS 1/1. PowerShell AST and `git diff --check`:
+  PASS apart from existing CRLF conversion notices.
+- Complete native M3 runner: PASS in 625.2 seconds on NVIDIA GeForce RTX 4070
+  Ti, driver 610.62. Each of 100/1k/10k/50k completed Direct 4 frames and GPU
+  12 frames; every GPU run observed ordered cold `IndirectGrouped` followed by
+  warm `GPUResidentScene`.
+- Exact Direct/GPU P6 parity passed with zero differing pixel bytes at all four
+  workloads. All eight DX12 InfoQueue reports were available, read-complete,
+  and had zero error/corruption messages. No failure manifest or orphaned
+  ModelViewer process remained.
+
+**Independent review result:**
+
+- Earlier reviews identified partial-frame submission, provisional access
+  snapshot leakage, permissive/lost completion tokens, and a stale external
+  instance-buffer descriptor cache. Each was remediated with focused tests and
+  then exercised by the real-DX12 workload gate.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete diagnostics, allocator, token, descriptor cache,
+  submission ownership, pass preflight, failure rollback, runner, evidence,
+  and test-honesty review.
+- Unrelated `Engine/Private/Engine.cpp`, runtime fatal diagnostics, Python
+  caches, and build artifacts remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- Native Task 11E evidence covers DX12 on one NVIDIA adapter. Vulkan and Metal
+  remain unqualified and are owned by Tasks 12 and 13.
+- Delayed GPU timing was unavailable and is truthfully recorded as zero,
+  `nonGating=true`, and `usedForAutoDecision=false`. Task 15 must add reviewed
+  GPU timing evidence before any measured threshold, hysteresis, or `Auto`
+  promotion.
+
+---
+
+### R-SP361 Render-policy Task 12 Vulkan Tier 1 Candidate qualification
+
+**Date:** 2026-08-05
+**Commit:** Included in the Task 12 stage commit after the reviewed gate below.
+
+**Prerequisite status:** PASS
+
+- Previous R-SP: R-SP360 (GPU Scene M3 diagnostics and workload exit).
+- Task 10 froze the backend-neutral indexed-indirect/submission strategy and
+  Task 11 completed the DX12 GPU Scene lane. Vulkan still exposed several
+  physically available features as semantic capabilities, had no native
+  count-command qualification evidence, and lacked resize/parity coverage.
+
+**Approved scope:**
+
+- Require the Vulkan 1.3 baseline actually consumed by the backend, snapshot
+  the enabled feature/extension chain, and publish semantic capabilities only
+  from enabled implementation state. Keep unsupported bindless, depth-bounds,
+  dynamic-line-width, secondary-command-buffer, ray-tracing, mesh, and async
+  queue claims disabled.
+- Select `vkCmdDrawIndexedIndirectCount` core/KHR dispatch explicitly and
+  validate fixed/count RHI descriptors, buffer usage/ranges, offsets, stride,
+  count limits, and live backend resources before native recording. Require
+  first-instance semantics for GPU culling and preserve Direct/fixed fallback.
+- Keep logical Compute and Copy domains aliased to Graphics until paired queue
+  ownership is implemented. Serialize submit/present/wait/retirement host
+  operations, avoid redundant cross-queue semaphores for aliased queues, and
+  gate optional synchronization2 shader stages by enabled features.
+- Repair frame-fence ownership across swapchain, headless, raw-submit, and
+  aborted frames. Clean swapchain children and the instance-owned surface after
+  device loss without attempting to recreate a terminal generation.
+- Use the shared 224-byte C++/HLSL instance layout, Vulkan shader targets, real
+  framebuffer resize observation, deterministic new-generation clear, and a
+  fail-closed seven-gate native runner. Keep Vulkan Candidate and `Auto` Direct.
+
+**Files changed:**
+
+- Vulkan device, command-context, resource, synchronization, queue, and
+  swapchain implementation under `RHI_Vulkan/Private`.
+- GPU-driven capability/qualification/culling contracts and the shared
+  instance shader ABI under `Render`.
+- Window resize plumbing under `HAL` and `Runtime`, ModelViewer smoke/evidence
+  behavior, focused Vulkan/GPU-driven/RHI tests, CMake registration, and
+  `Scripts/run_task12_vulkan_candidate.ps1`.
+- The execution ledger and this phase record.
+
+**Validation result:**
+
+- Primary serial build: PASS for VulkanValidation, GPUDrivenValidation,
+  RHIContractValidation, ModelViewer, RenderPassValidation,
+  RenderSceneValidation, ShaderCompilerValidation, RenderPolicyValidation,
+  CrossBackendValidation, DX12Validation, RenderThreadRuntimeValidation, and
+  EngineRenderCompositionValidation.
+- Primary tests: Vulkan 37/37, GPU-driven 48/48, RHI contract 44/44, extended
+  render/runtime/cross-backend CTest 167/167, Render Pass 203/203, Shader
+  Compiler 15/15, and Architecture.PhaseGates 1/1.
+- Native Vulkan Candidate runner: PASS on NVIDIA GeForce RTX 4070 Ti. All seven
+  gates completed with zero validation messages/errors/warnings and no orphan
+  process. Direct/GPU and repeated-GPU captures matched exactly at 320x180;
+  Direct/GPU resize captures matched exactly at 192x108. Zero-visible forced
+  GPU execution also completed.
+- Evidence summary:
+  `build/win_x64_debug/Task12Exit/Debug/RootFinal2/Task12VulkanCandidate.summary.json`.
+  Normal parity hash is `1518d947783d2a7c6886496d9f30b36d5063efd00f7e1bfb8075ed52ec4ff24b`;
+  resize parity hash is `c4d60b99a800b314342a87b7df47d90788fbb54138c545e62e0cb0285d2f6566`.
+- PowerShell runner execution, artifact/provenance validation, and scoped
+  `git diff --check`: PASS.
+
+**Independent review result:**
+
+- Review found and remediation closed: headless frame-fence starvation while
+  protecting raw submissions; missing raw Vulkan indexed-indirect validation;
+  device-lost swapchain/surface lifetime leakage; and an under-specified
+  revision-2 qualification-mask assertion.
+- A proposed DX12 resize-state P1 was withdrawn after confirming D3D12
+  `PRESENT` and `COMMON` are the same native state value.
+- Final verdict READY; unresolved P0/P1/P2: `0/0/0`.
+
+**Primary review status:**
+
+- PASS after complete scoped diff, capability-chain, native dispatch,
+  synchronization, frame-fence, resize-generation, shader-layout, negative
+  fixture, runner-honesty, parity, and validation-layer review.
+- Unrelated `Engine/Private/Engine.cpp`, runtime fatal diagnostics, Python
+  caches, logs, and build artifacts remain unstaged and untouched.
+
+**Residual risks / mandatory follow-ups:**
+
+- Candidate evidence covers one NVIDIA Vulkan adapter/driver environment; it
+  does not close the adapter/driver matrix, real-asset regression, or promote
+  `Auto`. GPU-based validation remains an explicitly missing qualification
+  gate.
+- Logical Vulkan Compute/Copy queues intentionally alias Graphics. Distinct
+  queues and paired ownership transfers require a separately reviewed RHI and
+  RenderGraph stage.
+- Metal ICB qualification remains open and is owned by Task 13. DX11/OpenGL
+  compatibility closure remains Task 14; neither may weaken the primary
+  DX12/Vulkan/Metal contracts.
 
 ---

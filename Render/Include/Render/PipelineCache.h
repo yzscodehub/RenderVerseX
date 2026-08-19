@@ -18,7 +18,9 @@
 #include "RHI/RHI.h"
 
 #include <array>
+#include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <span>
@@ -29,11 +31,25 @@
 namespace RVX
 {
     // Forward declarations
+    struct GPUCompletionToken;
+    class FrameConstantUploadArena;
+    class IShaderCompiler;
+    class RenderSubmissionTracker;
+    class RenderSubmissionResourceBatch;
+    class RenderRetirementQueue;
     class ShaderManager;
     struct ShaderCompileResult;
+    struct GPUSceneRasterResourceSnapshot;
     struct ViewData;
 
     constexpr uint32 RVX_MAX_OBJECT_SKINNING_MATRICES = 128;
+
+    /** @brief Vertex-stream contract for DefaultLit direct graphics pipelines. */
+    enum class DefaultLitDirectVertexInputMode : uint8
+    {
+        Rigid = 0,
+        Skinned = 1,
+    };
 
     /**
      * @brief View constants structure (matches HLSL cbuffer)
@@ -101,6 +117,32 @@ namespace RVX
         RayTracedShadowFallbackReason fallbackReason = RayTracedShadowFallbackReason::Disabled;
     };
 
+    enum class EnvironmentIBLFallbackReason : uint8
+    {
+        None = 0,
+        Disabled,
+        MissingIrradianceSRV,
+        MissingPrefilteredEnvironmentSRV,
+        MissingBRDFLUTSRV,
+        MissingSampler,
+        FallbackUnavailable,
+    };
+
+    struct EnvironmentIBLFrameResources
+    {
+        bool enabled = false;
+        RHITextureView* irradianceView = nullptr;
+        RHITextureView* prefilteredEnvironmentView = nullptr;
+        RHITextureView* brdfLUTView = nullptr;
+    };
+
+    struct EnvironmentIBLFrameBindingResult
+    {
+        bool textureIBLSamplingEnabled = false;
+        EnvironmentIBLFallbackReason fallbackReason =
+            EnvironmentIBLFallbackReason::Disabled;
+    };
+
     enum class FrameLightFallbackReason : uint8
     {
         None = 0,
@@ -158,6 +200,121 @@ namespace RVX
         Mat4 skinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
     };
 
+    /**
+     * @brief Private set-1 b0 payload for a sealed GPU-scene raster record.
+     *
+     * The ObjectConstants prefix is intentionally exact because DefaultLit's
+     * pixel shader still reads ObjectVelocityParams from b0.  Only the trailing
+     * counts are GPU-scene specific and they are filled by PipelineCache from a
+     * sealed resource snapshot.
+     */
+    struct alignas(16) GPUSceneRasterObjectConstants
+    {
+        ObjectConstants objectConstants{};
+        std::array<uint32, 4> gpuSceneRasterCounts{};
+    };
+
+    static_assert(offsetof(GPUSceneRasterObjectConstants, objectConstants) == 0);
+    static_assert(offsetof(GPUSceneRasterObjectConstants, gpuSceneRasterCounts) ==
+                  sizeof(ObjectConstants));
+
+    /**
+     * @brief Strongly-owned private GPU-scene raster binding state for one seal.
+     *
+     * This has no route-selection behavior.  It only preserves the resources
+     * that a later renderer pass must bind at set 1 and retain for submission.
+     */
+    struct GPUSceneRasterBindingSnapshot
+    {
+        RHIBufferRef objectConstantBuffer;
+        RHIBufferRef candidateBuffer;
+        RHIBufferRef primitiveBuffer;
+        RHIBufferRef transformBuffer;
+        RHIDescriptorSetRef objectDescriptorSet;
+        RHIDescriptorSetLayoutRef frameSetLayout;
+        RHIDescriptorSetLayoutRef objectSetLayout;
+        RHIDescriptorSetLayoutRef materialSetLayout;
+        RHIPipelineLayoutRef pipelineLayout;
+        RHIPipelineRef opaquePipeline;
+        RHIPipelineRef instancedMaterialOpaquePipeline;
+        RHIPipelineRef maskedPipeline;
+        RHIPipelineRef depthPipeline;
+        uint64 leaseVersion = 0;
+        uint32 candidateCount = 0;
+        uint32 primitiveCapacity = 0;
+        uint32 transformCapacity = 0;
+
+        [[nodiscard]] bool IsReadyForBinding() const;
+        [[nodiscard]] bool RetainSubmissionResources(
+            RenderSubmissionResourceBatch& batch) const;
+    };
+
+    /**
+     * @brief Per-recording frame/object bindings used by graphics passes.
+     *
+     * The regular PipelineCache bindings are frame-global mutable rings.  A
+     * graph recording that may execute after another recording therefore needs
+     * private constant buffers and immutable descriptor-set snapshots.  The
+     * snapshot owns both buffers/sets and assigns fixed object offsets without
+     * touching the cache's current-frame cursors.
+     */
+    struct RasterDrawBindingSnapshot
+    {
+        RHIBufferRef viewConstantBuffer;
+        RHIBufferRef objectConstantBuffer;
+        RHIDescriptorSetRef frameDescriptorSet;
+        RHIDescriptorSetRef objectDescriptorSet;
+        std::vector<Ref<RefCounted>> retainedResources;
+        uint64 objectConstantStride = 0;
+        uint32 objectCapacity = 0;
+        uint32 objectCursor = 0;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return viewConstantBuffer && objectConstantBuffer &&
+                   frameDescriptorSet && objectDescriptorSet &&
+                   objectConstantStride != 0 && objectCapacity != 0;
+        }
+    };
+
+    /**
+     * @brief Immutable frame bindings for all cascades of one directional shadow record.
+     *
+     * A single upload page contains one aligned ViewConstants record per
+     * cascade. Each descriptor set fixes binding 0 to a distinct range in that
+     * page, so command recording cannot observe a later cascade overwrite.
+     */
+    struct DirectionalShadowCascadeBindingSnapshot
+    {
+        RHIBufferRef viewConstantPageBuffer;
+        std::vector<RHIDescriptorSetRef> frameDescriptorSets;
+        std::vector<Ref<RefCounted>> retainedResources;
+        uint64 viewConstantStride = 0;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return viewConstantPageBuffer && !frameDescriptorSets.empty() &&
+                   viewConstantStride != 0;
+        }
+    };
+
+    /** @brief One page-local object binding captured while a graph is recorded. */
+    struct ObjectConstantBinding
+    {
+        RHIBufferRef constantBuffer;
+        RHIBufferRef instanceBuffer;
+        RHIDescriptorSetRef descriptorSet;
+        uint64 pageIdentity = 0;
+        std::array<uint32, 1> dynamicOffsets = {0};
+        bool requiresInstanceBuffer = false;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return constantBuffer && descriptorSet && pageIdentity != 0 &&
+                   (!requiresInstanceBuffer || instanceBuffer);
+        }
+    };
+
     struct PipelineCacheConfig
     {
         RHIFormat renderTargetFormat = RHIFormat::RGBA8_UNORM;
@@ -177,8 +334,10 @@ namespace RVX
         uint64 skyboxPipelineHash = 0;
         uint64 toneMappingPipelineHash = 0;
         uint64 bloomPipelineHash = 0;
+        uint64 ssaoPipelineHash = 0;
         uint64 colorGradingPipelineHash = 0;
         uint64 chromaticAberrationPipelineHash = 0;
+        uint64 filmGrainPipelineHash = 0;
         uint64 fxaaPipelineHash = 0;
         uint64 vignettePipelineHash = 0;
         uint64 uiPipelineHash = 0;
@@ -199,7 +358,12 @@ namespace RVX
     class PipelineCache
     {
     public:
+        using ShaderCompilerFactory =
+            std::function<std::unique_ptr<IShaderCompiler>()>;
+
         PipelineCache();
+        /** @brief Create a cache with an explicit compiler composition factory. */
+        explicit PipelineCache(ShaderCompilerFactory shaderCompilerFactory);
         ~PipelineCache();
 
         PipelineCache(const PipelineCache&) = delete;
@@ -221,6 +385,15 @@ namespace RVX
          * @brief Shutdown and release resources
          */
         void Shutdown();
+
+        /** @brief Transfer replaced descriptor snapshots using exact submission evidence. */
+        void RetireOwnerSnapshots(const GPUCompletionToken& completion,
+                                  RenderRetirementQueue& retirement);
+
+        /** @brief Completion evidence for the private paged object upload arena. */
+        void SetObjectConstantSubmissionTracker(RenderSubmissionTracker* tracker) noexcept;
+        [[nodiscard]] bool NotifyObjectConstantSubmission(const GPUCompletionToken& completion) noexcept;
+        void ReleaseUnsubmittedObjectConstants() noexcept;
 
         /**
          * @brief Check if initialized
@@ -271,19 +444,62 @@ namespace RVX
          */
         RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant) const;
         RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
+        RHIPipeline* GetPipelineForVariant(MaterialPipelineVariant variant,
+                                           RHIFormat renderTargetFormat,
+                                           DefaultLitDirectVertexInputMode inputMode);
         RHIPipeline* GetGPUDrivenPipelineForVariant(MaterialPipelineVariant variant, RHIFormat renderTargetFormat);
+        RHIPipeline* GetInstancedMaterialPipelineForVariant(
+            MaterialPipelineVariant variant,
+            RHIFormat renderTargetFormat);
+
+        /**
+         * @brief Get the GPU-scene raster pipeline for opaque or masked materials.
+         *
+         * This uses a private set-1 layout and never mutates the Direct/Tier1
+         * object descriptor set or its instance-buffer binding.
+         */
+        RHIPipeline* GetGPUScenePipelineForVariant(MaterialPipelineVariant variant,
+                                                    RHIFormat renderTargetFormat);
+        /** @brief GPU-scene opaque pipeline sourcing scalar material parameters per instance. */
+        RHIPipeline* GetGPUSceneInstancedMaterialPipelineForVariant(
+            MaterialPipelineVariant variant,
+            RHIFormat renderTargetFormat);
 
         /**
          * @brief Get the depth-only pipeline for depth prepass
          * @return Depth-only pipeline or nullptr if not available
          */
         RHIPipeline* GetDepthOnlyPipeline() const { return m_depthOnlyPipeline.Get(); }
+        RHIPipeline* GetDepthOnlyPipeline(
+            DefaultLitDirectVertexInputMode inputMode);
+        /** @brief Get the alpha-masked depth-only pipeline. */
+        RHIPipeline* GetMaskedDepthOnlyPipeline() const
+        {
+            return m_maskedDepthOnlyPipeline.Get();
+        }
+        RHIPipeline* GetMaskedDepthOnlyPipeline(
+            DefaultLitDirectVertexInputMode inputMode);
         RHIPipeline* GetGPUDrivenDepthOnlyPipeline();
+        /** @brief Get the GPU-scene depth-only raster pipeline. */
+        RHIPipeline* GetGPUSceneDepthOnlyPipeline();
+
+        /** @brief Whether the independent GPU-scene raster shader/layout substrate is usable. */
+        [[nodiscard]] bool IsGPUSceneRasterReady() const;
+        /** @brief Why the optional GPU-scene raster substrate is unavailable. Empty when ready. */
+        [[nodiscard]] const std::string& GetGPUSceneRasterUnavailableReason() const
+        {
+            return m_gpuSceneRasterUnavailableReason;
+        }
 
         /**
          * @brief Get the shadow-map depth-only pipeline for caster raster bias
          */
         RHIPipeline* GetShadowDepthPipeline(const ShadowDepthBiasState& biasState);
+        RHIPipeline* GetShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode);
+        RHIPipeline* GetInstancedShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState);
         static ShadowDepthBiasState SanitizeShadowDepthBiasState(const ShadowDepthBiasState& biasState);
 
         /**
@@ -307,6 +523,12 @@ namespace RVX
         RHIPipeline* GetBloomAdditivePipeline(RHIFormat outputFormat);
 
         /**
+         * @brief Get the fullscreen depth-only SSAO post-process pipeline
+         */
+        RHIPipeline* GetSSAOPipeline() const { return m_ssaoPipeline.Get(); }
+        RHIPipeline* GetSSAOPipeline(RHIFormat outputFormat);
+
+        /**
          * @brief Get the camera/depth motion-vector pipeline
          */
         RHIPipeline* GetCameraVelocityPipeline() const { return m_cameraVelocityPipeline.Get(); }
@@ -317,8 +539,14 @@ namespace RVX
          */
         RHIPipeline* GetObjectVelocityPipeline() const { return m_objectVelocityPipeline.Get(); }
         RHIPipeline* GetObjectVelocityPipeline(RHIFormat outputFormat);
+        RHIPipeline* GetObjectVelocityPipeline(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode);
         RHIPipeline* GetMaskedObjectVelocityPipeline() const { return m_maskedObjectVelocityPipeline.Get(); }
         RHIPipeline* GetMaskedObjectVelocityPipeline(RHIFormat outputFormat);
+        RHIPipeline* GetMaskedObjectVelocityPipeline(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode);
 
         /**
          * @brief Get the fullscreen alpha-composite pipeline for ray-traced reflections
@@ -357,6 +585,12 @@ namespace RVX
         RHIPipeline* GetFXAAPipeline(RHIFormat outputFormat);
 
         /**
+         * @brief Get the fullscreen FilmGrain LDR post-process pipeline
+         */
+        RHIPipeline* GetFilmGrainPipeline() const { return m_filmGrainPipeline.Get(); }
+        RHIPipeline* GetFilmGrainPipeline(RHIFormat outputFormat);
+
+        /**
          * @brief Get the fullscreen Vignette LDR post-process pipeline
          */
         RHIPipeline* GetVignettePipeline() const { return m_vignettePipeline.Get(); }
@@ -392,6 +626,17 @@ namespace RVX
          * @brief Get the default pipeline layout
          */
         RHIPipelineLayout* GetDefaultLayout() const { return m_pipelineLayout.Get(); }
+
+        /** @brief Get the GPU-scene raster layout (frame, private object, material). */
+        RHIPipelineLayout* GetGPUSceneRasterLayout() const
+        {
+            return m_gpuSceneRasterPipelineLayout.Get();
+        }
+        /** @brief Get the private set-1 b0 + candidate/primitive/transform layout. */
+        RHIDescriptorSetLayout* GetGPUSceneRasterObjectSetLayout() const
+        {
+            return m_gpuSceneRasterObjectSetLayout.Get();
+        }
 
         /**
          * @brief Get the post-process fullscreen pipeline layout
@@ -479,6 +724,12 @@ namespace RVX
          */
         RHIDescriptorSet* GetFrameDescriptorSet();
 
+        /** @brief Acquire the current frame-set snapshot for submission ownership. */
+        RHIDescriptorSetRef GetFrameDescriptorSetSnapshot() const
+        {
+            return m_frameDescriptorSet;
+        }
+
         /**
          * @brief Update frame-scope directional shadow texture/sampler bindings.
          */
@@ -490,6 +741,12 @@ namespace RVX
          */
         RayTracedShadowFrameBindingResult UpdateRayTracedShadowFrameResources(
             const RayTracedShadowFrameResources& resources);
+
+        /**
+         * @brief Update frame/view-scope environment IBL texture bindings.
+         */
+        EnvironmentIBLFrameBindingResult UpdateEnvironmentIBLFrameResources(
+            const EnvironmentIBLFrameResources& resources);
 
         /**
          * @brief Update frame-scope local light buffer bindings.
@@ -511,8 +768,14 @@ namespace RVX
             return m_lastRayTracedShadowFrameBindingResult;
         }
 
+        const EnvironmentIBLFrameBindingResult& GetLastEnvironmentIBLFrameBindingResult() const
+        {
+            return m_lastEnvironmentIBLFrameBindingResult;
+        }
+
         static const char* GetDirectionalShadowFallbackReasonName(DirectionalShadowFallbackReason reason);
         static const char* GetRayTracedShadowFallbackReasonName(RayTracedShadowFallbackReason reason);
+        static const char* GetEnvironmentIBLFallbackReasonName(EnvironmentIBLFallbackReason reason);
         static const char* GetFrameLightFallbackReasonName(FrameLightFallbackReason reason);
 
         /**
@@ -535,6 +798,23 @@ namespace RVX
         bool UpdateObjectInstanceBuffer(RHIBuffer* instanceBuffer);
 
         /**
+         * @brief Allocate one completion-tracked page-local object constant record.
+         *
+         * The returned binding owns b0 from the selected page and preserves
+         * set-1/b1 as either the supplied instance buffer or the stable fallback.
+         */
+        bool CreateObjectConstantBinding(
+            const Mat4& worldMatrix,
+            const Mat4& normalMatrix,
+            const Mat4& previousWorldMatrix,
+            const Mat4& previousViewProjectionMatrix,
+            bool previousWorldViewProjectionValid,
+            bool receivesShadow,
+            std::span<const Mat4> skinningMatrices,
+            RHIBuffer* instanceBuffer,
+            ObjectConstantBinding& outBinding);
+
+        /**
          * @brief Get the material descriptor set layout (set 2)
          */
         RHIDescriptorSetLayout* GetMaterialSetLayout() const;
@@ -543,6 +823,59 @@ namespace RVX
          * @brief Get dynamic constant-buffer offset for the current object slot
          */
         std::array<uint32, 1> GetCurrentObjectDynamicOffset() const;
+
+        /** @brief Create immutable per-record frame/object bindings. */
+        bool CreateRasterDrawBindingSnapshot(const ViewData& view,
+                                             uint32 objectCapacity,
+                                             RasterDrawBindingSnapshot& outSnapshot) const;
+
+        /**
+         * @brief Create immutable set-0 bindings for every directional-shadow cascade.
+         *
+         * All cascade constants are copied into one recording-owned page before
+         * descriptors are created. The caller must retain retainedResources in
+         * the RenderGraph execution ownership batch.
+         */
+        bool CreateDirectionalShadowCascadeBindingSnapshot(
+            std::span<const ViewData> cascadeViews,
+            DirectionalShadowCascadeBindingSnapshot& outSnapshot) const;
+
+        /**
+         * @brief Create the independent set-1 binding for one sealed GPU-scene raster view.
+         *
+         * The snapshot supplies its own strong b0/descriptor/table references;
+         * this never updates the cache's normal object buffer or descriptor.
+         */
+        bool CreateGPUSceneRasterBindingSnapshot(
+            const GPUSceneRasterResourceSnapshot& resources,
+            const ObjectConstants& objectConstants,
+            GPUSceneRasterBindingSnapshot& outSnapshot);
+
+        /**
+         * @brief Create isolated transparent frame/object bindings.
+         *
+         * Local-light and cluster buffers are single mutable upload allocations.
+         * This overload copies their contents into the recording-owned frame
+         * descriptor so later frames cannot rewrite an already registered graph.
+         * Directional and ray-traced shadow sampling remain explicitly disabled
+         * for transparent shading.
+         */
+        bool CreateTransparentRasterDrawBindingSnapshot(
+            const ViewData& view,
+            uint32 objectCapacity,
+            const FrameLightResources& lightResources,
+            RasterDrawBindingSnapshot& outSnapshot) const;
+
+        /** @brief Upload one object slot in a recording-owned snapshot. */
+        bool UpdateRasterDrawBindingSnapshotObject(
+            RasterDrawBindingSnapshot& snapshot,
+            const Mat4& worldMatrix,
+            const Mat4& normalMatrix,
+            const Mat4& previousWorldMatrix,
+            const Mat4& previousViewProjectionMatrix,
+            bool previousWorldViewProjectionValid,
+            bool receivesShadow,
+            std::span<const Mat4> skinningMatrices = {}) const;
 
         /**
          * @brief Build a single dynamic offset span for descriptor sets with one dynamic binding
@@ -560,13 +893,15 @@ namespace RVX
 
         /**
          * @brief Update per-object constants without previous-frame motion data.
+         * @return True when a new constant slot was uploaded successfully.
          */
-        void UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix);
+        bool UpdateObjectConstants(const Mat4& worldMatrix, const Mat4& normalMatrix);
 
         /**
          * @brief Update per-object constants with previous-frame motion data.
+         * @return True when a new constant slot was uploaded successfully.
          */
-        void UpdateObjectConstants(const Mat4& worldMatrix,
+        bool UpdateObjectConstants(const Mat4& worldMatrix,
                                    const Mat4& normalMatrix,
                                    const Mat4& previousWorldMatrix,
                                    const Mat4& previousViewProjectionMatrix,
@@ -575,8 +910,9 @@ namespace RVX
 
         /**
          * @brief Update per-object constants with previous-frame motion and render flags.
+         * @return True when a new constant slot was uploaded successfully.
          */
-        void UpdateObjectConstants(const Mat4& worldMatrix,
+        bool UpdateObjectConstants(const Mat4& worldMatrix,
                                    const Mat4& normalMatrix,
                                    const Mat4& previousWorldMatrix,
                                    const Mat4& previousViewProjectionMatrix,
@@ -622,8 +958,46 @@ namespace RVX
 
         void SetDepthStencilFormat(RHIFormat format) { m_config.depthStencilFormat = format; }
         void SetReverseZ(bool enabled) { m_config.reverseZ = enabled; }
+        bool IsReverseZ() const { return m_config.reverseZ; }
 
     private:
+        /**
+         * @brief Strong owners for every source referenced by one frame descriptor set.
+         *
+         * RHIDescriptorBinding intentionally contains raw backend handles. This
+         * snapshot keeps those handles live from descriptor creation through the
+         * exact completion token used to retire a replaced frame set.
+         */
+        struct FrameDescriptorBindingOwners final : RefCounted
+        {
+            RHIBufferRef viewConstantBuffer;
+            RHITextureViewRef directionalShadowView;
+            RHISamplerRef directionalShadowSampler;
+            RHIBufferRef lightConstantsBuffer;
+            RHIBufferRef pointLightsBuffer;
+            RHIBufferRef spotLightsBuffer;
+            RHITextureViewRef rayTracedShadowMaskView;
+            RHIBufferRef clusterConstantsBuffer;
+            RHIBufferRef clusterBuffer;
+            RHIBufferRef clusterLightIndexBuffer;
+            RHITextureViewRef environmentIBLIrradianceView;
+            RHITextureViewRef environmentIBLPrefilteredView;
+            RHITextureViewRef environmentIBLBRDFLUTView;
+            RHISamplerRef environmentIBLSampler;
+
+            [[nodiscard]] bool IsComplete() const noexcept
+            {
+                return viewConstantBuffer && directionalShadowView &&
+                       directionalShadowSampler && lightConstantsBuffer &&
+                       pointLightsBuffer && spotLightsBuffer &&
+                       rayTracedShadowMaskView && clusterConstantsBuffer &&
+                       clusterBuffer && clusterLightIndexBuffer &&
+                       environmentIBLIrradianceView &&
+                       environmentIBLPrefilteredView &&
+                       environmentIBLBRDFLUTView && environmentIBLSampler;
+            }
+        };
+
         static uint32 ToRHIConstantDynamicOffset(uint64 offset)
         {
             constexpr uint64 maxDynamicOffset = static_cast<uint64>(std::numeric_limits<uint32>::max());
@@ -639,6 +1013,7 @@ namespace RVX
 
         bool CompileShaders();
         bool CreatePipelineLayout();
+        bool CreateGPUSceneRasterPipelineLayout();
         bool CreatePostProcessPipelineLayout();
         bool CreateUIPipelineLayout();
         bool CreateRayTracedReflectionDenoisePipelineLayout();
@@ -651,28 +1026,58 @@ namespace RVX
                                                      const RHIDepthStencilState& depthStencilState,
                                                      const RHIBlendState& blendState,
                                                      RHIFormat renderTargetFormat,
+                                                     DefaultLitDirectVertexInputMode inputMode,
                                                      bool updatePrimaryStats);
         RHIPipelineRef GetOrCreateGPUDrivenDefaultLitPipeline(MaterialPipelineVariant variant,
                                                               const char* debugName,
                                                               const RHIDepthStencilState& depthStencilState,
                                                               const RHIBlendState& blendState,
                                                               RHIFormat renderTargetFormat);
+        RHIPipelineRef GetOrCreateInstancedMaterialDefaultLitPipeline(
+            MaterialPipelineVariant variant,
+            const char* debugName,
+            const RHIDepthStencilState& depthStencilState,
+            const RHIBlendState& blendState,
+            RHIFormat renderTargetFormat);
+        RHIPipelineRef GetOrCreateGPUSceneDefaultLitPipeline(MaterialPipelineVariant variant,
+                                                              const char* debugName,
+                                                              const RHIDepthStencilState& depthStencilState,
+                                                              const RHIBlendState& blendState,
+                                                              RHIFormat renderTargetFormat,
+                                                              bool instancedMaterial = false);
         RHIPipelineRef GetOrCreateDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateRigidDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateMaskedDepthOnlyPipeline(
+            DefaultLitDirectVertexInputMode inputMode =
+                DefaultLitDirectVertexInputMode::Skinned);
         RHIPipelineRef GetOrCreateGPUDrivenDepthOnlyPipeline();
-        RHIPipelineRef GetOrCreateShadowDepthPipeline(const ShadowDepthBiasState& biasState);
+        RHIPipelineRef GetOrCreateGPUSceneDepthOnlyPipeline();
+        RHIPipelineRef GetOrCreateShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode);
+        RHIPipelineRef GetOrCreateInstancedShadowDepthPipeline(
+            const ShadowDepthBiasState& biasState);
         RHIPipelineRef GetOrCreateSkyboxPipeline(RHIFormat outputFormat,
                                                  bool depthTest = true,
                                                  bool updatePrimaryStats = true);
         RHIPipelineRef GetOrCreateToneMappingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateBloomAdditivePipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateSSAOPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateCameraVelocityPipeline(RHIFormat outputFormat);
-        RHIPipelineRef GetOrCreateObjectVelocityPipeline(RHIFormat outputFormat);
-        RHIPipelineRef GetOrCreateMaskedObjectVelocityPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateObjectVelocityPipeline(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode =
+                DefaultLitDirectVertexInputMode::Skinned);
+        RHIPipelineRef GetOrCreateMaskedObjectVelocityPipeline(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode =
+                DefaultLitDirectVertexInputMode::Skinned);
         RHIPipelineRef GetOrCreateRayTracedReflectionCompositePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateRayTracedReflectionDenoisePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateColorGradingPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateChromaticAberrationPipeline(RHIFormat outputFormat);
+        RHIPipelineRef GetOrCreateFilmGrainPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateFXAAPipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateVignettePipeline(RHIFormat outputFormat);
         RHIPipelineRef GetOrCreateUIPipeline(RHIFormat outputFormat);
@@ -681,25 +1086,50 @@ namespace RVX
         RHIGraphicsPipelineDesc BuildDefaultLitPipelineDesc(const char* debugName,
                                                             const RHIDepthStencilState& depthStencilState,
                                                             const RHIBlendState& blendState,
-                                                            RHIFormat renderTargetFormat) const;
+                                                            RHIFormat renderTargetFormat,
+                                                            DefaultLitDirectVertexInputMode inputMode) const;
         RHIGraphicsPipelineDesc BuildGPUDrivenDefaultLitPipelineDesc(const char* debugName,
                                                                      const RHIDepthStencilState& depthStencilState,
                                                                      const RHIBlendState& blendState,
                                                                      RHIFormat renderTargetFormat) const;
+        RHIGraphicsPipelineDesc BuildInstancedMaterialDefaultLitPipelineDesc(
+            const char* debugName,
+            const RHIDepthStencilState& depthStencilState,
+            const RHIBlendState& blendState,
+            RHIFormat renderTargetFormat) const;
+        RHIGraphicsPipelineDesc BuildGPUSceneDefaultLitPipelineDesc(const char* debugName,
+                                                                     const RHIDepthStencilState& depthStencilState,
+                                                                     const RHIBlendState& blendState,
+                                                                     RHIFormat renderTargetFormat,
+                                                                     bool instancedMaterial = false) const;
         RHIGraphicsPipelineDesc BuildDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildRigidDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildMaskedDepthOnlyPipelineDesc(
+            DefaultLitDirectVertexInputMode inputMode) const;
         RHIGraphicsPipelineDesc BuildGPUDrivenDepthOnlyPipelineDesc() const;
-        RHIGraphicsPipelineDesc BuildShadowDepthPipelineDesc(const ShadowDepthBiasState& biasState) const;
+        RHIGraphicsPipelineDesc BuildGPUSceneDepthOnlyPipelineDesc() const;
+        RHIGraphicsPipelineDesc BuildShadowDepthPipelineDesc(
+            const ShadowDepthBiasState& biasState,
+            DefaultLitDirectVertexInputMode inputMode) const;
+        RHIGraphicsPipelineDesc BuildInstancedShadowDepthPipelineDesc(
+            const ShadowDepthBiasState& biasState) const;
         RHIGraphicsPipelineDesc BuildSkyboxPipelineDesc(RHIFormat outputFormat, bool depthTest = true) const;
         RHIGraphicsPipelineDesc BuildToneMappingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildBloomAdditivePipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildSSAOPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildCameraVelocityPipelineDesc(RHIFormat outputFormat) const;
-        RHIGraphicsPipelineDesc BuildObjectVelocityPipelineDesc(RHIFormat outputFormat) const;
-        RHIGraphicsPipelineDesc BuildMaskedObjectVelocityPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildObjectVelocityPipelineDesc(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode) const;
+        RHIGraphicsPipelineDesc BuildMaskedObjectVelocityPipelineDesc(
+            RHIFormat outputFormat,
+            DefaultLitDirectVertexInputMode inputMode) const;
         RHIGraphicsPipelineDesc BuildRayTracedReflectionCompositePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildRayTracedReflectionDenoisePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildColorGradingPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildChromaticAberrationPipelineDesc(RHIFormat outputFormat) const;
+        RHIGraphicsPipelineDesc BuildFilmGrainPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildFXAAPipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildVignettePipelineDesc(RHIFormat outputFormat) const;
         RHIGraphicsPipelineDesc BuildUIPipelineDesc(RHIFormat outputFormat) const;
@@ -707,17 +1137,33 @@ namespace RVX
         bool CreateObjectConstantBuffer();
         bool EnsureFrameShadowFallbackResources();
         bool EnsureFrameRayTracedShadowFallbackResources();
+        bool EnsureFrameEnvironmentIBLFallbackResources();
         bool EnsureFrameLightFallbackResources();
         bool EnsureFrameClusteredLightFallbackResources();
         bool EnsureObjectInstanceFallbackBuffer();
         bool UpdateDefaultFrameDescriptorSet();
         RHIDescriptorSetRef CreateFrameDescriptorSet();
+        Ref<FrameDescriptorBindingOwners> CreateFrameDescriptorBindingOwners() const;
+        std::vector<RHIDescriptorBinding> BuildFrameDescriptorBindings(
+            const FrameDescriptorBindingOwners& owners) const;
         RHIDescriptorSetRef CreateObjectDescriptorSet();
+        bool CreateRasterDrawBindingSnapshotInternal(
+            const ViewData& view,
+            uint32 objectCapacity,
+            const FrameLightResources* transparentLightResources,
+            RasterDrawBindingSnapshot& outSnapshot) const;
         uint64 AllocateObjectConstantSlot();
+        RHIDescriptorSetRef CreateObjectConstantPageDescriptor(
+            uint64 pageIdentity,
+            RHIBuffer* constantBuffer,
+            RHIBuffer* instanceBuffer,
+            bool cacheFallbackInstance);
         bool BuildReflectedDefaultLitLayouts(std::vector<RHIDescriptorSetLayoutDesc>& outLayouts);
         bool ValidateDefaultLitLayouts(const std::vector<RHIDescriptorSetLayoutDesc>& layouts);
         void ProcessPipelineManifest();
         void SetLastError(std::string message);
+        void ResetGPUSceneRasterState();
+        void DisableGPUSceneRaster(std::string reason);
         uint64 ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc, MaterialPipelineVariant variant) const;
         uint64 ComputePipelineStateHash(const RHIGraphicsPipelineDesc& desc,
                                         MaterialPipelineVariant variant,
@@ -731,26 +1177,41 @@ namespace RVX
         PipelineCacheConfig m_config;
         PipelineCacheStats m_stats;
         std::string m_lastError;
+        std::string m_gpuSceneRasterUnavailableReason;
 
         // Shader manager
+        ShaderCompilerFactory m_shaderCompilerFactory;
         std::unique_ptr<ShaderManager> m_shaderManager;
 
         // Shaders
         RHIShaderRef m_vertexShader;
+        RHIShaderRef m_rigidVertexShader;
         RHIShaderRef m_gpuDrivenVertexShader;
+        RHIShaderRef m_instancedMaterialVertexShader;
+        RHIShaderRef m_gpuSceneVertexShader;
+        RHIShaderRef m_gpuSceneInstancedMaterialVertexShader;
         RHIShaderRef m_pixelShader;
         RHIShaderRef m_depthOnlyVertexShader;
+        RHIShaderRef m_rigidDepthOnlyVertexShader;
+        RHIShaderRef m_maskedDepthOnlyVertexShader;
+        RHIShaderRef m_rigidMaskedDepthOnlyVertexShader;
+        RHIShaderRef m_maskedDepthOnlyPixelShader;
         RHIShaderRef m_gpuDrivenDepthOnlyVertexShader;
+        RHIShaderRef m_gpuSceneDepthOnlyVertexShader;
         RHIShaderRef m_skyboxVertexShader;
         RHIShaderRef m_skyboxPixelShader;
         RHIShaderRef m_toneMappingVertexShader;
         RHIShaderRef m_toneMappingPixelShader;
         RHIShaderRef m_bloomVertexShader;
         RHIShaderRef m_bloomPixelShader;
+        RHIShaderRef m_ssaoVertexShader;
+        RHIShaderRef m_ssaoPixelShader;
         RHIShaderRef m_cameraVelocityPixelShader;
         RHIShaderRef m_objectVelocityVertexShader;
+        RHIShaderRef m_rigidObjectVelocityVertexShader;
         RHIShaderRef m_objectVelocityPixelShader;
         RHIShaderRef m_maskedObjectVelocityVertexShader;
+        RHIShaderRef m_rigidMaskedObjectVelocityVertexShader;
         RHIShaderRef m_maskedObjectVelocityPixelShader;
         RHIShaderRef m_rayTracedReflectionCompositeVertexShader;
         RHIShaderRef m_rayTracedReflectionCompositePixelShader;
@@ -760,6 +1221,8 @@ namespace RVX
         RHIShaderRef m_colorGradingPixelShader;
         RHIShaderRef m_chromaticAberrationVertexShader;
         RHIShaderRef m_chromaticAberrationPixelShader;
+        RHIShaderRef m_filmGrainVertexShader;
+        RHIShaderRef m_filmGrainPixelShader;
         RHIShaderRef m_fxaaVertexShader;
         RHIShaderRef m_fxaaPixelShader;
         RHIShaderRef m_vignetteVertexShader;
@@ -775,20 +1238,33 @@ namespace RVX
         RHIShaderRef m_rayTracedReflectionClosestHitShader;
         RHIShaderRef m_rayTracedReflectionAnyHitShader;
         std::unique_ptr<ShaderCompileResult> m_vsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rigidVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuDrivenVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_instancedMaterialVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_gpuSceneVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_gpuSceneInstancedMaterialVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_psCompileResult;
         std::unique_ptr<ShaderCompileResult> m_depthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rigidDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rigidMaskedDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_maskedDepthOnlyPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_gpuDrivenDepthOnlyVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_gpuSceneDepthOnlyVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_skyboxVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_skyboxPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_toneMappingVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_toneMappingPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_bloomVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_bloomPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_ssaoVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_ssaoPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_cameraVelocityPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_objectVelocityVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rigidObjectVelocityVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_objectVelocityPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_maskedObjectVelocityVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_rigidMaskedObjectVelocityVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_maskedObjectVelocityPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionCompositeVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_rayTracedReflectionCompositePsCompileResult;
@@ -798,6 +1274,8 @@ namespace RVX
         std::unique_ptr<ShaderCompileResult> m_colorGradingPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_chromaticAberrationVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_chromaticAberrationPsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_filmGrainVsCompileResult;
+        std::unique_ptr<ShaderCompileResult> m_filmGrainPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_fxaaVsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_fxaaPsCompileResult;
         std::unique_ptr<ShaderCompileResult> m_vignetteVsCompileResult;
@@ -816,6 +1294,8 @@ namespace RVX
         // Descriptor set layouts and pipeline layout
         std::vector<RHIDescriptorSetLayoutRef> m_setLayouts;
         RHIPipelineLayoutRef m_pipelineLayout;
+        RHIDescriptorSetLayoutRef m_gpuSceneRasterObjectSetLayout;
+        RHIPipelineLayoutRef m_gpuSceneRasterPipelineLayout;
         RHIDescriptorSetLayoutRef m_postProcessSetLayout;
         RHIPipelineLayoutRef m_postProcessPipelineLayout;
         RHIDescriptorSetLayoutRef m_uiTextureSetLayout;
@@ -834,18 +1314,29 @@ namespace RVX
         RHIPipelineRef m_maskedPipeline;
         RHIPipelineRef m_transparentPipeline;
         RHIPipelineRef m_depthOnlyPipeline;
+        RHIPipelineRef m_rigidDepthOnlyPipeline;
+        RHIPipelineRef m_maskedDepthOnlyPipeline;
+        RHIPipelineRef m_rigidMaskedDepthOnlyPipeline;
         RHIPipelineRef m_gpuDrivenDepthOnlyPipeline;
+        RHIPipelineRef m_gpuSceneOpaquePipeline;
+        RHIPipelineRef m_gpuSceneInstancedMaterialOpaquePipeline;
+        RHIPipelineRef m_gpuSceneMaskedPipeline;
+        RHIPipelineRef m_gpuSceneDepthOnlyPipeline;
         RHIPipelineRef m_skyboxPipeline;
         RHIPipelineRef m_toneMappingPipeline;
         RHIPipelineRef m_bloomPipeline;
         RHIPipelineRef m_bloomAdditivePipeline;
+        RHIPipelineRef m_ssaoPipeline;
         RHIPipelineRef m_cameraVelocityPipeline;
         RHIPipelineRef m_objectVelocityPipeline;
+        RHIPipelineRef m_rigidObjectVelocityPipeline;
         RHIPipelineRef m_maskedObjectVelocityPipeline;
+        RHIPipelineRef m_rigidMaskedObjectVelocityPipeline;
         RHIPipelineRef m_rayTracedReflectionCompositePipeline;
         RHIPipelineRef m_rayTracedReflectionDenoisePipeline;
         RHIPipelineRef m_colorGradingPipeline;
         RHIPipelineRef m_chromaticAberrationPipeline;
+        RHIPipelineRef m_filmGrainPipeline;
         RHIPipelineRef m_fxaaPipeline;
         RHIPipelineRef m_vignettePipeline;
         RHIPipelineRef m_uiPipeline;
@@ -860,30 +1351,62 @@ namespace RVX
         RHIBufferRef m_objectConstantBuffer;
         RHIBufferRef m_objectInstanceFallbackBuffer;
         RHIDescriptorSetRef m_frameDescriptorSet;
+        Ref<FrameDescriptorBindingOwners> m_frameDescriptorBindingOwners;
         RHIDescriptorSetRef m_objectDescriptorSet;
+        std::unique_ptr<FrameConstantUploadArena> m_objectConstantUploadArena;
+        struct ObjectPageDescriptorKey
+        {
+            uint64 pageIdentity = 0;
+            RHIBuffer* instanceBuffer = nullptr;
+            bool operator==(const ObjectPageDescriptorKey& other) const noexcept
+            {
+                return pageIdentity == other.pageIdentity && instanceBuffer == other.instanceBuffer;
+            }
+        };
+        struct ObjectPageDescriptorKeyHash
+        {
+            size_t operator()(const ObjectPageDescriptorKey& key) const noexcept
+            {
+                return std::hash<uint64>{}(key.pageIdentity) ^
+                    (std::hash<RHIBuffer*>{}(key.instanceBuffer) << 1);
+            }
+        };
+        std::unordered_map<ObjectPageDescriptorKey,
+                           RHIDescriptorSetRef,
+                           ObjectPageDescriptorKeyHash> m_objectPageDescriptorCache;
+        std::vector<Ref<RefCounted>> m_pendingOwnerRetirements;
         RHITextureRef m_fallbackDirectionalShadowTexture;
         RHITextureViewRef m_fallbackDirectionalShadowView;
         RHITextureRef m_fallbackRayTracedShadowMaskTexture;
         RHITextureViewRef m_fallbackRayTracedShadowMaskView;
         RHISamplerRef m_directionalShadowSampler;
+        RHITextureRef m_fallbackEnvironmentIBLCubemapTexture;
+        RHITextureViewRef m_fallbackEnvironmentIBLCubemapView;
+        RHITextureRef m_fallbackEnvironmentIBLBRDFLUTTexture;
+        RHITextureViewRef m_fallbackEnvironmentIBLBRDFLUTView;
+        RHISamplerRef m_environmentIBLSampler;
         RHIBufferRef m_fallbackLightConstantsBuffer;
         RHIBufferRef m_fallbackPointLightsBuffer;
         RHIBufferRef m_fallbackSpotLightsBuffer;
         RHIBufferRef m_fallbackClusterConstantsBuffer;
         RHIBufferRef m_fallbackClusterBuffer;
         RHIBufferRef m_fallbackClusterLightIndexBuffer;
-        RHITextureView* m_currentDirectionalShadowView = nullptr;
-        RHITextureView* m_currentRayTracedShadowMaskView = nullptr;
-        RHISampler* m_currentDirectionalShadowSampler = nullptr;
-        RHIBuffer* m_currentLightConstantsBuffer = nullptr;
-        RHIBuffer* m_currentPointLightsBuffer = nullptr;
-        RHIBuffer* m_currentSpotLightsBuffer = nullptr;
-        RHIBuffer* m_currentClusterConstantsBuffer = nullptr;
-        RHIBuffer* m_currentClusterBuffer = nullptr;
-        RHIBuffer* m_currentClusterLightIndexBuffer = nullptr;
+        RHITextureViewRef m_currentDirectionalShadowView;
+        RHITextureViewRef m_currentRayTracedShadowMaskView;
+        RHISamplerRef m_currentDirectionalShadowSampler;
+        RHITextureViewRef m_currentEnvironmentIBLIrradianceView;
+        RHITextureViewRef m_currentEnvironmentIBLPrefilteredView;
+        RHITextureViewRef m_currentEnvironmentIBLBRDFLUTView;
+        RHIBufferRef m_currentLightConstantsBuffer;
+        RHIBufferRef m_currentPointLightsBuffer;
+        RHIBufferRef m_currentSpotLightsBuffer;
+        RHIBufferRef m_currentClusterConstantsBuffer;
+        RHIBufferRef m_currentClusterBuffer;
+        RHIBufferRef m_currentClusterLightIndexBuffer;
         bool m_frameResourceBindingsDirty = false;
         DirectionalShadowFrameBindingResult m_lastDirectionalShadowFrameBindingResult;
         RayTracedShadowFrameBindingResult m_lastRayTracedShadowFrameBindingResult;
+        EnvironmentIBLFrameBindingResult m_lastEnvironmentIBLFrameBindingResult;
         FrameLightBindingResult m_lastFrameLightBindingResult;
         uint64 m_objectConstantStride = 0;
         uint64 m_objectConstantCursor = 0;

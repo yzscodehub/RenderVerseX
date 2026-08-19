@@ -13,8 +13,12 @@ add_library(RVX_Geometry STATIC)
 
 # Source files
 target_sources(RVX_Geometry PRIVATE
-    # Placeholder source file (headers are mostly inline)
     Private/Geometry.cpp
+    Private/Asset/VertexAttribute.cpp
+    Private/Asset/Mesh.cpp
+    Private/Asset/Material.cpp
+    Private/Asset/Node.cpp
+    Private/Asset/Model.cpp
 )
 
 target_include_directories(RVX_Geometry PUBLIC

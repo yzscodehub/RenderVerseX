@@ -1,18 +1,69 @@
 #include "Particle/ParticleSubsystem.h"
-#include "Engine/Engine.h"
+#include "Core/Log.h"
 #include "Particle/GPU/CPUParticleSimulator.h"
 #include "Particle/GPU/IParticleSimulator.h"
-#include "Particle/GPU/ParticleSorter.h"
-#include "Particle/Rendering/ParticlePass.h"
-#include "Particle/Rendering/ParticleRenderer.h"
-#include "Render/Renderer/SceneRenderer.h"
-#include "RHI/RHI.h"
-#include "Core/Log.h"
+#include "Resource/ResourceSubsystem.h"
 #include <algorithm>
 #include <utility>
 
 namespace RVX::Particle
 {
+namespace
+{
+    RVX::ParticleRenderSnapshotMode ToSnapshotRenderMode(ParticleRenderMode mode)
+    {
+        switch (mode)
+        {
+            case ParticleRenderMode::Billboard:
+                return RVX::ParticleRenderSnapshotMode::Billboard;
+            case ParticleRenderMode::StretchedBillboard:
+                return RVX::ParticleRenderSnapshotMode::StretchedBillboard;
+            case ParticleRenderMode::HorizontalBillboard:
+                return RVX::ParticleRenderSnapshotMode::HorizontalBillboard;
+            case ParticleRenderMode::VerticalBillboard:
+                return RVX::ParticleRenderSnapshotMode::VerticalBillboard;
+            case ParticleRenderMode::Mesh:
+                return RVX::ParticleRenderSnapshotMode::Mesh;
+            case ParticleRenderMode::Trail:
+                return RVX::ParticleRenderSnapshotMode::Trail;
+        }
+
+        return RVX::ParticleRenderSnapshotMode::Billboard;
+    }
+
+    RVX::ParticleRenderSnapshotBlendMode ToSnapshotBlendMode(ParticleBlendMode mode)
+    {
+        switch (mode)
+        {
+            case ParticleBlendMode::Additive:
+                return RVX::ParticleRenderSnapshotBlendMode::Additive;
+            case ParticleBlendMode::AlphaBlend:
+                return RVX::ParticleRenderSnapshotBlendMode::AlphaBlend;
+            case ParticleBlendMode::Multiply:
+                return RVX::ParticleRenderSnapshotBlendMode::Multiply;
+            case ParticleBlendMode::Premultiplied:
+                return RVX::ParticleRenderSnapshotBlendMode::Premultiplied;
+        }
+
+        return RVX::ParticleRenderSnapshotBlendMode::AlphaBlend;
+    }
+
+    RVX::ParticleRenderSnapshotSimulationBackend ToSnapshotSimulationBackend(const ParticleSystemInstance& instance)
+    {
+        if (!instance.IsSimulationSupported())
+            return RVX::ParticleRenderSnapshotSimulationBackend::None;
+
+        const std::string& backendName = instance.GetSimulationBackendName();
+        if (backendName.find("GPU") != std::string::npos)
+            return RVX::ParticleRenderSnapshotSimulationBackend::GPU;
+        if (backendName.find("CPU") != std::string::npos)
+            return RVX::ParticleRenderSnapshotSimulationBackend::CPU;
+
+        return RVX::ParticleRenderSnapshotSimulationBackend::External;
+    }
+} // namespace
+
+ParticleSubsystem* ParticleSubsystem::s_activeSubsystem = nullptr;
 
 ParticleSubsystem::ParticleSubsystem() = default;
 
@@ -21,26 +72,30 @@ ParticleSubsystem::~ParticleSubsystem()
     Deinitialize();
 }
 
+ParticleSubsystem* ParticleSubsystem::GetActiveSubsystem()
+{
+    return s_activeSubsystem;
+}
+
+std::vector<SubsystemDependency> ParticleSubsystem::GetTypedDependencies() const
+{
+    return MakeDependencies<ResourceSubsystem>();
+}
+
 void ParticleSubsystem::Initialize()
 {
+    s_activeSubsystem = this;
     m_renderIntegrationReady = false;
     m_renderIntegrationUnsupportedReason = "Particle render integration is not initialized";
-
-    AcquireRenderDependencies();
-
-    if (!m_device)
-    {
-        MarkRenderIntegrationUnsupported("No RHI device available");
-        RVX_CORE_ERROR("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
-        return;
-    }
 
     // Check GPU capabilities
     CheckCapabilities();
 
-    // Create rendering components
-    CreateRenderComponents();
-    RegisterRenderIntegration();
+    if (m_config.enableSorting)
+    {
+        RVX_CORE_WARN("ParticleSubsystem: particle sorting is deferred to Render-owned feature passes");
+    }
+    MarkRenderIntegrationUnsupported("Particle rendering is provided through Render-owned feature snapshots");
 
     m_instances.reserve(m_config.maxInstances);
     m_visibleInstances.reserve(m_config.maxInstances);
@@ -53,9 +108,6 @@ void ParticleSubsystem::Initialize()
 
 void ParticleSubsystem::CheckCapabilities()
 {
-    if (!m_device)
-        return;
-
     m_gpuSimulationSupported = false;
 
     if (m_config.enableGPUSimulation)
@@ -64,108 +116,10 @@ void ParticleSubsystem::CheckCapabilities()
     }
 }
 
-void ParticleSubsystem::CreateRenderComponents()
+const ParticleRenderDrawStats& ParticleSubsystem::GetLastRenderDrawStats() const
 {
-    // Create renderer
-    m_renderer = std::make_unique<ParticleRenderer>();
-    if (m_hasRendererConfigOverride)
-    {
-        m_renderer->Initialize(m_device, m_rendererConfigOverride);
-    }
-    else
-    {
-        ParticleRendererConfig rendererConfig;
-        // Matches PipelineCache::GetDefaultDepthStencilFormat() used by SceneRenderer.
-        rendererConfig.depthStencilFormat = RHIFormat::D32_FLOAT;
-        m_renderer->Initialize(m_device, rendererConfig);
-    }
-
-    // Create sorter (if GPU simulation supported)
-    if (m_gpuSimulationSupported && m_config.enableSorting)
-    {
-        m_sorter = std::make_unique<ParticleSorter>();
-        m_sorter->Initialize(m_device, m_config.maxGlobalParticles);
-    }
-}
-
-void ParticleSubsystem::AcquireRenderDependencies()
-{
-    Engine* engine = GetEngine() ? GetEngine() : Engine::Get();
-    if (!engine)
-        return;
-
-    auto* renderSubsystem = engine->GetSubsystem<RenderSubsystem>();
-    if (!renderSubsystem)
-        return;
-
-    if (!m_device)
-    {
-        m_device = renderSubsystem->GetDevice();
-    }
-
-    if (!m_sceneRenderer)
-    {
-        m_sceneRenderer = renderSubsystem->GetSceneRenderer();
-    }
-}
-
-void ParticleSubsystem::RegisterRenderIntegration()
-{
-    if (!m_sceneRenderer)
-    {
-        MarkRenderIntegrationUnsupported("SceneRenderer is unavailable for particle pass registration");
-        RVX_CORE_WARN("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
-        return;
-    }
-
-    if (!m_renderer || !m_renderer->IsRenderingSupported())
-    {
-        const std::string reason = m_renderer && !m_renderer->GetUnsupportedReason().empty()
-                                       ? "Particle renderer is unsupported: " + m_renderer->GetUnsupportedReason()
-                                       : "Particle renderer is unavailable for pass registration";
-        MarkRenderIntegrationUnsupported(reason);
-        RVX_CORE_WARN("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
-        return;
-    }
-
-    auto renderPass = std::make_unique<ParticlePass>();
-    renderPass->SetRenderer(m_renderer.get());
-    renderPass->SetSorter(m_sorter.get());
-    renderPass->SetSortingEnabled(m_config.enableSorting);
-    renderPass->SetSoftParticlesEnabled(m_config.enableSoftParticles);
-
-    m_renderPass = renderPass.get();
-    m_sceneRenderer->AddPass(std::move(renderPass));
-    m_renderPassRegistered = true;
-    m_stats.renderPassRegistered = true;
-
-    if (!m_sceneRenderer->AddPreGraphPrepareCallback(
-            this,
-            [this](const ViewData& view)
-            {
-                if (m_renderIntegrationReady)
-                {
-                    PrepareRender(view);
-                }
-                else
-                {
-                    ++m_stats.skippedPrepareFrameCount;
-                }
-            }))
-    {
-        m_sceneRenderer->RemovePass("ParticlePass");
-        m_renderPass = nullptr;
-        m_renderPassRegistered = false;
-        m_stats.renderPassRegistered = false;
-        MarkRenderIntegrationUnsupported("Particle pre-graph prepare callback could not be registered");
-        RVX_CORE_WARN("ParticleSubsystem: {}", m_renderIntegrationUnsupportedReason);
-        return;
-    }
-
-    m_preGraphCallbackRegistered = true;
-    m_stats.preGraphCallbackRegistered = true;
-    m_renderIntegrationReady = true;
-    m_renderIntegrationUnsupportedReason.clear();
+    static const ParticleRenderDrawStats emptyStats;
+    return emptyStats;
 }
 
 void ParticleSubsystem::MarkRenderIntegrationUnsupported(const std::string& reason)
@@ -176,22 +130,18 @@ void ParticleSubsystem::MarkRenderIntegrationUnsupported(const std::string& reas
 
 void ParticleSubsystem::Deinitialize()
 {
-    if (m_sceneRenderer && m_preGraphCallbackRegistered)
+    if (s_activeSubsystem == this)
     {
-        m_sceneRenderer->RemovePreGraphPrepareCallback(this);
+        s_activeSubsystem = nullptr;
     }
+
     m_preGraphCallbackRegistered = false;
     m_stats.preGraphCallbackRegistered = false;
 
     MarkRenderIntegrationUnsupported("Particle subsystem is deinitialized");
 
-    if (m_sceneRenderer && m_renderPassRegistered)
-    {
-        m_sceneRenderer->RemovePass("ParticlePass");
-    }
     m_renderPassRegistered = false;
     m_stats.renderPassRegistered = false;
-    m_renderPass = nullptr;
 
     m_instances.clear();
     m_visibleInstances.clear();
@@ -201,12 +151,6 @@ void ParticleSubsystem::Deinitialize()
     m_stats.totalParticles = 0;
     m_stats.gpuSimulatedParticles = 0;
     m_stats.cpuSimulatedParticles = 0;
-
-    m_sorter.reset();
-    m_renderer.reset();
-
-    m_sceneRenderer = nullptr;
-    m_device = nullptr;
 
     RVX_CORE_INFO("ParticleSubsystem: Deinitialized");
 }
@@ -222,20 +166,13 @@ ParticleSystemInstance* ParticleSubsystem::CreateInstance(ParticleSystem::Ptr sy
         return nullptr;
 
     auto instance = std::make_unique<ParticleSystemInstance>(system);
-    if (m_device)
+    auto simulator = std::make_unique<CPUParticleSimulator>();
+    simulator->Initialize(system->maxParticles);
+    if (m_config.deterministicCpuSimulation)
     {
-        auto simulator = std::make_unique<CPUParticleSimulator>();
-        simulator->Initialize(m_device, system->maxParticles);
-        if (m_config.deterministicCpuSimulation)
-        {
-            simulator->SetRandomSeed(m_config.cpuSimulationSeed + static_cast<uint32>(m_instances.size()));
-        }
-        instance->SetSimulator(std::move(simulator), "CPU");
+        simulator->SetRandomSeed(m_config.cpuSimulationSeed + static_cast<uint32>(m_instances.size()));
     }
-    else
-    {
-        instance->SetSimulationUnsupported("ParticleSubsystem has no RHI device for CPU particle simulation");
-    }
+    instance->SetSimulator(std::move(simulator), "CPU");
 
     ParticleSystemInstance* ptr = instance.get();
     m_instances.push_back(std::move(instance));
@@ -295,32 +232,113 @@ void ParticleSubsystem::Simulate(float deltaTime)
     }
 }
 
-void ParticleSubsystem::PrepareRender(const ViewData& view)
+void ParticleSubsystem::PrepareRenderForCamera(const Vec3& cameraPosition)
 {
     ++m_stats.prepareFrameCount;
-    if (!m_renderPass)
-    {
-        ++m_stats.skippedPrepareFrameCount;
-        if (m_renderIntegrationUnsupportedReason.empty())
-        {
-            MarkRenderIntegrationUnsupported("Particle render pass is unavailable during PrepareRender");
-        }
-        return;
-    }
 
     // Update LODs
-    UpdateLODs(view);
+    UpdateLODsForCamera(cameraPosition);
 
     // Cull invisible instances
-    CullInstances(view);
-
-    // Update render pass
-    m_renderPass->SetParticleSystems(m_visibleInstances);
+    CullInstancesForCamera(cameraPosition);
 
     m_stats.visibleInstances = static_cast<uint32>(m_visibleInstances.size());
 }
 
-void ParticleSubsystem::CullInstances(const ViewData& view)
+bool ParticleSubsystem::BuildRenderSnapshot(RVX::ParticleRenderSnapshot& outSnapshot) const
+{
+    outSnapshot.BeginBuild(++m_nextRenderSnapshotSequence);
+
+    for (const auto& instanceOwner : m_instances)
+    {
+        const ParticleSystemInstance* instance = instanceOwner.get();
+        if (!instance)
+        {
+            outSnapshot.skippedReasons.push_back("Null particle instance");
+            continue;
+        }
+
+        if (!instance->IsPlaying())
+        {
+            outSnapshot.skippedReasons.push_back("Particle instance is not playing");
+            continue;
+        }
+
+        if (!instance->IsVisible())
+        {
+            outSnapshot.skippedReasons.push_back("Particle instance is hidden");
+            continue;
+        }
+
+        const uint32 aliveCount = instance->GetAliveCount();
+        if (aliveCount == 0)
+        {
+            outSnapshot.skippedReasons.push_back("Particle instance has no alive particles");
+            continue;
+        }
+
+        const auto system = instance->GetSystem();
+        if (!system)
+        {
+            outSnapshot.skippedReasons.push_back("Particle instance has no particle system");
+            continue;
+        }
+
+        RVX::ParticleRenderSnapshotItem item;
+        item.instanceId = instance->GetInstanceId();
+        item.systemId = system->id;
+        item.systemName = system->name;
+        item.worldMatrix = instance->GetTransform();
+        item.worldBounds = instance->GetWorldBounds();
+        item.position = instance->GetPosition();
+        item.renderMode = ToSnapshotRenderMode(system->renderMode);
+        item.blendMode = ToSnapshotBlendMode(system->blendMode);
+        item.simulationBackend = ToSnapshotSimulationBackend(*instance);
+        item.aliveParticleCount = aliveCount;
+        item.maxParticleCount = instance->GetMaxParticles();
+        item.lodLevel = instance->GetCurrentLODLevel();
+        item.normalizedTime = instance->GetNormalizedTime();
+        item.visible = instance->IsVisible();
+        item.simulationSupported = instance->IsSimulationSupported();
+        item.renderPayloadAvailable = false;
+        item.sortingSupported = false;
+        item.softParticlesEnabled = system->softParticleConfig.enabled;
+        item.softParticleFadeDistance = system->softParticleConfig.fadeDistance;
+
+        if (const IParticleSimulator* simulator = instance->GetSimulator())
+        {
+            item.renderPayloadAvailable = simulator->BuildRenderParticlePayload(item.particles);
+        }
+
+        if (item.renderPayloadAvailable)
+        {
+            item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::RenderOwnedPayloadReady;
+            item.renderPayloadReason =
+                "CPU particle payload exported; Render-owned particle upload/draw implementation is not connected";
+        }
+        else
+        {
+            item.payloadStatus = RVX::ParticleRenderSnapshotPayloadStatus::MetadataOnly;
+            item.renderPayloadReason =
+                "Particle snapshot contains metadata only; Render-owned particle draw data extraction is not connected";
+        }
+
+        item.sortingReason =
+            "Particle sorting is deferred to Render-owned feature passes";
+        if (!item.simulationSupported)
+        {
+            item.unsupportedReason = instance->GetSimulationUnsupportedReason();
+        }
+
+        outSnapshot.metadata.totalAliveParticles += aliveCount;
+        outSnapshot.items.push_back(std::move(item));
+    }
+
+    outSnapshot.MarkComplete();
+    return true;
+}
+
+void ParticleSubsystem::CullInstancesForCamera(const Vec3& cameraPosition)
 {
     m_visibleInstances.clear();
 
@@ -337,8 +355,8 @@ void ParticleSubsystem::CullInstances(const ViewData& view)
         if (system && system->lodConfig.enabled)
         {
             Vec3 pos = instance->GetPosition();
-            float distance = length(pos - view.cameraPosition);
-            
+            float distance = length(pos - cameraPosition);
+
             if (system->lodConfig.ShouldCull(distance))
                 continue;
         }
@@ -351,7 +369,7 @@ void ParticleSubsystem::CullInstances(const ViewData& view)
     }
 }
 
-void ParticleSubsystem::UpdateLODs(const ViewData& view)
+void ParticleSubsystem::UpdateLODsForCamera(const Vec3& cameraPosition)
 {
     for (auto& instance : m_instances)
     {
@@ -359,7 +377,7 @@ void ParticleSubsystem::UpdateLODs(const ViewData& view)
             continue;
 
         Vec3 pos = instance->GetPosition();
-        float distance = length(pos - view.cameraPosition);
+        float distance = length(pos - cameraPosition);
         instance->UpdateLOD(distance);
     }
 }

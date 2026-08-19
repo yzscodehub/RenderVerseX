@@ -14,6 +14,7 @@
 #include "HAL/Window/IWindow.h"
 #include "HAL/Window/WindowEvents.h"
 #include "HAL/Input/IInputBackend.h"
+#include "HAL/Input/InputBackendFactory.h"
 #include "HAL/Input/Input.h"
 #include "HAL/Input/InputState.h"
 #include "HAL/Input/InputEvents.h"

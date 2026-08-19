@@ -160,18 +160,16 @@ namespace
     {
     public:
         FakeTextureView(RHITexture* texture, const RHITextureViewDesc& desc)
-            : m_texture(texture)
+            : RHITextureView(RHITextureRef(texture))
             , m_format(desc.format == RHIFormat::Unknown && texture ? texture->GetFormat() : desc.format)
             , m_range(desc.subresourceRange)
         {
         }
 
-        RHITexture* GetTexture() const override { return m_texture; }
         RHIFormat GetFormat() const override { return m_format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_range; }
 
     private:
-        RHITexture* m_texture = nullptr;
         RHIFormat m_format = RHIFormat::Unknown;
         RHISubresourceRange m_range;
     };
@@ -469,10 +467,15 @@ namespace
 
     RHITextureViewRef CreateView(RHITextureViewType type)
     {
+        const auto texture = MakeRef<FakeTexture>(
+            RHITextureDesc::Texture2D(
+                1, 1, RHIFormat::RGBA8_UNORM,
+                RHITextureUsage::ShaderResource |
+                    RHITextureUsage::RenderTarget));
         RHITextureViewDesc viewDesc;
         viewDesc.type = type;
         viewDesc.format = RHIFormat::RGBA8_UNORM;
-        return MakeRef<FakeTextureView>(nullptr, viewDesc);
+        return MakeRef<FakeTextureView>(texture.Get(), viewDesc);
     }
 
     std::filesystem::path FindSystemFontPath()
@@ -1927,12 +1930,22 @@ TEST(UIValidation, TextRendererPositionsPackedGlyphsWithKerning)
     atlasDesc.fontSize = RVX_TEST_FONT_SIZE;
     atlasDesc.width = 512;
     atlasDesc.height = 512;
+    atlasDesc.codepoints = {
+        sample.previousCodepoint,
+        sample.codepoint};
     ASSERT_TRUE(font.BuildAtlas(atlas, atlasDesc));
 
     const UIFontAtlasGlyph* firstGlyph = atlas.FindGlyph(sample.previousCodepoint);
     const UIFontAtlasGlyph* secondGlyph = atlas.FindGlyph(sample.codepoint);
     ASSERT_NE(nullptr, firstGlyph);
     ASSERT_NE(nullptr, secondGlyph);
+    EXPECT_NEAR(font.GetKerningAdvance(sample.previousCodepoint,
+                                      sample.codepoint,
+                                      RVX_TEST_FONT_SIZE),
+                atlas.GetKerningAdvance(sample.previousCodepoint,
+                                        sample.codepoint,
+                                        RVX_TEST_FONT_SIZE),
+                0.001f);
 
     FakeDevice device;
     UIRenderer renderer;
@@ -1953,9 +1966,9 @@ TEST(UIValidation, TextRendererPositionsPackedGlyphsWithKerning)
     const float rawSecondLeft =
         bounds.x +
         firstGlyph->advance * atlasScale +
-        font.GetKerningAdvance(sample.previousCodepoint,
-                               sample.codepoint,
-                               RVX_TEST_FONT_SIZE) +
+        atlas.GetKerningAdvance(sample.previousCodepoint,
+                                sample.codepoint,
+                                RVX_TEST_FONT_SIZE) +
         secondGlyph->offset.x * atlasScale;
     const float baselineY = bounds.y + font.GetAscent(RVX_TEST_FONT_SIZE);
     const Rect expectedSecondRect = GlyphRectForExpectation(
@@ -2023,6 +2036,7 @@ TEST(UIValidation, SubmitUploadsAtlasAndDrawsCommandsThroughRHI)
     atlasDesc.fontSize = 20.0f;
     atlasDesc.width = 256;
     atlasDesc.height = 256;
+    atlasDesc.codepoints = {'U', 'I'};
     ASSERT_TRUE(font.BuildAtlas(atlas, atlasDesc));
 
     FakeDevice device;
@@ -2093,16 +2107,18 @@ TEST(UIValidation, SubmitUploadsAtlasAndDrawsCommandsThroughRHI)
 
     EXPECT_EQ(3u, device.createdDescriptorSetDescs.size());
     EXPECT_EQ(1u, device.createdDescriptorSetLayoutDescs.size());
-    ASSERT_EQ(1u, device.createdDescriptorSetLayoutDescs[0].entries.size());
-    EXPECT_EQ(RHIBindingType::CombinedTextureSampler,
+    ASSERT_EQ(2u, device.createdDescriptorSetLayoutDescs[0].entries.size());
+    EXPECT_EQ(RHIBindingType::SampledTexture,
               device.createdDescriptorSetLayoutDescs[0].entries[0].type);
-    ASSERT_EQ(1u, device.createdDescriptorSetDescs[0].bindings.size());
-    ASSERT_EQ(1u, device.createdDescriptorSetDescs[1].bindings.size());
-    ASSERT_EQ(1u, device.createdDescriptorSetDescs[2].bindings.size());
-    EXPECT_EQ(device.createdDescriptorSetDescs[0].bindings[0].sampler,
-              device.createdDescriptorSetDescs[2].bindings[0].sampler);
-    EXPECT_NE(device.createdDescriptorSetDescs[0].bindings[0].sampler,
-              device.createdDescriptorSetDescs[1].bindings[0].sampler);
+    EXPECT_EQ(RHIBindingType::Sampler,
+              device.createdDescriptorSetLayoutDescs[0].entries[1].type);
+    ASSERT_EQ(2u, device.createdDescriptorSetDescs[0].bindings.size());
+    ASSERT_EQ(2u, device.createdDescriptorSetDescs[1].bindings.size());
+    ASSERT_EQ(2u, device.createdDescriptorSetDescs[2].bindings.size());
+    EXPECT_EQ(device.createdDescriptorSetDescs[0].bindings[1].sampler,
+              device.createdDescriptorSetDescs[2].bindings[1].sampler);
+    EXPECT_NE(device.createdDescriptorSetDescs[0].bindings[1].sampler,
+              device.createdDescriptorSetDescs[1].bindings[1].sampler);
 
     EXPECT_NE(nullptr, renderer.GetWhiteTextureView());
     EXPECT_NE(nullptr, renderer.GetFontAtlasTextureView());

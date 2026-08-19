@@ -7,7 +7,6 @@
 
 #include "Render/PostProcess/PostProcessStack.h"
 
-#include <deque>
 
 namespace RVX
 {
@@ -93,7 +92,6 @@ namespace RVX
         IRHIDevice* m_resourceDevice = nullptr;
         RHIBufferRef m_constantBuffer;
         RHISamplerRef m_sampler;
-        std::deque<RHIDescriptorSetRef> m_retainedDescriptorSets;
     };
 
 } // namespace RVX

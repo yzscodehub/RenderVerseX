@@ -7,8 +7,56 @@
 #include "Render/Graph/RenderGraph.h"
 #include "Core/Log.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace RVX
 {
+
+namespace
+{
+    constexpr const char* RVX_ATMOSPHERE_GPU_UNSUPPORTED_REASON =
+        "AtmosphericScattering GPU LUT/render pipelines are not implemented; CPU analytic baseline is available";
+
+    float Saturate(float value)
+    {
+        return std::clamp(value, 0.0f, 1.0f);
+    }
+
+    Vec3 ClampVec3(const Vec3& value, float minValue, float maxValue)
+    {
+        return Vec3(std::clamp(value.x, minValue, maxValue),
+                    std::clamp(value.y, minValue, maxValue),
+                    std::clamp(value.z, minValue, maxValue));
+    }
+
+    Vec3 SafeNormalize(const Vec3& value, const Vec3& fallback)
+    {
+        const float len = length(value);
+        return len > 0.0001f ? value / len : fallback;
+    }
+
+    float SafePositive(float value, float fallback)
+    {
+        return std::isfinite(value) && value > 0.0f ? value : fallback;
+    }
+
+    Vec3 ExpVec3(const Vec3& value)
+    {
+        return Vec3(std::exp(value.x), std::exp(value.y), std::exp(value.z));
+    }
+} // namespace
+
+const char* GetAtmosphericScatteringImplementationTierName(AtmosphericScatteringImplementationTier tier)
+{
+    switch (tier)
+    {
+        case AtmosphericScatteringImplementationTier::Unsupported: return "Unsupported";
+        case AtmosphericScatteringImplementationTier::CpuAnalyticBaseline: return "CpuAnalyticBaseline";
+        case AtmosphericScatteringImplementationTier::GpuLut: return "GpuLut";
+    }
+    return "Unknown";
+}
 
 AtmosphericScattering::~AtmosphericScattering()
 {
@@ -43,6 +91,8 @@ void AtmosphericScattering::Initialize(IRHIDevice* device, const AtmosphericScat
     m_constantBuffer = device->CreateBuffer(bufferDesc);
 
     m_lutsNeedUpdate = true;
+    m_supported = false;
+    m_unsupportedReason = RVX_ATMOSPHERE_GPU_UNSUPPORTED_REASON;
 
     RVX_CORE_DEBUG("AtmosphericScattering: Initialized");
 }
@@ -63,6 +113,8 @@ void AtmosphericScattering::Shutdown()
     m_aerialPerspectivePipeline.Reset();
     m_constantBuffer.Reset();
     m_device = nullptr;
+    m_supported = false;
+    m_unsupportedReason = RVX_ATMOSPHERE_GPU_UNSUPPORTED_REASON;
 
     RVX_CORE_DEBUG("AtmosphericScattering: Shutdown");
 }
@@ -105,6 +157,7 @@ void AtmosphericScattering::SetConfig(const AtmosphericScatteringConfig& config)
         m_config.atmosphereHeight != config.atmosphereHeight;
 
     m_config = config;
+    m_config.sunDirection = SafeNormalize(m_config.sunDirection, Vec3(0.0f, 1.0f, 0.0f));
 
     if (needsLutUpdate)
         m_lutsNeedUpdate = true;
@@ -112,7 +165,7 @@ void AtmosphericScattering::SetConfig(const AtmosphericScatteringConfig& config)
 
 void AtmosphericScattering::SetSunDirection(const Vec3& direction)
 {
-    m_config.sunDirection = glm::normalize(direction);
+    m_config.sunDirection = SafeNormalize(direction, Vec3(0.0f, 1.0f, 0.0f));
     // Sky-view LUT needs update when sun moves
     m_lutsNeedUpdate = true;
 }
@@ -149,31 +202,19 @@ void AtmosphericScattering::PrecomputeLUTs(RHICommandContext& ctx)
 void AtmosphericScattering::ComputeTransmittanceLUT(RHICommandContext& ctx)
 {
     (void)ctx;
-    // TODO: Dispatch compute shader
-    // For each texel:
-    // - Map UV to (cosZenith, altitude)
-    // - Ray march from position to atmosphere edge
-    // - Integrate optical depth
-    // - Output exp(-opticalDepth)
+    RVX_CORE_WARN("AtmosphericScattering: GPU transmittance LUT path is unsupported; using CPU analytic baseline diagnostics");
 }
 
 void AtmosphericScattering::ComputeMultiScatteringLUT(RHICommandContext& ctx)
 {
     (void)ctx;
-    // TODO: Dispatch compute shader
-    // Precompute multiple scattering contribution
-    // Uses hemispherical integration
+    RVX_CORE_WARN("AtmosphericScattering: GPU multi-scattering LUT path is unsupported; using CPU analytic baseline diagnostics");
 }
 
 void AtmosphericScattering::ComputeSkyViewLUT(RHICommandContext& ctx)
 {
     (void)ctx;
-    // TODO: Dispatch compute shader
-    // For each direction on the hemisphere:
-    // - Ray march through atmosphere
-    // - Accumulate in-scattered light
-    // - Sample transmittance LUT
-    // - Add multi-scattering contribution
+    RVX_CORE_WARN("AtmosphericScattering: GPU sky-view LUT path is unsupported; using CPU analytic baseline diagnostics");
 }
 
 void AtmosphericScattering::RenderSky(RHICommandContext& ctx,
@@ -199,10 +240,7 @@ void AtmosphericScattering::RenderSky(RHICommandContext& ctx,
     // Update LUTs if needed
     PrecomputeLUTs(ctx);
 
-    // TODO: Render sky using sky-view LUT
-    // 1. Render fullscreen quad at far plane
-    // 2. Sample sky-view LUT based on view direction
-    // 3. Add sun disk
+    RVX_CORE_WARN("AtmosphericScattering: GPU sky render path is unsupported; procedural SkyboxPass remains the runtime sky baseline");
 }
 
 void AtmosphericScattering::AddToGraph(RenderGraph& graph,
@@ -250,7 +288,7 @@ void AtmosphericScattering::AddToGraph(RenderGraph& graph,
         {
             (void)data;
             (void)ctx;
-            // TODO: Render sky
+            RVX_CORE_WARN("AtmosphericScattering: graph sky render path is unsupported; procedural SkyboxPass remains the runtime sky baseline");
         });
 }
 
@@ -298,18 +336,50 @@ void AtmosphericScattering::ApplyAerialPerspective(RenderGraph& graph,
         {
             (void)data;
             (void)ctx;
-            // TODO: Apply aerial perspective
-            // - Sample transmittance along view ray
-            // - Add in-scattered light
-            // - Blend based on distance
+            RVX_CORE_WARN("AtmosphericScattering: aerial perspective graph path is unsupported; CPU transmittance baseline is diagnostic-only");
         });
+}
+
+AtmosphericScatteringDiagnostics AtmosphericScattering::GetDiagnostics() const
+{
+    AtmosphericScatteringDiagnostics diagnostics;
+    diagnostics.requested = m_enabled;
+    diagnostics.initialized = IsInitialized();
+    diagnostics.gpuLutSupported = m_supported;
+    diagnostics.cpuAnalyticBaselineAvailable = true;
+    diagnostics.implementationTier = m_supported
+        ? AtmosphericScatteringImplementationTier::GpuLut
+        : AtmosphericScatteringImplementationTier::CpuAnalyticBaseline;
+    diagnostics.unsupportedReason = m_supported ? std::string{} : m_unsupportedReason;
+    return diagnostics;
 }
 
 Vec3 AtmosphericScattering::GetSkyColor(const Vec3& direction) const
 {
-    (void)direction;
-    // TODO: Sample sky-view LUT
-    return Vec3(0.5f, 0.7f, 1.0f);  // Placeholder blue
+    const Vec3 viewDirection = SafeNormalize(direction, Vec3(0.0f, 1.0f, 0.0f));
+    const Vec3 sunDirection = SafeNormalize(m_config.sunDirection, Vec3(0.0f, 1.0f, 0.0f));
+
+    const float upAmount = Saturate(viewDirection.y * 0.5f + 0.5f);
+    const float horizonAmount = std::pow(1.0f - std::abs(std::clamp(viewDirection.y, -1.0f, 1.0f)), 0.65f);
+    const float sunHorizonWarmth = std::pow(Saturate(1.0f - std::abs(sunDirection.y)), 1.35f);
+    const float sunAlignment = Saturate(dot(viewDirection, sunDirection));
+    const float sunHalo = std::pow(sunAlignment, 64.0f) * 0.55f +
+                          std::pow(sunAlignment, 8.0f) * 0.12f;
+
+    const Vec3 zenithColor(0.12f, 0.32f, 0.78f);
+    const Vec3 noonHorizonColor(0.62f, 0.80f, 1.0f);
+    const Vec3 sunsetHorizonColor(1.0f, 0.48f, 0.18f);
+    const Vec3 horizonColor = glm::mix(noonHorizonColor, sunsetHorizonColor, sunHorizonWarmth * 0.65f);
+    const Vec3 groundColor(0.018f, 0.022f, 0.032f);
+
+    Vec3 skyColor = viewDirection.y >= 0.0f
+        ? glm::mix(horizonColor, zenithColor, std::pow(upAmount, 0.55f))
+        : glm::mix(groundColor, horizonColor, Saturate(upAmount * 0.6f));
+
+    skyColor = glm::mix(skyColor, horizonColor, horizonAmount * 0.18f);
+    skyColor += m_config.sunColor * (sunHalo * Saturate(m_config.sunIntensity / 20.0f));
+
+    return ClampVec3(skyColor, 0.0f, 8.0f);
 }
 
 Vec3 AtmosphericScattering::GetSunDiskColor() const
@@ -320,11 +390,32 @@ Vec3 AtmosphericScattering::GetSunDiskColor() const
 
 Vec3 AtmosphericScattering::GetTransmittance(const Vec3& origin, const Vec3& direction, float distance) const
 {
-    (void)origin;
-    (void)direction;
-    (void)distance;
-    // TODO: Sample transmittance LUT
-    return Vec3(1.0f);  // Placeholder (no attenuation)
+    const float safeDistance = std::max(distance, 0.0f);
+    if (safeDistance <= 0.0f)
+    {
+        return Vec3(1.0f);
+    }
+
+    const Vec3 rayDirection = SafeNormalize(direction, Vec3(0.0f, 1.0f, 0.0f));
+    const float planetRadius = SafePositive(m_config.planetRadius, 6371000.0f);
+    const float startAltitude = std::max(length(origin) - planetRadius, 0.0f);
+    const float endAltitude = std::max(length(origin + rayDirection * safeDistance) - planetRadius, 0.0f);
+    const float averageAltitude = (startAltitude + endAltitude) * 0.5f;
+
+    const float rayleighScaleHeight = SafePositive(m_config.rayleighScaleHeight, 8500.0f);
+    const float mieScaleHeight = SafePositive(m_config.mieScaleHeight, 1200.0f);
+    const float ozoneWidth = SafePositive(m_config.ozoneWidth, 15000.0f);
+
+    const float rayleighDensity = std::exp(-averageAltitude / rayleighScaleHeight);
+    const float mieDensity = std::exp(-averageAltitude / mieScaleHeight);
+    const float ozoneDensity = Saturate(1.0f - std::abs(averageAltitude - m_config.ozoneHeight) / ozoneWidth);
+
+    const Vec3 extinction =
+        m_config.rayleighScattering * rayleighDensity +
+        (m_config.mieScattering + m_config.mieAbsorption) * mieDensity +
+        m_config.ozoneAbsorption * ozoneDensity;
+
+    return ClampVec3(ExpVec3(-extinction * safeDistance), 0.0f, 1.0f);
 }
 
 } // namespace RVX

@@ -10,13 +10,18 @@
 #include "RHI/RHI.h"
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Renderer/ShadowConstants.h"
+#include "RenderContracts/RenderFrameTypes.h"
 
 #include <array>
 
 namespace RVX
 {
     class Camera;
-    class ResourceViewCache;
+    struct RenderFrameExecutionPlan;
+    struct RenderFrameExecutionReport;
+    struct RenderVisibilityResult;
+    struct SceneMeshPassPreparation;
+    struct SceneRenderInstanceBatchPlans;
 
     /**
      * @brief View data collected for rendering a single view/camera
@@ -56,6 +61,15 @@ namespace RVX
 
         /// Camera forward direction
         Vec3 cameraForward{0.0f, 0.0f, -1.0f};
+
+        /// Object and light layers this view is allowed to render.
+        uint32 cullingMask = ~0U;
+
+        /// Main raster color/depth policy copied from the immutable frame view.
+        RenderViewClearPolicy clearPolicy = RenderViewClearPolicy::Skybox;
+
+        /// Value-owned clear color copied from the immutable frame view.
+        Vec4 clearColor{0.1f, 0.1f, 0.15f, 1.0f};
 
         /// Near clip plane
         float nearPlane = 0.1f;
@@ -149,6 +163,18 @@ namespace RVX
         /// Optional motion-vector target for temporal reprojection
         RGTextureHandle velocityTarget;
 
+        /// Source cubemap sampled by SkyboxPass when the frame selects a cubemap sky.
+        RGTextureHandle environmentSkyTexture;
+
+        /// Diffuse environment convolution sampled by DefaultLit.
+        RGTextureHandle environmentIrradianceTexture;
+
+        /// Specular prefiltered environment sampled by DefaultLit.
+        RGTextureHandle environmentPrefilteredTexture;
+
+        /// Split-sum BRDF integration lookup sampled by DefaultLit.
+        RGTextureHandle environmentBRDFLUTTexture;
+
         // =====================================================================
         // Environment / IBL-Approximate Ambient
         // =====================================================================
@@ -180,17 +206,14 @@ namespace RVX
         /// Legacy non-IBL ambient floor; set to zero when texture IBL is ready
         float ambientFloorIntensity = 0.08f;
 
-        // =====================================================================
-        // RenderGraph Reference
-        // =====================================================================
-
-        /// Pointer to the render graph (set during BuildRenderGraph)
-        /// Allows passes to access actual RHI resources from handles during execution
-        RenderGraph* renderGraph = nullptr;
-
-        /// Pointer to the resource view cache (set during BuildRenderGraph)
-        /// Allows passes to get cached texture/buffer views
-        ResourceViewCache* viewCache = nullptr;
+        /// Borrowed frame-owned execution contract published by SceneRenderer.
+        /// Passes must not retain these pointers beyond the current frame.
+        const RenderFrameExecutionPlan* renderFrameExecutionPlan = nullptr;
+        const SceneMeshPassPreparation* meshPassPreparation = nullptr;
+        const SceneRenderInstanceBatchPlans* instanceBatchPlans = nullptr;
+        RenderFrameExecutionReport* renderFrameExecutionReport = nullptr;
+        /// Borrowed frame/view-owned visibility output. Passes must not retain it.
+        const RenderVisibilityResult* renderVisibility = nullptr;
 
         // =====================================================================
         // Frame Info
@@ -198,6 +221,9 @@ namespace RVX
 
         /// Current frame number
         uint64_t frameNumber = 0;
+
+        /// Backend-neutral Direct-lane instancing policy for this frame.
+        RenderInstancingMode instancingMode = RenderInstancingMode::Disabled;
 
         /// Reset temporal histories for this view, e.g. after camera cuts or large scene jumps
         bool resetTemporalHistory = false;
@@ -219,6 +245,33 @@ namespace RVX
          * @param height Viewport height
          */
         void SetupFromCamera(const Camera& camera, uint32_t width, uint32_t height);
+
+        /** @brief Setup numeric view state without retaining a Camera. */
+        void SetupFromSnapshot(
+            const RenderViewSnapshot& snapshot,
+            const Mat4& previousRenderedViewProjection,
+            bool previousRenderedViewValid,
+            bool resetHistory);
+
+        /** @brief Skybox may contribute only for the explicit Skybox policy. */
+        [[nodiscard]] bool AllowsSkybox() const noexcept
+        {
+            return clearPolicy == RenderViewClearPolicy::Skybox;
+        }
+
+        /**
+         * @brief Whether a transient scene-color target needs deterministic initialization.
+         *
+         * The current single-view post-process graph cannot import a prior
+         * scene-color value for DepthOnly/Nothing.  It initializes a known
+         * target before the later load operation rather than issuing an
+         * undefined load; the raster policy itself remains unchanged.
+         */
+        [[nodiscard]] bool RequiresDeterministicTransientColorInitialization() const noexcept
+        {
+            return clearPolicy == RenderViewClearPolicy::DepthOnly ||
+                   clearPolicy == RenderViewClearPolicy::Nothing;
+        }
 
         /**
          * @brief Create RHI viewport struct
@@ -244,6 +297,7 @@ namespace RVX
                 viewportWidth, viewportHeight
             };
         }
+
     };
 
 } // namespace RVX

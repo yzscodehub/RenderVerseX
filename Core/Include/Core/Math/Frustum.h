@@ -90,12 +90,14 @@ public:
             viewProj[3][3] - viewProj[3][1]
         );
 
-        // Near plane
+        // Near plane. GLM is configured for the canonical [0, 1] clip-depth
+        // convention, so the lower depth inequality is z >= 0 (row2), not
+        // the OpenGL [-w, w] row3 + row2 form.
         m_planes[static_cast<int>(FrustumPlane::Near)] = Plane(
-            viewProj[0][3] + viewProj[0][2],
-            viewProj[1][3] + viewProj[1][2],
-            viewProj[2][3] + viewProj[2][2],
-            viewProj[3][3] + viewProj[3][2]
+            viewProj[0][2],
+            viewProj[1][2],
+            viewProj[2][2],
+            viewProj[3][2]
         );
 
         // Far plane

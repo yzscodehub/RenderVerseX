@@ -1,16 +1,12 @@
 #include "Render/RayTracing/RayTracingScene.h"
 
-#include "Render/GPUResourceManager.h"
 #include "Render/Renderer/RenderDrawItem.h"
 #include "Render/Renderer/RenderScene.h"
-#include "Resource/Types/MaterialResource.h"
-#include "Resource/Types/MeshResource.h"
-#include "Scene/Mesh.h"
+#include "Resources/RenderResourceRegistry.h"
 
 #include <algorithm>
 #include <cmath>
 #include <memory>
-#include <optional>
 #include <utility>
 
 namespace RVX
@@ -32,15 +28,15 @@ namespace
         }
     }
 
-    RHIFormat ToRayTracingIndexFormat(IndexType indexType)
+    RHIFormat ToRayTracingIndexFormat(MeshUploadIndexType indexType)
     {
         switch (indexType)
         {
-            case IndexType::UInt16:
+            case MeshUploadIndexType::UInt16:
                 return RHIFormat::R16_UINT;
-            case IndexType::UInt32:
+            case MeshUploadIndexType::UInt32:
                 return RHIFormat::R32_UINT;
-            case IndexType::UInt8:
+            case MeshUploadIndexType::UInt8:
             default:
                 return RHIFormat::Unknown;
         }
@@ -51,29 +47,24 @@ namespace
         return (optionMask & objectLayerMask) & 0xFFu;
     }
 
-    uint32 GetIndexStride(IndexType indexType)
+    uint32 GetIndexStride(MeshUploadIndexType indexType)
     {
         switch (indexType)
         {
-            case IndexType::UInt8:
+            case MeshUploadIndexType::UInt8:
                 return 1;
-            case IndexType::UInt16:
+            case MeshUploadIndexType::UInt16:
                 return 2;
-            case IndexType::UInt32:
+            case MeshUploadIndexType::UInt32:
             default:
                 return 4;
         }
     }
 
-    PrimitiveType ResolveSubmeshPrimitive(const Mesh& mesh, uint32 submeshIndex)
+    uint64 PackHandle(RenderResourceHandle handle)
     {
-        const auto& submeshes = mesh.GetSubMeshes();
-        if (submeshIndex < submeshes.size() && submeshes[submeshIndex].primitive.has_value())
-        {
-            return *submeshes[submeshIndex].primitive;
-        }
-
-        return mesh.GetPrimitiveType();
+        return (static_cast<uint64>(handle.slot) << 32U) |
+               static_cast<uint64>(handle.generation);
     }
 
     RHIRayTracingGeometryFlags ToGeometryFlags(MaterialRenderMode mode)
@@ -90,7 +81,8 @@ namespace
                    : RHIRayTracingInstanceFlags::ForceNoOpaque;
     }
 
-    uint32 EncodeRayTracingSamplerFlags(const TextureInfo& texture)
+    uint32 EncodeRayTracingSamplerFlags(
+        const MaterialUploadTextureBinding& texture)
     {
         constexpr uint32 RVX_RT_ALPHA_WRAP_S_CLAMP = 1u << 0;
         constexpr uint32 RVX_RT_ALPHA_WRAP_T_CLAMP = 1u << 1;
@@ -99,50 +91,44 @@ namespace
         constexpr uint32 RVX_RT_ALPHA_WRAP_T_MIRROR = 1u << 4;
 
         uint32 flags = 0;
-        if (texture.wrapS == TextureInfo::WrapMode::ClampToEdge ||
-            texture.wrapS == TextureInfo::WrapMode::ClampToBorder)
+        if (texture.wrapS == MaterialUploadWrapMode::ClampToEdge ||
+            texture.wrapS == MaterialUploadWrapMode::ClampToBorder)
         {
             flags |= RVX_RT_ALPHA_WRAP_S_CLAMP;
         }
-        else if (texture.wrapS == TextureInfo::WrapMode::MirrorRepeat)
+        else if (texture.wrapS == MaterialUploadWrapMode::MirrorRepeat)
         {
             flags |= RVX_RT_ALPHA_WRAP_S_MIRROR;
         }
-        if (texture.wrapT == TextureInfo::WrapMode::ClampToEdge ||
-            texture.wrapT == TextureInfo::WrapMode::ClampToBorder)
+        if (texture.wrapT == MaterialUploadWrapMode::ClampToEdge ||
+            texture.wrapT == MaterialUploadWrapMode::ClampToBorder)
         {
             flags |= RVX_RT_ALPHA_WRAP_T_CLAMP;
         }
-        else if (texture.wrapT == TextureInfo::WrapMode::MirrorRepeat)
+        else if (texture.wrapT == MaterialUploadWrapMode::MirrorRepeat)
         {
             flags |= RVX_RT_ALPHA_WRAP_T_MIRROR;
         }
-        if (texture.magFilter == TextureInfo::FilterMode::Nearest)
+        if (texture.magFilter == MaterialUploadFilterMode::Nearest)
         {
             flags |= RVX_RT_ALPHA_MAG_NEAREST;
         }
-
         return flags;
     }
 
     RayTracingTextureSamplingMetadata BuildTextureSamplingMetadata(
-        const std::optional<TextureInfo>& texture)
+        const MaterialUploadTextureBinding& texture)
     {
         RayTracingTextureSamplingMetadata metadata;
-        if (!texture.has_value())
-        {
-            return metadata;
-        }
-
-        metadata.uvSet = static_cast<uint32>(std::max(texture->uvSet, 0));
-        metadata.samplerFlags = EncodeRayTracingSamplerFlags(*texture);
-        metadata.uvOffset = texture->offset;
-        metadata.uvScale = texture->scale;
-        metadata.uvRotation = texture->rotation;
+        metadata.uvSet = static_cast<uint32>(std::max(texture.uvSet, 0));
+        metadata.samplerFlags = EncodeRayTracingSamplerFlags(texture);
+        metadata.uvOffset = texture.offset;
+        metadata.uvScale = texture.scale;
+        metadata.uvRotation = texture.rotation;
         return metadata;
     }
 
-    uint32 EncodeMaterialWorkflow(MaterialWorkflow workflow)
+    uint32 EncodeMaterialWorkflow(MaterialSourceWorkflow workflow)
     {
         return static_cast<uint32>(workflow);
     }
@@ -199,7 +185,7 @@ namespace
         skip.reason = reason;
         skip.objectIndex = item.objectIndex;
         skip.submeshIndex = item.submeshIndex;
-        skip.meshId = object ? object->meshId : item.meshId;
+        skip.meshId = PackHandle(object ? object->mesh : item.mesh);
         skip.message = message ? message : "";
         plan.skips.push_back(std::move(skip));
     }
@@ -207,7 +193,7 @@ namespace
     RayTracingMaterialMetadata BuildMaterialMetadata(const RenderDrawItem& item)
     {
         RayTracingMaterialMetadata metadata;
-        metadata.materialId = item.materialId;
+        metadata.materialId = PackHandle(item.material);
 
         RayTracingMaterialMetadataFlags flags = RayTracingMaterialMetadataFlags::None;
         AddMaterialFlag(flags,
@@ -217,94 +203,94 @@ namespace
                         RayTracingMaterialMetadataFlags::Transparent,
                         item.renderMode == MaterialRenderMode::Transparent);
 
-        const Resource::MaterialResource* materialResource = item.materialResource;
-        if (!materialResource)
+        metadata.flags = static_cast<uint32>(flags);
+        return metadata;
+    }
+
+    const MaterialUploadTextureBinding* FindMaterialBinding(
+        const RenderMaterialResourceData& material,
+        MaterialUploadTextureSlot slot)
+    {
+        const auto it = std::find_if(
+            material.textureBindings.begin(),
+            material.textureBindings.end(),
+            [slot](const MaterialUploadTextureBinding& binding)
+            {
+                return binding.slot == slot;
+            });
+        return it != material.textureBindings.end() ? &*it : nullptr;
+    }
+
+    RayTracingMaterialMetadata BuildMaterialMetadata(
+        const RenderDrawItem& item,
+        const RenderResourceRegistry& registry)
+    {
+        RayTracingMaterialMetadata metadata = BuildMaterialMetadata(item);
+        const RenderMaterialResourceData* material =
+            registry.ResolveMaterial(item.material);
+        if (material == nullptr || !material->metadataValid)
         {
-            metadata.flags = static_cast<uint32>(flags);
             return metadata;
         }
 
-        const std::shared_ptr<Material> material = materialResource->GetMaterial();
-        if (material)
+        const MaterialSourceData& source = material->sourceData;
+        metadata.materialId = PackHandle(item.material);
+        metadata.baseColorFactor = source.baseColorFactor;
+        metadata.emissiveColor = source.emissiveColor;
+        metadata.emissiveStrength = source.emissiveStrength;
+        metadata.metallicFactor = source.metallicFactor;
+        metadata.roughnessFactor = source.roughnessFactor;
+        metadata.alphaCutoff = source.alphaCutoff;
+        metadata.normalScale = source.normalScale;
+        metadata.workflow = EncodeMaterialWorkflow(source.workflow);
+
+        RayTracingMaterialMetadataFlags flags =
+            static_cast<RayTracingMaterialMetadataFlags>(metadata.flags);
+        AddMaterialFlag(flags,
+                        RayTracingMaterialMetadataFlags::AlphaTest,
+                        source.alphaMode == MaterialSourceAlphaMode::Mask);
+        AddMaterialFlag(flags,
+                        RayTracingMaterialMetadataFlags::Transparent,
+                        source.alphaMode == MaterialSourceAlphaMode::Blend);
+        AddMaterialFlag(flags,
+                        RayTracingMaterialMetadataFlags::DoubleSided,
+                        source.doubleSided);
+        AddMaterialFlag(flags,
+                        RayTracingMaterialMetadataFlags::Unlit,
+                        source.workflow == MaterialSourceWorkflow::Unlit);
+
+        const auto applyBinding = [&](MaterialUploadTextureSlot slot,
+                                      RayTracingMaterialMetadataFlags flag,
+                                      uint64& textureId,
+                                      RayTracingTextureSamplingMetadata& sampling)
         {
-            metadata.baseColorFactor = material->GetBaseColor();
-            metadata.emissiveColor = material->GetEmissiveColor();
-            metadata.emissiveStrength = material->GetEmissiveStrength();
-            metadata.metallicFactor = material->GetMetallicFactor();
-            metadata.roughnessFactor = material->GetRoughnessFactor();
-            metadata.alphaCutoff = material->GetAlphaCutoff();
-            metadata.normalScale = material->GetNormalScale();
-            metadata.workflow = EncodeMaterialWorkflow(material->GetWorkflow());
-            if (metadata.materialId == Resource::InvalidResourceId)
+            const MaterialUploadTextureBinding* binding =
+                FindMaterialBinding(*material, slot);
+            if (binding == nullptr)
             {
-                metadata.materialId = material->GetMaterialId();
+                return;
             }
-
-            metadata.baseColorTextureSampling =
-                BuildTextureSamplingMetadata(material->GetBaseColorTexture());
-            metadata.metallicRoughnessTextureSampling =
-                BuildTextureSamplingMetadata(material->GetMetallicRoughnessTexture());
-            metadata.normalTextureSampling =
-                BuildTextureSamplingMetadata(material->GetNormalTexture());
-            metadata.emissiveTextureSampling =
-                BuildTextureSamplingMetadata(material->GetEmissiveTexture());
-
-            AddMaterialFlag(flags,
-                            RayTracingMaterialMetadataFlags::AlphaTest,
-                            material->GetAlphaMode() == Material::AlphaMode::Mask);
-            AddMaterialFlag(flags,
-                            RayTracingMaterialMetadataFlags::Transparent,
-                            material->GetAlphaMode() == Material::AlphaMode::Blend);
-            AddMaterialFlag(flags,
-                            RayTracingMaterialMetadataFlags::DoubleSided,
-                            material->IsDoubleSided());
-            AddMaterialFlag(flags,
-                            RayTracingMaterialMetadataFlags::HasBaseColorTexture,
-                            material->GetBaseColorTexture().has_value());
-            AddMaterialFlag(flags,
-                            RayTracingMaterialMetadataFlags::HasMetallicRoughnessTexture,
-                            material->GetMetallicRoughnessTexture().has_value());
-            AddMaterialFlag(flags,
-                            RayTracingMaterialMetadataFlags::HasNormalTexture,
-                            material->GetNormalTexture().has_value());
-            AddMaterialFlag(flags,
-                            RayTracingMaterialMetadataFlags::HasEmissiveTexture,
-                            material->GetEmissiveTexture().has_value());
-            AddMaterialFlag(flags,
-                            RayTracingMaterialMetadataFlags::Unlit,
-                            material->GetWorkflow() == MaterialWorkflow::Unlit);
-        }
-
-        AddMaterialFlag(flags,
-                        RayTracingMaterialMetadataFlags::HasBaseColorTexture,
-                        materialResource->GetAlbedoTexture().IsValid());
-        AddMaterialFlag(flags,
-                        RayTracingMaterialMetadataFlags::HasMetallicRoughnessTexture,
-                        materialResource->GetMetallicRoughnessTexture().IsValid());
-        AddMaterialFlag(flags,
-                        RayTracingMaterialMetadataFlags::HasNormalTexture,
-                        materialResource->GetNormalTexture().IsValid());
-        AddMaterialFlag(flags,
-                        RayTracingMaterialMetadataFlags::HasEmissiveTexture,
-                        materialResource->GetEmissiveTexture().IsValid());
-
-        const Resource::ResourceHandle<Resource::TextureResource> baseColorTexture =
-            materialResource->GetAlbedoTexture();
-        const Resource::ResourceHandle<Resource::TextureResource> metallicRoughnessTexture =
-            materialResource->GetMetallicRoughnessTexture();
-        const Resource::ResourceHandle<Resource::TextureResource> normalTexture =
-            materialResource->GetNormalTexture();
-        const Resource::ResourceHandle<Resource::TextureResource> emissiveTexture =
-            materialResource->GetEmissiveTexture();
-        metadata.baseColorTextureId =
-            baseColorTexture.IsValid() ? baseColorTexture.GetId() : Resource::InvalidResourceId;
-        metadata.metallicRoughnessTextureId =
-            metallicRoughnessTexture.IsValid() ? metallicRoughnessTexture.GetId() : Resource::InvalidResourceId;
-        metadata.normalTextureId =
-            normalTexture.IsValid() ? normalTexture.GetId() : Resource::InvalidResourceId;
-        metadata.emissiveTextureId =
-            emissiveTexture.IsValid() ? emissiveTexture.GetId() : Resource::InvalidResourceId;
-
+            AddMaterialFlag(flags, flag, true);
+            textureId = PackHandle(binding->texture);
+            sampling = BuildTextureSamplingMetadata(*binding);
+        };
+        applyBinding(MaterialUploadTextureSlot::BaseColor,
+                     RayTracingMaterialMetadataFlags::HasBaseColorTexture,
+                     metadata.baseColorTextureId,
+                     metadata.baseColorTextureSampling);
+        applyBinding(
+            MaterialUploadTextureSlot::MetallicRoughness,
+            RayTracingMaterialMetadataFlags::HasMetallicRoughnessTexture,
+            metadata.metallicRoughnessTextureId,
+            metadata.metallicRoughnessTextureSampling);
+        applyBinding(MaterialUploadTextureSlot::Normal,
+                     RayTracingMaterialMetadataFlags::HasNormalTexture,
+                     metadata.normalTextureId,
+                     metadata.normalTextureSampling);
+        applyBinding(MaterialUploadTextureSlot::Emissive,
+                     RayTracingMaterialMetadataFlags::HasEmissiveTexture,
+                     metadata.emissiveTextureId,
+                     metadata.emissiveTextureSampling);
         metadata.flags = static_cast<uint32>(flags);
         return metadata;
     }
@@ -332,39 +318,45 @@ namespace
             return metadata;
         }
 
-        const Resource::MaterialResource* materialResource = item.materialResource;
-        if (!materialResource)
+        return metadata;
+    }
+
+    RayTracingAlphaTestMetadata BuildAlphaTestMetadata(
+        const RenderDrawItem& item,
+        const MeshGPUBuffers& buffers,
+        const SubmeshGPUInfo& submesh,
+        RHIFormat indexFormat,
+        const RenderResourceRegistry& registry)
+    {
+        RayTracingAlphaTestMetadata metadata =
+            BuildAlphaTestMetadata(item, buffers, submesh, indexFormat);
+        const RenderMaterialResourceData* material =
+            registry.ResolveMaterial(item.material);
+        if (material == nullptr || !material->metadataValid)
         {
             return metadata;
         }
 
-        const std::shared_ptr<Material> material = materialResource->GetMaterial();
-        if (material)
+        const MaterialSourceData& source = material->sourceData;
+        metadata.alphaCutoff = source.alphaCutoff;
+        metadata.baseColorAlpha = source.baseColorFactor.a;
+        const MaterialUploadTextureBinding* binding = FindMaterialBinding(
+            *material, MaterialUploadTextureSlot::BaseColor);
+        if (binding == nullptr)
         {
-            metadata.alphaCutoff = material->GetAlphaCutoff();
-            metadata.baseColorAlpha = material->GetBaseColor().a;
-
-            const std::optional<TextureInfo>& baseColorTexture = material->GetBaseColorTexture();
-            if (baseColorTexture.has_value())
-            {
-                metadata.hasBaseColorTexture = true;
-                metadata.baseColorUVSet = static_cast<uint32>(std::max(baseColorTexture->uvSet, 0));
-                metadata.baseColorSamplerFlags = EncodeRayTracingSamplerFlags(*baseColorTexture);
-                metadata.baseColorUVOffset = baseColorTexture->offset;
-                metadata.baseColorUVScale = baseColorTexture->scale;
-                metadata.baseColorUVRotation = baseColorTexture->rotation;
-            }
+            return metadata;
         }
-
-        const Resource::ResourceHandle<Resource::TextureResource> baseColorResource =
-            materialResource->GetAlbedoTexture();
-        if (baseColorResource.IsValid())
-        {
-            metadata.hasBaseColorTexture = true;
-            metadata.hasResolvedBaseColorTexture = true;
-            metadata.baseColorTextureId = baseColorResource.GetId();
-        }
-
+        metadata.hasBaseColorTexture = true;
+        metadata.hasResolvedBaseColorTexture =
+            registry.IsGPUReadyExact(binding->texture);
+        metadata.baseColorTextureId = PackHandle(binding->texture);
+        metadata.baseColorUVSet = static_cast<uint32>(
+            std::max(binding->uvSet, 0));
+        metadata.baseColorSamplerFlags =
+            EncodeRayTracingSamplerFlags(*binding);
+        metadata.baseColorUVOffset = binding->offset;
+        metadata.baseColorUVScale = binding->scale;
+        metadata.baseColorUVRotation = binding->rotation;
         return metadata;
     }
 
@@ -399,7 +391,7 @@ namespace
 RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
     const RenderScene& scene,
     std::span<const uint32_t> visibleObjectIndices,
-    const GPUResourceManager& gpuResources,
+    const RenderResourceRegistry& registry,
     const RayTracingSceneOptions& options)
 {
     RayTracingSceneBuildPlan plan;
@@ -409,10 +401,11 @@ RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
     std::vector<RenderDrawItem> opaqueDrawItems;
     std::vector<RenderDrawItem> maskedDrawItems;
     std::vector<RenderDrawItem> transparentDrawItems;
-    const std::vector<uint32_t> visibleIndices(visibleObjectIndices.begin(), visibleObjectIndices.end());
+    const std::vector<uint32_t> visibleIndices(
+        visibleObjectIndices.begin(), visibleObjectIndices.end());
     BuildMaterialDrawLists(scene,
                            visibleIndices,
-                           Vec3(0.0f, 0.0f, 0.0f),
+                           Vec3(0.0f),
                            opaqueDrawItems,
                            maskedDrawItems,
                            transparentDrawItems);
@@ -420,162 +413,230 @@ RayTracingSceneBuildPlan BuildRayTracingSceneBuildPlan(
     std::vector<RenderDrawItem> drawItems;
     if (options.includeOpaque)
     {
-        drawItems.insert(drawItems.end(), opaqueDrawItems.begin(), opaqueDrawItems.end());
+        drawItems.insert(drawItems.end(),
+                         opaqueDrawItems.begin(),
+                         opaqueDrawItems.end());
     }
     if (options.includeMasked)
     {
-        drawItems.insert(drawItems.end(), maskedDrawItems.begin(), maskedDrawItems.end());
+        drawItems.insert(drawItems.end(),
+                         maskedDrawItems.begin(),
+                         maskedDrawItems.end());
     }
     if (options.includeTransparent)
     {
-        drawItems.insert(drawItems.end(), transparentDrawItems.begin(), transparentDrawItems.end());
+        drawItems.insert(drawItems.end(),
+                         transparentDrawItems.begin(),
+                         transparentDrawItems.end());
     }
     else
     {
         for (const RenderDrawItem& item : transparentDrawItems)
         {
-            const RenderObject* object = item.objectIndex < scene.GetObjectCount() ? &scene.GetObject(item.objectIndex) : nullptr;
-            AddSkip(plan, RayTracingSceneSkipReason::TransparentMaterial, item, object, "transparent material excluded");
+            const RenderObject* object =
+                item.objectIndex < scene.GetObjectCount()
+                    ? &scene.GetObject(item.objectIndex)
+                    : nullptr;
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::TransparentMaterial,
+                    item,
+                    object,
+                    "transparent material excluded");
         }
     }
 
     plan.stats.drawItemCount = drawItems.size();
-
     for (const RenderDrawItem& item : drawItems)
     {
-        if (!ShouldIncludeRenderMode(item.renderMode, options))
+        if (!ShouldIncludeRenderMode(item.renderMode, options) ||
+            item.objectIndex >= scene.GetObjectCount())
+        {
             continue;
-
-        if (item.objectIndex >= scene.GetObjectCount())
-            continue;
+        }
 
         const RenderObject& object = scene.GetObject(item.objectIndex);
         if (options.requireShadowCasting && !object.castsShadow)
         {
-            AddSkip(plan, RayTracingSceneSkipReason::ShadowCastingDisabled, item, &object, "shadow casting disabled");
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::ShadowCastingDisabled,
+                    item,
+                    &object,
+                    "shadow casting disabled");
             continue;
         }
-
-        const uint32 resolvedInstanceMask = ResolveRayTracingInstanceMask(options.instanceMask, object.layerMask);
-        if (resolvedInstanceMask == 0)
+        const uint32 instanceMask = ResolveRayTracingInstanceMask(
+            options.instanceMask, object.layerMask);
+        if (instanceMask == 0)
         {
-            AddSkip(plan, RayTracingSceneSkipReason::InstanceMaskZero, item, &object, "ray tracing instance mask is zero");
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::InstanceMaskZero,
+                    item,
+                    &object,
+                    "ray tracing instance mask is zero");
             continue;
         }
-
         if (!IsFiniteTransform(object.worldMatrix))
         {
-            AddSkip(plan, RayTracingSceneSkipReason::InvalidTransform, item, &object, "ray tracing instance transform is not finite");
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::InvalidTransform,
+                    item,
+                    &object,
+                    "ray tracing instance transform is not finite");
             continue;
         }
 
-        Resource::MeshResource* meshResource = object.meshResource;
-        if (!meshResource || !meshResource->GetMesh())
+        const RenderMeshResourceData* mesh = registry.ResolveMesh(item.mesh);
+        if (mesh == nullptr || mesh->createInfo.vertexCount == 0 ||
+            mesh->createInfo.indexCount == 0)
         {
-            AddSkip(plan, RayTracingSceneSkipReason::MissingMeshResource, item, &object, "missing CPU mesh resource");
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::MissingMeshResource,
+                    item,
+                    &object,
+                    "missing exact mesh metadata");
             continue;
         }
-
-        const Mesh& mesh = *meshResource->GetMesh();
-        if (ResolveSubmeshPrimitive(mesh, item.submeshIndex) != PrimitiveType::Triangles)
+        const MeshUploadPrimitiveTopology topology =
+            item.submeshIndex < mesh->submeshes.size()
+                ? mesh->submeshes[item.submeshIndex].topology
+                : mesh->createInfo.topology;
+        if (topology != MeshUploadPrimitiveTopology::Triangles)
         {
-            AddSkip(plan, RayTracingSceneSkipReason::UnsupportedPrimitive, item, &object, "only triangle geometry is supported");
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::UnsupportedPrimitive,
+                    item,
+                    &object,
+                    "only triangle geometry is supported");
             continue;
         }
 
-        const MeshGPUBuffers buffers = gpuResources.GetMeshBuffers(meshResource->GetId());
+        const MeshGPUBuffers buffers = registry.ResolveMeshBuffers(item.mesh);
         if (!buffers.IsValid())
         {
-            AddSkip(plan, RayTracingSceneSkipReason::MeshNotGPUReady, item, &object, "mesh GPU buffers are not resident");
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::MeshNotGPUReady,
+                    item,
+                    &object,
+                    "exact mesh GPU buffers are not ready");
             continue;
         }
-
         if (item.submeshIndex >= buffers.submeshes.size())
         {
-            AddSkip(plan, RayTracingSceneSkipReason::InvalidSubmesh, item, &object, "submesh index is outside GPU buffer metadata");
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::InvalidSubmesh,
+                    item,
+                    &object,
+                    "submesh index is outside exact GPU metadata");
             continue;
         }
 
-        const RHIFormat indexFormat = ToRayTracingIndexFormat(mesh.GetIndexType());
+        const RHIFormat indexFormat =
+            ToRayTracingIndexFormat(mesh->createInfo.indexType);
         if (!IsRHIIndexFormatSupportedForRayTracing(indexFormat))
         {
-            AddSkip(plan, RayTracingSceneSkipReason::UnsupportedIndexFormat, item, &object, "mesh index format is unsupported for ray tracing");
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::UnsupportedIndexFormat,
+                    item,
+                    &object,
+                    "mesh index format is unsupported for ray tracing");
             continue;
         }
-
         const SubmeshGPUInfo& submesh = buffers.submeshes[item.submeshIndex];
         if (submesh.indexCount == 0)
         {
-            AddSkip(plan, RayTracingSceneSkipReason::InvalidSubmesh, item, &object, "submesh has no indices");
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::InvalidSubmesh,
+                    item,
+                    &object,
+                    "submesh has no indices");
             continue;
         }
-
         if (submesh.baseVertex < 0)
         {
-            AddSkip(plan, RayTracingSceneSkipReason::UnsupportedBaseVertex, item, &object, "negative baseVertex cannot be represented in AS geometry");
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::UnsupportedBaseVertex,
+                    item,
+                    &object,
+                    "negative baseVertex cannot be represented in AS geometry");
+            continue;
+        }
+        const uint32 baseVertex = static_cast<uint32>(submesh.baseVertex);
+        if (baseVertex >= mesh->createInfo.vertexCount)
+        {
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::InvalidSubmesh,
+                    item,
+                    &object,
+                    "baseVertex is outside the vertex buffer");
             continue;
         }
 
         const uint32 vertexStride = buffers.positionBuffer->GetStride() != 0
-                                        ? buffers.positionBuffer->GetStride()
-                                        : static_cast<uint32>(sizeof(Vec3));
-        const uint32 baseVertex = static_cast<uint32>(submesh.baseVertex);
-        if (baseVertex >= mesh.GetVertexCount())
-        {
-            AddSkip(plan, RayTracingSceneSkipReason::InvalidSubmesh, item, &object, "baseVertex is outside the vertex buffer");
-            continue;
-        }
-
+            ? buffers.positionBuffer->GetStride()
+            : static_cast<uint32>(sizeof(Vec3));
         RHIRayTracingGeometryDesc geometry;
         geometry.type = RHIRayTracingGeometryType::Triangles;
         geometry.flags = ToGeometryFlags(item.renderMode);
         geometry.triangles.vertexBuffer = buffers.positionBuffer;
-        geometry.triangles.vertexOffset = static_cast<uint64>(baseVertex) * vertexStride;
+        geometry.triangles.vertexOffset =
+            static_cast<uint64>(baseVertex) * vertexStride;
         geometry.triangles.vertexStride = vertexStride;
         geometry.triangles.vertexFormat = RHIFormat::RGB32_FLOAT;
-        geometry.triangles.vertexCount = static_cast<uint32>(mesh.GetVertexCount() - baseVertex);
+        geometry.triangles.vertexCount = static_cast<uint32>(
+            mesh->createInfo.vertexCount - baseVertex);
         geometry.triangles.indexBuffer = buffers.indexBuffer;
-        geometry.triangles.indexOffset = static_cast<uint64>(submesh.indexOffset) * GetIndexStride(mesh.GetIndexType());
+        geometry.triangles.indexOffset =
+            static_cast<uint64>(submesh.indexOffset) *
+            GetIndexStride(mesh->createInfo.indexType);
         geometry.triangles.indexFormat = indexFormat;
         geometry.triangles.indexCount = submesh.indexCount;
 
-        const RHIRayTracingValidationResult geometryValidation = ValidateRHIRayTracingGeometryDesc(geometry);
-        if (!geometryValidation)
+        const RHIRayTracingValidationResult validation =
+            ValidateRHIRayTracingGeometryDesc(geometry);
+        if (!validation)
         {
-            AddSkip(plan, RayTracingSceneSkipReason::InvalidGeometry, item, &object, geometryValidation.message);
+            AddSkip(plan,
+                    RayTracingSceneSkipReason::InvalidGeometry,
+                    item,
+                    &object,
+                    validation.message);
             continue;
         }
 
         RayTracingBLASKey key;
-        key.meshId = meshResource->GetId();
+        key.mesh = item.mesh;
+        key.meshId = PackHandle(item.mesh);
         key.submeshIndex = item.submeshIndex;
         key.renderMode = item.renderMode;
-        const uint32 blasIndex = FindOrAddBLASBuild(plan, key, geometry, options);
-        plan.blasBuilds[blasIndex].instanceCount++;
+        const uint32 blasIndex =
+            FindOrAddBLASBuild(plan, key, geometry, options);
+        ++plan.blasBuilds[blasIndex].instanceCount;
 
         RayTracingTLASInstance instance;
         instance.blasIndex = blasIndex;
         instance.objectIndex = item.objectIndex;
         instance.submeshIndex = item.submeshIndex;
         instance.entityId = object.entityId;
-        instance.materialId = item.materialId;
+        instance.materialId = PackHandle(item.material);
         instance.renderMode = item.renderMode;
-        instance.material = BuildMaterialMetadata(item);
+        instance.material = BuildMaterialMetadata(item, registry);
         if (object.castsShadow)
         {
-            instance.material.flags |= static_cast<uint32>(RayTracingMaterialMetadataFlags::ShadowCaster);
+            instance.material.flags |= static_cast<uint32>(
+                RayTracingMaterialMetadataFlags::ShadowCaster);
         }
-        instance.alphaTest = BuildAlphaTestMetadata(item, buffers, submesh, indexFormat);
+        instance.alphaTest = BuildAlphaTestMetadata(
+            item, buffers, submesh, indexFormat, registry);
         WriteRowMajor3x4(instance.desc.transform, object.worldMatrix);
         instance.desc.instanceId = static_cast<uint32>(plan.instances.size());
-        instance.desc.instanceMask = resolvedInstanceMask;
+        instance.desc.instanceMask = instanceMask;
         instance.desc.instanceContributionToHitGroupIndex = 0;
         instance.desc.flags = ToInstanceFlags(item.renderMode);
         if (instance.alphaTest.enabled)
         {
             ++plan.stats.alphaTestedInstanceCount;
         }
-        plan.instances.push_back(instance);
+        plan.instances.push_back(std::move(instance));
     }
 
     plan.stats.blasBuildCount = plan.blasBuilds.size();

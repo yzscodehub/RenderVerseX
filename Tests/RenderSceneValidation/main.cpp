@@ -1,1026 +1,2131 @@
-#include "Animation/Data/Skeleton.h"
-#include "Core/Core.h"
+#include "GPUScene/GPUSceneUpdate.h"
+#include "Render/Lighting/LightManager.h"
+#include "Render/Passes/RenderPassRecordContext.h"
 #include "Render/Renderer/RenderDrawItem.h"
-#include "Render/Renderer/RenderProxy.h"
+#include "Render/Renderer/RenderDrawPacket.h"
+#include "Render/Renderer/RenderSceneDatabase.h"
+#include "Render/Renderer/SceneRenderer.h"
 #include "Render/Renderer/RenderScene.h"
-#include "RHI/RHITexture.h"
-#include "Resource/Types/MaterialResource.h"
-#include "Resource/Types/MeshResource.h"
-#include "Runtime/Camera/Camera.h"
-#include "Scene/Actor.h"
-#include "Scene/Components/LightComponent.h"
-#include "Scene/Components/MeshRendererComponent.h"
-#include "Scene/Components/SkeletonComponent.h"
-#include "Scene/Components/SkyboxComponent.h"
-#include "Scene/Components/StaticMeshComponent.h"
-#include "Scene/Mesh.h"
-#include "Scene/SceneManager.h"
-#include "World/World.h"
+#include "RenderContracts/RenderFramePacketV5.h"
+#include "RenderContracts/RenderSceneUpdate.h"
+#include "Resources/RenderResourceRegistry.h"
+#include "Resources/RenderRetirementQueue.h"
+#include "Resources/RenderSubmissionTracker.h"
+#include "Runtime/RenderResourceGateway.h"
 
-#include "RenderProxySceneBridge.h"
-#include "SceneSkyboxPassBridge.h"
-
+#include <algorithm>
 #include <gtest/gtest.h>
 
-#include <initializer_list>
 #include <memory>
+#include <utility>
 #include <vector>
+
+namespace RVX
+{
+    class SceneRendererTestAccess final
+    {
+    public:
+        static void SetGPUScenePublishAllocationFailure(
+            SceneRenderer& renderer,
+            bool enabled) noexcept
+        {
+            if (renderer.m_gpuSceneUpdate)
+            {
+                renderer.m_gpuSceneUpdate->SetThrowOnPublishForTesting(enabled);
+            }
+        }
+
+        static void SetGPUSceneTier2DiagnosticVersions(
+            SceneRenderer& renderer,
+            uint64 residentVersion,
+            uint64 leaseVersion) noexcept
+        {
+            renderer.m_renderPolicyDiagnostics.gpuSceneResidentVersion =
+                residentVersion;
+            renderer.m_renderPolicyDiagnostics.gpuSceneLeaseVersion =
+                leaseVersion;
+        }
+
+        static void InvalidateRenderFramePlan(SceneRenderer& renderer)
+        {
+            renderer.InvalidateRenderFramePlan();
+        }
+
+        static void SetExecutionReport(
+            SceneRenderer& renderer,
+            std::vector<RenderPassExecutionReport> passes)
+        {
+            renderer.m_renderPolicyDiagnostics.planAvailable = true;
+            renderer.m_renderPolicyDiagnostics.reportAvailable = false;
+            renderer.m_renderPolicyDiagnostics.executionReport = {};
+            renderer.m_renderPolicyDiagnostics.executionReport.passes =
+                std::move(passes);
+        }
+
+        static void FinalizeExecutionReport(
+            SceneRenderer& renderer,
+            bool graphExecuted) noexcept
+        {
+            renderer.FinalizeRenderExecutionReportStatus(graphExecuted);
+        }
+
+        static void SetSubmissionReadyDiagnostics(
+            SceneRenderer& renderer) noexcept
+        {
+            renderer.m_frameDiagnostics.rendered = true;
+            renderer.m_frameDiagnostics.graphCompileValid = true;
+        }
+
+        static bool HasSubmissionFailure(const SceneRenderer& renderer) noexcept
+        {
+            return renderer.HasSubmissionFailure();
+        }
+
+        static void SetPersistentAccessSnapshots(
+            SceneRenderer& renderer,
+            const RHITextureAccessSnapshot& depthAccess,
+            std::vector<RHITextureAccessSnapshot> backBufferAccesses,
+            uint32 activeBackBufferIndex)
+        {
+            renderer.m_depthAccessSnapshot = depthAccess;
+            renderer.m_backBufferAccessSnapshots = std::move(backBufferAccesses);
+            renderer.m_activeBackBufferIndex = activeBackBufferIndex;
+        }
+
+        static void PublishProvisionalAccessSnapshots(
+            SceneRenderer& renderer,
+            const RHITextureAccessSnapshot& depthAccess,
+            const RHITextureAccessSnapshot& backBufferAccess) noexcept
+        {
+            renderer.PublishProvisionalFrameAccessSnapshots(
+                &depthAccess, &backBufferAccess);
+        }
+
+        static const RHITextureAccessSnapshot& GetDepthAccessSnapshot(
+            const SceneRenderer& renderer) noexcept
+        {
+            return renderer.m_depthAccessSnapshot;
+        }
+
+        static const RHITextureAccessSnapshot& GetBackBufferAccessSnapshot(
+            const SceneRenderer& renderer,
+            uint32 index) noexcept
+        {
+            return renderer.m_backBufferAccessSnapshots[index];
+        }
+
+        static bool HasProvisionalAccessSnapshots(
+            const SceneRenderer& renderer) noexcept
+        {
+            return renderer.m_frameAccessSnapshotRollback.pending;
+        }
+
+        static void ConfirmProvisionalAccessSnapshots(
+            SceneRenderer& renderer) noexcept
+        {
+            renderer.ConfirmProvisionalFrameAccessSnapshots();
+        }
+
+        static uint64 ObserveMutationEvidenceAfter(
+            SceneRenderer& renderer,
+            const RenderMutationEvidenceDiagnostics& previous) noexcept
+        {
+            renderer.m_lastObservedMutationEvidence = previous;
+            renderer.UpdateLiveMutationEvidence();
+            return renderer.m_mutationEvidenceEpoch;
+        }
+    };
+} // namespace RVX
 
 using namespace RVX;
 
 namespace
 {
-    class TestMeshResource : public Resource::MeshResource
+    class SkinningSemanticTestBuffer final : public RHIBuffer
     {
     public:
-        void MarkLoaded()
+        explicit SkinningSemanticTestBuffer(const RHIBufferDesc& desc)
+            : m_desc(desc)
+            , m_storage(static_cast<size_t>(desc.size))
         {
-            SetState(Resource::ResourceState::Loaded);
         }
+
+        uint64 GetSize() const override { return m_desc.size; }
+        RHIBufferUsage GetUsage() const override { return m_desc.usage; }
+        RHIMemoryType GetMemoryType() const override
+        {
+            return m_desc.memoryType;
+        }
+        uint32 GetStride() const override { return m_desc.stride; }
+        void* Map() override
+        {
+            return m_storage.empty() ? nullptr : m_storage.data();
+        }
+        void Unmap() override {}
+
+    private:
+        RHIBufferDesc m_desc;
+        std::vector<uint8> m_storage;
     };
 
-    class TestMaterialResource : public Resource::MaterialResource
+    TEST(RenderSceneValidation,
+         AbortedFrameRestoresProvisionalDepthAndActiveBackBufferAccessSnapshots)
+    {
+        SceneRenderer renderer;
+        const RHITextureAccessSnapshot previousDepth =
+            MakeRHITextureAccessSnapshot(RHIResourceState::DepthWrite,
+                                         RHIShaderStage::None,
+                                         GPUQueueDomain::Graphics,
+                                         RHIContentValidity::Valid);
+        const RHITextureAccessSnapshot previousBackBuffer0 =
+            MakeRHITextureAccessSnapshot(RHIResourceState::Present,
+                                         RHIShaderStage::None,
+                                         GPUQueueDomain::Graphics,
+                                         RHIContentValidity::Valid);
+        const RHITextureAccessSnapshot previousBackBuffer1 =
+            MakeRHITextureAccessSnapshot(RHIResourceState::RenderTarget,
+                                         RHIShaderStage::Pixel,
+                                         GPUQueueDomain::Graphics,
+                                         RHIContentValidity::Valid);
+        const RHITextureAccessSnapshot realizedDepth =
+            MakeRHITextureAccessSnapshot(RHIResourceState::ShaderResource,
+                                         RHIShaderStage::Pixel,
+                                         GPUQueueDomain::Graphics,
+                                         RHIContentValidity::Valid);
+        const RHITextureAccessSnapshot realizedBackBuffer =
+            MakeRHITextureAccessSnapshot(RHIResourceState::Present,
+                                         RHIShaderStage::None,
+                                         GPUQueueDomain::Graphics,
+                                         RHIContentValidity::Valid);
+
+        SceneRendererTestAccess::SetPersistentAccessSnapshots(
+            renderer,
+            previousDepth,
+            {previousBackBuffer0, previousBackBuffer1},
+            1u);
+        SceneRendererTestAccess::PublishProvisionalAccessSnapshots(
+            renderer, realizedDepth, realizedBackBuffer);
+        EXPECT_TRUE(SceneRendererTestAccess::HasProvisionalAccessSnapshots(renderer));
+        EXPECT_EQ(realizedDepth,
+                  SceneRendererTestAccess::GetDepthAccessSnapshot(renderer));
+        EXPECT_EQ(previousBackBuffer0,
+                  SceneRendererTestAccess::GetBackBufferAccessSnapshot(renderer, 0u));
+        EXPECT_EQ(realizedBackBuffer,
+                  SceneRendererTestAccess::GetBackBufferAccessSnapshot(renderer, 1u));
+
+        // This is the same release path used after RenderAcceptedFrame fails
+        // or EndFrame returns a zero submission point.
+        renderer.ReleaseUnsubmittedFrame();
+        EXPECT_FALSE(SceneRendererTestAccess::HasProvisionalAccessSnapshots(renderer));
+        EXPECT_EQ(previousDepth,
+                  SceneRendererTestAccess::GetDepthAccessSnapshot(renderer));
+        EXPECT_EQ(previousBackBuffer0,
+                  SceneRendererTestAccess::GetBackBufferAccessSnapshot(renderer, 0u));
+        EXPECT_EQ(previousBackBuffer1,
+                  SceneRendererTestAccess::GetBackBufferAccessSnapshot(renderer, 1u));
+
+        SceneRendererTestAccess::PublishProvisionalAccessSnapshots(
+            renderer, realizedDepth, realizedBackBuffer);
+        GPUCompletionToken completion;
+        ASSERT_TRUE(InsertGPUCompletionPoint(
+            completion, {GPUQueueDomain::Graphics, 1u}));
+        // Completion without a recording boundary cannot own this frame and
+        // must not confirm its provisional access snapshots.
+        EXPECT_FALSE(renderer.NotifySubmission(completion));
+        EXPECT_TRUE(SceneRendererTestAccess::HasProvisionalAccessSnapshots(renderer));
+        SceneRendererTestAccess::ConfirmProvisionalAccessSnapshots(renderer);
+        EXPECT_FALSE(SceneRendererTestAccess::HasProvisionalAccessSnapshots(renderer));
+        EXPECT_EQ(realizedDepth,
+                  SceneRendererTestAccess::GetDepthAccessSnapshot(renderer));
+        EXPECT_EQ(realizedBackBuffer,
+                  SceneRendererTestAccess::GetBackBufferAccessSnapshot(renderer, 1u));
+    }
+
+    class RegistryFixture final
     {
     public:
-        void MarkLoaded()
+        RegistryFixture()
+            : gateway(MakeConfig())
         {
-            SetState(Resource::ResourceState::Loaded);
-        }
-    };
-
-    class TestTextureResource : public Resource::TextureResource
-    {
-    public:
-        void MarkLoaded()
-        {
-            SetState(Resource::ResourceState::Loaded);
-        }
-    };
-
-    class FakeSkyboxTexture final : public RHITexture
-    {
-    public:
-        uint32 GetWidth() const override { return 4; }
-        uint32 GetHeight() const override { return 4; }
-        uint32 GetDepth() const override { return 1; }
-        uint32 GetMipLevels() const override { return 1; }
-        uint32 GetArraySize() const override { return 1; }
-        RHIFormat GetFormat() const override { return RHIFormat::RGBA8_UNORM; }
-        RHITextureUsage GetUsage() const override { return RHITextureUsage::ShaderResource; }
-        RHITextureDimension GetDimension() const override { return RHITextureDimension::TextureCube; }
-        RHISampleCount GetSampleCount() const override { return RHISampleCount::Count1; }
-    };
-
-    struct FakeSkyboxPassTarget
-    {
-        SceneSkyboxPassActions MakeActions()
-        {
-            SceneSkyboxPassActions actions;
-            actions.setProcedural =
-                [this](const Vec3&,
-                       const Vec3&,
-                       const Vec3&,
-                       const Vec3&,
-                       const Vec3&,
-                       float,
-                       float)
-                {
-                    proceduralSet = true;
-                    clearedReason.clear();
-                };
-            actions.setSolidColor =
-                [this](const Vec3&, float)
-                {
-                    solidColorSet = true;
-                    clearedReason.clear();
-                };
-            actions.setCubemap =
-                [this](RHITexture* texture, float exposure, float rotation, float blurLevel)
-                {
-                    selectedCubemap = texture;
-                    cubemapExposure = exposure;
-                    cubemapRotation = rotation;
-                    cubemapBlurLevel = blurLevel;
-                    clearedReason.clear();
-                };
-            actions.clear =
-                [this](const char* reason)
-                {
-                    selectedCubemap = nullptr;
-                    clearedReason = reason ? reason : "";
-                };
-            return actions;
+            EXPECT_TRUE(registry.Initialize(&gateway.GetStatusTable(),
+                                            &retirement));
         }
 
-        bool proceduralSet = false;
-        bool solidColorSet = false;
-        RHITexture* selectedCubemap = nullptr;
-        float cubemapExposure = 0.0f;
-        float cubemapRotation = 0.0f;
-        float cubemapBlurLevel = 0.0f;
-        std::string clearedReason;
-    };
-
-    RenderObject MakeObject(const Vec3& center, float extent = 0.5f)
-    {
-        RenderObject object;
-        object.bounds = AABB(center - Vec3(extent), center + Vec3(extent));
-        object.visible = true;
-        return object;
-    }
-
-    Camera MakeTestCamera()
-    {
-        Camera camera;
-        camera.SetPerspective(1.04719755f, 1.0f, 0.1f, 100.0f);
-        camera.SetPosition(Vec3(0.0f, 0.0f, 5.0f));
-        camera.LookAt(Vec3(0.0f, 0.0f, 0.0f));
-        return camera;
-    }
-
-    Resource::ResourceHandle<Resource::MeshResource> MakeMeshResource(Resource::ResourceId id)
-    {
-        auto* resource = new TestMeshResource();
-        resource->SetId(id);
-        resource->SetMesh(MeshFactory::CreateTriangle());
-        resource->SetBounds(AABB(Vec3(-1.0f), Vec3(1.0f)));
-        resource->MarkLoaded();
-        return Resource::ResourceHandle<Resource::MeshResource>(resource);
-    }
-
-    Resource::ResourceHandle<Resource::MaterialResource> MakeMaterialResource(Resource::ResourceId id)
-    {
-        auto* resource = new TestMaterialResource();
-        resource->SetId(id);
-        resource->SetMaterialData(std::make_shared<Material>());
-        resource->MarkLoaded();
-        return Resource::ResourceHandle<Resource::MaterialResource>(resource);
-    }
-
-    Resource::ResourceHandle<Resource::MaterialResource> MakeMaterialResource(Resource::ResourceId id,
-                                                                             Material::AlphaMode alphaMode)
-    {
-        auto resource = MakeMaterialResource(id);
-        resource->GetMaterial()->SetAlphaMode(alphaMode);
-        return resource;
-    }
-
-    Resource::ResourceHandle<Resource::TextureResource> MakeCubemapTextureResource(Resource::ResourceId id)
-    {
-        auto* resource = new TestTextureResource();
-        resource->SetId(id);
-
-        Resource::TextureMetadata metadata;
-        metadata.width = 1;
-        metadata.height = 1;
-        metadata.depth = 1;
-        metadata.mipLevels = 1;
-        metadata.arrayLayers = 6;
-        metadata.format = Resource::TextureFormat::RGBA8;
-        metadata.isCubemap = true;
-        metadata.isArray = false;
-        metadata.isSRGB = false;
-        metadata.usage = Resource::TextureUsage::Color;
-        resource->SetData(std::vector<uint8>(6u * 4u, 255u), metadata);
-        resource->MarkLoaded();
-
-        return Resource::ResourceHandle<Resource::TextureResource>(resource);
-    }
-
-    Animation::Skeleton::Ptr MakeTwoBoneSkeleton()
-    {
-        auto skeleton = Animation::Skeleton::Create();
-        skeleton->AddBone("Root");
-        skeleton->AddBone("Child", 0);
-        skeleton->ComputeInverseBindPoses();
-        return skeleton;
-    }
-
-    RenderObject MakeMaterialObject(uint64 meshId,
-                                    std::initializer_list<Resource::MaterialResource*> materials,
-                                    const Vec3& position = Vec3(0.0f))
-    {
-        RenderObject object = MakeObject(position);
-        object.meshId = meshId;
-        object.worldMatrix = Mat4Identity();
-        object.worldMatrix[3] = Vec4(position, 1.0f);
-
-        for (Resource::MaterialResource* material : materials)
+        ~RegistryFixture()
         {
-            object.materialResources.push_back(material);
-            object.materialIds.push_back(material ? material->GetId() : 0);
+            registry.Shutdown();
         }
 
-        return object;
+        RenderResourceHandle Add(
+            AssetId asset,
+            RenderResourceKind kind,
+            bool ready,
+            std::vector<RenderResourceHandle> dependencies = {})
+        {
+            const RenderResourceReserveResult reserved =
+                gateway.ReserveResource(asset, kind);
+            EXPECT_EQ(reserved.code, RenderResourceReserveCode::Reserved);
+            const RenderResourceHandle handle = reserved.handle;
+            PackedRenderResourceStatus status{
+                handle.generation,
+                RenderResourcePublicState::Reserved,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus queued = status;
+            queued.state = RenderResourcePublicState::UploadQueued;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, status, queued, RenderStatusWriter::Update));
+            PackedRenderResourceStatus uploading = queued;
+            uploading.state = RenderResourcePublicState::Uploading;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, queued, uploading, RenderStatusWriter::Render));
+            EXPECT_TRUE(registry.BeginPending(handle,
+                                              kind,
+                                              dependencies));
+            if (ready)
+            {
+                EXPECT_TRUE(registry.Commit(handle));
+                PackedRenderResourceStatus gpuReady = uploading;
+                gpuReady.state = RenderResourcePublicState::GPUReady;
+                EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                    handle,
+                    uploading,
+                    gpuReady,
+                    RenderStatusWriter::Render));
+            }
+            return handle;
+        }
+
+        RenderResourceHandle AddQueuedWithoutRegistry(
+            AssetId asset,
+            RenderResourceKind kind)
+        {
+            const RenderResourceReserveResult reserved =
+                gateway.ReserveResource(asset, kind);
+            EXPECT_EQ(reserved.code, RenderResourceReserveCode::Reserved);
+            const RenderResourceHandle handle = reserved.handle;
+            const PackedRenderResourceStatus status{
+                handle.generation,
+                RenderResourcePublicState::Reserved,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus queued = status;
+            queued.state = RenderResourcePublicState::UploadQueued;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, status, queued, RenderStatusWriter::Update));
+            return handle;
+        }
+
+        RenderResourceHandle AddMeshWithMetadata(
+            AssetId asset,
+            const MeshUploadCreateInfo& createInfo,
+            const std::vector<MeshUploadSubmesh>& submeshes,
+            bool includeBoneIndexSemantic = false)
+        {
+            const RenderResourceReserveResult reserved =
+                gateway.ReserveResource(asset, RenderResourceKind::Mesh);
+            EXPECT_EQ(reserved.code, RenderResourceReserveCode::Reserved);
+            const RenderResourceHandle handle = reserved.handle;
+            const PackedRenderResourceStatus status{
+                handle.generation,
+                RenderResourcePublicState::Reserved,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus queued = status;
+            queued.state = RenderResourcePublicState::UploadQueued;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, status, queued, RenderStatusWriter::Update));
+            PackedRenderResourceStatus uploading = queued;
+            uploading.state = RenderResourcePublicState::Uploading;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, queued, uploading, RenderStatusWriter::Render));
+            EXPECT_TRUE(registry.BeginPending(handle, RenderResourceKind::Mesh, {}));
+            EXPECT_TRUE(registry.SetPendingMeshMetadata(
+                handle, createInfo, submeshes));
+            if (includeBoneIndexSemantic)
+            {
+                RHIBufferDesc boneIndexDesc;
+                boneIndexDesc.size = sizeof(uint32) * 3U;
+                boneIndexDesc.usage = RHIBufferUsage::Vertex;
+                boneIndexDesc.stride = sizeof(uint32);
+                EXPECT_TRUE(registry.AddPendingMeshBuffer(
+                    handle,
+                    RenderMeshBufferSemantic::BoneIndices,
+                    RHIBufferRef(new SkinningSemanticTestBuffer(boneIndexDesc)),
+                    boneIndexDesc.size));
+            }
+            EXPECT_TRUE(registry.Commit(handle));
+            PackedRenderResourceStatus gpuReady = uploading;
+            gpuReady.state = RenderResourcePublicState::GPUReady;
+            EXPECT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, uploading, gpuReady, RenderStatusWriter::Render));
+            return handle;
+        }
+
+        void CompletePendingMesh(
+            RenderResourceHandle handle,
+            const MeshUploadCreateInfo& createInfo,
+            const std::vector<MeshUploadSubmesh>& submeshes)
+        {
+            const RenderResourceStatus status =
+                gateway.GetStatusTable().Query(handle);
+            ASSERT_EQ(status.code, RenderResourceStatusCode::Current);
+            ASSERT_EQ(status.state, RenderResourcePublicState::Uploading);
+            ASSERT_TRUE(registry.SetPendingMeshMetadata(
+                handle, createInfo, submeshes));
+            ASSERT_TRUE(registry.Commit(handle));
+            const PackedRenderResourceStatus uploading{
+                handle.generation,
+                RenderResourcePublicState::Uploading,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus ready = uploading;
+            ready.state = RenderResourcePublicState::GPUReady;
+            ASSERT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle,
+                uploading,
+                ready,
+                RenderStatusWriter::Render));
+        }
+
+        void ReplaceReadyResource(RenderResourceHandle handle,
+                                  RenderResourceKind kind,
+                                  uint64 sourceRevision,
+                                  std::vector<RenderResourceHandle>
+                                      dependencies = {})
+        {
+            const RenderResourceStatus status =
+                gateway.GetStatusTable().Query(handle);
+            ASSERT_EQ(status.code, RenderResourceStatusCode::Current);
+            ASSERT_EQ(status.state, RenderResourcePublicState::GPUReady);
+            const PackedRenderResourceStatus ready{
+                handle.generation,
+                RenderResourcePublicState::GPUReady,
+                RenderResourceFailureCode::None};
+            PackedRenderResourceStatus queued = ready;
+            queued.state = RenderResourcePublicState::ReplacementQueued;
+            ASSERT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, ready, queued, RenderStatusWriter::Update));
+            PackedRenderResourceStatus replacing = ready;
+            replacing.state = RenderResourcePublicState::Replacing;
+            ASSERT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, queued, replacing, RenderStatusWriter::Render));
+            ASSERT_TRUE(registry.BeginPending(
+                handle,
+                kind,
+                dependencies,
+                RenderResourceContentOperation::Replace,
+                sourceRevision));
+            ASSERT_TRUE(registry.Commit(handle));
+            ASSERT_TRUE(gateway.GetStatusTable().CompareExchange(
+                handle, replacing, ready, RenderStatusWriter::Render));
+        }
+
+        static RenderTransportConfig MakeConfig()
+        {
+            RenderTransportConfig config;
+            config.statusSlotCapacity = 1024;
+            config.uploadRequestCapacity = 8;
+            config.uploadByteCapacity = 1024;
+            return config;
+        }
+
+        RenderResourceGateway gateway;
+        RenderRetirementQueue retirement;
+        RenderResourceRegistry registry;
+    };
+
+    ParticleRenderSnapshotItem MakeParticleFeature()
+    {
+        ParticleRenderSnapshotItem particle;
+        particle.instanceId = 7;
+        particle.systemId = 7;
+        particle.systemAssetId = {.value = 8};
+        particle.systemName = "packet-owned-feature";
+        particle.worldBounds = AABB(Vec3{-1.0f}, Vec3{1.0f});
+        return particle;
     }
 
-    SceneEntity* CreateEntity(World& world, const std::string& name)
+    RenderPrimitiveSnapshot MakePrimitive(
+        RenderResourceHandle mesh,
+        RenderResourceHandle material = {},
+        const Vec3& position = Vec3{0.0f})
     {
-        auto* sceneManager = world.GetSceneManager();
-        const auto handle = sceneManager->CreateEntity(name);
-        return sceneManager->GetEntity(handle);
+        RenderPrimitiveSnapshot primitive;
+        primitive.objectId = 42;
+        primitive.mesh = mesh;
+        primitive.material = material;
+        primitive.worldTransform = Mat4Identity();
+        primitive.worldTransform[3] = Vec4(position, 1.0f);
+        primitive.previousWorldTransform = primitive.worldTransform;
+        primitive.boundsMin = position - Vec3{1.0f};
+        primitive.boundsMax = position + Vec3{1.0f};
+        primitive.flags = 0x7U;
+        primitive.layerMask = 0x55U;
+        primitive.sortKey = 900;
+        primitive.skinMatrices.push_back(Mat4Identity());
+        return primitive;
     }
 
-    class EmptyPrimitiveComponent : public PrimitiveComponent
+    struct V5FrameInput
     {
-    public:
-        const char* GetClassName() const override { return "EmptyPrimitiveComponent"; }
-        bool HasRenderProxy() const override { return false; }
-        bool HasRenderData() const override { return false; }
+        RenderSceneDatabase database;
+        std::unique_ptr<const RenderFramePacketV5> frame;
     };
 
-    class LegacyOnlyPrimitiveComponent : public PrimitiveComponent
+    V5FrameInput MakeFrame(
+        uint64 sequence,
+        uint64 worldRevision,
+        uint64 temporalEpoch,
+        bool discontinuity,
+        std::vector<RenderPrimitiveSnapshot> primitives)
     {
-    public:
-        const char* GetClassName() const override { return "LegacyOnlyPrimitiveComponent"; }
-        bool HasRenderProxy() const override { return false; }
-        bool HasRenderData() const override { return true; }
-    };
-
-    class FailingProxyPrimitiveComponent : public PrimitiveComponent
-    {
-    public:
-        const char* GetClassName() const override { return "FailingProxyPrimitiveComponent"; }
-        bool HasRenderProxy() const override { return true; }
-        bool HasRenderData() const override { return true; }
-        bool CreateRenderProxy(RenderPrimitiveProxy& outProxy) const override
+        V5FrameInput input;
+        RenderSceneMutationAccumulator accumulator;
+        accumulator.Begin(0, true);
+        for (RenderPrimitiveSnapshot& primitive : primitives)
         {
-            (void)outProxy;
-            return false;
+            EXPECT_TRUE(accumulator.UpsertPrimitive(
+                std::move(primitive), true));
         }
-    };
+        EXPECT_TRUE(accumulator.UpsertParticle(MakeParticleFeature(), true));
+        accumulator.UpsertSky({});
+        accumulator.UpsertEnvironment({});
+        EXPECT_TRUE(input.database.Apply(
+            accumulator.Build(worldRevision)).IsApplied());
 
-    class LogEnvironment final : public ::testing::Environment
+        RenderFrameHeaderV5 header;
+        header.sequence = sequence;
+        header.requiredSceneRevision = worldRevision;
+        header.worldRevision = worldRevision;
+        header.temporalEpoch = temporalEpoch;
+        header.explicitDiscontinuity = discontinuity;
+
+        RenderViewSnapshot view;
+        view.viewportWidth = 1280;
+        view.viewportHeight = 720;
+        view.cameraPosition = {0.0f, 0.0f, 5.0f};
+        RenderExtractionDiagnostics diagnostics;
+        diagnostics.code = RenderExtractionCode::Complete;
+        diagnostics.complete = true;
+        input.frame = RenderFramePacketV5::Create(
+            header,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            diagnostics);
+        return input;
+    }
+
+    std::unique_ptr<const RenderFramePacketV5> MakeFramePacketV5(
+        uint64 sequence,
+        uint64 requiredSceneRevision,
+        uint64 worldRevision = 1,
+        uint64 temporalEpoch = 1,
+        bool discontinuity = false)
     {
-    public:
-        void SetUp() override
-        {
-            Log::Initialize();
-        }
+        RenderFrameHeaderV5 header;
+        header.sequence = sequence;
+        header.requiredSceneRevision = requiredSceneRevision;
+        header.worldRevision = worldRevision;
+        header.temporalEpoch = temporalEpoch;
+        header.explicitDiscontinuity = discontinuity;
+        RenderViewSnapshot view;
+        view.viewportWidth = 1280;
+        view.viewportHeight = 720;
+        RenderExtractionDiagnostics diagnostics;
+        diagnostics.code = RenderExtractionCode::Complete;
+        diagnostics.complete = true;
+        return RenderFramePacketV5::Create(
+            header,
+            view,
+            RenderFrameSettings{},
+            RenderFrameCaptureRequest{},
+            diagnostics);
+    }
 
-        void TearDown() override
-        {
-            Log::Shutdown();
-        }
-    };
-
-    [[maybe_unused]] ::testing::Environment* const g_logEnvironment =
-        ::testing::AddGlobalTestEnvironment(new LogEnvironment());
+    RenderFrameApplyResult Apply(
+        RenderScene& scene,
+        const RenderResourceRegistry& registry,
+        uint64 sequence,
+        uint64 worldRevision,
+        uint64 temporalEpoch,
+        bool discontinuity,
+        RenderPrimitiveSnapshot primitive)
+    {
+        V5FrameInput input = MakeFrame(
+            sequence,
+            worldRevision,
+            temporalEpoch,
+            discontinuity,
+            {std::move(primitive)});
+        EXPECT_NE(input.frame, nullptr);
+        return scene.ApplyFrameV5(*input.frame, input.database, registry);
+    }
 } // namespace
 
-TEST(RenderSceneValidation, CullAgainstCameraRejectsOutsideObjects)
+TEST(RenderSceneValidation, AppliesTransactionallyAndOwnsPacketValues)
 {
-    RenderScene scene;
-    scene.AddObject(MakeObject(Vec3(0.0f, 0.0f, 0.0f)));
-    scene.AddObject(MakeObject(Vec3(100.0f, 0.0f, 0.0f)));
-
-    std::vector<uint32_t> visibleIndices;
-    scene.CullAgainstCamera(MakeTestCamera(), visibleIndices);
-
-    EXPECT_EQ(visibleIndices.size(), 1);
-    EXPECT_EQ(visibleIndices[0], 0u);
-}
-
-TEST(RenderSceneValidation, CullAgainstCameraHonorsVisibilityFlag)
-{
-    RenderScene scene;
-    RenderObject hidden = MakeObject(Vec3(0.0f, 0.0f, 0.0f));
-    hidden.visible = false;
-    scene.AddObject(hidden);
-
-    std::vector<uint32_t> visibleIndices;
-    scene.CullAgainstCamera(MakeTestCamera(), visibleIndices);
-
-    EXPECT_TRUE(visibleIndices.empty());
-}
-
-TEST(RenderSceneValidation, BuildMaterialDrawListsRoutesMaterialModesAndPreservesIdentity)
-{
-    auto opaqueMaterial = MakeMaterialResource(2101, Material::AlphaMode::Opaque);
-    auto maskedMaterial = MakeMaterialResource(2102, Material::AlphaMode::Mask);
-    auto transparentMaterial = MakeMaterialResource(2103, Material::AlphaMode::Blend);
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({1}, RenderResourceKind::Mesh, true);
+    const RenderResourceHandle material =
+        resources.Add({2}, RenderResourceKind::Material, true);
+    V5FrameInput input =
+        MakeFrame(10, 3, 4, false, {MakePrimitive(mesh, material, {2, 0, 0})});
+    ASSERT_NE(input.frame, nullptr);
 
     RenderScene scene;
-    scene.AddObject(MakeMaterialObject(3101,
-                                       {opaqueMaterial.Get(), maskedMaterial.Get(), transparentMaterial.Get()}));
+    RenderFrameApplyResult applied =
+        scene.ApplyFrameV5(*input.frame, input.database, resources.registry);
+    ASSERT_TRUE(applied.IsApplied());
+    input.frame.reset();
+    input.database.Clear();
 
-    std::vector<uint32_t> visibleIndices = {0};
-    std::vector<RenderDrawItem> opaqueItems;
-    std::vector<RenderDrawItem> maskedItems;
-    std::vector<RenderDrawItem> transparentItems;
-
-    BuildMaterialDrawLists(scene, visibleIndices, Vec3(0.0f, 0.0f, 5.0f),
-                           opaqueItems, maskedItems, transparentItems);
-
-    ASSERT_EQ(static_cast<size_t>(1), opaqueItems.size());
-    ASSERT_EQ(static_cast<size_t>(1), maskedItems.size());
-    ASSERT_EQ(static_cast<size_t>(1), transparentItems.size());
-
-    EXPECT_EQ(0u, opaqueItems[0].objectIndex);
-    EXPECT_EQ(0u, opaqueItems[0].submeshIndex);
-    EXPECT_EQ(3101u, opaqueItems[0].meshId);
-    EXPECT_EQ(opaqueMaterial.GetId(), opaqueItems[0].materialId);
-    EXPECT_EQ(opaqueMaterial.Get(), opaqueItems[0].materialResource);
-    EXPECT_EQ(MaterialRenderMode::Opaque, opaqueItems[0].renderMode);
-
-    EXPECT_EQ(0u, maskedItems[0].objectIndex);
-    EXPECT_EQ(1u, maskedItems[0].submeshIndex);
-    EXPECT_EQ(3101u, maskedItems[0].meshId);
-    EXPECT_EQ(maskedMaterial.GetId(), maskedItems[0].materialId);
-    EXPECT_EQ(maskedMaterial.Get(), maskedItems[0].materialResource);
-    EXPECT_EQ(MaterialRenderMode::Masked, maskedItems[0].renderMode);
-
-    EXPECT_EQ(0u, transparentItems[0].objectIndex);
-    EXPECT_EQ(2u, transparentItems[0].submeshIndex);
-    EXPECT_EQ(3101u, transparentItems[0].meshId);
-    EXPECT_EQ(transparentMaterial.GetId(), transparentItems[0].materialId);
-    EXPECT_EQ(transparentMaterial.Get(), transparentItems[0].materialResource);
-    EXPECT_EQ(MaterialRenderMode::Transparent, transparentItems[0].renderMode);
-}
-
-TEST(RenderSceneValidation, BuildMaterialDrawListsSortsTransparentBackToFront)
-{
-    auto transparentMaterial = MakeMaterialResource(2201, Material::AlphaMode::Blend);
-
-    RenderScene scene;
-    scene.AddObject(MakeMaterialObject(3201, {transparentMaterial.Get()}, Vec3(0.0f, 0.0f, 2.0f)));
-    scene.AddObject(MakeMaterialObject(3202, {transparentMaterial.Get()}, Vec3(0.0f, 0.0f, 9.0f)));
-
-    std::vector<uint32_t> visibleIndices = {0, 1};
-    std::vector<RenderDrawItem> opaqueItems;
-    std::vector<RenderDrawItem> maskedItems;
-    std::vector<RenderDrawItem> transparentItems;
-
-    BuildMaterialDrawLists(scene, visibleIndices, Vec3(0.0f),
-                           opaqueItems, maskedItems, transparentItems);
-
-    EXPECT_TRUE(opaqueItems.empty());
-    EXPECT_TRUE(maskedItems.empty());
-    ASSERT_EQ(static_cast<size_t>(2), transparentItems.size());
-    EXPECT_EQ(1u, transparentItems[0].objectIndex);
-    EXPECT_EQ(0u, transparentItems[1].objectIndex);
-    EXPECT_GT(transparentItems[0].depthFromCamera, transparentItems[1].depthFromCamera);
-}
-
-TEST(RenderSceneValidation, StaticMeshComponentCollectsRenderObjectFromWorld)
-{
-    World world;
-    world.Initialize();
-
-    auto* entity = CreateEntity(world, "PrimitiveEntity");
-    ASSERT_NE(nullptr, entity);
-    entity->SetPosition(Vec3(4.0f, 0.0f, 0.0f));
-
-    auto mesh = MakeMeshResource(1001);
-    auto material = MakeMaterialResource(2001);
-
-    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, primitive);
-    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
-    primitive->SetMesh(mesh);
-    primitive->SetMaterial(0, material);
-    primitive->SetLayerMask(0x34u);
-    primitive->SetCastsShadow(false);
-    primitive->SetReceivesShadow(false);
-
-    RenderScene scene;
-    scene.CollectFromWorld(&world);
-
-    EXPECT_EQ(static_cast<size_t>(1), scene.GetObjectCount());
-    const auto& object = scene.GetObject(0);
-    EXPECT_EQ(entity->GetHandle(), object.entityId);
-    EXPECT_EQ(mesh.GetId(), object.meshId);
-    EXPECT_EQ(mesh.Get(), object.meshResource);
-    EXPECT_EQ(static_cast<size_t>(1), object.materialIds.size());
-    EXPECT_EQ(material.GetId(), object.materialIds[0]);
-    EXPECT_EQ(material.Get(), object.materialResources[0]);
-    EXPECT_EQ(0x34u, object.layerMask);
-    EXPECT_FALSE(object.castsShadow);
-    EXPECT_FALSE(object.receivesShadow);
-    EXPECT_EQ(Vec3(4.0f, 0.0f, 0.0f), Vec3(object.worldMatrix[3]));
-
-    world.Shutdown();
-}
-
-TEST(RenderSceneValidation, StaticMeshComponentCollectsRenderObjectFromSceneManager)
-{
-    World world;
-    world.Initialize();
-
-    auto* entity = CreateEntity(world, "SceneManagerPrimitiveEntity");
-    ASSERT_NE(nullptr, entity);
-    entity->SetPosition(Vec3(2.0f, 0.0f, 0.0f));
-
-    auto mesh = MakeMeshResource(1005);
-    auto material = MakeMaterialResource(2005);
-
-    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, primitive);
-    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
-    primitive->SetMesh(mesh);
-    primitive->SetMaterial(0, material);
-
-    RenderScene worldScene;
-    worldScene.CollectFromWorld(&world);
-
-    RenderScene sceneManagerScene;
-    sceneManagerScene.CollectFromSceneManager(world.GetSceneManager());
-
-    ASSERT_EQ(worldScene.GetObjectCount(), sceneManagerScene.GetObjectCount());
-    ASSERT_EQ(static_cast<size_t>(1), sceneManagerScene.GetObjectCount());
-    const auto& object = sceneManagerScene.GetObject(0);
-    EXPECT_EQ(entity->GetHandle(), object.entityId);
-    EXPECT_EQ(mesh.GetId(), object.meshId);
-    EXPECT_EQ(mesh.Get(), object.meshResource);
-    ASSERT_EQ(static_cast<size_t>(1), object.materialIds.size());
-    EXPECT_EQ(material.GetId(), object.materialIds[0]);
-    EXPECT_EQ(Vec3(2.0f, 0.0f, 0.0f), Vec3(object.worldMatrix[3]));
-
-    world.Shutdown();
-}
-
-TEST(RenderSceneValidation, StaticMeshComponentCreatesRenderProxy)
-{
-    World world;
-    world.Initialize();
-
-    auto* entity = CreateEntity(world, "ProxyPrimitiveEntity");
-    ASSERT_NE(nullptr, entity);
-    entity->SetPosition(Vec3(2.0f, 3.0f, 4.0f));
-
-    auto mesh = MakeMeshResource(1101);
-    auto material = MakeMaterialResource(2101);
-
-    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, primitive);
-    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
-    primitive->SetMesh(mesh);
-    primitive->SetMaterial(0, material);
-    primitive->SetLayerMask(0x10u);
-    primitive->SetCastsShadow(false);
-    primitive->SetReceivesShadow(false);
-
-    RenderPrimitiveProxy proxy;
-    ASSERT_TRUE(primitive->CreateRenderProxy(proxy));
-
-    EXPECT_EQ(0u, proxy.ownerId);
-    EXPECT_EQ(mesh.GetId(), proxy.meshId);
-    EXPECT_EQ(mesh.Get(), proxy.meshResource);
-    ASSERT_EQ(static_cast<size_t>(1), proxy.materialIds.size());
-    ASSERT_EQ(static_cast<size_t>(1), proxy.materialResources.size());
-    EXPECT_EQ(material.GetId(), proxy.materialIds[0]);
-    EXPECT_EQ(material.Get(), proxy.materialResources[0]);
-    EXPECT_EQ(0x10u, proxy.layerMask);
-    EXPECT_FALSE(proxy.castsShadow);
-    EXPECT_FALSE(proxy.receivesShadow);
-    EXPECT_TRUE(proxy.visible);
-    EXPECT_EQ(Vec3(2.0f, 3.0f, 4.0f), Vec3(proxy.worldMatrix[3]));
-
-    world.Shutdown();
-}
-
-TEST(RenderSceneValidation, RenderSceneApplyProxySnapshotPopulatesObjectsAndLights)
-{
-    RenderProxySnapshot snapshot;
-
-    RenderPrimitiveProxy primitive;
-    primitive.ownerId = 42;
-    primitive.worldMatrix = Mat4Identity();
-    primitive.worldMatrix[3] = Vec4(1.0f, 2.0f, 3.0f, 1.0f);
-    primitive.normalMatrix = Mat4Identity();
-    primitive.bounds = AABB(Vec3(-1.0f), Vec3(1.0f));
-    primitive.meshId = 3101;
-    primitive.materialIds = {4101};
-    primitive.skinningMatrices = {Mat4Identity(), Mat4Identity()};
-    primitive.skinningMatrices[1][3] = Vec4(0.0f, 2.0f, 0.0f, 1.0f);
-    primitive.sortKey = 4101;
-    primitive.layerMask = 0x5Au;
-    primitive.visible = true;
-    primitive.castsShadow = false;
-    primitive.receivesShadow = true;
-    snapshot.primitives.push_back(primitive);
-
-    RenderLightProxy light;
-    light.ownerId = 43;
-    light.type = RenderLightProxy::Type::Point;
-    light.position = Vec3(0.0f, 4.0f, 0.0f);
-    light.color = Vec3(1.0f, 0.5f, 0.25f);
-    light.intensity = 3.0f;
-    light.range = 12.0f;
-    light.castsShadow = true;
-    snapshot.lights.push_back(light);
-
-    RenderScene scene;
-    scene.AddObject(MakeObject(Vec3(99.0f)));
-    scene.ApplyProxySnapshot(snapshot);
-
-    ASSERT_EQ(static_cast<size_t>(1), scene.GetObjectCount());
-    ASSERT_EQ(static_cast<size_t>(1), scene.GetLightCount());
-
+    ASSERT_EQ(scene.GetObjectCount(), 1U);
     const RenderObject& object = scene.GetObject(0);
-    EXPECT_EQ(42u, object.entityId);
-    EXPECT_EQ(3101u, object.meshId);
-    EXPECT_EQ(Vec3(1.0f, 2.0f, 3.0f), Vec3(object.worldMatrix[3]));
-    ASSERT_EQ(static_cast<size_t>(1), object.materialIds.size());
-    EXPECT_EQ(4101u, object.materialIds[0]);
-    ASSERT_TRUE(object.HasSkinningData());
-    ASSERT_EQ(static_cast<size_t>(2), object.skinningMatrices.size());
-    EXPECT_EQ(Vec3(0.0f, 2.0f, 0.0f), Vec3(object.skinningMatrices[1][3]));
-    EXPECT_EQ(0x5Au, object.layerMask);
-    EXPECT_FALSE(object.castsShadow);
-    EXPECT_TRUE(object.receivesShadow);
-
-    const RenderLight& renderLight = scene.GetLight(0);
-    EXPECT_EQ(RenderLight::Type::Point, renderLight.type);
-    EXPECT_EQ(Vec3(0.0f, 4.0f, 0.0f), renderLight.position);
-    EXPECT_EQ(Vec3(1.0f, 0.5f, 0.25f), renderLight.color);
-    EXPECT_EQ(3.0f, renderLight.intensity);
-    EXPECT_TRUE(renderLight.castsShadow);
+    EXPECT_EQ(object.mesh, mesh);
+    EXPECT_EQ(object.material, material);
+    EXPECT_EQ(Vec3(object.worldMatrix[3]), (Vec3{2, 0, 0}));
+    EXPECT_EQ(object.skinningMatrices.size(), 1U);
+    EXPECT_EQ(scene.GetFeatures().particles.items[0].systemName,
+              "packet-owned-feature");
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 10U);
 }
 
-TEST(RenderSceneValidation, RenderProxyBridgeBuildsPrimitiveAndLightSnapshot)
+TEST(RenderSceneValidation,
+     ViewLayerFilteringDoesNotMutateRetainedObjectsOrLights)
 {
-    World world;
-    world.Initialize();
+    RenderScene scene;
 
-    auto* meshEntity = CreateEntity(world, "ProxyMeshEntity");
-    ASSERT_NE(nullptr, meshEntity);
-    meshEntity->SetPosition(Vec3(3.0f, 0.0f, 0.0f));
+    RenderObject includedObject;
+    includedObject.entityId = 1;
+    includedObject.drawable = true;
+    includedObject.visible = true;
+    includedObject.layerMask = 0x00000001U;
+    includedObject.bounds = AABB(Vec3(-0.1F, -0.1F, 0.2F),
+                                 Vec3(0.1F, 0.1F, 0.3F));
+    scene.AddObject(includedObject);
 
-    auto mesh = MakeMeshResource(1201);
-    auto material = MakeMaterialResource(2201);
-    auto* primitive = static_cast<Actor*>(meshEntity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, primitive);
-    EXPECT_TRUE(primitive->AttachToComponent(meshEntity->GetRootComponent()));
-    primitive->SetMesh(mesh);
-    primitive->SetMaterial(0, material);
+    RenderObject excludedObject = includedObject;
+    excludedObject.entityId = 2;
+    excludedObject.layerMask = 0x00000002U;
+    scene.AddObject(excludedObject);
 
-    auto* lightEntity = CreateEntity(world, "ProxyLightEntity");
-    ASSERT_NE(nullptr, lightEntity);
-    lightEntity->SetPosition(Vec3(0.0f, 5.0f, 0.0f));
-    auto* light = lightEntity->AddComponent<LightComponent>();
-    ASSERT_NE(nullptr, light);
-    light->SetLightType(LightType::Point);
-    light->SetColor(Vec3(0.25f, 0.5f, 1.0f));
-    light->SetIntensity(2.0f);
-    light->SetCastsShadow(true);
+    RenderLight excludedDirectional;
+    excludedDirectional.lightId = 3;
+    excludedDirectional.type = RenderLight::Type::Directional;
+    excludedDirectional.intensity = 8.0F;
+    excludedDirectional.layerMask = 0x00000002U;
+    excludedDirectional.castsShadow = true;
+    scene.AddLight(excludedDirectional);
 
-    RenderProxySceneBridge bridge;
-    RenderProxySnapshot snapshot;
-    RenderProxySceneBridgeResult result;
-    ASSERT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
+    RenderLight includedDirectional = excludedDirectional;
+    includedDirectional.lightId = 4;
+    includedDirectional.intensity = 2.0F;
+    includedDirectional.layerMask = 0x00000001U;
+    scene.AddLight(includedDirectional);
 
-    EXPECT_TRUE(result.usedProxyPath);
-    EXPECT_FALSE(result.requiresLegacyFallback);
-    EXPECT_EQ(RenderProxySceneBridgeFallbackReason::None, result.fallbackReason);
-    EXPECT_EQ(static_cast<size_t>(1), result.primitiveCount);
-    EXPECT_EQ(static_cast<size_t>(1), result.lightCount);
+    RenderLight excludedPoint;
+    excludedPoint.lightId = 5;
+    excludedPoint.type = RenderLight::Type::Point;
+    excludedPoint.layerMask = 0x00000002U;
+    scene.AddLight(excludedPoint);
 
-    ASSERT_EQ(static_cast<size_t>(1), snapshot.primitives.size());
-    EXPECT_EQ(meshEntity->GetHandle(), snapshot.primitives[0].ownerId);
-    EXPECT_EQ(meshEntity->GetHandle(), snapshot.primitives[0].id.value);
-    EXPECT_EQ(mesh.GetId(), snapshot.primitives[0].meshId);
-    EXPECT_EQ(material.GetId(), snapshot.primitives[0].materialIds[0]);
+    RenderLight includedPoint = excludedPoint;
+    includedPoint.lightId = 6;
+    includedPoint.layerMask = 0x00000001U;
+    scene.AddLight(includedPoint);
 
-    ASSERT_EQ(static_cast<size_t>(1), snapshot.lights.size());
-    EXPECT_EQ(lightEntity->GetHandle(), snapshot.lights[0].ownerId);
-    EXPECT_EQ(RenderLightProxy::Type::Point, snapshot.lights[0].type);
-    EXPECT_EQ(Vec3(0.0f, 5.0f, 0.0f), snapshot.lights[0].position);
-    EXPECT_TRUE(snapshot.lights[0].castsShadow);
+    RenderViewSnapshot view;
+    view.cullingMask = 0x00000001U;
+    view.viewProjectionMatrix = Mat4Identity();
+    std::vector<uint32> visibleObjects;
+    scene.CullAgainstView(view, visibleObjects);
 
-    world.Shutdown();
+    ASSERT_EQ(1U, visibleObjects.size());
+    EXPECT_EQ(0U, visibleObjects.front());
+    // The view cannot alter the retained scene: a second view can select the
+    // other object and all lights remain available to future cameras.
+    EXPECT_EQ(2U, scene.GetObjectCount());
+    EXPECT_EQ(4U, scene.GetLightCount());
+    EXPECT_EQ(0x00000002U, scene.GetLight(0).layerMask);
+
+    const PrimaryDirectionalLightRecordInput primary =
+        SelectPrimaryDirectionalLightRecordInput(scene, view.cullingMask);
+    ASSERT_TRUE(primary.selected);
+    EXPECT_FLOAT_EQ(2.0F, primary.intensity);
+    EXPECT_TRUE(primary.castsShadow);
+
+    LightManager lights;
+    lights.CollectLights(scene, view.cullingMask);
+    EXPECT_FLOAT_EQ(2.0F, lights.GetMainLight().intensity);
+    EXPECT_EQ(1U, lights.GetPointLightCount());
+    EXPECT_EQ(0U, lights.GetPointShadowRequestCount());
 }
 
-TEST(RenderSceneValidation, RenderProxyBridgePropagatesSkeletonSkinningMatrices)
+TEST(RenderSceneValidation,
+     AppliesV5DirectlyFromPersistentDatabaseWithoutCompatibilityPacket)
 {
-    World world;
-    world.Initialize();
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({31}, RenderResourceKind::Mesh, true);
+    const RenderResourceHandle material =
+        resources.Add({32}, RenderResourceKind::Material, true);
 
-    auto* meshEntity = CreateEntity(world, "SkinnedProxyMeshEntity");
-    ASSERT_NE(nullptr, meshEntity);
+    RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    ASSERT_TRUE(reset.UpsertPrimitive(
+        MakePrimitive(mesh, material, {4.0F, 0.0F, 0.0F}), true));
+    reset.UpsertSky(RenderSkySnapshot{});
+    reset.UpsertEnvironment(RenderEnvironmentSnapshot{});
+    RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(reset.Build(3)).IsApplied());
 
-    auto mesh = MakeMeshResource(1202);
-    auto material = MakeMaterialResource(2202);
-    auto* primitive = static_cast<Actor*>(meshEntity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, primitive);
-    EXPECT_TRUE(primitive->AttachToComponent(meshEntity->GetRootComponent()));
-    primitive->SetMesh(mesh);
-    primitive->SetMaterial(0, material);
-
-    auto* skeleton = meshEntity->AddComponent<SkeletonComponent>();
-    ASSERT_NE(nullptr, skeleton);
-    skeleton->SetSkeleton(MakeTwoBoneSkeleton());
-    skeleton->SetBoneLocalPosition(1, Vec3(0.0f, 2.0f, 0.0f));
-
-    RenderProxySceneBridge bridge;
-    RenderProxySnapshot snapshot;
-    RenderProxySceneBridgeResult result;
-    ASSERT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
-
-    ASSERT_EQ(static_cast<size_t>(1), snapshot.primitives.size());
-    const RenderPrimitiveProxy& proxy = snapshot.primitives[0];
-    ASSERT_TRUE(proxy.HasSkinningData());
-    ASSERT_EQ(static_cast<size_t>(2), proxy.skinningMatrices.size());
-    EXPECT_EQ(Vec3(0.0f, 2.0f, 0.0f), Vec3(proxy.skinningMatrices[1][3]));
+    RenderFrameHeaderV5 header;
+    header.sequence = 77;
+    header.requiredSceneRevision = 3;
+    header.worldRevision = 9;
+    header.temporalEpoch = 2;
+    RenderViewSnapshot view;
+    view.viewportWidth = 1280;
+    view.viewportHeight = 720;
+    RenderExtractionDiagnostics diagnostics;
+    diagnostics.complete = true;
+    const auto frame = RenderFramePacketV5::Create(
+        header,
+        view,
+        RenderFrameSettings{},
+        RenderFrameCaptureRequest{},
+        diagnostics);
+    ASSERT_NE(frame, nullptr);
 
     RenderScene scene;
-    scene.ApplyProxySnapshot(snapshot);
+    const RenderFrameApplyResult result =
+        scene.ApplyFrameV5(*frame, database, resources.registry);
+    ASSERT_TRUE(result.IsApplied());
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 77U);
+    ASSERT_EQ(scene.GetObjectCount(), 1U);
+    EXPECT_EQ(scene.GetObject(0).entityId, 42U);
+    EXPECT_EQ(Vec3(scene.GetObject(0).worldMatrix[3]),
+              (Vec3{4.0F, 0.0F, 0.0F}));
+}
 
-    ASSERT_EQ(static_cast<size_t>(1), scene.GetObjectCount());
+TEST(RenderSceneValidation,
+     StaticFramesDoNoRetainedWorkAndOnePercentTransformDirtyUpdatesExactObject)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {8100},
+        createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+
+    constexpr uint32 objectCount = 100;
+    RenderSceneMutationAccumulator reset;
+    reset.Begin(0, true);
+    for (uint32 index = 0; index < objectCount; ++index)
+    {
+        RenderPrimitiveSnapshot primitive = MakePrimitive(
+            mesh, {}, {static_cast<float32>(index), 0.0F, 0.0F});
+        primitive.objectId = static_cast<uint64>(index) + 1U;
+        ASSERT_TRUE(reset.UpsertPrimitive(std::move(primitive), true));
+    }
+    RenderSceneDatabase database;
+    ASSERT_TRUE(database.Apply(reset.Build(1)).IsApplied());
+
+    RenderScene scene;
+    const auto firstFrame = MakeFramePacketV5(1, 1, 7, 3);
+    ASSERT_NE(firstFrame, nullptr);
+    const RenderFrameApplyResult initial =
+        scene.ApplyFrameV5(*firstFrame, database, resources.registry);
+    ASSERT_TRUE(initial.IsApplied());
+    ASSERT_TRUE(initial.sceneMutated);
+    EXPECT_TRUE(scene.IsFullGPUSceneMutation());
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount, 1U);
+    EXPECT_EQ(scene.GetRetainedStats().lastRebuiltObjectCount, objectCount);
+    EXPECT_EQ(scene.GetMutationTotals().fullRebuildCount, 1U);
+    EXPECT_EQ(scene.GetMutationTotals().incrementalCommitCount, 0U);
+    EXPECT_EQ(scene.GetMutationTotals().rebuiltObjectCount, objectCount);
+    EXPECT_EQ(scene.GetObjectCount(), objectCount);
+    EXPECT_EQ(scene.GetDrawCount(), objectCount);
+    scene.MarkAcceptedFrameRendered();
+
+    // First reuse settles previous matrices once. The following reuse must be
+    // a true static frame with no retained rebuild or GPU-scene mutation.
+    const auto settleFrame = MakeFramePacketV5(2, 1, 7, 3);
+    ASSERT_NE(settleFrame, nullptr);
+    const RenderFrameApplyResult settled =
+        scene.ApplyFrameV5(*settleFrame, database, resources.registry);
+    ASSERT_TRUE(settled.IsApplied());
+    ASSERT_TRUE(settled.sceneMutated);
+    EXPECT_EQ(scene.GetGPUSceneChangedObjectIds().size(), objectCount);
+    scene.MarkAcceptedFrameRendered();
+
+    const RenderDrawPacketCacheStats beforeStatic =
+        scene.GetDrawPacketCacheStats();
+    const auto staticFrame = MakeFramePacketV5(3, 1, 7, 3);
+    ASSERT_NE(staticFrame, nullptr);
+    const RenderFrameApplyResult reused =
+        scene.ApplyFrameV5(*staticFrame, database, resources.registry);
+    ASSERT_TRUE(reused.IsApplied());
+    EXPECT_FALSE(reused.sceneMutated);
+    EXPECT_FALSE(scene.IsFullGPUSceneMutation());
+    EXPECT_TRUE(scene.GetGPUSceneChangedObjectIds().empty());
+    EXPECT_TRUE(scene.GetGPUSceneRemovedObjectIds().empty());
+    EXPECT_EQ(scene.GetRetainedStats().staticReuseCount, 1U);
+    EXPECT_EQ(scene.GetRetainedStats().lastRebuiltObjectCount, 0U);
+    // The latest-only frame diagnostics may now describe this static frame,
+    // but durable mutation evidence must retain the earlier full rebuild.
+    EXPECT_EQ(scene.GetMutationTotals().fullRebuildCount, 1U);
+    EXPECT_EQ(scene.GetMutationTotals().incrementalCommitCount, 0U);
+    EXPECT_EQ(scene.GetMutationTotals().rebuiltObjectCount, objectCount);
+    EXPECT_EQ(scene.GetDrawPacketCacheStats().packetBuildCount,
+              beforeStatic.packetBuildCount);
+    scene.MarkAcceptedFrameRendered();
+
+    RenderPrimitiveSnapshot changed = MakePrimitive(
+        mesh, {}, {25.0F, 4.0F, 0.0F});
+    changed.objectId = 26;
+    RenderSceneMutationAccumulator update;
+    update.Begin(1);
+    ASSERT_TRUE(update.UpsertPrimitive(std::move(changed)));
+    ASSERT_TRUE(database.Apply(update.Build(2)).IsApplied());
+
+    const RenderDrawPacketCacheStats beforeDirty =
+        scene.GetDrawPacketCacheStats();
+    const auto dirtyFrame = MakeFramePacketV5(4, 2, 7, 3);
+    ASSERT_NE(dirtyFrame, nullptr);
+    const RenderFrameApplyResult dirty =
+        scene.ApplyFrameV5(*dirtyFrame, database, resources.registry);
+    ASSERT_TRUE(dirty.IsApplied());
+    EXPECT_TRUE(dirty.sceneMutated);
+    EXPECT_EQ(scene.GetRetainedStats().incrementalUpdateCount, 1U);
+    EXPECT_EQ(scene.GetRetainedStats().lastRebuiltObjectCount, 1U);
+    EXPECT_EQ(scene.GetRetainedStats().lastRemovedObjectCount, 0U);
+    EXPECT_EQ(scene.GetMutationTotals().incrementalCommitCount, 1U);
+    EXPECT_EQ(scene.GetMutationTotals().rebuiltObjectCount, objectCount + 1U);
+    EXPECT_EQ(scene.GetGPUSceneChangedObjectIds(),
+              std::vector<uint64>({26U}));
+    ASSERT_NE(scene.FindObject(26), nullptr);
+    EXPECT_EQ(scene.FindObject(26)->objectRevision, 2U);
+    EXPECT_EQ(Vec3(scene.FindObject(26)->worldMatrix[3]),
+              (Vec3{25.0F, 4.0F, 0.0F}));
+    const RenderDrawPacketCacheStats afterDirty =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterDirty.entryCount, objectCount);
+    EXPECT_EQ(afterDirty.packetBuildCount,
+              beforeDirty.packetBuildCount);
+    EXPECT_EQ(afterDirty.hitCount, beforeDirty.hitCount + 1U);
+    EXPECT_EQ(afterDirty.GetInvalidationCount(
+                  RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged),
+              beforeDirty.GetInvalidationCount(
+                  RenderDrawPacketCacheInvalidationReason::ObjectRevisionChanged));
+}
+
+TEST(RenderSceneValidation,
+     MutationWatermarkFreezesAtThePresentedBoundaryAndRejectsDoNotReplaceIt)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {901}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    SceneRenderer renderer;
+
+    V5FrameInput initial = MakeFrame(301, 1, 1, false, {MakePrimitive(mesh)});
+    ASSERT_NE(initial.frame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *initial.frame, initial.database, resources.registry).IsApplied());
+    EXPECT_FALSE(renderer.GetFrameDiagnostics().mutationEvidence.completion.available);
+
+    renderer.MarkAcceptedFramePresented();
+    const RenderMutationEvidenceDiagnostics presented =
+        renderer.GetFrameDiagnostics().mutationEvidence;
+    ASSERT_TRUE(presented.completion.available);
+    EXPECT_EQ(1U, presented.completion.completedPresentationCount);
+    EXPECT_EQ(301U, presented.completion.completedFrameSequence);
+    EXPECT_EQ(1U, presented.completion.requiredSceneRevision);
+    EXPECT_EQ(1U, presented.completion.appliedSceneRevision);
+    EXPECT_EQ(1U, presented.scene.fullRebuildCount);
+
+    // Applying/recording a later static frame cannot replace the completed
+    // watermark before that frame has actually crossed the present boundary.
+    const std::unique_ptr<const RenderFramePacketV5> staticFrame =
+        MakeFramePacketV5(302, 1, 1, 1, false);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *staticFrame, initial.database, resources.registry).IsApplied());
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence.completion.completedFrameSequence,
+              presented.completion.completedFrameSequence);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence.scene.fullRebuildCount,
+              presented.scene.fullRebuildCount);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence
+                  .completion.completedPresentationCount,
+              presented.completion.completedPresentationCount);
+
+    const std::unique_ptr<const RenderFramePacketV5> rejectedFrame =
+        MakeFramePacketV5(302, 1, 1, 1, false);
+    EXPECT_EQ(renderer.ApplyFrameV5(
+                  *rejectedFrame, initial.database, resources.registry).code,
+              RenderFrameApplyCode::OutOfOrder);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence.completion.completedFrameSequence,
+              presented.completion.completedFrameSequence);
+    EXPECT_EQ(renderer.GetFrameDiagnostics().mutationEvidence
+                  .completion.completedPresentationCount,
+              presented.completion.completedPresentationCount);
+
+    renderer.MarkAcceptedFramePresented();
+    const RenderMutationEvidenceDiagnostics staticPresented =
+        renderer.GetFrameDiagnostics().mutationEvidence;
+    EXPECT_EQ(302U, staticPresented.completion.completedFrameSequence);
+    EXPECT_EQ(2U, staticPresented.completion.completedPresentationCount);
+    EXPECT_EQ(presented.scene.fullRebuildCount,
+              staticPresented.scene.fullRebuildCount);
+
+    // A skipped accepted sequence still crosses exactly one completed
+    // presentation boundary; no missed-frame inference is involved.
+    const std::unique_ptr<const RenderFramePacketV5> skippedFrame =
+        MakeFramePacketV5(304, 1, 1, 1, false);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *skippedFrame, initial.database, resources.registry).IsApplied());
+    EXPECT_EQ(2U, renderer.GetFrameDiagnostics().mutationEvidence
+                      .completion.completedPresentationCount);
+    renderer.MarkAcceptedFramePresented();
+    const RenderMutationEvidenceDiagnostics skippedPresented =
+        renderer.GetFrameDiagnostics().mutationEvidence;
+    EXPECT_EQ(304U, skippedPresented.completion.completedFrameSequence);
+    EXPECT_EQ(3U, skippedPresented.completion.completedPresentationCount);
+}
+
+TEST(RenderSceneValidation,
+     MutationEvidenceEpochAdvancesWhenFullUploadCountDrops)
+{
+    SceneRenderer renderer;
+    RenderMutationEvidenceDiagnostics previous{};
+    previous.gpuSceneUpload.fullUploadCount = 1;
+
+    EXPECT_EQ(2U,
+              SceneRendererTestAccess::ObserveMutationEvidenceAfter(
+                  renderer, previous));
+}
+
+TEST(RenderSceneValidation,
+     MutationEvidenceEpochAdvancesWhenSubmittedUploadedRowsDrop)
+{
+    SceneRenderer renderer;
+    RenderMutationEvidenceDiagnostics previous{};
+    previous.gpuSceneUpload.submittedUploadedRowCount[
+        static_cast<uint32>(GPUSceneDiagnosticsTable::Draws)] = 1;
+
+    EXPECT_EQ(2U,
+              SceneRendererTestAccess::ObserveMutationEvidenceAfter(
+                  renderer, previous));
+}
+
+TEST(RenderSceneValidation, GPUScenePublicationFailureCannotRejectAnAppliedFrame)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {700}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    SceneRenderer renderer;
+
+    V5FrameInput first = MakeFrame(
+        101, 1, 1, false, {MakePrimitive(mesh)});
+    ASSERT_NE(first.frame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *first.frame, first.database, resources.registry).IsApplied());
+    renderer.GetRenderScene().MarkAcceptedFrameRendered();
+    const GPUScenePublicationStats before =
+        renderer.GetGPUScenePublicationStats();
+    ASSERT_EQ(before.failureReason, GPUScenePublicationFailureReason::None);
+    ASSERT_EQ(before.publishedObjectCount, 1U);
+
+    SceneRendererTestAccess::SetGPUScenePublishAllocationFailure(renderer, true);
+    V5FrameInput second = MakeFrame(
+        102, 2, 1, false, {MakePrimitive(mesh)});
+    second.frame = MakeFramePacketV5(102, 2, 1, 1, false);
+    ASSERT_NE(second.frame, nullptr);
+    const RenderFrameApplyResult applied =
+        renderer.ApplyFrameV5(
+            *second.frame, second.database, resources.registry);
+
+    EXPECT_TRUE(applied.IsApplied());
+    EXPECT_EQ(renderer.GetRenderScene().GetAcceptedHeader().sequence, 102U);
+    const GPUScenePublicationStats& failed =
+        renderer.GetGPUScenePublicationStats();
+    EXPECT_EQ(failed.failureReason, GPUScenePublicationFailureReason::AllocationFailed);
+    EXPECT_EQ(failed.committedVersion, before.committedVersion);
+    EXPECT_EQ(failed.committedSourceSequence, before.committedSourceSequence);
+    EXPECT_EQ(failed.publishedObjectCount, before.publishedObjectCount);
+    EXPECT_EQ(failed.publishedDrawCount, before.publishedDrawCount);
+    EXPECT_FALSE(failed.executionEligible);
+
+    const GPUSceneDiagnostics snapshot = renderer.GetGPUSceneDiagnostics();
+    EXPECT_TRUE(snapshot.available);
+    EXPECT_TRUE(snapshot.informationalOnly);
+    EXPECT_TRUE(snapshot.publicationAttempted);
+    EXPECT_TRUE(snapshot.publicationFailed);
+    EXPECT_FALSE(snapshot.publicationPublished);
+    EXPECT_FALSE(snapshot.publicationComplete);
+    EXPECT_EQ(snapshot.publicationFailureReason,
+              GPUScenePublicationFailureReason::AllocationFailed);
+    EXPECT_EQ(snapshot.committedVersion, before.committedVersion);
+    const GPUSceneDiagnostics copied = snapshot;
+    EXPECT_EQ(copied.committedVersion, snapshot.committedVersion);
+    EXPECT_EQ(copied.publicationPublished, snapshot.publicationPublished);
+
+    // The direct path may render the accepted scene even though publication
+    // failed. A later static frame must therefore retry from the complete
+    // retained scene instead of waiting indefinitely for another mutation.
+    renderer.GetRenderScene().MarkAcceptedFrameRendered();
+    SceneRendererTestAccess::SetGPUScenePublishAllocationFailure(renderer, false);
+    const std::unique_ptr<const RenderFramePacketV5> retryFrame =
+        MakeFramePacketV5(103, 2, 1, 1, false);
+    const RenderFrameApplyResult retried = renderer.ApplyFrameV5(
+        *retryFrame, second.database, resources.registry);
+    ASSERT_TRUE(retried.IsApplied());
+    EXPECT_FALSE(retried.sceneMutated);
+    const GPUScenePublicationStats& recovered =
+        renderer.GetGPUScenePublicationStats();
+    EXPECT_EQ(recovered.failureReason,
+              GPUScenePublicationFailureReason::None);
+    EXPECT_TRUE(recovered.complete);
+    EXPECT_EQ(recovered.committedSourceSequence, 103U);
+    EXPECT_EQ(recovered.publishedObjectCount, 1U);
+}
+
+TEST(RenderSceneValidation,
+     StaticFrameAdvancesGPUSceneIdentityWithoutVersionOrObjectMutation)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {702}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    SceneRenderer renderer;
+
+    V5FrameInput initial = MakeFrame(201, 1, 1, false, {MakePrimitive(mesh)});
+    ASSERT_NE(initial.frame, nullptr);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *initial.frame, initial.database, resources.registry).IsApplied());
+    renderer.GetRenderScene().MarkAcceptedFrameRendered();
+
+    const std::unique_ptr<const RenderFramePacketV5> settleFrame =
+        MakeFramePacketV5(202, 1, 1, 1, false);
+    ASSERT_TRUE(renderer.ApplyFrameV5(
+        *settleFrame, initial.database, resources.registry).IsApplied());
+    renderer.GetRenderScene().MarkAcceptedFrameRendered();
+    const GPUScenePublicationStats beforeStatic =
+        renderer.GetGPUScenePublicationStats();
+    ASSERT_TRUE(beforeStatic.complete);
+    ASSERT_NE(beforeStatic.committedVersion, 0U);
+
+    const std::unique_ptr<const RenderFramePacketV5> staticFrame =
+        MakeFramePacketV5(203, 1, 1, 1, false);
+    const RenderFrameApplyResult staticApplied = renderer.ApplyFrameV5(
+        *staticFrame, initial.database, resources.registry);
+    ASSERT_TRUE(staticApplied.IsApplied());
+    EXPECT_FALSE(staticApplied.sceneMutated);
+
+    const GPUScenePublicationStats& afterStatic =
+        renderer.GetGPUScenePublicationStats();
+    EXPECT_EQ(afterStatic.committedVersion,
+              beforeStatic.committedVersion);
+    EXPECT_EQ(afterStatic.committedSourceSequence, 203U);
+    EXPECT_EQ(afterStatic.addCount, 0U);
+    EXPECT_EQ(afterStatic.updateCount, 0U);
+    EXPECT_EQ(afterStatic.removeCount, 0U);
+    EXPECT_TRUE(afterStatic.complete);
+}
+
+TEST(RenderSceneValidation, GPUSceneTier2DiagnosticVersionsAreValueOnlyAndResetWithFramePlan)
+{
+    SceneRenderer renderer;
+    SceneRendererTestAccess::SetGPUSceneTier2DiagnosticVersions(
+        renderer, 47u, 47u);
+
+    const RenderPolicyDiagnostics copied =
+        renderer.GetRenderPolicyDiagnostics();
+    EXPECT_EQ(copied.gpuSceneResidentVersion, 47u);
+    EXPECT_EQ(copied.gpuSceneLeaseVersion, 47u);
+
+    SceneRendererTestAccess::InvalidateRenderFramePlan(renderer);
+    const RenderPolicyDiagnostics& reset = renderer.GetRenderPolicyDiagnostics();
+    EXPECT_EQ(reset.gpuSceneResidentVersion, 0u);
+    EXPECT_EQ(reset.gpuSceneLeaseVersion, 0u);
+}
+
+TEST(RenderSceneValidation,
+     FrameExecutionStatusCompletesWithMixedCompletedAndNotAttemptedPasses)
+{
+    SceneRenderer renderer;
+    RenderPassExecutionReport completed;
+    completed.pass = RenderPassKind::Opaque;
+    completed.status = RenderExecutionStatus::Completed;
+    RenderPassExecutionReport omitted;
+    omitted.pass = RenderPassKind::Depth;
+    omitted.status = RenderExecutionStatus::NotAttempted;
+
+    SceneRendererTestAccess::SetExecutionReport(
+        renderer, {completed, omitted});
+    SceneRendererTestAccess::FinalizeExecutionReport(renderer, true);
+
+    const RenderPolicyDiagnostics& diagnostics =
+        renderer.GetRenderPolicyDiagnostics();
+    EXPECT_TRUE(diagnostics.reportAvailable);
+    EXPECT_EQ(diagnostics.executionReport.status,
+              RenderExecutionStatus::Completed);
+    ASSERT_EQ(diagnostics.executionReport.passes.size(), 2U);
+    EXPECT_EQ(diagnostics.executionReport.passes[0].status,
+              RenderExecutionStatus::Completed);
+    EXPECT_EQ(diagnostics.executionReport.passes[1].status,
+              RenderExecutionStatus::NotAttempted);
+}
+
+TEST(RenderSceneValidation,
+     FrameExecutionStatusFailsAtomicallyWhenAnyRecordedPassFails)
+{
+    SceneRenderer renderer;
+    RenderPassExecutionReport completed;
+    completed.pass = RenderPassKind::Depth;
+    completed.status = RenderExecutionStatus::Completed;
+    RenderPassExecutionReport failed;
+    failed.pass = RenderPassKind::Opaque;
+    failed.status = RenderExecutionStatus::Failed;
+
+    SceneRendererTestAccess::SetExecutionReport(renderer, {completed, failed});
+    SceneRendererTestAccess::FinalizeExecutionReport(renderer, true);
+
+    const RenderPolicyDiagnostics& diagnostics =
+        renderer.GetRenderPolicyDiagnostics();
+    EXPECT_TRUE(diagnostics.reportAvailable);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              diagnostics.executionReport.status);
+    SceneRendererTestAccess::SetSubmissionReadyDiagnostics(renderer);
+    EXPECT_TRUE(SceneRendererTestAccess::HasSubmissionFailure(renderer));
+    ASSERT_EQ(2U, diagnostics.executionReport.passes.size());
+    EXPECT_EQ(RenderExecutionStatus::Completed,
+              diagnostics.executionReport.passes[0].status);
+    EXPECT_EQ(RenderExecutionStatus::Failed,
+              diagnostics.executionReport.passes[1].status);
+}
+
+TEST(RenderSceneValidation,
+     FrameExecutionStatusStaysNotAttemptedWhenNoPassRecords)
+{
+    SceneRenderer renderer;
+    RenderPassExecutionReport depth;
+    depth.pass = RenderPassKind::Depth;
+    RenderPassExecutionReport opaque;
+    opaque.pass = RenderPassKind::Opaque;
+
+    SceneRendererTestAccess::SetExecutionReport(renderer, {depth, opaque});
+    SceneRendererTestAccess::FinalizeExecutionReport(renderer, true);
+
+    const RenderPolicyDiagnostics& diagnostics =
+        renderer.GetRenderPolicyDiagnostics();
+    EXPECT_TRUE(diagnostics.reportAvailable);
+    EXPECT_EQ(diagnostics.executionReport.status,
+              RenderExecutionStatus::NotAttempted);
+    ASSERT_EQ(diagnostics.executionReport.passes.size(), 2U);
+    EXPECT_EQ(diagnostics.executionReport.passes[0].status,
+              RenderExecutionStatus::NotAttempted);
+    EXPECT_EQ(diagnostics.executionReport.passes[1].status,
+              RenderExecutionStatus::NotAttempted);
+}
+
+TEST(RenderSceneValidation,
+     FrameExecutionReportStaysUnavailableWhenTheGraphDoesNotExecute)
+{
+    SceneRenderer renderer;
+    RenderPassExecutionReport completed;
+    completed.pass = RenderPassKind::Opaque;
+    completed.status = RenderExecutionStatus::Completed;
+
+    SceneRendererTestAccess::SetExecutionReport(renderer, {completed});
+    SceneRendererTestAccess::FinalizeExecutionReport(renderer, false);
+
+    const RenderPolicyDiagnostics& diagnostics =
+        renderer.GetRenderPolicyDiagnostics();
+    EXPECT_FALSE(diagnostics.reportAvailable);
+    EXPECT_EQ(diagnostics.executionReport.status,
+              RenderExecutionStatus::NotAttempted);
+    ASSERT_EQ(diagnostics.executionReport.passes.size(), 1U);
+    EXPECT_EQ(diagnostics.executionReport.passes[0].status,
+              RenderExecutionStatus::Completed);
+}
+
+TEST(RenderSceneValidation, ShadowPreviousTransformFollowsRenderedHistoryAndDiscontinuities)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {701}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    RenderScene scene;
+    GPUSceneUpdate shadow;
+
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      1,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {1.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    const GPUScenePublicationStats firstPublication =
+        shadow.Publish(scene, resources.registry);
+    ASSERT_EQ(firstPublication.failureReason,
+              GPUScenePublicationFailureReason::None);
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      2,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {1.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    const GPUScenePublicationStats noOpPublication =
+        shadow.Publish(scene, resources.registry);
+    EXPECT_EQ(noOpPublication.committedVersion,
+              firstPublication.committedVersion);
+    EXPECT_EQ(noOpPublication.committedSourceSequence, 2U);
+    EXPECT_EQ(noOpPublication.noOpCount, 1U);
+
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      3,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {2.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    ASSERT_EQ(shadow.Publish(scene, resources.registry).failureReason,
+              GPUScenePublicationFailureReason::None);
+    const GPUSceneTransformRow& acceptedButNotRendered =
+        shadow.GetCommittedMirrorForTesting().transforms[1];
+    EXPECT_FALSE(HasGPUSceneTransformFlag(
+        acceptedButNotRendered.transformFlags,
+        GPUSceneTransformFlags::PreviousWorldFromLocalValid));
+
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      4,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {3.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    ASSERT_EQ(shadow.Publish(scene, resources.registry).failureReason,
+              GPUScenePublicationFailureReason::None);
+    const GPUSceneTransformRow& renderedHistory =
+        shadow.GetCommittedMirrorForTesting().transforms[1];
+    EXPECT_TRUE(HasGPUSceneTransformFlag(
+        renderedHistory.transformFlags,
+        GPUSceneTransformFlags::PreviousWorldFromLocalValid));
+    EXPECT_FLOAT_EQ(renderedHistory.previousWorldFromLocal.rows[0].w, 2.0F);
+
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      5,
+                      1,
+                      1,
+                      true,
+                      MakePrimitive(mesh, {}, {4.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    ASSERT_EQ(shadow.Publish(scene, resources.registry).failureReason,
+              GPUScenePublicationFailureReason::None);
+    const GPUSceneTransformRow& discontinuity =
+        shadow.GetCommittedMirrorForTesting().transforms[1];
+    EXPECT_FALSE(HasGPUSceneTransformFlag(
+        discontinuity.transformFlags,
+        GPUSceneTransformFlags::PreviousWorldFromLocalValid));
+}
+
+TEST(RenderSceneValidation,
+     BuildsAuthoritativeBatchesFromRegistrySubmeshesAndBindings)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 6;
+    createInfo.indexType = MeshUploadIndexType::UInt16;
+    createInfo.boundsMin = {-1.0f, -1.0f, -1.0f};
+    createInfo.boundsMax = {1.0f, 1.0f, 1.0f};
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {101}, createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles},
+         {3, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    const RenderResourceHandle maskedMaterial =
+        resources.Add({102}, RenderResourceKind::Material, true);
+    const RenderResourceHandle transparentMaterial =
+        resources.Add({103}, RenderResourceKind::Material, true);
+
+    RenderPrimitiveSnapshot primitive = MakePrimitive(mesh, maskedMaterial);
+    primitive.submeshes = {
+        {0, maskedMaterial, RenderMaterialMode::Masked},
+        {1, transparentMaterial, RenderMaterialMode::Transparent}};
+    V5FrameInput input = MakeFrame(
+        1, 1, 1, false, {primitive});
+    ASSERT_NE(input.frame, nullptr);
+
+    RenderScene scene;
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *input.frame, input.database, resources.registry).IsApplied());
     const RenderObject& object = scene.GetObject(0);
-    ASSERT_TRUE(object.HasSkinningData());
-    ASSERT_EQ(static_cast<size_t>(2), object.skinningMatrices.size());
-    EXPECT_EQ(Vec3(0.0f, 2.0f, 0.0f), Vec3(object.skinningMatrices[1][3]));
-
-    world.Shutdown();
+    ASSERT_TRUE(object.meshBatchesAuthoritative);
+    ASSERT_EQ(object.meshBatches.size(), 2U);
+    EXPECT_EQ(object.meshBatches[0].material, maskedMaterial);
+    EXPECT_EQ(object.meshBatches[1].material, transparentMaterial);
+    EXPECT_EQ(object.meshBatches[0].materialMode, RenderMaterialMode::Masked);
+    EXPECT_EQ(object.meshBatches[1].materialMode,
+              RenderMaterialMode::Transparent);
+    EXPECT_EQ(object.material, maskedMaterial);
+    ASSERT_EQ(object.materialModes.size(), 2U);
+    EXPECT_EQ(object.materialModes[1], RenderMaterialMode::Transparent);
+    const auto& references = scene.GetReferencedResources();
+    EXPECT_NE(std::find(references.begin(), references.end(), maskedMaterial),
+              references.end());
+    EXPECT_NE(std::find(references.begin(), references.end(), transparentMaterial),
+              references.end());
 }
 
-TEST(RenderSceneValidation, SceneSkyboxBridgeReportsMissingCubemapResource)
+TEST(RenderSceneValidation,
+     RejectsIncompleteAuthoritativeBindingsWithoutMutatingScene)
 {
-    World world;
-    world.Initialize();
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 6;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {111}, createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles},
+         {3, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    const RenderResourceHandle material =
+        resources.Add({112}, RenderResourceKind::Material, true);
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene, resources.registry, 1, 1, 1, false,
+                      MakePrimitive(mesh, material)).IsApplied());
 
-    auto* entity = CreateEntity(world, "MissingCubemapSkybox");
-    ASSERT_NE(nullptr, entity);
-    auto* skybox = entity->AddComponent<SkyboxComponent>();
-    ASSERT_NE(nullptr, skybox);
-    skybox->SetSkyboxType(SkyboxType::Cubemap);
-
-    SceneSkyboxPassBridge bridge;
-    FakeSkyboxPassTarget target;
-    SceneSkyboxPassBridgeResult result;
-    EXPECT_FALSE(bridge.Update(&world, target.MakeActions(), {}, &result));
-
-    EXPECT_TRUE(result.skyboxFound);
-    EXPECT_FALSE(result.uploadRequested);
-    EXPECT_EQ(SceneSkyboxPassBridgeFallbackReason::SkyboxCubemapMissing, result.fallbackReason);
-    EXPECT_EQ(std::string(ToString(result.fallbackReason)), target.clearedReason);
-    EXPECT_EQ(nullptr, target.selectedCubemap);
-
-    world.Shutdown();
+    RenderPrimitiveSnapshot incomplete = MakePrimitive(mesh, material);
+    incomplete.submeshes = {{0, material, RenderMaterialMode::Opaque}};
+    V5FrameInput input = MakeFrame(
+        2, 1, 1, false, {std::move(incomplete)});
+    ASSERT_NE(input.frame, nullptr);
+    EXPECT_EQ(scene.ApplyFrameV5(
+                  *input.frame, input.database, resources.registry).code,
+              RenderFrameApplyCode::InvalidPacket);
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 1U);
 }
 
-TEST(RenderSceneValidation, SceneSkyboxBridgeRequestsUploadForNotReadyCubemap)
+TEST(RenderSceneValidation, MissingSubmeshMaterialStillBuildsDrawableBatch)
 {
-    World world;
-    world.Initialize();
-
-    auto* entity = CreateEntity(world, "NotReadyCubemapSkybox");
-    ASSERT_NE(nullptr, entity);
-    auto* skybox = entity->AddComponent<SkyboxComponent>();
-    ASSERT_NE(nullptr, skybox);
-    auto cubemap = MakeCubemapTextureResource(9101);
-    skybox->SetCubemap(cubemap);
-
-    bool uploadRequested = false;
-    Resource::ResourceId uploadId = Resource::InvalidResourceId;
-    SceneSkyboxTextureAccess textureAccess;
-    textureAccess.requestUpload =
-        [&uploadRequested, &uploadId](Resource::TextureResource* texture)
-        {
-            uploadRequested = true;
-            uploadId = texture ? texture->GetId() : Resource::InvalidResourceId;
-        };
-    textureAccess.isGPUReady =
-        [](Resource::ResourceId) -> bool
-        {
-            return false;
-        };
-    textureAccess.getTexture =
-        [](Resource::ResourceId) -> RHITexture*
-        {
-            return nullptr;
-        };
-
-    SceneSkyboxPassBridge bridge;
-    FakeSkyboxPassTarget target;
-    SceneSkyboxPassBridgeResult result;
-    EXPECT_FALSE(bridge.Update(&world, target.MakeActions(), textureAccess, &result));
-
-    EXPECT_TRUE(result.skyboxFound);
-    EXPECT_TRUE(result.uploadRequested);
-    EXPECT_TRUE(uploadRequested);
-    EXPECT_EQ(cubemap.GetId(), uploadId);
-    EXPECT_EQ(SceneSkyboxPassBridgeFallbackReason::SkyboxCubemapNotReady, result.fallbackReason);
-    EXPECT_EQ(std::string(ToString(result.fallbackReason)), target.clearedReason);
-    EXPECT_EQ(nullptr, target.selectedCubemap);
-
-    world.Shutdown();
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {121}, createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    RenderPrimitiveSnapshot primitive = MakePrimitive(mesh);
+    primitive.submeshes = {{0, {}, RenderMaterialMode::Opaque}};
+    RenderScene scene;
+    const RenderFrameApplyResult result = Apply(
+        scene, resources.registry, 1, 1, 1, false, std::move(primitive));
+    ASSERT_TRUE(result.IsApplied());
+    const RenderObject& object = scene.GetObject(0);
+    EXPECT_TRUE(object.drawable);
+    ASSERT_EQ(object.meshBatches.size(), 1U);
+    EXPECT_FALSE(object.meshBatches[0].material.IsValid());
+    EXPECT_TRUE(HasRenderBatchFlag(object.meshBatches[0].flags,
+                                   RenderBatchFlags::MissingMaterial));
 }
 
-TEST(RenderSceneValidation, SceneSkyboxBridgePassesReadyCubemapToTarget)
+TEST(RenderSceneValidation,
+     RetainsAcceptedPacketTemplatesAndRejectsInvalidPublications)
 {
-    World world;
-    world.Initialize();
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {122}, createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    const RenderResourceHandle material =
+        resources.Add({123}, RenderResourceKind::Material, true);
+    RenderScene scene;
 
-    auto* entity = CreateEntity(world, "ReadyCubemapSkybox");
-    ASSERT_NE(nullptr, entity);
-    auto* skybox = entity->AddComponent<SkyboxComponent>();
-    ASSERT_NE(nullptr, skybox);
-    auto cubemap = MakeCubemapTextureResource(9102);
-    skybox->SetCubemap(cubemap);
-    skybox->SetExposure(1.5f);
-    skybox->SetRotation(0.25f);
-    skybox->SetBlurLevel(2.0f);
+    RenderPrimitiveSnapshot initial = MakePrimitive(
+        mesh, material, {1.0f, 0.0f, 0.0f});
+    initial.skinMatrices = {Mat4Identity()};
+    initial.hasSkinningPaletteProvider = true;
+    initial.skinningPalette.providerComponentId = 0x0000000300000001ULL;
+    initial.skinningPalette.sourceModelResourceId = 901;
+    initial.skinningPalette.poseSequence = 17;
+    const SkinningPaletteHash initialHash =
+        ComputeSkinningPaletteHash(initial.skinMatrices);
+    ASSERT_TRUE(initialHash.IsValid());
+    initial.skinningPalette.paletteHash = initialHash.value;
+    initial.skinningPalette.paletteCount = initialHash.matrixCount;
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      1,
+                      1,
+                      1,
+                      false,
+                      std::move(initial))
+                    .IsApplied());
+    const RenderObject& acceptedSkinnedObject = scene.GetObject(0);
+    EXPECT_TRUE(acceptedSkinnedObject.HasValidSkinningPalette());
+    EXPECT_EQ(acceptedSkinnedObject.skinningPalette.poseSequence, 17u);
+    const RenderDrawPacketCacheStats afterFirst =
+        scene.GetDrawPacketCacheStats();
+    ASSERT_EQ(afterFirst.entryCount, 1U);
+    EXPECT_EQ(afterFirst.packetBuildCount, 1U);
 
-    FakeSkyboxTexture gpuCubemap;
-    SceneSkyboxTextureAccess textureAccess;
-    textureAccess.isGPUReady =
-        [cubemap](Resource::ResourceId id) -> bool
-        {
-            return id == cubemap.GetId();
-        };
-    textureAccess.getTexture =
-        [cubemap, &gpuCubemap](Resource::ResourceId id) -> RHITexture*
-        {
-            return id == cubemap.GetId() ? &gpuCubemap : nullptr;
-        };
+    RenderPrimitiveSnapshot leading = MakePrimitive(mesh, material);
+    leading.objectId = 43;
+    RenderPrimitiveSnapshot retained = MakePrimitive(
+        mesh, material, {7.0f, 0.0f, 0.0f});
+    retained.skinMatrices = {Mat4Identity(), Mat4Identity()};
+    retained.skinMatrices[1][3] = Vec4{2.0f, 0.0f, 0.0f, 1.0f};
+    V5FrameInput second = MakeFrame(
+        2, 1, 1, false, {std::move(leading), std::move(retained)});
+    ASSERT_NE(second.frame, nullptr);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *second.frame, second.database, resources.registry).IsApplied());
 
-    SceneSkyboxPassBridge bridge;
-    FakeSkyboxPassTarget target;
-    SceneSkyboxPassBridgeResult result;
-    EXPECT_TRUE(bridge.Update(&world, target.MakeActions(), textureAccess, &result));
+    const RenderDrawPacketCacheStats afterSecond =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterSecond.packetBuildCount, afterFirst.packetBuildCount + 1U);
+    EXPECT_EQ(afterSecond.entryCreationCount,
+              afterFirst.entryCreationCount + 1U);
+    EXPECT_EQ(afterSecond.hitCount, afterFirst.hitCount + 1U);
 
-    EXPECT_TRUE(result.skyboxFound);
-    EXPECT_FALSE(result.uploadRequested);
-    EXPECT_EQ(SceneSkyboxPassBridgeFallbackReason::None, result.fallbackReason);
-    EXPECT_EQ(&gpuCubemap, result.selectedCubemap);
-    EXPECT_EQ(&gpuCubemap, target.selectedCubemap);
-    EXPECT_EQ(1.5f, target.cubemapExposure);
-    EXPECT_EQ(0.25f, target.cubemapRotation);
-    EXPECT_EQ(2.0f, target.cubemapBlurLevel);
-    EXPECT_TRUE(target.clearedReason.empty());
+    std::vector<RenderDrawItem> opaque;
+    std::vector<RenderDrawItem> masked;
+    std::vector<RenderDrawItem> transparent;
+    BuildMaterialDrawLists(
+        scene, {1}, Vec3{0.0f}, opaque, masked, transparent);
+    ASSERT_EQ(opaque.size(), 1U);
+    EXPECT_EQ(opaque[0].packet,
+              BuildLegacyMaterialDrawPacket(scene.GetObject(1).meshBatches[0]));
+    EXPECT_EQ(opaque[0].packet.primitiveData, 1U);
+    const auto& referencedResources = scene.GetReferencedResources();
+    EXPECT_NE(std::find(referencedResources.begin(), referencedResources.end(),
+                        opaque[0].packet.geometryKey.mesh),
+              referencedResources.end());
+    EXPECT_NE(std::find(referencedResources.begin(), referencedResources.end(),
+                        opaque[0].packet.materialKey.material),
+              referencedResources.end());
+    const RenderDrawPacketCacheStats afterFirstDrawList =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterFirstDrawList.packetBuildCount,
+              afterSecond.packetBuildCount);
+    EXPECT_EQ(afterFirstDrawList.entryCreationCount,
+              afterSecond.entryCreationCount);
 
-    world.Shutdown();
+    BuildMaterialDrawLists(
+        scene, {1}, Vec3{0.0f}, opaque, masked, transparent);
+    const RenderDrawPacketCacheStats afterSecondDrawList =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterSecondDrawList.packetBuildCount,
+              afterSecond.packetBuildCount);
+    EXPECT_EQ(afterSecondDrawList.entryCreationCount,
+              afterSecond.entryCreationCount);
+
+    const RenderResourceHandle stale{mesh.slot, mesh.generation + 1};
+    EXPECT_EQ(Apply(scene,
+                    resources.registry,
+                    3,
+                    1,
+                    1,
+                    false,
+                    MakePrimitive(stale, material))
+                  .code,
+              RenderFrameApplyCode::StaleRequiredHandle);
+    const RenderDrawPacketCacheStats afterRejected =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterRejected.entryCount, afterSecond.entryCount);
+    EXPECT_EQ(afterRejected.packetBuildCount, afterSecond.packetBuildCount);
+    EXPECT_EQ(afterRejected.entryCreationCount,
+              afterSecond.entryCreationCount);
 }
 
-TEST(RenderSceneValidation, SceneSkyboxBridgeKeepsEquirectangularUnsupported)
+TEST(RenderSceneValidation,
+     BoneVertexSemanticsRequireRuntimePaletteForSkinnedPackets)
 {
-    World world;
-    world.Initialize();
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {124},
+        createInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}},
+        true);
+    const RenderResourceHandle material =
+        resources.Add({125}, RenderResourceKind::Material, true);
+    RenderScene scene;
 
-    auto* entity = CreateEntity(world, "EquirectangularSkybox");
-    ASSERT_NE(nullptr, entity);
-    auto* skybox = entity->AddComponent<SkyboxComponent>();
-    ASSERT_NE(nullptr, skybox);
-    skybox->SetSkyboxType(SkyboxType::Equirectangular);
+    RenderPrimitiveSnapshot unskinned = MakePrimitive(mesh, material);
+    unskinned.skinMatrices.clear();
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      1,
+                      1,
+                      1,
+                      false,
+                      std::move(unskinned))
+                    .IsApplied());
 
-    SceneSkyboxPassBridge bridge;
-    FakeSkyboxPassTarget target;
-    SceneSkyboxPassBridgeResult result;
-    EXPECT_FALSE(bridge.Update(&world, target.MakeActions(), {}, &result));
+    const RenderObject& unskinnedObject = scene.GetObject(0);
+    ASSERT_FALSE(unskinnedObject.HasSkinningData());
+    ASSERT_EQ(unskinnedObject.meshBatches.size(), 1U);
+    const MeshBatch& unskinnedBatch = unskinnedObject.meshBatches[0];
+    EXPECT_FALSE(HasRenderBatchFlag(unskinnedBatch.flags,
+                                    RenderBatchFlags::Skinned));
+    const RenderDrawPacket unskinnedLegacyPacket =
+        BuildLegacyMaterialDrawPacket(unskinnedBatch);
+    EXPECT_FALSE(unskinnedLegacyPacket.pipelineKey.skinned);
+    EXPECT_EQ(static_cast<uint32>(unskinnedLegacyPacket.flags) &
+                  static_cast<uint32>(RenderDrawFlags::Skinned),
+              0U);
 
-    EXPECT_TRUE(result.skyboxFound);
-    EXPECT_FALSE(result.uploadRequested);
-    EXPECT_EQ(SceneSkyboxPassBridgeFallbackReason::SkyboxEquirectangularDrawingNotImplemented,
-              result.fallbackReason);
-    EXPECT_EQ(std::string(ToString(result.fallbackReason)), target.clearedReason);
-    EXPECT_EQ(nullptr, target.selectedCubemap);
+    std::vector<RenderDrawItem> opaque;
+    std::vector<RenderDrawItem> masked;
+    std::vector<RenderDrawItem> transparent;
+    BuildMaterialDrawLists(
+        scene, {0}, Vec3{0.0f}, opaque, masked, transparent);
+    ASSERT_EQ(opaque.size(), 1U);
+    EXPECT_FALSE(opaque[0].packet.pipelineKey.skinned);
+    EXPECT_EQ(static_cast<uint32>(opaque[0].packet.flags) &
+                  static_cast<uint32>(RenderDrawFlags::Skinned),
+              0U);
 
-    world.Shutdown();
+    const RenderDrawPacketCacheStats unskinnedCache =
+        scene.GetDrawPacketCacheStats();
+
+    RenderPrimitiveSnapshot skinned = MakePrimitive(mesh, material);
+    skinned.hasSkinningPaletteProvider = true;
+    skinned.skinningPalette.providerComponentId = 0x0000000400000001ULL;
+    skinned.skinningPalette.sourceModelResourceId = 902;
+    skinned.skinningPalette.poseSequence = 18;
+    const SkinningPaletteHash paletteHash =
+        ComputeSkinningPaletteHash(skinned.skinMatrices);
+    ASSERT_TRUE(paletteHash.IsValid());
+    skinned.skinningPalette.paletteHash = paletteHash.value;
+    skinned.skinningPalette.paletteCount = paletteHash.matrixCount;
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      2,
+                      2,
+                      1,
+                      false,
+                      std::move(skinned))
+                    .IsApplied());
+
+    const RenderObject& skinnedObject = scene.GetObject(0);
+    ASSERT_TRUE(skinnedObject.HasValidSkinningPalette());
+    ASSERT_EQ(skinnedObject.meshBatches.size(), 1U);
+    const MeshBatch& skinnedBatch = skinnedObject.meshBatches[0];
+    EXPECT_TRUE(HasRenderBatchFlag(skinnedBatch.flags,
+                                   RenderBatchFlags::Skinned));
+    const RenderDrawPacket skinnedLegacyPacket =
+        BuildLegacyMaterialDrawPacket(skinnedBatch);
+    EXPECT_TRUE(skinnedLegacyPacket.pipelineKey.skinned);
+    EXPECT_NE(static_cast<uint32>(skinnedLegacyPacket.flags) &
+                  static_cast<uint32>(RenderDrawFlags::Skinned),
+              0U);
+
+    BuildMaterialDrawLists(
+        scene, {0}, Vec3{0.0f}, opaque, masked, transparent);
+    ASSERT_EQ(opaque.size(), 1U);
+    EXPECT_TRUE(opaque[0].packet.pipelineKey.skinned);
+    EXPECT_NE(static_cast<uint32>(opaque[0].packet.flags) &
+                  static_cast<uint32>(RenderDrawFlags::Skinned),
+              0U);
+
+    const RenderDrawPacketCacheStats skinnedCache =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(skinnedCache.packetBuildCount,
+              unskinnedCache.packetBuildCount + 1U);
+    EXPECT_EQ(skinnedCache.missCount, unskinnedCache.missCount + 1U);
+    EXPECT_EQ(skinnedCache.GetInvalidationCount(
+                  RenderDrawPacketCacheInvalidationReason::StaticStateChanged),
+              unskinnedCache.GetInvalidationCount(
+                  RenderDrawPacketCacheInvalidationReason::StaticStateChanged) +
+                  1U);
 }
 
-TEST(RenderSceneValidation, RenderProxyBridgeReportsLegacyRendererFallback)
+TEST(RenderSceneValidation, RejectsSchemaOrderAndStaleHandlesWithoutMutation)
 {
-    World world;
-    world.Initialize();
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({3}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      10,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {1, 0, 0}))
+                    .IsApplied());
 
-    auto* entity = CreateEntity(world, "LegacyRendererEntity");
-    ASSERT_NE(nullptr, entity);
+    V5FrameInput unsupported =
+        MakeFrame(11, 1, 1, false, {MakePrimitive(mesh, {}, {2, 0, 0})});
+    ASSERT_NE(unsupported.frame, nullptr);
+    const_cast<RenderFrameHeaderV5&>(
+        unsupported.frame->GetHeader()).schemaVersion += 1;
+    EXPECT_EQ(scene.ApplyFrameV5(
+                  *unsupported.frame,
+                  unsupported.database,
+                  resources.registry).code,
+              RenderFrameApplyCode::UnsupportedSchema);
+    EXPECT_EQ(Vec3(scene.GetObject(0).worldMatrix[3]), (Vec3{1, 0, 0}));
 
-    auto mesh = MakeMeshResource(1202);
-    auto* legacyRenderer = entity->AddComponent<MeshRendererComponent>();
-    ASSERT_NE(nullptr, legacyRenderer);
-    legacyRenderer->SetMesh(mesh);
+    EXPECT_EQ(Apply(scene,
+                    resources.registry,
+                    9,
+                    1,
+                    1,
+                    false,
+                    MakePrimitive(mesh, {}, {3, 0, 0}))
+                  .code,
+              RenderFrameApplyCode::OutOfOrder);
+    EXPECT_EQ(Vec3(scene.GetObject(0).worldMatrix[3]), (Vec3{1, 0, 0}));
 
-    RenderProxySceneBridge bridge;
-    RenderProxySnapshot snapshot;
-    RenderProxySceneBridgeResult result;
-    EXPECT_FALSE(bridge.BuildSnapshot(&world, snapshot, &result));
-
-    EXPECT_FALSE(result.usedProxyPath);
-    EXPECT_TRUE(result.requiresLegacyFallback);
-    EXPECT_EQ(RenderProxySceneBridgeFallbackReason::LegacyRendererRequired, result.fallbackReason);
-    EXPECT_EQ(entity->GetHandle(), result.fallbackOwnerId);
-    EXPECT_TRUE(snapshot.primitives.empty());
-    EXPECT_TRUE(snapshot.lights.empty());
-
-    world.Shutdown();
+    const RenderResourceHandle stale{mesh.slot, mesh.generation + 1};
+    EXPECT_EQ(Apply(scene,
+                    resources.registry,
+                    12,
+                    1,
+                    1,
+                    false,
+                    MakePrimitive(stale, {}, {4, 0, 0}))
+                  .code,
+              RenderFrameApplyCode::StaleRequiredHandle);
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 10U);
+    EXPECT_EQ(Vec3(scene.GetObject(0).worldMatrix[3]), (Vec3{1, 0, 0}));
 }
 
-TEST(RenderSceneValidation, RenderProxyBridgeDoesNotFallbackForHiddenPrimitiveControlledLegacyRenderer)
+TEST(RenderSceneValidation, UsesReadyFallbackForPendingRequiredMesh)
 {
-    World world;
-    world.Initialize();
-
-    auto* entity = CreateEntity(world, "HiddenPrimitiveControlledEntity");
-    ASSERT_NE(nullptr, entity);
-
-    auto mesh = MakeMeshResource(1203);
-    auto* legacyRenderer = entity->AddComponent<MeshRendererComponent>();
-    ASSERT_NE(nullptr, legacyRenderer);
-    legacyRenderer->SetMesh(mesh);
-
-    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, primitive);
-    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
-    primitive->SetMesh(mesh);
-    primitive->SetVisible(false);
-
-    RenderProxySceneBridge bridge;
-    RenderProxySnapshot snapshot;
-    RenderProxySceneBridgeResult result;
-    EXPECT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
-
-    EXPECT_TRUE(result.usedProxyPath);
-    EXPECT_FALSE(result.requiresLegacyFallback);
-    EXPECT_TRUE(snapshot.primitives.empty());
-
-    world.Shutdown();
-}
-
-TEST(RenderSceneValidation, RenderProxyBridgeFallbackOnlyWhenLegacyPrimitiveIsRenderable)
-{
-    World world;
-    world.Initialize();
-
-    auto* emptyEntity = CreateEntity(world, "EmptyPrimitiveEntity");
-    ASSERT_NE(nullptr, emptyEntity);
-    auto* emptyPrimitive = static_cast<Actor*>(emptyEntity)->AddComponent<EmptyPrimitiveComponent>();
-    ASSERT_NE(nullptr, emptyPrimitive);
-
-    RenderProxySceneBridge bridge;
-    RenderProxySnapshot snapshot;
-    RenderProxySceneBridgeResult result;
-    EXPECT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
-    EXPECT_FALSE(result.requiresLegacyFallback);
-
-    auto* legacyEntity = CreateEntity(world, "LegacyPrimitiveEntity");
-    ASSERT_NE(nullptr, legacyEntity);
-    auto* legacyPrimitive = static_cast<Actor*>(legacyEntity)->AddComponent<LegacyOnlyPrimitiveComponent>();
-    ASSERT_NE(nullptr, legacyPrimitive);
-
-    EXPECT_FALSE(bridge.BuildSnapshot(&world, snapshot, &result));
-    EXPECT_TRUE(result.requiresLegacyFallback);
-    EXPECT_EQ(RenderProxySceneBridgeFallbackReason::PrimitiveProxyUnavailable, result.fallbackReason);
-    EXPECT_EQ(legacyEntity->GetHandle(), result.fallbackOwnerId);
-
-    world.Shutdown();
-}
-
-TEST(RenderSceneValidation, RenderProxyBridgeReportsProxyCreationFailure)
-{
-    World world;
-    world.Initialize();
-
-    auto* entity = CreateEntity(world, "FailingProxyPrimitiveEntity");
-    ASSERT_NE(nullptr, entity);
-    auto* primitive = static_cast<Actor*>(entity)->AddComponent<FailingProxyPrimitiveComponent>();
-    ASSERT_NE(nullptr, primitive);
-
-    RenderProxySceneBridge bridge;
-    RenderProxySnapshot snapshot;
-    RenderProxySceneBridgeResult result;
-    EXPECT_FALSE(bridge.BuildSnapshot(&world, snapshot, &result));
-
-    EXPECT_TRUE(result.requiresLegacyFallback);
-    EXPECT_EQ(RenderProxySceneBridgeFallbackReason::PrimitiveProxyCreationFailed, result.fallbackReason);
-    EXPECT_EQ(entity->GetHandle(), result.fallbackOwnerId);
-    EXPECT_TRUE(snapshot.primitives.empty());
-
-    world.Shutdown();
-}
-
-TEST(RenderSceneValidation, RenderProxyBridgeReflectsTransformUpdates)
-{
-    World world;
-    world.Initialize();
-
-    auto* entity = CreateEntity(world, "TransformProxyEntity");
-    ASSERT_NE(nullptr, entity);
-
-    auto mesh = MakeMeshResource(1204);
-    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, primitive);
-    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
-    primitive->SetMesh(mesh);
-
-    RenderProxySceneBridge bridge;
-    RenderProxySnapshot snapshot;
-    RenderProxySceneBridgeResult result;
-
-    entity->SetPosition(Vec3(1.0f, 0.0f, 0.0f));
-    ASSERT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
-    ASSERT_EQ(static_cast<size_t>(1), snapshot.primitives.size());
-    EXPECT_EQ(Vec3(1.0f, 0.0f, 0.0f), Vec3(snapshot.primitives[0].worldMatrix[3]));
-
-    entity->SetPosition(Vec3(5.0f, 0.0f, 0.0f));
-    ASSERT_TRUE(bridge.BuildSnapshot(&world, snapshot, &result));
-    ASSERT_EQ(static_cast<size_t>(1), snapshot.primitives.size());
-    EXPECT_EQ(Vec3(5.0f, 0.0f, 0.0f), Vec3(snapshot.primitives[0].worldMatrix[3]));
-
-    world.Shutdown();
-}
-
-TEST(RenderSceneValidation, RenderSceneCollectorFallsBackToLegacyWhenStaticMeshPrimitiveHasNoRenderData)
-{
-    World world;
-    world.Initialize();
-
-    auto* entity = CreateEntity(world, "LegacyFallbackEntity");
-    ASSERT_NE(nullptr, entity);
-
-    auto mesh = MakeMeshResource(1002);
-    auto* legacyRenderer = entity->AddComponent<MeshRendererComponent>();
-    legacyRenderer->SetMesh(mesh);
-
-    auto* emptyPrimitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, emptyPrimitive);
-    EXPECT_TRUE(emptyPrimitive->IsRegistered());
-    EXPECT_FALSE(emptyPrimitive->HasRenderData());
+    RegistryFixture resources;
+    const RenderResourceHandle pending =
+        resources.Add({4}, RenderResourceKind::Mesh, false);
+    const RenderResourceHandle fallback =
+        resources.Add({5}, RenderResourceKind::Mesh, true);
+    RenderPrimitiveSnapshot primitive = MakePrimitive(pending);
+    primitive.fallbackMesh = fallback;
 
     RenderScene scene;
-    scene.CollectFromWorld(&world);
-
-    EXPECT_EQ(static_cast<size_t>(1), scene.GetObjectCount());
-    EXPECT_EQ(entity->GetHandle(), scene.GetObject(0).entityId);
-    EXPECT_EQ(mesh.GetId(), scene.GetObject(0).meshId);
-
-    world.Shutdown();
+    RenderFrameApplyResult result = Apply(
+        scene, resources.registry, 1, 1, 1, false, std::move(primitive));
+    ASSERT_TRUE(result.IsApplied());
+    EXPECT_EQ(result.pendingFallbackCount, 1U);
+    EXPECT_EQ(result.skippedDrawCount, 0U);
+    EXPECT_EQ(scene.GetObject(0).mesh, fallback);
+    EXPECT_TRUE(scene.GetObject(0).drawable);
 }
 
-TEST(RenderSceneValidation, RenderSceneCollectorDoesNotDuplicateWhenStaticMeshPrimitiveRenders)
+TEST(RenderSceneValidation,
+     StaticDatabasePromotesFallbackWhenWatchedResourceBecomesReady)
 {
-    World world;
-    world.Initialize();
+    RegistryFixture resources;
+    const RenderResourceHandle pending =
+        resources.Add({41}, RenderResourceKind::Mesh, false);
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const std::vector<MeshUploadSubmesh> submeshes = {
+        {0, 3, 0, MeshUploadPrimitiveTopology::Triangles}};
+    const RenderResourceHandle fallback = resources.AddMeshWithMetadata(
+        {42}, createInfo, submeshes);
+    RenderPrimitiveSnapshot primitive = MakePrimitive(pending);
+    primitive.fallbackMesh = fallback;
 
-    auto* entity = CreateEntity(world, "DedupEntity");
-    ASSERT_NE(nullptr, entity);
-
-    auto mesh = MakeMeshResource(1003);
-    auto* legacyRenderer = entity->AddComponent<MeshRendererComponent>();
-    legacyRenderer->SetMesh(mesh);
-
-    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, primitive);
-    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
-    primitive->SetMesh(mesh);
-
+    V5FrameInput input = MakeFrame(1, 1, 1, false, {primitive});
     RenderScene scene;
-    scene.CollectFromWorld(&world);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *input.frame, input.database, resources.registry).IsApplied());
+    ASSERT_EQ(scene.GetObject(0).mesh, fallback);
+    scene.MarkAcceptedFrameRendered();
+    const uint64 fullRebuildsBefore =
+        scene.GetRetainedStats().fullRebuildCount;
 
-    EXPECT_EQ(static_cast<size_t>(1), scene.GetObjectCount());
-    EXPECT_EQ(entity->GetHandle(), scene.GetObject(0).entityId);
-    EXPECT_EQ(mesh.GetId(), scene.GetObject(0).meshId);
-
-    world.Shutdown();
+    resources.CompletePendingMesh(pending, createInfo, submeshes);
+    const std::unique_ptr<const RenderFramePacketV5> staticSceneFrame =
+        MakeFramePacketV5(2, 1, 1, 1, false);
+    const RenderFrameApplyResult promoted = scene.ApplyFrameV5(
+        *staticSceneFrame, input.database, resources.registry);
+    ASSERT_TRUE(promoted.IsApplied());
+    EXPECT_TRUE(promoted.sceneMutated);
+    EXPECT_EQ(scene.GetObject(0).mesh, pending);
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
+              fullRebuildsBefore + 1U);
 }
 
-TEST(RenderSceneValidation, RenderSceneCollectorSkipsInactivePrimitiveOwners)
+TEST(RenderSceneValidation,
+     StaticSceneRetainsPacketsAcrossExactContentOnlyTextureReplacement)
 {
-    World world;
-    world.Initialize();
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const std::vector<MeshUploadSubmesh> submeshes = {
+        {0, 3, 0, MeshUploadPrimitiveTopology::Triangles}};
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {43}, createInfo, submeshes);
+    const RenderResourceHandle texture = resources.Add(
+        {44}, RenderResourceKind::Texture, true);
+    const RenderResourceHandle material = resources.Add(
+        {45}, RenderResourceKind::Material, true, {texture});
+    EXPECT_EQ(resources.registry.GetExactKind(texture),
+              RenderResourceKind::Texture);
+    EXPECT_EQ(resources.registry.GetExactKind(
+                  {texture.slot, texture.generation + 1U}),
+              RenderResourceKind::Invalid);
 
-    auto* entity = CreateEntity(world, "InactivePrimitiveEntity");
-    ASSERT_NE(nullptr, entity);
-
-    auto mesh = MakeMeshResource(1004);
-    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, primitive);
-    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
-    primitive->SetMesh(mesh);
-    entity->SetActive(false);
-
+    V5FrameInput input = MakeFrame(
+        1, 1, 1, false, {MakePrimitive(mesh, material)});
     RenderScene scene;
-    scene.CollectFromWorld(&world);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *input.frame, input.database, resources.registry).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    const std::unique_ptr<const RenderFramePacketV5> settleFrame =
+        MakeFramePacketV5(2, 1, 1, 1, false);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *settleFrame, input.database, resources.registry).IsApplied());
+    scene.MarkAcceptedFrameRendered();
 
-    EXPECT_EQ(static_cast<size_t>(0), scene.GetObjectCount());
+    const RenderSceneRetainedStats before = scene.GetRetainedStats();
+    const RenderDrawPacketCacheStats cacheBefore =
+        scene.GetDrawPacketCacheStats();
+    const RenderObject& objectBefore = scene.GetObject(0);
+    ASSERT_EQ(objectBefore.meshBatches.size(), 1U);
+    const MeshBatch batchBefore = objectBefore.meshBatches[0];
 
-    world.Shutdown();
+    resources.ReplaceReadyResource(
+        texture, RenderResourceKind::Texture, 1);
+    const std::unique_ptr<const RenderFramePacketV5> staticFrame =
+        MakeFramePacketV5(3, 1, 1, 1, false);
+    const RenderFrameApplyResult refreshed = scene.ApplyFrameV5(
+        *staticFrame, input.database, resources.registry);
+    ASSERT_TRUE(refreshed.IsApplied());
+    EXPECT_FALSE(refreshed.sceneMutated);
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
+              before.fullRebuildCount);
+    EXPECT_EQ(scene.GetRetainedStats().incrementalUpdateCount,
+              before.incrementalUpdateCount);
+    EXPECT_EQ(scene.GetObjectCount(), 1U);
+    EXPECT_EQ(scene.GetDrawCount(), 1U);
+    const RenderObject& objectAfter = scene.GetObject(0);
+    ASSERT_EQ(objectAfter.meshBatches.size(), 1U);
+    EXPECT_EQ(objectAfter.entityId, objectBefore.entityId);
+    EXPECT_EQ(objectAfter.mesh, objectBefore.mesh);
+    EXPECT_EQ(objectAfter.material, objectBefore.material);
+    EXPECT_EQ(objectAfter.meshBatches[0].mesh, batchBefore.mesh);
+    EXPECT_EQ(objectAfter.meshBatches[0].submeshIndex,
+              batchBefore.submeshIndex);
+    EXPECT_EQ(objectAfter.meshBatches[0].material, batchBefore.material);
+    EXPECT_EQ(objectAfter.meshBatches[0].materialMode,
+              batchBefore.materialMode);
+    const RenderDrawPacketCacheStats cacheAfter =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(cacheAfter.entryCount, cacheBefore.entryCount);
+    EXPECT_EQ(cacheAfter.packetBuildCount, cacheBefore.packetBuildCount);
 }
 
-TEST(RenderSceneValidation, RenderSceneCollectorDoesNotFallbackWhenPrimitiveIsHidden)
+TEST(RenderSceneValidation,
+     StaticSceneRebuildsForMaterialOrMeshContentReplacement)
 {
-    World world;
-    world.Initialize();
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const std::vector<MeshUploadSubmesh> submeshes = {
+        {0, 3, 0, MeshUploadPrimitiveTopology::Triangles}};
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {46}, createInfo, submeshes);
+    const RenderResourceHandle material = resources.Add(
+        {47}, RenderResourceKind::Material, true);
+    V5FrameInput input = MakeFrame(
+        1, 1, 1, false, {MakePrimitive(mesh, material)});
+    RenderScene scene;
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *input.frame, input.database, resources.registry).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    const std::unique_ptr<const RenderFramePacketV5> settleFrame =
+        MakeFramePacketV5(2, 1, 1, 1, false);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *settleFrame, input.database, resources.registry).IsApplied());
+    const uint64 fullBeforeMaterial =
+        scene.GetRetainedStats().fullRebuildCount;
 
-    auto* entity = CreateEntity(world, "HiddenPrimitiveEntity");
-    ASSERT_NE(nullptr, entity);
+    resources.ReplaceReadyResource(
+        material, RenderResourceKind::Material, 1);
+    const std::unique_ptr<const RenderFramePacketV5> materialFrame =
+        MakeFramePacketV5(3, 1, 1, 1, false);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *materialFrame, input.database, resources.registry).IsApplied());
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
+              fullBeforeMaterial + 1U);
 
-    auto mesh = MakeMeshResource(1005);
-    auto* legacyRenderer = entity->AddComponent<MeshRendererComponent>();
-    legacyRenderer->SetMesh(mesh);
+    const uint64 fullBeforeMesh = scene.GetRetainedStats().fullRebuildCount;
+    resources.ReplaceReadyResource(mesh, RenderResourceKind::Mesh, 1);
+    const std::unique_ptr<const RenderFramePacketV5> meshFrame =
+        MakeFramePacketV5(4, 1, 1, 1, false);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *meshFrame, input.database, resources.registry).IsApplied());
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount, fullBeforeMesh + 1U);
+}
 
-    auto* primitive = static_cast<Actor*>(entity)->AddComponent<StaticMeshComponent>();
-    ASSERT_NE(nullptr, primitive);
-    EXPECT_TRUE(primitive->AttachToComponent(entity->GetRootComponent()));
-    primitive->SetMesh(mesh);
-    primitive->SetVisible(false);
+TEST(RenderSceneValidation,
+     StaticSceneRejectsTopologyUnsafeOrStaleTextureRefreshFromReuse)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const std::vector<MeshUploadSubmesh> submeshes = {
+        {0, 3, 0, MeshUploadPrimitiveTopology::Triangles}};
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {48}, createInfo, submeshes);
+    const RenderResourceHandle dependency = resources.Add(
+        {49}, RenderResourceKind::Texture, true);
+    const RenderResourceHandle texture = resources.Add(
+        {50}, RenderResourceKind::Texture, true, {dependency});
+    const RenderResourceHandle material = resources.Add(
+        {51}, RenderResourceKind::Material, true, {texture});
+    V5FrameInput input = MakeFrame(
+        1, 1, 1, false, {MakePrimitive(mesh, material)});
+    RenderScene scene;
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *input.frame, input.database, resources.registry).IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    const std::unique_ptr<const RenderFramePacketV5> settleFrame =
+        MakeFramePacketV5(2, 1, 1, 1, false);
+    ASSERT_TRUE(scene.ApplyFrameV5(
+        *settleFrame, input.database, resources.registry).IsApplied());
+
+    const uint64 fullBeforeTopologyChange =
+        scene.GetRetainedStats().fullRebuildCount;
+    resources.ReplaceReadyResource(
+        texture, RenderResourceKind::Texture, 1, {dependency});
+    const std::unique_ptr<const RenderFramePacketV5> topologyFrame =
+        MakeFramePacketV5(3, 1, 1, 1, false);
+    const RenderFrameApplyResult topologyResult = scene.ApplyFrameV5(
+        *topologyFrame, input.database, resources.registry);
+    ASSERT_TRUE(topologyResult.IsApplied());
+    EXPECT_TRUE(topologyResult.sceneMutated);
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
+              fullBeforeTopologyChange + 1U);
+
+    const uint64 fullBeforeStale = scene.GetRetainedStats().fullRebuildCount;
+    ASSERT_TRUE(resources.registry.Release(texture));
+    EXPECT_EQ(resources.registry.GetExactKind(texture),
+              RenderResourceKind::Invalid);
+    const std::unique_ptr<const RenderFramePacketV5> staleFrame =
+        MakeFramePacketV5(4, 1, 1, 1, false);
+    const RenderFrameApplyResult staleResult = scene.ApplyFrameV5(
+        *staleFrame, input.database, resources.registry);
+    ASSERT_TRUE(staleResult.IsApplied());
+    EXPECT_TRUE(staleResult.sceneMutated);
+    EXPECT_EQ(scene.GetRetainedStats().fullRebuildCount,
+              fullBeforeStale + 1U);
+}
+
+TEST(RenderSceneValidation,
+     UsesFallbackMeshMetadataWithLegacyMaterialForEverySubmesh)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle pendingPreferred =
+        resources.Add({44}, RenderResourceKind::Mesh, false);
+    MeshUploadCreateInfo fallbackCreateInfo;
+    fallbackCreateInfo.indexCount = 6;
+    fallbackCreateInfo.indexType = MeshUploadIndexType::UInt16;
+    const RenderResourceHandle readyFallback = resources.AddMeshWithMetadata(
+        {45}, fallbackCreateInfo,
+        {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles},
+         {3, 3, 0, MeshUploadPrimitiveTopology::TriangleStrip}});
+    const RenderResourceHandle legacyMaterial =
+        resources.Add({46}, RenderResourceKind::Material, true);
+    const RenderResourceHandle ignoredSecondMaterial =
+        resources.Add({47}, RenderResourceKind::Material, true);
+
+    RenderPrimitiveSnapshot primitive = MakePrimitive(
+        pendingPreferred, legacyMaterial);
+    primitive.fallbackMesh = readyFallback;
+    primitive.flags |= static_cast<uint32>(RenderMaterialMode::Masked) << 8U;
+    primitive.submeshes = {
+        {0, legacyMaterial, RenderMaterialMode::Masked},
+        {1, ignoredSecondMaterial, RenderMaterialMode::Transparent}};
 
     RenderScene scene;
-    scene.CollectFromWorld(&world);
+    const RenderFrameApplyResult result = Apply(
+        scene, resources.registry, 1, 1, 1, false, std::move(primitive));
+    ASSERT_TRUE(result.IsApplied());
+    EXPECT_EQ(result.pendingFallbackCount, 1U);
+    const RenderObject& object = scene.GetObject(0);
+    EXPECT_EQ(object.mesh, readyFallback);
+    ASSERT_TRUE(object.meshBatchesAuthoritative);
+    ASSERT_EQ(object.meshBatches.size(), 2U);
+    for (const MeshBatch& batch : object.meshBatches)
+    {
+        EXPECT_EQ(batch.material, legacyMaterial);
+        EXPECT_EQ(batch.materialMode, RenderMaterialMode::Masked);
+    }
+    ASSERT_EQ(object.materialModes.size(), 2U);
+    EXPECT_EQ(object.material, legacyMaterial);
+    EXPECT_EQ(object.materialModes[0], RenderMaterialMode::Masked);
+    EXPECT_EQ(object.materialModes[1], RenderMaterialMode::Masked);
+}
 
-    EXPECT_EQ(static_cast<size_t>(0), scene.GetObjectCount());
+TEST(RenderSceneValidation,
+     SynthesizesSingleSubmeshFromCreateInfoForGeometryAndDrawArguments)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 9;
+    createInfo.indexType = MeshUploadIndexType::UInt16;
+    createInfo.topology = MeshUploadPrimitiveTopology::TriangleStrip;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {48}, createInfo, {});
+    const RenderResourceHandle material =
+        resources.Add({49}, RenderResourceKind::Material, true);
 
-    world.Shutdown();
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene, resources.registry, 1, 1, 1, false,
+                      MakePrimitive(mesh, material)).IsApplied());
+    const RenderObject& object = scene.GetObject(0);
+    ASSERT_TRUE(object.meshBatchesAuthoritative);
+    ASSERT_EQ(object.meshBatches.size(), 1U);
+    const MeshBatch& batch = object.meshBatches[0];
+    EXPECT_EQ(batch.submeshIndex, 0U);
+    EXPECT_EQ(batch.indexType, MeshUploadIndexType::UInt16);
+    EXPECT_EQ(batch.geometry.indexOffset, 0U);
+    EXPECT_EQ(batch.geometry.indexCount, 9U);
+    EXPECT_EQ(batch.geometry.baseVertex, 0);
+    EXPECT_EQ(batch.geometry.topology, MeshUploadPrimitiveTopology::TriangleStrip);
+
+    const RenderDrawPacket packet = BuildLegacyMaterialDrawPacket(batch);
+    EXPECT_EQ(packet.arguments.indexCount, 9U);
+    EXPECT_EQ(packet.arguments.firstIndex, 0U);
+    EXPECT_EQ(packet.arguments.vertexOffset, 0);
+    EXPECT_EQ(packet.arguments.instanceCount, 1U);
+    EXPECT_EQ(packet.arguments.firstInstance, 0U);
+}
+
+TEST(RenderSceneValidation, AcceptsQueuedRequiredMeshBeforeRegistryCreation)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle queued =
+        resources.AddQueuedWithoutRegistry({41}, RenderResourceKind::Mesh);
+
+    RenderScene scene;
+    const RenderFrameApplyResult result = Apply(
+        scene, resources.registry, 1, 1, 1, false, MakePrimitive(queued));
+
+    ASSERT_TRUE(result.IsApplied());
+    EXPECT_EQ(result.skippedDrawCount, 1U);
+    EXPECT_FALSE(scene.GetObject(0).mesh.IsValid());
+    EXPECT_FALSE(scene.GetObject(0).drawable);
+}
+
+TEST(RenderSceneValidation, SequenceGapPreservesRenderedTemporalHistory)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({6}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      10,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {1, 0, 0}))
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+
+    RenderFrameApplyResult gap = Apply(scene,
+                                       resources.registry,
+                                       13,
+                                       1,
+                                       1,
+                                       false,
+                                       MakePrimitive(mesh, {}, {3, 0, 0}));
+    ASSERT_TRUE(gap.IsApplied());
+    EXPECT_EQ(gap.sequenceGap, 2U);
+    EXPECT_FALSE(gap.temporalHistoryReset);
+    EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 1U);
+    EXPECT_EQ(Vec3(scene.GetObject(0).previousWorldMatrix[3]),
+              (Vec3{1, 0, 0}));
+}
+
+TEST(RenderSceneValidation, ResetsHistoryForEachContinuityBoundary)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({7}, RenderResourceKind::Mesh, true);
+
+    const auto verifyReset = [&](uint64 worldRevision,
+                                 uint64 temporalEpoch,
+                                 bool discontinuity,
+                                 bool surfaceChange)
+    {
+        RenderScene scene;
+        scene.SetSurfaceCompatibilityKey(1);
+        EXPECT_TRUE(Apply(scene,
+                          resources.registry,
+                          1,
+                          1,
+                          1,
+                          false,
+                          MakePrimitive(mesh))
+                        .IsApplied());
+        scene.MarkAcceptedFrameRendered();
+        if (surfaceChange)
+        {
+            scene.SetSurfaceCompatibilityKey(2);
+        }
+        const RenderFrameApplyResult result = Apply(
+            scene,
+            resources.registry,
+            2,
+            worldRevision,
+            temporalEpoch,
+            discontinuity,
+            MakePrimitive(mesh, {}, {2, 0, 0}));
+        EXPECT_TRUE(result.IsApplied());
+        EXPECT_TRUE(result.temporalHistoryReset);
+        EXPECT_EQ(scene.GetObject(0).previousWorldMatrixValid, 0U);
+    };
+
+    verifyReset(2, 1, false, false);
+    verifyReset(1, 2, false, false);
+    verifyReset(1, 1, true, false);
+    verifyReset(1, 1, false, true);
+}
+
+TEST(RenderSceneValidation, ReplacedOrRejectedPacketDoesNotAdvancePreviousState)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle mesh =
+        resources.Add({8}, RenderResourceKind::Mesh, true);
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      20,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {1, 0, 0}))
+                    .IsApplied());
+    scene.MarkAcceptedFrameRendered();
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      21,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {2, 0, 0}))
+                    .IsApplied());
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      22,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {3, 0, 0}))
+                    .IsApplied());
+    EXPECT_EQ(Vec3(scene.GetObject(0).previousWorldMatrix[3]),
+              (Vec3{1, 0, 0}));
+    EXPECT_EQ(scene.GetLastRenderedFrameSequence(), 20U);
+
+    const RenderResourceHandle stale{mesh.slot, mesh.generation + 1};
+    EXPECT_EQ(Apply(scene,
+                    resources.registry,
+                    23,
+                    1,
+                    1,
+                    false,
+                    MakePrimitive(stale))
+                  .code,
+              RenderFrameApplyCode::StaleRequiredHandle);
+    EXPECT_EQ(scene.GetLastRenderedFrameSequence(), 20U);
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 22U);
+}
+
+TEST(RenderSceneValidation, StampsExactResourceClosureTransactionally)
+{
+    RegistryFixture resources;
+    const RenderResourceHandle texture =
+        resources.Add({20}, RenderResourceKind::Texture, true);
+    const RenderResourceHandle material = resources.Add(
+        {21}, RenderResourceKind::Material, true, {texture});
+
+    GPUCompletionToken completion;
+    ASSERT_TRUE(InsertGPUCompletionPoint(
+        completion,
+        GPUCompletionPoint{GPUQueueDomain::Graphics, 17}));
+    const std::vector<RenderResourceHandle> roots{material};
+    ASSERT_TRUE(resources.registry.MergeLastUseClosure(roots, completion));
+    EXPECT_EQ(resources.registry.GetLastUse(material).count, 1U);
+    EXPECT_EQ(resources.registry.GetLastUse(material).points[0].value, 17U);
+    EXPECT_EQ(resources.registry.GetLastUse(texture).points[0].value, 17U);
+
+    const std::vector<RenderResourceHandle> staleRoots{
+        RenderResourceHandle{material.slot, material.generation + 1}};
+    GPUCompletionToken later;
+    ASSERT_TRUE(InsertGPUCompletionPoint(
+        later,
+        GPUCompletionPoint{GPUQueueDomain::Graphics, 99}));
+    EXPECT_FALSE(resources.registry.MergeLastUseClosure(staleRoots, later));
+    EXPECT_EQ(resources.registry.GetLastUse(material).points[0].value, 17U);
+    EXPECT_EQ(resources.registry.GetLastUse(texture).points[0].value, 17U);
+}
+
+TEST(RenderSceneValidation,
+     PersistentDatabaseRejectsDuplicateObjectIdsWithoutSceneMutation)
+{
+    RegistryFixture resources;
+    MeshUploadCreateInfo createInfo;
+    createInfo.indexCount = 3;
+    const RenderResourceHandle mesh = resources.AddMeshWithMetadata(
+        {30}, createInfo, {{0, 3, 0, MeshUploadPrimitiveTopology::Triangles}});
+    RenderScene scene;
+    ASSERT_TRUE(Apply(scene,
+                      resources.registry,
+                      1,
+                      1,
+                      1,
+                      false,
+                      MakePrimitive(mesh, {}, {1.0F, 0.0F, 0.0F}))
+                    .IsApplied());
+    const RenderDrawPacketCacheStats beforeCache =
+        scene.GetDrawPacketCacheStats();
+    ASSERT_EQ(scene.GetAcceptedHeader().sequence, 1U);
+    ASSERT_EQ(scene.GetObjectCount(), 1U);
+
+    RenderPrimitiveSnapshot first = MakePrimitive(
+        mesh, {}, {2.0F, 0.0F, 0.0F});
+    RenderPrimitiveSnapshot duplicate = MakePrimitive(
+        mesh, {}, {3.0F, 0.0F, 0.0F});
+    first.objectId = 99;
+    duplicate.objectId = 99;
+    RenderSceneUpdateBatch invalidBatch;
+    invalidBatch.targetSceneRevision = 2;
+    invalidBatch.fullReset = true;
+    invalidBatch.primitives.push_back(
+        {RenderSceneMutationOperation::Upsert, 99, std::move(first)});
+    invalidBatch.primitives.push_back(
+        {RenderSceneMutationOperation::Upsert, 99, std::move(duplicate)});
+    RenderSceneDatabase invalidDatabase;
+    EXPECT_EQ(invalidDatabase.Apply(invalidBatch).code,
+              RenderSceneUpdateApplyCode::InvalidMutation);
+    EXPECT_EQ(invalidDatabase.GetRevision(), 0U);
+
+    EXPECT_EQ(scene.GetAcceptedHeader().sequence, 1U);
+    EXPECT_EQ(scene.GetObjectCount(), 1U);
+    EXPECT_EQ(Vec3(scene.GetObject(0).worldMatrix[3]),
+              (Vec3{1.0F, 0.0F, 0.0F}));
+    const RenderDrawPacketCacheStats afterCache =
+        scene.GetDrawPacketCacheStats();
+    EXPECT_EQ(afterCache.entryCount, beforeCache.entryCount);
+    EXPECT_EQ(afterCache.resolveCount, beforeCache.resolveCount);
+    EXPECT_EQ(afterCache.entryCreationCount, beforeCache.entryCreationCount);
 }

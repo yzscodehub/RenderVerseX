@@ -5,21 +5,26 @@
  * @brief Mesh resource type
  */
 
+#include "Core/Math/AABB.h"
+#include "Geometry/Asset/AssetMetadata.h"
+#include "Geometry/Asset/Mesh.h"
 #include "Resource/IResource.h"
 #include "Resource/ResourceHandle.h"
-#include "Scene/Mesh.h"
-#include "Core/Math/AABB.h"
+
 #include <memory>
 #include <vector>
 
 namespace RVX::Resource
 {
     /**
-     * @brief Mesh resource - encapsulates Scene::Mesh with resource lifecycle
+     * @brief Mesh resource - encapsulates Mesh data with resource lifecycle
      */
-    class MeshResource : public IResource
+    class MeshResource : public IResource,
+                         public IMeshAssetMetadata
     {
     public:
+        static constexpr ResourceType StaticResourceType = ResourceType::Mesh;
+
         MeshResource();
         ~MeshResource() override;
 
@@ -32,12 +37,16 @@ namespace RVX::Resource
         size_t GetMemoryUsage() const override;
         size_t GetGPUMemoryUsage() const override;
 
+        AABB GetAssetMeshBounds() const override { return GetBounds(); }
+        size_t GetAssetMeshSubmeshCount() const override;
+
         // =====================================================================
         // Mesh Data
         // =====================================================================
 
         std::shared_ptr<Mesh> GetMesh() const { return m_mesh; }
         void SetMesh(std::shared_ptr<Mesh> mesh);
+
         void SetLODMeshes(std::vector<std::shared_ptr<Mesh>> lodMeshes);
         size_t GetLODCount() const;
         std::shared_ptr<Mesh> GetLODMesh(size_t lodIndex) const;
@@ -50,25 +59,10 @@ namespace RVX::Resource
         const AABB& GetBounds() const { return m_bounds; }
         void SetBounds(const AABB& bounds) { m_bounds = bounds; }
 
-        // =====================================================================
-        // GPU Resources (future)
-        // =====================================================================
-
-        // RHI::BufferHandle GetVertexBuffer();
-        // RHI::BufferHandle GetIndexBuffer();
-        // void UploadToGPU(RHI::Device* device);
-        // void ReleaseGPUResources();
-        // bool IsGPUResident() const;
-
     private:
         std::shared_ptr<Mesh> m_mesh;
         std::vector<std::shared_ptr<Mesh>> m_lodMeshes;
         AABB m_bounds;
-
-        // GPU resources (future)
-        // RHI::BufferHandle m_vertexBuffer;
-        // RHI::BufferHandle m_indexBuffer;
-        // bool m_gpuResident = false;
     };
 
 } // namespace RVX::Resource

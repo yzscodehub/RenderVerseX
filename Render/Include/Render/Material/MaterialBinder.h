@@ -6,6 +6,8 @@
  */
 
 #include "Render/Material/MaterialGPUData.h"
+#include "Render/Material/MaterialSourceData.h"
+#include "RenderContracts/RenderIdentity.h"
 #include "RHI/RHI.h"
 #include <string>
 #include <unordered_map>
@@ -13,8 +15,7 @@
 namespace RVX
 {
     // Forward declarations
-    class Material;
-    class GPUResourceManager;
+    class RenderResourceRegistry;
 
     enum class MaterialBindStatus : uint8
     {
@@ -26,7 +27,7 @@ namespace RVX
 
     /**
      * @brief Binds material data to the rendering pipeline
-     * 
+     *
      * MaterialBinder handles:
      * - Converting CPU Material data to GPU constants
      * - Managing material constant buffers
@@ -50,9 +51,9 @@ namespace RVX
         /**
          * @brief Initialize the material binder
          * @param device RHI device for resource creation
-         * @param gpuResources GPU resource manager for texture access
          */
-        void Initialize(IRHIDevice* device, GPUResourceManager* gpuResources);
+        void Initialize(IRHIDevice* device,
+                        const RenderResourceRegistry* resourceRegistry = nullptr);
 
         /**
          * @brief Shutdown and release resources
@@ -73,12 +74,12 @@ namespace RVX
         /**
          * @brief Bind a material for rendering
          * @param ctx Command context to bind to
-         * @param material The material to bind
+         * @param material Source material data to bind
          * @param setIndex Descriptor set index for material constants
-         * 
+         *
          * Updates the material constant buffer and binds textures.
          */
-        void Bind(RHICommandContext& ctx, const Material& material, uint32 setIndex = 2);
+        void Bind(RHICommandContext& ctx, const MaterialSourceData& material, uint32 setIndex = 2);
 
         /**
          * @brief Bind a material by ID
@@ -87,13 +88,16 @@ namespace RVX
          * @param setIndex Descriptor set index
          */
         void Bind(RHICommandContext& ctx, uint64 materialId, uint32 setIndex = 2);
+        void Bind(RHICommandContext& ctx,
+                  RenderResourceHandle material,
+                  uint32 setIndex = 2);
 
         /**
-         * @brief Convert material to GPU constants
-         * @param material Source material
+         * @brief Convert render-facing material data to GPU constants
+         * @param material Source material data
          * @return GPU constant buffer data
          */
-        static MaterialGPUConstants ConvertToGPU(const Material& material);
+        static MaterialGPUConstants ConvertToGPU(const MaterialSourceData& material);
 
         // =========================================================================
         // Default Material
@@ -117,7 +121,7 @@ namespace RVX
         void SetBindResult(MaterialBindStatus status, std::string message);
 
         IRHIDevice* m_device = nullptr;
-        GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
 
         // Shared constant buffer for material data
         RHIBufferRef m_constantBuffer;

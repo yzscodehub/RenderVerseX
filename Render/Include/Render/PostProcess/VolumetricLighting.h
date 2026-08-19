@@ -10,6 +10,8 @@
 #include "Core/MathTypes.h"
 #include "Render/PostProcess/PostProcessStack.h"
 
+#include <string>
+
 namespace RVX
 {
     class ClusteredLighting;
@@ -23,6 +25,29 @@ namespace RVX
         Medium,         ///< 32 samples, half resolution
         High,           ///< 64 samples, half resolution
         Ultra           ///< 128 samples, full resolution
+    };
+
+    enum class VolumetricLightingImplementationTier : uint8
+    {
+        Unsupported = 0,
+        RayMarchComposite
+    };
+
+    const char* GetVolumetricLightingImplementationTierName(VolumetricLightingImplementationTier tier);
+
+    struct VolumetricLightingDiagnostics
+    {
+        bool requested = false;
+        bool supported = false;
+        bool scheduled = false;
+        bool depthAvailable = false;
+        bool shadowMapAvailable = false;
+        bool temporalRequested = false;
+        bool halfResolution = false;
+        uint32 sampleCount = 0;
+        VolumetricLightingImplementationTier implementationTier =
+            VolumetricLightingImplementationTier::Unsupported;
+        std::string reason;
     };
 
     /**
@@ -149,7 +174,12 @@ namespace RVX
         void SetCameraMatrices(const Mat4& view, const Mat4& proj, 
                                 const Mat4& prevView, const Mat4& prevProj);
 
+        const VolumetricLightingDiagnostics& GetLastDiagnostics() const { return m_lastDiagnostics; }
+
     private:
+        void GetQualityPlan(uint32& outSampleCount, bool& outHalfResolution) const;
+        void RecordUnsupportedDiagnostics(bool depthAvailable, bool shadowMapAvailable);
+
         VolumetricLightingConfig m_config;
         ClusteredLighting* m_clusteredLighting = nullptr;
         
@@ -167,6 +197,7 @@ namespace RVX
         
         // Temporal data
         uint32 m_frameIndex = 0;
+        VolumetricLightingDiagnostics m_lastDiagnostics;
     };
 
 } // namespace RVX

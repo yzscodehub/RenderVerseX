@@ -12,11 +12,8 @@
  * - Normal map generation
  */
 
-#include "Terrain/Heightmap.h"
-#include "Terrain/TerrainComponent.h"
-#include "Terrain/TerrainLOD.h"
-#include "Terrain/TerrainMaterial.h"
 #include "Terrain/TerrainCollider.h"
+#include "Terrain/TerrainTypes.h"
 
 namespace RVX
 {

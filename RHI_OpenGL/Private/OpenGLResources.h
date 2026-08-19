@@ -96,7 +96,6 @@ namespace RVX
         OpenGLTextureView(OpenGLDevice* device, OpenGLTexture* texture, const RHITextureViewDesc& desc);
         ~OpenGLTextureView() override;
 
-        RHITexture* GetTexture() const override { return m_texture.Get(); }
         RHIFormat GetFormat() const override { return m_desc.format; }
         const RHISubresourceRange& GetSubresourceRange() const override { return m_desc.subresourceRange; }
         uint64 GetNativeShaderResourceHandleForUI() const override { return static_cast<uint64>(m_textureView); }
@@ -107,7 +106,7 @@ namespace RVX
 
     private:
         OpenGLDevice* m_device = nullptr;
-        Ref<OpenGLTexture> m_texture;
+        OpenGLTexture* m_texture = nullptr;
         RHITextureViewDesc m_desc;
         GLuint m_textureView = 0;
         GLenum m_target = GL_TEXTURE_2D;

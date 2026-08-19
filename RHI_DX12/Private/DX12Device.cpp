@@ -6,12 +6,36 @@
 #include "DX12Query.h"
 #include "DX12Upload.h"
 #include "Core/Log.h"
+#include "RHI/RHIPipelineValidation.h"
 #include "RHI/RHITexture.h"
 
+#include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <string>
+#include <vector>
 
 namespace RVX
 {
+    static_assert(sizeof(IndirectDrawIndexedCommand) ==
+                      sizeof(D3D12_DRAW_INDEXED_ARGUMENTS),
+                  "DX12 indexed indirect execution must use the shared command layout.");
+
+    bool IsDX12TerminalDeviceLossReason(HRESULT reason) noexcept
+    {
+        switch (reason)
+        {
+            case DXGI_ERROR_DEVICE_HUNG:
+            case DXGI_ERROR_DEVICE_REMOVED:
+            case DXGI_ERROR_DEVICE_RESET:
+            case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
+            case DXGI_ERROR_INVALID_CALL:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     namespace
     {
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS ToD3D12ASBuildFlags(
@@ -76,6 +100,16 @@ namespace RVX
 
             result = static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(baseAddress64 + offset);
             return result != 0;
+        }
+
+        std::string FormatDX12DriverVersion(const LARGE_INTEGER& version)
+        {
+            const uint32 highPart = static_cast<uint32>(version.HighPart);
+            const uint32 lowPart = version.LowPart;
+            return std::to_string((highPart >> 16U) & 0xFFFFU) + "." +
+                   std::to_string(highPart & 0xFFFFU) + "." +
+                   std::to_string((lowPart >> 16U) & 0xFFFFU) + "." +
+                   std::to_string(lowPart & 0xFFFFU);
         }
 
         D3D12_GPU_VIRTUAL_ADDRESS GetDX12BufferAddress(RHIBuffer* buffer, uint64 offset = 0)
@@ -209,6 +243,21 @@ namespace RVX
     // =============================================================================
     bool DX12Device::Initialize(const RHIDeviceDesc& desc)
     {
+        m_deviceLost.store(false, std::memory_order_release);
+        m_runtimeStatus.store(RHIDeviceRuntimeStatus::Ready,
+                              std::memory_order_release);
+        m_lastFaultNativeError.store(0, std::memory_order_release);
+        m_lastFaultOperation.store(RHIDeviceFaultOperation::None,
+                                   std::memory_order_release);
+        m_faultSequence.store(0, std::memory_order_release);
+        m_frameFenceValues.fill(0);
+        m_nextFrameFenceValue = 1;
+        m_frameIndex = 0;
+        m_queueTimelineNextValues = {1, 1, 1};
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            m_deviceFaultMessage.clear();
+        }
         RVX_RHI_INFO("Initializing DX12 Device...");
 
         if (desc.enableDebugLayer)
@@ -223,7 +272,8 @@ namespace RVX
             return false;
         }
 
-        if (!SelectAdapter(desc.preferredAdapterIndex))
+        if (!SelectAdapter(desc.preferredAdapterIndex,
+                           desc.allowSoftwareAdapter))
         {
             return false;
         }
@@ -249,6 +299,15 @@ namespace RVX
 
         // Create frame fence
         DX12_CHECK(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_frameFence)));
+        for (uint32 queueIndex = 0;
+             queueIndex < static_cast<uint32>(m_queueTimelineFences.size());
+             ++queueIndex)
+        {
+            DX12_CHECK(m_device->CreateFence(
+                0,
+                D3D12_FENCE_FLAG_NONE,
+                IID_PPV_ARGS(&m_queueTimelineFences[queueIndex])));
+        }
         m_fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!m_fenceEvent)
         {
@@ -287,7 +346,14 @@ namespace RVX
 
     void DX12Device::Shutdown()
     {
-        WaitIdle();
+        if (m_device)
+        {
+            WaitIdle();
+            // This runs once, after GPU completion and before the device is
+            // released. A destructor's idempotent second Shutdown must not
+            // overwrite the process exit evidence with "available=false".
+            WriteDebugQueueExitReport();
+        }
 
         if (m_fenceEvent)
         {
@@ -307,6 +373,10 @@ namespace RVX
         m_memoryAllocator.Reset();
         #endif
 
+        for (ComPtr<ID3D12Fence>& timelineFence : m_queueTimelineFences)
+        {
+            timelineFence.Reset();
+        }
         m_frameFence.Reset();
         m_copyQueue.Reset();
         m_computeQueue.Reset();
@@ -316,6 +386,170 @@ namespace RVX
         m_factory.Reset();
 
         RVX_RHI_INFO("DX12 Device shutdown complete");
+    }
+
+    void DX12Device::WriteDebugQueueExitReport()
+    {
+        char* reportPathValue = nullptr;
+        size_t reportPathLength = 0;
+        if (_dupenv_s(&reportPathValue,
+                       &reportPathLength,
+                       "RVX_DX12_DEBUG_QUEUE_REPORT_PATH") != 0 ||
+            reportPathValue == nullptr)
+        {
+            return;
+        }
+        const std::string reportPath(reportPathValue);
+        std::free(reportPathValue);
+        if (reportPath.empty())
+        {
+            return;
+        }
+
+        bool available = false;
+        bool readComplete = true;
+        uint64 messageCount = 0;
+        uint64 errorCount = 0;
+        uint64 corruptionCount = 0;
+        if (m_device)
+        {
+            ComPtr<ID3D12InfoQueue> infoQueue;
+            if (SUCCEEDED(m_device.As(&infoQueue)) && infoQueue)
+            {
+                available = true;
+                messageCount = infoQueue->GetNumStoredMessages();
+                for (UINT64 index = 0; index < messageCount; ++index)
+                {
+                    SIZE_T messageSize = 0;
+                    if (FAILED(infoQueue->GetMessage(index, nullptr, &messageSize)) ||
+                        messageSize == 0)
+                    {
+                        readComplete = false;
+                        continue;
+                    }
+                    std::vector<uint8> messageBytes(messageSize);
+                    auto* message = reinterpret_cast<D3D12_MESSAGE*>(
+                        messageBytes.data());
+                    if (FAILED(infoQueue->GetMessage(index, message, &messageSize)))
+                    {
+                        readComplete = false;
+                        continue;
+                    }
+                    if (message->Severity == D3D12_MESSAGE_SEVERITY_ERROR)
+                    {
+                        ++errorCount;
+                    }
+                    else if (message->Severity ==
+                             D3D12_MESSAGE_SEVERITY_CORRUPTION)
+                    {
+                        ++corruptionCount;
+                    }
+                    if ((message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
+                         message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION) &&
+                        message->pDescription != nullptr)
+                    {
+                        RVX_RHI_ERROR("DX12 debug queue: {}", message->pDescription);
+                    }
+                }
+                infoQueue->ClearStoredMessages();
+            }
+        }
+
+        std::ofstream output(reportPath, std::ios::out | std::ios::trunc);
+        const bool reportWritten = static_cast<bool>(output);
+        if (reportWritten)
+        {
+            output << "{\n"
+                   << "  \"schema\": \"RVX.DX12DebugQueue\",\n"
+                   << "  \"schemaVersion\": 1,\n"
+                   << "  \"debugLayerEnabled\": "
+                   << (m_debugLayerEnabled ? "true" : "false") << ",\n"
+                   << "  \"available\": " << (available ? "true" : "false") << ",\n"
+                   << "  \"readComplete\": "
+                   << (readComplete ? "true" : "false") << ",\n"
+                   << "  \"messageCount\": " << messageCount << ",\n"
+                   << "  \"errorCount\": " << errorCount << ",\n"
+                   << "  \"corruptionCount\": " << corruptionCount << ",\n"
+                   << "  \"passed\": "
+                   << ((m_debugLayerEnabled && available && readComplete &&
+                        errorCount == 0 && corruptionCount == 0)
+                       ? "true" : "false") << "\n"
+                   << "}\n";
+        }
+        if (!output && reportWritten)
+        {
+            RVX_RHI_ERROR("Failed to write DX12 debug queue report: {}",
+                          reportPath);
+        }
+        else if (!reportWritten)
+        {
+            RVX_RHI_ERROR("Failed to open DX12 debug queue report: {}",
+                          reportPath);
+        }
+        RVX_RHI_INFO(
+            "RVX_DX12_DEBUG_QUEUE_SUMMARY debugLayerEnabled={} available={} readComplete={} messageCount={} errorCount={} corruptionCount={} reportWritten={}",
+            m_debugLayerEnabled,
+            available,
+            readComplete,
+            messageCount,
+            errorCount,
+            corruptionCount,
+            reportWritten && static_cast<bool>(output));
+    }
+
+    RHINativeValidationDiagnostics
+        DX12Device::GetNativeValidationDiagnostics() const
+    {
+        RHINativeValidationDiagnostics diagnostics;
+        diagnostics.enabled = m_debugLayerEnabled;
+        if (!m_device)
+        {
+            diagnostics.readComplete = false;
+            return diagnostics;
+        }
+
+        ComPtr<ID3D12InfoQueue> infoQueue;
+        if (FAILED(m_device.As(&infoQueue)) || !infoQueue)
+        {
+            diagnostics.readComplete = false;
+            return diagnostics;
+        }
+
+        diagnostics.available = true;
+        diagnostics.messageCount = infoQueue->GetNumStoredMessages();
+        for (UINT64 index = 0; index < diagnostics.messageCount; ++index)
+        {
+            SIZE_T messageSize = 0;
+            if (FAILED(infoQueue->GetMessage(index, nullptr, &messageSize)) ||
+                messageSize == 0)
+            {
+                diagnostics.readComplete = false;
+                continue;
+            }
+            std::vector<uint8> messageBytes(messageSize);
+            auto* message = reinterpret_cast<D3D12_MESSAGE*>(
+                messageBytes.data());
+            if (FAILED(infoQueue->GetMessage(index, message, &messageSize)))
+            {
+                diagnostics.readComplete = false;
+                continue;
+            }
+            switch (message->Severity)
+            {
+                case D3D12_MESSAGE_SEVERITY_WARNING:
+                    ++diagnostics.warningCount;
+                    break;
+                case D3D12_MESSAGE_SEVERITY_ERROR:
+                    ++diagnostics.errorCount;
+                    break;
+                case D3D12_MESSAGE_SEVERITY_CORRUPTION:
+                    ++diagnostics.corruptionCount;
+                    break;
+                default:
+                    break;
+            }
+        }
+        return diagnostics;
     }
 
     // =============================================================================
@@ -330,7 +564,53 @@ namespace RVX
         return S_OK;
     }
 
-    void DX12Device::HandleDeviceLost(HRESULT reason)
+    RHIDeviceRuntimeStatus DX12Device::QueryRuntimeStatus() const noexcept
+    {
+        const RHIDeviceRuntimeStatus published =
+            m_runtimeStatus.load(std::memory_order_acquire);
+        if (published != RHIDeviceRuntimeStatus::Ready)
+        {
+            return published;
+        }
+        if (m_device)
+        {
+            const HRESULT reason = m_device->GetDeviceRemovedReason();
+            if (FAILED(reason))
+            {
+                const_cast<DX12Device*>(this)->HandleDeviceLost(
+                    reason,
+                    RHIDeviceFaultOperation::Context);
+                return m_runtimeStatus.load(std::memory_order_acquire);
+            }
+        }
+        return RHIDeviceRuntimeStatus::Ready;
+    }
+
+    RHIDeviceFault DX12Device::GetLastDeviceFault() const
+    {
+        RHIDeviceFault fault;
+        fault.status = QueryRuntimeStatus();
+        fault.operation =
+            m_lastFaultOperation.load(std::memory_order_acquire);
+        fault.backend = RHIBackendType::DX12;
+        fault.nativeError =
+            m_lastFaultNativeError.load(std::memory_order_acquire);
+        fault.sequence = m_faultSequence.load(std::memory_order_acquire);
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            fault.message = m_deviceFaultMessage;
+        }
+        if (fault.IsFailure() && fault.nativeError == 0 && m_device)
+        {
+            fault.nativeError = static_cast<uint32>(
+                m_device->GetDeviceRemovedReason());
+        }
+        return fault;
+    }
+
+    void DX12Device::HandleDeviceLost(
+        HRESULT reason,
+        RHIDeviceFaultOperation operation) noexcept
     {
         // Prevent multiple notifications
         bool expected = false;
@@ -339,48 +619,82 @@ namespace RVX
             return; // Already handled
         }
 
-        RVX_RHI_ERROR("=== Device Lost Detected ===");
-        RVX_RHI_ERROR("Reason HRESULT: 0x{:08X}", static_cast<uint32>(reason));
-
         // Get detailed reason if available
+        HRESULT effectiveReason = reason;
         if (m_device)
         {
-            HRESULT removedReason = m_device->GetDeviceRemovedReason();
-            RVX_RHI_ERROR("Device Removed Reason: 0x{:08X}", static_cast<uint32>(removedReason));
-
-            switch (removedReason)
+            const HRESULT removedReason = m_device->GetDeviceRemovedReason();
+            if (FAILED(removedReason))
             {
-                case DXGI_ERROR_DEVICE_HUNG:
-                    RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_HUNG: GPU took too long to execute commands");
-                    break;
-                case DXGI_ERROR_DEVICE_REMOVED:
-                    RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_REMOVED: GPU was physically removed or driver update");
-                    break;
-                case DXGI_ERROR_DEVICE_RESET:
-                    RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_RESET: GPU reset due to bad commands");
-                    break;
-                case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
-                    RVX_RHI_ERROR("  -> DXGI_ERROR_DRIVER_INTERNAL_ERROR: Driver encountered internal error");
-                    break;
-                case DXGI_ERROR_INVALID_CALL:
-                    RVX_RHI_ERROR("  -> DXGI_ERROR_INVALID_CALL: Invalid API usage");
-                    break;
-                case S_OK:
-                    RVX_RHI_ERROR("  -> S_OK: Device is still valid (unexpected)");
-                    break;
-                default:
-                    RVX_RHI_ERROR("  -> Unknown reason code");
-                    break;
+                effectiveReason = removedReason;
             }
         }
 
-        // Log DRED info if available
-        LogDREDInfo();
+        m_lastFaultNativeError.store(static_cast<uint32>(effectiveReason),
+                                     std::memory_order_release);
+        m_lastFaultOperation.store(operation, std::memory_order_release);
+        m_faultSequence.store(1, std::memory_order_release);
+        try
+        {
+            std::lock_guard lock(m_deviceFaultMutex);
+            m_deviceFaultMessage =
+                "DX12 device removed; DRED breadcrumbs and page-fault data were captured in the RHI log";
+        }
+        catch (...)
+        {
+            // Numeric evidence remains authoritative if diagnostic allocation
+            // fails while publishing a terminal device state.
+        }
+        m_runtimeStatus.store(RHIDeviceRuntimeStatus::DeviceLost,
+                              std::memory_order_release);
+
+        try
+        {
+            RVX_RHI_ERROR("=== Device Lost Detected ===");
+            RVX_RHI_ERROR("Reason HRESULT: 0x{:08X}",
+                          static_cast<uint32>(reason));
+            RVX_RHI_ERROR("Device Removed Reason: 0x{:08X}",
+                          static_cast<uint32>(effectiveReason));
+            switch (effectiveReason)
+            {
+            case DXGI_ERROR_DEVICE_HUNG:
+                RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_HUNG: GPU execution timed out");
+                break;
+            case DXGI_ERROR_DEVICE_REMOVED:
+                RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_REMOVED: device or driver was removed");
+                break;
+            case DXGI_ERROR_DEVICE_RESET:
+                RVX_RHI_ERROR("  -> DXGI_ERROR_DEVICE_RESET: GPU reset after invalid work");
+                break;
+            case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
+                RVX_RHI_ERROR("  -> DXGI_ERROR_DRIVER_INTERNAL_ERROR: driver failure");
+                break;
+            case DXGI_ERROR_INVALID_CALL:
+                RVX_RHI_ERROR("  -> DXGI_ERROR_INVALID_CALL: invalid API usage");
+                break;
+            default:
+                RVX_RHI_ERROR("  -> Unclassified device-removal reason");
+                break;
+            }
+            LogDREDInfo();
+        }
+        catch (...)
+        {
+            // Logging and DRED capture are best effort after the owned fault
+            // value has been release-published.
+        }
 
         // Invoke user callback
         if (m_deviceLostCallback)
         {
-            m_deviceLostCallback(reason);
+            try
+            {
+                m_deviceLostCallback(effectiveReason);
+            }
+            catch (...)
+            {
+                // A diagnostic callback may not escape a backend failure path.
+            }
         }
     }
 
@@ -619,7 +933,8 @@ namespace RVX
     // =============================================================================
     // Adapter Selection
     // =============================================================================
-    bool DX12Device::SelectAdapter(uint32 preferredIndex)
+    bool DX12Device::SelectAdapter(uint32 preferredIndex,
+                                   bool allowSoftwareAdapter)
     {
         ComPtr<IDXGIAdapter1> adapter;
 
@@ -633,8 +948,10 @@ namespace RVX
             DXGI_ADAPTER_DESC1 desc;
             adapter->GetDesc1(&desc);
 
-            // Skip software adapters
-            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+            // Production defaults to hardware-only. Hosted validation may
+            // explicitly permit a software adapter such as WARP.
+            if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
+                !allowSoftwareAdapter)
             {
                 continue;
             }
@@ -653,6 +970,23 @@ namespace RVX
                     RVX_RHI_DEBUG("Found GPU {}: {} (VRAM: {} MB)",
                         adapters.size() - 1, name, desc.DedicatedVideoMemory / (1024 * 1024));
                 }
+            }
+        }
+
+        if (adapters.empty() && allowSoftwareAdapter)
+        {
+            ComPtr<IDXGIAdapter4> warpAdapter;
+            if (SUCCEEDED(m_factory->EnumWarpAdapter(
+                    IID_PPV_ARGS(&warpAdapter))) &&
+                SUCCEEDED(D3D12CreateDevice(
+                    warpAdapter.Get(),
+                    D3D_FEATURE_LEVEL_12_0,
+                    __uuidof(ID3D12Device),
+                    nullptr)))
+            {
+                adapters.push_back(std::move(warpAdapter));
+                RVX_RHI_INFO(
+                    "Using explicitly permitted WARP software adapter");
             }
         }
 
@@ -769,58 +1103,65 @@ namespace RVX
         }
     }
 
-    ID3D12CommandSignature* DX12Device::GetDrawCommandSignature()
+    ID3D12CommandSignature* DX12Device::GetCommandSignature(
+        const RHIIndirectCommandLayout& layout)
     {
-        if (!m_drawCommandSignature)
+        const DX12IndirectValidationResult layoutValidation =
+            ValidateDX12IndirectCommandLayout(layout);
+        if (!layoutValidation)
         {
-            D3D12_INDIRECT_ARGUMENT_DESC arg = {};
-            arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
-
-            D3D12_COMMAND_SIGNATURE_DESC desc = {};
-            desc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS);
-            desc.NumArgumentDescs = 1;
-            desc.pArgumentDescs = &arg;
-
-            DX12_CHECK(m_device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&m_drawCommandSignature)));
+            RVX_RHI_ERROR("DX12 command signature rejected: {}",
+                          layoutValidation.message);
+            return nullptr;
         }
 
-        return m_drawCommandSignature.Get();
-    }
-
-    ID3D12CommandSignature* DX12Device::GetDrawIndexedCommandSignature()
-    {
-        if (!m_drawIndexedCommandSignature)
+        D3D12_INDIRECT_ARGUMENT_TYPE argumentType =
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+        switch (layout.semantic)
         {
-            D3D12_INDIRECT_ARGUMENT_DESC arg = {};
-            arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
-
-            D3D12_COMMAND_SIGNATURE_DESC desc = {};
-            desc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
-            desc.NumArgumentDescs = 1;
-            desc.pArgumentDescs = &arg;
-
-            DX12_CHECK(m_device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&m_drawIndexedCommandSignature)));
+            case RHIIndirectCommandSemantic::Draw:
+                argumentType = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+                break;
+            case RHIIndirectCommandSemantic::DrawIndexed:
+                argumentType = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+                break;
+            case RHIIndirectCommandSemantic::Dispatch:
+                argumentType = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+                break;
+            default:
+                RVX_RHI_ERROR("DX12 command signature rejected: invalid semantic layout");
+                return nullptr;
+        }
+        std::lock_guard<std::mutex> lock(m_commandSignatureMutex);
+        const auto cached = m_commandSignatures.find(layout);
+        if (cached != m_commandSignatures.end())
+        {
+            return cached->second.Get();
         }
 
-        return m_drawIndexedCommandSignature.Get();
-    }
+        D3D12_INDIRECT_ARGUMENT_DESC argument = {};
+        argument.Type = argumentType;
+        D3D12_COMMAND_SIGNATURE_DESC desc = {};
+        desc.ByteStride = layout.commandStride;
+        desc.NumArgumentDescs = 1;
+        desc.pArgumentDescs = &argument;
 
-    ID3D12CommandSignature* DX12Device::GetDispatchCommandSignature()
-    {
-        if (!m_dispatchCommandSignature)
+        ComPtr<ID3D12CommandSignature> signature;
+        const HRESULT result = m_device->CreateCommandSignature(
+            &desc, nullptr, IID_PPV_ARGS(&signature));
+        if (FAILED(result))
         {
-            D3D12_INDIRECT_ARGUMENT_DESC arg = {};
-            arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
-
-            D3D12_COMMAND_SIGNATURE_DESC desc = {};
-            desc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
-            desc.NumArgumentDescs = 1;
-            desc.pArgumentDescs = &arg;
-
-            DX12_CHECK(m_device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&m_dispatchCommandSignature)));
+            RVX_RHI_ERROR("DX12 command signature creation failed (semantic {}, stride {}, HRESULT {:#x})",
+                          static_cast<uint32>(layout.semantic),
+                          layout.commandStride,
+                          static_cast<uint32>(result));
+            return nullptr;
         }
 
-        return m_dispatchCommandSignature.Get();
+        auto [inserted, wasInserted] =
+            m_commandSignatures.emplace(layout, std::move(signature));
+        (void)wasInserted;
+        return inserted->second.Get();
     }
 
     // =============================================================================
@@ -838,23 +1179,107 @@ namespace RVX
         m_capabilities.adapterName = name;
         m_capabilities.dedicatedVideoMemory = adapterDesc.DedicatedVideoMemory;
 
-        // Query feature support
+        // CheckInterfaceSupport queries the selected adapter rather than the
+        // process default.  The returned LARGE_INTEGER is the documented
+        // DXGI four-part driver version, not a D3D feature-level value.
+        m_capabilities.driverVersion.clear();
+        LARGE_INTEGER driverVersion = {};
+        const HRESULT driverVersionResult = m_adapter->CheckInterfaceSupport(
+            __uuidof(IDXGIDevice), &driverVersion);
+        if (SUCCEEDED(driverVersionResult) && driverVersion.QuadPart != 0)
+        {
+            m_capabilities.driverVersion =
+                FormatDX12DriverVersion(driverVersion);
+        }
+        else if (FAILED(driverVersionResult))
+        {
+            RVX_RHI_WARN(
+                "DX12 adapter '{}' driver version query failed (HRESULT {:#x}); omitting driver identity",
+                m_capabilities.adapterName,
+                static_cast<uint32>(driverVersionResult));
+        }
+        else
+        {
+            RVX_RHI_WARN(
+                "DX12 adapter '{}' driver version query returned zero; omitting driver identity",
+                m_capabilities.adapterName);
+        }
+
+        // This baseline query defines the binding tier used by several reported
+        // capabilities. Continuing after a failure would mistake the zeroed
+        // structure for an authoritative Tier 0 result, so fail device creation
+        // closed instead.
         D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
-        m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
+        const HRESULT optionsResult = m_device->CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
+        if (FAILED(optionsResult))
+        {
+            RVX_RHI_ERROR("DX12 baseline feature query failed (HRESULT {:#x}); refusing to report unknown capabilities",
+                          static_cast<uint32>(optionsResult));
+            return false;
+        }
 
         m_capabilities.dx12.resourceBindingTier = static_cast<uint32>(options.ResourceBindingTier);
 
         // Root signature version
         D3D12_FEATURE_DATA_ROOT_SIGNATURE rootSigFeature = {};
         rootSigFeature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
-        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &rootSigFeature, sizeof(rootSigFeature))))
+        const HRESULT rootSignatureResult = m_device->CheckFeatureSupport(
+            D3D12_FEATURE_ROOT_SIGNATURE, &rootSigFeature, sizeof(rootSigFeature));
+        m_capabilities.dx12.supportsRootSignature1_1 = false;
+        if (SUCCEEDED(rootSignatureResult))
         {
             m_capabilities.dx12.supportsRootSignature1_1 = (rootSigFeature.HighestVersion >= D3D_ROOT_SIGNATURE_VERSION_1_1);
         }
+        else
+        {
+            RVX_RHI_WARN("DX12 root signature feature query failed (HRESULT {:#x}); using the root signature 1.0 fallback",
+                         static_cast<uint32>(rootSignatureResult));
+        }
 
-        // Shader model
+        // Query the newest shader model first. Older D3D12 runtimes reject an
+        // unknown requested model with E_INVALIDARG, so retry their known 6.0
+        // ceiling before reporting either capability.
         D3D12_FEATURE_DATA_SHADER_MODEL shaderModel = { D3D_SHADER_MODEL_6_6 };
-        m_device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel));
+        HRESULT shaderModelResult = m_device->CheckFeatureSupport(
+            D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel));
+        if (shaderModelResult == E_INVALIDARG)
+        {
+            shaderModel = { D3D_SHADER_MODEL_6_0 };
+            shaderModelResult = m_device->CheckFeatureSupport(
+                D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel));
+        }
+
+        m_capabilities.dx12.supportsSM6_0 = false;
+        m_capabilities.dx12.supportsSM6_6 = false;
+        if (SUCCEEDED(shaderModelResult))
+        {
+            m_capabilities.dx12.supportsSM6_0 =
+                shaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_0;
+            m_capabilities.dx12.supportsSM6_6 =
+                shaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_6;
+        }
+        else
+        {
+            RVX_RHI_WARN("DX12 shader model feature query failed (HRESULT {:#x}); reporting SM6.0 and SM6.6 unsupported",
+                         static_cast<uint32>(shaderModelResult));
+        }
+
+        D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12 = {};
+        const HRESULT options12Result = m_device->CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof(options12));
+        m_capabilities.dx12.supportsEnhancedBarriers =
+            SUCCEEDED(options12Result) && options12.EnhancedBarriersSupported;
+
+        // All ordinary textures, placed textures, and swap-chain images enter
+        // the engine in COMMON; D3D12 defines that legacy initial state as the
+        // COMMON enhanced layout. Buffers do not carry layouts. This lets the
+        // command context select one dialect for its complete lifetime without
+        // mixing ResourceBarrier and Barrier on the same subresource.
+        m_capabilities.dx12.barrierDialect =
+            m_capabilities.dx12.supportsEnhancedBarriers
+            ? DX12BarrierDialect::Enhanced
+            : DX12BarrierDialect::Legacy;
 
         // Common limits
         m_capabilities.maxTextureSize = 16384;
@@ -874,6 +1299,7 @@ namespace RVX
         }
 
         // Feature support
+        m_capabilities.supportsComputePipeline = true;
         m_capabilities.supportsAsyncCompute = true;
 
         // Raytracing
@@ -915,28 +1341,86 @@ namespace RVX
         m_capabilities.supportsSeparateStencilRef = false;      // DX12 doesn't support separate stencil refs
         m_capabilities.supportsSplitBarrier = true;             // DX12 supports split barriers
         m_capabilities.supportsSecondaryCommandBuffer = true;   // DX12 supports bundles
-        m_capabilities.supportsIndirectDrawCount = true;        // ExecuteIndirect supports count buffers
+        m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
+        m_capabilities.indexedIndirectExecution.supportsCountBuffer = true;
+        m_capabilities.indexedIndirectExecution.supportsFirstInstance = true;
+        m_capabilities.indexedIndirectExecution.requiresExactCommandStride = true;
+        m_capabilities.indexedIndirectExecution.indexedCommandSize = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.minCommandStride = sizeof(IndirectDrawIndexedCommand);
+        m_capabilities.indexedIndirectExecution.commandStrideAlignment = 4;
+        m_capabilities.indexedIndirectExecution.argumentOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.countOffsetAlignment = 4;
+        m_capabilities.indexedIndirectExecution.maxDrawCount = UINT32_MAX;
+        m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
+        m_capabilities.indexedIndirectExecution.requiredArgumentState = RHIResourceState::IndirectArgument;
+        m_capabilities.indexedIndirectExecution.requiredCountState = RHIResourceState::IndirectArgument;
+        m_capabilities.supportsIndirectDrawCount =
+            m_capabilities.indexedIndirectExecution.supportsCountBuffer;
         m_capabilities.supportsDescriptorSets = true;
         m_capabilities.supportsDynamicDescriptorOffsets = true;
         m_capabilities.maxDescriptorSets = 4;
         m_capabilities.supportsExplicitResourceBarriers = true;
+        m_capabilities.supportsBufferRangeBarriers =
+            m_capabilities.dx12.barrierDialect == DX12BarrierDialect::Enhanced;
+        m_capabilities.supportsExplicitAliasingBarriers = true;
         m_capabilities.emulatesResourceBarriers = false;
         m_capabilities.supportsMemoryBudgetQuery = true;        // DXGI supports memory budget
         m_capabilities.supportsPersistentMapping = true;        // DX12 supports persistent mapping
         m_capabilities.supportsExplicitHeapManagement = true;   // DX12 supports explicit heaps
-        m_capabilities.supportsTimestampQueries = true;
-        m_capabilities.supportsOcclusionQueries = true;
-        m_capabilities.supportsPipelineStatisticsQueries = true;
+        // Timestamp frequency is queue-specific in D3D12.  The public RHI
+        // projection is deliberately Graphics-only, so do not advertise the
+        // feature until the Graphics queue has produced a usable frequency.
+        m_capabilities.supportsTimestampQueries = false;
+        m_capabilities.timestampFrequency = 0;
         if (m_graphicsQueue)
         {
-            m_graphicsQueue->GetTimestampFrequency(&m_capabilities.timestampFrequency);
+            uint64 graphicsTimestampFrequency = 0;
+            const HRESULT timestampFrequencyResult =
+                m_graphicsQueue->GetTimestampFrequency(&graphicsTimestampFrequency);
+            if (SUCCEEDED(timestampFrequencyResult) && graphicsTimestampFrequency != 0)
+            {
+                m_capabilities.supportsTimestampQueries = true;
+                m_capabilities.timestampFrequency = graphicsTimestampFrequency;
+            }
+            else
+            {
+                const HRESULT deviceRemovedReason = GetDeviceRemovedReason();
+                const HRESULT effectiveReason = FAILED(deviceRemovedReason)
+                    ? deviceRemovedReason
+                    : timestampFrequencyResult;
+                if (FAILED(deviceRemovedReason) ||
+                    IsDX12TerminalDeviceLossReason(effectiveReason))
+                {
+                    // Queues, fences, and the owned fault state are fully
+                    // initialized before capability discovery.  Preserve the
+                    // terminal device fault rather than disguising removal as
+                    // an optional timestamp capability gap.
+                    HandleDeviceLost(effectiveReason,
+                                     RHIDeviceFaultOperation::Context);
+                    return false;
+                }
+
+                RVX_RHI_WARN(
+                    "DX12 Graphics timestamp queries unavailable: GetTimestampFrequency failed (0x{:08X}) or returned zero",
+                    static_cast<uint32>(timestampFrequencyResult));
+            }
         }
+        m_capabilities.supportsOcclusionQueries = true;
+        m_capabilities.supportsPipelineStatisticsQueries = true;
         m_capabilities.supportsHostFenceSignal = false;
         m_capabilities.supportsDefaultQueueFenceSignal = true;
         m_capabilities.supportsExplicitQueueFenceSignal = true;
         m_capabilities.supportsQueueFenceWait = true;
-        m_capabilities.supportsMultiQueueBatchSubmit = false;
+        m_capabilities.supportsMultiQueueBatchSubmit = true;
+        m_capabilities.supportsQueueSubmissionPlan = true;
         m_capabilities.emulatesQueueFences = false;
+        m_capabilities.queueTopology.completionMode = RHIQueueCompletionMode::NativeTimeline;
+        m_capabilities.queueTopology.logicalQueueDomains = {
+            GPUQueueDomain::Graphics,
+            GPUQueueDomain::Compute,
+            GPUQueueDomain::Copy,
+        };
+        m_capabilities.queueTopology.activeDomainCount = 3;
 
         return true;
     }
@@ -946,12 +1430,30 @@ namespace RVX
     // =============================================================================
     void DX12Device::BeginFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         // Wait for the frame we're about to render to complete on GPU
         uint64 fenceValue = m_frameFenceValues[m_frameIndex];
         if (m_frameFence->GetCompletedValue() < fenceValue)
         {
-            m_frameFence->SetEventOnCompletion(fenceValue, m_fenceEvent);
-            WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+            const HRESULT eventResult =
+                m_frameFence->SetEventOnCompletion(fenceValue, m_fenceEvent);
+            if (FAILED(eventResult))
+            {
+                HandleDeviceLost(eventResult,
+                                 RHIDeviceFaultOperation::FenceWait);
+                return;
+            }
+            const DWORD waitResult =
+                WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+            if (waitResult == WAIT_FAILED)
+            {
+                HandleDeviceLost(HRESULT_FROM_WIN32(GetLastError()),
+                                 RHIDeviceFaultOperation::FenceWait);
+                return;
+            }
         }
 
         // Recycle completed command allocators
@@ -963,9 +1465,21 @@ namespace RVX
 
     void DX12Device::EndFrame()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         // Signal fence for this frame
-        m_frameFenceValues[m_frameIndex] = m_frameFence->GetCompletedValue() + 1;
-        m_graphicsQueue->Signal(m_frameFence.Get(), m_frameFenceValues[m_frameIndex]);
+        m_frameFenceValues[m_frameIndex] = m_nextFrameFenceValue++;
+        const HRESULT signalResult =
+            m_graphicsQueue->Signal(m_frameFence.Get(),
+                                    m_frameFenceValues[m_frameIndex]);
+        if (FAILED(signalResult))
+        {
+            HandleDeviceLost(signalResult,
+                             RHIDeviceFaultOperation::CommandSubmission);
+            return;
+        }
 
         // Advance frame index
         m_frameIndex = (m_frameIndex + 1) % RVX_MAX_FRAME_COUNT;
@@ -973,20 +1487,48 @@ namespace RVX
 
     void DX12Device::WaitIdle()
     {
+        if (QueryRuntimeStatus() != RHIDeviceRuntimeStatus::Ready)
+        {
+            return;
+        }
         auto waitForQueue = [&](ID3D12CommandQueue* queue)
         {
-            if (!queue)
-                return;
+            if (!queue || QueryRuntimeStatus() !=
+                              RHIDeviceRuntimeStatus::Ready)
+                return false;
 
-            uint64 fenceValue = m_frameFence->GetCompletedValue() + 1;
-            queue->Signal(m_frameFence.Get(), fenceValue);
-            m_frameFence->SetEventOnCompletion(fenceValue, m_fenceEvent);
-            WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+            const uint64 fenceValue = m_nextFrameFenceValue++;
+            HRESULT result = queue->Signal(m_frameFence.Get(), fenceValue);
+            if (FAILED(result))
+            {
+                HandleDeviceLost(result,
+                                 RHIDeviceFaultOperation::Shutdown);
+                return false;
+            }
+            result = m_frameFence->SetEventOnCompletion(fenceValue,
+                                                        m_fenceEvent);
+            if (FAILED(result))
+            {
+                HandleDeviceLost(result,
+                                 RHIDeviceFaultOperation::FenceWait);
+                return false;
+            }
+            if (WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE) ==
+                WAIT_FAILED)
+            {
+                HandleDeviceLost(HRESULT_FROM_WIN32(GetLastError()),
+                                 RHIDeviceFaultOperation::FenceWait);
+                return false;
+            }
+            return true;
         };
 
-        waitForQueue(m_graphicsQueue.Get());
-        waitForQueue(m_computeQueue.Get());
-        waitForQueue(m_copyQueue.Get());
+        if (!waitForQueue(m_graphicsQueue.Get()) ||
+            !waitForQueue(m_computeQueue.Get()) ||
+            !waitForQueue(m_copyQueue.Get()))
+        {
+            return;
+        }
         m_allocatorPool.Tick();
     }
 
@@ -1119,6 +1661,15 @@ namespace RVX
 
     RHIPipelineRef DX12Device::CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc)
     {
+        const RHIPipelineValidationResult validation =
+            ValidateRHIGraphicsPipelineDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR(
+                "DX12 graphics pipeline preflight failed: {}",
+                FormatRHIPipelineValidationResult(validation));
+            return nullptr;
+        }
         return CreateDX12GraphicsPipeline(this, desc);
     }
 
@@ -1237,6 +1788,21 @@ namespace RVX
 
     RHIQueryPoolRef DX12Device::CreateQueryPool(const RHIQueryPoolDesc& desc)
     {
+        const RHIQueryValidationResult validation = ValidateRHIQueryPoolDesc(desc);
+        if (!validation)
+        {
+            RVX_RHI_ERROR("DX12: Query pool creation rejected: {}", validation.message);
+            return nullptr;
+        }
+
+        if (desc.type == RHIQueryType::Timestamp &&
+            (!m_capabilities.supportsTimestampQueries ||
+             m_capabilities.timestampFrequency == 0))
+        {
+            RVX_RHI_ERROR("DX12: Timestamp query creation rejected because Graphics timestamps are unavailable");
+            return nullptr;
+        }
+
         return CreateDX12QueryPool(this, desc);
     }
 
@@ -1250,12 +1816,21 @@ namespace RVX
 
     uint64 DX12Device::SubmitCommandContext(RHICommandContext* context, RHIFence* signalFence)
     {
+        std::lock_guard lock(m_queueSubmissionMutex);
         return SubmitDX12CommandContext(this, context, signalFence);
     }
 
     uint64 DX12Device::SubmitCommandContexts(std::span<RHICommandContext* const> contexts, RHIFence* signalFence)
     {
+        std::lock_guard lock(m_queueSubmissionMutex);
         return SubmitDX12CommandContexts(this, contexts, signalFence);
+    }
+
+    uint64 DX12Device::SubmitQueuePlan(const RHIQueueSubmissionPlan& plan,
+                                       RHIFence* terminalFence)
+    {
+        std::lock_guard lock(m_queueSubmissionMutex);
+        return SubmitDX12QueuePlan(this, plan, terminalFence);
     }
 
     // =============================================================================
@@ -1316,6 +1891,32 @@ namespace RVX
         stats.totalUsed = stats.totalAllocated;
 
         return stats;
+    }
+
+    RHIDescriptorDiagnostics DX12Device::GetDescriptorDiagnostics() const
+    {
+        const auto convert = [](const DX12DescriptorAllocatorStats& source)
+        {
+            RHIDescriptorAllocatorStats result;
+            result.currentPages = source.currentPages;
+            result.peakPages = source.peakPages;
+            result.activeDescriptors = source.activeDescriptors;
+            result.peakActiveDescriptors = source.peakActiveDescriptors;
+            result.allocationFailures = source.allocationFailures;
+            result.validationFailures = source.validationFailures;
+            return result;
+        };
+
+        RHIDescriptorDiagnostics diagnostics;
+        diagnostics.resourceViews = convert(
+            m_descriptorHeapManager.GetCpuCbvSrvUavStats());
+        diagnostics.samplers = convert(
+            m_descriptorHeapManager.GetCpuSamplerStats());
+        diagnostics.renderTargets = convert(
+            m_descriptorHeapManager.GetRTVStats());
+        diagnostics.depthStencils = convert(
+            m_descriptorHeapManager.GetDSVStats());
+        return diagnostics;
     }
 
     // =============================================================================

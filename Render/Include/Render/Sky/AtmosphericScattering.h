@@ -21,6 +21,26 @@ namespace RVX
     class RenderGraph;
     struct RGTextureHandle;
 
+    enum class AtmosphericScatteringImplementationTier : uint8
+    {
+        Unsupported = 0,
+        CpuAnalyticBaseline,
+        GpuLut
+    };
+
+    const char* GetAtmosphericScatteringImplementationTierName(AtmosphericScatteringImplementationTier tier);
+
+    struct AtmosphericScatteringDiagnostics
+    {
+        bool requested = true;
+        bool initialized = false;
+        bool gpuLutSupported = false;
+        bool cpuAnalyticBaselineAvailable = true;
+        AtmosphericScatteringImplementationTier implementationTier =
+            AtmosphericScatteringImplementationTier::CpuAnalyticBaseline;
+        std::string unsupportedReason;
+    };
+
     /**
      * @brief Atmospheric scattering configuration
      */
@@ -134,6 +154,8 @@ namespace RVX
         bool IsRequestedEnabled() const { return m_enabled; }
         bool IsSupported() const { return m_supported; }
         const std::string& GetUnsupportedReason() const { return m_unsupportedReason; }
+        bool IsCpuAnalyticBaselineAvailable() const { return true; }
+        AtmosphericScatteringDiagnostics GetDiagnostics() const;
 
         // =========================================================================
         // LUT Management
@@ -211,7 +233,7 @@ namespace RVX
         // =========================================================================
 
         /**
-         * @brief Get sky color at a given direction (for ambient lighting)
+         * @brief Get deterministic analytic sky color at a given direction
          */
         Vec3 GetSkyColor(const Vec3& direction) const;
 
@@ -221,7 +243,7 @@ namespace RVX
         Vec3 GetSunDiskColor() const;
 
         /**
-         * @brief Calculate transmittance along a ray
+         * @brief Calculate deterministic analytic transmittance along a ray
          */
         Vec3 GetTransmittance(const Vec3& origin, const Vec3& direction, float distance) const;
 
@@ -235,7 +257,8 @@ namespace RVX
         AtmosphericScatteringConfig m_config;
         bool m_enabled = true;
         bool m_supported = false;
-        std::string m_unsupportedReason = "Atmospheric scattering compute and sky render pipelines are not implemented";
+        std::string m_unsupportedReason =
+            "AtmosphericScattering GPU LUT/render pipelines are not implemented; CPU analytic baseline is available";
 
         float m_viewerHeight = 1.0f;  // Above planet surface
         bool m_lutsNeedUpdate = true;

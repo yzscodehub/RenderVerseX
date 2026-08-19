@@ -61,8 +61,6 @@ void BloomPass::SetResources(PipelineCache* pipelineCache, ResourceViewCache* vi
     IRHIDevice* device = m_pipelineCache ? m_pipelineCache->GetDevice() : nullptr;
     if (device != m_resourceDevice)
     {
-        m_retainedDescriptorSets.clear();
-        m_constantBuffer.Reset();
         m_sampler.Reset();
         m_resourceDevice = device;
     }
@@ -233,6 +231,9 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
     {
         RGTextureHandle input;
         RGTextureHandle output;
+        RGTextureViewHandle inputView;
+        RGTextureViewHandle outputView;
+        RHIFormat outputFormat = RHIFormat::Unknown;
         float threshold;
         float intensity;
         float radius;
@@ -249,13 +250,46 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             RenderGraphBuilder& builder,
             BloomData& data)
         {
-            data.input = builder.Read(input, RHIShaderStage::Pixel);
-            if (additive)
+            data.input = input;
+            data.output = output;
+            const RHITextureDesc* inputDesc = builder.GetTextureDesc(input);
+            const RHITextureDesc* outputDesc = builder.GetTextureDesc(output);
+            if (inputDesc)
             {
-                // Destination blending reads the previous contents implicitly; expose that dependency to the graph.
-                builder.Read(output, RHIShaderStage::Pixel);
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = inputDesc->format;
+                viewDesc.dimension = inputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::ShaderResource;
+                viewDesc.debugName = "BloomInputSRV";
+                data.inputView = builder.Read(
+                    builder.CreateTextureView(input, viewDesc),
+                    MakeRGAccessDesc(
+                        RHIResourceState::ShaderResource,
+                        RHIShaderStage::Pixel));
             }
-            data.output = builder.Write(output, RHIResourceState::RenderTarget);
+            if (outputDesc)
+            {
+                data.outputFormat = outputDesc->format;
+                RHITextureViewDesc viewDesc;
+                viewDesc.format = outputDesc->format;
+                viewDesc.dimension = outputDesc->dimension;
+                viewDesc.subresourceRange = RHISubresourceRange::All();
+                viewDesc.type = RHITextureViewType::RenderTarget;
+                viewDesc.debugName = additive
+                    ? "BloomAdditiveOutputRTV" : "BloomOutputRTV";
+                RGTextureViewHandle outputView =
+                    builder.CreateTextureView(output, viewDesc);
+                const RGAccessDesc outputAccess = MakeRGAccessDesc(
+                    RHIResourceState::RenderTarget,
+                    RHIShaderStage::Pixel,
+                    outputLoadOp == RHILoadOp::Load
+                        ? RHIDiscardIntent::Preserve
+                        : RHIDiscardIntent::Discard);
+                data.outputView = additive
+                    ? builder.ReadWrite(outputView, outputAccess)
+                    : builder.Write(outputView, outputAccess);
+            }
             data.threshold = threshold;
             data.intensity = intensity;
             data.radius = radius;
@@ -264,23 +298,17 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             data.additive = additive;
             data.outputLoadOp = outputLoadOp;
         },
-        [this, &graph](const BloomData& data, RHICommandContext& ctx)
+        [this](const BloomData& data, RenderGraphPassContext& context)
         {
-            if (!m_pipelineCache || !m_viewCache)
+            if (!m_pipelineCache)
             {
                 RVX_CORE_WARN("Bloom: missing resources during execution");
                 return;
             }
 
-            RHIFormat outputFormat = RHIFormat::Unknown;
-            if (const RHITextureDesc* outputDesc = graph.GetTextureDesc(data.output))
-            {
-                outputFormat = outputDesc->format;
-            }
-
             RHIPipeline* pipeline = data.additive ?
-                m_pipelineCache->GetBloomAdditivePipeline(outputFormat) :
-                m_pipelineCache->GetBloomPipeline(outputFormat);
+                m_pipelineCache->GetBloomAdditivePipeline(data.outputFormat) :
+                m_pipelineCache->GetBloomPipeline(data.outputFormat);
             RHIDescriptorSetLayout* setLayout = m_pipelineCache->GetPostProcessSetLayout();
             IRHIDevice* device = m_pipelineCache->GetDevice();
             if (!pipeline || !setLayout || !device)
@@ -289,32 +317,45 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
                 return;
             }
 
-            RHITexture* inputTexture = graph.GetTexture(data.input);
-            RHITexture* outputTexture = graph.GetTexture(data.output);
+            RHITexture* inputTexture = context.GetTexture(data.input);
+            RHITexture* outputTexture = context.GetTexture(data.output);
             if (!inputTexture || !outputTexture)
             {
                 RVX_CORE_WARN("Bloom: input or output texture is unavailable");
                 return;
             }
 
-            RHITextureView* inputView = m_viewCache->GetDefaultSRV(inputTexture);
-            RHITextureView* outputView = m_viewCache->GetDefaultRTV(outputTexture);
+            RHITextureView* inputView = context.GetTextureView(data.inputView);
+            RHITextureView* outputView = context.GetTextureView(data.outputView);
             if (!inputView || !outputView)
             {
                 RVX_CORE_WARN("Bloom: failed to resolve input SRV or output RTV");
                 return;
             }
 
-            const bool constantsReady = EnsureRuntimeResources() &&
-                                        UpdateConstants(inputTexture->GetWidth(),
-                                                        inputTexture->GetHeight(),
-                                                        data.threshold,
-                                                        data.intensity,
-                                                        data.radius,
-                                                        data.softKnee,
-                                                        data.mode);
-            if (!constantsReady)
+            if (!EnsureRuntimeResources())
             {
+                return;
+            }
+
+            // Every recorded draw needs immutable constants until its GPU submission
+            // completes. Reusing one mapped buffer here lets later Bloom passes overwrite
+            // constants that earlier command-list entries still reference.
+            RHIBufferRef passConstants = CreatePassConstants(inputTexture->GetWidth(),
+                                                             inputTexture->GetHeight(),
+                                                             data.threshold,
+                                                             data.intensity,
+                                                             data.radius,
+                                                             data.softKnee,
+                                                             data.mode);
+            if (!passConstants)
+            {
+                return;
+            }
+            if (!context.RetainSubmissionResource(
+                    Ref<RefCounted>(passConstants)))
+            {
+                RVX_CORE_WARN("Bloom: submission ownership rejected pass constants");
                 return;
             }
 
@@ -322,11 +363,12 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
             descriptorDesc.layout = setLayout;
             descriptorDesc.debugName = "BloomDescriptorSet";
             descriptorDesc.BindBuffer(0,
-                                      m_constantBuffer.Get(),
+                                      passConstants.Get(),
                                       0,
                                       AlignPostProcessConstantBufferSize(sizeof(BloomGPUConstants)));
             descriptorDesc.BindTexture(1, inputView);
             descriptorDesc.BindSampler(2, m_sampler.Get());
+            descriptorDesc.BindTexture(3, inputView);
 
             RHIDescriptorSetRef descriptorSet = device->CreateDescriptorSet(descriptorDesc);
             if (!descriptorSet)
@@ -334,16 +376,18 @@ void BloomPass::AddFullscreenPass(RenderGraph& graph,
                 RVX_CORE_WARN("Bloom: failed to create descriptor set");
                 return;
             }
-            m_retainedDescriptorSets.push_back(descriptorSet);
-            while (m_retainedDescriptorSets.size() > RVX_MAX_FRAME_COUNT + 1)
+            if (!context.RetainSubmissionResource(
+                    Ref<RefCounted>(descriptorSet)))
             {
-                m_retainedDescriptorSets.pop_front();
+                RVX_CORE_WARN("Bloom: submission ownership rejected descriptor set");
+                return;
             }
 
             RHIRenderPassDesc renderPassDesc;
             renderPassDesc.AddColorAttachment(outputView, data.outputLoadOp, RHIStoreOp::Store);
             renderPassDesc.SetRenderArea(0, 0, outputTexture->GetWidth(), outputTexture->GetHeight());
 
+            RHICommandContext& ctx = context.Commands();
             ctx.BeginRenderPass(renderPassDesc);
             ctx.SetPipeline(pipeline);
             ctx.SetDescriptorSet(0, descriptorSet.Get());
@@ -374,22 +418,6 @@ bool BloomPass::EnsureRuntimeResources()
         return false;
     }
 
-    if (!m_constantBuffer)
-    {
-        RHIBufferDesc bufferDesc;
-        bufferDesc.size = AlignPostProcessConstantBufferSize(sizeof(BloomGPUConstants));
-        bufferDesc.usage = RHIBufferUsage::Constant;
-        bufferDesc.memoryType = RHIMemoryType::Upload;
-        bufferDesc.debugName = "BloomConstants";
-
-        m_constantBuffer = device->CreateBuffer(bufferDesc);
-        if (!m_constantBuffer)
-        {
-            MarkUnsupported("Bloom constant buffer creation failed");
-            return false;
-        }
-    }
-
     if (!m_sampler)
     {
         RHISamplerDesc samplerDesc = RHISamplerDesc::LinearClamp();
@@ -405,16 +433,32 @@ bool BloomPass::EnsureRuntimeResources()
     return true;
 }
 
-bool BloomPass::UpdateConstants(uint32 width,
-                                uint32 height,
-                                float threshold,
-                                float intensity,
-                                float radius,
-                                float softKnee,
-                                PassMode mode)
+RHIBufferRef BloomPass::CreatePassConstants(uint32 width,
+                                            uint32 height,
+                                            float threshold,
+                                            float intensity,
+                                            float radius,
+                                            float softKnee,
+                                            PassMode mode) const
 {
-    if (!m_constantBuffer)
-        return false;
+    IRHIDevice* device = m_pipelineCache ? m_pipelineCache->GetDevice() : nullptr;
+    if (!device)
+    {
+        return {};
+    }
+
+    RHIBufferDesc bufferDesc;
+    bufferDesc.size = AlignPostProcessConstantBufferSize(sizeof(BloomGPUConstants));
+    bufferDesc.usage = RHIBufferUsage::Constant;
+    bufferDesc.memoryType = RHIMemoryType::Upload;
+    bufferDesc.debugName = "BloomPassConstants";
+
+    RHIBufferRef constantBuffer = device->CreateBuffer(bufferDesc);
+    if (!constantBuffer)
+    {
+        RVX_CORE_WARN("Bloom: pass constant buffer creation failed");
+        return {};
+    }
 
     const float safeWidth = width > 0 ? static_cast<float>(width) : 1.0f;
     const float safeHeight = height > 0 ? static_cast<float>(height) : 1.0f;
@@ -430,16 +474,16 @@ bool BloomPass::UpdateConstants(uint32 width,
     constants.invTextureSize[1] = 1.0f / safeHeight;
     constants.mode = static_cast<float>(static_cast<uint32>(mode));
 
-    void* mapped = m_constantBuffer->Map();
+    void* mapped = constantBuffer->Map();
     if (!mapped)
     {
-        RVX_CORE_WARN("Bloom: failed to map constants buffer");
-        return false;
+        RVX_CORE_WARN("Bloom: failed to map pass constants buffer");
+        return {};
     }
 
     std::memcpy(mapped, &constants, sizeof(constants));
-    m_constantBuffer->Unmap();
-    return true;
+    constantBuffer->Unmap();
+    return constantBuffer;
 }
 
 } // namespace RVX

@@ -326,15 +326,20 @@ namespace RVX::Resource
 
     std::unique_ptr<AudioStreamBuffer> AudioResource::CreateStreamBuffer() const
     {
-        // For streaming, we need miniaudio decoder
-        // This is a placeholder - actual implementation would use miniaudio
-        if (!IsStreaming() || m_streamingPath.empty())
+        if (!IsStreaming())
         {
+            RVX_CORE_WARN("AudioResource: CreateStreamBuffer requires streaming load mode");
             return nullptr;
         }
 
-        // Return null for now - will be implemented with miniaudio integration
-        RVX_CORE_WARN("AudioResource: Streaming not yet implemented");
+        if (m_streamingPath.empty())
+        {
+            RVX_CORE_WARN("AudioResource: CreateStreamBuffer requires a streaming source path");
+            return nullptr;
+        }
+
+        RVX_CORE_ERROR("AudioResource: Streaming is unsupported for '{}' because no stream buffer implementation exists",
+                       m_streamingPath);
         return nullptr;
     }
 

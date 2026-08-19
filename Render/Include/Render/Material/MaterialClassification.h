@@ -5,18 +5,12 @@
  * @brief Helpers for routing materials to render passes and pipeline variants
  */
 
-#include "Core/Types.h"
+#include "Render/Material/MaterialSourceData.h"
+#include "RenderContracts/RenderMaterial.h"
 
 namespace RVX
 {
-    class Material;
-
-    enum class MaterialRenderMode : uint8
-    {
-        Opaque = 0,
-        Masked,
-        Transparent
-    };
+    using MaterialRenderMode = RenderMaterialMode;
 
     enum class MaterialPipelineVariant : uint8
     {
@@ -25,7 +19,8 @@ namespace RVX
         Transparent
     };
 
-    MaterialRenderMode ClassifyMaterialRenderMode(const Material* material);
+    MaterialRenderMode ClassifyMaterialRenderMode(MaterialSourceAlphaMode alphaMode);
+    MaterialRenderMode ClassifyMaterialRenderMode(const MaterialSourceData& materialSource);
     MaterialPipelineVariant GetPipelineVariantForRenderMode(MaterialRenderMode mode);
 
 } // namespace RVX

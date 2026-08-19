@@ -1,13 +1,30 @@
 # RVX-NG · 北极星设计宪章
 
 **日期**：2026-06-26  
-**状态**：北极星设计原则 · v1.0 框架定稿
+**状态**：北极星设计原则 · v1.1 目标口径调整
 
-本文定义 RVX-NG 的设计阶段边界：先建立一个基于现代游戏引擎最佳实践、完整且可验证的目标架构，再单独设计当前引擎向该目标演进的实施方案。
+本文定义 RVX-NG 的设计阶段边界：先建立一个基于现代游戏引擎最佳实践、完整且可验证的目标架构，再单独设计当前引擎向该目标演进的实施方案。v1.1 只调整目标表述，使目标从“理想终态口号”收敛为“生产级框架底座 + 分级演进上限”。
 
 ## 1. 定位
 
 RVX-NG 是 RenderVerseX 的下一代目标架构，不是当前实现的补丁计划，也不是迁移排期。
+
+整体目标：把 RenderVerseX 建设成一个以现代 RenderGraph、多后端 RHI 和清晰数据边界为核心的生产级 C++20 实时渲染/游戏引擎框架。首期目标不是一次性完成所有游戏引擎终态能力，而是先交付可编译、可测试、可诊断、可扩展、可工具化的框架底座：样例、编辑器和运行时共享一致的 Scene、Resource、Shader、Render 契约，每个能力都有诚实 capability、fallback、诊断 artifact 和自动化门禁。开放世界、高端 GI/RT、主机/移动/XR 与完整发行生态作为 Proven / Advanced / Research 分级演进上限逐步兑现。
+
+目标分三层表达：
+
+- **框架底座**：模块边界、生命周期、RHI/RenderGraph、Scene/Render 快照、资源与 Shader 管线、测试门禁和诊断 artifact 必须先稳定。
+- **生产闭环**：Editor/runtime 同源、资源 cook/DDC/VFS、FrameDebugger/Profiler、质量档和跨后端回归进入中期主线。
+- **长期上限**：开放世界、大规模场景、高端 GI/RT、主机/移动/XR profile、完整发行与生态作为分级演进能力，不作为首期一次性交付承诺。
+
+首期成功定义：
+
+- **能稳定构建与验证**：核心模块、代表性样例、编辑器入口和验证测试在主开发平台持续可构建；关键行为进入 CTest、脚本门禁或可复用 smoke gate。
+- **边界可执行**：Render 不读取 gameplay 类型，Feature 不直接碰 RHI，Editor/runtime 通过共享核心契约协作；新增跨层依赖必须有明确理由和门禁。
+- **能力可解释**：每个 RHI、Render、Resource、Shader 和 Scene-to-Render 能力都能报告 supported、fallback、unsupported 或 skipped 状态，并给出可诊断原因。
+- **数据流可替换**：Scene、Resource、Shader、RenderGraph 和 RHI 之间通过版本化结构、句柄、快照或 artifact 交换数据，避免把临时实现写成长期接口。
+- **工具可消费**：诊断文本、JSON、Graphviz、manifest、artifact summary 等输出具备 schema、稳定路径和完整性信息，能被 Editor、Profiler、FrameDebugger 和 CI 使用。
+- **演进可控**：Advanced/Research 能力只能在 Proven fallback 和自动化门禁存在后进入主线；失败时不阻塞框架底座出货。
 
 目标架构应回答：
 

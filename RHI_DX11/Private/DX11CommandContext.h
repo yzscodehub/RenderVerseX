@@ -23,6 +23,8 @@ namespace RVX
         DX11CommandContext(DX11Device* device, RHICommandQueueType queueType);
         ~DX11CommandContext() override;
 
+        RHICommandQueueType GetQueueType() const override { return m_queueType; }
+
         // =========================================================================
         // RHICommandContext Implementation
         // =========================================================================

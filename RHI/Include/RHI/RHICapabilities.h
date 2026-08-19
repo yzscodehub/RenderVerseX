@@ -1,10 +1,16 @@
 #pragma once
 
 #include "RHI/RHIDefinitions.h"
+#include "RHI/RHIIndirectExecution.h"
+#include "RHI/RHIQueueTopology.h"
 #include <string>
+#include <vector>
 
 namespace RVX
 {
+    inline constexpr const char* RVX_RHI_CAPABILITY_REPORT_SCHEMA_ID = "RVX.RHI.CapabilityReport";
+    inline constexpr uint32 RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION = 6;
+
     // =============================================================================
     // DX11 Threading Mode
     // =============================================================================
@@ -14,6 +20,15 @@ namespace RVX
         DeferredContext,  // Use Deferred Context for multi-threading
         Adaptive,         // Auto-select based on DrawCall count
     };
+
+    /** @brief Native barrier API selected by the DX12 backend. */
+    enum class DX12BarrierDialect : uint8
+    {
+        Legacy = 0,
+        Enhanced,
+    };
+
+    const char* GetDX12BarrierDialectName(DX12BarrierDialect dialect);
 
     // =============================================================================
     // Device Capabilities
@@ -58,11 +73,19 @@ namespace RVX
         uint32 shaderTableBaseAlignment = 0;
         bool supportsMeshShaders = false;
         bool supportsVariableRateShading = false;
+        bool supportsComputePipeline = false;
         bool supportsAsyncCompute = false;
+        /**
+         * @brief Temporary compatibility projection of indexedIndirectExecution.supportsCountBuffer.
+         * New code must consume indexedIndirectExecution directly.
+         * TODO(Task 16B): remove this projection after diagnostics and tools migrate.
+         */
         bool supportsIndirectDrawCount = false;
+        RHIIndexedIndirectExecutionCapabilities indexedIndirectExecution;
         bool supportsConservativeRasterization = false;
 
-        // Query support
+        // Query support. Timestamp fields are a Graphics-queue projection:
+        // implementations must not use them to imply Compute/Copy support.
         bool supportsTimestampQueries = false;
         bool supportsOcclusionQueries = false;
         bool supportsPipelineStatisticsQueries = false;
@@ -74,7 +97,9 @@ namespace RVX
         bool supportsExplicitQueueFenceSignal = false; // Fence signal on an explicitly selected GPU queue.
         bool supportsQueueFenceWait = false;           // GPU queue can wait on a fence value without CPU blocking.
         bool supportsMultiQueueBatchSubmit = false;    // SubmitCommandContexts can submit mixed queue types in one batch.
+        bool supportsQueueSubmissionPlan = false;      // SubmitQueuePlan can execute an explicit dependency DAG.
         bool emulatesQueueFences = false;              // Queue fence behavior is emulated rather than native GPU sync.
+        RHIQueueTopology queueTopology;                // Logical queues mapped to stable physical completion domains.
 
         // Dynamic state support
         bool supportsDepthBounds = false;           // DX12/Vulkan only
@@ -90,6 +115,8 @@ namespace RVX
         bool supportsDynamicDescriptorOffsets = false; // Dynamic buffer offsets are supported by descriptor-set binding.
         uint32 maxDescriptorSets = 0;               // Maximum descriptor set slots supported by the base contract.
         bool supportsExplicitResourceBarriers = false; // Backend requires/supports explicit resource barrier commands.
+        bool supportsBufferRangeBarriers = false;   // Backend can independently synchronize byte ranges of one buffer.
+        bool supportsExplicitAliasingBarriers = false; // Backend can order placed resources that reuse the same memory.
         bool emulatesResourceBarriers = false;      // Barrier API is emulated/no-op because backend tracks transitions implicitly.
 
         // Memory features
@@ -113,6 +140,8 @@ namespace RVX
             bool supportsRootSignature1_1 = false;
             bool supportsSM6_0 = false;
             bool supportsSM6_6 = false;
+            bool supportsEnhancedBarriers = false;
+            DX12BarrierDialect barrierDialect = DX12BarrierDialect::Legacy;
         } dx12;
 
         // Vulkan-specific
@@ -161,5 +190,93 @@ namespace RVX
             uint32 maxComputeSharedMemorySize = 32768;
         } opengl;
     };
+
+    enum class RHICapabilityFeature : uint8
+    {
+        ComputePipeline = 0,
+        DescriptorSets = 1,
+        ExplicitResourceBarriers = 2,
+        QueueSynchronization = 3,
+        AsyncCompute = 4,
+        IndirectDrawCount = 5,
+        RayTracing = 6,
+        BindlessResources = 7,
+        QuerySupport = 8,
+        MemoryBudget = 9,
+        ExplicitHeapManagement = 10,
+        IndexedIndirectExecution = 11,
+    };
+
+    enum class RHICapabilityStatus : uint8
+    {
+        Unsupported = 0,
+        Supported,
+        Emulated,
+    };
+
+    const char* GetRHICapabilityFeatureName(RHICapabilityFeature feature);
+    const char* GetRHICapabilityStatusName(RHICapabilityStatus status);
+
+    struct RHICapabilityReportEntry
+    {
+        RHICapabilityFeature feature = RHICapabilityFeature::ComputePipeline;
+        RHICapabilityStatus status = RHICapabilityStatus::Unsupported;
+        bool supported = false;
+        bool emulated = false;
+        std::string requiredCapability;
+        std::string diagnosticMessage;
+    };
+
+    struct RHICapabilityReport
+    {
+        uint32 schemaVersion = RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION;
+        RHIBackendType backendType = RHIBackendType::None;
+        std::string adapterName;
+        std::string driverVersion;
+        bool validationPassed = false;
+        std::string validationMessage;
+        RHIQueueTopology queueTopology;
+        RHIIndexedIndirectExecutionCapabilities indexedIndirectExecution;
+        std::vector<RHICapabilityReportEntry> entries;
+        uint32 supportedCount = 0;
+        uint32 emulatedCount = 0;
+        uint32 unsupportedCount = 0;
+        bool renderGraphBaselineSupported = false;
+        std::vector<std::string> renderGraphBaselineMissingRequirements;
+    };
+
+    /**
+     * @brief Result of validating the public RHI capability contract.
+     */
+    struct RHICapabilityValidationResult
+    {
+        bool valid = true;
+        std::string message;
+
+        explicit operator bool() const { return valid; }
+    };
+
+    /**
+     * @brief Validate that a backend capability report is internally consistent.
+     *
+     * This checks the public contract only: feature flags must agree with their
+     * limits and fallback flags, without assuming a specific GPU model.
+     */
+    RHICapabilityValidationResult ValidateRHICapabilities(const RHICapabilities& capabilities);
+
+    /**
+     * @brief Build a versioned feature capability report for diagnostics/tooling.
+     */
+    RHICapabilityReport BuildRHICapabilityReport(const RHICapabilities& capabilities);
+
+    /**
+     * @brief Export a stable, human-readable capability report for logs/tools.
+     */
+    std::string ExportRHICapabilityReportText(const RHICapabilityReport& report);
+
+    /**
+     * @brief Export a stable machine-readable capability report for tools/CI.
+     */
+    std::string ExportRHICapabilityReportJson(const RHICapabilityReport& report);
 
 } // namespace RVX

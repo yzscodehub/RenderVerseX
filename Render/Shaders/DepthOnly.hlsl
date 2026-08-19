@@ -10,9 +10,14 @@
 //   Slot 0: Position buffer (float3)
 //   Slot 4: Bone indices buffer (uint4)
 //   Slot 5: Bone weights buffer (float4)
+//   Slot 6: GPU-driven global instance index buffer (uint)
+//   Slot 2: Masked-depth UVs (float2)
 // =============================================================================
 
 #define RVX_MAX_OBJECT_SKINNING_MATRICES 128
+
+#include "Include/GPUInstanceData.hlsli"
+#include "GPUDriven/GPUSceneRaster.hlsli"
 
 cbuffer ViewConstants : register(b0, space0)
 {
@@ -26,6 +31,7 @@ cbuffer ViewConstants : register(b0, space0)
 #define LightDirection LightDirection_Padding.xyz
 #define Padding LightDirection_Padding.w
 
+#if !defined(RVX_GPU_SCENE_RASTER)
 cbuffer ObjectConstants : register(b0, space1)
 {
     float4x4 World;
@@ -35,25 +41,11 @@ cbuffer ObjectConstants : register(b0, space1)
     float4 SkinningParams; // x: enabled, y: matrix count
     float4x4 SkinningMatrices[RVX_MAX_OBJECT_SKINNING_MATRICES];
 };
+#endif
 
-struct GPUInstanceData
-{
-    float4x4 worldMatrix;
-    float4x4 normalMatrix;
-    float4 boundingSphere;
-    float4 aabbMin;
-    float4 aabbMax;
-    uint meshId;
-    uint materialId;
-    uint indexCount;
-    uint firstIndex;
-    int vertexOffset;
-    uint sourceIndex;
-    uint drawGroupIndex;
-    uint drawGroupCommandOffset;
-};
-
+#if !defined(RVX_GPU_SCENE_RASTER)
 StructuredBuffer<GPUInstanceData> GPUDrivenInstances : register(t1, space1);
+#endif
 
 struct VSInput
 {
@@ -62,10 +54,59 @@ struct VSInput
     float4 BoneWeights : BLENDWEIGHT;
 };
 
+struct RigidDirectVSInput
+{
+    float3 Position : POSITION;
+};
+
+struct RigidVSInput
+{
+    float3 Position : POSITION;
+    uint InstanceIndex : INSTANCE_INDEX;
+};
+
 struct VSOutput
 {
     float4 Position : SV_POSITION;
 };
+
+struct MaskedVSInput
+{
+    float3 Position : POSITION;
+    float2 TexCoord : TEXCOORD0;
+    uint4 BoneIndices : BLENDINDICES;
+    float4 BoneWeights : BLENDWEIGHT;
+};
+
+struct MaskedRigidVSInput
+{
+    float3 Position : POSITION;
+    float2 TexCoord : TEXCOORD0;
+};
+
+struct MaskedVSOutput
+{
+    float4 Position : SV_POSITION;
+    float2 TexCoord : TEXCOORD0;
+};
+
+cbuffer MaterialConstants : register(b0, space2)
+{
+    float4 BaseColorFactor;
+    float MetallicFactor;
+    float RoughnessFactor;
+    float NormalScale;
+    float OcclusionStrength;
+    float4 EmissiveColor_Strength;
+    uint TextureFlags;
+    uint AlphaMode;
+    float AlphaCutoff;
+    uint Workflow;
+    uint4 DoubleSided_MaterialPaddingBits;
+};
+
+Texture2D BaseColorTexture : register(t1, space2);
+SamplerState MaterialSampler : register(s6, space2);
 
 float4 ResolveSkinningPosition(float3 position, uint4 boneIndices, float4 boneWeights)
 {
@@ -99,11 +140,79 @@ VSOutput VSMain(VSInput input)
     return output;
 }
 
-VSOutput VSMainGPUDriven(VSInput input, uint instanceId : SV_InstanceID)
+VSOutput VSMainRigid(RigidDirectVSInput input)
 {
     VSOutput output;
-    float4x4 world = GPUDrivenInstances[instanceId].worldMatrix;
-    float4 worldPosition = mul(world, float4(input.Position, 1.0));
+    const float4 worldPosition = RVXTransformRigidAffinePosition(
+        World[0], World[1], World[2], input.Position);
     output.Position = mul(ViewProjection, worldPosition);
     return output;
+}
+
+#if !defined(RVX_GPU_SCENE_RASTER)
+VSOutput VSMainGPUDriven(
+    RigidVSInput input)
+{
+    VSOutput output;
+    const float4x4 world = GPUDrivenInstances[input.InstanceIndex].worldMatrix;
+    const float4 worldPosition = RVXTransformRigidAffinePosition(
+        world[0], world[1], world[2], input.Position);
+    output.Position = mul(ViewProjection, worldPosition);
+    return output;
+}
+#endif
+
+#if defined(RVX_GPU_SCENE_RASTER)
+VSOutput VSMainGPUScene(RigidVSInput input)
+{
+    VSOutput output;
+    GPUSceneTransformRow transform;
+    uint primitiveFlags;
+    uint materialParameterSlot;
+    if (!GPUSceneResolveRasterTransform(
+            input.InstanceIndex,
+            transform,
+            primitiveFlags,
+            materialParameterSlot))
+    {
+        output.Position = GPUSceneInvalidClipPosition();
+        return output;
+    }
+
+    const float4 worldPosition = GPUSceneTransformPosition(transform, input.Position);
+    output.Position = mul(ViewProjection, worldPosition);
+    return output;
+}
+
+#endif
+
+MaskedVSOutput VSMainMasked(MaskedVSInput input)
+{
+    MaskedVSOutput output;
+    float4 worldPosition = mul(
+        World,
+        ResolveSkinningPosition(input.Position, input.BoneIndices, input.BoneWeights));
+    output.Position = mul(ViewProjection, worldPosition);
+    output.TexCoord = input.TexCoord;
+    return output;
+}
+
+MaskedVSOutput VSMainMaskedRigid(MaskedRigidVSInput input)
+{
+    MaskedVSOutput output;
+    const float4 worldPosition = RVXTransformRigidAffinePosition(
+        World[0], World[1], World[2], input.Position);
+    output.Position = mul(ViewProjection, worldPosition);
+    output.TexCoord = input.TexCoord;
+    return output;
+}
+
+void PSMainMasked(MaskedVSOutput input)
+{
+    float alpha = BaseColorFactor.a;
+    if ((TextureFlags & 0x01u) != 0u)
+    {
+        alpha *= BaseColorTexture.Sample(MaterialSampler, input.TexCoord).a;
+    }
+    clip(alpha - AlphaCutoff);
 }

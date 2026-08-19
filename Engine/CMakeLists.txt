@@ -7,7 +7,7 @@
 # Module Architecture (after refactoring):
 # - HAL: Hardware abstraction (Window, Input backend)
 # - Runtime: Runtime services (Window, Input, Time, Camera subsystems)
-# - World: Scene management (Scene, Spatial, Picking)
+# - World: ownership of the single Scene ECS runtime
 # - Render: Rendering (RenderGraph, RenderSubsystem)
 # - Resource: Asset management (ResourceSubsystem)
 # =============================================================================
@@ -15,6 +15,11 @@ add_library(RVX_Engine STATIC)
 
 target_sources(RVX_Engine PRIVATE
     Private/Engine.cpp
+    Private/ECS/EcsRenderFramePipeline.cpp
+    Private/ECS/EcsRenderEntityRetirementCoordinator.cpp
+    Private/ECS/EcsSceneRenderProofGateway.cpp
+    Private/ECS/EcsRenderRuntimeComposition.cpp
+    Private/ECS/WorldEcsRuntimeComposition.cpp
 )
 
 target_include_directories(RVX_Engine PUBLIC
@@ -34,14 +39,28 @@ target_link_libraries(RVX_Engine PUBLIC
     RVX_Runtime
     
     # World & Scene
+    RVX::Physics
     RVX_World
     
     # Rendering
     RVX_Render
+    RVX_RenderContracts
+    RVX_RenderExtraction
     
     # Resources
     RVX_Resource
+    RVX_ResourceSceneAdapters
+    RVX::AnimationSceneAdapters
     
+)
+
+target_link_libraries(RVX_Engine PRIVATE
+    RVX::Audio
+    RVX::Particle
+    RVX::PhysicsSceneAdapters
+    RVX::Scripting
+    RVX::Terrain
+    RVX::Water
 )
 
 add_library(RVX::Engine ALIAS RVX_Engine)

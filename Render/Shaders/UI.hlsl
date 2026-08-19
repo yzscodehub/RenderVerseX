@@ -9,7 +9,7 @@ cbuffer UIPushConstants : register(b0, space0)
 };
 
 Texture2D<float4> UITexture : register(t0, space0);
-SamplerState UISampler : register(s0, space0);
+SamplerState UISampler : register(s1, space0);
 
 struct VSInput
 {

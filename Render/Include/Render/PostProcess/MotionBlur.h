@@ -10,6 +10,8 @@
 #include "Core/MathTypes.h"
 #include "Render/PostProcess/PostProcessStack.h"
 
+#include <string>
+
 namespace RVX
 {
     /**
@@ -21,6 +23,28 @@ namespace RVX
         Medium,         ///< 8 samples  
         High,           ///< 16 samples
         Ultra           ///< 32 samples
+    };
+
+    enum class MotionBlurImplementationTier : uint8
+    {
+        Unsupported = 0,
+        VelocityGather
+    };
+
+    const char* GetMotionBlurImplementationTierName(MotionBlurImplementationTier tier);
+
+    struct MotionBlurDiagnostics
+    {
+        bool requested = false;
+        bool supported = false;
+        bool scheduled = false;
+        bool cameraDataAvailable = false;
+        bool velocityAvailable = false;
+        bool depthAvailable = false;
+        bool historyAvailable = false;
+        uint32 sampleCount = 0;
+        MotionBlurImplementationTier implementationTier = MotionBlurImplementationTier::Unsupported;
+        std::string reason;
     };
 
     /**
@@ -80,6 +104,14 @@ namespace RVX
         int32 GetPriority() const override { return 100; }  // Very early, before DOF
 
         void Configure(const PostProcessSettings& settings) override;
+        PostProcessFrameInputRequirements GetFrameInputRequirements() const override
+        {
+            return {
+                .requiresDepth = true,
+                .requiresVelocity = true,
+                .requiresHistory = true,
+            };
+        }
         void AddToGraph(RenderGraph& graph, RGTextureHandle input, RGTextureHandle output) override;
 
         // =========================================================================
@@ -135,11 +167,17 @@ namespace RVX
          */
         void SetCameraMatrices(const Mat4& currentViewProj, const Mat4& prevViewProj);
 
+        const MotionBlurDiagnostics& GetLastDiagnostics() const { return m_lastDiagnostics; }
+
     private:
+        uint32 GetSampleCount() const;
+        void RecordUnsupportedDiagnostics(bool velocityAvailable, bool depthAvailable);
+
         MotionBlurConfig m_config;
         Mat4 m_currentViewProj;
         Mat4 m_prevViewProj;
         bool m_hasCameraData = false;
+        MotionBlurDiagnostics m_lastDiagnostics;
     };
 
 } // namespace RVX

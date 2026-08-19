@@ -1,54 +1,38 @@
 #include "MetalSwapChain.h"
+#include "MetalCommandContext.h"
 #include "MetalDevice.h"
 #include "MetalResources.h"
 #include "MetalConversions.h"
+
+#include <algorithm>
 
 namespace RVX
 {
     MetalSwapChain::MetalSwapChain(MetalDevice* device, const RHISwapChainDesc& desc)
         : m_device(device)
-        , m_width(desc.width)
-        , m_height(desc.height)
-        , m_format(desc.format)
-        , m_bufferCount(desc.bufferCount)
-        , m_vsync(desc.vsync)
+        , m_width(desc.surface.width)
+        , m_height(desc.surface.height)
+        , m_format(desc.surface.preferredFormat)
+        , m_bufferCount(std::clamp(desc.bufferCount, 2u, 3u))
+        , m_vsync(desc.surface.vsync)
     {
+        if (!desc.surface.IsValidFor(RHIBackendType::Metal))
+        {
+            RVX_RHI_ERROR("MetalSwapChain: Invalid HAL-owned presentation layer");
+            return;
+        }
+
+        m_metalLayer = (__bridge CAMetalLayer*)
+            reinterpret_cast<void*>(desc.surface.nativeLayer);
+        m_metalLayer.device = device->GetMTLDevice();
+        m_metalLayer.pixelFormat =
+            ToMTLPixelFormat(desc.surface.preferredFormat);
+        m_metalLayer.drawableSize =
+            CGSizeMake(desc.surface.width, desc.surface.height);
+        m_metalLayer.maximumDrawableCount = m_bufferCount;
+        m_metalLayer.framebufferOnly = YES;
 #if RVX_PLATFORM_MACOS
-        // Get NSWindow from handle and create/get CAMetalLayer
-        NSWindow* window = (__bridge NSWindow*)desc.windowHandle;
-        if (!window)
-        {
-            RVX_RHI_ERROR("MetalSwapChain: Invalid window handle");
-            return;
-        }
-
-        // Create CAMetalLayer
-        m_metalLayer = [CAMetalLayer layer];
-        m_metalLayer.device = device->GetMTLDevice();
-        m_metalLayer.pixelFormat = ToMTLPixelFormat(desc.format);
-        m_metalLayer.drawableSize = CGSizeMake(desc.width, desc.height);
-        m_metalLayer.displaySyncEnabled = desc.vsync;
-        m_metalLayer.framebufferOnly = YES;
-
-        // Set layer on window's content view
-        NSView* contentView = [window contentView];
-        [contentView setWantsLayer:YES];
-        [contentView setLayer:m_metalLayer];
-
-#elif RVX_PLATFORM_IOS
-        // Get UIView from handle
-        UIView* view = (__bridge UIView*)desc.windowHandle;
-        if (!view)
-        {
-            RVX_RHI_ERROR("MetalSwapChain: Invalid view handle");
-            return;
-        }
-
-        m_metalLayer = (CAMetalLayer*)[view layer];
-        m_metalLayer.device = device->GetMTLDevice();
-        m_metalLayer.pixelFormat = ToMTLPixelFormat(desc.format);
-        m_metalLayer.drawableSize = CGSizeMake(desc.width, desc.height);
-        m_metalLayer.framebufferOnly = YES;
+        m_metalLayer.displaySyncEnabled = desc.surface.vsync;
 #endif
 
         CreateBackBuffers();
@@ -151,12 +135,14 @@ namespace RVX
 
     void MetalSwapChain::Present()
     {
-        // Present the drawable
-        // Note: For optimal performance, presentDrawable should be called on the command buffer
-        // before commit. This fallback uses immediate presentation.
+        // Presentation remains command-buffer owned and follows queued render work.
         if (m_currentDrawable)
         {
-            [m_currentDrawable present];
+            MetalCommandContext presentationContext(
+                m_device, RHICommandQueueType::Graphics);
+            presentationContext.Begin();
+            presentationContext.SetPresentationDrawable(m_currentDrawable);
+            presentationContext.Submit(nullptr);
         }
 
         AdvanceFrame();

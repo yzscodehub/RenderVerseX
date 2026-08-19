@@ -1,5 +1,6 @@
 #include "Resource/IResource.h"
 #include <functional>
+#include <utility>
 
 namespace RVX::Resource
 {
@@ -17,16 +18,59 @@ std::vector<ResourceId> IResource::GetAllDependencies() const
 
 void IResource::SetState(ResourceState state)
 {
-    m_state.store(state, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        m_state.store(state, std::memory_order_release);
+    }
+    m_stateCondition.notify_all();
+}
+
+void IResource::WaitForLoad() const
+{
+    std::unique_lock<std::mutex> lock(m_stateMutex);
+    m_stateCondition.wait(lock, [this]() {
+        return GetState() != ResourceState::Loading;
+    });
+}
+
+bool IResource::WaitForLoadFor(uint32 timeoutMs) const
+{
+    std::unique_lock<std::mutex> lock(m_stateMutex);
+    return m_stateCondition.wait_for(
+        lock,
+        std::chrono::milliseconds(timeoutMs),
+        [this]() {
+            return GetState() != ResourceState::Loading;
+        });
 }
 
 void IResource::NotifyLoaded()
 {
-    SetState(ResourceState::Loaded);
+    CommitLoadedState();
+    NotifyLoadedObserver();
+}
+
+void IResource::CommitLoadedState() noexcept
+{
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        m_state.store(ResourceState::Loaded, std::memory_order_release);
+    }
+    m_stateCondition.notify_all();
+}
+
+void IResource::NotifyLoadedObserver()
+{
     if (m_onLoaded)
     {
         m_onLoaded(this);
     }
+}
+
+void IResource::SetContentVerificationReceipt(
+    ResourceContentVerificationReceipt receipt) noexcept
+{
+    m_contentVerificationReceipt = std::move(receipt);
 }
 
 void IResource::NotifyUnloaded()
@@ -70,6 +114,7 @@ const char* GetResourceTypeName(ResourceType type)
         case ResourceType::Model:      return "Model";
         case ResourceType::Prefab:     return "Prefab";
         case ResourceType::Script:     return "Script";
+        case ResourceType::Environment:return "Environment";
         default:                       return "Custom";
     }
 }

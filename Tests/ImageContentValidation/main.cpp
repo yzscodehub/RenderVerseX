@@ -1,6 +1,8 @@
 #include "Common/ImageFile.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <limits>
@@ -19,6 +21,11 @@ namespace
         double minLumaRange = 1.0;
         double nearBlackThreshold = 8.0;
         double maxNearBlackRatio = 0.98;
+        double minTopBottomLumaDelta = 0.0;
+        double minPBRMetallicLumaDelta = 40.0;
+        double minPBRRoughnessContrastDelta = 2.0;
+        bool requireTopBottomLumaDelta = false;
+        bool requirePBRGridResponse = false;
         bool showHelp = false;
     };
 
@@ -33,6 +40,11 @@ namespace
             << "  --min-luma-range <0-255>       Minimum sampled luma range\n"
             << "  --near-black-threshold <0-255> Luma threshold for near-black pixels\n"
             << "  --max-near-black-ratio <0-1>   Maximum sampled near-black ratio\n"
+            << "  --min-top-bottom-luma-delta <0-255>\n"
+            << "                                  Minimum top-band minus bottom-band luma\n"
+            << "  --require-pbr-grid-response     Validate both 5x5 PBR response matrices\n"
+            << "  --min-pbr-metallic-luma-delta <0-255>\n"
+            << "  --min-pbr-roughness-contrast-delta <0-255>\n"
             << "  --sample-step <pixels>         Sample every N pixels, default 1\n";
     }
 
@@ -97,6 +109,31 @@ namespace
                 if (!value) return false;
                 options.maxNearBlackRatio = std::stod(value);
             }
+            else if (arg == "--min-top-bottom-luma-delta")
+            {
+                const char* value = requireValue("--min-top-bottom-luma-delta");
+                if (!value) return false;
+                options.minTopBottomLumaDelta = std::stod(value);
+                options.requireTopBottomLumaDelta = true;
+            }
+            else if (arg == "--require-pbr-grid-response")
+            {
+                options.requirePBRGridResponse = true;
+            }
+            else if (arg == "--min-pbr-metallic-luma-delta")
+            {
+                const char* value =
+                    requireValue("--min-pbr-metallic-luma-delta");
+                if (!value) return false;
+                options.minPBRMetallicLumaDelta = std::stod(value);
+            }
+            else if (arg == "--min-pbr-roughness-contrast-delta")
+            {
+                const char* value =
+                    requireValue("--min-pbr-roughness-contrast-delta");
+                if (!value) return false;
+                options.minPBRRoughnessContrastDelta = std::stod(value);
+            }
             else if (arg == "--sample-step")
             {
                 const char* value = requireValue("--sample-step");
@@ -131,6 +168,361 @@ namespace
         return 0.2126 * static_cast<double>(r) +
                0.7152 * static_cast<double>(g) +
                0.0722 * static_cast<double>(b);
+    }
+
+    struct PatchMetrics
+    {
+        double mean = 0.0;
+        double contrast = 0.0;
+    };
+
+    PatchMetrics MeasurePatch(const RVX::Test::ImageData& image,
+                              RVX::uint32 centerX,
+                              RVX::uint32 centerY,
+                              RVX::uint32 radius)
+    {
+        const RVX::uint32 minX = centerX > radius ? centerX - radius : 0;
+        const RVX::uint32 minY = centerY > radius ? centerY - radius : 0;
+        const RVX::uint32 maxX =
+            std::min(centerX + radius, image.width - 1u);
+        const RVX::uint32 maxY =
+            std::min(centerY + radius, image.height - 1u);
+
+        double sum = 0.0;
+        double sumSquared = 0.0;
+        RVX::uint64 count = 0;
+        for (RVX::uint32 y = minY; y <= maxY; ++y)
+        {
+            for (RVX::uint32 x = minX; x <= maxX; ++x)
+            {
+                const RVX::uint64 offset =
+                    (static_cast<RVX::uint64>(y) * image.width + x) *
+                    image.bytesPerPixel;
+                const double value = Luma(
+                    image.pixels[static_cast<size_t>(offset + 0)],
+                    image.pixels[static_cast<size_t>(offset + 1)],
+                    image.pixels[static_cast<size_t>(offset + 2)]);
+                sum += value;
+                sumSquared += value * value;
+                ++count;
+            }
+        }
+
+        PatchMetrics result;
+        if (count > 0)
+        {
+            result.mean = sum / static_cast<double>(count);
+            const double variance =
+                std::max(0.0,
+                         sumSquared / static_cast<double>(count) -
+                             result.mean * result.mean);
+            result.contrast = std::sqrt(variance);
+        }
+        return result;
+    }
+
+    struct PBRGridResponseMetrics
+    {
+        double metallicLumaDelta = 0.0;
+        double roughnessContrastDelta = 0.0;
+        std::array<double, 5> roughnessRowContrast{};
+        RVX::uint32 roughnessContrastDropCount = 0;
+    };
+
+    struct PBRProjectedPoint
+    {
+        double x = 0.0;
+        double y = 0.0;
+    };
+
+    struct PBRViewBasis
+    {
+        double forwardX = 0.0;
+        double forwardY = 0.0;
+        double forwardZ = 0.0;
+        double rightX = 0.0;
+        double rightY = 0.0;
+        double rightZ = 0.0;
+        double upX = 0.0;
+        double upY = 0.0;
+        double upZ = 0.0;
+    };
+
+    [[nodiscard]] double Dot(double x,
+                             double y,
+                             double z,
+                             double axisX,
+                             double axisY,
+                             double axisZ)
+    {
+        return x * axisX + y * axisY + z * axisZ;
+    }
+
+    [[nodiscard]] PBRViewBasis MakePBRViewBasis()
+    {
+        constexpr double CameraYaw = 0.7853981634;
+        constexpr double CameraPitch = 0.2094395102;
+        const double sinYaw = std::sin(CameraYaw);
+        const double cosYaw = std::cos(CameraYaw);
+        const double sinPitch = std::sin(CameraPitch);
+        const double cosPitch = std::cos(CameraPitch);
+        return {
+            .forwardX = -cosPitch * sinYaw,
+            .forwardY = -sinPitch,
+            .forwardZ = -cosPitch * cosYaw,
+            .rightX = cosYaw,
+            .rightY = 0.0,
+            .rightZ = -sinYaw,
+            .upX = -sinPitch * sinYaw,
+            .upY = cosPitch,
+            .upZ = -sinPitch * cosYaw,
+        };
+    }
+
+    [[nodiscard]] double CalculatePBRGridCameraDistance(
+        RVX::uint32 width,
+        RVX::uint32 height)
+    {
+        constexpr double VerticalFov = 0.6981317008;
+        constexpr double MatrixHalfExtent = 3.45;
+        // PBRMaterialsSample passes 1.08 to BuildModelCameraFrame first, then
+        // initializes SampleOrbitCameraController. That controller immediately
+        // calls OrbitCameraRig::Fit using the rig default of 1.10.
+        constexpr double OrbitFitMargin = 1.10;
+        const double aspect = static_cast<double>(width) /
+            static_cast<double>(height);
+        const double tanVertical = std::tan(VerticalFov * 0.5);
+        const double tanHorizontal = tanVertical * aspect;
+        if (!std::isfinite(tanVertical) || !std::isfinite(tanHorizontal) ||
+            tanVertical <= 0.0 || tanHorizontal <= 0.0)
+        {
+            return 0.0;
+        }
+
+        // This is the value-only equivalent of
+        // OrbitCameraRig::CalculateFitDistance for PBRMaterialsSample's
+        // FreeOrbit rig. Its configured minimum distance is below every
+        // corner-fit constraint, so the eight AABB corners are authoritative.
+        const PBRViewBasis basis = MakePBRViewBasis();
+        double requiredDistance = 0.0;
+        for (double x : {-MatrixHalfExtent, MatrixHalfExtent})
+        {
+            for (double y : {-MatrixHalfExtent, MatrixHalfExtent})
+            {
+                for (double z : {-MatrixHalfExtent, MatrixHalfExtent})
+                {
+                    const double alongView = Dot(
+                        x, y, z,
+                        basis.forwardX, basis.forwardY, basis.forwardZ);
+                    const double horizontal = std::abs(Dot(
+                        x, y, z,
+                        basis.rightX, basis.rightY, basis.rightZ));
+                    const double vertical = std::abs(Dot(
+                        x, y, z,
+                        basis.upX, basis.upY, basis.upZ));
+                    requiredDistance = std::max(
+                        requiredDistance, horizontal / tanHorizontal - alongView);
+                    requiredDistance = std::max(
+                        requiredDistance, vertical / tanVertical - alongView);
+                }
+            }
+        }
+
+        const double radius = std::sqrt(
+            3.0 * MatrixHalfExtent * MatrixHalfExtent);
+        const double fitPadding = std::max(
+            radius * (OrbitFitMargin - 1.0), radius * 0.001);
+        return requiredDistance + fitPadding;
+    }
+
+    PBRProjectedPoint ProjectPBRGridPoint(
+        RVX::uint32 width,
+        RVX::uint32 height,
+        RVX::uint32 row,
+        RVX::uint32 column,
+        double layerZ)
+    {
+        constexpr double VerticalFov = 0.6981317008;
+        constexpr double CameraYaw = 0.7853981634;
+        constexpr double CameraPitch = 0.2094395102;
+        constexpr double GridSpacing = 1.45;
+
+        const double aspect = static_cast<double>(width) /
+            static_cast<double>(height);
+        const double distance = CalculatePBRGridCameraDistance(width, height);
+        const double worldX =
+            (static_cast<double>(column) - 2.0) * GridSpacing;
+        const double worldY =
+            (2.0 - static_cast<double>(row)) * GridSpacing;
+        const double sinYaw = std::sin(CameraYaw);
+        const double cosYaw = std::cos(CameraYaw);
+        const double sinPitch = std::sin(CameraPitch);
+        const double cosPitch = std::cos(CameraPitch);
+        const double viewAxisX = cosPitch * sinYaw;
+        const double viewAxisY = sinPitch;
+        const double viewAxisZ = cosPitch * cosYaw;
+        const double viewDepth = distance -
+            (worldX * viewAxisX + worldY * viewAxisY +
+             layerZ * viewAxisZ);
+        const double viewX = worldX * cosYaw - layerZ * sinYaw;
+        const double viewY =
+            worldX * (-sinPitch * sinYaw) + worldY * cosPitch +
+            layerZ * (-sinPitch * cosYaw);
+        const double tanHalfFov = std::tan(VerticalFov * 0.5);
+
+        return {
+            0.5 + viewX / (2.0 * viewDepth * tanHalfFov * aspect),
+            0.5 - viewY / (2.0 * viewDepth * tanHalfFov)};
+    }
+
+    [[nodiscard]] bool ValidatePBRReferenceProjection()
+    {
+        constexpr RVX::uint32 CalibrationWidth = 320;
+        constexpr RVX::uint32 CalibrationHeight = 180;
+        constexpr double ExpectedDistance = 16.711408;
+        constexpr double DistanceTolerance = 0.00001;
+        const double distance = CalculatePBRGridCameraDistance(
+            CalibrationWidth, CalibrationHeight);
+        const PBRProjectedPoint topLeft = ProjectPBRGridPoint(
+            CalibrationWidth, CalibrationHeight, 0, 0, 2.9);
+        const PBRProjectedPoint bottomRight = ProjectPBRGridPoint(
+            CalibrationWidth, CalibrationHeight, 4, 4, 2.9);
+        const RVX::uint32 topLeftX = static_cast<RVX::uint32>(std::lround(
+            topLeft.x * static_cast<double>(CalibrationWidth)));
+        const RVX::uint32 topLeftY = static_cast<RVX::uint32>(std::lround(
+            topLeft.y * static_cast<double>(CalibrationHeight)));
+        const RVX::uint32 bottomRightX = static_cast<RVX::uint32>(std::lround(
+            bottomRight.x * static_cast<double>(CalibrationWidth)));
+        const RVX::uint32 bottomRightY = static_cast<RVX::uint32>(std::lround(
+            bottomRight.y * static_cast<double>(CalibrationHeight)));
+        if (std::abs(distance - ExpectedDistance) > DistanceTolerance ||
+            topLeftX != 97 || topLeftY != 46 ||
+            bottomRightX != 160 || bottomRightY != 159)
+        {
+            std::cerr << "PBR reference projection calibration failed\n";
+            return false;
+        }
+        return true;
+    }
+
+    PBRGridResponseMetrics MeasurePBRGridResponse(
+        const RVX::Test::ImageData& image,
+        double layerZ,
+        RVX::uint32 firstVisibleMetallicColumn,
+        RVX::uint32 radius)
+    {
+        constexpr RVX::uint32 GridSize = 5;
+        PatchMetrics patches[GridSize][GridSize] = {};
+
+        for (RVX::uint32 row = 0; row < GridSize; ++row)
+        {
+            for (RVX::uint32 column = 0; column < GridSize; ++column)
+            {
+                const PBRProjectedPoint projected =
+                    ProjectPBRGridPoint(
+                        image.width, image.height, row, column, layerZ);
+                const RVX::uint32 centerX = static_cast<RVX::uint32>(std::lround(
+                    projected.x * static_cast<double>(image.width)));
+                const RVX::uint32 centerY = static_cast<RVX::uint32>(std::lround(
+                    projected.y * static_cast<double>(image.height)));
+                patches[row][column] =
+                    MeasurePatch(image, centerX, centerY, radius);
+            }
+        }
+
+        PBRGridResponseMetrics metrics;
+        for (RVX::uint32 row = 0; row < GridSize; ++row)
+        {
+            metrics.metallicLumaDelta +=
+                patches[row][firstVisibleMetallicColumn].mean -
+                patches[row][GridSize - 1].mean;
+        }
+        metrics.metallicLumaDelta /= static_cast<double>(GridSize);
+
+        for (RVX::uint32 row = 0; row < GridSize; ++row)
+        {
+            for (RVX::uint32 column = firstVisibleMetallicColumn;
+                 column < GridSize;
+                 ++column)
+            {
+                metrics.roughnessRowContrast[row] +=
+                    patches[row][column].contrast;
+            }
+            metrics.roughnessRowContrast[row] /=
+                static_cast<double>(GridSize - firstVisibleMetallicColumn);
+            if (row > 0 &&
+                metrics.roughnessRowContrast[row] <
+                    metrics.roughnessRowContrast[row - 1])
+            {
+                ++metrics.roughnessContrastDropCount;
+            }
+        }
+
+        for (RVX::uint32 column = firstVisibleMetallicColumn;
+             column < GridSize;
+             ++column)
+        {
+            metrics.roughnessContrastDelta +=
+                patches[0][column].contrast -
+                patches[GridSize - 1][column].contrast;
+        }
+        metrics.roughnessContrastDelta /=
+            static_cast<double>(GridSize - firstVisibleMetallicColumn);
+        return metrics;
+    }
+
+    bool ValidatePBRMatrixResponse(const char* matrixName,
+                                   const PBRGridResponseMetrics& metrics,
+                                   const Options& options)
+    {
+        std::cout << "  pbr " << matrixName << " metallic luma delta:       "
+                  << metrics.metallicLumaDelta << "\n"
+                  << "  pbr " << matrixName << " roughness contrast delta: "
+                  << metrics.roughnessContrastDelta << "\n"
+                  << "  pbr " << matrixName << " roughness contrast drops: "
+                  << metrics.roughnessContrastDropCount << "/4\n";
+        if (metrics.metallicLumaDelta < options.minPBRMetallicLumaDelta)
+        {
+            std::cerr << "PBR " << matrixName
+                      << " matrix metallic response is too small\n";
+            return false;
+        }
+        if (metrics.roughnessContrastDelta <
+            options.minPBRRoughnessContrastDelta)
+        {
+            std::cerr << "PBR " << matrixName
+                      << " matrix roughness response is too small\n";
+            return false;
+        }
+        if (metrics.roughnessContrastDropCount < 3)
+        {
+            std::cerr << "PBR " << matrixName
+                      << " matrix roughness response is not consistently monotonic\n";
+            return false;
+        }
+        return true;
+    }
+
+    bool ValidatePBRGridResponse(const RVX::Test::ImageData& image,
+                                 const Options& options)
+    {
+        if (!ValidatePBRReferenceProjection())
+        {
+            return false;
+        }
+        const double scale = std::min(
+            static_cast<double>(image.width) / 320.0,
+            static_cast<double>(image.height) / 180.0);
+        const RVX::uint32 radius = std::max<RVX::uint32>(
+            2u, static_cast<RVX::uint32>(std::lround(3.0 * scale)));
+
+        // The front terracotta slice remains fully observable in the default
+        // diagonal cube view. Factor and texture workflows render this same
+        // 5x5 material surface in separate qualified sample runs.
+        const PBRGridResponseMetrics frontSliceMetrics = MeasurePBRGridResponse(
+            image, 2.9, 0u, radius);
+        return ValidatePBRMatrixResponse(
+            "front slice", frontSliceMetrics, options);
     }
 } // namespace
 
@@ -167,6 +559,10 @@ int main(int argc, char** argv)
     std::unordered_set<RVX::uint32> uniqueColors;
     RVX::uint64 sampledPixels = 0;
     RVX::uint64 nearBlackPixels = 0;
+    RVX::uint64 topBandPixels = 0;
+    RVX::uint64 bottomBandPixels = 0;
+    double topBandLuma = 0.0;
+    double bottomBandLuma = 0.0;
     double minLuma = std::numeric_limits<double>::max();
     double maxLuma = std::numeric_limits<double>::lowest();
 
@@ -186,6 +582,16 @@ int main(int argc, char** argv)
             if (luma <= options.nearBlackThreshold)
             {
                 ++nearBlackPixels;
+            }
+            if (y < image.height / 4u)
+            {
+                topBandLuma += luma;
+                ++topBandPixels;
+            }
+            if (y >= image.height - image.height / 4u)
+            {
+                bottomBandLuma += luma;
+                ++bottomBandPixels;
             }
 
             if (uniqueColors.size() < options.minUniqueColors)
@@ -210,6 +616,11 @@ int main(int argc, char** argv)
     const double lumaRange = maxLuma - minLuma;
     const double nearBlackRatio =
         static_cast<double>(nearBlackPixels) / static_cast<double>(sampledPixels);
+    const double topBottomLumaDelta =
+        topBandPixels > 0 && bottomBandPixels > 0
+            ? topBandLuma / static_cast<double>(topBandPixels) -
+                  bottomBandLuma / static_cast<double>(bottomBandPixels)
+            : 0.0;
 
     std::cout << "ImageContentValidation\n"
               << "  image:            " << options.image << "\n"
@@ -218,6 +629,10 @@ int main(int argc, char** argv)
               << "  unique colors:    " << uniqueColors.size() << "\n"
               << "  luma range:       " << lumaRange << "\n"
               << "  near-black ratio: " << nearBlackRatio << "\n";
+    if (options.requireTopBottomLumaDelta)
+    {
+        std::cout << "  top-bottom luma:  " << topBottomLumaDelta << "\n";
+    }
 
     if (uniqueColors.size() < options.minUniqueColors)
     {
@@ -234,6 +649,20 @@ int main(int argc, char** argv)
     if (nearBlackRatio > options.maxNearBlackRatio)
     {
         std::cerr << "Image is too close to black\n";
+        return 1;
+    }
+
+    if (options.requireTopBottomLumaDelta &&
+        (topBandPixels == 0 || bottomBandPixels == 0 ||
+         topBottomLumaDelta < options.minTopBottomLumaDelta))
+    {
+        std::cerr << "Image top-to-bottom orientation contract failed\n";
+        return 1;
+    }
+
+    if (options.requirePBRGridResponse &&
+        !ValidatePBRGridResponse(image, options))
+    {
         return 1;
     }
 

@@ -5,6 +5,7 @@
 #include "ShaderCompiler/ShaderCompileService.h"
 #include "ShaderCompiler/ShaderHotReloader.h"
 #include "ShaderCompiler/ShaderLayout.h"
+#include "ShaderCompiler/ShaderManager.h"
 #include "ShaderCompiler/ShaderPermutation.h"
 #include "RHI/RHI.h"
 
@@ -68,12 +69,6 @@ namespace
         file << text;
     }
 
-    bool IsCompilerUnavailable(const RVX::ShaderCompileResult& result)
-    {
-        return result.errorMessage.find("not available") != std::string::npos ||
-               result.errorMessage.find("not initialized") != std::string::npos;
-    }
-
     std::string TestVertexShaderSource()
     {
         return R"(
@@ -87,17 +82,27 @@ cbuffer Camera : register(b0, space0)
 struct VSInput
 {
     float3 position : POSITION;
+    float2 texCoord : TEXCOORD1;
+    uint4 blendIndices : BLENDINDICES0;
 };
 
 struct VSOutput
 {
     float4 position : SV_POSITION;
+    float2 texCoord : TEXCOORD1;
 };
 
 VSOutput main(VSInput input)
 {
     VSOutput output;
-    output.position = mul(gViewProjection, float4(input.position + RVX_TEST_OFFSET, 1.0));
+    float blendOffset = float(input.blendIndices.x) * 0.000001;
+    output.position = mul(
+        gViewProjection,
+        float4(
+            input.position + RVX_TEST_OFFSET +
+                float3(blendOffset, 0.0, 0.0),
+            1.0));
+    output.texCoord = input.texCoord;
     return output;
 }
 )";
@@ -116,6 +121,12 @@ VSOutput main(VSInput input)
             , m_observedMutex(std::move(observedMutex))
             , m_observedValues(std::move(observedValues))
         {
+        }
+
+        RVX::ShaderCompileSupport QuerySupport(
+            const RVX::ShaderCompileOptions&) const override
+        {
+            return RVX::ShaderCompileSupport::Supported();
         }
 
         RVX::ShaderCompileResult Compile(const RVX::ShaderCompileOptions& options) override
@@ -156,6 +167,12 @@ VSOutput main(VSInput input)
         {
         }
 
+        RVX::ShaderCompileSupport QuerySupport(
+            const RVX::ShaderCompileOptions&) const override
+        {
+            return RVX::ShaderCompileSupport::Supported();
+        }
+
         RVX::ShaderCompileResult Compile(const RVX::ShaderCompileOptions&) override
         {
             return m_result;
@@ -169,7 +186,8 @@ VSOutput main(VSInput input)
     {
     public:
         explicit CapturedShader(const RVX::RHIShaderDesc& desc)
-            : m_stage(desc.stage)
+            : RHIShader(desc)
+            , m_stage(desc.stage)
         {
             if (desc.bytecode && desc.bytecodeSize > 0)
             {
@@ -259,6 +277,78 @@ TEST_F(ShaderCompilerValidationFixture, InvalidCompileOptionsReturnVisibleFailur
     RVX::ShaderCompileResult result = compiler->Compile(options);
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.errorMessage.empty());
+}
+
+TEST_F(ShaderCompilerValidationFixture, QuerySupportProvidesStructuredFailureForUnsupportedBackend)
+{
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const std::string source = "float4 main() : SV_Target { return 1.0; }";
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Pixel;
+    options.sourceCode = source.c_str();
+    options.entryPoint = "main";
+    options.sourcePath = "UnsupportedBackend.hlsl";
+    options.targetBackend = RVX::RHIBackendType::None;
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    EXPECT_FALSE(support.IsSupported());
+    EXPECT_NE(support.code, RVX::ShaderCompileSupportCode::Supported);
+    EXPECT_FALSE(support.reason.empty());
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, support.reason);
+}
+
+TEST_F(ShaderCompilerValidationFixture, ShaderManagerUsesInjectedCompiler)
+{
+    RVX::ShaderCompileResult injectedResult;
+    injectedResult.success = true;
+    injectedResult.bytecode = {'R', 'V', 'X'};
+    injectedResult.reflection.valid = true;
+    injectedResult.reflection.resources.push_back(
+        {"InjectedConstants", 0, 0, RVX::RHIBindingType::UniformBuffer, 1});
+    injectedResult.reflection.inputs.push_back(
+        {"POSITION", 0, 0, RVX::RHIFormat::RGB32_FLOAT, false});
+
+    TempDirectory temp("rvx_shader_manager_injection");
+    RVX::ShaderManagerConfig config;
+    config.cacheDirectory = temp.Path() / "Cache";
+    config.enableMemoryCache = false;
+    config.enableDiskCache = false;
+
+    RVX::ShaderManager manager(
+        config,
+        std::make_unique<StaticResultCompiler>(std::move(injectedResult)));
+    CapturingDevice device(RVX::RHIBackendType::DX12);
+
+    RVX::ShaderLoadDesc desc;
+    desc.path = "InjectedCompiler.hlsl";
+    desc.entryPoint = "main";
+    desc.stage = RVX::RHIShaderStage::Vertex;
+    desc.backend = RVX::RHIBackendType::DX12;
+
+    const RVX::ShaderLoadResult result = manager.LoadFromSource(
+        &device,
+        desc,
+        "float4 main() : SV_Position { return 0.0; }");
+
+    ASSERT_TRUE(result.compileResult.success)
+        << result.compileResult.errorMessage;
+    ASSERT_NE(result.shader, nullptr);
+    EXPECT_EQ(device.createShaderCalls, 1u);
+    EXPECT_EQ(device.lastShaderSource, "RVX");
+    ASSERT_TRUE(result.shader->HasInterface());
+    EXPECT_EQ(
+        result.shader->GetInterface().stage,
+        RVX::RHIShaderStage::Vertex);
+    ASSERT_EQ(result.shader->GetInterface().inputs.size(), 1u);
+    EXPECT_EQ(
+        result.shader->GetInterface().inputs.front().semanticName,
+        "POSITION");
+    EXPECT_EQ(result.shader->GetEntryPoint(), "main");
 }
 
 TEST_F(ShaderCompilerValidationFixture, AsyncCompileOwnsOptionStrings)
@@ -370,6 +460,66 @@ TEST_F(ShaderCompilerValidationFixture, MemoryShaderCacheInvalidatesOnIncludeMut
     EXPECT_FALSE(cache.Load(key).has_value());
 }
 
+TEST_F(
+    ShaderCompilerValidationFixture,
+    DiskShaderCacheRoundTripsCompleteInterfaceReflection)
+{
+    TempDirectory temp("rvx_shader_cache_reflection");
+
+    RVX::ShaderCacheManager::Config config;
+    config.cacheDirectory = temp.Path() / "Cache";
+    config.enableMemoryCache = true;
+    config.enableDiskCache = true;
+    config.validateOnLoad = false;
+    RVX::ShaderCacheManager cache(config);
+
+    RVX::ShaderCacheEntry entry;
+    entry.bytecode = {1, 2, 3, 4};
+    entry.backend = RVX::RHIBackendType::Vulkan;
+    entry.stage = RVX::RHIShaderStage::Vertex;
+    entry.reflection.valid = true;
+    entry.reflection.resources.push_back(
+        {"ObjectData", 2, 3, RVX::RHIBindingType::StorageBuffer, 4});
+    entry.reflection.pushConstants.push_back({16, 32});
+    entry.reflection.inputs.push_back(
+        {"TEXCOORD", 1, 5, RVX::RHIFormat::RG32_FLOAT, false});
+    entry.reflection.outputs.push_back(
+        {"SV_POSITION",
+         0,
+         RVX::RVX_INVALID_INDEX,
+         RVX::RHIFormat::RGBA32_FLOAT,
+         true});
+
+    constexpr RVX::uint64 key = 0xA11CE;
+    cache.Save(key, entry);
+    cache.ClearMemoryCache();
+
+    const std::optional<RVX::ShaderCacheEntry> loaded =
+        cache.Load(key);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_TRUE(loaded->reflection.valid);
+    ASSERT_EQ(loaded->reflection.resources.size(), 1u);
+    EXPECT_EQ(loaded->reflection.resources[0].set, 2u);
+    EXPECT_EQ(loaded->reflection.resources[0].binding, 3u);
+    EXPECT_EQ(loaded->reflection.resources[0].count, 4u);
+    ASSERT_EQ(loaded->reflection.pushConstants.size(), 1u);
+    EXPECT_EQ(loaded->reflection.pushConstants[0].offset, 16u);
+    EXPECT_EQ(loaded->reflection.pushConstants[0].size, 32u);
+    ASSERT_EQ(loaded->reflection.inputs.size(), 1u);
+    EXPECT_EQ(loaded->reflection.inputs[0].semantic, "TEXCOORD");
+    EXPECT_EQ(loaded->reflection.inputs[0].semanticIndex, 1u);
+    EXPECT_EQ(loaded->reflection.inputs[0].location, 5u);
+    EXPECT_EQ(
+        loaded->reflection.inputs[0].format,
+        RVX::RHIFormat::RG32_FLOAT);
+    EXPECT_FALSE(loaded->reflection.inputs[0].systemValue);
+    ASSERT_EQ(loaded->reflection.outputs.size(), 1u);
+    EXPECT_TRUE(loaded->reflection.outputs[0].systemValue);
+    EXPECT_EQ(
+        loaded->reflection.outputs[0].location,
+        RVX::RVX_INVALID_INDEX);
+}
+
 TEST_F(ShaderCompilerValidationFixture, DX12CompileProducesReflectionAndSourceInfo)
 {
     TempDirectory temp("rvx_shader_compile_dx12");
@@ -392,12 +542,13 @@ TEST_F(ShaderCompilerValidationFixture, DX12CompileProducesReflectionAndSourceIn
     options.targetBackend = RVX::RHIBackendType::DX12;
     options.enableOptimization = false;
 
-    RVX::ShaderCompileResult result = compiler->Compile(options);
-    if (!result.success && IsCompilerUnavailable(result))
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
     {
-        GTEST_SKIP() << result.errorMessage;
+        GTEST_SKIP() << support.reason;
     }
 
+    RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.bytecode.empty());
     EXPECT_FALSE(result.sourceInfo.IsEmpty());
@@ -423,10 +574,271 @@ TEST_F(ShaderCompilerValidationFixture, DX12CompileProducesReflectionAndSourceIn
     EXPECT_EQ(cameraIt->binding, 0u);
     EXPECT_EQ(cameraIt->type, RVX::RHIBindingType::UniformBuffer);
 
+    ASSERT_TRUE(result.reflection.valid);
+    auto texCoordIt = std::find_if(
+        result.reflection.inputs.begin(),
+        result.reflection.inputs.end(),
+        [](const RVX::ShaderReflection::InputAttribute& input)
+        {
+            return input.semantic == "TEXCOORD" &&
+                   input.semanticIndex == 1;
+        });
+    ASSERT_NE(texCoordIt, result.reflection.inputs.end());
+    EXPECT_EQ(texCoordIt->format, RVX::RHIFormat::RG32_FLOAT);
+    EXPECT_FALSE(texCoordIt->systemValue);
+
+    auto blendIndicesIt = std::find_if(
+        result.reflection.inputs.begin(),
+        result.reflection.inputs.end(),
+        [](const RVX::ShaderReflection::InputAttribute& input)
+        {
+            return input.semantic == "BLENDINDICES" &&
+                   input.semanticIndex == 0;
+        });
+    ASSERT_NE(blendIndicesIt, result.reflection.inputs.end());
+    EXPECT_EQ(
+        blendIndicesIt->format,
+        RVX::RHIFormat::RGBA32_UINT);
+
+    auto positionOutputIt = std::find_if(
+        result.reflection.outputs.begin(),
+        result.reflection.outputs.end(),
+        [](const RVX::ShaderReflection::InputAttribute& output)
+        {
+            return output.semantic == "SV_POSITION";
+        });
+    ASSERT_NE(positionOutputIt, result.reflection.outputs.end());
+    EXPECT_TRUE(positionOutputIt->systemValue);
+
+    const RVX::RHIShaderInterface shaderInterface =
+        RVX::BuildRHIShaderInterface(
+            RVX::RHIShaderStage::Vertex,
+            result.reflection);
+    EXPECT_TRUE(shaderInterface.available);
+    EXPECT_NE(shaderInterface.hash, 0u);
+    EXPECT_EQ(
+        shaderInterface.inputs.size(),
+        result.reflection.inputs.size());
+    EXPECT_EQ(
+        shaderInterface.outputs.size(),
+        result.reflection.outputs.size());
+
     RVX::AutoPipelineLayout layout = RVX::BuildAutoPipelineLayout({{result.reflection, RVX::RHIShaderStage::Vertex}});
     ASSERT_FALSE(layout.setLayouts.empty());
     ASSERT_FALSE(layout.setLayouts[0].entries.empty());
     EXPECT_EQ(layout.setLayouts[0].entries[0].type, RVX::RHIBindingType::UniformBuffer);
+}
+
+TEST_F(
+    ShaderCompilerValidationFixture,
+    VulkanCompilePreservesPortableInterfaceSemantics)
+{
+    TempDirectory temp("rvx_shader_compile_vulkan");
+    const fs::path shaderPath = temp.Path() / "Main.hlsl";
+    const fs::path includePath = temp.Path() / "Common.hlsli";
+    const std::string source = TestVertexShaderSource();
+
+    WriteTextFile(
+        includePath,
+        "static const float3 RVX_TEST_OFFSET = "
+        "float3(0.0, 0.0, 0.0);\n");
+    WriteTextFile(shaderPath, source);
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const std::string shaderPathString = shaderPath.string();
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Vertex;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.sourcePath = shaderPathString.c_str();
+    options.targetBackend = RVX::RHIBackendType::Vulkan;
+    options.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport support =
+        compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
+    const RVX::ShaderCompileResult result =
+        compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_TRUE(result.reflection.valid);
+
+    auto findInput =
+        [&result](const char* semantic, RVX::uint32 semanticIndex)
+    {
+        return std::find_if(
+            result.reflection.inputs.begin(),
+            result.reflection.inputs.end(),
+            [semantic, semanticIndex](
+                const RVX::ShaderReflection::InputAttribute& input)
+            {
+                return input.semantic == semantic &&
+                       input.semanticIndex == semanticIndex;
+            });
+    };
+
+    const auto positionIt = findInput("POSITION", 0);
+    ASSERT_NE(positionIt, result.reflection.inputs.end());
+    EXPECT_EQ(positionIt->location, 0u);
+    EXPECT_EQ(positionIt->format, RVX::RHIFormat::RGB32_FLOAT);
+
+    const auto texCoordIt = findInput("TEXCOORD", 1);
+    ASSERT_NE(texCoordIt, result.reflection.inputs.end());
+    EXPECT_EQ(texCoordIt->format, RVX::RHIFormat::RG32_FLOAT);
+
+    const auto blendIndicesIt = findInput("BLENDINDICES", 0);
+    ASSERT_NE(blendIndicesIt, result.reflection.inputs.end());
+    EXPECT_EQ(
+        blendIndicesIt->format,
+        RVX::RHIFormat::RGBA32_UINT);
+
+    const auto texCoordOutputIt = std::find_if(
+        result.reflection.outputs.begin(),
+        result.reflection.outputs.end(),
+        [](const RVX::ShaderReflection::InputAttribute& output)
+        {
+            return output.semantic == "TEXCOORD" &&
+                   output.semanticIndex == 1;
+        });
+    ASSERT_NE(texCoordOutputIt, result.reflection.outputs.end());
+    EXPECT_EQ(texCoordOutputIt->format, RVX::RHIFormat::RG32_FLOAT);
+
+    const RVX::RHIShaderInterface shaderInterface =
+        RVX::BuildRHIShaderInterface(
+            RVX::RHIShaderStage::Vertex,
+            result.reflection);
+    EXPECT_TRUE(shaderInterface.available);
+    EXPECT_NE(shaderInterface.hash, 0u);
+}
+
+TEST_F(
+    ShaderCompilerValidationFixture,
+    VulkanCompileUsesPortableExtensionsAndDistinguishesStructuredBuffers)
+{
+    const std::string source = R"(
+StructuredBuffer<uint> gReadOnly : register(t0, space0);
+RWStructuredBuffer<uint> gReadWrite : register(u0, space1);
+
+[numthreads(1, 1, 1)]
+void main(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    gReadWrite[dispatchThreadId.x] = gReadOnly[dispatchThreadId.x];
+}
+)";
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Compute;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.targetBackend = RVX::RHIBackendType::Vulkan;
+    options.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport support =
+        compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_TRUE(result.reflection.valid);
+
+    const std::string spirvText(
+        reinterpret_cast<const char*>(result.bytecode.data()),
+        result.bytecode.size());
+    EXPECT_EQ(
+        spirvText.find("SPV_GOOGLE_hlsl_functionality1"),
+        std::string::npos);
+    EXPECT_EQ(
+        spirvText.find("SPV_GOOGLE_user_type"),
+        std::string::npos);
+
+    const auto findResource =
+        [&result](const char* name)
+        {
+            return std::find_if(
+                result.reflection.resources.begin(),
+                result.reflection.resources.end(),
+                [name](const RVX::ShaderReflection::ResourceBinding& resource)
+                {
+                    return resource.name == name;
+                });
+        };
+
+    const auto readOnlyIt = findResource("gReadOnly");
+    ASSERT_NE(readOnlyIt, result.reflection.resources.end());
+    EXPECT_EQ(
+        readOnlyIt->type,
+        RVX::RHIBindingType::ShaderResourceBuffer);
+
+    const auto readWriteIt = findResource("gReadWrite");
+    ASSERT_NE(readWriteIt, result.reflection.resources.end());
+    EXPECT_EQ(
+        readWriteIt->type,
+        RVX::RHIBindingType::StorageBuffer);
+}
+
+TEST_F(
+    ShaderCompilerValidationFixture,
+    OpenGLReflectionDistinguishesReadOnlyAndWritableStructuredBuffers)
+{
+    const std::string source = R"(
+StructuredBuffer<uint> gReadOnly : register(t0, space0);
+RWStructuredBuffer<uint> gReadWrite : register(u2, space0);
+
+[numthreads(1, 1, 1)]
+void main(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    gReadWrite[dispatchThreadId.x] = gReadOnly[dispatchThreadId.x];
+}
+)";
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Compute;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.sourcePath = "OpenGLStructuredBufferReflection.hlsl";
+    options.targetBackend = RVX::RHIBackendType::OpenGL;
+    options.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+
+    const auto findResource =
+        [&result](const char* name)
+        {
+            return std::find_if(
+                result.reflection.resources.begin(),
+                result.reflection.resources.end(),
+                [name](const RVX::ShaderReflection::ResourceBinding& resource)
+                {
+                    return resource.name == name;
+                });
+        };
+    const auto readOnlyIt = findResource("gReadOnly");
+    ASSERT_NE(readOnlyIt, result.reflection.resources.end());
+    EXPECT_EQ(readOnlyIt->type, RVX::RHIBindingType::ShaderResourceBuffer);
+    const auto readWriteIt = findResource("gReadWrite");
+    ASSERT_NE(readWriteIt, result.reflection.resources.end());
+    EXPECT_EQ(readWriteIt->type, RVX::RHIBindingType::StorageBuffer);
 }
 
 TEST_F(ShaderCompilerValidationFixture, DX11DefaultProfileSupportsRegisterSpaces)
@@ -471,12 +883,13 @@ VSOutput main(VSInput input)
     options.targetBackend = RVX::RHIBackendType::DX11;
     options.enableOptimization = false;
 
-    RVX::ShaderCompileResult result = compiler->Compile(options);
-    if (!result.success && IsCompilerUnavailable(result))
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
     {
-        GTEST_SKIP() << result.errorMessage;
+        GTEST_SKIP() << support.reason;
     }
 
+    RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.bytecode.empty());
 
@@ -490,6 +903,194 @@ VSOutput main(VSInput input)
     ASSERT_NE(objectIt, result.reflection.resources.end());
     EXPECT_EQ(objectIt->set, 1u);
     EXPECT_EQ(objectIt->binding, 0u);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       DX11SamplerABIKeepsFrameAndMaterialSamplersWithinSixteenSlots)
+{
+    const std::string source = R"(
+Texture2D<float4> FrameTexture : register(t1, space0);
+Texture2D<float4> EnvironmentTexture : register(t10, space0);
+SamplerState FrameSampler : register(s2, space0);
+SamplerState EnvironmentSampler : register(s13, space0);
+
+Texture2D<float4> MaterialTexture0 : register(t1, space2);
+Texture2D<float4> MaterialTexture1 : register(t2, space2);
+Texture2D<float4> MaterialTexture2 : register(t3, space2);
+Texture2D<float4> MaterialTexture3 : register(t4, space2);
+Texture2D<float4> MaterialTexture4 : register(t5, space2);
+SamplerState MaterialSampler0 : register(s6, space2);
+SamplerState MaterialSampler1 : register(s7, space2);
+SamplerState MaterialSampler2 : register(s8, space2);
+SamplerState MaterialSampler3 : register(s9, space2);
+SamplerState MaterialSampler4 : register(s10, space2);
+
+float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
+{
+    float4 value = FrameTexture.Sample(FrameSampler, uv);
+    value += EnvironmentTexture.Sample(EnvironmentSampler, uv);
+    value += MaterialTexture0.Sample(MaterialSampler0, uv);
+    value += MaterialTexture1.Sample(MaterialSampler1, uv);
+    value += MaterialTexture2.Sample(MaterialSampler2, uv);
+    value += MaterialTexture3.Sample(MaterialSampler3, uv);
+    value += MaterialTexture4.Sample(MaterialSampler4, uv);
+    return value;
+}
+)";
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Pixel;
+    options.entryPoint = "main";
+    options.sourceCode = source.c_str();
+    options.sourcePath = "DX11SamplerABITest.hlsl";
+    options.targetBackend = RVX::RHIBackendType::DX11;
+    options.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    EXPECT_FALSE(result.bytecode.empty());
+
+    const auto expectSampler = [&result](const char* name,
+                                         RVX::uint32 set,
+                                         RVX::uint32 binding)
+    {
+        const auto found = std::find_if(
+            result.reflection.resources.begin(),
+            result.reflection.resources.end(),
+            [name](const RVX::ShaderReflection::ResourceBinding& resource)
+            {
+                return resource.name == name;
+            });
+        ASSERT_NE(result.reflection.resources.end(), found);
+        EXPECT_EQ(RVX::RHIBindingType::Sampler, found->type);
+        EXPECT_EQ(set, found->set);
+        EXPECT_EQ(binding, found->binding);
+    };
+    expectSampler("FrameSampler", 0, 2);
+    expectSampler("EnvironmentSampler", 0, 13);
+    expectSampler("MaterialSampler0", 2, 6);
+    expectSampler("MaterialSampler1", 2, 7);
+    expectSampler("MaterialSampler2", 2, 8);
+    expectSampler("MaterialSampler3", 2, 9);
+    expectSampler("MaterialSampler4", 2, 10);
+
+    const auto expectTexture = [&result](const char* name,
+                                         RVX::uint32 set,
+                                         RVX::uint32 binding)
+    {
+        const auto found = std::find_if(
+            result.reflection.resources.begin(),
+            result.reflection.resources.end(),
+            [name](const RVX::ShaderReflection::ResourceBinding& resource)
+            {
+                return resource.name == name;
+            });
+        ASSERT_NE(result.reflection.resources.end(), found);
+        EXPECT_EQ(RVX::RHIBindingType::SampledTexture, found->type);
+        EXPECT_EQ(set, found->set);
+        EXPECT_EQ(binding, found->binding);
+    };
+    expectTexture("FrameTexture", 0, 1);
+    expectTexture("EnvironmentTexture", 0, 10);
+    expectTexture("MaterialTexture0", 2, 1);
+    expectTexture("MaterialTexture1", 2, 2);
+    expectTexture("MaterialTexture2", 2, 3);
+    expectTexture("MaterialTexture3", 2, 4);
+    expectTexture("MaterialTexture4", 2, 5);
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       DX11DefaultLitPixelReflectionPreservesDescriptorSets)
+{
+    const fs::path shaderPath =
+        fs::path(RVX_SOURCE_DIR) / "Render" / "Shaders" / "DefaultLit.hlsl";
+    std::ifstream shaderFile(shaderPath, std::ios::binary);
+    ASSERT_TRUE(shaderFile.is_open()) << shaderPath.string();
+    const std::string source{
+        std::istreambuf_iterator<char>(shaderFile),
+        std::istreambuf_iterator<char>()};
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const std::string shaderPathString = shaderPath.string();
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Pixel;
+    options.entryPoint = "PSMain";
+    options.sourceCode = source.c_str();
+    options.sourcePath = shaderPathString.c_str();
+    options.targetBackend = RVX::RHIBackendType::DX11;
+    options.targetProfile = "ps_5_0";
+    options.enableOptimization = false;
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    const auto clusterConstants = std::find_if(
+        result.reflection.resources.begin(),
+        result.reflection.resources.end(),
+        [](const RVX::ShaderReflection::ResourceBinding& resource)
+        {
+            return resource.name == "ClusterConstants";
+        });
+    ASSERT_NE(result.reflection.resources.end(), clusterConstants);
+    EXPECT_EQ(clusterConstants->set, 0u);
+    EXPECT_EQ(clusterConstants->binding, 7u);
+    for (const RVX::ShaderReflection::ResourceBinding& resource :
+         result.reflection.resources)
+    {
+        EXPECT_FALSE(resource.set == 1 && resource.binding == 3)
+            << "Unexpected DefaultLit PS resource: " << resource.name;
+    }
+}
+
+TEST_F(ShaderCompilerValidationFixture,
+       OpenGLToneMappingPixelCompileSupportsPortableCBufferLayout)
+{
+    const fs::path shaderPath = fs::path(RVX_SOURCE_DIR) / "Render" / "Shaders" /
+                                "PostProcess" / "ToneMapping.hlsl";
+    std::ifstream shaderFile(shaderPath, std::ios::binary);
+    ASSERT_TRUE(shaderFile.is_open()) << shaderPath.string();
+    const std::string source{
+        std::istreambuf_iterator<char>(shaderFile),
+        std::istreambuf_iterator<char>()};
+
+    auto compiler = RVX::CreateShaderCompiler();
+    ASSERT_NE(compiler, nullptr);
+
+    const std::string shaderPathString = shaderPath.string();
+    RVX::ShaderCompileOptions options;
+    options.stage = RVX::RHIShaderStage::Pixel;
+    options.entryPoint = "PSMain";
+    options.sourceCode = source.c_str();
+    options.sourcePath = shaderPathString.c_str();
+    options.targetBackend = RVX::RHIBackendType::OpenGL;
+    options.enableOptimization = false;
+    options.defines.push_back({"RVX_FULLSCREEN_UV_Y_MATCHES_CLIP_Y", "1"});
+
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
+    {
+        GTEST_SKIP() << support.reason;
+    }
+
+    const RVX::ShaderCompileResult result = compiler->Compile(options);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    EXPECT_FALSE(result.glslSource.empty());
 }
 
 TEST_F(ShaderCompilerValidationFixture, OpenGLCompileProducesGLSLSource)
@@ -514,12 +1115,13 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLCompileProducesGLSLSource)
     options.targetBackend = RVX::RHIBackendType::OpenGL;
     options.enableOptimization = false;
 
-    RVX::ShaderCompileResult result = compiler->Compile(options);
-    if (!result.success && IsCompilerUnavailable(result))
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
     {
-        GTEST_SKIP() << result.errorMessage;
+        GTEST_SKIP() << support.reason;
     }
 
+    RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.bytecode.empty());
     EXPECT_FALSE(result.glslSource.empty());
@@ -574,20 +1176,41 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     options.targetBackend = RVX::RHIBackendType::OpenGL;
     options.enableOptimization = false;
 
-    RVX::ShaderCompileResult result = compiler->Compile(options);
-    if (!result.success && IsCompilerUnavailable(result))
+    const RVX::ShaderCompileSupport support = compiler->QuerySupport(options);
+    if (!support.IsSupported())
     {
-        GTEST_SKIP() << result.errorMessage;
+        GTEST_SKIP() << support.reason;
     }
 
+    RVX::ShaderCompileResult result = compiler->Compile(options);
     ASSERT_TRUE(result.success) << result.errorMessage;
     EXPECT_FALSE(result.glslSource.empty());
 
-    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 5,
-                  "OpenGL GLSL binding ABI changes must invalidate cached GLSL");
+    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 12,
+                   "OpenGL GLSL binding ABI changes must invalidate cached GLSL");
     EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 0, 0), 1u);
     EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 2, 0), 9u);
-    EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 1), 7u);
+    EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 1), 2u);
+    EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 2), 3u);
+    EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 3), 7u);
+    EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 4), 8u);
+    EXPECT_EQ(RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::SampledTexture, 2, 5), 9u);
+    EXPECT_EQ(
+        RVX::GLSLBindingABI::FlattenBinding(
+            RVX::RHIBindingType::ShaderResourceBuffer, 0, 11),
+        11u);
+    EXPECT_EQ(
+        RVX::GLSLBindingABI::FlattenBinding(
+            RVX::RHIBindingType::ShaderResourceBuffer, 1, 1),
+        12u);
+    EXPECT_EQ(
+        RVX::GLSLBindingABI::FlattenBinding(
+            RVX::RHIBindingType::ShaderResourceBuffer, 1, 3),
+        14u);
+    EXPECT_EQ(
+        RVX::GLSLBindingABI::FlattenBinding(
+            RVX::RHIBindingType::ShaderResourceBuffer, 2, 11),
+        15u);
 
     EXPECT_EQ(result.glslBindings.uboBindings["FrameConstants"],
               RVX::GLSLBindingABI::FlattenBinding(RVX::RHIBindingType::UniformBuffer, 0, 0));
@@ -729,4 +1352,34 @@ TEST_F(ShaderCompilerValidationFixture, OpenGLPermutationUsesGeneratedGLSLSource
     EXPECT_EQ(device.createShaderCalls, 1u);
     EXPECT_EQ(device.lastShaderSource, glslSource);
     EXPECT_NE(device.lastShaderSource, spirvBytes);
+}
+
+TEST(ShaderCompilerPolicyValidation, DebugInformationDoesNotChangeOptimizationMode)
+{
+    RVX::ShaderCompileOptions options;
+
+    options.enableDebugInfo = false;
+    options.enableOptimization = false;
+    EXPECT_EQ(
+        RVX::ResolveShaderOptimizationMode(options),
+        RVX::ShaderOptimizationMode::Disabled);
+
+    options.enableDebugInfo = true;
+    EXPECT_EQ(
+        RVX::ResolveShaderOptimizationMode(options),
+        RVX::ShaderOptimizationMode::Disabled);
+
+    options.enableDebugInfo = false;
+    options.enableOptimization = true;
+    EXPECT_EQ(
+        RVX::ResolveShaderOptimizationMode(options),
+        RVX::ShaderOptimizationMode::Level3);
+
+    options.enableDebugInfo = true;
+    EXPECT_EQ(
+        RVX::ResolveShaderOptimizationMode(options),
+        RVX::ShaderOptimizationMode::Level3);
+
+    static_assert(RVX::RVX_SHADER_COMPILER_CACHE_ABI_VERSION >= 13,
+                  "Shader optimization-policy changes must invalidate cached bytecode");
 }

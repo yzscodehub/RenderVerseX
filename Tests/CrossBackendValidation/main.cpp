@@ -1,5 +1,6 @@
 #include "Core/Core.h"
 #include "RHI/RHI.h"
+#include "RHI_BackendFactory/RHIBackendFactory.h"
 #include "Common/GpuTestUtils.h"
 
 #include <gtest/gtest.h>
@@ -69,6 +70,111 @@ std::vector<RHIBackendType> GetAvailableBackends()
 #endif
 
     return backends;
+}
+
+// =============================================================================
+// Capability Contract Consistency
+// =============================================================================
+TEST(CrossBackendValidation, CapabilityContractConsistency)
+{
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
+    uint32_t testedBackendCount = 0;
+
+    for (auto backend : backends)
+    {
+        auto device = CreateDeviceForBackend(backend);
+        if (!ShouldRunBackend(device, backend))
+        {
+            continue;
+        }
+        ++testedBackendCount;
+
+        const RHICapabilities& caps = device->GetCapabilities();
+        auto validation = ValidateRHICapabilities(caps);
+
+        EXPECT_TRUE(validation)
+            << "Backend " << ToString(backend)
+            << " reported inconsistent capabilities: " << validation.message;
+    }
+
+    RVX_GTEST_SKIP_IF_NO_GPU_BACKENDS(testedBackendCount);
+}
+
+TEST(CrossBackendValidation, DeviceCapabilityReportRenderGraphBaselineConsistency)
+{
+    std::vector<RHIBackendType> backends = GetAvailableBackends();
+    uint32_t testedBackendCount = 0;
+
+    for (auto backend : backends)
+    {
+        auto device = CreateDeviceForBackend(backend);
+        if (!ShouldRunBackend(device, backend))
+        {
+            continue;
+        }
+        ++testedBackendCount;
+
+        const RHICapabilities& caps = device->GetCapabilities();
+        const RHICapabilityReport report = device->GetCapabilityReport();
+
+        EXPECT_EQ(report.schemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION) << ToString(backend);
+        EXPECT_EQ(report.backendType, backend) << ToString(backend);
+        EXPECT_EQ(report.adapterName, caps.adapterName) << ToString(backend);
+        EXPECT_EQ(report.driverVersion, caps.driverVersion) << ToString(backend);
+        EXPECT_FALSE(report.adapterName.empty()) << ToString(backend);
+        const bool requiresDriverIdentity =
+            backend == RHIBackendType::DX12 ||
+            backend == RHIBackendType::Vulkan;
+        if (requiresDriverIdentity)
+        {
+            EXPECT_FALSE(report.driverVersion.empty()) << ToString(backend);
+        }
+        EXPECT_TRUE(report.validationPassed)
+            << "Backend " << ToString(backend)
+            << " reported invalid capabilities: " << report.validationMessage;
+        EXPECT_TRUE(report.renderGraphBaselineSupported)
+            << "Backend " << ToString(backend)
+            << " is missing " << report.renderGraphBaselineMissingRequirements.size()
+            << " RenderGraph baseline requirements";
+        EXPECT_TRUE(report.renderGraphBaselineMissingRequirements.empty()) << ToString(backend);
+
+        const std::string text = device->ExportCapabilityReportText();
+        EXPECT_NE(text.find("RHI Capability Report"), std::string::npos) << ToString(backend);
+        if (!report.adapterName.empty())
+        {
+            EXPECT_NE(text.find("Adapter: " + report.adapterName), std::string::npos)
+                << ToString(backend);
+        }
+        if (!report.driverVersion.empty())
+        {
+            EXPECT_NE(text.find("DriverVersion: " + report.driverVersion), std::string::npos)
+                << ToString(backend);
+        }
+        EXPECT_NE(text.find("RenderGraphBaseline: Passed"), std::string::npos) << ToString(backend);
+        EXPECT_NE(text.find("RenderGraphBaselineMissing: none"), std::string::npos) << ToString(backend);
+
+        const std::string json = device->ExportCapabilityReportJson();
+        EXPECT_NE(json.find("\"schemaId\": \"RVX.RHI.CapabilityReport\""), std::string::npos) << ToString(backend);
+        EXPECT_NE(json.find("\"kind\": \"RHICapabilityReportJson\""), std::string::npos) << ToString(backend);
+        if (!report.adapterName.empty())
+        {
+            EXPECT_NE(json.find("\"adapterName\": \"" + report.adapterName + "\""),
+                      std::string::npos)
+                << ToString(backend);
+        }
+        if (!report.driverVersion.empty())
+        {
+            EXPECT_NE(json.find("\"driverVersion\": \"" + report.driverVersion + "\""),
+                      std::string::npos)
+                << ToString(backend);
+        }
+        EXPECT_NE(json.find("\"renderGraphBaseline\": {"), std::string::npos) << ToString(backend);
+        EXPECT_NE(json.find("\"supported\": true"), std::string::npos) << ToString(backend);
+
+        RVX_CORE_INFO("Backend {}: RHI capability report RenderGraph baseline OK", ToString(backend));
+    }
+
+    RVX_GTEST_SKIP_IF_NO_GPU_BACKENDS(testedBackendCount);
 }
 
 // =============================================================================
@@ -305,7 +411,13 @@ TEST(CrossBackendValidation, DescriptorContractConsistency)
         ASSERT_NE(nullptr, layout.Get()) << ToString(backend);
 
         RHIDescriptorSetDesc validSetDesc;
-        validSetDesc.SetLayout(layout.Get());
+        RHIBufferDesc bufferDesc;
+        bufferDesc.SetSize(256)
+            .SetUsage(RHIBufferUsage::Constant)
+            .SetMemoryType(RHIMemoryType::Upload);
+        auto buffer = device->CreateBuffer(bufferDesc);
+        ASSERT_NE(nullptr, buffer.Get()) << ToString(backend);
+        validSetDesc.SetLayout(layout.Get()).BindBuffer(0, buffer.Get(), 0, 256);
         auto set = device->CreateDescriptorSet(validSetDesc);
         ASSERT_NE(nullptr, set.Get()) << ToString(backend);
         EXPECT_TRUE(set->Update({})) << ToString(backend);

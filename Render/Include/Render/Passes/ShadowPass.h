@@ -4,22 +4,29 @@
  * @file ShadowPass.h
  * @brief Shadow map generation pass with CSM support
  * 
- * ShadowPass renders scene geometry to shadow maps for directional,
- * point, and spot lights. Supports Cascaded Shadow Maps (CSM) for
- * directional lights.
+ * ShadowPass renders scene geometry to directional-light shadow maps using
+ * Cascaded Shadow Maps (CSM). Point- and spot-light shadow maps are not
+ * currently supported.
  */
 
-#include "Render/Passes/IRenderPass.h"
 #include "Core/MathTypes.h"
+#include "Render/Passes/IRenderPass.h"
+#include "Render/Passes/DirectDrawPacketBatch.h"
 #include "Render/Renderer/ShadowConstants.h"
+#include "Render/Submission/RasterInstanceStream.h"
+#include "Render/Submission/RenderInstanceBatchPlan.h"
 
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace RVX
 {
+    class RenderResourceRegistry;
     class RenderScene;
-    class GPUResourceManager;
     class PipelineCache;
+    struct DirectionalShadowCascadeBindingSnapshot;
+    struct ObjectConstantBinding;
 
     /**
      * @brief Cascade info for CSM
@@ -40,6 +47,7 @@ namespace RVX
     {
         uint32_t shadowMapSize = 2048;       // Shadow map resolution
         uint32_t numCascades = 4;            // Number of CSM cascades
+        float maxDistance = 200.0f;          // Maximum camera distance covered by CSM
         float cascadeSplitLambda = 0.95f;    // PSSM split scheme parameter
         float shadowBias = 0.005f;           // Depth bias to reduce shadow acne
         float normalBias = 0.02f;            // Normal offset bias
@@ -60,15 +68,6 @@ namespace RVX
         RayTracedShadowMode rayTracedShadowMode = RayTracedShadowMode::ComplementRaster; // RT mask composition strategy
     };
 
-    struct ShadowPassStats
-    {
-        uint32_t configuredCascadeCount = 0;
-        uint32_t declaredCascadeResourceCount = 0;
-        uint32_t resolvedCascadeViewCount = 0;
-        uint32_t shadowCasterCount = 0;
-        uint32_t drawCount = 0;
-    };
-
     /**
      * @brief Shadow map generation pass
      * 
@@ -83,7 +82,7 @@ namespace RVX
     {
     public:
         ShadowPass();
-        ~ShadowPass() override = default;
+        ~ShadowPass() override;
 
         // =========================================================================
         // IRenderPass Interface
@@ -95,42 +94,42 @@ namespace RVX
         
         RenderGraphPassType GetPassType() const override { return RenderGraphPassType::Graphics; }
 
-        void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
-        void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void AddToGraph(RenderGraph& graph,
+                        const RenderPassRecordContext& context) override;
 
         // =========================================================================
         // Configuration
         // =========================================================================
 
-        void SetResources(GPUResourceManager* gpuResources, PipelineCache* pipelineCache);
-        void SetRenderScene(const RenderScene* scene);
+        void SetResources(PipelineCache* pipelineCache);
+        void SetResourceRegistry(const RenderResourceRegistry* registry)
+        {
+            m_resourceRegistry = registry;
+        }
         void SetConfig(const ShadowPassConfig& config);
-
-        /**
-         * @brief Set directional light for shadow mapping
-         */
-        void SetDirectionalLight(const Vec3& direction, const Vec3& color, float intensity);
-
-        /**
-         * @brief Calculate CSM cascades from view data
-         */
-        void CalculateCascades(const ViewData& view);
 
         /**
          * @brief Get cascade info for shader binding
          */
         const std::vector<ShadowCascade>& GetCascades() const { return m_cascades; }
         const ShadowPassConfig& GetConfig() const { return m_config; }
-        const Vec3& GetLightDirection() const { return m_lightDirection; }
-        float GetLightIntensity() const { return m_lightIntensity; }
 
-        /**
-         * @brief Get the shadow map texture (after execution)
-         */
-        RHITexture* GetShadowMap() const { return m_shadowMapTexture; }
         RGTextureHandle GetShadowMapTextureHandle() const { return m_shadowMapTextureHandle; }
         const std::vector<RGTextureHandle>& GetCascadeTextureHandles() const { return m_cascadeTextureHandles; }
-        const ShadowPassStats& GetStats() const { return m_stats; }
+        const ShadowPassStats& GetStats() const
+        {
+            return m_publishedRecordResults
+                ? m_publishedRecordResults->shadowStats : m_stats;
+        }
+        void PublishRecordResults(
+            const std::shared_ptr<RenderPassRecordResults>& results,
+            const RenderPassRecordIdentity& expectedIdentity)
+        {
+            if (results != nullptr && results->identity == expectedIdentity)
+            {
+                m_publishedRecordResults = results;
+            }
+        }
 
         void SetEnabled(bool enabled) { m_enabled = enabled; }
         bool IsRequestedEnabled() const override { return m_enabled; }
@@ -139,28 +138,63 @@ namespace RVX
         bool IsEnabled() const override { return IsRequestedEnabled() && IsSupported(); }
 
     private:
-        bool ResolveCascadeViews(const ViewData& view);
-        void RenderCascade(RHICommandContext& ctx, const ViewData& view, uint32_t cascadeIndex);
+        struct PlannedShadowDraw;
 
-        bool m_enabled = false;  // Disabled by default until light is configured
+        void Setup(RenderGraphBuilder& builder, const ViewData& view) override;
+        void Execute(RHICommandContext& ctx, const ViewData& view) override;
+        void InitializeGraphRecorder(
+            const RenderScene* scene,
+            std::shared_ptr<RasterInstanceStreamCache> directInstanceStreamCache);
+        void CalculateCascades(const ViewData& view,
+                               const PrimaryDirectionalLightRecordInput& primaryLight);
+        void Setup(RenderGraphBuilder& builder,
+                   const ViewData& view,
+                   const PrimaryDirectionalLightRecordInput& primaryLight);
+        void Execute(RenderGraphPassContext& context,
+                     const ViewData& view,
+                     const PrimaryDirectionalLightRecordInput& primaryLight);
+        void RenderCascade(RenderGraphPassContext& context,
+                           const ViewData& view,
+                           uint32_t cascadeIndex,
+                           const PrimaryDirectionalLightRecordInput& primaryLight);
+        bool BuildPlannedShadowDraws(RenderGraphBuilder& builder,
+                                     const ViewData& view);
+        bool BuildCascadeFrameBindings(
+            RenderGraphBuilder& builder,
+            const ViewData& view,
+            const PrimaryDirectionalLightRecordInput& primaryLight);
+        bool PrepareDirectInstanceStream(RenderGraphBuilder& builder,
+                                         const ViewData& view);
+        void ApplyDirectInstancePlan(RenderGraphBuilder& builder,
+                                     const ViewData& view);
+
+        bool m_enabled = false;
         mutable std::string m_unsupportedReason = "ShadowPass has not been configured";
-        GPUResourceManager* m_gpuResources = nullptr;
+        const RenderResourceRegistry* m_resourceRegistry = nullptr;
         PipelineCache* m_pipelineCache = nullptr;
         const RenderScene* m_renderScene = nullptr;
 
         ShadowPassConfig m_config;
-        Vec3 m_lightDirection{0.0f, -1.0f, 0.0f};
-        Vec3 m_lightColor{1.0f, 1.0f, 1.0f};
-        float m_lightIntensity = 1.0f;
 
         std::vector<ShadowCascade> m_cascades;
 
         // Shadow map resources
         RGTextureHandle m_shadowMapTextureHandle;
-        RHITexture* m_shadowMapTexture = nullptr;
         std::vector<RGTextureHandle> m_cascadeTextureHandles;
-        std::vector<RHITextureView*> m_cascadeViews;
+        std::vector<RGTextureViewHandle> m_cascadeViewHandles;
+        std::vector<PlannedShadowDraw> m_plannedShadowDraws;
+        std::unique_ptr<DirectionalShadowCascadeBindingSnapshot>
+            m_cascadeFrameBindings;
+        RGBufferHandle m_directInstanceHandle;
+        RGBufferHandle m_directInstanceIndexHandle;
+        RenderInstanceBatchPlan m_directInstancePlan;
+        std::shared_ptr<RasterInstanceStreamCache> m_directInstanceStreamCache =
+            std::make_shared<RasterInstanceStreamCache>();
+        RasterInstanceStream m_directInstanceStream;
+        bool m_directInstancingPreflightFailed = false;
+        bool m_shadowDrawPreflightValid = false;
         ShadowPassStats m_stats;
+        std::shared_ptr<RenderPassRecordResults> m_publishedRecordResults;
     };
 
 } // namespace RVX

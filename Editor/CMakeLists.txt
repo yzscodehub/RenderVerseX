@@ -37,6 +37,7 @@ target_sources(RVX_Editor PRIVATE
     Private/EditorPendingAction.cpp
     Private/EditorRenderBootstrapService.cpp
     Private/EditorRenderFrameService.cpp
+    Private/EditorRenderRuntimeAdapter.cpp
     Private/EditorRenderShutdownService.cpp
     Private/EditorScreenshotService.cpp
     Private/EditorSelectionService.cpp
@@ -147,6 +148,7 @@ target_link_libraries(RVX_Editor PUBLIC
     RVX::Core
     RVX::RHI
     RVX::Render
+    RVX::RenderContracts
     RVX::Resource
     RVX::Scene
     RVX::Tools
@@ -155,6 +157,10 @@ target_link_libraries(RVX_Editor PUBLIC
     RVX::HAL
     glad::glad
     OpenGL::GL
+)
+
+target_link_libraries(RVX_Editor PRIVATE
+    RVX::RHI_BackendFactory
 )
 
 if(RVX_ENABLE_DX11)
@@ -178,6 +184,7 @@ endif()
 
 target_compile_definitions(RVX_Editor PUBLIC
     RVX_EDITOR_ENABLE_LEGACY_IMGUI=$<BOOL:${RVX_EDITOR_ENABLE_LEGACY_IMGUI}>
+    RVX_EDITOR_M1_RENDER_ADAPTER=1
 )
 
 if(RVX_EDITOR_ENABLE_LEGACY_IMGUI)

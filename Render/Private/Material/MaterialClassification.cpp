@@ -1,23 +1,24 @@
 #include "Render/Material/MaterialClassification.h"
-#include "Scene/Material.h"
 
 namespace RVX
 {
-    MaterialRenderMode ClassifyMaterialRenderMode(const Material* material)
+    MaterialRenderMode ClassifyMaterialRenderMode(MaterialSourceAlphaMode alphaMode)
     {
-        if (!material)
-            return MaterialRenderMode::Opaque;
-
-        switch (material->GetAlphaMode())
+        switch (alphaMode)
         {
-            case Material::AlphaMode::Mask:
+            case MaterialSourceAlphaMode::Mask:
                 return MaterialRenderMode::Masked;
-            case Material::AlphaMode::Blend:
+            case MaterialSourceAlphaMode::Blend:
                 return MaterialRenderMode::Transparent;
-            case Material::AlphaMode::Opaque:
+            case MaterialSourceAlphaMode::Opaque:
             default:
                 return MaterialRenderMode::Opaque;
         }
+    }
+
+    MaterialRenderMode ClassifyMaterialRenderMode(const MaterialSourceData& materialSource)
+    {
+        return ClassifyMaterialRenderMode(materialSource.alphaMode);
     }
 
     MaterialPipelineVariant GetPipelineVariantForRenderMode(MaterialRenderMode mode)

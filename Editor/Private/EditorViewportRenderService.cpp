@@ -13,7 +13,6 @@
 #include "Render/Renderer/SceneRenderer.h"
 #include "RHI/RHICommandContext.h"
 #include "RHI/RHIDevice.h"
-#include "Runtime/Camera/Camera.h"
 #include "UI/UIRenderer.h"
 
 namespace RVX::Editor
@@ -124,70 +123,13 @@ const EditorViewportSceneRenderStats& EditorViewportRenderService::Submit(
         bool baseRendered = false;
         std::string fallbackReason;
 
-        if (desc.sceneRenderer && desc.sceneRenderer->IsInitialized())
-        {
-            SceneRendererExternalTargetDesc externalTarget;
-            externalTarget.colorTarget = viewport->GetColorTarget();
-            externalTarget.depthTarget = viewport->GetDepthTarget();
-            externalTarget.colorInitialState = state.colorState;
-            externalTarget.colorFinalState = RHIResourceState::ShaderResource;
-            externalTarget.depthInitialState = state.depthState;
-            externalTarget.depthFinalState = RHIResourceState::DepthWrite;
-
-            desc.sceneRenderer->SetExternalRenderTarget(externalTarget);
-            const Camera camera = viewport->BuildRenderCamera();
-            desc.sceneRenderer->SetupView(camera, desc.sceneManager);
-            desc.sceneRenderer->Render();
-
-            const SceneRendererFrameDiagnostics& frameDiagnostics =
-                desc.sceneRenderer->GetFrameDiagnostics();
-            const SceneRendererExternalTargetStats& externalStats =
-                desc.sceneRenderer->GetExternalRenderTargetStats();
-            const SceneRenderPassChainStats& passStats =
-                desc.sceneRenderer->GetPassChainStats();
-            const PipelineCache* pipelineCache =
-                desc.sceneRenderer->GetPipelineCache();
-            const bool pipelineReady =
-                pipelineCache && pipelineCache->IsInitialized();
-            const bool sceneHasRenderableContent =
-                desc.sceneRenderer->GetRenderScene().GetObjectCount() > 0;
-            sceneRecorded = externalStats.active &&
-                            externalStats.importedColor &&
-                            passStats.graphPassCount > 0 &&
-                            pipelineReady &&
-                            sceneHasRenderableContent;
-            fallbackReason = externalStats.fallbackReason;
-            if (!pipelineReady)
-            {
-                fallbackReason = "SceneRenderer pipeline cache unavailable";
-            }
-            else if (!sceneHasRenderableContent)
-            {
-                fallbackReason = "Editor scene has no renderable objects";
-            }
-            if (!sceneRecorded && fallbackReason.empty())
-            {
-                fallbackReason = "SceneRenderer did not record viewport target";
-            }
-
-            viewport->MarkSceneRenderResult(sceneRecorded,
-                                            externalTarget.colorFinalState,
-                                            externalStats.importedDepth
-                                                ? externalTarget.depthFinalState
-                                                : state.depthState,
-                                            fallbackReason);
-            viewport->SetRenderGraphDiagnostics(
-                BuildViewportRenderGraphDiagnostics(frameDiagnostics));
-        }
-        else
-        {
-            fallbackReason = "SceneRenderer unavailable";
-            viewport->MarkSceneRenderResult(false,
-                                            state.colorState,
-                                            state.depthState,
-                                            fallbackReason);
-            viewport->ClearRenderGraphDiagnostics();
-        }
+        fallbackReason =
+            "Editor scene publication is deferred; using fallback clear";
+        viewport->MarkSceneRenderResult(false,
+                                        state.colorState,
+                                        state.depthState,
+                                        fallbackReason);
+        viewport->ClearRenderGraphDiagnostics();
 
         if (sceneRecorded)
         {

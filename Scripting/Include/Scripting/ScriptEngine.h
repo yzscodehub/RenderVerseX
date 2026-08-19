@@ -21,7 +21,7 @@
 namespace RVX
 {
     // Forward declarations
-    class ScriptComponent;
+    class InputSubsystem;
 
     /**
      * @brief Handle to a loaded script
@@ -50,6 +50,11 @@ namespace RVX
         std::filesystem::path scriptsDirectory = "Scripts";
         bool enableHotReload = true;
         float hotReloadInterval = 1.0f;     ///< Check interval in seconds
+
+        ScriptingSubsystemConfig()
+        {
+            luaConfig.libraries = LuaLibrary::Safe | LuaLibrary::Package;
+        }
     };
 
     /**
@@ -103,6 +108,16 @@ namespace RVX
          * @brief Get current configuration
          */
         const ScriptingSubsystemConfig& GetConfig() const { return m_config; }
+
+        /**
+         * @brief Bind the optional runtime input subsystem used by Lua input APIs.
+         */
+        void SetInputSubsystem(InputSubsystem* inputSubsystem);
+
+        /**
+         * @brief Get the currently bound input subsystem, if any.
+         */
+        InputSubsystem* GetInputSubsystem() const { return m_inputSubsystem; }
 
         // =====================================================================
         // Script Loading
@@ -267,25 +282,6 @@ namespace RVX
         sol::state& GetState() { return m_luaState.GetState(); }
         const sol::state& GetState() const { return m_luaState.GetState(); }
 
-        // =====================================================================
-        // Component Management
-        // =====================================================================
-
-        /**
-         * @brief Register a script component (called by ScriptComponent)
-         */
-        void RegisterComponent(ScriptComponent* component);
-
-        /**
-         * @brief Unregister a script component
-         */
-        void UnregisterComponent(ScriptComponent* component);
-
-        /**
-         * @brief Get all registered script components
-         */
-        const std::vector<ScriptComponent*>& GetComponents() const { return m_components; }
-
     private:
         LuaState m_luaState;
         ScriptingSubsystemConfig m_config;
@@ -295,8 +291,8 @@ namespace RVX
         std::unordered_map<std::string, ScriptHandle> m_pathToHandle;
         ScriptHandle m_nextHandle = 1;
 
-        // Registered components
-        std::vector<ScriptComponent*> m_components;
+        InputSubsystem* m_inputSubsystem = nullptr;
+        bool m_initialized = false;
 
         // Hot reload
         float m_timeSinceLastCheck = 0.0f;
