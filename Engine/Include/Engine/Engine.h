@@ -76,34 +76,34 @@ namespace RVX
 
     /**
      * @brief Main engine class
-     * 
+     *
      * The Engine coordinates all subsystems and provides the main game loop.
      * Uses the EngineSubsystem pattern for modular, dependency-aware initialization.
-     * 
+     *
      * Built-in subsystems (from Runtime module):
      * - WindowSubsystem: Window creation and management
      * - InputSubsystem: Input polling and events
      * - TimeSubsystem: Frame timing
-     * 
+     *
      * Render subsystems (from Render module):
      * - RenderSubsystem: Rendering coordination
-     * 
+     *
      * Usage:
      * @code
      * Engine engine;
      * engine.SetConfig(config);
-     * 
+     *
      * // Add subsystems (order doesn't matter - dependencies are resolved automatically)
      * engine.AddSubsystem<WindowSubsystem>();
      * engine.AddSubsystem<InputSubsystem>();
      * engine.AddSubsystem<RenderSubsystem>();
-     * 
+     *
      * engine.Initialize();
-     * 
+     *
      * while (!engine.ShouldShutdown()) {
      *     engine.Tick();
      * }
-     * 
+     *
      * engine.Shutdown();
      * @endcode
      */

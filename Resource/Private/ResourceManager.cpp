@@ -4597,7 +4597,7 @@ ResourceType ResourceManager::GetTypeFromExtension(const std::string& extension)
         return ResourceType::Mesh;
 
     // Texture formats
-    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".dds" || 
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".dds" ||
         ext == ".tga" || ext == ".bmp" || ext == ".hdr" || ext == ".gif")
         return ResourceType::Texture;
 
@@ -4713,7 +4713,7 @@ bool IResourceLoader::CanLoad(const std::string& path) const
 {
     std::filesystem::path fsPath(path);
     std::string ext = fsPath.extension().string();
-    
+
     auto supported = GetSupportedExtensions();
     return std::find(supported.begin(), supported.end(), ext) != supported.end();
 }

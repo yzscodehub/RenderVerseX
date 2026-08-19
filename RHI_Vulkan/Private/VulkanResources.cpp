@@ -672,7 +672,7 @@ namespace RVX
         }
 
         VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        
+
         switch (desc.dimension)
         {
             case RHITextureDimension::Texture1D:
@@ -711,7 +711,7 @@ namespace RVX
             imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         if (HasFlag(desc.usage, RHITextureUsage::DepthStencil))
             imageInfo.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        
+
         imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
         VmaAllocationCreateInfo allocInfo = {};
@@ -814,7 +814,7 @@ namespace RVX
 
         // Subresource range
         viewInfo.subresourceRange.baseMipLevel = desc.subresourceRange.baseMipLevel;
-        viewInfo.subresourceRange.levelCount = (desc.subresourceRange.mipLevelCount == 0 || desc.subresourceRange.mipLevelCount == RVX_ALL_MIPS) ? 
+        viewInfo.subresourceRange.levelCount = (desc.subresourceRange.mipLevelCount == 0 || desc.subresourceRange.mipLevelCount == RVX_ALL_MIPS) ?
             VK_REMAINING_MIP_LEVELS : desc.subresourceRange.mipLevelCount;
         viewInfo.subresourceRange.baseArrayLayer = desc.subresourceRange.baseArrayLayer;
         viewInfo.subresourceRange.layerCount = (desc.subresourceRange.arrayLayerCount == 0 || desc.subresourceRange.arrayLayerCount == RVX_ALL_LAYERS) ?
@@ -1386,7 +1386,7 @@ namespace RVX
 
         // Create image without memory allocation
         VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        
+
         switch (desc.dimension)
         {
             case RHITextureDimension::Texture1D:
@@ -1425,7 +1425,7 @@ namespace RVX
             imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         if (HasFlag(desc.usage, RHITextureUsage::DepthStencil))
             imageInfo.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        
+
         imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
         // For placed resources, we need the ALIAS flag if memory may be shared

@@ -33,27 +33,27 @@ namespace RVX
 
     /**
      * @brief Render context - encapsulates RHI device, swap chain, and frame synchronization
-     * 
+     *
      * RenderContext is the central rendering resource manager. It owns the RHI device,
      * manages swap chain lifecycle, and handles multi-frame synchronization.
-     * 
+     *
      * Responsibilities:
      * - RHI device creation and lifecycle
      * - Swap chain management (creation, resize, present)
      * - Frame synchronization (fences, frame indexing)
      * - Command context management per frame
-     * 
+     *
      * Usage:
      * @code
      * RenderContextConfig config;
      * config.backendType = RHIBackendType::Vulkan;
      * config.enableValidation = true;
-     * 
+     *
      * RenderContext ctx;
      * NativeSurfaceDesc surface;
      * ctx.Initialize(config, surface);
      * ctx.CreateSwapChain(surface);
-     * 
+     *
      * // Main loop
      * while (running)
      * {
@@ -63,7 +63,7 @@ namespace RVX
      *     ctx.EndFrame();
      *     ctx.Present();
      * }
-     * 
+     *
      * ctx.Shutdown();
      * @endcode
      */
@@ -134,7 +134,7 @@ namespace RVX
         /**
          * @brief Begin a new frame
          * @return true when the frame slot is safe and recording began
-         * 
+         *
          * Waits for the frame's previous work to complete (if using multi-buffering),
          * acquires the next swap chain image, and prepares the command context.
          */
@@ -169,7 +169,7 @@ namespace RVX
 
         /**
          * @brief Wait for all GPU work to complete
-         * 
+         *
          * Useful for shutdown or resource recreation.
          */
         void WaitIdle();
@@ -245,7 +245,7 @@ namespace RVX
         // RHI resources
         std::unique_ptr<IRHIDevice> m_device;
         RHISwapChainRef m_swapChain;
-        
+
         // Per-frame command contexts
         std::array<RHICommandContextRef, RVX_MAX_FRAME_COUNT> m_graphicsContexts;
         std::array<RHICommandContextRef, RVX_MAX_FRAME_COUNT> m_computeContexts;
@@ -260,7 +260,7 @@ namespace RVX
         std::array<std::unique_ptr<RenderGraphExecution>, RVX_MAX_FRAME_COUNT>
             m_inFlightGraphExecutions;
         std::unique_ptr<RenderFrameTimingOwner> m_frameTiming;
-        
+
         // Frame synchronization
         FrameSynchronizer m_frameSynchronizer;
         uint32_t m_frameIndex = 0;

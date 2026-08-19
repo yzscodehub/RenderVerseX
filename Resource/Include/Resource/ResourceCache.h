@@ -48,7 +48,7 @@ namespace RVX::Resource
 
     /**
      * @brief In-memory cache for loaded resources
-     * 
+     *
      * Provides:
      * - Fast lookup by ResourceId
      * - LRU eviction policy

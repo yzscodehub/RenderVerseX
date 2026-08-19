@@ -3662,20 +3662,20 @@ namespace RVX
         ss << "  rankdir=LR;\n";
         ss << "  node [fontname=\"Helvetica\", fontsize=10];\n";
         ss << "  edge [color=\"#666666\"];\n\n";
-        
+
         // Subgraph for resources
         ss << "  subgraph cluster_resources {\n";
         ss << "    label=\"Resources\";\n";
         ss << "    style=dashed;\n";
         ss << "    color=\"#cccccc\";\n\n";
-        
+
         // Texture nodes (ellipse)
         for (size_t i = 0; i < m_impl->textures.size(); ++i)
         {
             const auto& tex = m_impl->textures[i];
             std::string name = tex.desc.debugName ? tex.desc.debugName : ("Tex" + std::to_string(i));
             std::string fillColor = tex.imported ? "#b3d9ff" : (tex.alias.isAliased ? "#ffffb3" : "#b3ffb3");
-            
+
             ss << "    tex" << i << " [shape=ellipse, style=filled, fillcolor=\"" << fillColor << "\", ";
             ss << "label=\"" << name << "\\n" << tex.desc.width << "x" << tex.desc.height;
             if (tex.alias.isAliased)
@@ -3684,14 +3684,14 @@ namespace RVX
             }
             ss << "\"];\n";
         }
-        
+
         // Buffer nodes (ellipse with different shape)
         for (size_t i = 0; i < m_impl->buffers.size(); ++i)
         {
             const auto& buf = m_impl->buffers[i];
             std::string name = buf.desc.debugName ? buf.desc.debugName : ("Buf" + std::to_string(i));
             std::string fillColor = buf.imported ? "#b3d9ff" : (buf.alias.isAliased ? "#ffffb3" : "#b3ffb3");
-            
+
             ss << "    buf" << i << " [shape=box, style=\"filled,rounded\", fillcolor=\"" << fillColor << "\", ";
             ss << "label=\"" << name << "\\n" << (buf.desc.size / 1024) << " KB";
             if (buf.alias.isAliased)
@@ -3700,15 +3700,15 @@ namespace RVX
             }
             ss << "\"];\n";
         }
-        
+
         ss << "  }\n\n";
-        
+
         // Pass nodes (boxes)
         ss << "  // Passes\n";
         for (size_t i = 0; i < m_impl->passes.size(); ++i)
         {
             const auto& pass = m_impl->passes[i];
-            
+
             std::string color;
             if (pass.culled)
                 color = "#e0e0e0";
@@ -3720,16 +3720,16 @@ namespace RVX
                 color = "#d9ead3";
             else
                 color = "#f4cccc";
-            
+
             std::string style = pass.culled ? "dashed" : "filled";
-            
+
             ss << "  pass" << i << " [shape=box, style=\"" << style << "\", fillcolor=\"" << color << "\", ";
             ss << "label=\"" << pass.name;
             if (pass.culled)
                 ss << "\\n(CULLED)";
             ss << "\"];\n";
         }
-        
+
         // Dependencies (resource -> pass for reads, pass -> resource for writes)
         ss << "\n  // Read edges (resource -> pass)\n";
         for (size_t i = 0; i < m_impl->passes.size(); ++i)
@@ -3744,7 +3744,7 @@ namespace RVX
                 ss << "  buf" << bufIdx << " -> pass" << i << " [color=\"#3366cc\"];\n";
             }
         }
-        
+
         ss << "\n  // Write edges (pass -> resource)\n";
         for (size_t i = 0; i < m_impl->passes.size(); ++i)
         {
@@ -3758,7 +3758,7 @@ namespace RVX
                 ss << "  pass" << i << " -> buf" << bufIdx << " [color=\"#cc3333\", style=bold];\n";
             }
         }
-        
+
         // Execution order edges
         if (m_impl->executionOrder.size() > 1)
         {
@@ -3769,7 +3769,7 @@ namespace RVX
                 ss << "  pass" << m_impl->executionOrder[i - 1] << " -> pass" << m_impl->executionOrder[i] << ";\n";
             }
         }
-        
+
         // Legend
         ss << "\n  // Legend\n";
         ss << "  subgraph cluster_legend {\n";
@@ -3785,22 +3785,22 @@ namespace RVX
         ss << "    legend_copy [shape=box, style=filled, fillcolor=\"#d9ead3\", label=\"Copy\"];\n";
         ss << "    legend_imported -> legend_transient -> legend_aliased -> legend_graphics -> legend_compute -> legend_raytracing -> legend_copy [style=invis];\n";
         ss << "  }\n";
-        
+
         ss << "}\n";
-        
+
         return ss.str();
     }
 
     bool RenderGraph::SaveGraphviz(const char* filename) const
     {
         std::string dot = ExportGraphviz();
-        
+
         std::ofstream file(filename);
         if (!file.is_open())
         {
             return false;
         }
-        
+
         file << dot;
         return file.good();
     }

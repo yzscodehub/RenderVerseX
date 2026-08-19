@@ -36,22 +36,22 @@ namespace RVX
             return semantic ^ (stride << 8) ^ (invalidation << 24);
         }
     };
-    
+
     // Root Signature cache key
     struct RootSignatureCacheKey
     {
         std::vector<std::pair<uint32, uint8>> bindings;  // (binding, type) pairs per set
         uint32 pushConstantSize = 0;
         uint32 setCount = 0;
-        
+
         bool operator==(const RootSignatureCacheKey& other) const
         {
-            return pushConstantSize == other.pushConstantSize 
-                && setCount == other.setCount 
+            return pushConstantSize == other.pushConstantSize
+                && setCount == other.setCount
                 && bindings == other.bindings;
         }
     };
-    
+
     struct RootSignatureCacheKeyHash
     {
         size_t operator()(const RootSignatureCacheKey& key) const
@@ -161,11 +161,11 @@ namespace RVX
         ID3D12CommandQueue* GetGraphicsQueue() const { return m_graphicsQueue.Get(); }
         ID3D12CommandQueue* GetComputeQueue() const { return m_computeQueue.Get(); }
         ID3D12CommandQueue* GetCopyQueue() const { return m_copyQueue.Get(); }
-        
+
         DX12DescriptorHeapManager& GetDescriptorHeapManager() { return m_descriptorHeapManager; }
         DX12PipelineCache& GetPipelineCache() { return m_pipelineCache; }
         DX12CommandAllocatorPool& GetAllocatorPool() { return m_allocatorPool; }
-        
+
         ID3D12CommandQueue* GetQueue(RHICommandQueueType type) const;
 
         ID3D12CommandSignature* GetCommandSignature(
@@ -179,7 +179,7 @@ namespace RVX
         // Device Lost Handling
         // =========================================================================
         using DeviceLostCallback = std::function<void(HRESULT reason)>;
-        
+
         void SetDeviceLostCallback(DeviceLostCallback callback) { m_deviceLostCallback = std::move(callback); }
         bool IsDeviceLost() const { return m_deviceLost.load(std::memory_order_acquire); }
         HRESULT GetDeviceRemovedReason() const;
@@ -194,7 +194,7 @@ namespace RVX
         ComPtr<ID3D12RootSignature> GetOrCreateRootSignature(
             const RootSignatureCacheKey& key,
             const std::function<ComPtr<ID3D12RootSignature>()>& createFunc);
-        
+
         static RootSignatureCacheKey BuildRootSignatureKey(const RHIPipelineLayoutDesc& desc);
 
     private:

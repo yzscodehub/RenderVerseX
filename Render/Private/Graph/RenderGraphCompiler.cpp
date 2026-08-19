@@ -853,25 +853,25 @@ namespace RVX
         {
             uint64 bpp = GetFormatBytesPerPixel(desc.format);
             if (bpp == 0) bpp = 4;  // Fallback for compressed formats
-            
+
             uint64 totalSize = 0;
             uint32 width = desc.width;
             uint32 height = desc.height;
             uint32 depth = desc.depth;
-            
+
             for (uint32 mip = 0; mip < desc.mipLevels; ++mip)
             {
                 uint64 mipSize = static_cast<uint64>(width) * height * depth * bpp;
                 totalSize += mipSize * desc.arraySize;
-                
+
                 width = std::max(1u, width / 2);
                 height = std::max(1u, height / 2);
                 depth = std::max(1u, depth / 2);
             }
-            
+
             // Account for MSAA
             totalSize *= static_cast<uint32>(desc.sampleCount);
-            
+
             // Align to 64KB (D3D12 default heap alignment)
             return (totalSize + 65535) & ~65535ULL;
         }
@@ -1399,7 +1399,7 @@ namespace RVX
                 for (size_t heapIdx = 0; heapIdx < heaps.size(); ++heapIdx)
                 {
                     auto& heap = heaps[heapIdx];
-                    
+
                     // Find the end offset of all overlapping allocations
                     uint64 maxEndOffset = 0;
                     for (const auto& alloc : heap.allocations)
@@ -1413,7 +1413,7 @@ namespace RVX
 
                     // Try to fit after all overlapping allocations
                     uint64 alignedOffset = (maxEndOffset + alignment - 1) & ~(alignment - 1);
-                    
+
                     // Accept this heap if the growth is reasonable
                     if (alignedOffset + requiredSize <= heap.totalSize * 2 + requiredSize)
                     {

@@ -558,7 +558,7 @@ ResourceCache::Stats ResourceCache::GetStats() const
 
     Stats stats;
     stats.totalResources = m_resources.size();
-    
+
     for (const auto& [id, resource] : m_resources)
     {
         stats.memoryUsage += resource->GetMemoryUsage();
