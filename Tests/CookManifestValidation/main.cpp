@@ -1,3 +1,4 @@
+#include "Common/FilesystemLinkTestSupport.h"
 #include "Core/Hash/SHA256.h"
 #include "Resource/CookManifest.h"
 
@@ -314,13 +315,12 @@ TEST_F(CookManifestValidationFixture, AdmissionVerifiesMountedContentAndEveryExp
 TEST_F(CookManifestValidationFixture, AdmissionFailsClosedWhenMountedSymlinkEscapesTheCookedRoot)
 {
     const fs::path outsideRoot = m_root / "outside";
+    const fs::path linkPath = m_cookedRoot / "zzz";
     WriteFile(outsideRoot / "escape.rva", "outside-product");
     std::error_code linkError;
-    fs::create_directory_symlink(outsideRoot, m_cookedRoot / "zzz", linkError);
-    if (linkError)
-    {
-        GTEST_SKIP() << "The current test host does not permit directory symlink creation: " << linkError.message();
-    }
+    ASSERT_TRUE(RVX::TestSupport::CreateDirectoryLink(
+        outsideRoot, linkPath, linkError)) << linkError.message();
+    const RVX::TestSupport::ScopedDirectoryLink linkCleanup(linkPath);
 
     CookManifest manifest = MakeManifest();
     CookManifestEntry& entry = manifest.entries.front();

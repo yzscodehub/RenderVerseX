@@ -899,6 +899,7 @@ rvx_add_gtest(
     NAME ResourceRuntimePolicyValidation
     LANE unit
     SOURCES ResourceRuntimePolicyValidation/main.cpp
+    INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
     LIBS
         RVX::Core
         RVX::Resource
@@ -931,6 +932,7 @@ rvx_add_gtest(
     NAME CookManifestValidation
     LANE unit
     SOURCES CookManifestValidation/main.cpp
+    INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
     LIBS
         RVX::Core
         RVX::Resource
@@ -986,6 +988,7 @@ rvx_add_gtest(
     NAME CookedModelProductValidation
     LANE unit
     SOURCES CookedModelProductValidation/main.cpp
+    INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
     LIBS RVX::Core RVX::Resource RVX::Tools
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TAGS subsystem.resource suite.cook suite.model

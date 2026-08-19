@@ -5,9 +5,6 @@
 find_package(GTest CONFIG REQUIRED)
 include(GoogleTest)
 include(${CMAKE_SOURCE_DIR}/cmake/RVXValidation.cmake)
-set(RVX_VALIDATION_ENABLE_LEGACY_LANE_INFERENCE OFF CACHE BOOL
-    "C02 requires explicit validation lanes; C03 removes legacy inference"
-    FORCE)
 
 include(${CMAKE_CURRENT_LIST_DIR}/CMake/TestSupport.cmake)
 

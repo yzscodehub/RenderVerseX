@@ -205,50 +205,6 @@
   ],
   "testPresets": [
     {
-      "name": "win_x64_debug_unit_lint",
-      "configurePreset": "win_x64_debug",
-      "configuration": "Debug",
-      "execution": { "noTestsAction": "error" },
-      "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "^lane\\.unit$" } }
-    },
-    {
-      "name": "win_x64_release_unit_lint",
-      "configurePreset": "win_x64_release",
-      "configuration": "Release",
-      "execution": { "noTestsAction": "error" },
-      "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "^lane\\.unit$" } }
-    },
-    {
-      "name": "linux_x64_debug_unit_lint",
-      "configurePreset": "linux_x64_debug",
-      "execution": { "noTestsAction": "error" },
-      "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "^lane\\.unit$" } }
-    },
-    {
-      "name": "linux_x64_release_unit_lint",
-      "configurePreset": "linux_x64_release",
-      "execution": { "noTestsAction": "error" },
-      "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "^lane\\.unit$" } }
-    },
-    {
-      "name": "mac_arm64_debug_unit_lint",
-      "configurePreset": "mac_arm64_debug",
-      "execution": { "noTestsAction": "error" },
-      "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "^lane\\.unit$" } }
-    },
-    {
-      "name": "mac_arm64_release_unit_lint",
-      "configurePreset": "mac_arm64_release",
-      "execution": { "noTestsAction": "error" },
-      "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "^lane\\.unit$" } }
-    },
-    {
       "name": "win_x64_debug_lane_base",
       "hidden": true,
       "configurePreset": "win_x64_debug",
@@ -278,7 +234,7 @@
       "name": "win_x64_debug_native",
       "inherits": "win_x64_debug_lane_base",
       "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/win_x64_debug/BuildTruth/junit-native.xml" },
-      "filter": { "include": { "label": "^lane\\.native$" } }
+      "filter": { "include": { "label": "^suite\\.primary-native$" } }
     },
     {
       "name": "win_x64_qualification_lane_base",
@@ -323,7 +279,7 @@
       "name": "linux_x64_debug_native",
       "inherits": "linux_x64_debug_lane_base",
       "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/linux_x64_debug/BuildTruth/junit-native.xml" },
-      "filter": { "include": { "label": "^lane\\.native$" } }
+      "filter": { "include": { "label": "^suite\\.primary-native$" } }
     },
     {
       "name": "linux_x64_tsan_lane_base",
@@ -373,7 +329,7 @@
       "name": "mac_arm64_debug_native",
       "inherits": "mac_arm64_debug_lane_base",
       "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/mac_arm64_debug/BuildTruth/junit-native.xml" },
-      "filter": { "include": { "label": "^lane\\.native$" } }
+      "filter": { "include": { "label": "^suite\\.primary-native$" } }
     }
   ]
 }

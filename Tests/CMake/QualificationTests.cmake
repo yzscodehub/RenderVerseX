@@ -127,6 +127,7 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary
         TIMEOUT ${RVX_SAMPLE_TIMEOUT}
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
         FIXTURES_SETUP "${test_prefix}FreshCapture"
     )
 
@@ -146,7 +147,6 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS ${test_prefix}Smoke
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
     )
 
@@ -175,7 +175,6 @@ function(rvx_add_renderverse_primary_smoke SAMPLE_ID SAMPLE_LABEL ASSET_ID BACKE
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS ${test_prefix}Smoke
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
     )
 endfunction()
@@ -208,7 +207,6 @@ function(rvx_add_renderverse_p0_cross_path_parity SAMPLE_LABEL BACKEND_NAME BACK
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.gpu-driven suite.parity
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS "${test_prefix}GPUDrivenSmoke;${test_prefix}DirectSmoke"
         FIXTURES_REQUIRED
             "${test_prefix}GPUDrivenFreshCapture;${test_prefix}DirectFreshCapture")
 endfunction()
@@ -761,7 +759,6 @@ function(rvx_add_renderverse_pbr_response_validation BACKEND_NAME BACKEND_LABEL 
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.pbr
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS ${test_prefix}Smoke
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
     )
 endfunction()
@@ -840,7 +837,6 @@ function(rvx_add_renderverse_pbr_workflow_parity BACKEND_NAME BACKEND_LABEL)
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.pbr suite.parity
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS "RenderVerseSamples${BACKEND_LABEL}PBRMaterialsSmoke;RenderVerseSamples${BACKEND_LABEL}PBRMaterialsTextureSmoke"
         FIXTURES_REQUIRED
             "RenderVerseSamples${BACKEND_LABEL}PBRMaterialsFreshCapture;RenderVerseSamples${BACKEND_LABEL}PBRMaterialsTextureFreshCapture"
     )
@@ -915,6 +911,8 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
         TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.qualification
         TIMEOUT 300
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
     )
 
     rvx_add_validation_test(
@@ -933,7 +931,7 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
         TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.qualification
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS ${test_prefix}Validation
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
     )
 
     rvx_add_validation_test(
@@ -967,7 +965,7 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
         TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.qualification
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS ${test_prefix}Validation
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
     )
 
     if(TARGET RVXCook)
@@ -991,6 +989,7 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
             TAGS product.tools subsystem.resource trait.external-assets suite.cook suite.model suite.qualification
             TIMEOUT 600
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            FIXTURES_SETUP "${cooked_fixture}"
         )
     endif()
 
@@ -1005,7 +1004,7 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
                 --catalog "${external_catalog}"
                 --asset-root "${RVX_EXTERNAL_MODEL_ROOT}")
             set(mode_run_arguments --smoke)
-            set(mode_dependency "")
+            set(mode_fixture "")
         else()
             set(mode_label Cooked)
             set(model_arguments --model "${cooked_model}")
@@ -1013,7 +1012,7 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
             # catalog. It is still validation-enabled, but cannot claim the
             # catalog-backed redistributable provenance required by --smoke.
             set(mode_run_arguments "")
-            set(mode_dependency ${cooked_fixture})
+            set(mode_fixture ${cooked_fixture})
         endif()
 
         set(direct_capture "")
@@ -1071,7 +1070,9 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
                 TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.lifetime suite.qualification suite.${asset_mode} suite.${render_path}
                 TIMEOUT 1200
                 WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
-                DEPENDS ${mode_dependency}
+                RESOURCE_LOCK rvx_gpu
+                FIXTURES_SETUP "${lifetime_prefix}Artifacts"
+                FIXTURES_REQUIRED "${mode_fixture}"
             )
 
             set(qualification_test ${lifetime_prefix}QualificationValidation)
@@ -1093,7 +1094,7 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
                 TAGS product.samples trait.diagnostics backend.${BACKEND_NAME} suite.model-viewer suite.startup suite.residency suite.lifetime suite.qualification suite.${asset_mode} suite.${render_path}
                 TIMEOUT 30
                 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-                DEPENDS ${lifetime_prefix}Lifetime600
+                FIXTURES_REQUIRED "${lifetime_prefix}Artifacts"
             )
 
             if(render_path STREQUAL "direct")
@@ -1142,7 +1143,8 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
                     TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.lifetime suite.soak suite.qualification suite.${asset_mode} suite.${render_path}
                     TIMEOUT 3600
                     WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
-                    DEPENDS ${mode_dependency}
+                    RESOURCE_LOCK rvx_gpu
+                    FIXTURES_REQUIRED "${mode_fixture}"
                 )
             endif()
         endforeach()
@@ -1166,7 +1168,8 @@ function(rvx_add_renderverse_external_model_viewer_validation BACKEND_NAME BACKE
                 TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.model-viewer suite.lifetime suite.parity suite.qualification suite.${asset_mode}
                 TIMEOUT 30
                 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-                DEPENDS "${direct_lifetime_test};${gpu_lifetime_test}"
+                FIXTURES_REQUIRED
+                    "${direct_lifetime_test}Artifacts;${gpu_lifetime_test}Artifacts"
             )
         endif()
     endforeach()
@@ -1247,6 +1250,8 @@ function(rvx_add_renderverse_external_environment_validation BACKEND_NAME BACKEN
         TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.pbr suite.qualification
         TIMEOUT 300
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP "${test_prefix}FreshCapture"
     )
 
     rvx_add_validation_test(
@@ -1265,7 +1270,7 @@ function(rvx_add_renderverse_external_environment_validation BACKEND_NAME BACKEN
         TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.pbr suite.qualification
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS ${test_prefix}Validation
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
     )
 
     rvx_add_validation_test(
@@ -1297,7 +1302,7 @@ function(rvx_add_renderverse_external_environment_validation BACKEND_NAME BACKEN
         TAGS product.samples trait.visual trait.gpu trait.external-assets backend.${BACKEND_NAME} suite.pbr suite.qualification
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS ${test_prefix}Validation
+        FIXTURES_REQUIRED "${test_prefix}FreshCapture"
     )
 endfunction()
 
@@ -1337,6 +1342,7 @@ function(rvx_add_renderverse_readiness_smoke BACKEND_NAME BACKEND_LABEL)
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.readiness
         TIMEOUT 120
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+        RESOURCE_LOCK rvx_gpu
         FIXTURES_SETUP "${test_prefix}FreshCapture"
     )
 
@@ -1356,7 +1362,6 @@ function(rvx_add_renderverse_readiness_smoke BACKEND_NAME BACKEND_LABEL)
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.readiness
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS ${test_prefix}Smoke
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
     )
 
@@ -1384,7 +1389,6 @@ function(rvx_add_renderverse_readiness_smoke BACKEND_NAME BACKEND_LABEL)
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.readiness
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS ${test_prefix}Smoke
         FIXTURES_REQUIRED "${test_prefix}FreshCapture"
     )
 endfunction()
@@ -1458,6 +1462,7 @@ function(rvx_add_renderverse_gpu_driven_parity BACKEND_NAME BACKEND_LABEL)
             TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.gpu-driven suite.parity
             TIMEOUT 120
             WORKING_DIRECTORY "$<TARGET_FILE_DIR:RenderVerseSamples>"
+            RESOURCE_LOCK rvx_gpu
             FIXTURES_SETUP "${test_prefix}${path_label}FreshCapture"
         )
 
@@ -1477,7 +1482,6 @@ function(rvx_add_renderverse_gpu_driven_parity BACKEND_NAME BACKEND_LABEL)
             TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.gpu-driven suite.parity
             TIMEOUT 30
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            DEPENDS ${test_prefix}${path_label}Smoke
             FIXTURES_REQUIRED "${test_prefix}${path_label}FreshCapture"
         )
 
@@ -1515,7 +1519,6 @@ function(rvx_add_renderverse_gpu_driven_parity BACKEND_NAME BACKEND_LABEL)
             TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.gpu-driven suite.parity
             TIMEOUT 30
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            DEPENDS ${test_prefix}${path_label}Smoke
             FIXTURES_REQUIRED "${test_prefix}${path_label}FreshCapture"
         )
     endforeach()
@@ -1534,7 +1537,6 @@ function(rvx_add_renderverse_gpu_driven_parity BACKEND_NAME BACKEND_LABEL)
         TAGS product.samples trait.visual trait.gpu backend.${BACKEND_NAME} suite.primary suite.gpu-driven suite.parity
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS "${test_prefix}GPUSmoke;${test_prefix}DirectSmoke"
         FIXTURES_REQUIRED
             "${test_prefix}GPUFreshCapture;${test_prefix}DirectFreshCapture"
     )
@@ -2083,7 +2085,6 @@ function(rvx_add_renderverse_p0_cross_backend_parity SAMPLE_LABEL)
             TAGS product.samples trait.visual trait.gpu backend.dx12 backend.vulkan suite.primary suite.parity suite.cross-backend
             TIMEOUT 30
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            DEPENDS "RenderVerseSamplesDX12${SAMPLE_LABEL}${path_label}Smoke;RenderVerseSamplesVulkan${SAMPLE_LABEL}${path_label}Smoke"
             FIXTURES_REQUIRED
                 "RenderVerseSamplesDX12${SAMPLE_LABEL}${path_label}FreshCapture;RenderVerseSamplesVulkan${SAMPLE_LABEL}${path_label}FreshCapture")
     endforeach()
@@ -2125,7 +2126,6 @@ function(rvx_add_renderverse_gpu_driven_cross_backend_parity)
             TAGS product.samples trait.visual trait.gpu backend.dx12 backend.vulkan suite.primary suite.gpu-driven suite.parity suite.cross-backend
             TIMEOUT 30
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            DEPENDS "RenderVerseSamplesDX12GPUDriven${path_label}Smoke;RenderVerseSamplesVulkanGPUDriven${path_label}Smoke"
             FIXTURES_REQUIRED
                 "RenderVerseSamplesDX12GPUDriven${path_label}FreshCapture;RenderVerseSamplesVulkanGPUDriven${path_label}FreshCapture")
     endforeach()
@@ -2172,7 +2172,6 @@ if(WIN32
         TAGS product.samples trait.visual trait.gpu backend.dx12 backend.vulkan suite.primary suite.parity suite.cross-backend
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS "RenderVerseSamplesDX12RenderingStressDirectSmoke;RenderVerseSamplesVulkanRenderingStressDirectSmoke"
         FIXTURES_REQUIRED
             "RenderVerseSamplesDX12RenderingStressDirectFreshCapture;RenderVerseSamplesVulkanRenderingStressDirectFreshCapture"
     )
@@ -2191,7 +2190,6 @@ if(WIN32
         TAGS product.samples trait.visual trait.gpu backend.dx12 backend.vulkan suite.primary suite.gpu-driven suite.parity suite.cross-backend
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS "RenderVerseSamplesDX12RenderingStressGPUDrivenSmoke;RenderVerseSamplesVulkanRenderingStressGPUDrivenSmoke"
         FIXTURES_REQUIRED
             "RenderVerseSamplesDX12RenderingStressGPUDrivenFreshCapture;RenderVerseSamplesVulkanRenderingStressGPUDrivenFreshCapture"
     )
@@ -2228,6 +2226,8 @@ if(RVX_ENABLE_OPENGL AND TARGET RVXEditor)
         TAGS product.editor trait.visual trait.gpu backend.opengl suite.smoke
         TIMEOUT 120
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP RVXEditorSmokeFreshCapture
     )
 
     rvx_add_validation_test(
@@ -2246,7 +2246,7 @@ if(RVX_ENABLE_OPENGL AND TARGET RVXEditor)
         TAGS product.editor trait.visual trait.gpu backend.opengl suite.smoke
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS RVXEditorSmoke
+        FIXTURES_REQUIRED RVXEditorSmokeFreshCapture
     )
 
     rvx_add_validation_test(
@@ -2261,6 +2261,8 @@ if(RVX_ENABLE_OPENGL AND TARGET RVXEditor)
         TAGS product.editor trait.visual trait.gpu backend.opengl suite.workspace-path
         TIMEOUT 120
         WORKING_DIRECTORY "${RVX_EDITOR_WORKSPACE_PATH_SMOKE_CWD}"
+        RESOURCE_LOCK rvx_gpu
+        FIXTURES_SETUP RVXEditorWorkspacePathSmokeFreshCapture
     )
 
     rvx_add_validation_test(
@@ -2279,6 +2281,6 @@ if(RVX_ENABLE_OPENGL AND TARGET RVXEditor)
         TAGS product.editor trait.visual trait.gpu backend.opengl suite.workspace-path
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS RVXEditorWorkspacePathSmoke
+        FIXTURES_REQUIRED RVXEditorWorkspacePathSmokeFreshCapture
     )
 endif()

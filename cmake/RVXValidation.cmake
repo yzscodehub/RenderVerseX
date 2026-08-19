@@ -2,10 +2,8 @@
 # RVX validation registration
 # =============================================================================
 #
-# This compatibility layer centralizes validation registration while the
-# existing test tree still uses LABELS-based classification.  C02 can turn off
-# RVX_VALIDATION_ENABLE_LEGACY_LANE_INFERENCE once every test declares exactly
-# one LANE.
+# All validation tests declare exactly one primary lane.  The lane aggregates
+# are build-only conveniences; CTest labels are the source of test selection.
 
 include_guard(GLOBAL)
 
@@ -18,23 +16,15 @@ set(RVX_VALIDATION_LANES
     shipping
 )
 
-option(RVX_VALIDATION_ENABLE_LEGACY_LANE_INFERENCE
-    "Infer validation lanes from legacy LABELS when LANE is omitted"
-    ON
-)
-
 function(_rvx_validation_require_lane lane context)
+    if(NOT lane)
+        message(FATAL_ERROR "${context} requires an explicit LANE")
+    endif()
+
     list(FIND RVX_VALIDATION_LANES "${lane}" _rvx_validation_lane_index)
     if(_rvx_validation_lane_index EQUAL -1)
         message(FATAL_ERROR
             "${context} requires LANE to be one of: ${RVX_VALIDATION_LANES}; got '${lane}'")
-    endif()
-endfunction()
-
-function(_rvx_validation_require_explicit_lane_if_strict lane context)
-    if(NOT lane AND NOT RVX_VALIDATION_ENABLE_LEGACY_LANE_INFERENCE)
-        message(FATAL_ERROR
-            "${context} requires an explicit LANE when legacy lane inference is disabled")
     endif()
 endfunction()
 
@@ -54,84 +44,37 @@ function(_rvx_validation_register_target target_name lane)
             "Validation target '${target_name}' must exist before it can be registered")
     endif()
 
-    # Preserve the pre-C01 property so existing inventory code remains valid
-    # until it is replaced by rvx_finalize_validation().
-    _rvx_validation_append_unique_global(RVX_VALIDATION_EXECUTABLE_TARGETS "${target_name}")
+    _rvx_validation_require_lane("${lane}" "Validation target '${target_name}'")
+    string(TOUPPER "${lane}" _rvx_validation_lane_upper)
     _rvx_validation_append_unique_global(RVX_VALIDATION_ALL_TARGETS "${target_name}")
-
-    if(lane)
-        _rvx_validation_require_lane("${lane}" "Validation target '${target_name}'")
-        string(TOUPPER "${lane}" _rvx_validation_lane_upper)
-        _rvx_validation_append_unique_global(
-            "RVX_VALIDATION_LANE_${_rvx_validation_lane_upper}_TARGETS"
-            "${target_name}"
-        )
-        set_property(TARGET "${target_name}" PROPERTY RVX_VALIDATION_LANE "${lane}")
-    endif()
+    _rvx_validation_append_unique_global(
+        "RVX_VALIDATION_LANE_${_rvx_validation_lane_upper}_TARGETS"
+        "${target_name}"
+    )
 endfunction()
 
-function(_rvx_validation_infer_legacy_lanes labels out_lanes)
-    set(_rvx_validation_lanes "")
-    if(RVX_VALIDATION_ENABLE_LEGACY_LANE_INFERENCE)
-        foreach(_rvx_validation_lane IN LISTS RVX_VALIDATION_LANES)
-            list(FIND labels "${_rvx_validation_lane}" _rvx_validation_label_index)
-            if(NOT _rvx_validation_label_index EQUAL -1)
-                list(APPEND _rvx_validation_lanes "${_rvx_validation_lane}")
-            endif()
-        endforeach()
-    endif()
-    set("${out_lanes}" "${_rvx_validation_lanes}" PARENT_SCOPE)
-endfunction()
+function(_rvx_validation_validate_metadata lane tags suite context)
+    _rvx_validation_require_lane("${lane}" "${context}")
 
-function(_rvx_validation_validate_metadata lane labels tags suite context)
-    foreach(_rvx_validation_tag IN LISTS tags)
-        if(_rvx_validation_tag MATCHES "^lane\\.")
+    if(suite)
+        if(suite MATCHES ";" OR NOT suite MATCHES "^[A-Za-z0-9][A-Za-z0-9_.-]*$")
             message(FATAL_ERROR
-                "${context} TAGS may not declare '${_rvx_validation_tag}'; use the LANE argument instead")
+                "${context} SUITE must be one approved suite identifier; got '${suite}'")
+        endif()
+    endif()
+
+    foreach(_rvx_validation_tag IN LISTS tags)
+        if(NOT _rvx_validation_tag MATCHES
+           "^(product|subsystem|platform|backend|trait|suite)\\.[A-Za-z0-9][A-Za-z0-9_.-]*$")
+            message(FATAL_ERROR
+                "${context} TAGS entry '${_rvx_validation_tag}' must use an approved "
+                "product.*, subsystem.*, platform.*, backend.*, trait.* or suite.* namespace")
         endif()
     endforeach()
-
-    if(lane)
-        foreach(_rvx_validation_label IN LISTS labels)
-            if(_rvx_validation_label MATCHES "^lane\\.")
-                message(FATAL_ERROR
-                    "${context} declares LANE '${lane}' and may not also inject lane label "
-                    "'${_rvx_validation_label}' through LABELS")
-            endif()
-        endforeach()
-
-        if(suite MATCHES "^lane\\.")
-            message(FATAL_ERROR
-                "${context} declares LANE '${lane}' and may not use lane metadata as SUITE '${suite}'")
-        endif()
-        if(suite MATCHES ";")
-            message(FATAL_ERROR "${context} SUITE must be a single suite identifier")
-        endif()
-    endif()
-
-    if(NOT RVX_VALIDATION_ENABLE_LEGACY_LANE_INFERENCE)
-        if(labels)
-            message(FATAL_ERROR
-                "${context} may not use legacy LABELS when legacy lane inference is disabled; "
-                "use LANE, TAGS and SUITE")
-        endif()
-        foreach(_rvx_validation_tag IN LISTS tags)
-            if(NOT _rvx_validation_tag MATCHES
-               "^(product|subsystem|platform|backend|trait|suite)\\.[A-Za-z0-9][A-Za-z0-9_.-]*$")
-                message(FATAL_ERROR
-                    "${context} TAGS entry '${_rvx_validation_tag}' must use an approved "
-                    "product.*, subsystem.*, platform.*, backend.*, trait.* or suite.* namespace")
-            endif()
-        endforeach()
-    endif()
 endfunction()
 
-function(_rvx_validation_compose_labels out_labels lane labels tags suite)
-    set(_rvx_validation_labels ${labels})
-
-    if(lane)
-        list(APPEND _rvx_validation_labels "lane.${lane}")
-    endif()
+function(_rvx_validation_compose_labels out_labels lane tags suite)
+    set(_rvx_validation_labels "lane.${lane}")
 
     foreach(_rvx_validation_tag IN LISTS tags)
         if(NOT _rvx_validation_tag STREQUAL "")
@@ -147,13 +90,101 @@ function(_rvx_validation_compose_labels out_labels lane labels tags suite)
     set("${out_labels}" "${_rvx_validation_labels}" PARENT_SCOPE)
 endfunction()
 
-# Registers a GoogleTest executable.  The original C01 call contract remains
-# valid: NAME, SOURCES, LIBS, INCLUDES, DEFINES, LABELS, TIMEOUT and
-# WORKING_DIRECTORY.  LANE/TAGS/SUITE are additive metadata for new callers.
+function(_rvx_validation_escape_property_value out_value value)
+    string(REPLACE ";" "\\;" _rvx_validation_escaped "${value}")
+    set("${out_value}" "${_rvx_validation_escaped}" PARENT_SCOPE)
+endfunction()
+
+# PRE_TEST discovery creates the individual GTest cases only when CTest runs.
+# Attach optional metadata from a follow-up CTest include, where the generated
+# <target>_TESTS list is available. This avoids passing empty key/value pairs
+# to gtest_discover_tests(), which shifts the remaining properties.
+function(_rvx_validation_attach_gtest_metadata target_name)
+    set(options WILL_FAIL)
+    set(one_value_args RESOURCE_LOCK PROCESSORS)
+    set(multi_value_args
+        ENVIRONMENT
+        REQUIRED_FILES
+        FIXTURES_SETUP
+        FIXTURES_REQUIRED
+        FIXTURES_CLEANUP
+        DEPENDS
+    )
+    cmake_parse_arguments(PARSE_ARGV 1 RVX_GTEST_METADATA
+        "${options}"
+        "${one_value_args}"
+        "${multi_value_args}"
+    )
+
+    set(_rvx_validation_property_lines "")
+    foreach(_rvx_validation_property
+        ENVIRONMENT
+        REQUIRED_FILES
+        FIXTURES_SETUP
+        FIXTURES_REQUIRED
+        FIXTURES_CLEANUP
+        DEPENDS
+        RESOURCE_LOCK
+        PROCESSORS
+    )
+        if(RVX_GTEST_METADATA_${_rvx_validation_property})
+            _rvx_validation_escape_property_value(
+                _rvx_validation_escaped_value
+                "${RVX_GTEST_METADATA_${_rvx_validation_property}}"
+            )
+            string(APPEND _rvx_validation_property_lines
+                "        ${_rvx_validation_property} \"${_rvx_validation_escaped_value}\"\n")
+        endif()
+    endforeach()
+    if(RVX_GTEST_METADATA_WILL_FAIL)
+        string(APPEND _rvx_validation_property_lines "        WILL_FAIL TRUE\n")
+    endif()
+
+    if(_rvx_validation_property_lines)
+        set(_rvx_validation_metadata_file
+            "${CMAKE_CURRENT_BINARY_DIR}/${target_name}_rvx_metadata.cmake")
+        string(CONCAT _rvx_validation_metadata_content
+            "if(DEFINED ${target_name}_TESTS)\n"
+            "    set_tests_properties(\${${target_name}_TESTS} PROPERTIES\n"
+            "${_rvx_validation_property_lines}"
+            "    )\n"
+            "endif()\n"
+        )
+        file(GENERATE
+            OUTPUT "${_rvx_validation_metadata_file}"
+            CONTENT "${_rvx_validation_metadata_content}"
+        )
+        set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+            "${_rvx_validation_metadata_file}")
+    endif()
+endfunction()
+
+# Registers a GoogleTest executable. Tests are discovered immediately before
+# CTest execution so all of their CTest metadata is shared consistently.
 function(rvx_add_gtest)
-    set(options "")
-    set(one_value_args NAME LANE TIMEOUT LABELS SUITE WORKING_DIRECTORY)
-    set(multi_value_args SOURCES LIBS INCLUDES DEFINES TAGS)
+    set(options WILL_FAIL)
+    set(one_value_args
+        NAME
+        LANE
+        TIMEOUT
+        SUITE
+        WORKING_DIRECTORY
+        RESOURCE_LOCK
+        PROCESSORS
+    )
+    set(multi_value_args
+        SOURCES
+        LIBS
+        INCLUDES
+        DEFINES
+        TAGS
+        ENVIRONMENT
+        REQUIRED_FILES
+        FIXTURES_SETUP
+        FIXTURES_REQUIRED
+        FIXTURES_CLEANUP
+        DEPENDS
+    )
     cmake_parse_arguments(PARSE_ARGV 0 RVX_GTEST
         "${options}"
         "${one_value_args}"
@@ -164,37 +195,24 @@ function(rvx_add_gtest)
         message(FATAL_ERROR
             "rvx_add_gtest received unparsed arguments: ${RVX_GTEST_UNPARSED_ARGUMENTS}")
     endif()
-
     if(NOT RVX_GTEST_NAME)
         message(FATAL_ERROR "rvx_add_gtest requires NAME")
     endif()
-
     if(NOT RVX_GTEST_SOURCES)
         message(FATAL_ERROR "rvx_add_gtest(${RVX_GTEST_NAME}) requires SOURCES")
     endif()
 
-    if(RVX_GTEST_LANE)
-        _rvx_validation_require_lane("${RVX_GTEST_LANE}" "rvx_add_gtest(${RVX_GTEST_NAME})")
-    endif()
-    _rvx_validation_require_explicit_lane_if_strict(
-        "${RVX_GTEST_LANE}"
-        "rvx_add_gtest(${RVX_GTEST_NAME})"
-    )
     _rvx_validation_validate_metadata(
         "${RVX_GTEST_LANE}"
-        "${RVX_GTEST_LABELS}"
         "${RVX_GTEST_TAGS}"
         "${RVX_GTEST_SUITE}"
         "rvx_add_gtest(${RVX_GTEST_NAME})"
     )
-
     if(NOT RVX_GTEST_TIMEOUT)
         set(RVX_GTEST_TIMEOUT 120)
     endif()
 
-    add_executable(${RVX_GTEST_NAME}
-        ${RVX_GTEST_SOURCES}
-    )
+    add_executable(${RVX_GTEST_NAME} ${RVX_GTEST_SOURCES})
     target_link_libraries(${RVX_GTEST_NAME} PRIVATE
         GTest::gtest_main
         ${RVX_GTEST_LIBS}
@@ -202,32 +220,22 @@ function(rvx_add_gtest)
     target_compile_features(${RVX_GTEST_NAME} PRIVATE cxx_std_20)
 
     if(RVX_GTEST_INCLUDES)
-        target_include_directories(${RVX_GTEST_NAME} PRIVATE
-            ${RVX_GTEST_INCLUDES}
-        )
+        target_include_directories(${RVX_GTEST_NAME} PRIVATE ${RVX_GTEST_INCLUDES})
     endif()
-
     if(RVX_GTEST_DEFINES)
-        target_compile_definitions(${RVX_GTEST_NAME} PRIVATE
-            ${RVX_GTEST_DEFINES}
-        )
+        target_compile_definitions(${RVX_GTEST_NAME} PRIVATE ${RVX_GTEST_DEFINES})
     endif()
 
     _rvx_validation_compose_labels(
         _rvx_validation_labels
         "${RVX_GTEST_LANE}"
-        "${RVX_GTEST_LABELS}"
         "${RVX_GTEST_TAGS}"
         "${RVX_GTEST_SUITE}"
     )
-    # gtest_discover_tests stores PROPERTIES as a flat key/value list.  An
-    # unescaped CMake list would therefore turn every label after the first
-    # into a bogus property name instead of keeping it in LABELS.
-    string(REPLACE ";" "\\;" _rvx_validation_discovery_labels
-        "${_rvx_validation_labels}")
-
-    # PRE_TEST intentionally matches the pre-C01 helper.  It keeps test
-    # discovery out of the build and does not change existing CTest behavior.
+    _rvx_validation_escape_property_value(
+        _rvx_validation_discovery_labels
+        "${_rvx_validation_labels}"
+    )
     if(RVX_GTEST_WORKING_DIRECTORY)
         gtest_discover_tests(${RVX_GTEST_NAME}
             WORKING_DIRECTORY "${RVX_GTEST_WORKING_DIRECTORY}"
@@ -235,7 +243,7 @@ function(rvx_add_gtest)
             DISCOVERY_TIMEOUT 30
             PROPERTIES
                 LABELS "${_rvx_validation_discovery_labels}"
-                TIMEOUT ${RVX_GTEST_TIMEOUT}
+                TIMEOUT "${RVX_GTEST_TIMEOUT}"
         )
     else()
         gtest_discover_tests(${RVX_GTEST_NAME}
@@ -243,31 +251,58 @@ function(rvx_add_gtest)
             DISCOVERY_TIMEOUT 30
             PROPERTIES
                 LABELS "${_rvx_validation_discovery_labels}"
-                TIMEOUT ${RVX_GTEST_TIMEOUT}
+                TIMEOUT "${RVX_GTEST_TIMEOUT}"
         )
     endif()
 
-    if(RVX_GTEST_LANE)
-        _rvx_validation_register_target("${RVX_GTEST_NAME}" "${RVX_GTEST_LANE}")
-    else()
-        _rvx_validation_register_target("${RVX_GTEST_NAME}" "")
-        _rvx_validation_infer_legacy_lanes("${_rvx_validation_labels}" _rvx_validation_legacy_lanes)
-        foreach(_rvx_validation_lane IN LISTS _rvx_validation_legacy_lanes)
-            _rvx_validation_register_target("${RVX_GTEST_NAME}" "${_rvx_validation_lane}")
-        endforeach()
+    set(_rvx_validation_gtest_metadata_arguments "")
+    foreach(_rvx_validation_metadata
+        ENVIRONMENT
+        REQUIRED_FILES
+        FIXTURES_SETUP
+        FIXTURES_REQUIRED
+        FIXTURES_CLEANUP
+        DEPENDS
+        RESOURCE_LOCK
+        PROCESSORS
+    )
+        if(RVX_GTEST_${_rvx_validation_metadata})
+            list(APPEND _rvx_validation_gtest_metadata_arguments
+                ${_rvx_validation_metadata}
+                ${RVX_GTEST_${_rvx_validation_metadata}}
+            )
+        endif()
+    endforeach()
+    if(RVX_GTEST_WILL_FAIL)
+        list(APPEND _rvx_validation_gtest_metadata_arguments WILL_FAIL)
     endif()
+    _rvx_validation_attach_gtest_metadata(
+        "${RVX_GTEST_NAME}"
+        ${_rvx_validation_gtest_metadata_arguments}
+    )
+
+    _rvx_validation_register_target("${RVX_GTEST_NAME}" "${RVX_GTEST_LANE}")
 endfunction()
 
-# Registers a non-GTest CTest entry.  BUILD_TARGETS are added to validation
-# aggregate build targets; COMMAND retains normal add_test semantics.
+# Registers a non-GTest CTest entry. BUILD_TARGETS join the matching build
+# lane; metadata maps one-to-one to CTest properties.
 function(rvx_add_validation_test)
     set(options WILL_FAIL)
-    set(one_value_args NAME LANE TIMEOUT SUITE WORKING_DIRECTORY RESOURCE_LOCK PROCESSORS)
+    set(one_value_args
+        NAME
+        LANE
+        TIMEOUT
+        SUITE
+        WORKING_DIRECTORY
+        RESOURCE_LOCK
+        PROCESSORS
+    )
     set(multi_value_args
         COMMAND
         BUILD_TARGETS
-        LABELS
         TAGS
+        ENVIRONMENT
+        REQUIRED_FILES
         FIXTURES_SETUP
         FIXTURES_REQUIRED
         FIXTURES_CLEANUP
@@ -283,23 +318,15 @@ function(rvx_add_validation_test)
         message(FATAL_ERROR
             "rvx_add_validation_test received unparsed arguments: ${RVX_TEST_UNPARSED_ARGUMENTS}")
     endif()
-
     if(NOT RVX_TEST_NAME)
         message(FATAL_ERROR "rvx_add_validation_test requires NAME")
     endif()
     if(NOT RVX_TEST_COMMAND)
         message(FATAL_ERROR "rvx_add_validation_test(${RVX_TEST_NAME}) requires COMMAND")
     endif()
-    if(RVX_TEST_LANE)
-        _rvx_validation_require_lane("${RVX_TEST_LANE}" "rvx_add_validation_test(${RVX_TEST_NAME})")
-    endif()
-    _rvx_validation_require_explicit_lane_if_strict(
-        "${RVX_TEST_LANE}"
-        "rvx_add_validation_test(${RVX_TEST_NAME})"
-    )
+
     _rvx_validation_validate_metadata(
         "${RVX_TEST_LANE}"
-        "${RVX_TEST_LABELS}"
         "${RVX_TEST_TAGS}"
         "${RVX_TEST_SUITE}"
         "rvx_add_validation_test(${RVX_TEST_NAME})"
@@ -309,97 +336,53 @@ function(rvx_add_validation_test)
     endif()
 
     add_test(NAME ${RVX_TEST_NAME} COMMAND ${RVX_TEST_COMMAND})
-
     _rvx_validation_compose_labels(
         _rvx_validation_labels
         "${RVX_TEST_LANE}"
-        "${RVX_TEST_LABELS}"
         "${RVX_TEST_TAGS}"
         "${RVX_TEST_SUITE}"
     )
     set_tests_properties(${RVX_TEST_NAME} PROPERTIES
         LABELS "${_rvx_validation_labels}"
-        TIMEOUT ${RVX_TEST_TIMEOUT}
+        TIMEOUT "${RVX_TEST_TIMEOUT}"
     )
 
-    if(RVX_TEST_WORKING_DIRECTORY)
-        set_tests_properties(${RVX_TEST_NAME} PROPERTIES
-            WORKING_DIRECTORY "${RVX_TEST_WORKING_DIRECTORY}"
-        )
-    endif()
-    if(RVX_TEST_FIXTURES_SETUP)
-        set_tests_properties(${RVX_TEST_NAME} PROPERTIES
-            FIXTURES_SETUP "${RVX_TEST_FIXTURES_SETUP}"
-        )
-    endif()
-    if(RVX_TEST_FIXTURES_REQUIRED)
-        set_tests_properties(${RVX_TEST_NAME} PROPERTIES
-            FIXTURES_REQUIRED "${RVX_TEST_FIXTURES_REQUIRED}"
-        )
-    endif()
-    if(RVX_TEST_FIXTURES_CLEANUP)
-        set_tests_properties(${RVX_TEST_NAME} PROPERTIES
-            FIXTURES_CLEANUP "${RVX_TEST_FIXTURES_CLEANUP}"
-        )
-    endif()
-    if(RVX_TEST_DEPENDS)
-        set_tests_properties(${RVX_TEST_NAME} PROPERTIES DEPENDS "${RVX_TEST_DEPENDS}")
-    endif()
-    if(RVX_TEST_RESOURCE_LOCK)
-        set_tests_properties(${RVX_TEST_NAME} PROPERTIES RESOURCE_LOCK "${RVX_TEST_RESOURCE_LOCK}")
-    endif()
-    if(RVX_TEST_PROCESSORS)
-        set_tests_properties(${RVX_TEST_NAME} PROPERTIES PROCESSORS "${RVX_TEST_PROCESSORS}")
-    endif()
+    foreach(_rvx_validation_property
+        WORKING_DIRECTORY
+        ENVIRONMENT
+        REQUIRED_FILES
+        FIXTURES_SETUP
+        FIXTURES_REQUIRED
+        FIXTURES_CLEANUP
+        DEPENDS
+        RESOURCE_LOCK
+        PROCESSORS
+    )
+        if(RVX_TEST_${_rvx_validation_property})
+            set_tests_properties(${RVX_TEST_NAME} PROPERTIES
+                ${_rvx_validation_property} "${RVX_TEST_${_rvx_validation_property}}")
+        endif()
+    endforeach()
     if(RVX_TEST_WILL_FAIL)
         set_tests_properties(${RVX_TEST_NAME} PROPERTIES WILL_FAIL TRUE)
     endif()
 
     foreach(_rvx_validation_target IN LISTS RVX_TEST_BUILD_TARGETS)
-        if(RVX_TEST_LANE)
-            _rvx_validation_register_target("${_rvx_validation_target}" "${RVX_TEST_LANE}")
-        else()
-            _rvx_validation_register_target("${_rvx_validation_target}" "")
-            _rvx_validation_infer_legacy_lanes("${_rvx_validation_labels}" _rvx_validation_legacy_lanes)
-            foreach(_rvx_validation_lane IN LISTS _rvx_validation_legacy_lanes)
-                _rvx_validation_register_target("${_rvx_validation_target}" "${_rvx_validation_lane}")
-            endforeach()
-        endif()
+        _rvx_validation_register_target("${_rvx_validation_target}" "${RVX_TEST_LANE}")
     endforeach()
 endfunction()
 
-# Creates the six fixed lane aggregate build targets and their all-lanes
-# counterpart.  Call once after all test targets and legacy direct add_test()
-# registrations have been declared.
+# Creates the six fixed lane aggregates and the all-lanes aggregate. CTest
+# discovery remains PRE_TEST, so a required lane with no discovered tests is a
+# runtime gate failure rather than a silently successful configure.
 function(rvx_finalize_validation)
-    set(options "")
-    set(one_value_args "")
-    set(multi_value_args EXTRA_TARGETS)
-    cmake_parse_arguments(PARSE_ARGV 0 RVX_FINALIZE
-        "${options}"
-        "${one_value_args}"
-        "${multi_value_args}"
-    )
-
-    if(RVX_FINALIZE_UNPARSED_ARGUMENTS)
-        message(FATAL_ERROR
-            "rvx_finalize_validation received unparsed arguments: ${RVX_FINALIZE_UNPARSED_ARGUMENTS}")
-    endif()
-
     get_property(_rvx_validation_finalized GLOBAL PROPERTY RVX_VALIDATION_FINALIZED)
     if(_rvx_validation_finalized)
         message(FATAL_ERROR "rvx_finalize_validation may only be called once")
     endif()
 
-    get_property(_rvx_validation_legacy_targets GLOBAL
-        PROPERTY RVX_VALIDATION_EXECUTABLE_TARGETS)
     get_property(_rvx_validation_all_targets GLOBAL PROPERTY RVX_VALIDATION_ALL_TARGETS)
-    list(APPEND _rvx_validation_all_targets
-        ${_rvx_validation_legacy_targets}
-        ${RVX_FINALIZE_EXTRA_TARGETS}
-    )
     list(REMOVE_DUPLICATES _rvx_validation_all_targets)
-
     foreach(_rvx_validation_target IN LISTS _rvx_validation_all_targets)
         if(NOT TARGET "${_rvx_validation_target}")
             message(FATAL_ERROR
@@ -430,12 +413,6 @@ function(rvx_finalize_validation)
         message(FATAL_ERROR "Validation aggregate 'RVXValidationAll' already exists")
     endif()
     add_custom_target(RVXValidationAll DEPENDS ${_rvx_validation_all_targets})
-
-    # Retain the historical inventory name as a compatibility alias in C01.
-    if(TARGET RVXValidationInventory)
-        message(FATAL_ERROR "Validation aggregate 'RVXValidationInventory' already exists")
-    endif()
-    add_custom_target(RVXValidationInventory DEPENDS ${_rvx_validation_all_targets})
 
     set_property(GLOBAL PROPERTY RVX_VALIDATION_FINALIZED TRUE)
 endfunction()

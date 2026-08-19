@@ -1,3 +1,4 @@
+#include "Common/FilesystemLinkTestSupport.h"
 #include "Core/Log.h"
 #include "Geometry/Asset/Mesh.h"
 #include "Geometry/Asset/Model.h"
@@ -319,13 +320,13 @@ TEST(CookedModelProductValidation, ResolvedDependencyMustRemainInsideProductDire
     fs::create_directories(outsideDirectory);
     fs::copy_file(productDirectory / artifact.meshArtifactPath,
                   outsideDirectory / "meshes.rva");
+    const fs::path linkPath = productDirectory / "linked";
     std::error_code linkError;
-    fs::create_directory_symlink(outsideDirectory,
-                                 productDirectory / "linked",
-                                 linkError);
-    if (linkError)
-        GTEST_SKIP() << "Directory symlink creation is unavailable: "
-                     << linkError.message();
+    ASSERT_TRUE(RVX::TestSupport::CreateDirectoryLink(
+        outsideDirectory,
+        linkPath,
+        linkError)) << linkError.message();
+    const RVX::TestSupport::ScopedDirectoryLink linkCleanup(linkPath);
 
     artifact.meshArtifactPath = "linked/meshes.rva";
     std::vector<RVX::uint8> escapedBytes;

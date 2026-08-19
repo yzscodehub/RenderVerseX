@@ -614,23 +614,34 @@ namespace
     KerningFontSample FindKerningFontSample(float fontSize)
     {
 #if defined(_WIN32)
-        constexpr std::array<const char*, 3> candidates = {
+        constexpr std::array<const char*, 3> preferredCandidates = {
             "C:/Windows/Fonts/segoeui.ttf",
             "C:/Windows/Fonts/arial.ttf",
             "C:/Windows/Fonts/calibri.ttf",
         };
+        constexpr std::array<const char*, 1> fontRoots = {
+            "C:/Windows/Fonts",
+        };
 #elif defined(__APPLE__)
-        constexpr std::array<const char*, 3> candidates = {
+        constexpr std::array<const char*, 3> preferredCandidates = {
             "/System/Library/Fonts/SFNS.ttf",
             "/System/Library/Fonts/Supplemental/Arial.ttf",
             "/Library/Fonts/Arial.ttf",
         };
+        constexpr std::array<const char*, 2> fontRoots = {
+            "/System/Library/Fonts",
+            "/Library/Fonts",
+        };
 #else
-        constexpr std::array<const char*, 4> candidates = {
+        constexpr std::array<const char*, 4> preferredCandidates = {
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
             "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        };
+        constexpr std::array<const char*, 2> fontRoots = {
+            "/usr/share/fonts",
+            "/usr/local/share/fonts",
         };
 #endif
         constexpr std::array<std::pair<uint32, uint32>, 5> pairs = {
@@ -640,7 +651,41 @@ namespace
             {'W', 'a'},
             {'L', 'T'}};
 
-        for (const char* candidate : candidates)
+        std::vector<std::filesystem::path> candidates;
+        candidates.reserve(preferredCandidates.size() + 32u);
+        for (const char* candidate : preferredCandidates)
+        {
+            candidates.emplace_back(candidate);
+        }
+        for (const char* root : fontRoots)
+        {
+            std::error_code error;
+            const std::filesystem::recursive_directory_iterator end;
+            for (std::filesystem::recursive_directory_iterator iterator(
+                     root,
+                     std::filesystem::directory_options::skip_permission_denied,
+                     error);
+                 !error && iterator != end;
+                 iterator.increment(error))
+            {
+                if (!iterator->is_regular_file(error))
+                {
+                    error.clear();
+                    continue;
+                }
+                const std::filesystem::path extension = iterator->path().extension();
+                if (extension == ".ttf" || extension == ".TTF" ||
+                    extension == ".otf" || extension == ".OTF")
+                {
+                    candidates.push_back(iterator->path());
+                }
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
+        candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                         candidates.end());
+
+        for (const std::filesystem::path& candidate : candidates)
         {
             std::error_code error;
             if (!std::filesystem::exists(candidate, error))
@@ -649,7 +694,7 @@ namespace
             }
 
             UIFontMetrics font;
-            if (!font.LoadTrueTypeFile(candidate))
+            if (!font.LoadTrueTypeFile(candidate.string()))
             {
                 continue;
             }
@@ -1277,10 +1322,8 @@ TEST(UIValidation, TrueTypeFontMetricsAppliesKerningToMeasuredText)
 {
     constexpr float RVX_TEST_FONT_SIZE = 48.0f;
     const KerningFontSample sample = FindKerningFontSample(RVX_TEST_FONT_SIZE);
-    if (sample.path.empty())
-    {
-        GTEST_SKIP() << "No system TrueType font candidate exposes a tested kern pair";
-    }
+    ASSERT_FALSE(sample.path.empty())
+        << "No installed TrueType/OpenType font exposes a tested kern pair";
 
     UIFontMetrics font;
     ASSERT_TRUE(font.LoadTrueTypeFile(sample.path.string()));
@@ -1917,10 +1960,8 @@ TEST(UIValidation, TextRendererPositionsPackedGlyphsWithKerning)
 {
     constexpr float RVX_TEST_FONT_SIZE = 48.0f;
     const KerningFontSample sample = FindKerningFontSample(RVX_TEST_FONT_SIZE);
-    if (sample.path.empty())
-    {
-        GTEST_SKIP() << "No system TrueType font candidate exposes a tested kern pair";
-    }
+    ASSERT_FALSE(sample.path.empty())
+        << "No installed TrueType/OpenType font exposes a tested kern pair";
 
     UIFontMetrics font;
     ASSERT_TRUE(font.LoadTrueTypeFile(sample.path.string()));

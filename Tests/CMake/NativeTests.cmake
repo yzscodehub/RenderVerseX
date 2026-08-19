@@ -29,14 +29,19 @@ if(RVX_NATIVE_LIFECYCLE_BACKEND)
         DEFINES
             ${RVX_NATIVE_LIFECYCLE_DEFINE}
             RVX_NATIVE_REQUIRED_BACKEND="${RVX_NATIVE_LIFECYCLE_BACKEND}"
-        TAGS trait.gpu
+        TAGS trait.gpu suite.primary-native
         SUITE required-native-lifecycle
         TIMEOUT 180
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        RESOURCE_LOCK rvx_gpu
     )
 endif()
 
 if(RVX_ENABLE_DX12)
+    set(RVX_NATIVE_DX12_PRIMARY_TAGS "")
+    if(WIN32)
+        set(RVX_NATIVE_DX12_PRIMARY_TAGS suite.primary-native)
+    endif()
     rvx_add_gtest(
         NAME DX12Validation
         LANE native
@@ -53,12 +58,17 @@ if(RVX_ENABLE_DX12)
             ${CMAKE_CURRENT_SOURCE_DIR}
             ${CMAKE_SOURCE_DIR}/RHI_DX12/Private
             ${CMAKE_SOURCE_DIR}/Render/Private
-        TAGS backend.dx12 trait.gpu
+        TAGS backend.dx12 trait.gpu ${RVX_NATIVE_DX12_PRIMARY_TAGS}
         TIMEOUT 120
+        RESOURCE_LOCK rvx_gpu
     )
 endif()
 
 if(RVX_ENABLE_VULKAN)
+    set(RVX_NATIVE_VULKAN_PRIMARY_TAGS "")
+    if(UNIX AND NOT APPLE)
+        set(RVX_NATIVE_VULKAN_PRIMARY_TAGS suite.primary-native)
+    endif()
     rvx_add_gtest(
         NAME VulkanValidation
         LANE native
@@ -74,8 +84,9 @@ if(RVX_ENABLE_VULKAN)
         INCLUDES
             ${CMAKE_CURRENT_SOURCE_DIR}
             ${CMAKE_SOURCE_DIR}/RHI_Vulkan/Private
-        TAGS backend.vulkan trait.gpu
+        TAGS backend.vulkan trait.gpu ${RVX_NATIVE_VULKAN_PRIMARY_TAGS}
         TIMEOUT 120
+        RESOURCE_LOCK rvx_gpu
     )
 endif()
 
@@ -97,6 +108,7 @@ if(RVX_ENABLE_DX11)
             ${CMAKE_SOURCE_DIR}/RHI_DX11/Private
         TAGS backend.dx11 trait.gpu
         TIMEOUT 120
+        RESOURCE_LOCK rvx_gpu
     )
 endif()
 
@@ -115,6 +127,7 @@ if(RVX_ENABLE_DX12 AND RVX_ENABLE_VULKAN)
         INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
         TAGS trait.gpu suite.cross-backend
         TIMEOUT 180
+        RESOURCE_LOCK rvx_gpu
     )
 endif()
 
@@ -138,6 +151,8 @@ if(TARGET RVXEditor AND TARGET ImageContentValidation)
             TAGS product.editor trait.visual trait.gpu suite.native-ui
             TIMEOUT 120
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            RESOURCE_LOCK rvx_gpu
+            FIXTURES_SETUP "${test_prefix}FreshCapture"
         )
 
         rvx_add_validation_test(
@@ -156,7 +171,7 @@ if(TARGET RVXEditor AND TARGET ImageContentValidation)
             TAGS product.editor trait.visual trait.gpu suite.native-ui
             TIMEOUT 30
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            DEPENDS ${smoke_test}
+            FIXTURES_REQUIRED "${test_prefix}FreshCapture"
         )
     endfunction()
 
@@ -209,7 +224,7 @@ if(TARGET RVXEditor AND TARGET ImageContentValidation)
     function(rvx_add_editor_native_automation_smoke_test test_prefix scenario artifact_name)
         set(options CONFIRM_OVERWRITE)
         set(oneValueArgs TARGET SETTINGS_PATH SHORTCUT_PROFILE_PATH)
-        set(multiValueArgs DEPENDS)
+        set(multiValueArgs FIXTURES_REQUIRED FIXTURES_SETUP)
         cmake_parse_arguments(RVX_AUTOMATION
             "${options}"
             "${oneValueArgs}"
@@ -257,7 +272,10 @@ if(TARGET RVXEditor AND TARGET ImageContentValidation)
             TAGS product.editor trait.visual trait.gpu suite.native-ui suite.automation
             TIMEOUT 120
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            DEPENDS ${RVX_AUTOMATION_DEPENDS}
+            RESOURCE_LOCK rvx_gpu
+            FIXTURES_SETUP
+                "${test_prefix}FreshCapture;${RVX_AUTOMATION_FIXTURES_SETUP}"
+            FIXTURES_REQUIRED "${RVX_AUTOMATION_FIXTURES_REQUIRED}"
         )
 
         rvx_add_validation_test(
@@ -276,7 +294,7 @@ if(TARGET RVXEditor AND TARGET ImageContentValidation)
             TAGS product.editor trait.visual trait.gpu suite.native-ui suite.automation
             TIMEOUT 30
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            DEPENDS ${smoke_test}
+            FIXTURES_REQUIRED "${test_prefix}FreshCapture"
         )
     endfunction()
 
@@ -301,6 +319,7 @@ if(TARGET RVXEditor AND TARGET ImageContentValidation)
         TAGS product.editor suite.native-ui suite.automation
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        FIXTURES_SETUP RVXEditorNativeAutomationDirectories
     )
 
     rvx_add_validation_test(
@@ -311,7 +330,8 @@ if(TARGET RVXEditor AND TARGET ImageContentValidation)
         TAGS product.editor suite.native-ui suite.automation
         TIMEOUT 30
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS RVXEditorNativeAutomationDirectoryPrepare
+        FIXTURES_SETUP RVXEditorNativeFilePickerScene
+        FIXTURES_REQUIRED RVXEditorNativeAutomationDirectories
     )
 
     rvx_add_editor_native_automation_smoke_test(
@@ -350,14 +370,15 @@ if(TARGET RVXEditor AND TARGET ImageContentValidation)
         NativeSaveSceneFilePickerSmoke.ppm
         TARGET "${RVX_EDITOR_NATIVE_FILE_PICKER_SCENE}"
         CONFIRM_OVERWRITE
-        DEPENDS RVXEditorNativeFilePickerOverwriteFixture
+        FIXTURES_SETUP RVXEditorNativeSavedScene
+        FIXTURES_REQUIRED RVXEditorNativeFilePickerScene
     )
     rvx_add_editor_native_automation_smoke_test(
         RVXEditorNativeOpenSceneFilePicker
         open-scene-file-picker
         NativeOpenSceneFilePickerSmoke.ppm
         TARGET "${RVX_EDITOR_NATIVE_FILE_PICKER_SCENE}"
-        DEPENDS RVXEditorNativeSaveSceneFilePickerSmoke
+        FIXTURES_REQUIRED RVXEditorNativeSavedScene
     )
     rvx_add_editor_native_automation_smoke_test(
         RVXEditorNativeShortcutAutosave
@@ -365,13 +386,13 @@ if(TARGET RVXEditor AND TARGET ImageContentValidation)
         NativeShortcutAutosaveSmoke.ppm
         SETTINGS_PATH "${RVX_EDITOR_NATIVE_SHORTCUT_SETTINGS}"
         SHORTCUT_PROFILE_PATH "${RVX_EDITOR_NATIVE_SHORTCUT_PROFILE}"
-        DEPENDS RVXEditorNativeAutomationDirectoryPrepare
+        FIXTURES_REQUIRED RVXEditorNativeAutomationDirectories
     )
     rvx_add_editor_native_automation_smoke_test(
         RVXEditorNativeUIScaleAdjust
         ui-scale-adjust
         NativeUIScaleAdjustSmoke.ppm
         SETTINGS_PATH "${RVX_EDITOR_NATIVE_UI_SCALE_SETTINGS}"
-        DEPENDS RVXEditorNativeAutomationDirectoryPrepare
+        FIXTURES_REQUIRED RVXEditorNativeAutomationDirectories
     )
 endif()

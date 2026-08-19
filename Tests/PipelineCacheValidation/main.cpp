@@ -912,7 +912,7 @@ namespace
         return fs::exists(scenePath) ? scenePath : fs::path{};
     }
 
-    fs::path FindTestsCMakePath()
+    fs::path FindQualificationTestsCMakePath()
     {
         const fs::path shaderDir = FindShaderDirectory();
         if (shaderDir.empty())
@@ -921,7 +921,8 @@ namespace
         }
 
         const fs::path repoRoot = shaderDir.parent_path().parent_path();
-        const fs::path testsCMakePath = repoRoot / "Tests" / "CMakeLists.txt";
+        const fs::path testsCMakePath =
+            repoRoot / "Tests" / "CMake" / "QualificationTests.cmake";
         return fs::exists(testsCMakePath) ? testsCMakePath : fs::path{};
     }
 
@@ -2022,7 +2023,7 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
         GTEST_SKIP() << "Render/Shaders directory not found";
     }
 
-    const fs::path testsCMakePath = FindTestsCMakePath();
+    const fs::path testsCMakePath = FindQualificationTestsCMakePath();
     ASSERT_FALSE(testsCMakePath.empty());
     const std::string testsCMake = ReadTextFile(testsCMakePath);
     const bool hasDx12PbrWorkflow =
@@ -2056,8 +2057,6 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
                                           bool checkTextureSmoke)
     {
         const std::string factorPrefix = "RenderVerseSamples${BACKEND_LABEL}PBRMaterials";
-        const std::string factorSmoke = factorPrefix + "Smoke";
-        const std::string textureSmoke = factorPrefix + "TextureSmoke";
         const std::string workflowParity = factorPrefix + "WorkflowParity";
         const std::string factorCapture = factorPrefix + "_320x180.ppm";
         const std::string textureCapture = factorPrefix + "Texture_320x180.ppm";
@@ -2065,7 +2064,10 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
         const std::string workflowReport = factorPrefix + "WorkflowParity.json";
         const std::string responseImageVar = "${test_prefix}ResponseValidation";
 
-        EXPECT_NE(testsCMake.find(factorSmoke), std::string::npos);
+        EXPECT_NE(testsCMake.find(
+                      "set(test_prefix \"RenderVerseSamples${BACKEND_LABEL}${SAMPLE_LABEL}\")"),
+                  std::string::npos);
+        EXPECT_NE(testsCMake.find("NAME ${test_prefix}Smoke"), std::string::npos);
         EXPECT_NE(testsCMake.find(factorCapture), std::string::npos);
         if (checkResponse)
         {
@@ -2075,7 +2077,10 @@ TEST_F(PipelineCacheValidationFixture, OpenGLPBRMaterialSmokeHasVisualGoldenCove
         }
         if (checkTextureSmoke)
         {
-            EXPECT_NE(testsCMake.find(textureSmoke), std::string::npos);
+            EXPECT_NE(testsCMake.find(
+                          "rvx_add_renderverse_primary_smoke(\n"
+                          "        pbr-materials PBRMaterialsTexture pbr-material-texture-cube"),
+                      std::string::npos);
             EXPECT_NE(testsCMake.find(textureCapture), std::string::npos);
         }
         if (checkWorkflow)
@@ -2183,7 +2188,8 @@ TEST_F(PipelineCacheValidationFixture, RVXCookWorkflowDocumentationCoversCurrent
 
     const std::string doc = ReadTextFile(docPath);
     const std::string cookMain = ReadTextFile(repoRoot / "Tools" / "Private" / "CookMain.cpp");
-    const std::string testsCMake = ReadTextFile(repoRoot / "Tests" / "CMakeLists.txt");
+    const std::string testsCMake =
+        ReadTextFile(repoRoot / "Tests" / "CMake" / "UnitTests.cmake");
 
     EXPECT_NE(cookMain.find("--texture-compression <auto|none|bc1|bc3|bc5|bc7>"), std::string::npos);
     EXPECT_NE(cookMain.find("mesh.generateLODs"), std::string::npos);
@@ -7305,7 +7311,7 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
     EXPECT_NE(source.find("ModelViewer smoke ray-traced reflection history reset ready"), std::string::npos);
     EXPECT_NE(source.find("ModelViewer smoke ray-traced reflection history resize ready"), std::string::npos);
 
-    const fs::path testsCMakePath = FindTestsCMakePath();
+    const fs::path testsCMakePath = FindQualificationTestsCMakePath();
     ASSERT_FALSE(testsCMakePath.empty());
     const std::string testsCMake = ReadTextFile(testsCMakePath);
     EXPECT_NE(testsCMake.find("ModelViewerRayTracedShadowSmoke"), std::string::npos);
@@ -7326,7 +7332,6 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
     EXPECT_NE(testsCMake.find("RTShadow_DX12_192x108.ppm"), std::string::npos);
     EXPECT_NE(testsCMake.find("--screenshot \"${RVX_MODELVIEWER_RT_SHADOW_ACTUAL}\""), std::string::npos);
     EXPECT_NE(testsCMake.find("--expected \"${RVX_MODELVIEWER_RT_SHADOW_GOLDEN}\""), std::string::npos);
-    EXPECT_NE(testsCMake.find("set_property(TEST ModelViewerRayTracedShadowVisualGoldenValidation PROPERTY DEPENDS ModelViewerRayTracedShadowSmoke)"), std::string::npos);
     EXPECT_NE(testsCMake.find("--ray-traced-reflections"), std::string::npos);
     EXPECT_NE(testsCMake.find("--expect-ray-traced-reflection-ready"), std::string::npos);
     EXPECT_NE(testsCMake.find("--expect-ray-traced-reflection-history-ready"), std::string::npos);
@@ -7335,7 +7340,6 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
     EXPECT_NE(testsCMake.find("RTReflection_DX12_192x108.ppm"), std::string::npos);
     EXPECT_NE(testsCMake.find("--screenshot \"${RVX_MODELVIEWER_RT_REFLECTION_ACTUAL}\""), std::string::npos);
     EXPECT_NE(testsCMake.find("--expected \"${RVX_MODELVIEWER_RT_REFLECTION_GOLDEN}\""), std::string::npos);
-    EXPECT_NE(testsCMake.find("set_property(TEST ModelViewerRayTracedReflectionVisualGoldenValidation PROPERTY DEPENDS ModelViewerRayTracedReflectionSmoke)"), std::string::npos);
     EXPECT_NE(testsCMake.find("--rt-max-rays 8000"), std::string::npos);
     EXPECT_NE(testsCMake.find("--rt-max-resource-bytes 1"), std::string::npos);
     EXPECT_NE(testsCMake.find("--expect-ray-tracing-budget-applied"), std::string::npos);
@@ -7350,7 +7354,6 @@ TEST_F(PipelineCacheValidationFixture, ModelViewerRayTracingSmokeGatesAreObserva
     EXPECT_NE(testsCMake.find("--expect-ray-tracing-gpu-budget-recovered"), std::string::npos);
     EXPECT_NE(testsCMake.find("--frames 6"), std::string::npos);
     EXPECT_NE(testsCMake.find("--frames 8"), std::string::npos);
-    EXPECT_NE(testsCMake.find("LABELS \"visual;gpu;raytracing\""), std::string::npos);
 
     const fs::path renderRoot = FindShaderDirectory().parent_path();
     const std::string renderSubsystem = ReadTextFile(renderRoot / "Private" / "RenderSubsystem.cpp");

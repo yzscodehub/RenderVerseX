@@ -1,3 +1,4 @@
+#include "Common/FilesystemLinkTestSupport.h"
 #include "Core/Diagnostics/ContentHash.h"
 #include "Core/Log.h"
 #include "Geometry/Asset/Material.h"
@@ -797,14 +798,9 @@ TEST(ResourceRuntimePolicyValidation, RejectsMountedRootSymlinkEscapesWhenSuppor
 
     const fs::path symlinkPath = sourceRoot / "external";
     std::error_code linkError;
-    fs::create_directory_symlink(outsideRoot, symlinkPath, linkError);
-    if (linkError)
-    {
-        std::error_code removeError;
-        fs::remove_all(sourceRoot, removeError);
-        fs::remove_all(outsideRoot, removeError);
-        GTEST_SKIP() << "Directory symlinks are unavailable in this environment: " << linkError.message();
-    }
+    ASSERT_TRUE(RVX::TestSupport::CreateDirectoryLink(
+        outsideRoot, symlinkPath, linkError)) << linkError.message();
+    const RVX::TestSupport::ScopedDirectoryLink linkCleanup(symlinkPath);
 
     ResourceRuntimePolicy policy;
     policy.mode = ResourceRuntimeMode::Editor;

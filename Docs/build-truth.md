@@ -1,42 +1,64 @@
-# Build Truth Gate
+# Build Truth v3 Gate
 
-The build-truth gate is the authoritative precondition for architecture work.
-It configures the selected preset, builds the project and complete validation
-inventory, rejects unavailable CTest executables, runs the focused architecture
-baseline and unit/lint preset, checks branch and working-tree whitespace, and
-writes machine-readable evidence below the build directory.
+Build Truth is the authoritative local and CI validation entry point for
+architecture work. A run performs the module self-test, configures once, builds
+`RVXValidationAll` once, captures the complete CTest `json-v1` inventory, and
+then executes each required lane with an independent JUnit artifact.
 
-The authoritative Runtime presets set `RVX_BUILD_EDITOR=OFF`. Editor remains
-explicitly deferred during the pure Runtime ECS migration and is neither
-available nor a Runtime correctness dependency.
+Every discovered test must have exactly one primary `lane.*` label. A required
+lane fails on zero selected tests, a missing or malformed artifact, a disabled,
+skipped, or not-run case, a JUnit/inventory count mismatch, or any test failure.
+The runner also verifies that the tracked and non-ignored untracked source
+snapshot does not change while validation is running.
+
+The Runtime presets set `RVX_BUILD_EDITOR=OFF`. Editor remains a deferred
+product and is not a Runtime correctness dependency.
 
 Windows Debug from an empty build directory:
 
 ```powershell
+$env:RVX_NATIVE_ALLOW_SOFTWARE_ADAPTER = "1" # Optional local/CI opt-in.
 Scripts\run_build_truth.ps1 `
     -ConfigurePreset win_x64_debug `
     -BuildPreset win_x64_debug `
-    -TestPreset win_x64_debug_unit_lint `
+    -LaneTestPresets "win_x64_debug_architecture,win_x64_debug_unit,win_x64_debug_integration,win_x64_debug_native" `
     -BuildDir build\win_x64_debug `
     -Configuration Debug `
     -BaseRef master `
-    -NativeTestRegex "^NativeRenderLifecycleValidation\.RequiredBackendPresentsResizesAndStops$" `
     -RequiredNativeBackend DX12 `
     -Fresh
 ```
 
-Linux and macOS use the matching presets and build directories. The same script
-runs under PowerShell 7 (`pwsh`) on all CI hosts, with Vulkan and Metal as their
-required native backends. Linux runs under Xvfb with Mesa Vulkan available.
+Linux and macOS use the matching four lane presets and build directories. The
+same script runs under PowerShell 7 (`pwsh`) on every CI host. Vulkan is the
+required Linux native backend and Metal is the required macOS native backend.
+Linux runs under Xvfb with an explicitly selected Vulkan ICD and installed font
+fixtures required by the portable UI tests.
 
-M1 extends the gate with one platform-primary native lifecycle smoke. The test
-must write owned JSON evidence for adapter identity, render-thread identity,
-present, resize, and shutdown. A skipped required backend, missing artifact, or
-backend mismatch fails the gate. `Architecture.M1ArchitectureCut` is part of
-the existing architecture baseline and is not executed a second time.
+The platform-primary Native preset selects only the production backend and the
+fixed lifecycle smoke: DX12 on Windows, Vulkan on Linux, and Metal on macOS.
+Selecting the Native lane requires `-RequiredNativeBackend`; omitting it is a
+fail-closed configuration error rather than a way to bypass native evidence.
+The lifecycle test writes raw evidence for the requested and actual backend,
+adapter identity, render-thread identity, present, resize, and shutdown. Build
+Truth wraps that evidence with the source commit, preset, fallback verdict, and
+software-adapter policy. Missing evidence, backend fallback, or an unapproved
+software adapter fails the gate.
 
-ThreadSanitizer remains a separate Linux preset because it instruments a small
-Runtime Core target rather than the full Runtime build:
+Successful execution writes these files below the selected build directory:
+
+- `BuildTruth/BuildTruth.json`
+- `BuildTruth/CTestInventory.json`
+- `BuildTruth/CTestInventory.<lane>.json`
+- `BuildTruth/JUnit.<lane>.xml`
+- `BuildTruth/NativeRenderLifecycle.raw.json` when Native evidence is requested
+- `BuildTruth/NativeEvidence.json` when Native evidence is requested
+
+`Scripts/run_architecture_baseline.ps1` remains a thin, label-driven entry point
+for running only the Architecture lane from an existing build. It does not own
+a separate hard-coded test-name baseline.
+
+ThreadSanitizer remains a separate focused Linux preset:
 
 ```bash
 cmake --preset linux_x64_tsan
@@ -44,23 +66,6 @@ cmake --build --preset linux_x64_tsan --target RenderConcurrencyTSAN
 ctest --preset linux_x64_tsan --output-on-failure
 ```
 
-Editor compatibility is not compiled by this gate. It will return as a
-separate product gate after the Editor has been redesigned against the Runtime
-ECS contracts.
-
-Successful execution produces:
-
-- `BuildTruth/BuildTruth.json`
-- `BuildTruth/ArchitectureBaseline.json`
-- `BuildTruth/ArchitectureBaseline.junit.xml`
-- `BuildTruth/CTestInventory.txt`
-- `BuildTruth/NativeRenderLifecycle.json` when a required native backend is
-  supplied
-
-Exit code `0` means every configured command and evidence check passed. Missing
-Python, roots, manifests, targets, test executables, baseline patterns, Git base
-references, or whitespace cleanliness produce a non-zero exit.
-
-The gate proves build, validation, and one thin native lifecycle path. It does
-not replace deterministic fake-RHI lifetime suites, TSAN, or broader backend
-feature and visual validation.
+Exit code `0` means every requested lane and evidence check passed. Build Truth
+does not replace Nightly qualification, broad compatibility-backend runtime
+coverage, visual parity, soak testing, or the later Shipping product gate.

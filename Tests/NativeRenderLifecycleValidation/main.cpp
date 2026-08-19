@@ -23,6 +23,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -47,6 +48,46 @@ namespace
 #else
 #error NativeRenderLifecycleValidation requires a platform backend definition
 #endif
+    }
+
+    [[nodiscard]] constexpr const char* BackendIdentifier(
+        RHIBackendType backend) noexcept
+    {
+        switch (backend)
+        {
+            case RHIBackendType::DX11: return "DX11";
+            case RHIBackendType::DX12: return "DX12";
+            case RHIBackendType::Vulkan: return "Vulkan";
+            case RHIBackendType::Metal: return "Metal";
+            case RHIBackendType::OpenGL: return "OpenGL";
+            case RHIBackendType::Auto: return "Auto";
+            default: return "None";
+        }
+    }
+
+    [[nodiscard]] bool IsSoftwareAdapterName(std::string adapterName)
+    {
+        for (char& character : adapterName)
+        {
+            character = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(character)));
+        }
+        constexpr const char* softwareTokens[] = {
+            "software",
+            "warp",
+            "swiftshader",
+            "lavapipe",
+            "llvmpipe",
+            "microsoft basic",
+        };
+        for (const char* token : softwareTokens)
+        {
+            if (adapterName.find(token) != std::string::npos)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     [[nodiscard]] std::string ReadEnvironmentVariable(const char* name)
@@ -290,7 +331,8 @@ namespace
         const RenderShutdownResult& shutdown,
         uint64 mainThreadIdentityHash,
         uint64 startupDurationMs,
-        uint64 shutdownDurationMs)
+        uint64 shutdownDurationMs,
+        bool softwareAdapterAllowed)
     {
         const std::string reportPath =
             ReadEnvironmentVariable("RVX_NATIVE_LIFECYCLE_REPORT");
@@ -314,10 +356,22 @@ namespace
         }
         stream << "{\n"
                << "  \"schema\": \"RVX.M1.NativeRenderLifecycle\",\n"
-               << "  \"schemaVersion\": 1,\n"
+               << "  \"schemaVersion\": 2,\n"
                << "  \"status\": \"passed\",\n"
-               << "  \"requiredBackend\": \""
+               << "  \"requestedBackend\": \""
                << JsonEscape(RVX_NATIVE_REQUIRED_BACKEND) << "\",\n"
+               << "  \"actualBackend\": \""
+               << JsonEscape(BackendIdentifier(diagnostics.backend)) << "\",\n"
+               << "  \"backendFallback\": "
+               << (diagnostics.backend != RequiredBackend() ? "true" : "false")
+               << ",\n"
+               << "  \"softwareAdapterAllowed\": "
+               << (softwareAdapterAllowed ? "true" : "false") << ",\n"
+               << "  \"softwareAdapter\": "
+               << (IsSoftwareAdapterName(diagnostics.adapterName)
+                       ? "true"
+                       : "false")
+               << ",\n"
                << "  \"adapterName\": \""
                << JsonEscape(diagnostics.adapterName) << "\",\n"
                << "  \"driverVersion\": \""
@@ -444,7 +498,8 @@ namespace
                                   shutdown,
                                   mainThreadIdentityHash,
                                   startupDurationMs,
-                                  shutdownDurationMs));
+                                  shutdownDurationMs,
+                                  config.allowSoftwareAdapter));
     }
 } // namespace
 } // namespace RVX

@@ -6301,7 +6301,7 @@ namespace
         const std::string mainSource =
             ReadTextFile(root / "Editor" / "Private" / "Main.cpp");
         const std::string testsCMake =
-            ReadTextFile(root / "Tests" / "CMakeLists.txt");
+            ReadTextFile(root / "Tests" / "CMake" / "NativeTests.cmake");
         const std::string editorCMake =
             ReadTextFile(root / "Editor" / "CMakeLists.txt");
         ASSERT_FALSE(source.empty());
@@ -6450,10 +6450,19 @@ namespace
         EXPECT_EQ(std::string::npos,
                   testsCMake.find("--auto-open-native-panel ${panel_id}"));
         EXPECT_NE(std::string::npos,
-                  testsCMake.find("LABELS \"visual;gpu;editor;native-ui\"",
-                                  nativeSmokeFunction));
+                  testsCMake.find(
+                      "TAGS product.editor trait.visual trait.gpu suite.native-ui",
+                      nativeSmokeFunction));
         EXPECT_NE(std::string::npos,
-                  testsCMake.find("set_property(TEST ${image_test} PROPERTY DEPENDS ${smoke_test})"));
+                  testsCMake.find("RESOURCE_LOCK rvx_gpu", nativeSmokeFunction));
+        EXPECT_NE(std::string::npos,
+                  testsCMake.find(
+                      "FIXTURES_SETUP \"${test_prefix}FreshCapture\"",
+                      nativeSmokeFunction));
+        EXPECT_NE(std::string::npos,
+                  testsCMake.find(
+                      "FIXTURES_REQUIRED \"${test_prefix}FreshCapture\"",
+                      nativeSmokeFunction));
 
         const auto expectNativePanelSmokeGate =
             [&testsCMake](const std::string& testPrefix,
@@ -6499,7 +6508,7 @@ namespace
         ASSERT_FALSE(root.empty());
 
         const std::string testsCMake =
-            ReadTextFile(root / "Tests" / "CMakeLists.txt");
+            ReadTextFile(root / "Tests" / "CMake" / "NativeTests.cmake");
         ASSERT_FALSE(testsCMake.empty());
 
         const size_t nativeSmokeGate = testsCMake.find(
@@ -6534,14 +6543,15 @@ namespace
                   testsCMake.find("--automation-confirm-overwrite",
                                   automationFunction));
         EXPECT_NE(std::string::npos,
-                  testsCMake.find("LABELS \"visual;gpu;editor;native-ui;automation\"",
-                                  automationFunction));
+                  testsCMake.find(
+                      "TAGS product.editor trait.visual trait.gpu suite.native-ui suite.automation",
+                      automationFunction));
         EXPECT_NE(std::string::npos,
-                  testsCMake.find("set_property(TEST ${smoke_test} APPEND PROPERTY",
-                                  automationFunction));
+                  testsCMake.find("RESOURCE_LOCK rvx_gpu", automationFunction));
         EXPECT_NE(std::string::npos,
-                  testsCMake.find("set_property(TEST ${image_test} PROPERTY DEPENDS ${smoke_test})",
-                                  automationFunction));
+                  testsCMake.find("FIXTURES_SETUP", automationFunction));
+        EXPECT_NE(std::string::npos,
+                  testsCMake.find("FIXTURES_REQUIRED", automationFunction));
 
         EXPECT_NE(std::string::npos,
                   testsCMake.find("RVXEditorNativeAutomationDirectoryPrepare"));
