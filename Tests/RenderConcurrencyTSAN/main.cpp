@@ -4,6 +4,7 @@
  */
 
 #include "Render/RenderDiagnostics.h"
+#include "RenderContracts/RenderFramePacketV5.h"
 #include "Runtime/RenderControlMailbox.h"
 #include "Runtime/RenderDiagnosticsPublisher.h"
 #include "Runtime/RenderFrameMailbox.h"
@@ -30,12 +31,12 @@ namespace
             header.sequence = sequence;
         }
 
-        [[nodiscard]] const RenderFrameHeader& GetHeader() const noexcept
+        [[nodiscard]] const RenderFrameHeaderV5& GetHeader() const noexcept
         {
             return header;
         }
 
-        RenderFrameHeader header{};
+        RenderFrameHeaderV5 header{};
     };
 
     struct StressFrameValidator
