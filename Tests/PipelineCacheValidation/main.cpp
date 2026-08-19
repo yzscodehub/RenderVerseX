@@ -5164,9 +5164,9 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     EXPECT_NE(passSource.find("isNewestSubmittedRecording &&"), std::string::npos);
     EXPECT_NE(passSource.find("MakeRHITextureAccessSnapshot(RHIResourceState::Common)"),
               std::string::npos);
-    EXPECT_NE(passSource.find("std::array<RHITextureAccessSnapshot, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> maskAccesses{};"),
+    EXPECT_NE(passSource.find("std::vector<HistorySlot> slots;"),
               std::string::npos);
-    EXPECT_NE(passSource.find("builder.ImportTexture(owner.masks[read], owner.maskAccesses[read])"),
+    EXPECT_NE(passSource.find("builder.ImportTexture(owner.slots[read].mask, owner.slots[read].maskAccess)"),
               std::string::npos);
     EXPECT_NE(passSource.find("recordedGraph->GetRealizedAccess(reservation->shadowMaskHandle)"),
               std::string::npos);
@@ -5186,8 +5186,9 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     EXPECT_NE(passHeader.find("uint64 estimatedRayCount = 0;"), std::string::npos);
     EXPECT_NE(passSource.find("std::vector<RHITextureViewRef> materialTextureViews;"),
               std::string::npos);
-    EXPECT_NE(passSource.find("std::array<RHITextureRef, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> depths{};"), std::string::npos);
-    EXPECT_NE(passSource.find("std::array<RHITextureRef, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> normals{};"), std::string::npos);
+    EXPECT_NE(passSource.find("struct HistorySlot"), std::string::npos);
+    EXPECT_NE(passSource.find("AppendHistorySlot(owner, device)"), std::string::npos);
+    EXPECT_EQ(passSource.find("RVX_MAX_FRAME_COUNT + 1"), std::string::npos);
     EXPECT_NE(passSource.find("RGTextureHandle velocityHandle{};"), std::string::npos);
     EXPECT_EQ(passHeader.find("m_fallbackVelocityTexture"), std::string::npos);
     EXPECT_NE(passHeader.find("bool CreateFrameFallbackTextures(RayTracedShadowFrameState& state) const;"), std::string::npos);
@@ -5204,7 +5205,7 @@ TEST_F(PipelineCacheValidationFixture, RayTracedShadowPassCreatesDescriptorSetAn
     EXPECT_NE(passSource.find("stats.historyResolutionChanged = resolutionChanged;"),
               std::string::npos);
     EXPECT_NE(passSource.find("reservation->historyAvailable = reusableHistory;"), std::string::npos);
-    EXPECT_NE(passSource.find("viewCache->InvalidateTexture(owner.masks[index].Get())"), std::string::npos);
+    EXPECT_NE(passSource.find("viewCache->InvalidateTexture(slot.mask.Get())"), std::string::npos);
     const auto shadowOnAdd = passSource.find("void RayTracedShadowPass::OnAdd(IRHIDevice* device)");
     ASSERT_NE(shadowOnAdd, std::string::npos);
     const auto shadowDeviceChange = passSource.find("if (m_device != device)", shadowOnAdd);

@@ -11,9 +11,9 @@
 #include "Resources/RenderSubmissionTracker.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 namespace RVX
 {
@@ -26,8 +26,6 @@ namespace RVX
         constexpr uint32 RVX_RAY_TRACED_SHADOW_TIMING_START_QUERY_OFFSET = 0;
         constexpr uint32 RVX_RAY_TRACED_SHADOW_TIMING_END_QUERY_OFFSET = 1;
         constexpr uint64 RVX_RAY_TRACED_SHADOW_TIMING_READBACK_BYTES = sizeof(uint64) * 2;
-        constexpr uint32 RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT = RVX_MAX_FRAME_COUNT + 1;
-
         RenderResourceHandle UnpackRenderResourceHandle(uint64 value)
         {
             return RenderResourceHandle{static_cast<uint32>(value >> 32U),
@@ -153,6 +151,19 @@ namespace RVX
 
     struct RayTracedShadowHistoryOwner
     {
+        struct HistorySlot
+        {
+            RHITextureRef mask;
+            RHITextureRef depth;
+            RHITextureRef normal;
+            RHITextureAccessSnapshot maskAccess =
+                MakeRHITextureAccessSnapshot(RHIResourceState::Common);
+            RHITextureAccessSnapshot depthAccess =
+                MakeRHITextureAccessSnapshot(RHIResourceState::Common);
+            RHITextureAccessSnapshot normalAccess =
+                MakeRHITextureAccessSnapshot(RHIResourceState::Common);
+        };
+
         struct PendingTimingSample
         {
             RenderPassRecordIdentity identity{};
@@ -162,12 +173,7 @@ namespace RVX
             uint64 timestampFrequency = 0;
         };
 
-        std::array<RHITextureRef, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> masks{};
-        std::array<RHITextureRef, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> depths{};
-        std::array<RHITextureRef, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> normals{};
-        std::array<RHITextureAccessSnapshot, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> maskAccesses{};
-        std::array<RHITextureAccessSnapshot, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> depthAccesses{};
-        std::array<RHITextureAccessSnapshot, RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT> normalAccesses{};
+        std::vector<HistorySlot> slots;
         std::vector<std::shared_ptr<RayTracedShadowHistoryReservation>> reservations;
         std::vector<std::shared_ptr<RayTracedShadowSubmissionRecord>> submissionRecords;
         std::vector<PendingTimingSample> pendingTimingSamples;
@@ -257,21 +263,19 @@ namespace RVX
         void ResetHistoryTextures(RayTracedShadowHistoryOwner& owner,
                                   ResourceViewCache* viewCache)
         {
-            for (uint32 index = 0; index < RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT; ++index)
+            for (RayTracedShadowHistoryOwner::HistorySlot& slot : owner.slots)
             {
                 if (viewCache)
                 {
-                    if (owner.masks[index]) viewCache->InvalidateTexture(owner.masks[index].Get());
-                    if (owner.depths[index]) viewCache->InvalidateTexture(owner.depths[index].Get());
-                    if (owner.normals[index]) viewCache->InvalidateTexture(owner.normals[index].Get());
+                    if (slot.mask) viewCache->InvalidateTexture(slot.mask.Get());
+                    if (slot.depth) viewCache->InvalidateTexture(slot.depth.Get());
+                    if (slot.normal) viewCache->InvalidateTexture(slot.normal.Get());
                 }
-                QueueHistoryOwnerRetirement(owner, owner.masks[index]);
-                QueueHistoryOwnerRetirement(owner, owner.depths[index]);
-                QueueHistoryOwnerRetirement(owner, owner.normals[index]);
-                owner.maskAccesses[index] = MakeRHITextureAccessSnapshot(RHIResourceState::Common);
-                owner.depthAccesses[index] = MakeRHITextureAccessSnapshot(RHIResourceState::Common);
-                owner.normalAccesses[index] = MakeRHITextureAccessSnapshot(RHIResourceState::Common);
+                QueueHistoryOwnerRetirement(owner, slot.mask);
+                QueueHistoryOwnerRetirement(owner, slot.depth);
+                QueueHistoryOwnerRetirement(owner, slot.normal);
             }
+            owner.slots.clear();
             owner.width = 0;
             owner.height = 0;
             owner.committedSlot = RVX_INVALID_INDEX;
@@ -286,6 +290,43 @@ namespace RVX
             }
         }
 
+        bool AppendHistorySlot(RayTracedShadowHistoryOwner& owner,
+                               IRHIDevice* device)
+        {
+            if (!device || owner.width == 0 || owner.height == 0)
+            {
+                return false;
+            }
+
+            RayTracedShadowHistoryOwner::HistorySlot slot;
+            RHITextureDesc desc;
+            desc.width = owner.width;
+            desc.height = owner.height;
+            desc.depth = 1;
+            desc.mipLevels = 1;
+            desc.arraySize = 1;
+            desc.dimension = RHITextureDimension::Texture2D;
+            desc.usage = RHITextureUsage::ShaderResource | RHITextureUsage::UnorderedAccess;
+            desc.format = RHIFormat::R8_UNORM;
+            desc.debugName = "RayTracedShadowHistory";
+            slot.mask = device->CreateTexture(desc);
+            desc.format = RHIFormat::R32_FLOAT;
+            desc.debugName = "RayTracedShadowDepthHistory";
+            slot.depth = device->CreateTexture(desc);
+            desc.format = RHIFormat::RGBA16_FLOAT;
+            desc.debugName = "RayTracedShadowNormalHistory";
+            slot.normal = device->CreateTexture(desc);
+            if (!slot.mask || !slot.depth || !slot.normal)
+            {
+                QueueHistoryOwnerRetirement(owner, slot.mask);
+                QueueHistoryOwnerRetirement(owner, slot.depth);
+                QueueHistoryOwnerRetirement(owner, slot.normal);
+                return false;
+            }
+            owner.slots.emplace_back(std::move(slot));
+            return true;
+        }
+
         bool EnsureHistoryTextures(RayTracedShadowHistoryOwner& owner,
                                    IRHIDevice* device,
                                    ResourceViewCache* viewCache,
@@ -297,12 +338,7 @@ namespace RVX
             {
                 return false;
             }
-            const bool complete = std::all_of(
-                owner.masks.begin(), owner.masks.end(), [](const RHITextureRef& texture) { return texture != nullptr; }) &&
-                std::all_of(
-                    owner.depths.begin(), owner.depths.end(), [](const RHITextureRef& texture) { return texture != nullptr; }) &&
-                std::all_of(
-                    owner.normals.begin(), owner.normals.end(), [](const RHITextureRef& texture) { return texture != nullptr; });
+            const bool complete = !owner.slots.empty();
             const bool resolutionChanged = complete && (owner.width != width || owner.height != height);
             if (complete && !resolutionChanged)
             {
@@ -329,39 +365,19 @@ namespace RVX
             stats.historyReset = true;
             ResetHistoryTextures(owner, viewCache);
 
-            RHITextureDesc desc;
-            desc.width = width;
-            desc.height = height;
-            desc.depth = 1;
-            desc.mipLevels = 1;
-            desc.arraySize = 1;
-            desc.format = RHIFormat::R8_UNORM;
-            desc.dimension = RHITextureDimension::Texture2D;
-            desc.usage = RHITextureUsage::ShaderResource | RHITextureUsage::UnorderedAccess;
-            for (uint32 index = 0; index < RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT; ++index)
-            {
-                desc.debugName = "RayTracedShadowHistory";
-                owner.masks[index] = device->CreateTexture(desc);
-                desc.format = RHIFormat::R32_FLOAT;
-                desc.debugName = "RayTracedShadowDepthHistory";
-                owner.depths[index] = device->CreateTexture(desc);
-                desc.format = RHIFormat::RGBA16_FLOAT;
-                desc.debugName = "RayTracedShadowNormalHistory";
-                owner.normals[index] = device->CreateTexture(desc);
-                desc.format = RHIFormat::R8_UNORM;
-                if (!owner.masks[index] || !owner.depths[index] || !owner.normals[index])
-                {
-                    ResetHistoryTextures(owner, viewCache);
-                    return false;
-                }
-            }
             owner.width = width;
             owner.height = height;
+            if (!AppendHistorySlot(owner, device))
+            {
+                ResetHistoryTextures(owner, viewCache);
+                return false;
+            }
             return true;
         }
 
         std::shared_ptr<RayTracedShadowHistoryReservation> ReserveHistory(
             RayTracedShadowHistoryOwner& owner,
+            IRHIDevice* device,
             const RenderPassRecordIdentity& identity,
             const ShadowPassConfig& config,
             const Mat4& currentViewProjection,
@@ -377,7 +393,9 @@ namespace RVX
                 owner.committedSlot != RVX_INVALID_INDEX;
 
             uint32 writeSlot = RVX_INVALID_INDEX;
-            for (uint32 candidate = 0; candidate < RVX_RAY_TRACED_SHADOW_HISTORY_SLOT_COUNT; ++candidate)
+            for (uint32 candidate = 0;
+                 candidate < static_cast<uint32>(owner.slots.size());
+                 ++candidate)
             {
                 if (candidate == owner.committedSlot)
                 {
@@ -399,7 +417,11 @@ namespace RVX
             }
             if (writeSlot == RVX_INVALID_INDEX)
             {
-                return nullptr;
+                if (!AppendHistorySlot(owner, device))
+                {
+                    return nullptr;
+                }
+                writeSlot = static_cast<uint32>(owner.slots.size() - 1);
             }
 
             auto reservation = std::make_shared<RayTracedShadowHistoryReservation>();
@@ -741,6 +763,7 @@ namespace RVX
         }
 
         state->reservation = ReserveHistory(*state->historyOwner,
+                                            m_device,
                                             state->execution.identity,
                                             state->config,
                                             state->execution.view.viewProjectionMatrix,
@@ -800,20 +823,20 @@ namespace RVX
                         data->fallbackVelocityTexture,
                         RHIResourceState::Common);
                 const RGTextureHandle historyRead = read != RVX_INVALID_INDEX
-                    ? builder.ImportTexture(owner.masks[read], owner.maskAccesses[read])
+                    ? builder.ImportTexture(owner.slots[read].mask, owner.slots[read].maskAccess)
                     : builder.ImportTexture(data->fallbackHistoryMaskTexture, RHIResourceState::Common);
                 const RGTextureHandle historyDepthRead = read != RVX_INVALID_INDEX
-                    ? builder.ImportTexture(owner.depths[read], owner.depthAccesses[read])
+                    ? builder.ImportTexture(owner.slots[read].depth, owner.slots[read].depthAccess)
                     : builder.ImportTexture(data->fallbackHistoryDepthTexture, RHIResourceState::Common);
                 const RGTextureHandle historyNormalRead = read != RVX_INVALID_INDEX
-                    ? builder.ImportTexture(owner.normals[read], owner.normalAccesses[read])
+                    ? builder.ImportTexture(owner.slots[read].normal, owner.slots[read].normalAccess)
                     : builder.ImportTexture(data->fallbackHistoryNormalTexture, RHIResourceState::Common);
                 const RGTextureHandle shadowMask = builder.ImportTexture(
-                    owner.masks[write], owner.maskAccesses[write]);
+                    owner.slots[write].mask, owner.slots[write].maskAccess);
                 const RGTextureHandle historyDepthWrite = builder.ImportTexture(
-                    owner.depths[write], owner.depthAccesses[write]);
+                    owner.slots[write].depth, owner.slots[write].depthAccess);
                 const RGTextureHandle historyNormalWrite = builder.ImportTexture(
-                    owner.normals[write], owner.normalAccesses[write]);
+                    owner.slots[write].normal, owner.slots[write].normalAccess);
 
                 const auto declareView = [&builder](
                     RGTextureHandle texture,
@@ -918,14 +941,14 @@ namespace RVX
                 data->reservation->historyDepthWriteHandle = historyDepthWrite;
                 data->reservation->historyNormalWriteHandle = historyNormalWrite;
                 data->historyReadTexture = read != RVX_INVALID_INDEX
-                    ? owner.masks[read] : data->fallbackHistoryMaskTexture;
+                    ? owner.slots[read].mask : data->fallbackHistoryMaskTexture;
                 data->historyDepthReadTexture = read != RVX_INVALID_INDEX
-                    ? owner.depths[read] : data->fallbackHistoryDepthTexture;
+                    ? owner.slots[read].depth : data->fallbackHistoryDepthTexture;
                 data->historyNormalReadTexture = read != RVX_INVALID_INDEX
-                    ? owner.normals[read] : data->fallbackHistoryNormalTexture;
-                data->shadowMaskTexture = owner.masks[write];
-                data->historyDepthWriteTexture = owner.depths[write];
-                data->historyNormalWriteTexture = owner.normals[write];
+                    ? owner.slots[read].normal : data->fallbackHistoryNormalTexture;
+                data->shadowMaskTexture = owner.slots[write].mask;
+                data->historyDepthWriteTexture = owner.slots[write].depth;
+                data->historyNormalWriteTexture = owner.slots[write].normal;
                 data->pipeline = RHIPipelineRef(m_pipelineCache->GetRayTracedShadowPipeline());
                 data->shaderTable = RHIShaderTableRef(m_pipelineCache->GetRayTracedShadowShaderTable());
                 data->setLayout = RHIDescriptorSetLayoutRef(m_pipelineCache->GetRayTracedShadowSetLayout());
@@ -1184,20 +1207,20 @@ namespace RVX
                 RenderGraph* const recordedGraph = reservation->identity.graph;
                 if (recordedGraph && reservation->readSlot != RVX_INVALID_INDEX)
                 {
-                    owner.maskAccesses[reservation->readSlot] =
+                    owner.slots[reservation->readSlot].maskAccess =
                         recordedGraph->GetRealizedAccess(reservation->historyReadHandle);
-                    owner.depthAccesses[reservation->readSlot] =
+                    owner.slots[reservation->readSlot].depthAccess =
                         recordedGraph->GetRealizedAccess(reservation->historyDepthReadHandle);
-                    owner.normalAccesses[reservation->readSlot] =
+                    owner.slots[reservation->readSlot].normalAccess =
                         recordedGraph->GetRealizedAccess(reservation->historyNormalReadHandle);
                 }
                 if (recordedGraph)
                 {
-                    owner.maskAccesses[reservation->writeSlot] =
+                    owner.slots[reservation->writeSlot].maskAccess =
                         recordedGraph->GetRealizedAccess(reservation->shadowMaskHandle);
-                    owner.depthAccesses[reservation->writeSlot] =
+                    owner.slots[reservation->writeSlot].depthAccess =
                         recordedGraph->GetRealizedAccess(reservation->historyDepthWriteHandle);
-                    owner.normalAccesses[reservation->writeSlot] =
+                    owner.slots[reservation->writeSlot].normalAccess =
                         recordedGraph->GetRealizedAccess(reservation->historyNormalWriteHandle);
                 }
             }

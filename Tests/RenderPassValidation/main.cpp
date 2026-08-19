@@ -1214,7 +1214,6 @@ namespace
     public:
         FakeDevice()
         {
-            m_capabilities.backendType = RHIBackendType::DX12;
             m_capabilities.adapterName = "RenderPassValidation";
             m_capabilities.driverVersion = "1";
             m_capabilities.supportsComputePipeline = true;
@@ -1224,7 +1223,6 @@ namespace
             m_capabilities.supportsExplicitResourceBarriers = true;
             m_capabilities.supportsDefaultQueueFenceSignal = true;
             m_capabilities.supportsExplicitQueueFenceSignal = true;
-            m_capabilities.supportsAsyncCompute = true;
             m_capabilities.supportsIndirectDrawCount = true;
             m_capabilities.indexedIndirectExecution.supportsFixedCount = true;
             m_capabilities.indexedIndirectExecution.supportsCountBuffer = true;
@@ -1240,13 +1238,7 @@ namespace
             m_capabilities.indexedIndirectExecution.maxDrawCount = UINT32_MAX;
             m_capabilities.indexedIndirectExecution.countValueSize = sizeof(uint32);
             m_capabilities.dx12.resourceBindingTier = 2;
-            m_capabilities.queueTopology.completionMode =
-                RHIQueueCompletionMode::NativeTimeline;
-            m_capabilities.queueTopology.logicalQueueDomains = {
-                GPUQueueDomain::Graphics,
-                GPUQueueDomain::Compute,
-                GPUQueueDomain::Copy};
-            m_capabilities.queueTopology.activeDomainCount = 3;
+            ConfigureTestBackendIdentity();
         }
 
         RHIBufferRef CreateBuffer(const RHIBufferDesc& desc) override
@@ -1459,7 +1451,6 @@ namespace
 
         void EnableBasicCapabilities()
         {
-            m_capabilities.backendType = RHIBackendType::DX12;
             m_capabilities.adapterName = "RenderPassValidation Test Adapter";
             m_capabilities.driverVersion = "RenderPassValidation.Driver.1";
             m_capabilities.supportsComputePipeline = true;
@@ -1469,15 +1460,40 @@ namespace
             m_capabilities.supportsExplicitResourceBarriers = true;
             m_capabilities.supportsDefaultQueueFenceSignal = true;
             m_capabilities.supportsExplicitQueueFenceSignal = true;
-            m_capabilities.supportsAsyncCompute = true;
+            m_capabilities.dx12.resourceBindingTier = 2;
+            ConfigureTestBackendIdentity();
+        }
+
+        void ConfigureTestBackendIdentity()
+        {
             m_capabilities.queueTopology.completionMode =
                 RHIQueueCompletionMode::NativeTimeline;
+#if defined(__APPLE__)
+            m_capabilities.backendType = RHIBackendType::Metal;
+            m_capabilities.supportsAsyncCompute = false;
+            m_capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Graphics};
+            m_capabilities.queueTopology.activeDomainCount = 1;
+#elif defined(_WIN32)
+            m_capabilities.backendType = RHIBackendType::DX12;
+            m_capabilities.supportsAsyncCompute = true;
             m_capabilities.queueTopology.logicalQueueDomains = {
                 GPUQueueDomain::Graphics,
                 GPUQueueDomain::Compute,
                 GPUQueueDomain::Copy};
             m_capabilities.queueTopology.activeDomainCount = 3;
-            m_capabilities.dx12.resourceBindingTier = 2;
+#else
+            m_capabilities.backendType = RHIBackendType::Vulkan;
+            m_capabilities.supportsAsyncCompute = true;
+            m_capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy};
+            m_capabilities.queueTopology.activeDomainCount = 3;
+            m_capabilities.vulkan.apiVersion = 1;
+#endif
         }
 
         void EnableRayTracing()
@@ -6632,13 +6648,23 @@ TEST_F(RenderPassValidationFixture, RayTracedShadowPassReusesHistoryAcrossStable
     EXPECT_FALSE(secondStats.historyResolutionChanged);
     EXPECT_FALSE(secondStats.historyConfigChanged);
     EXPECT_FALSE(secondStats.historyReset);
-    // Velocity is optional at the view boundary, but the RT descriptor always
-    // needs a graph-declared SRV.  Each recording therefore owns one tiny
-    // fallback instead of sharing a cross-graph Common-state texture.
-    EXPECT_EQ(device.createdTextureDescs.size(), textureCountAfterFirstFrame + 1u);
+    // The second submitted frame grows the dynamic history pool from one slot
+    // to the required read/write pair. Velocity is optional at the view
+    // boundary, but the RT descriptor also owns one tiny per-recording fallback.
+    EXPECT_EQ(device.createdTextureDescs.size(), textureCountAfterFirstFrame + 4u);
     ASSERT_NE(device.createdTextureDescs.back().debugName, nullptr);
     EXPECT_EQ(std::string(device.createdTextureDescs.back().debugName),
               "RayTracedShadowFallbackVelocity");
+
+    const size_t textureCountAfterSecondFrame = device.createdTextureDescs.size();
+    RecordingCommandContext thirdCtx;
+    runFrame(3, thirdCtx);
+    EXPECT_EQ(thirdCtx.dispatchRaysCount, 1u);
+    EXPECT_TRUE(thirdCtx.lastDispatchRaysValidation.valid)
+        << thirdCtx.lastDispatchRaysValidation.message;
+    // Once the exact read/write demand is established, later submitted frames
+    // reuse those slots and allocate only their per-recording velocity fallback.
+    EXPECT_EQ(device.createdTextureDescs.size(), textureCountAfterSecondFrame + 1u);
 }
 
 TEST_F(RenderPassValidationFixture,
