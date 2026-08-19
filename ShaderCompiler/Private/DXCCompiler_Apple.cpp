@@ -381,7 +381,14 @@ namespace RVX
             shader.setEnvInput(glslang::EShSourceHlsl, stage, glslang::EShClientVulkan, 100);
             shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_2);
             shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_5);
-            shader.setEnvTargetHlslFunctionality1();
+            // User-defined graphics interfaces need HlslSemanticGOOGLE so
+            // reflection can recover the original semantic and index. Compute
+            // shaders have no such stage interface; omitting the extension
+            // there keeps storage-only SPIR-V on the portable core contract.
+            if (options.stage != RHIShaderStage::Compute)
+            {
+                shader.setEnvTargetHlslFunctionality1();
+            }
 
             // Set up preamble with defines
             std::string preamble;
