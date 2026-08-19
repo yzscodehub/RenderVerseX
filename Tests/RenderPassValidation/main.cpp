@@ -630,6 +630,85 @@ namespace
             return true;
         }
 
+    protected:
+        void* MapWriteRangeImpl(uint64 offset, uint64 size) override
+        {
+            ++m_mapCount;
+            if (!m_mapSucceeds || m_storage.empty() || m_isMapped ||
+                offset > m_storage.size() ||
+                size > m_storage.size() - offset)
+            {
+                return nullptr;
+            }
+
+            const auto first = m_storage.begin() + static_cast<size_t>(offset);
+            m_mappedRangeBackup.assign(
+                first, first + static_cast<size_t>(size));
+            m_mappedRangeOffset = offset;
+            m_mappedRangeSize = size;
+            m_isMapped = true;
+            m_isRangeMapped = true;
+            return m_storage.data() + static_cast<size_t>(offset);
+        }
+
+        RHIHostWriteReceipt CommitMappedWriteRangeImpl(
+            uint64 offset,
+            uint64 size) override
+        {
+            RHIHostWriteReceipt receipt;
+            if (!m_isMapped || !m_isRangeMapped ||
+                offset != m_mappedRangeOffset || size != m_mappedRangeSize)
+            {
+                return receipt;
+            }
+
+            if (!m_commitSucceeds)
+            {
+                RestoreMappedRange();
+                return receipt;
+            }
+
+            ClearMappedRange();
+            receipt.committed = true;
+            return receipt;
+        }
+
+        bool CancelMappedWriteRangeImpl(uint64 offset, uint64 size) override
+        {
+            if (!m_isMapped || !m_isRangeMapped ||
+                offset != m_mappedRangeOffset || size != m_mappedRangeSize)
+            {
+                return false;
+            }
+            RestoreMappedRange();
+            return true;
+        }
+
+    private:
+        void ClearMappedRange()
+        {
+            m_mappedRangeBackup.clear();
+            m_mappedRangeOffset = 0;
+            m_mappedRangeSize = 0;
+            m_isRangeMapped = false;
+            m_isMapped = false;
+        }
+
+        void RestoreMappedRange()
+        {
+            if (m_mappedRangeOffset <= m_storage.size() &&
+                m_mappedRangeBackup.size() <=
+                    m_storage.size() - m_mappedRangeOffset)
+            {
+                std::copy(m_mappedRangeBackup.begin(),
+                          m_mappedRangeBackup.end(),
+                          m_storage.begin() +
+                              static_cast<size_t>(m_mappedRangeOffset));
+            }
+            ClearMappedRange();
+        }
+
+    public:
         const std::vector<uint8>& GetStorage() const { return m_storage; }
         void WriteTimestampPair(uint64 first, uint64 second)
         {
@@ -650,9 +729,13 @@ namespace
         RHIBufferDesc m_desc;
         std::vector<uint8> m_storage;
         std::vector<uint8> m_mappedStorage;
+        std::vector<uint8> m_mappedRangeBackup;
+        uint64 m_mappedRangeOffset = 0;
+        uint64 m_mappedRangeSize = 0;
         bool m_mapSucceeds = true;
         bool m_commitSucceeds = true;
         bool m_isMapped = false;
+        bool m_isRangeMapped = false;
         uint32 m_mapCount = 0;
     };
 
@@ -1499,6 +1582,12 @@ namespace
         void EnableRayTracing()
         {
             m_capabilities.backendType = RHIBackendType::DX12;
+            m_capabilities.supportsAsyncCompute = true;
+            m_capabilities.queueTopology.logicalQueueDomains = {
+                GPUQueueDomain::Graphics,
+                GPUQueueDomain::Compute,
+                GPUQueueDomain::Copy};
+            m_capabilities.queueTopology.activeDomainCount = 3;
             m_capabilities.supportsRaytracing = true;
             m_capabilities.supportsRaytracingPipeline = true;
             m_capabilities.supportsAccelerationStructureUpdate = true;
@@ -19223,9 +19312,29 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     renderer.BuildRenderGraphForTesting();
 
     const SceneRendererToolDiagnosticsSnapshot& toolSnapshot = renderer.GetToolDiagnosticsSnapshot();
+    const RHIBackendType expectedBackend = device.GetBackendType();
+    const std::string expectedBackendName = ToString(expectedBackend);
+    const bool expectedCollapsedGraphicsTopology =
+        expectedBackend == RHIBackendType::Metal;
+    const std::string expectedQueueText = expectedCollapsedGraphicsTopology
+        ? "queueCompletionMode=NativeTimeline, "
+          "logicalQueueDomains=[Graphics,Graphics,Graphics], activeDomainCount=1"
+        : "queueCompletionMode=NativeTimeline, "
+          "logicalQueueDomains=[Graphics,Compute,Copy], activeDomainCount=3";
+    const std::string expectedQueueJson = expectedCollapsedGraphicsTopology
+        ? "\"queueTopology\": {\n"
+          "      \"completionMode\": \"NativeTimeline\",\n"
+          "      \"logicalQueueDomains\": [\"Graphics\", \"Graphics\", \"Graphics\"],\n"
+          "      \"activeDomainCount\": 1\n"
+          "    }"
+        : "\"queueTopology\": {\n"
+          "      \"completionMode\": \"NativeTimeline\",\n"
+          "      \"logicalQueueDomains\": [\"Graphics\", \"Compute\", \"Copy\"],\n"
+          "      \"activeDomainCount\": 3\n"
+          "    }";
     ASSERT_TRUE(toolSnapshot.rhiCapabilityReportAvailable);
     EXPECT_EQ(toolSnapshot.rhiCapabilityReport.schemaVersion, RVX_RHI_CAPABILITY_REPORT_SCHEMA_VERSION);
-    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.backendType, RHIBackendType::DX12);
+    EXPECT_EQ(toolSnapshot.rhiCapabilityReport.backendType, expectedBackend);
     EXPECT_EQ(toolSnapshot.rhiCapabilityReport.adapterName, "RenderPassValidation Test Adapter");
     EXPECT_EQ(toolSnapshot.rhiCapabilityReport.driverVersion, "RenderPassValidation.Driver.1");
     EXPECT_TRUE(toolSnapshot.rhiCapabilityReport.validationPassed)
@@ -19236,13 +19345,13 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
 
     const std::string diagnosticsText = renderer.ExportToolDiagnosticsText();
     EXPECT_NE(diagnosticsText.find("rhiCapabilities=true"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find("RHICapabilities: schema=6, backend=DirectX 12"), std::string::npos);
+    EXPECT_NE(
+        diagnosticsText.find(
+            "RHICapabilities: schema=6, backend=" + expectedBackendName),
+        std::string::npos);
     EXPECT_NE(diagnosticsText.find("adapter=RenderPassValidation Test Adapter"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("driver=RenderPassValidation.Driver.1"), std::string::npos);
-    EXPECT_NE(diagnosticsText.find(
-                  "queueCompletionMode=NativeTimeline, "
-                  "logicalQueueDomains=[Graphics,Compute,Copy], activeDomainCount=3"),
-              std::string::npos);
+    EXPECT_NE(diagnosticsText.find(expectedQueueText), std::string::npos);
     EXPECT_NE(diagnosticsText.find("renderGraphBaseline=Passed"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("RenderGraphBaselineMissing: none"), std::string::npos);
     EXPECT_NE(diagnosticsText.find("RHICapability ComputePipeline: status=Supported"), std::string::npos);
@@ -19250,16 +19359,13 @@ TEST(SceneRendererDiagnosticsValidation, ToolDiagnosticsSnapshotCarriesRHICapabi
     const std::string manifestJson = renderer.ExportToolDiagnosticsManifestJson();
     EXPECT_NE(manifestJson.find("\"rhiCapabilityReportAvailable\": true"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"rhiCapabilities\": {\n    \"schemaVersion\": 6"), std::string::npos);
-    EXPECT_NE(manifestJson.find("\"backend\": \"DirectX 12\""), std::string::npos);
+    EXPECT_NE(
+        manifestJson.find(
+            "\"backend\": \"" + expectedBackendName + "\""),
+        std::string::npos);
     EXPECT_NE(manifestJson.find("\"adapterName\": \"RenderPassValidation Test Adapter\""), std::string::npos);
     EXPECT_NE(manifestJson.find("\"driverVersion\": \"RenderPassValidation.Driver.1\""), std::string::npos);
-    EXPECT_NE(manifestJson.find(
-                  "\"queueTopology\": {\n"
-                  "      \"completionMode\": \"NativeTimeline\",\n"
-                  "      \"logicalQueueDomains\": [\"Graphics\", \"Compute\", \"Copy\"],\n"
-                  "      \"activeDomainCount\": 3\n"
-                  "    }"),
-              std::string::npos);
+    EXPECT_NE(manifestJson.find(expectedQueueJson), std::string::npos);
     EXPECT_NE(manifestJson.find("\"renderGraphBaselineSupported\": true"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"renderGraphBaselineMissingRequirements\": []"), std::string::npos);
     EXPECT_NE(manifestJson.find("\"feature\": \"ComputePipeline\""), std::string::npos);
