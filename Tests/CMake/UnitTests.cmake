@@ -904,6 +904,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES AudioResourceValidation/main.cpp
     LIBS
+        RVX::AssetImport
         RVX::Core
         RVX::Resource
     TIMEOUT 120
@@ -1053,6 +1054,7 @@ rvx_add_gtest(
     SOURCES EnvironmentPreparedLoadingValidation/main.cpp
     LIBS
         RVX::Core
+        RVX::AssetImport
         RVX::Resource
     TAGS subsystem.resource suite.environment trait.async
     TIMEOUT 120

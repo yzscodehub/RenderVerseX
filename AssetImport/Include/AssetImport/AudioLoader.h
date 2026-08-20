@@ -2,7 +2,7 @@
 
 /**
  * @file AudioLoader.h
- * @brief Audio resource loader using miniaudio
+ * @brief Development-only source audio loader using miniaudio
  * 
  * Loads audio files from various formats:
  * - WAV (PCM, IEEE float)
@@ -16,8 +16,8 @@
 
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/AudioResource.h"
-#include <string>
 #include <memory>
+#include <string>
 
 namespace RVX::Resource
 {
@@ -89,6 +89,7 @@ namespace RVX::Resource
         std::vector<std::string> GetSupportedExtensions() const override;
         IResource* Load(const std::string& path) override;
         bool CanLoad(const std::string& path) const override;
+        bool Supports(const ResourceLoaderRequest& request) const override;
 
         AudioLoadStatus GetLastLoadStatus() const { return m_lastLoadStatus; }
         const std::string& GetLastLoadError() const { return m_lastLoadError; }

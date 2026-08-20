@@ -3,7 +3,6 @@
  * @brief AudioEngine implementation with miniaudio backend
  */
 
-#define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
 
 #include "Audio/AudioEngine.h"

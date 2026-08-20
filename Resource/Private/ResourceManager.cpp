@@ -1,7 +1,8 @@
 #include "Resource/ResourceManager.h"
 #include "ModelTextureStreamingService.h"
 #include "Resource/Loader/AnimationLoader.h"
-#include "Resource/Loader/EnvironmentLoader.h"
+#include "Resource/Loader/CookedAudioLoader.h"
+#include "Resource/Loader/CookedEnvironmentLoader.h"
 #include "Resource/Loader/MeshLoader.h"
 #include "Resource/Loader/ModelLoader.h"
 #include "Resource/Loader/ShaderLoader.h"
@@ -10,6 +11,8 @@
 #include "Resource/Types/MaterialInstanceResource.h"
 #include "Resource/Types/ModelResource.h"
 #include "Resource/Types/TextureResource.h"
+#include "Resource/Cooked/CookedAudioArtifact.h"
+#include "Resource/Cooked/CookedEnvironmentArtifact.h"
 #include "Core/Assert.h"
 #include "Core/Diagnostics/JsonWriter.h"
 #include "Core/Log.h"
@@ -647,6 +650,20 @@ namespace
         {
             return ResourceType::Shader;
         }
+
+        const auto startsWithMagic = [&file](std::string_view magic)
+        {
+            file.clear();
+            file.seekg(0, std::ios::beg);
+            std::string observed(magic.size(), '\0');
+            file.read(observed.data(), static_cast<std::streamsize>(observed.size()));
+            return file.gcount() == static_cast<std::streamsize>(observed.size()) &&
+                observed == magic;
+        };
+        if (startsWithMagic(RVX_AUDIO_ARTIFACT_MAGIC))
+            return ResourceType::Audio;
+        if (startsWithMagic(RVX_ENVIRONMENT_ARTIFACT_MAGIC))
+            return ResourceType::Environment;
         file.clear();
         file.seekg(0, std::ios::beg);
 
@@ -988,7 +1005,8 @@ ResourceManagerDependencies CreateRuntimeResourceManagerDependencies(
     add(std::make_unique<ShaderLoader>(&manager));
     add(std::make_unique<CookedModelLoader>(&manager));
     add(std::make_unique<AnimationLoader>());
-    add(std::make_unique<EnvironmentLoader>());
+    add(std::make_unique<CookedAudioLoader>(&manager));
+    add(std::make_unique<CookedEnvironmentLoader>());
     return dependencies;
 }
 

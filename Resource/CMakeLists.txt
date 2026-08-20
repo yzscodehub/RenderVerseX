@@ -38,6 +38,8 @@ target_sources(RVX_Resource PRIVATE
     Private/ModelTextureStreamingService.cpp
     Private/DefaultResources.cpp
     Private/Cooked/CookedAnimationArtifact.cpp
+    Private/Cooked/CookedAudioArtifact.cpp
+    Private/Cooked/CookedEnvironmentArtifact.cpp
     Private/Cooked/CookedModelArtifact.cpp
     
     # Concrete resource types
@@ -56,8 +58,9 @@ target_sources(RVX_Resource PRIVATE
     Private/Loader/ShaderLoader.cpp
     Private/Loader/TextureLoader.cpp
     Private/Loader/ModelLoader.cpp
-    Private/Loader/AudioLoader.cpp
     Private/Loader/AnimationLoader.cpp
+    Private/Loader/CookedAudioLoader.cpp
+    Private/Loader/CookedEnvironmentLoader.cpp
     Private/Loader/HDRTextureLoader.cpp
     Private/Loader/EnvironmentLoader.cpp
 
@@ -169,15 +172,6 @@ if(TINYEXR_INCLUDE_DIR)
     endif()
 else()
     message(STATUS "RVX_Resource: tinyexr not found. EXR loading will not be available (HDR still works).")
-endif()
-
-# miniaudio from vcpkg (header-only)
-find_path(MINIAUDIO_INCLUDE_DIR miniaudio.h)
-if(MINIAUDIO_INCLUDE_DIR)
-    target_include_directories(RVX_Resource PRIVATE ${MINIAUDIO_INCLUDE_DIR})
-    message(STATUS "RVX_Resource: Using miniaudio from ${MINIAUDIO_INCLUDE_DIR}")
-else()
-    message(WARNING "RVX_Resource: miniaudio not found. Audio resource loading will not be available.")
 endif()
 
 add_library(RVX::Resource ALIAS RVX_Resource)

@@ -1,5 +1,5 @@
+#include "AssetImport/AudioLoader.h"
 #include "Core/Log.h"
-#include "Resource/Loader/AudioLoader.h"
 
 #include <gtest/gtest.h>
 

@@ -23,6 +23,18 @@ bool AddSourceResourceDependencies(
     }
 
     if (!dependencies.loaderCatalog.Add(
+            std::make_unique<AssetImport::SourceAudioLoader>(&manager),
+            outError))
+    {
+        return false;
+    }
+    if (!dependencies.loaderCatalog.Add(
+            std::make_unique<AssetImport::SourceEnvironmentLoader>(),
+            outError))
+    {
+        return false;
+    }
+    if (!dependencies.loaderCatalog.Add(
             std::make_unique<AssetImport::SourceTextureLoader>(&manager),
             outError))
     {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace RVX::Resource
 {
@@ -33,23 +34,45 @@ namespace RVX::Resource
 
     void AudioResource::SetData(std::vector<uint8_t> data, const AudioMetadata& metadata)
     {
-        m_data = std::move(data);
-        m_metadata = metadata;
-        
-        // Calculate duration if not set
-        if (m_metadata.duration <= 0.0f && m_metadata.totalFrames > 0)
+        if (!SetPreparedData(std::move(data), metadata))
         {
-            m_metadata.duration = FramesToDuration(m_metadata.totalFrames, m_metadata.sampleRate);
+            SetState(ResourceState::Failed);
+            return;
         }
-
-        // Set loop end to total frames if not set
-        if (m_metadata.loopEndFrame == 0)
-        {
-            m_metadata.loopEndFrame = m_metadata.totalFrames;
-        }
-
         SetState(ResourceState::Loaded);
         NotifyLoaded();
+    }
+
+    bool AudioResource::SetPreparedData(
+        std::vector<uint8_t> data,
+        AudioMetadata metadata)
+    {
+        const size_t bytesPerSample = GetAudioFormatBytes(metadata.format);
+        if (IsLoaded() || metadata.sampleRate == 0 || metadata.channels == 0 ||
+            metadata.totalFrames == 0 || bytesPerSample == 0 ||
+            metadata.totalFrames > std::numeric_limits<size_t>::max() /
+                metadata.channels ||
+            static_cast<size_t>(metadata.totalFrames) * metadata.channels >
+                std::numeric_limits<size_t>::max() / bytesPerSample ||
+            data.size() != static_cast<size_t>(metadata.totalFrames) *
+                metadata.channels * bytesPerSample)
+        {
+            return false;
+        }
+        if (metadata.duration <= 0.0f)
+            metadata.duration = FramesToDuration(metadata.totalFrames,
+                                                 metadata.sampleRate);
+        if (metadata.loopEndFrame == 0)
+            metadata.loopEndFrame = metadata.totalFrames;
+        if (metadata.loopStartFrame > metadata.totalFrames ||
+            metadata.loopEndFrame > metadata.totalFrames ||
+            metadata.loopEndFrame < metadata.loopStartFrame)
+        {
+            return false;
+        }
+        m_data = std::move(data);
+        m_metadata = std::move(metadata);
+        return true;
     }
 
     void AudioResource::SetLoopPoints(uint64_t startFrame, uint64_t endFrame)

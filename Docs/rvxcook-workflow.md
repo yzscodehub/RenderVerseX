@@ -4,7 +4,7 @@ This document describes the current RenderVerseX asset cook workflow for enginee
 
 ## Command
 
-`RVXCook` cooks importable source assets from a source directory into runtime `.rva` artifacts and writes a deterministic `RVX_COOK_MANIFEST_V1` manifest.
+`RVXCook` cooks importable source assets from a source directory into runtime `.rva` artifacts and writes a deterministic `RVX_COOK_MANIFEST_V2` manifest. Before publication, the Tools writer reopens the staged manifest through the Resource runtime reader; a manifest that runtime cannot admit is never published.
 
 ```powershell
 build\win_x64_debug\Tools\Debug\RVXCook.exe `
@@ -64,6 +64,10 @@ For each importable source file, `RVXCook` writes a sibling cooked artifact unde
 
 Texture artifacts use `RVX_TEXTURE_PREBAKE_V1` and include metadata such as `format`, `usage`, `srgb`, `requestedCompressionMode`, `compression`, and `dataSize`. Supported cooked compressed texture formats are BC1, BC3, BC5, and BC7.
 
+HDR and EXR inputs are environment assets, not ordinary textures. Their `RVX_ENVIRONMENT_ARTIFACT_V2` products contain canonical RGBA16F environment, irradiance and prefiltered cubemap mip chains plus a RGBA16F BRDF LUT. The artifact records the source identity, environment options hash, intensity, per-section SHA-256 values, and an envelope payload hash.
+
+Audio inputs produce `RVX_AUDIO_ARTIFACT_V2` products containing interleaved PCM16 samples, sample rate, channel count, frame count, loop metadata, and an envelope payload hash. Runtime Audio and Environment loaders accept these products only from Cooked or Package domains; source decoding is supplied exclusively by the development composition.
+
 Mesh and shader artifacts use their own `.rva` headers and are loaded by header dispatch rather than extension guessing. Mesh artifacts can include lower LOD payloads with compacted vertex attributes and remapped UInt32 index data when `mesh.generateLODs=true`.
 
 ## glTF Runtime Rewrite
@@ -92,6 +96,7 @@ Current regression gates for this workflow:
 - `RenderHonestyValidationFixture.RVXCookCliRejectsInvalidMeshCookProfile`
 - `RenderHonestyValidationFixture.ResourceManagerLoadsCookedMeshArtifactWithLOD`
 - `GPUResourceManagerValidation.BC7TextureDataUploadsWithBlockLayout`
+- `CookedEnvironmentAudioArtifactValidation.*`
 
 ## Known Limits
 

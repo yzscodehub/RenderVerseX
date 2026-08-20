@@ -4,11 +4,16 @@
  */
 
 #include "Tools/AssetPipeline.h"
+#include "AssetImport/AudioLoader.h"
 #include "Core/Diagnostics/ContentHash.h"
 #include "Core/Log.h"
+#include "Resource/CookManifest.h"
 #include "Resource/Cooked/CookedAnimationArtifact.h"
+#include "Resource/Cooked/CookedAudioArtifact.h"
+#include "Resource/Cooked/CookedEnvironmentArtifact.h"
 #include "Resource/Cooked/CookedModelArtifact.h"
 #include "Resource/Importer/GLTFImporter.h"
+#include "Resource/Loader/EnvironmentLoader.h"
 #include "Resource/Loader/TextureLoader.h"
 #include "Resource/Types/TextureResource.h"
 #include "ShaderContracts/ShaderArtifact.h"
@@ -21,8 +26,9 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
-#include <exception>
 #include <cmath>
+#include <cstring>
+#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
@@ -126,6 +132,7 @@ namespace
             case AssetType::Shader:    return "Shader";
             case AssetType::Animation: return "Animation";
             case AssetType::Audio:     return "Audio";
+            case AssetType::Environment: return "Environment";
             case AssetType::Font:      return "Font";
             case AssetType::Prefab:    return "Prefab";
             case AssetType::Scene:     return "Scene";
@@ -1555,6 +1562,45 @@ namespace
         return true;
     }
 
+    bool WriteCookedBinaryArtifact(const fs::path& outputPath,
+                                   std::span<const uint8> bytes,
+                                   std::string& outError)
+    {
+        if (bytes.empty())
+        {
+            outError = "Cooked artifact payload is empty";
+            return false;
+        }
+        if (!outputPath.parent_path().empty())
+        {
+            std::error_code directoryError;
+            fs::create_directories(outputPath.parent_path(), directoryError);
+            if (directoryError)
+            {
+                outError = "Failed to create cooked artifact directory: " +
+                    directoryError.message();
+                return false;
+            }
+        }
+        std::ofstream file(outputPath, std::ios::binary | std::ios::trunc);
+        if (!file.is_open())
+        {
+            outError = "Failed to open cooked artifact for writing: " +
+                outputPath.string();
+            return false;
+        }
+        file.write(reinterpret_cast<const char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+        if (!file.good())
+        {
+            outError = "Failed while writing cooked artifact: " +
+                outputPath.string();
+            return false;
+        }
+        outError.clear();
+        return true;
+    }
+
     bool WriteShaderArtifact(const fs::path& outputPath,
                              const fs::path& sourcePath,
                              const ShaderImportOptions& importOptions,
@@ -2155,6 +2201,16 @@ namespace
         settings += '\n';
     }
 
+    void AppendCanonicalUInt64(std::string& settings,
+                               const char* key,
+                               uint64 value)
+    {
+        settings += key;
+        settings += '=';
+        settings += std::to_string(value);
+        settings += '\n';
+    }
+
     void AppendCanonicalFloat(std::string& settings, const char* key, float value)
     {
         std::ostringstream stream;
@@ -2245,6 +2301,29 @@ namespace
                 }
                 AppendCanonicalBool(settings, "shader.enableDebugInfo", resolved.enableDebugInfo);
                 AppendCanonicalBool(settings, "shader.enableOptimization", resolved.enableOptimization);
+                break;
+            }
+            case AssetType::Environment:
+            {
+                const EnvironmentImportOptions resolved = options
+                    ? *static_cast<const EnvironmentImportOptions*>(options)
+                    : EnvironmentImportOptions{};
+                AppendCanonicalInteger(settings, "environment.quality", resolved.quality);
+                AppendCanonicalFloat(settings, "environment.exposure", resolved.exposure);
+                AppendCanonicalBool(settings, "environment.applyGamma", resolved.applyGamma);
+                break;
+            }
+            case AssetType::Audio:
+            {
+                const AudioCookOptions resolved = options
+                    ? *static_cast<const AudioCookOptions*>(options)
+                    : AudioCookOptions{};
+                AppendCanonicalInteger(settings, "audio.targetSampleRate", resolved.targetSampleRate);
+                AppendCanonicalBool(settings, "audio.forceMono", resolved.forceMono);
+                AppendCanonicalBool(settings, "audio.forceStereo", resolved.forceStereo);
+                AppendCanonicalBool(settings, "audio.looping", resolved.looping);
+                AppendCanonicalUInt64(settings, "audio.loopStartFrame", resolved.loopStartFrame);
+                AppendCanonicalUInt64(settings, "audio.loopEndFrame", resolved.loopEndFrame);
                 break;
             }
             default:
@@ -3322,6 +3401,19 @@ bool CookManifest::Save(const fs::path& manifestPath,
         }
     }
 
+    // Resource owns the runtime manifest contract.  A tool-generated package
+    // is not publishable unless that exact reader accepts the staged bytes.
+    Resource::CookManifest runtimeManifest;
+    std::string runtimeManifestError;
+    if (!Resource::LoadCookManifest(
+            tempPath, runtimeManifest, runtimeManifestError))
+    {
+        fs::remove(tempPath, ec);
+        outError = "Runtime rejected the generated cook manifest: " +
+            runtimeManifestError;
+        return false;
+    }
+
     fs::remove(manifestPath, ec);
     ec.clear();
     fs::rename(tempPath, manifestPath, ec);
@@ -3483,8 +3575,10 @@ CookManifest AssetPipeline::CookDirectory(const fs::path& sourceDir,
         for (const fs::path& filePath : filesToImport)
         {
             CookManifestEntry entry;
-            const AssetType assetType =
-                GetAssetTypeFromExtension(ToLower(filePath.extension().string()));
+            IAssetImporter* importer = GetImporter(filePath.extension().string());
+            const AssetType assetType = importer
+                ? importer->GetAssetType()
+                : GetAssetTypeFromExtension(ToLower(filePath.extension().string()));
             entry.type = assetType;
 
             std::error_code relativeError;
@@ -3526,6 +3620,8 @@ CookManifest AssetPipeline::CookDirectory(const fs::path& sourceDir,
                             optionsProvider ? optionsProvider(filePath, assetType) : nullptr;
                         std::optional<ModelImportOptions> canonicalModelOptions;
                         std::optional<ShaderImportOptions> canonicalShaderOptions;
+                        std::optional<EnvironmentImportOptions> canonicalEnvironmentOptions;
+                        std::optional<AudioCookOptions> canonicalAudioOptions;
                         const void* importOptions = requestedImportOptions;
                         if (assetType == AssetType::Model)
                         {
@@ -3544,6 +3640,24 @@ CookManifest AssetPipeline::CookDirectory(const fs::path& sourceDir,
                             canonicalShaderOptions->logicalAssetId =
                                 relativePath.generic_string();
                             importOptions = &*canonicalShaderOptions;
+                        }
+                        else if (assetType == AssetType::Environment)
+                        {
+                            canonicalEnvironmentOptions = requestedImportOptions
+                                ? *static_cast<const EnvironmentImportOptions*>(requestedImportOptions)
+                                : EnvironmentImportOptions{};
+                            canonicalEnvironmentOptions->artifactSourcePath =
+                                relativePath.generic_string();
+                            importOptions = &*canonicalEnvironmentOptions;
+                        }
+                        else if (assetType == AssetType::Audio)
+                        {
+                            canonicalAudioOptions = requestedImportOptions
+                                ? *static_cast<const AudioCookOptions*>(requestedImportOptions)
+                                : AudioCookOptions{};
+                            canonicalAudioOptions->artifactSourcePath =
+                                relativePath.generic_string();
+                            importOptions = &*canonicalAudioOptions;
                         }
                         const bool isExternalGltf =
                             ToLower(filePath.extension().string()) == ".gltf";
@@ -3573,7 +3687,6 @@ CookManifest AssetPipeline::CookDirectory(const fs::path& sourceDir,
                         entry.sourceModTime = GetFileWriteTimeTicks(filePath);
                         if (entry.success)
                         {
-                            IAssetImporter* importer = GetImporter(filePath.extension().string());
                             std::vector<fs::path> productPaths;
                             productPaths.reserve(result.outputPaths.size() + 1u);
                             productPaths.push_back(outPath);
@@ -3737,8 +3850,8 @@ AssetType AssetPipeline::GetAssetTypeFromExtension(const std::string& ext)
         {".jpeg", AssetType::Texture},
         {".tga", AssetType::Texture},
         {".bmp", AssetType::Texture},
-        {".hdr", AssetType::Texture},
-        {".exr", AssetType::Texture},
+        {".hdr", AssetType::Environment},
+        {".exr", AssetType::Environment},
         {".fbx", AssetType::Mesh},
         {".obj", AssetType::Mesh},
         {".gltf", AssetType::Model},
@@ -4531,6 +4644,85 @@ ImportResult ShaderImporter::Import(const fs::path& sourcePath,
 }
 
 // ============================================================================
+// EnvironmentImporter
+// ============================================================================
+
+ImportResult EnvironmentImporter::Import(const fs::path& sourcePath,
+                                           const fs::path& outputPath,
+                                           const void* options)
+{
+    ImportResult result;
+    const EnvironmentImportOptions importOptions = options
+        ? *static_cast<const EnvironmentImportOptions*>(options)
+        : EnvironmentImportOptions{};
+    if (importOptions.quality > 3 || !std::isfinite(importOptions.exposure) ||
+        importOptions.exposure <= 0.0f)
+    {
+        result.error = "Environment cook options are invalid";
+        return result;
+    }
+
+    std::string artifactSourcePath = sourcePath.generic_string();
+    if (!importOptions.artifactSourcePath.empty())
+    {
+        if (!IsCanonicalRelativePath(importOptions.artifactSourcePath))
+        {
+            result.error = "Environment artifact source path is not canonical";
+            return result;
+        }
+        artifactSourcePath = importOptions.artifactSourcePath;
+    }
+
+    Resource::EnvironmentLoadOptions loadOptions;
+    loadOptions.quality = static_cast<Resource::HDRIBLQualityProfile>(
+        importOptions.quality);
+    loadOptions.exposure = importOptions.exposure;
+    loadOptions.applyGamma = importOptions.applyGamma;
+    Resource::EnvironmentLoader loader(loadOptions);
+    std::unique_ptr<Resource::EnvironmentResource> environment(
+        static_cast<Resource::EnvironmentResource*>(
+            loader.Load(fs::absolute(sourcePath).string())));
+    if (!environment || !environment->IsLoaded())
+    {
+        result.error = "HDR/EXR environment import failed";
+        return result;
+    }
+
+    Resource::CookedEnvironmentArtifact artifact;
+    artifact.sourcePath = artifactSourcePath;
+    artifact.importOptionsHash =
+        Resource::EnvironmentLoader::ComputeImportOptionsHash(loadOptions);
+    artifact.intensity = importOptions.exposure;
+    const Resource::EnvironmentResourceData& data = environment->GetData();
+    const Resource::TextureHandle textures[] = {
+        data.environment, data.irradiance, data.prefiltered, data.brdfLUT};
+    for (size_t index = 0; index < artifact.textures.size(); ++index)
+    {
+        if (!textures[index] ||
+            !Resource::BuildCookedEnvironmentTexture(
+                static_cast<Resource::CookedEnvironmentTextureRole>(index),
+                *textures[index], artifact.textures[index], result.error))
+        {
+            if (result.error.empty())
+                result.error = "Environment importer produced a missing IBL texture";
+            return result;
+        }
+    }
+
+    std::vector<uint8> bytes;
+    if (!Resource::SerializeCookedEnvironmentArtifact(
+            artifact, bytes, result.error) ||
+        !WriteCookedBinaryArtifact(outputPath, bytes, result.error))
+    {
+        return result;
+    }
+
+    result.success = true;
+    result.outputPaths.push_back(outputPath.string());
+    return result;
+}
+
+// ============================================================================
 // AudioImporter
 // ============================================================================
 
@@ -4539,18 +4731,82 @@ ImportResult AudioImporter::Import(const fs::path& sourcePath,
                                     const void* options)
 {
     ImportResult result;
+    const AudioCookOptions importOptions = options
+        ? *static_cast<const AudioCookOptions*>(options)
+        : AudioCookOptions{};
+    if (importOptions.forceMono && importOptions.forceStereo)
+    {
+        result.error = "Audio cook cannot force mono and stereo simultaneously";
+        return result;
+    }
+    std::string artifactSourcePath = sourcePath.generic_string();
+    if (!importOptions.artifactSourcePath.empty())
+    {
+        if (!IsCanonicalRelativePath(importOptions.artifactSourcePath))
+        {
+            result.error = "Audio artifact source path is not canonical";
+            return result;
+        }
+        artifactSourcePath = importOptions.artifactSourcePath;
+    }
 
-    // TODO: Load audio file
-    // TODO: Convert to common format
-    // TODO: Compress if appropriate
+    Resource::AudioLoadOptions loadOptions;
+    loadOptions.targetFormat = Resource::AudioFormat::S16;
+    loadOptions.targetSampleRate = importOptions.targetSampleRate;
+    loadOptions.forceMono = importOptions.forceMono;
+    loadOptions.forceStereo = importOptions.forceStereo;
+    loadOptions.enableStreaming = false;
+    loadOptions.streamingThreshold = std::numeric_limits<size_t>::max();
+    Resource::AudioLoader loader(nullptr);
+    Resource::AudioResource* loaded = loader.LoadWithOptions(
+        fs::absolute(sourcePath).string(), loadOptions);
+    if (!loaded || loader.WasLastLoadFallback() ||
+        loader.GetLastLoadStatus() != Resource::AudioLoadStatus::Loaded)
+    {
+        result.error = loader.GetLastLoadError().empty()
+            ? "Audio decode failed"
+            : loader.GetLastLoadError();
+        return result;
+    }
+    std::unique_ptr<Resource::AudioResource> audio(loaded);
+    const Resource::AudioMetadata& metadata = audio->GetMetadata();
+    if (metadata.format != Resource::AudioFormat::S16 ||
+        audio->GetData().size() % sizeof(int16) != 0)
+    {
+        result.error = "Audio decoder did not produce canonical PCM16 data";
+        return result;
+    }
 
-    RVX_CORE_INFO("Importing audio: {}", sourcePath.string());
+    Resource::CookedAudioArtifact artifact;
+    artifact.sourcePath = artifactSourcePath;
+    artifact.sampleRate = metadata.sampleRate;
+    artifact.channels = metadata.channels;
+    artifact.frameCount = metadata.totalFrames;
+    artifact.looping = importOptions.looping;
+    artifact.loopStartFrame = importOptions.loopStartFrame;
+    artifact.loopEndFrame = importOptions.looping
+        ? (importOptions.loopEndFrame == 0
+               ? metadata.totalFrames
+               : importOptions.loopEndFrame)
+        : 0;
+    artifact.pcm16.resize(audio->GetData().size() / sizeof(int16));
+    for (size_t index = 0; index < artifact.pcm16.size(); ++index)
+    {
+        std::memcpy(&artifact.pcm16[index],
+                    audio->GetData().data() + index * sizeof(int16),
+                    sizeof(int16));
+    }
 
-    result.success = false;
-    result.error = "AudioImporter is not implemented; no audio artifact was written";
-    result.warnings.push_back("Audio import disabled until the real audio pipeline is implemented");
-    (void)options;
-    (void)outputPath;
+    std::vector<uint8> bytes;
+    if (!Resource::SerializeCookedAudioArtifact(
+            artifact, bytes, result.error) ||
+        !WriteCookedBinaryArtifact(outputPath, bytes, result.error))
+    {
+        return result;
+    }
+
+    result.success = true;
+    result.outputPaths.push_back(outputPath.string());
     return result;
 }
 

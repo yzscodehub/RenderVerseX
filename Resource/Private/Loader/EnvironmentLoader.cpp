@@ -86,6 +86,13 @@ bool EnvironmentLoader::CanLoad(const std::string& path) const
     return extension == ".hdr" || extension == ".exr";
 }
 
+bool EnvironmentLoader::Supports(const ResourceLoaderRequest& request) const
+{
+    return request.type == ResourceType::Environment &&
+        request.domain == ResourceLoadDomain::Source &&
+        CanLoad(request.resolvedPath);
+}
+
 IResource* EnvironmentLoader::Load(const std::string& path)
 {
     const EnvironmentPreparationState state = CapturePreparationState();

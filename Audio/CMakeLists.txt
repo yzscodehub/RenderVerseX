@@ -9,6 +9,14 @@ if(NOT MINIAUDIO_INCLUDE_DIR)
     message(FATAL_ERROR "miniaudio.h not found. Please install via vcpkg: vcpkg install miniaudio")
 endif()
 
+add_library(RVX_AudioCodec STATIC
+    Private/MiniaudioImplementation.cpp
+)
+target_include_directories(RVX_AudioCodec PUBLIC
+    ${MINIAUDIO_INCLUDE_DIR}
+)
+add_library(RVX::AudioCodec ALIAS RVX_AudioCodec)
+
 target_sources(RVX_Audio PRIVATE
     Private/AudioEngine.cpp
     Private/AudioClip.cpp
@@ -45,6 +53,7 @@ target_link_libraries(RVX_Audio PUBLIC
     RVX::Physics
     RVX::Scene
 )
+target_link_libraries(RVX_Audio PRIVATE RVX::AudioCodec)
 
 # miniaudio include path (header-only)
 target_include_directories(RVX_Audio PRIVATE
@@ -59,7 +68,7 @@ elseif(APPLE)
     find_library(COREAUDIO_FRAMEWORK CoreAudio)
     find_library(AUDIOTOOLBOX_FRAMEWORK AudioToolbox)
     if(COREAUDIO_FRAMEWORK AND AUDIOTOOLBOX_FRAMEWORK)
-        target_link_libraries(RVX_Audio PRIVATE
+        target_link_libraries(RVX_AudioCodec PRIVATE
             ${COREAUDIO_FRAMEWORK}
             ${AUDIOTOOLBOX_FRAMEWORK}
         )
@@ -67,7 +76,7 @@ elseif(APPLE)
 elseif(UNIX)
     # Linux may need pthread and dl
     find_package(Threads REQUIRED)
-    target_link_libraries(RVX_Audio PRIVATE
+    target_link_libraries(RVX_AudioCodec PRIVATE
         Threads::Threads
         ${CMAKE_DL_LIBS}
     )
@@ -75,6 +84,11 @@ endif()
 
 add_library(RVX::Audio ALIAS RVX_Audio)
 
+rvx_register_module_target(
+    TARGET RVX_AudioCodec
+    MODULE Audio
+    ALIASES RVX::AudioCodec
+)
 rvx_register_module_target(
     TARGET RVX_Audio
     MODULE Audio

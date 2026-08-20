@@ -46,7 +46,7 @@ namespace RVX::Resource
      * manager-null HDRTextureLoader. Cache insertion, notifications and scene
      * use remain owner-thread responsibilities of ResourceManager.
      */
-    class EnvironmentLoader final : public IResourceLoader
+    class EnvironmentLoader : public IResourceLoader
     {
     public:
         EnvironmentLoader() = default;
@@ -68,6 +68,7 @@ namespace RVX::Resource
                      ResourceLoadError& outError) override;
         bool SupportsPreparedLoading() const override { return true; }
         bool CanLoad(const std::string& path) const override;
+        bool Supports(const ResourceLoaderRequest& request) const override;
 
         // =====================================================================
         // Admission State

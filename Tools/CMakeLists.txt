@@ -24,6 +24,7 @@ target_link_libraries(RVX_Tools PUBLIC
 )
 
 target_link_libraries(RVX_Tools PRIVATE
+    RVX::AssetImport
     RVX::Resource
     RVX::ShaderCompiler
 )

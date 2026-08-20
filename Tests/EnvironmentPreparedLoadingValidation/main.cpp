@@ -1,3 +1,4 @@
+#include "AssetImport/SourceResourceLoaders.h"
 #include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
 #include "Resource/Loader/EnvironmentLoader.h"
@@ -12,6 +13,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -155,9 +157,21 @@ namespace
             config.runtimePolicy.mode = ResourceRuntimeMode::Editor;
             config.runtimePolicy.allowSourceAssetReads = true;
             ResourceManager& manager = ResourceManager::Get();
-            manager.Initialize(
-                config,
-                CreateRuntimeResourceManagerDependencies(manager));
+            ResourceManagerDependencies dependencies =
+                CreateRuntimeResourceManagerDependencies(manager);
+            auto sourceLoader =
+                std::make_unique<AssetImport::SourceEnvironmentLoader>();
+            m_environmentLoader = sourceLoader.get();
+            std::string compositionError;
+            if (!dependencies.loaderCatalog.Add(
+                    std::move(sourceLoader),
+                    compositionError))
+            {
+                throw std::runtime_error(
+                    "Failed to compose source environment loader: " +
+                    compositionError);
+            }
+            manager.Initialize(config, std::move(dependencies));
         }
 
         ~EnvironmentManagerGuard()
@@ -169,6 +183,14 @@ namespace
             JobSystem::Get().Shutdown();
             Log::Shutdown();
         }
+
+        EnvironmentLoader* GetEnvironmentLoader() const noexcept
+        {
+            return m_environmentLoader;
+        }
+
+    private:
+        EnvironmentLoader* m_environmentLoader = nullptr;
     };
 } // namespace
 
@@ -380,8 +402,7 @@ TEST(EnvironmentPreparedLoadingValidation, ResourceManagerRoutesTypedEnvironment
     ASSERT_TRUE(WriteHDRFixture(fixture.Get()));
     EnvironmentManagerGuard guard;
 
-    auto* loader = dynamic_cast<EnvironmentLoader*>(
-        ResourceManager::Get().GetLoader(ResourceType::Environment));
+    EnvironmentLoader* loader = guard.GetEnvironmentLoader();
     ASSERT_NE(loader, nullptr);
     EnvironmentLoadOptions options;
     options.quality = HDRIBLQualityProfile::Validation;
@@ -460,8 +481,7 @@ TEST(EnvironmentPreparedLoadingValidation,
     ASSERT_TRUE(WriteHDRFixture(fixture.Get()));
     EnvironmentManagerGuard guard;
 
-    auto* loader = dynamic_cast<EnvironmentLoader*>(
-        ResourceManager::Get().GetLoader(ResourceType::Environment));
+    EnvironmentLoader* loader = guard.GetEnvironmentLoader();
     ASSERT_NE(loader, nullptr);
     const EnvironmentLoadOptions original = loader->GetOptions();
 
@@ -510,8 +530,7 @@ TEST(EnvironmentPreparedLoadingValidation,
     ASSERT_EQ(expected.fileCount, 1u);
 
     EnvironmentManagerGuard guard;
-    auto* loader = dynamic_cast<EnvironmentLoader*>(
-        ResourceManager::Get().GetLoader(ResourceType::Environment));
+    EnvironmentLoader* loader = guard.GetEnvironmentLoader();
     ASSERT_NE(loader, nullptr);
     EnvironmentLoadOptions environmentOptions;
     environmentOptions.quality = HDRIBLQualityProfile::Validation;

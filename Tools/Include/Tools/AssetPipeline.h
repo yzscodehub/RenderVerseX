@@ -44,7 +44,8 @@ enum class AssetType : uint8
     Prefab = 8,
     Scene = 9,
     Script = 10,
-    Model = 11
+    Model = 11,
+    Environment = 12
 };
 
 /**
@@ -247,6 +248,28 @@ struct ModelImportOptions
     std::string artifactSourcePath;
 };
 
+/** @brief Deterministic HDR/EXR environment cook settings. */
+struct EnvironmentImportOptions
+{
+    /** 0=Validation, 1=Low, 2=Medium, 3=High. */
+    uint8 quality = 1;
+    float32 exposure = 1.0f;
+    bool applyGamma = false;
+    std::string artifactSourcePath;
+};
+
+/** @brief Deterministic PCM16 audio cook settings. */
+struct AudioCookOptions
+{
+    uint32 targetSampleRate = 0;
+    bool forceMono = false;
+    bool forceStereo = false;
+    bool looping = false;
+    uint64 loopStartFrame = 0;
+    uint64 loopEndFrame = 0;
+    std::string artifactSourcePath;
+};
+
 /**
  * @brief Shader import options
  */
@@ -344,7 +367,7 @@ public:
 
     std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr", ".exr"};
+        return {".png", ".jpg", ".jpeg", ".tga", ".bmp"};
     }
 
     AssetType GetAssetType() const override { return AssetType::Texture; }
@@ -401,6 +424,24 @@ public:
 
 private:
     CompilerFactory m_compilerFactory;
+};
+
+/** @brief HDR/EXR importer that writes a self-contained float16 IBL artifact. */
+class EnvironmentImporter : public IAssetImporter
+{
+public:
+    const char* GetName() const override { return "EnvironmentImporter"; }
+
+    std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".hdr", ".exr"};
+    }
+
+    AssetType GetAssetType() const override { return AssetType::Environment; }
+
+    ImportResult Import(const fs::path& sourcePath,
+                        const fs::path& outputPath,
+                        const void* options = nullptr) override;
 };
 
 /** @brief Complete static glTF model product importer. */

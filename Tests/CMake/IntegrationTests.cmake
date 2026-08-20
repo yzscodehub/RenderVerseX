@@ -1,5 +1,14 @@
 # Multi-module and product-composition validation.
 rvx_add_gtest(
+    NAME CookedEnvironmentAudioArtifactValidation
+    LANE integration
+    SOURCES CookedEnvironmentAudioArtifactValidation/main.cpp
+    LIBS RVX::Core RVX::Resource RVX::Tools
+    TAGS subsystem.resource suite.cook
+    TIMEOUT 120
+)
+
+rvx_add_gtest(
     NAME EngineEcsWorldOwnershipValidation
     LANE integration
     SOURCES EngineEcsWorldOwnershipValidation/main.cpp

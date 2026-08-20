@@ -142,6 +142,11 @@ namespace RVX::Resource
         /// Set audio data
         void SetData(std::vector<uint8_t> data, const AudioMetadata& metadata);
 
+        /** @brief Bind decoded/cooked data without publishing the resource. */
+        [[nodiscard]] bool SetPreparedData(
+            std::vector<uint8_t> data,
+            AudioMetadata metadata);
+
         // =====================================================================
         // Streaming Interface
         // =====================================================================

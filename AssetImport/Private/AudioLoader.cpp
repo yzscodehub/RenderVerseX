@@ -1,17 +1,16 @@
-#include "Resource/Loader/AudioLoader.h"
-#include "Resource/ResourceCache.h"
+#include "AssetImport/AudioLoader.h"
 #include "Core/Log.h"
+#include "Resource/ResourceCache.h"
 
 // miniaudio configuration - enable all decoders
 #define MA_NO_DEVICE_IO  // We just need decoding, not playback
-#define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <algorithm>
 #include <functional>
-#include <cmath>
 
 namespace RVX::Resource
 {
@@ -52,6 +51,13 @@ namespace RVX::Resource
 
         auto extensions = GetSupportedExtensions();
         return std::find(extensions.begin(), extensions.end(), ext) != extensions.end();
+    }
+
+    bool AudioLoader::Supports(const ResourceLoaderRequest& request) const
+    {
+        return request.type == ResourceType::Audio &&
+            request.domain == ResourceLoadDomain::Source &&
+            CanLoad(request.resolvedPath);
     }
 
     IResource* AudioLoader::Load(const std::string& path)
