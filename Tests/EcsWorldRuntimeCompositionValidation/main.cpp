@@ -2,7 +2,7 @@
 
 #include "Core/Log.h"
 #include "../../Particle/Include/Particle/ECS/ParticleEcsBridge.h"
-#include "Resource/Loader/EnvironmentLoader.h"
+#include "AssetImport/EnvironmentLoader.h"
 #include "Resource/PreparedResourceBundle.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/Types/EnvironmentResource.h"
@@ -126,6 +126,17 @@ namespace
         {
             outState.reset();
             outCanonicalImportOptionsHash = 0;
+            if (!suppliedState)
+            {
+                Resource::ResourceLoadError captureError;
+                suppliedState = Resource::EnvironmentLoader::CreatePreparationState(
+                    {}, outCanonicalImportOptionsHash, captureError);
+                if (!suppliedState)
+                {
+                    outError = std::move(captureError);
+                    return false;
+                }
+            }
             const auto environmentState =
                 std::dynamic_pointer_cast<const Resource::EnvironmentPreparationState>(
                     std::move(suppliedState));

@@ -1,4 +1,4 @@
-#include "Resource/Loader/EnvironmentLoader.h"
+#include "AssetImport/EnvironmentLoader.h"
 
 #include <algorithm>
 #include <bit>

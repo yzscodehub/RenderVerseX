@@ -1,4 +1,4 @@
-#include "Resource/Importer/GLTFImporter.h"
+#include "AssetImport/GLTFImporter.h"
 #include "Core/Assert.h"
 #include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
@@ -978,7 +978,7 @@ namespace RVX::Resource
         // Load the glTF file
         tinygltf::Model gltfModel;
         std::string error, warning;
-        
+
         if (!LoadFile(path,
                       gltfModel,
                       error,
@@ -1208,7 +1208,7 @@ namespace RVX::Resource
                 // Embedded texture (in GLB or base64)
                 ref.sourceType = TextureSourceType::Embedded;
                 ref.mimeType = image.mimeType;
-                
+
                 if (!image.image.empty())
                 {
                     // The custom tinygltf callback preserves encoded PNG/JPEG
@@ -1268,7 +1268,7 @@ namespace RVX::Resource
 
         // PBR Metallic-Roughness
         const auto& pbr = mat.pbrMetallicRoughness;
-        
+
         // Base color
         material->SetBaseColor(
             static_cast<float>(pbr.baseColorFactor[0]),
@@ -2496,7 +2496,7 @@ namespace RVX::Resource
         if (gltfNode.mesh >= 0 && gltfNode.mesh < static_cast<int>(meshToFirstPrimitiveIndex.size()))
         {
             const auto& gltfMesh = gltf.meshes[gltfNode.mesh];
-            
+
             // For multi-primitive meshes, we use the first primitive index
             node->SetMeshIndex(meshToFirstPrimitiveIndex[gltfNode.mesh]);
 

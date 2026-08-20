@@ -6,6 +6,7 @@
  */
 
 #include "Engine/EngineRuntimeDependencies.h"
+#include "Resource/ResourceManager.h"
 
 #include <filesystem>
 
@@ -19,4 +20,13 @@ namespace RVX
     [[nodiscard]] EngineRuntimeDependencies
     CreateShippingEngineRuntimeDependencies(
         std::filesystem::path cookedShaderRoot);
+
+    /**
+     * @brief Create the fail-closed Resource configuration used by shipping products.
+     * @param cookedResourceRoot Root containing cooked Resource artifacts.
+     * @return Runtime-only configuration that forbids source reads and hot reload.
+     */
+    [[nodiscard]] Resource::ResourceManagerConfig
+    CreateShippingResourceManagerConfig(
+        std::filesystem::path cookedResourceRoot);
 } // namespace RVX

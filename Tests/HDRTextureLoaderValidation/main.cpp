@@ -1,4 +1,4 @@
-#include "Resource/Loader/HDRTextureLoader.h"
+#include "AssetImport/HDRTextureLoader.h"
 
 #include <gtest/gtest.h>
 

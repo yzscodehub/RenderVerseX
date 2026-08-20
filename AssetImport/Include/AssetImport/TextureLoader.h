@@ -3,7 +3,7 @@
 /**
  * @file TextureLoader.h
  * @brief Texture resource loader
- * 
+ *
  * Loads textures from files or embedded data.
  * Supports external texture sharing via absolute path caching.
  */
@@ -11,26 +11,13 @@
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/TextureResource.h"
 #include "Resource/Loader/TextureReference.h"
-#include "ResourceRuntime/ResourceLoaderDomainPolicy.h"
+#include "ResourceRuntime/TextureSourceDecode.h"
 #include <functional>
 #include <string>
 #include <memory>
 
 namespace RVX::Resource
 {
-    struct DecodedTextureData
-    {
-        std::shared_ptr<const std::vector<uint8_t>> bytes;
-        TextureMetadata metadata;
-        std::string sourceKey;
-
-        [[nodiscard]] bool IsValid() const noexcept
-        {
-            return bytes && !bytes->empty() && metadata.width != 0 &&
-                   metadata.height != 0;
-        }
-    };
-
     enum class TextureLoadStatus : uint8_t
     {
         None,
@@ -42,7 +29,7 @@ namespace RVX::Resource
 
     /**
      * @brief Texture resource loader
-     * 
+     *
      * Features:
      * - Loads textures from common image formats (PNG, JPEG, etc.)
      * - Handles both external files and embedded data
@@ -54,9 +41,7 @@ namespace RVX::Resource
     public:
         explicit TextureLoader(
             ResourceManager* manager,
-            bool prepareOnly = false,
-            ResourceLoaderDomainPolicy domainPolicy =
-                ResourceLoaderDomainPolicy::SourceAndRuntime);
+            bool prepareOnly = false);
         ~TextureLoader() override = default;
 
         // =====================================================================
@@ -79,10 +64,10 @@ namespace RVX::Resource
 
         /**
          * @brief Load a texture from a TextureReference
-         * 
+         *
          * For external textures, uses the absolute path as the cache key,
          * enabling cross-model texture sharing.
-         * 
+         *
          * @param ref The texture reference (external path or embedded data)
          * @param modelPath Path to the model file (used as base for relative paths)
          * @return TextureResource pointer (ownership handled by ResourceManager)
@@ -128,7 +113,7 @@ namespace RVX::Resource
 
         /**
          * @brief Load a texture from file
-         * 
+         *
          * @param absolutePath Absolute path to the texture file
          * @return TextureResource pointer
          */
@@ -138,7 +123,7 @@ namespace RVX::Resource
 
         /**
          * @brief Load a texture from memory
-         * 
+         *
          * @param data Pointer to image data (encoded PNG/JPEG or raw RGBA)
          * @param size Size of data in bytes
          * @param uniqueKey Unique key for caching/ResourceId
@@ -161,7 +146,7 @@ namespace RVX::Resource
 
         /**
          * @brief Get a default texture for a given usage
-         * 
+         *
          * @param usage The texture usage type
          * @return Default texture (white for Color, flat normal for Normal, etc.)
          */
@@ -228,8 +213,6 @@ namespace RVX::Resource
 
         ResourceManager* m_manager;
         bool m_prepareOnly = false;
-        ResourceLoaderDomainPolicy m_domainPolicy =
-            ResourceLoaderDomainPolicy::SourceAndRuntime;
         TextureLoadStatus m_lastLoadStatus = TextureLoadStatus::None;
         std::string m_lastLoadError;
 
@@ -237,19 +220,6 @@ namespace RVX::Resource
         TextureResource* m_whiteTexture = nullptr;
         TextureResource* m_normalTexture = nullptr;
         TextureResource* m_errorTexture = nullptr;
-    };
-
-    /** @brief Texture loader exposed to cooked/package runtime composition. */
-    class CookedTextureLoader final : public TextureLoader
-    {
-    public:
-        explicit CookedTextureLoader(ResourceManager* manager)
-            : TextureLoader(
-                  manager,
-                  false,
-                  ResourceLoaderDomainPolicy::RuntimeOnly)
-        {
-        }
     };
 
 } // namespace RVX::Resource

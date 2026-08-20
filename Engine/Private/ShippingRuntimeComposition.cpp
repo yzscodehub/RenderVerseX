@@ -24,4 +24,16 @@ namespace RVX
                 std::move(cookedShaderRoot));
         return dependencies;
     }
+
+    Resource::ResourceManagerConfig CreateShippingResourceManagerConfig(
+        std::filesystem::path cookedResourceRoot)
+    {
+        Resource::ResourceManagerConfig config =
+            Resource::MakeResourceManagerConfigForAppMode(AppMode::Runtime);
+        const std::string root = cookedResourceRoot.lexically_normal().generic_string();
+        config.basePath = root;
+        config.runtimePolicy.cookedRoot = root;
+        config.enableHotReload = false;
+        return config;
+    }
 } // namespace RVX

@@ -1,18 +1,12 @@
-#include "Resource/Loader/ModelLoader.h"
+#include "AssetImport/ModelLoader.h"
 
 #include "Core/Log.h"
 #include "Geometry/Asset/VertexAttribute.h"
-#include "Resource/Cooked/CookedAnimationArtifact.h"
-#include "Resource/Cooked/CookedMeshArtifactReader.h"
-#include "Resource/Types/AnimationResource.h"
 
 #include <algorithm>
 #include <bit>
 #include <filesystem>
-#include <fstream>
 #include <functional>
-#include <iterator>
-#include <string_view>
 
 namespace RVX::Resource
 {
@@ -44,115 +38,6 @@ namespace
         constexpr uint64 FnvPrime = 1099511628211ull;
         hash ^= static_cast<uint64>(value);
         hash *= FnvPrime;
-    }
-
-    bool ReadCookedModel(const std::string& path,
-                         CookedModelArtifact& outArtifact,
-                         std::string& outError)
-    {
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
-        if (!file.is_open())
-        {
-            outError = "Cannot open cooked model artifact: " + path;
-            return false;
-        }
-        const std::streamsize byteCount = file.tellg();
-        if (byteCount <= 0)
-        {
-            outError = "Cooked model artifact is empty: " + path;
-            return false;
-        }
-        file.seekg(0, std::ios::beg);
-        std::vector<uint8> bytes(static_cast<size_t>(byteCount));
-        if (!file.read(reinterpret_cast<char*>(bytes.data()), byteCount))
-        {
-            outError = "Failed to read cooked model artifact: " + path;
-            return false;
-        }
-        return DeserializeCookedModelArtifact(bytes, outArtifact, outError);
-    }
-
-    bool IsCookedModelPath(const std::string& path)
-    {
-        std::string extension = std::filesystem::path(path).extension().string();
-        std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
-        return extension == ".rva";
-    }
-
-    bool ReadCookedAnimation(const std::filesystem::path& path,
-                             CookedAnimationArtifact& outArtifact,
-                             std::string& outError)
-    {
-        constexpr uint64 MaxAnimationArtifactBytes = 256ull * 1024ull * 1024ull;
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
-        if (!file.is_open())
-        {
-            outError = "Cannot open contained animation artifact: " + path.string();
-            return false;
-        }
-        const std::streamsize byteCount = file.tellg();
-        if (byteCount <= 0 || static_cast<uint64>(byteCount) > MaxAnimationArtifactBytes)
-        {
-            outError = "Contained animation artifact byte count is invalid: " + path.string();
-            return false;
-        }
-        file.seekg(0, std::ios::beg);
-        std::vector<uint8> bytes(static_cast<size_t>(byteCount));
-        if (!file.read(reinterpret_cast<char*>(bytes.data()), byteCount))
-        {
-            outError = "Failed to read contained animation artifact: " + path.string();
-            return false;
-        }
-        return DeserializeCookedAnimationArtifact(bytes, outArtifact, outError);
-    }
-
-    bool ResolveContainedCookedDependency(
-        const std::filesystem::path& productDirectory,
-        const std::string& relativeValue,
-        std::string_view expectedExtension,
-        std::filesystem::path& outPath)
-    {
-        const std::filesystem::path relativePath(relativeValue);
-        if (relativeValue.empty() || relativePath.is_absolute() ||
-            relativePath.has_root_path())
-        {
-            return false;
-        }
-        for (const std::filesystem::path& component : relativePath)
-        {
-            if (component == "..")
-                return false;
-        }
-
-        std::error_code error;
-        const std::filesystem::path canonicalRoot =
-            std::filesystem::weakly_canonical(productDirectory, error);
-        if (error)
-            return false;
-        const std::filesystem::path canonicalCandidate =
-            std::filesystem::weakly_canonical(canonicalRoot / relativePath, error);
-        if (error)
-            return false;
-        const std::filesystem::path relativeCandidate =
-            std::filesystem::relative(canonicalCandidate, canonicalRoot, error);
-        if (error || relativeCandidate.empty() || relativeCandidate.is_absolute() ||
-            relativeCandidate.has_root_path())
-        {
-            return false;
-        }
-        for (const std::filesystem::path& component : relativeCandidate)
-        {
-            if (component == "..")
-                return false;
-        }
-
-        std::string extension = canonicalCandidate.extension().string();
-        std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
-        if (extension != expectedExtension)
-            return false;
-
-        outPath = canonicalCandidate;
-        return true;
     }
 
     bool HasValidSkinningAttributes(const Mesh& mesh)
@@ -232,11 +117,8 @@ namespace
     }
 } // namespace
 
-ModelLoader::ModelLoader(
-    ResourceManager* manager,
-    ResourceLoaderDomainPolicy domainPolicy)
+ModelLoader::ModelLoader(ResourceManager* manager)
     : m_manager(manager)
-    , m_domainPolicy(domainPolicy)
 {
 }
 
@@ -291,7 +173,7 @@ bool ModelLoader::CapturePreparationState(
 
 std::vector<std::string> ModelLoader::GetSupportedExtensions() const
 {
-    return {".gltf", ".glb", ".rva"};
+    return {".gltf", ".glb"};
 }
 
 bool ModelLoader::CanLoad(const std::string& path) const
@@ -304,17 +186,9 @@ bool ModelLoader::CanLoad(const std::string& path) const
 
 bool ModelLoader::Supports(const ResourceLoaderRequest& request) const
 {
-    if (request.type != ResourceType::Model ||
-        !SupportsResourceLoadDomain(m_domainPolicy, request.domain) ||
-        !CanLoad(request.resolvedPath))
-    {
-        return false;
-    }
-
-    const bool cookedArtifact = IsCookedModelPath(request.resolvedPath);
-    return request.domain == ResourceLoadDomain::Source
-        ? !cookedArtifact
-        : cookedArtifact;
+    return request.type == ResourceType::Model &&
+           request.domain == ResourceLoadDomain::Source &&
+           CanLoad(request.resolvedPath);
 }
 
 IResource* ModelLoader::Load(const std::string& path)
@@ -332,44 +206,19 @@ IResource* ModelLoader::Load(const std::string& path)
         m_manager ? m_manager->GetStartupTraceContext() : Diagnostics::TraceContext{};
     TextureLoader textureLoader(m_manager);
     const std::string resourceIdentityPath = CanonicalizeAssetPath(absolutePath.string());
-    ModelResource* model = nullptr;
-    if (IsCookedModelPath(absolutePath.string()))
+    GLTFImporter importer;
+    GLTFImportResult imported = importer.Import(absolutePath.string(), options, traceContext);
+    if (!imported.success)
     {
-        CookedModelArtifact artifact;
-        std::string cookedError;
-        if (!ReadCookedModel(absolutePath.string(), artifact, cookedError))
-        {
-            RVX_CORE_ERROR("ModelLoader: Failed to read cooked model '{}': {}", path, cookedError);
-            return nullptr;
-        }
-        model = CreateCookedModelResource(resourceIdentityPath,
-                                          absolutePath.string(),
-                                          artifact,
-                                          textureLoader,
-                                          traceContext,
-                                          cookedError);
-        if (!model)
-        {
-            RVX_CORE_ERROR("ModelLoader: Failed to instantiate cooked model '{}': {}", path, cookedError);
-            return nullptr;
-        }
+        RVX_CORE_ERROR("ModelLoader: Failed to import '{}': {}", path, imported.errorMessage);
+        return nullptr;
     }
-    else
-    {
-        GLTFImporter importer;
-        GLTFImportResult imported = importer.Import(absolutePath.string(), options, traceContext);
-        if (!imported.success)
-        {
-            RVX_CORE_ERROR("ModelLoader: Failed to import '{}': {}", path, imported.errorMessage);
-            return nullptr;
-        }
-        model = CreateModelResource(resourceIdentityPath,
-                                    absolutePath.string(),
-                                    imported,
-                                    textureLoader,
-                                    traceContext,
-                                    false);
-    }
+    ModelResource* model = CreateModelResource(resourceIdentityPath,
+                                               absolutePath.string(),
+                                               imported,
+                                               textureLoader,
+                                               traceContext,
+                                               false);
     if (!model)
     {
         return nullptr;
@@ -381,22 +230,22 @@ IResource* ModelLoader::Load(const std::string& path)
     {
         if (mesh && !mesh->IsLoaded())
         {
-            mesh->NotifyLoaded();
+            MarkSynchronousLoadComplete(*mesh);
         }
     }
     for (const ResourceHandle<MaterialResource>& material : model->GetMaterials())
     {
         if (material && !material->IsLoaded())
         {
-            material->NotifyLoaded();
+            MarkSynchronousLoadComplete(*material);
         }
     }
     if (const AnimationHandle animation = model->GetAnimationResource();
         animation && !animation->IsLoaded())
     {
-        animation->NotifyLoaded();
+        MarkSynchronousLoadComplete(*animation);
     }
-    model->NotifyLoaded();
+    MarkSynchronousLoadComplete(*model);
     return model;
 }
 
@@ -414,83 +263,44 @@ bool ModelLoader::Prepare(const ResourceLoadPreparationContext& context,
         context.traceContext, "ModelIO", {{"path", context.resolvedPath}});
     ModelResource* model = nullptr;
     ResourceContentIdentity observedContentIdentity;
-    if (IsCookedModelPath(context.resolvedPath))
+    const auto state =
+        std::dynamic_pointer_cast<const ModelLoadPreparationState>(context.loaderState);
+    if (!state)
     {
-        CookedModelArtifact artifact;
-        std::string cookedError;
-        if (!ReadCookedModel(context.resolvedPath, artifact, cookedError))
-        {
-            importSpan.SetAttribute("result", "failed");
-            outError = {ResourceLoadErrorCode::LoaderFailure, cookedError};
-            return false;
-        }
-        importSpan.SetAttribute("format",
-                                artifact.animationArtifactPath.empty()
-                                    ? "RVX_MODEL_PREBAKE_V1"
-                                    : "RVX_MODEL_PREBAKE_V2");
-        importSpan.SetAttribute("result", "prepared");
-        importSpan.End();
+        outError = {ResourceLoadErrorCode::InvalidRequest,
+                    "Model load is missing its immutable import-options snapshot."};
+        return false;
+    }
+    GLTFImporter importer;
+    GLTFImportResult imported = importer.Import(context.resolvedPath,
+                                                state->options,
+                                                importSpan.GetChildContext());
+    if (!imported.success)
+    {
+        importSpan.SetAttribute("result", "failed");
+        outError = {ResourceLoadErrorCode::LoaderFailure, imported.errorMessage};
+        return false;
+    }
+    observedContentIdentity = imported.observedContentIdentity;
+    importSpan.SetAttribute("result", "prepared");
+    importSpan.End();
 
-        Diagnostics::TraceSpan prepareSpan = Diagnostics::BeginTraceSpan(
-            context.traceContext, "CPUPrepare", {{"path", context.resolvedPath}});
-        TextureLoader textureLoader(nullptr, true);
-        model = CreateCookedModelResource(context.resourceIdentityPath,
-                                          context.resolvedPath,
-                                          artifact,
-                                          textureLoader,
-                                          context.traceContext,
-                                          cookedError);
-        if (!model)
-        {
-            prepareSpan.SetAttribute("result", "failed");
-            outError = {ResourceLoadErrorCode::LoaderFailure, cookedError};
-            return false;
-        }
+    Diagnostics::TraceSpan prepareSpan = Diagnostics::BeginTraceSpan(
+        context.traceContext,
+        "CPUPrepare",
+        {{"path", context.resolvedPath}});
+    TextureLoader textureLoader(nullptr, true);
+    model = CreateModelResource(context.resourceIdentityPath,
+                                context.resolvedPath,
+                                imported,
+                                textureLoader,
+                                context.traceContext,
+                                true);
+    if (model)
+    {
         prepareSpan.SetAttribute("meshCount", model->GetMeshCount());
         prepareSpan.SetAttribute("materialCount", model->GetMaterialCount());
         prepareSpan.SetAttribute("result", "prepared");
-    }
-    else
-    {
-        const auto state =
-            std::dynamic_pointer_cast<const ModelLoadPreparationState>(context.loaderState);
-        if (!state)
-        {
-            outError = {ResourceLoadErrorCode::InvalidRequest,
-                        "Model load is missing its immutable import-options snapshot."};
-            return false;
-        }
-        GLTFImporter importer;
-        GLTFImportResult imported = importer.Import(context.resolvedPath,
-                                                    state->options,
-                                                    importSpan.GetChildContext());
-        if (!imported.success)
-        {
-            importSpan.SetAttribute("result", "failed");
-            outError = {ResourceLoadErrorCode::LoaderFailure, imported.errorMessage};
-            return false;
-        }
-        observedContentIdentity = imported.observedContentIdentity;
-        importSpan.SetAttribute("result", "prepared");
-        importSpan.End();
-
-        Diagnostics::TraceSpan prepareSpan = Diagnostics::BeginTraceSpan(
-            context.traceContext,
-            "CPUPrepare",
-            {{"path", context.resolvedPath}});
-        TextureLoader textureLoader(nullptr, true);
-        model = CreateModelResource(context.resourceIdentityPath,
-                                    context.resolvedPath,
-                                    imported,
-                                    textureLoader,
-                                    context.traceContext,
-                                    true);
-        if (model)
-        {
-            prepareSpan.SetAttribute("meshCount", model->GetMeshCount());
-            prepareSpan.SetAttribute("materialCount", model->GetMaterialCount());
-            prepareSpan.SetAttribute("result", "prepared");
-        }
     }
     if (!model)
     {
@@ -583,190 +393,6 @@ bool ModelLoader::BuildPreparedBundle(ModelResource* model,
         return false;
     }
     return true;
-}
-
-ModelResource* ModelLoader::CreateCookedModelResource(
-    const std::string& resourceIdentityPath,
-    const std::string& sourcePath,
-    CookedModelArtifact& artifact,
-    TextureLoader& textureLoader,
-    const Diagnostics::TraceContext& traceContext,
-    std::string& outError)
-{
-    const std::filesystem::path modelDirectory =
-        std::filesystem::path(sourcePath).parent_path();
-    std::filesystem::path meshPath;
-    if (!ResolveContainedCookedDependency(modelDirectory,
-                                          artifact.meshArtifactPath,
-                                          ".rva",
-                                          meshPath))
-    {
-        outError = "Cooked model mesh dependency must resolve to a contained .rva product";
-        return nullptr;
-    }
-    std::vector<CookedMeshRecord> cookedMeshes;
-    if (!CookedMeshArtifactReader::ReadFile(meshPath.string(), cookedMeshes, outError))
-        return nullptr;
-
-    AnimationHandle animation;
-    if (!artifact.animationArtifactPath.empty())
-    {
-        std::filesystem::path animationPath;
-        if (!ResolveContainedCookedDependency(modelDirectory,
-                                              artifact.animationArtifactPath,
-                                              ".rvxanim",
-                                              animationPath))
-        {
-            outError = "Cooked model animation dependency must resolve to a contained .rvxanim product";
-            return nullptr;
-        }
-
-        CookedAnimationArtifact animationArtifact;
-        if (!ReadCookedAnimation(animationPath, animationArtifact, outError))
-            return nullptr;
-        if (animationArtifact.sourcePath != artifact.sourcePath)
-        {
-            outError = "Cooked model and contained animation source paths do not match";
-            return nullptr;
-        }
-
-        auto animationResource = std::make_unique<AnimationResource>();
-        const std::string animationIdentityPath = resourceIdentityPath + "#animation";
-        animationResource->SetId(GenerateResourceId(animationIdentityPath));
-        animationResource->SetPath(animationIdentityPath);
-        animationResource->SetName(animationPath.stem().string());
-        if (!animationResource->SetData(animationArtifact.skeleton,
-                                        animationArtifact.clips))
-        {
-            outError = "Contained animation artifact could not be admitted by AnimationResource";
-            return nullptr;
-        }
-        animation = AnimationHandle(animationResource.release());
-    }
-
-    std::vector<ResourceHandle<TextureResource>> textures;
-    textures.reserve(artifact.textures.size());
-    for (TextureReference& reference : artifact.textures)
-    {
-        std::filesystem::path resolvedTexturePath;
-        if (!ResolveContainedCookedDependency(modelDirectory,
-                                              reference.path,
-                                              ".rva",
-                                              resolvedTexturePath))
-        {
-            outError = "Cooked model texture dependency must resolve to a contained .rva product";
-            return nullptr;
-        }
-        // Consume the exact canonical path that passed the containment check;
-        // do not resolve the serialized path a second time in TextureLoader.
-        reference.path = resolvedTexturePath.string();
-        TextureResource* texture = textureLoader.LoadFromReference(
-            reference,
-            sourcePath,
-            traceContext,
-            resourceIdentityPath);
-        if (!texture || textureLoader.WasLastLoadFallback())
-        {
-            outError = textureLoader.GetLastLoadError().empty()
-                ? "Failed to load a cooked model texture dependency"
-                : textureLoader.GetLastLoadError();
-            return nullptr;
-        }
-        textures.emplace_back(texture);
-    }
-
-    auto model = std::make_unique<ModelResource>();
-    std::vector<ResourceHandle<MeshResource>> meshes;
-    meshes.reserve(cookedMeshes.size());
-    for (size_t index = 0; index < cookedMeshes.size(); ++index)
-    {
-        CookedMeshRecord& record = cookedMeshes[index];
-        if (record.lodMeshes.empty() || !record.lodMeshes.front())
-        {
-            outError = "Cooked model contains an empty mesh record";
-            return nullptr;
-        }
-        auto* mesh = new MeshResource();
-        mesh->SetId(GenerateMeshId(resourceIdentityPath, static_cast<int>(index)));
-        mesh->SetPath(resourceIdentityPath + "#mesh_" + std::to_string(index));
-        mesh->SetName(record.lodMeshes.front()->name.empty()
-                          ? "Mesh_" + std::to_string(index)
-                          : record.lodMeshes.front()->name);
-        mesh->SetLODMeshes(std::move(record.lodMeshes));
-        meshes.emplace_back(mesh);
-    }
-    model->SetMeshes(std::move(meshes));
-
-    std::vector<ResourceHandle<MaterialResource>> materials;
-    materials.reserve(artifact.materials.size());
-    GLTFImportResult compatibilityImportResult;
-    for (size_t index = 0; index < artifact.materials.size(); ++index)
-    {
-        MaterialResource* material = CreateMaterialResource(
-            resourceIdentityPath,
-            static_cast<int>(index),
-            artifact.materials[index],
-            textures,
-            compatibilityImportResult);
-        if (!material)
-        {
-            outError = "Cooked model contains an invalid material record";
-            return nullptr;
-        }
-        materials.emplace_back(material);
-    }
-    model->SetMaterials(std::move(materials));
-    model->SetRootNode(std::move(artifact.rootNode));
-    model->SetAnimationResource(std::move(animation));
-
-    bool hierarchyValid = model->GetRootNode() != nullptr;
-    if (hierarchyValid)
-    {
-        model->GetRootNode()->TraverseDepthFirst(
-            [&](Node* node)
-            {
-                if (!node || node->GetMeshIndex() < -1 ||
-                    node->GetMeshIndex() >= static_cast<int>(model->GetMeshCount()))
-                {
-                    hierarchyValid = false;
-                    return;
-                }
-                for (const int meshIndex : node->GetMeshIndices())
-                {
-                    if (meshIndex < 0 ||
-                        meshIndex >= static_cast<int>(model->GetMeshCount()))
-                    {
-                        hierarchyValid = false;
-                        return;
-                    }
-                }
-                if (node->GetSkinIndex() < -1 || node->GetSkinIndex() > 0 ||
-                    (node->HasSkin() && !model->GetAnimationResource()))
-                {
-                    hierarchyValid = false;
-                    return;
-                }
-                for (const int materialIndex : node->GetMaterialIndices())
-                {
-                    if (materialIndex < 0 ||
-                        materialIndex >= static_cast<int>(model->GetMaterialCount()))
-                    {
-                        hierarchyValid = false;
-                        return;
-                    }
-                }
-            });
-    }
-    if (!hierarchyValid)
-    {
-        outError = "Cooked model hierarchy references invalid mesh, material, or skin data";
-        return nullptr;
-    }
-    if (model->GetAnimationResource() && !ValidateSkinnedNodeMeshes(*model, outError))
-    {
-        return nullptr;
-    }
-    return model.release();
 }
 
 ModelResource* ModelLoader::CreateModelResource(const std::string& resourceIdentityPath,

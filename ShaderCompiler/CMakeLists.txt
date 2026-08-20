@@ -100,8 +100,9 @@ if(APPLE)
     )
 endif()
 
-# Vulkan: Link SPIRV-Reflect for shader reflection
-if(RVX_ENABLE_VULKAN)
+# DXC on Windows may emit SPIR-V even in a DX12-only host-tools composition;
+# Vulkan developer builds also require the same reflection implementation.
+if(WIN32 OR RVX_ENABLE_VULKAN)
     # Find SPIRV-Headers package for spirv.h
     find_package(SPIRV-Headers CONFIG)
     if(SPIRV-Headers_FOUND)

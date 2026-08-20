@@ -47,6 +47,16 @@ bool AddSourceResourceDependencies(
         return false;
     }
 
+    if (dependencies.textureSourceDecoder)
+    {
+        outError =
+            "Development resource composition already has a source texture decoder";
+        return false;
+    }
+
+    dependencies.textureSourceDecoder =
+        std::make_unique<AssetImport::SourceTextureLoader>(nullptr);
+
     dependencies.changeMonitor =
         std::make_unique<PollingResourceChangeMonitor>();
     outError.clear();

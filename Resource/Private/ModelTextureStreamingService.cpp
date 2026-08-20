@@ -11,7 +11,9 @@ namespace RVX::Resource
 {
 ModelTextureStreamingService::ModelTextureStreamingService(
     uint64 decodedByteBudget,
-    uint32 maxConcurrentDecodes)
+    uint32 maxConcurrentDecodes,
+    std::unique_ptr<ITextureSourceDecoder> sourceDecoder)
+    : m_sourceDecoder(std::move(sourceDecoder))
 {
     m_stats.decodedByteBudget = decodedByteBudget;
     const size_t workerCount = JobSystem::Get().GetWorkerCount();
@@ -210,18 +212,19 @@ void ModelTextureStreamingService::Execute(
         }
         else
         {
-            TextureLoader decoder(nullptr, true);
-            if (!decoder.DecodeReference(task.source.reference,
-                                         task.source.sourceModelPath,
-                                         task.source.traceContext,
-                                         completion.data,
-                                         completion.error,
-                                         [&task]()
-                                         {
-                                             return !task.cancellationToken ||
-                                                    task.cancellationToken->load(
-                                                        std::memory_order_acquire);
-                                         }))
+            if (!m_sourceDecoder ||
+                !m_sourceDecoder->Decode(
+                    task.source.reference,
+                    task.source.sourceModelPath,
+                    task.source.traceContext,
+                    completion.data,
+                    completion.error,
+                    [&task]()
+                    {
+                        return !task.cancellationToken ||
+                               task.cancellationToken->load(
+                                   std::memory_order_acquire);
+                    }))
             {
                 if (task.cancellationToken->load(std::memory_order_acquire))
                 {
@@ -230,7 +233,9 @@ void ModelTextureStreamingService::Execute(
                 }
                 else if (completion.error.empty())
                 {
-                    completion.error = "Model texture decode failed";
+                    completion.error = m_sourceDecoder
+                        ? "Model texture decode failed"
+                        : "Model texture source decoder is unavailable";
                 }
             }
             else if (task.cancellationToken->load(std::memory_order_acquire))

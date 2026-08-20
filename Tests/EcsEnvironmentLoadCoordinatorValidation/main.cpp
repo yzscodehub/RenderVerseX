@@ -1,5 +1,5 @@
 #include "Core/Log.h"
-#include "Resource/Loader/EnvironmentLoader.h"
+#include "AssetImport/EnvironmentLoader.h"
 #include "Resource/PreparedResourceBundle.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/Types/EnvironmentResource.h"
@@ -338,11 +338,18 @@ namespace
 
     RVX::ResourceSceneAdapters::EcsEnvironmentLoadDesc MakeEnvironmentDesc(
         std::string path,
-        RVX::ECS::SceneRuntimeId sceneRuntimeId)
+        RVX::ECS::SceneRuntimeId sceneRuntimeId,
+        const RVX::Resource::EnvironmentLoadOptions& options = {})
     {
         RVX::ResourceSceneAdapters::EcsEnvironmentLoadDesc desc;
         desc.path = std::move(path);
         desc.expectedSceneRuntimeId = sceneRuntimeId;
+        RVX::Resource::ResourceLoadError preparationError;
+        desc.preparationState = RVX::Resource::EnvironmentLoader::CreatePreparationState(
+            options,
+            desc.resourceOptions.importOptionsHash,
+            preparationError);
+        EXPECT_NE(desc.preparationState, nullptr) << preparationError.message;
         return desc;
     }
 } // namespace
@@ -508,10 +515,12 @@ TEST(EcsEnvironmentLoadCoordinatorValidation,
         runtime, resources.m_resources, &proof);
 
     const RVX::Resource::ResourceContentIdentity expectedIdentity = MakeObservedIdentity();
+    const RVX::Resource::EnvironmentLoadOptions lowOptions{
+        .quality = RVX::Resource::HDRIBLQualityProfile::Low,
+        .exposure = 1.25f,
+    };
     RVX::ResourceSceneAdapters::EcsEnvironmentLoadDesc desc =
-        MakeEnvironmentDesc("profile-low.hdr", runtime.GetSceneRuntimeId());
-    desc.environmentOptions.quality = RVX::Resource::HDRIBLQualityProfile::Low;
-    desc.environmentOptions.exposure = 1.25f;
+        MakeEnvironmentDesc("profile-low.hdr", runtime.GetSceneRuntimeId(), lowOptions);
     desc.resourceOptions.expectedContentIdentity = expectedIdentity;
     std::string error;
     const auto low = coordinator.RequestEnvironment(std::move(desc), error);
@@ -520,8 +529,7 @@ TEST(EcsEnvironmentLoadCoordinatorValidation,
     const auto lowRequested = coordinator.GetStatus(low);
     ASSERT_TRUE(lowRequested.has_value());
     EXPECT_EQ(lowRequested->canonicalImportOptionsHash,
-              RVX::Resource::EnvironmentLoader::ComputeImportOptionsHash(
-                  lowRequested->environmentOptions));
+              RVX::Resource::EnvironmentLoader::ComputeImportOptionsHash(lowOptions));
     EXPECT_EQ(lowRequested->request.assetKey.importOptionsHash,
               lowRequested->canonicalImportOptionsHash);
     const RVX::Resource::EnvironmentLoadOptions smokeOptions{

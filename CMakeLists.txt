@@ -39,6 +39,11 @@ option(RVX_ENABLE_OPENGL "Enable OpenGL backend" OFF)
 option(RVX_BUILD_DEVELOPER "Build developer-only libraries and composition" ON)
 option(RVX_BUILD_PROGRAMS "Build developer command-line programs" ON)
 option(RVX_BUILD_SHIPPING_PRODUCTS "Build shipping composition and consumer roots" OFF)
+option(RVX_BUILD_SHIPPING_TESTS
+    "Build the standalone cooked-only shipping validation lane"
+    OFF)
+set(RVX_SHIPPING_HOST_COOK_EXECUTABLE "" CACHE FILEPATH
+    "RVXCook executable produced by the separate host-tools build")
 option(RVX_BUILD_EDITOR "Build the Editor application and Editor-only validation" OFF)
 option(RVX_BUILD_SAMPLES "Build sample applications" ON)
 option(RVX_BUILD_TESTS "Build validation tests" ON)
@@ -58,6 +63,24 @@ endif()
 if(RVX_BUILD_TESTS AND NOT RVX_BUILD_DEVELOPER)
     message(FATAL_ERROR
         "RVX_BUILD_TESTS requires RVX_BUILD_DEVELOPER=ON")
+endif()
+if(RVX_BUILD_SHIPPING_TESTS AND NOT RVX_BUILD_SHIPPING_PRODUCTS)
+    message(FATAL_ERROR
+        "RVX_BUILD_SHIPPING_TESTS requires RVX_BUILD_SHIPPING_PRODUCTS=ON")
+endif()
+if(RVX_BUILD_SHIPPING_TESTS AND RVX_BUILD_TESTS)
+    message(FATAL_ERROR
+        "RVX_BUILD_SHIPPING_TESTS is a standalone composition and requires RVX_BUILD_TESTS=OFF")
+endif()
+if(RVX_BUILD_SHIPPING_TESTS)
+    if(NOT IS_ABSOLUTE "${RVX_SHIPPING_HOST_COOK_EXECUTABLE}")
+        message(FATAL_ERROR
+            "RVX_SHIPPING_HOST_COOK_EXECUTABLE must be an absolute path from the host-tools build")
+    endif()
+    if(NOT EXISTS "${RVX_SHIPPING_HOST_COOK_EXECUTABLE}")
+        message(FATAL_ERROR
+            "RVX_SHIPPING_HOST_COOK_EXECUTABLE does not exist: ${RVX_SHIPPING_HOST_COOK_EXECUTABLE}")
+    endif()
 endif()
 
 if(RVX_BUILD_EDITOR)
@@ -111,9 +134,13 @@ find_package(glm CONFIG REQUIRED)
 if(RVX_ENABLE_VULKAN)
     find_package(Vulkan REQUIRED)
     find_package(VulkanMemoryAllocator CONFIG REQUIRED)
-    if(RVX_BUILD_DEVELOPER)
-        find_package(unofficial-spirv-reflect CONFIG REQUIRED)
-    endif()
+endif()
+
+# ShaderReflection uses SPIRV-Reflect for every Windows developer build (DXC
+# may emit SPIR-V even when the runtime Vulkan backend is disabled) and for
+# Vulkan developer builds on other platforms.
+if(RVX_BUILD_DEVELOPER AND (WIN32 OR RVX_ENABLE_VULKAN))
+    find_package(unofficial-spirv-reflect CONFIG REQUIRED)
 endif()
 
 # SPIRV-Cross is needed for Metal/OpenGL translation and for portable SPIR-V
@@ -367,6 +394,11 @@ if(RVX_BUILD_SHIPPING_PRODUCTS)
     add_subdirectory(Tests/ShippingConsumer)
 endif()
 
+if(RVX_BUILD_SHIPPING_TESTS)
+    enable_testing()
+    add_subdirectory(Tests/Shipping)
+endif()
+
 if(NOT RVX_BUILD_TESTS AND NOT RVX_BUILD_SHIPPING_PRODUCTS)
     rvx_register_disabled_module(
         MODULE Tests
@@ -394,6 +426,7 @@ message(STATUS "  OpenGL:       ${RVX_ENABLE_OPENGL}")
 message(STATUS "  Developer:    ${RVX_BUILD_DEVELOPER}")
 message(STATUS "  Programs:     ${RVX_BUILD_PROGRAMS}")
 message(STATUS "  Shipping:     ${RVX_BUILD_SHIPPING_PRODUCTS}")
+message(STATUS "  ShippingTests:${RVX_BUILD_SHIPPING_TESTS}")
 message(STATUS "  Editor:       ${RVX_BUILD_EDITOR}")
 message(STATUS "  Samples:      ${RVX_BUILD_SAMPLES}")
 message(STATUS "  Tests:        ${RVX_BUILD_TESTS}")

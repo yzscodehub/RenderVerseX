@@ -3,9 +3,9 @@
 /** @file SourceResourceLoaders.h @brief Development source loader adapters */
 
 #include "AssetImport/AudioLoader.h"
-#include "Resource/Loader/EnvironmentLoader.h"
-#include "Resource/Loader/ModelLoader.h"
-#include "Resource/Loader/TextureLoader.h"
+#include "AssetImport/EnvironmentLoader.h"
+#include "AssetImport/ModelLoader.h"
+#include "AssetImport/TextureLoader.h"
 
 namespace RVX::AssetImport
 {
@@ -25,10 +25,20 @@ namespace RVX::AssetImport
     };
 
     /** @brief Texture importer selected exclusively for Source requests. */
-    class SourceTextureLoader final : public Resource::TextureLoader
+    class SourceTextureLoader final
+        : public Resource::TextureLoader,
+          public Resource::ITextureSourceDecoder
     {
     public:
         explicit SourceTextureLoader(Resource::ResourceManager* manager);
+
+        bool Decode(
+            const Resource::TextureReference& reference,
+            const std::string& modelPath,
+            const Diagnostics::TraceContext& traceContext,
+            Resource::DecodedTextureData& outData,
+            std::string& outError,
+            const std::function<bool()>& isCancellationRequested = {}) override;
     };
 
     /** @brief Model importer selected exclusively for Source requests. */

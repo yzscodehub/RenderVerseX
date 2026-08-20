@@ -80,12 +80,45 @@ public:
 
         ShaderProgramRequest request;
         const std::filesystem::path requestedPath(desc.path);
-        std::error_code relativeError;
-        const std::filesystem::path relative = std::filesystem::relative(
-            requestedPath, m_shaderRoot, relativeError);
-        request.logicalAssetId = !relativeError && !relative.empty() &&
-                relative.begin()->generic_string() != ".."
-            ? relative.generic_string()
+        const std::filesystem::path relative =
+            requestedPath.lexically_relative(m_shaderRoot);
+        std::string canonicalRelative;
+        bool isContained = !relative.empty() &&
+            !relative.is_absolute() && !relative.has_root_path();
+        if (isContained)
+        {
+            std::string value = relative.generic_string();
+            std::replace(value.begin(), value.end(), '\\', '/');
+            size_t offset = 0;
+            while (offset <= value.size())
+            {
+                const size_t separator = value.find('/', offset);
+                const size_t count = separator == std::string::npos
+                    ? value.size() - offset
+                    : separator - offset;
+                const std::string component = value.substr(offset, count);
+                if (!component.empty() && component != ".")
+                {
+                    if (component == "..")
+                    {
+                        isContained = false;
+                        break;
+                    }
+                    if (!canonicalRelative.empty())
+                    {
+                        canonicalRelative.push_back('/');
+                    }
+                    canonicalRelative += component;
+                }
+                if (separator == std::string::npos)
+                {
+                    break;
+                }
+                offset = separator + 1;
+            }
+        }
+        request.logicalAssetId = isContained && !canonicalRelative.empty()
+            ? canonicalRelative
             : requestedPath.generic_string();
         request.stage = desc.stage;
         request.entryPoint = desc.entryPoint;

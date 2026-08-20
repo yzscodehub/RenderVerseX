@@ -1,7 +1,7 @@
 #include "AssetImport/SourceResourceLoaders.h"
 #include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
-#include "Resource/Loader/EnvironmentLoader.h"
+#include "AssetImport/EnvironmentLoader.h"
 
 #include <gtest/gtest.h>
 

@@ -279,6 +279,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES EcsEnvironmentLoadCoordinatorValidation/main.cpp
     LIBS
+        RVX::AssetImport
         RVX::Core
         RVX::ResourceRuntime
         RVX::ResourceSceneAdapters
@@ -293,6 +294,7 @@ if(TARGET RVX_SampleCommon)
         LANE unit
         SOURCES EcsSampleEnvironmentLoaderValidation/main.cpp
         LIBS
+            RVX::AssetImport
             RVX::Core
             RVX::SampleCommon
         TAGS product.samples subsystem.resource subsystem.scene subsystem.ecs suite.environment
@@ -591,7 +593,7 @@ if(TARGET RVX_SampleCommon)
         NAME SampleAssetCatalogValidation
         LANE unit
         SOURCES SampleAssetCatalogValidation/main.cpp
-        LIBS RVX::SampleCommon
+        LIBS RVX::AssetImport RVX::SampleCommon
         TAGS product.samples suite.assets
         TIMEOUT 30
     )
@@ -642,6 +644,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES HDRTextureLoaderValidation/main.cpp
     LIBS
+        RVX::AssetImport
         RVX::Core
         RVX::ResourceRuntime
     INCLUDES
@@ -756,6 +759,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES SkeletalAssetPipelineValidation/main.cpp
     LIBS
+        RVX::AssetImport
         RVX::Core
         RVX::ResourceRuntime
         RVX::AssetPipeline
@@ -1030,7 +1034,7 @@ rvx_add_gtest(
     NAME SceneAssetStreamingValidation
     LANE unit
     SOURCES SceneAssetStreamingValidation/main.cpp
-    LIBS RVX::Core RVX::ResourceRuntime RVX::ResourceSource
+    LIBS RVX::AssetImport RVX::Core RVX::ResourceRuntime RVX::ResourceSource
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TAGS subsystem.resource suite.streaming
     TIMEOUT 30
@@ -1041,7 +1045,7 @@ rvx_add_gtest(
     LANE unit
     SOURCES CookedModelProductValidation/main.cpp
     INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
-    LIBS RVX::Core RVX::ResourceRuntime RVX::AssetPipeline
+    LIBS RVX::AssetImport RVX::Core RVX::ResourceRuntime RVX::AssetPipeline
     DEFINES RVX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TAGS subsystem.resource suite.cook suite.model
     TIMEOUT 120

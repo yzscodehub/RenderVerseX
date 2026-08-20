@@ -57,6 +57,10 @@ namespace RVX::Resource
             return request.type == GetResourceType() &&
                 CanLoad(request.resolvedPath);
         }
+
+    protected:
+        /** @brief Complete a synchronous loader-owned resource without exposing publication publicly. */
+        static void MarkSynchronousLoadComplete(IResource& resource);
     };
 } // namespace RVX::Resource
 

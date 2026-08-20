@@ -1,4 +1,4 @@
-#include "Resource/Loader/HDRTextureLoader.h"
+#include "AssetImport/HDRTextureLoader.h"
 
 #include "Core/Hash/SHA256.h"
 #include "Core/Log.h"

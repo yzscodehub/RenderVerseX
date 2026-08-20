@@ -22,7 +22,6 @@ include(${CMAKE_CURRENT_LIST_DIR}/CMake/UnitTests.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/CMake/IntegrationTests.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/CMake/NativeTests.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/CMake/QualificationTests.cmake)
-include(${CMAKE_CURRENT_LIST_DIR}/CMake/ShippingTests.cmake)
 
 file(GLOB TEST_SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/*.hlsl")
 foreach(SHADER ${TEST_SHADERS})

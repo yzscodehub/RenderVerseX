@@ -4,6 +4,7 @@
 
 #include "ResourceRuntime/ResourceChangeMonitor.h"
 #include "ResourceRuntime/ResourceLoaderCatalog.h"
+#include "ResourceRuntime/TextureSourceDecode.h"
 
 #include <memory>
 
@@ -13,6 +14,7 @@ namespace RVX::Resource
     {
         ResourceLoaderCatalog loaderCatalog;
         std::unique_ptr<IResourceChangeMonitor> changeMonitor;
+        std::unique_ptr<ITextureSourceDecoder> textureSourceDecoder;
 
         ResourceManagerDependencies() = default;
         ~ResourceManagerDependencies() = default;

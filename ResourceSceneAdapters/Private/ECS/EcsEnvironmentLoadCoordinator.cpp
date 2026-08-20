@@ -265,33 +265,13 @@ namespace RVX::ResourceSceneAdapters
             return InvalidEcsEnvironmentLoadHandle;
         }
 
-        uint64 canonicalImportOptionsHash = 0;
-        Resource::ResourceLoadError preparationError;
-        Resource::ResourceLoadPreparationStateRef preparationState =
-            Resource::EnvironmentLoader::CreatePreparationState(
-                desc.environmentOptions,
-                canonicalImportOptionsHash,
-                preparationError);
-        if (preparationState == nullptr)
-        {
-            outError = preparationError.message.empty() ?
-                           "ECS environment request could not capture immutable bake options." :
-                           preparationError.message;
-            return InvalidEcsEnvironmentLoadHandle;
-        }
-        if (desc.resourceOptions.importOptionsHash != 0 &&
-            desc.resourceOptions.importOptionsHash != canonicalImportOptionsHash)
-        {
-            outError =
-                "Environment ResourceLoadOptions hash conflicts with its immutable options.";
-            return InvalidEcsEnvironmentLoadHandle;
-        }
-        desc.resourceOptions.importOptionsHash = canonicalImportOptionsHash;
+        const uint64 canonicalImportOptionsHash =
+            desc.resourceOptions.importOptionsHash;
         Resource::ResourceLoadHandle<Resource::EnvironmentResource> request =
             m_resources.RequestAsync<Resource::EnvironmentResource>(
                 desc.path,
                 std::move(desc.resourceOptions),
-                std::move(preparationState));
+                std::move(desc.preparationState));
         if (!request.IsValid())
         {
             outError = "ResourceSubsystem rejected the prepared Environment request.";
@@ -302,7 +282,6 @@ namespace RVX::ResourceSceneAdapters
         entry->request = std::move(request);
         entry->status.request = entry->request.GetSnapshot();
         entry->status.assetKey = entry->status.request.assetKey;
-        entry->status.environmentOptions = desc.environmentOptions;
         entry->status.canonicalImportOptionsHash = canonicalImportOptionsHash;
         entry->status.sceneRuntimeId = sceneRuntimeId;
         const EcsEnvironmentLoadHandle handle = Allocate(std::move(entry));

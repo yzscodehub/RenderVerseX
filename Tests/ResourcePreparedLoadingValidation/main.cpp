@@ -1,6 +1,6 @@
 #include "Resource/ResourceManager.h"
 #include "AssetImport/SourceResourceLoaders.h"
-#include "Resource/Importer/GLTFImporter.h"
+#include "AssetImport/GLTFImporter.h"
 #include "Resource/Types/ModelResource.h"
 #include "Core/Log.h"
 

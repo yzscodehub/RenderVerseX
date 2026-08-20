@@ -26,6 +26,7 @@
         "RVX_BUILD_DEVELOPER": "ON",
         "RVX_BUILD_PROGRAMS": "ON",
         "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
         "VCPKG_TARGET_TRIPLET": "x64-windows"
       },
       "condition": {
@@ -55,6 +56,7 @@
         "RVX_BUILD_DEVELOPER": "ON",
         "RVX_BUILD_PROGRAMS": "ON",
         "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
         "VCPKG_TARGET_TRIPLET": "x64-linux"
       },
       "condition": {
@@ -84,7 +86,8 @@
         "RVX_BUILD_TESTS": "ON",
         "RVX_BUILD_DEVELOPER": "ON",
         "RVX_BUILD_PROGRAMS": "ON",
-        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF"
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF"
       },
       "condition": {
         "type": "equals",
@@ -175,6 +178,72 @@
       }
     },
     {
+      "name": "win_x64_shipping_host_release",
+      "displayName": "Windows x64 Shipping Host Tools Release",
+      "inherits": "win_x64_base",
+      "binaryDir": "${sourceDir}/build/win_x64_shipping_host_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "ON",
+        "RVX_ENABLE_VULKAN": "OFF",
+        "RVX_ENABLE_METAL": "OFF",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF"
+      }
+    },
+    {
+      "name": "linux_x64_shipping_host_release",
+      "displayName": "Linux x64 Shipping Host Tools Release",
+      "inherits": "linux_x64_base",
+      "binaryDir": "${sourceDir}/build/linux_x64_shipping_host_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "OFF",
+        "RVX_ENABLE_VULKAN": "ON",
+        "RVX_ENABLE_METAL": "OFF",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF"
+      }
+    },
+    {
+      "name": "mac_arm64_shipping_host_release",
+      "displayName": "macOS arm64 Shipping Host Tools Release",
+      "inherits": "mac_arm64_base",
+      "binaryDir": "${sourceDir}/build/mac_arm64_shipping_host_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "RVX_ENABLE_DX11": "OFF",
+        "RVX_ENABLE_DX12": "OFF",
+        "RVX_ENABLE_VULKAN": "OFF",
+        "RVX_ENABLE_METAL": "ON",
+        "RVX_ENABLE_OPENGL": "OFF",
+        "RVX_BUILD_DEVELOPER": "ON",
+        "RVX_BUILD_PROGRAMS": "ON",
+        "RVX_BUILD_SHIPPING_PRODUCTS": "OFF",
+        "RVX_BUILD_SHIPPING_TESTS": "OFF",
+        "RVX_BUILD_EDITOR": "OFF",
+        "RVX_BUILD_SAMPLES": "OFF",
+        "RVX_BUILD_TESTS": "OFF",
+        "RVX_ENABLE_FBX": "OFF"
+      }
+    },
+    {
       "name": "win_x64_shipping_release",
       "displayName": "Windows x64 Shipping Release",
       "inherits": "win_x64_base",
@@ -189,6 +258,11 @@
         "RVX_BUILD_DEVELOPER": "OFF",
         "RVX_BUILD_PROGRAMS": "OFF",
         "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
+        "RVX_BUILD_SHIPPING_TESTS": "ON",
+        "RVX_SHIPPING_HOST_COOK_EXECUTABLE": {
+          "value": "${sourceDir}/build/win_x64_shipping_host_release/Tools/Release/RVXCook.exe",
+          "type": "FILEPATH"
+        },
         "RVX_BUILD_EDITOR": "OFF",
         "RVX_BUILD_SAMPLES": "OFF",
         "RVX_BUILD_TESTS": "OFF",
@@ -210,6 +284,11 @@
         "RVX_BUILD_DEVELOPER": "OFF",
         "RVX_BUILD_PROGRAMS": "OFF",
         "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
+        "RVX_BUILD_SHIPPING_TESTS": "ON",
+        "RVX_SHIPPING_HOST_COOK_EXECUTABLE": {
+          "value": "${sourceDir}/build/linux_x64_shipping_host_release/Tools/RVXCook",
+          "type": "FILEPATH"
+        },
         "RVX_BUILD_EDITOR": "OFF",
         "RVX_BUILD_SAMPLES": "OFF",
         "RVX_BUILD_TESTS": "OFF",
@@ -231,6 +310,11 @@
         "RVX_BUILD_DEVELOPER": "OFF",
         "RVX_BUILD_PROGRAMS": "OFF",
         "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
+        "RVX_BUILD_SHIPPING_TESTS": "ON",
+        "RVX_SHIPPING_HOST_COOK_EXECUTABLE": {
+          "value": "${sourceDir}/build/mac_arm64_shipping_host_release/Tools/RVXCook",
+          "type": "FILEPATH"
+        },
         "RVX_BUILD_EDITOR": "OFF",
         "RVX_BUILD_SAMPLES": "OFF",
         "RVX_BUILD_TESTS": "OFF",
@@ -275,23 +359,79 @@
       "configurePreset": "mac_arm64_release"
     },
     {
+      "name": "win_x64_shipping_host_release",
+      "configurePreset": "win_x64_shipping_host_release",
+      "configuration": "Release",
+      "targets": ["RVXCook"]
+    },
+    {
+      "name": "linux_x64_shipping_host_release",
+      "configurePreset": "linux_x64_shipping_host_release",
+      "targets": ["RVXCook"]
+    },
+    {
+      "name": "mac_arm64_shipping_host_release",
+      "configurePreset": "mac_arm64_shipping_host_release",
+      "targets": ["RVXCook"]
+    },
+    {
       "name": "win_x64_shipping_release",
       "configurePreset": "win_x64_shipping_release",
       "configuration": "Release",
-      "targets": ["RVXShippingProduct", "RVXShippingConsumer"]
+      "targets": ["RVXValidationShipping"]
     },
     {
       "name": "linux_x64_shipping_release",
       "configurePreset": "linux_x64_shipping_release",
-      "targets": ["RVXShippingProduct", "RVXShippingConsumer"]
+      "targets": ["RVXValidationShipping"]
     },
     {
       "name": "mac_arm64_shipping_release",
       "configurePreset": "mac_arm64_shipping_release",
-      "targets": ["RVXShippingProduct", "RVXShippingConsumer"]
+      "targets": ["RVXValidationShipping"]
     }
   ],
   "testPresets": [
+    {
+      "name": "win_x64_shipping_release_lane_base",
+      "hidden": true,
+      "configurePreset": "win_x64_shipping_release",
+      "configuration": "Release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "win_x64_shipping_release_shipping",
+      "inherits": "win_x64_shipping_release_lane_base",
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/win_x64_shipping_release/BuildTruth/junit-shipping.xml" },
+      "filter": { "include": { "label": "^lane\\.shipping$" } }
+    },
+    {
+      "name": "linux_x64_shipping_release_lane_base",
+      "hidden": true,
+      "configurePreset": "linux_x64_shipping_release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux_x64_shipping_release_shipping",
+      "inherits": "linux_x64_shipping_release_lane_base",
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/linux_x64_shipping_release/BuildTruth/junit-shipping.xml" },
+      "filter": { "include": { "label": "^lane\\.shipping$" } }
+    },
+    {
+      "name": "mac_arm64_shipping_release_lane_base",
+      "hidden": true,
+      "configurePreset": "mac_arm64_shipping_release",
+      "execution": { "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "mac_arm64_shipping_release_shipping",
+      "inherits": "mac_arm64_shipping_release_lane_base",
+      "output": { "outputOnFailure": true, "outputJUnitFile": "${sourceDir}/build/mac_arm64_shipping_release/BuildTruth/junit-shipping.xml" },
+      "filter": { "include": { "label": "^lane\\.shipping$" } }
+    },
     {
       "name": "win_x64_debug_lane_base",
       "hidden": true,

@@ -4,8 +4,8 @@
 #include "Geometry/Asset/Model.h"
 #include "Resource/Cooked/CookedMeshArtifactReader.h"
 #include "Resource/Cooked/CookedModelArtifact.h"
-#include "Resource/Importer/GLTFImporter.h"
-#include "Resource/Loader/ModelLoader.h"
+#include "AssetImport/GLTFImporter.h"
+#include "Resource/Loader/CookedModelLoader.h"
 #include "Resource/Types/ModelResource.h"
 #include "Tools/AssetPipeline.h"
 
@@ -122,7 +122,7 @@ TEST(CookedModelProductValidation, DeterministicRoundTripLoadsWithoutSourceParsi
     for (const auto& mesh : meshes)
         ASSERT_FALSE(mesh.lodMeshes.empty());
 
-    RVX::Resource::ModelLoader loader(nullptr);
+    RVX::Resource::CookedModelLoader loader(nullptr);
     std::unique_ptr<RVX::Resource::ModelResource> model(
         static_cast<RVX::Resource::ModelResource*>(
             loader.Load(output.string())));
@@ -295,7 +295,7 @@ TEST(CookedModelProductValidation, CorruptionAndDependencyEscapeFailClosed)
                       static_cast<std::streamsize>(escapedBytes.size()));
     escapedFile.close();
     RVX::Log::Initialize();
-    RVX::Resource::ModelLoader loader(nullptr);
+    RVX::Resource::CookedModelLoader loader(nullptr);
     EXPECT_EQ(loader.Load(escapedRoot.string()), nullptr);
     RVX::Log::Shutdown();
 }
@@ -339,7 +339,7 @@ TEST(CookedModelProductValidation, ResolvedDependencyMustRemainInsideProductDire
     escapedFile.close();
 
     RVX::Log::Initialize();
-    RVX::Resource::ModelLoader loader(nullptr);
+    RVX::Resource::CookedModelLoader loader(nullptr);
     EXPECT_EQ(loader.Load(escapedRoot.string()), nullptr);
     RVX::Log::Shutdown();
 }

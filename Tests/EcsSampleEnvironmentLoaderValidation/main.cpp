@@ -1,5 +1,6 @@
 #include "Samples/SampleEnvironmentLoader.h"
 
+#include "AssetImport/EnvironmentLoader.h"
 #include "Scene/ECS/SceneEcsRuntime.h"
 
 #include <gtest/gtest.h>
@@ -199,18 +200,27 @@ TEST(EcsSampleEnvironmentLoaderValidation,
     EXPECT_EQ(lowDesc.expectedSceneRuntimeId, sceneRuntimeId);
     EXPECT_EQ(highDesc.expectedSceneRuntimeId, sceneRuntimeId);
     EXPECT_EQ(smokeDesc.expectedSceneRuntimeId, sceneRuntimeId);
-    EXPECT_EQ(lowDesc.environmentOptions.quality, Resource::HDRIBLQualityProfile::Low);
-    EXPECT_EQ(highDesc.environmentOptions.quality, Resource::HDRIBLQualityProfile::High);
-    EXPECT_EQ(smokeDesc.environmentOptions.quality,
+    const auto lowState = std::dynamic_pointer_cast<
+        const Resource::EnvironmentPreparationState>(lowDesc.preparationState);
+    const auto highState = std::dynamic_pointer_cast<
+        const Resource::EnvironmentPreparationState>(highDesc.preparationState);
+    const auto smokeState = std::dynamic_pointer_cast<
+        const Resource::EnvironmentPreparationState>(smokeDesc.preparationState);
+    ASSERT_NE(lowState, nullptr);
+    ASSERT_NE(highState, nullptr);
+    ASSERT_NE(smokeState, nullptr);
+    EXPECT_EQ(lowState->sourceOptions.quality, Resource::HDRIBLQualityProfile::Low);
+    EXPECT_EQ(highState->sourceOptions.quality, Resource::HDRIBLQualityProfile::High);
+    EXPECT_EQ(smokeState->sourceOptions.quality,
               Resource::HDRIBLQualityProfile::Validation);
-    EXPECT_FLOAT_EQ(lowDesc.environmentOptions.exposure, 1.25f);
-    EXPECT_FLOAT_EQ(highDesc.environmentOptions.exposure, 2.0f);
-    EXPECT_FLOAT_EQ(smokeDesc.environmentOptions.exposure, 1.5f);
+    EXPECT_FLOAT_EQ(lowState->sourceOptions.exposure, 1.25f);
+    EXPECT_FLOAT_EQ(highState->sourceOptions.exposure, 2.0f);
+    EXPECT_FLOAT_EQ(smokeState->sourceOptions.exposure, 1.5f);
     EXPECT_EQ(lowDesc.resourceOptions.expectedContentIdentity, identity);
     EXPECT_EQ(highDesc.resourceOptions.expectedContentIdentity, identity);
     EXPECT_EQ(smokeDesc.resourceOptions.expectedContentIdentity, identity);
-    EXPECT_NE(lowDesc.environmentOptions.quality, highDesc.environmentOptions.quality);
-    EXPECT_NE(smokeDesc.environmentOptions.quality, highDesc.environmentOptions.quality);
+    EXPECT_NE(lowState->sourceOptions.quality, highState->sourceOptions.quality);
+    EXPECT_NE(smokeState->sourceOptions.quality, highState->sourceOptions.quality);
 }
 
 TEST(EcsSampleEnvironmentLoaderValidation,
@@ -230,10 +240,8 @@ TEST(EcsSampleEnvironmentLoaderValidation,
     ResourceSceneAdapters::EcsEnvironmentLoadStatus published;
     published.state = ResourceSceneAdapters::EcsEnvironmentLoadState::FullyResident;
     published.sceneRuntimeId = sceneRuntimeId;
-    published.environmentOptions.quality = Resource::HDRIBLQualityProfile::Default;
-    published.environmentOptions.exposure = 1.75f;
-    published.canonicalImportOptionsHash =
-        Resource::EnvironmentLoader::ComputeImportOptionsHash(published.environmentOptions);
+    published.canonicalImportOptionsHash = Resource::EnvironmentLoader::ComputeImportOptionsHash(
+        {.quality = Resource::HDRIBLQualityProfile::Default, .exposure = 1.75f});
     published.contentVerificationReceipt = Resource::ResourceContentVerificationReceipt{
         .status = Resource::ResourceContentVerificationStatus::Verified,
         .expected = identity,

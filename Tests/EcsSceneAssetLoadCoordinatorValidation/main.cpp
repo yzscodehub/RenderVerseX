@@ -2,6 +2,7 @@
 #include "Resource/PreparedResourceBundle.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/Types/ModelResource.h"
+#include "ResourceRuntime/TextureSourceDecode.h"
 #include "ResourceSceneAdapters/ECS/EcsSceneAssetLoadCoordinator.h"
 #include "Scene/ECS/AnimationFragments.h"
 
@@ -10,7 +11,11 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <functional>
+#include <memory>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -50,6 +55,39 @@ namespace
         {
             return {.code = RVX::RenderResourceStatusCode::StaleGeneration,
                     .state = RVX::RenderResourcePublicState::Released};
+        }
+    };
+
+    /** @brief Deterministic source decoder injected by streaming-focused tests. */
+    class FixtureTextureSourceDecoder final
+        : public RVX::Resource::ITextureSourceDecoder
+    {
+    public:
+        bool Decode(
+            const RVX::Resource::TextureReference& reference,
+            const std::string& modelPath,
+            const RVX::Diagnostics::TraceContext&,
+            RVX::Resource::DecodedTextureData& outData,
+            std::string& outError,
+            const std::function<bool()>& isCancellationRequested) override
+        {
+            if (isCancellationRequested && isCancellationRequested())
+            {
+                outError = "Fixture texture decode was cancelled";
+                return false;
+            }
+
+            outData.bytes = std::make_shared<const std::vector<RVX::uint8>>(
+                std::vector<RVX::uint8>{0x7fu});
+            outData.metadata = {
+                .width = 1,
+                .height = 1,
+                .mipLevels = 1,
+                .format = RVX::Resource::TextureFormat::RGBA8,
+            };
+            outData.sourceKey = modelPath + "#fixture-" + reference.path;
+            outError.clear();
+            return true;
         }
     };
 
@@ -377,7 +415,10 @@ namespace
         {
             RVX::Resource::ResourceManagerConfig config;
             config.asyncThreadCount = asyncThreadCount;
-            m_resources.Initialize(config, {});
+            RVX::Resource::ResourceManagerDependencies dependencies;
+            dependencies.textureSourceDecoder =
+                std::make_unique<FixtureTextureSourceDecoder>();
+            m_resources.Initialize(config, std::move(dependencies));
             m_resources.RegisterLoader(
                 RVX::ResourceType::Model,
                 std::make_unique<PreparedRootOnlyModelLoader>());

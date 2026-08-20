@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Resource/Loader/TextureLoader.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/ModelResource.h"
+#include "ResourceRuntime/TextureSourceDecode.h"
 
 #include <deque>
 #include <atomic>
@@ -17,8 +17,10 @@ namespace RVX::Resource
     class ModelTextureStreamingService final
     {
     public:
-        ModelTextureStreamingService(uint64 decodedByteBudget,
-                                     uint32 maxConcurrentDecodes);
+        ModelTextureStreamingService(
+            uint64 decodedByteBudget,
+            uint32 maxConcurrentDecodes,
+            std::unique_ptr<ITextureSourceDecoder> sourceDecoder);
         ~ModelTextureStreamingService();
 
         ModelTextureStreamingService(const ModelTextureStreamingService&) = delete;
@@ -80,6 +82,7 @@ namespace RVX::Resource
             m_cancellationTokens;
         std::unordered_map<ResourceId, PendingPublication>
             m_pendingPublications;
+        std::unique_ptr<ITextureSourceDecoder> m_sourceDecoder;
         ModelTextureStreamingStats m_stats;
         bool m_stopping = false;
     };

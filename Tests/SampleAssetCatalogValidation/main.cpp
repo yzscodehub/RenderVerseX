@@ -1,6 +1,6 @@
 #include "Core/Hash/SHA256.h"
 #include "Core/Log.h"
-#include "Resource/Importer/GLTFImporter.h"
+#include "AssetImport/GLTFImporter.h"
 #include "Samples/SampleAssetCatalog.h"
 #include "Samples/SampleContext.h"
 

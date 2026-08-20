@@ -24,9 +24,10 @@
 #include "Render/Graph/RenderGraph.h"
 #include "Render/Renderer/ViewData.h"
 #include "Render/Sky/AtmosphericScattering.h"
-#include "Resource/Importer/GLTFImporter.h"
+#include "AssetImport/GLTFImporter.h"
 #include "Resource/CookManifest.h"
-#include "Resource/Loader/TextureLoader.h"
+#include "AssetImport/TextureLoader.h"
+#include "Resource/Loader/CookedTextureLoader.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MeshResource.h"
 #include "Resource/Types/ModelResource.h"
@@ -1682,10 +1683,9 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliWritesBC7TextureArtifact)
     EXPECT_NEAR(decodedPixels[0][2], rgba[2], 80);
     EXPECT_NEAR(decodedPixels[0][3], rgba[3], 2);
 
-    RVX::Resource::TextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.LoadFromFile(artifactPath.string()));
+    RVX::Resource::CookedTextureLoader loader(nullptr);
+    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.Load(artifactPath.string()));
     ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
     EXPECT_EQ(texture->GetFormat(), RVX::Resource::TextureFormat::BC7);
     EXPECT_EQ(texture->GetUsage(), RVX::Resource::TextureUsage::Color);
     EXPECT_TRUE(texture->IsSRGB());
@@ -1822,10 +1822,10 @@ TEST_F(RenderHonestyValidationFixture, RVXCookCliRewritesGltfTextureUrisToCooked
     ASSERT_TRUE(material);
     RVX::Resource::ResourceHandle<RVX::Resource::TextureResource> albedo = material->GetAlbedoTexture();
     ASSERT_TRUE(albedo);
-    EXPECT_EQ(RVX::Resource::TextureFormat::BC1, albedo->GetFormat());
+    EXPECT_EQ(RVX::Resource::TextureFormat::RGBA8, albedo->GetFormat());
     EXPECT_EQ(RVX::Resource::TextureUsage::Color, albedo->GetUsage());
     EXPECT_TRUE(albedo->IsSRGB());
-    EXPECT_FALSE(albedo->IsDefaultFallback());
+    EXPECT_TRUE(albedo->IsStreamingPlaceholder());
 
     manager.Shutdown();
     fs::remove_all(dir);
@@ -1938,7 +1938,7 @@ TEST_F(RenderHonestyValidationFixture, TextureImporterWritesCookedMipArtifact)
     fs::remove_all(dir);
 }
 
-TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedTextureArtifact)
+TEST_F(RenderHonestyValidationFixture, CookedTextureLoaderReadsCookedTextureArtifact)
 {
     fs::path dir = MakeTempDir("rvx_texture_loader_cooked_artifact");
     const fs::path source = dir / "Albedo.tga";
@@ -1961,11 +1961,10 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedTextureArtifact)
     const RVX::Tools::ImportResult importResult = importer.Import(source, output, &importOptions);
     ASSERT_TRUE(importResult.success) << importResult.error;
 
-    RVX::Resource::TextureLoader loader(nullptr);
+    RVX::Resource::CookedTextureLoader loader(nullptr);
     EXPECT_TRUE(loader.CanLoad(output.string()));
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.LoadFromFile(output.string()));
+    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.Load(output.string()));
     ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
     EXPECT_FALSE(texture->IsDefaultFallback());
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
@@ -1986,7 +1985,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedTextureArtifact)
     fs::remove_all(dir);
 }
 
-TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedBC1TextureArtifact)
+TEST_F(RenderHonestyValidationFixture, CookedTextureLoaderReadsCookedBC1TextureArtifact)
 {
     fs::path dir = MakeTempDir("rvx_texture_loader_bc1_artifact");
     const fs::path source = dir / "Albedo.tga";
@@ -2010,10 +2009,9 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedBC1TextureArtifac
     ASSERT_TRUE(importResult.success) << importResult.error;
     EXPECT_TRUE(importResult.warnings.empty());
 
-    RVX::Resource::TextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.LoadFromFile(output.string()));
+    RVX::Resource::CookedTextureLoader loader(nullptr);
+    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.Load(output.string()));
     ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
     EXPECT_EQ(metadata.width, 4u);
@@ -2029,7 +2027,7 @@ TEST_F(RenderHonestyValidationFixture, TextureLoaderReadsCookedBC1TextureArtifac
     fs::remove_all(dir);
 }
 
-TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureArtifact)
+TEST_F(RenderHonestyValidationFixture, SourceModelLoaderDoesNotDecodeExternalCookedTextureArtifact)
 {
     fs::path dir = MakeTempDir("rvx_model_loader_cooked_texture_uri");
     const fs::path source = dir / "Albedo.tga";
@@ -2137,17 +2135,14 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
     ASSERT_TRUE(material);
     RVX::Resource::ResourceHandle<RVX::Resource::TextureResource> albedo = material->GetAlbedoTexture();
     ASSERT_TRUE(albedo);
-    EXPECT_EQ(RVX::Resource::TextureFormat::BC1, albedo->GetFormat());
+    EXPECT_TRUE(albedo->IsStreamingPlaceholder());
     EXPECT_EQ(RVX::Resource::TextureUsage::Color, albedo->GetUsage());
-    EXPECT_TRUE(albedo->IsSRGB());
-    EXPECT_EQ(24u, albedo->GetData().size());
-    EXPECT_FALSE(albedo->IsDefaultFallback());
 
     manager.Shutdown();
 
-    // Prepared model loading must recognize an RVA texture as an already
-    // cooked CPU product. It is published directly and never enters the
-    // source-image fallback/decode streaming state machine.
+    // A source model loader never decodes an RVA dependency. The source
+    // composition publishes an observable placeholder and leaves it pending;
+    // cooked model loading owns cooked texture resolution.
     RVX::Resource::ResourceManager preparedManager;
     InitializeDevelopmentResources(preparedManager, config);
     auto preparedRequest =
@@ -2159,15 +2154,15 @@ TEST_F(RenderHonestyValidationFixture, ModelLoaderResolvesExternalCookedTextureA
         preparedModel = preparedRequest.TryGet();
     ASSERT_TRUE(preparedModel);
     EXPECT_EQ(preparedModel->GetTextureStreamingSnapshot().stage,
-              RVX::Resource::ModelTextureStreamingStage::None);
+              RVX::Resource::ModelTextureStreamingStage::AwaitingMinimumResident);
     ASSERT_EQ(preparedModel->GetMaterialCount(), 1u);
     auto preparedAlbedo =
         preparedModel->GetMaterial(0)->GetAlbedoTexture();
     ASSERT_TRUE(preparedAlbedo);
     EXPECT_EQ(preparedAlbedo->GetFormat(),
-              RVX::Resource::TextureFormat::BC1);
-    EXPECT_EQ(preparedAlbedo->GetData().size(), 24u);
-    EXPECT_FALSE(preparedAlbedo->IsStreamingPlaceholder());
+              RVX::Resource::TextureFormat::RGBA8);
+    EXPECT_EQ(preparedAlbedo->GetData().size(), 4u);
+    EXPECT_TRUE(preparedAlbedo->IsStreamingPlaceholder());
     EXPECT_EQ(preparedManager.GetModelTextureStreamingStats().completedDecodes,
               0u);
     preparedManager.Shutdown();
@@ -2208,10 +2203,9 @@ TEST_F(RenderHonestyValidationFixture, TextureImporterWritesCookedBC3AlphaArtifa
     EXPECT_NE(artifact.find("compression=BC3"), std::string::npos);
     EXPECT_NE(artifact.find("dataSize=48"), std::string::npos);
 
-    RVX::Resource::TextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.LoadFromFile(output.string()));
+    RVX::Resource::CookedTextureLoader loader(nullptr);
+    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.Load(output.string()));
     ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
     EXPECT_EQ(metadata.width, 4u);
@@ -2324,10 +2318,9 @@ TEST_F(RenderHonestyValidationFixture, TextureImporterWritesCookedBC5NormalArtif
     EXPECT_NE(artifact.find("compression=BC5"), std::string::npos);
     EXPECT_NE(artifact.find("dataSize=48"), std::string::npos);
 
-    RVX::Resource::TextureLoader loader(nullptr);
-    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.LoadFromFile(output.string()));
+    RVX::Resource::CookedTextureLoader loader(nullptr);
+    std::unique_ptr<RVX::Resource::TextureResource> texture(loader.Load(output.string()));
     ASSERT_NE(texture, nullptr) << loader.GetLastLoadError();
-    EXPECT_EQ(loader.GetLastLoadStatus(), RVX::Resource::TextureLoadStatus::Loaded);
 
     const RVX::Resource::TextureMetadata& metadata = texture->GetMetadata();
     EXPECT_EQ(metadata.width, 4u);

@@ -7,7 +7,7 @@
 #include "Render/Material/MaterialTemplate.h"
 #include "Resources/FrameConstantUploadArena.h"
 #include "Resources/RenderSubmissionTracker.h"
-#include "Resource/Loader/TextureLoader.h"
+#include "Resource/Loader/CookedTextureLoader.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/ShaderResource.h"
 #include "Resource/Types/TextureResource.h"
@@ -2247,12 +2247,12 @@ namespace
             false,
             std::vector<uint8>(16, 0x33)));
 
-        Resource::TextureLoader loader(nullptr);
-        Resource::TextureHandle albedo(loader.LoadFromFile(albedoPath.string()));
+        Resource::CookedTextureLoader loader(nullptr);
+        Resource::TextureHandle albedo(loader.Load(albedoPath.string()));
         ASSERT_TRUE(albedo) << loader.GetLastLoadError();
-        Resource::TextureHandle metallicRoughness(loader.LoadFromFile(metallicRoughnessPath.string()));
+        Resource::TextureHandle metallicRoughness(loader.Load(metallicRoughnessPath.string()));
         ASSERT_TRUE(metallicRoughness) << loader.GetLastLoadError();
-        Resource::TextureHandle normal(loader.LoadFromFile(normalPath.string()));
+        Resource::TextureHandle normal(loader.Load(normalPath.string()));
         ASSERT_TRUE(normal) << loader.GetLastLoadError();
 
         EXPECT_EQ(Resource::TextureFormat::BC1, albedo->GetFormat());

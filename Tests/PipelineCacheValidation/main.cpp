@@ -2067,6 +2067,24 @@ TEST_F(PipelineCacheValidationFixture,
     }
 }
 
+TEST_F(PipelineCacheValidationFixture,
+       RelativeShaderRootProducesCanonicalCookedProgramIds)
+{
+    RecordingShaderProgramProvider provider;
+    FakeDevice device(RVX::RHIBackendType::DX12);
+    PipelineCacheForValidation cache(provider);
+    ASSERT_TRUE(cache.Initialize(&device, ".")) << cache.GetLastError();
+    ASSERT_FALSE(provider.requests.empty());
+    EXPECT_EQ(provider.requests.front().logicalAssetId, "DefaultLit.hlsl");
+    for (const RVX::ShaderProgramRequest& request : provider.requests)
+    {
+        EXPECT_FALSE(request.logicalAssetId.starts_with("./"))
+            << request.logicalAssetId << ':' << request.entryPoint;
+        EXPECT_FALSE(request.logicalAssetId.starts_with(".\\"))
+            << request.logicalAssetId << ':' << request.entryPoint;
+    }
+}
+
 TEST_F(PipelineCacheValidationFixture, OpenGLDescriptorBindingsUseStableGLSLBindingABIAndSingleSamplerPropagation)
 {
     if (!HasShaderFixtures())

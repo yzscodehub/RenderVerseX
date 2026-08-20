@@ -37,6 +37,7 @@ target_link_libraries(RVX_SampleCommon PUBLIC
 )
 
 target_link_libraries(RVX_SampleCommon PRIVATE
+    RVX::AssetImport
     RVX::EngineDevelopmentComposition
     nlohmann_json::nlohmann_json
 )

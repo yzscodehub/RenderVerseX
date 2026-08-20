@@ -65,12 +65,8 @@
 #include "Resource/Types/EnvironmentResource.h"
 
 // Loaders
-#include "Resource/Loader/TextureLoader.h"
-#include "Resource/Loader/ModelLoader.h"
+#include "Resource/Loader/CookedTextureLoader.h"
+#include "Resource/Loader/CookedModelLoader.h"
 #include "Resource/Loader/AnimationLoader.h"
-#include "Resource/Loader/HDRTextureLoader.h"
-#include "Resource/Loader/EnvironmentLoader.h"
-
-// Importers
-#include "Resource/Importer/GLTFImporter.h"
-#include "Resource/Importer/FBXImporter.h"
+#include "Resource/Loader/CookedAudioLoader.h"
+#include "Resource/Loader/CookedEnvironmentLoader.h"

@@ -6,7 +6,6 @@
  */
 
 #include "Core/Handle.h"
-#include "Resource/Loader/EnvironmentLoader.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/Types/EnvironmentResource.h"
 #include "ResourceSceneAdapters/ECS/EcsEnvironmentPresentationReceipt.h"
@@ -68,9 +67,9 @@ namespace RVX::ResourceSceneAdapters
     struct EcsEnvironmentLoadDesc
     {
         std::string path;
-        /** Immutable bake profile captured before asynchronous preparation. */
-        Resource::EnvironmentLoadOptions environmentOptions;
         Resource::ResourceLoadOptions resourceOptions;
+        /** Optional loader-owned immutable state captured by development composition. */
+        Resource::ResourceLoadPreparationStateRef preparationState;
         /** Must name this coordinator's one exact Scene runtime. */
         ECS::SceneRuntimeId expectedSceneRuntimeId;
     };
@@ -150,8 +149,7 @@ namespace RVX::ResourceSceneAdapters
         EcsEnvironmentLoadState state = EcsEnvironmentLoadState::Requested;
         Resource::ResourceLoadSnapshot request;
         Resource::AssetKey assetKey;
-        /** Immutable profile and canonical identity admitted for this request. */
-        Resource::EnvironmentLoadOptions environmentOptions;
+        /** Canonical identity admitted for this request. */
         uint64 canonicalImportOptionsHash = 0;
         /** Published root proof copied while the strong resource lease is held. */
         std::optional<Resource::ResourceContentVerificationReceipt>

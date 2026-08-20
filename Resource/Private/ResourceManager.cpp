@@ -3,10 +3,10 @@
 #include "Resource/Loader/AnimationLoader.h"
 #include "Resource/Loader/CookedAudioLoader.h"
 #include "Resource/Loader/CookedEnvironmentLoader.h"
+#include "Resource/Loader/CookedModelLoader.h"
+#include "Resource/Loader/CookedTextureLoader.h"
 #include "Resource/Loader/MeshLoader.h"
-#include "Resource/Loader/ModelLoader.h"
 #include "Resource/Loader/ShaderLoader.h"
-#include "Resource/Loader/TextureLoader.h"
 #include "Resource/Types/MaterialResource.h"
 #include "Resource/Types/MaterialInstanceResource.h"
 #include "Resource/Types/ModelResource.h"
@@ -977,10 +977,14 @@ void ResourceManager::Initialize(
     m_initialized = true;
     ConfigureHotReload(config.enableHotReload);
     StartAsyncWorkers();
-    m_modelTextureStreaming =
-        std::make_unique<ModelTextureStreamingService>(
-            m_config.modelTextureDecodedByteBudget,
-            m_config.modelTextureMaxConcurrentDecodes);
+    if (dependencies.textureSourceDecoder)
+    {
+        m_modelTextureStreaming =
+            std::make_unique<ModelTextureStreamingService>(
+                m_config.modelTextureDecodedByteBudget,
+                m_config.modelTextureMaxConcurrentDecodes,
+                std::move(dependencies.textureSourceDecoder));
+    }
     // Publish admission only after every object observed by RequestAsync is
     // initialized. This release pairs with request-side acquire checks.
     m_acceptAsyncRequests.store(true, std::memory_order_release);
@@ -4943,6 +4947,11 @@ bool IResourceLoader::CanLoad(const std::string& path) const
 
     auto supported = GetSupportedExtensions();
     return std::find(supported.begin(), supported.end(), ext) != supported.end();
+}
+
+void IResourceLoader::MarkSynchronousLoadComplete(IResource& resource)
+{
+    resource.NotifyLoaded();
 }
 
 } // namespace RVX::Resource

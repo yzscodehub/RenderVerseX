@@ -1,0 +1,68 @@
+{
+  "schema": "RVX.ShippingDynamicDependencyPolicy",
+  "schemaVersion": 1,
+  "platforms": {
+    "windows": {
+      "allowedExact": [
+        "advapi32.dll",
+        "bcrypt.dll",
+        "cfgmgr32.dll",
+        "comdlg32.dll",
+        "d3d12.dll",
+        "d3d12core.dll",
+        "dbghelp.dll",
+        "dxgi.dll",
+        "gdi32.dll",
+        "imm32.dll",
+        "kernel32.dll",
+        "ntdll.dll",
+        "ole32.dll",
+        "oleaut32.dll",
+        "rpcrt4.dll",
+        "secur32.dll",
+        "setupapi.dll",
+        "shell32.dll",
+        "shlwapi.dll",
+        "ucrtbase.dll",
+        "user32.dll",
+        "userenv.dll",
+        "version.dll",
+        "winmm.dll",
+        "ws2_32.dll"
+      ],
+      "allowedPatterns": [
+        "^(?:api|ext)-ms-win-[a-z0-9_-]+\\.dll$",
+        "^concrt[0-9]+\\.dll$",
+        "^msvcp[0-9]+(?:_[0-9]+|_atomic_wait)?\\.dll$",
+        "^vcruntime[0-9]+(?:_[0-9]+)?\\.dll$"
+      ],
+      "forbiddenPatterns": [
+        "(?i)(?:shadercompiler|assetimport|assetpipeline|resourcesource|enginedevelopmentcomposition|rvxcook|gtest|editor)",
+        "(?i)(?:dxcompiler|d3dcompiler|glslang|spirv-cross|spirv_cross)"
+      ]
+    },
+    "linux": {
+      "allowedExact": [],
+      "allowedPatterns": [
+        "^ld-linux[^/]*\\.so(?:\\.[0-9]+)*$",
+        "^lib(?:c|dl|gcc_s|m|pthread|rt|stdc\\+\\+)\\.so(?:\\.[0-9]+)*$",
+        "^libvulkan\\.so(?:\\.[0-9]+)*$"
+      ],
+      "forbiddenPatterns": [
+        "(?i)(?:shadercompiler|assetimport|assetpipeline|resourcesource|enginedevelopmentcomposition|rvxcook|gtest|editor)",
+        "(?i)(?:dxcompiler|d3dcompiler|glslang|spirv-cross|spirv_cross)"
+      ]
+    },
+    "macos": {
+      "allowedExact": [],
+      "allowedPatterns": [
+        "^/usr/lib/[^/]+\\.dylib$",
+        "^/System/Library/Frameworks/(?:AppKit|CoreFoundation|CoreGraphics|Foundation|IOKit|Metal|MetalKit|QuartzCore)\\.framework/Versions/[^/]+/[^/]+$"
+      ],
+      "forbiddenPatterns": [
+        "(?i)(?:shadercompiler|assetimport|assetpipeline|resourcesource|enginedevelopmentcomposition|rvxcook|gtest|editor)",
+        "(?i)(?:dxcompiler|d3dcompiler|glslang|spirv-cross|spirv_cross)"
+      ]
+    }
+  }
+}

@@ -2,6 +2,8 @@
 
 #include "Samples/SampleEnvironmentLoader.h"
 
+#include "AssetImport/EnvironmentLoader.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -207,9 +209,22 @@ namespace RVX
 
         ResourceSceneAdapters::EcsEnvironmentLoadDesc desc;
         desc.path = path.string();
-        desc.environmentOptions.quality = quality;
-        desc.environmentOptions.exposure = options.exposure;
-        desc.environmentOptions.applyGamma = false;
+        Resource::EnvironmentLoadOptions environmentOptions;
+        environmentOptions.quality = quality;
+        environmentOptions.exposure = options.exposure;
+        environmentOptions.applyGamma = false;
+        Resource::ResourceLoadError preparationError;
+        desc.preparationState = Resource::EnvironmentLoader::CreatePreparationState(
+            environmentOptions,
+            desc.resourceOptions.importOptionsHash,
+            preparationError);
+        if (!desc.preparationState)
+        {
+            outError = preparationError.message.empty()
+                           ? "Environment preparation state creation failed."
+                           : preparationError.message;
+            return false;
+        }
         desc.expectedSceneRuntimeId = m_sceneRuntimeId;
         desc.resourceOptions.expectedContentIdentity = expectedContentIdentity;
         LoadedSampleEnvironment requested;

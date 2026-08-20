@@ -3,8 +3,9 @@
 #include "Geometry/Asset/Mesh.h"
 #include "Resource/Cooked/CookedAnimationArtifact.h"
 #include "Resource/Cooked/CookedModelArtifact.h"
-#include "Resource/Importer/GLTFImporter.h"
-#include "Resource/Loader/ModelLoader.h"
+#include "AssetImport/GLTFImporter.h"
+#include "AssetImport/ModelLoader.h"
+#include "Resource/Loader/CookedModelLoader.h"
 #include "Resource/Types/ModelResource.h"
 #include "Tools/AssetPipeline.h"
 
@@ -522,7 +523,7 @@ TEST_F(SkeletalAssetPipelineValidation,
         "models/casual-female/Casual_Female.rva");
     ASSERT_FALSE(cookedModel.empty());
 
-    RVX::Resource::ModelLoader loader(nullptr);
+    RVX::Resource::CookedModelLoader loader(nullptr);
     std::unique_ptr<RVX::Resource::ModelResource> model(
         static_cast<RVX::Resource::ModelResource*>(
             loader.Load(cookedModel.string())));
@@ -800,7 +801,7 @@ TEST_F(SkeletalAssetPipelineValidation,
     EXPECT_EQ(ReadBytes(animationPath), firstAnimationBytes);
     EXPECT_EQ(ReadBytes(meshPath), firstMeshBytes);
 
-    RVX::Resource::ModelLoader loader(nullptr);
+    RVX::Resource::CookedModelLoader loader(nullptr);
     std::unique_ptr<RVX::Resource::ModelResource> model(
         static_cast<RVX::Resource::ModelResource*>(loader.Load(output.string())));
     ASSERT_TRUE(model);

@@ -1,4 +1,4 @@
-#include "Resource/Importer/FBXImporter.h"
+#include "AssetImport/FBXImporter.h"
 #include "Core/Log.h"
 
 #include <filesystem>

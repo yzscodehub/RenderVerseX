@@ -5,7 +5,7 @@
  * @brief Prepared HDR/IBL environment loader with immutable admission state.
  */
 
-#include "Resource/Loader/HDRTextureLoader.h"
+#include "AssetImport/HDRTextureLoader.h"
 #include "Resource/ResourceManager.h"
 #include "Resource/Types/EnvironmentResource.h"
 

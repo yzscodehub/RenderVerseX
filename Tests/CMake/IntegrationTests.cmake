@@ -64,6 +64,7 @@ rvx_add_gtest(
     LANE integration
     SOURCES EcsWorldRuntimeCompositionValidation/main.cpp
     LIBS
+        RVX::AssetImport
         RVX::Engine
         RVX::AnimationSceneAdapters
         RVX::Audio
@@ -202,6 +203,7 @@ rvx_add_gtest(
     LANE integration
     SOURCES RenderHonestyValidation/main.cpp
     LIBS
+        RVX::AssetImport
         RVX::Core
         RVX::Render
         RVX::ResourceRuntime

@@ -16,17 +16,29 @@ SourceEnvironmentLoader::SourceEnvironmentLoader(
 }
 
 SourceTextureLoader::SourceTextureLoader(Resource::ResourceManager* manager)
-    : Resource::TextureLoader(
-          manager,
-          false,
-          Resource::ResourceLoaderDomainPolicy::SourceOnly)
+    : Resource::TextureLoader(manager)
 {
 }
 
+bool SourceTextureLoader::Decode(
+    const Resource::TextureReference& reference,
+    const std::string& modelPath,
+    const Diagnostics::TraceContext& traceContext,
+    Resource::DecodedTextureData& outData,
+    std::string& outError,
+    const std::function<bool()>& isCancellationRequested)
+{
+    return DecodeReference(
+        reference,
+        modelPath,
+        traceContext,
+        outData,
+        outError,
+        isCancellationRequested);
+}
+
 SourceModelLoader::SourceModelLoader(Resource::ResourceManager* manager)
-    : Resource::ModelLoader(
-          manager,
-          Resource::ResourceLoaderDomainPolicy::SourceOnly)
+    : Resource::ModelLoader(manager)
 {
 }
 } // namespace RVX::AssetImport

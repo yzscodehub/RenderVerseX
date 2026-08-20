@@ -153,10 +153,9 @@ namespace RVX::Resource
         friend class ResourceManager;
         friend class ResourceCache;
         friend class ResourceLoader;
-        friend class TextureLoader;
+        friend class IResourceLoader;
         friend class MeshLoader;
         friend class ShaderLoader;
-        friend class ModelLoader;
         friend class AnimationLoader;
         friend class DefaultResources;
 
