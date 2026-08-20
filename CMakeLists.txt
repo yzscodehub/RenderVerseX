@@ -335,7 +335,7 @@ add_subdirectory(ResourceSceneAdapters) # Resource data to pure ECS scene adapte
 add_subdirectory(Source/Runtime/Physics)    # Physics subsystem
 add_subdirectory(PhysicsSceneAdapters) # Pure ECS to Built-in Physics composition
 add_subdirectory(AnimationSceneAdapters) # Animation runtime to Scene ECS adapters
-add_subdirectory(Audio)      # Audio subsystem
+add_subdirectory(Source/Runtime/Audio) # Audio subsystem
 add_subdirectory(World)      # World owns the single Scene ECS runtime
 add_subdirectory(RenderExtraction) # Frozen ECS values to render contracts
 add_subdirectory(Render)       # Render module (includes RenderGraph)
@@ -347,8 +347,8 @@ else()
         MODULE EngineDevelopmentComposition
         REASON "Developer components are disabled for this configuration")
 endif()
-add_subdirectory(Particle)   # GPU-driven particle system
-add_subdirectory(AI)         # AI module (Navigation, BehaviorTree, Perception)
+add_subdirectory(Source/Runtime/Particle) # GPU-driven particle system
+add_subdirectory(Source/Runtime/AI) # AI module (Navigation, BehaviorTree, Perception)
 add_subdirectory(Source/Runtime/Networking) # Network communication and replication
 if(RVX_BUILD_DEVELOPER)
     add_subdirectory(Debug)      # Debug module (profiling, console, stats)
@@ -357,7 +357,7 @@ else()
         MODULE Debug
         REASON "Developer components are disabled for this configuration")
 endif()
-add_subdirectory(Scripting)  # Lua scripting system
+add_subdirectory(Source/Runtime/Scripting) # Lua scripting system
 if(RVX_BUILD_DEVELOPER)
     add_subdirectory(Tools)      # Asset pipeline and tools
 else()
@@ -365,9 +365,9 @@ else()
         MODULE AssetPipeline
         REASON "Developer components are disabled for this configuration")
 endif()
-add_subdirectory(UI)         # UI framework
-add_subdirectory(Terrain)    # Terrain module (heightmap terrain rendering)
-add_subdirectory(Water)      # Water module (water surface and effects)
+add_subdirectory(Source/Runtime/UI) # UI framework
+add_subdirectory(Source/Runtime/Terrain) # Terrain module (heightmap terrain rendering)
+add_subdirectory(Source/Runtime/Water) # Water module (water surface and effects)
 
 if(RVX_BUILD_EDITOR)
     add_subdirectory(Editor)

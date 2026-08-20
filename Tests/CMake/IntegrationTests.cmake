@@ -216,11 +216,11 @@ rvx_add_gtest(
         Particle
     INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/Particle/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Particle/Private
         ${CMAKE_SOURCE_DIR}/Render/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/ResourceRuntime/Include
         ${CMAKE_SOURCE_DIR}/ShaderCompiler/Include
-        ${CMAKE_SOURCE_DIR}/Terrain/Private
+        ${CMAKE_SOURCE_DIR}/Source/Runtime/Terrain/Private
         ${CMAKE_SOURCE_DIR}/Tools/Include
         ${CMAKE_SOURCE_DIR}/Source/Runtime/RHI/Include
     TIMEOUT 120

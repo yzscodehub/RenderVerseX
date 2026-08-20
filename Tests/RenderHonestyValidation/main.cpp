@@ -3620,18 +3620,19 @@ TEST_F(RenderHonestyValidationFixture, TerrainPlaceholderPathsExposeHonestDiagno
     const fs::path repoRoot = FindRepoRoot();
     ASSERT_FALSE(repoRoot.empty());
 
+    const fs::path terrainRoot = repoRoot / "Source" / "Runtime" / "Terrain";
     const std::string heightmapHeader =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "Terrain" / "Heightmap.h");
+        ReadTextFile(terrainRoot / "Private" / "Terrain" / "Heightmap.h");
     const std::string heightmapSource =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "Heightmap.cpp");
+        ReadTextFile(terrainRoot / "Private" / "Heightmap.cpp");
     const std::string materialHeader =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "Terrain" / "TerrainMaterial.h");
+        ReadTextFile(terrainRoot / "Private" / "Terrain" / "TerrainMaterial.h");
     const std::string materialSource =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "TerrainMaterial.cpp");
+        ReadTextFile(terrainRoot / "Private" / "TerrainMaterial.cpp");
     const std::string lodHeader =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "Terrain" / "TerrainLOD.h");
+        ReadTextFile(terrainRoot / "Private" / "Terrain" / "TerrainLOD.h");
     const std::string lodSource =
-        ReadTextFile(repoRoot / "Terrain" / "Private" / "TerrainLOD.cpp");
+        ReadTextFile(terrainRoot / "Private" / "TerrainLOD.cpp");
 
     EXPECT_EQ(heightmapSource.find("This is a simplified placeholder"), std::string::npos);
     EXPECT_EQ(heightmapSource.find("Render/GPUUploadService.h"), std::string::npos);

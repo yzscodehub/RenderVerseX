@@ -1,15 +1,15 @@
 #include "WorldEcsRuntimeComposition.h"
 
 #include "Core/Log.h"
-#include "../../Particle/Include/Particle/ECS/ParticleEcsBridge.h"
+#include "../../Source/Runtime/Particle/Include/Particle/ECS/ParticleEcsBridge.h"
 #include "AssetImport/EnvironmentLoader.h"
 #include "Resource/PreparedResourceBundle.h"
 #include "Resource/ResourceSubsystem.h"
 #include "Resource/Types/EnvironmentResource.h"
 #include "Resource/Types/TextureResource.h"
 #include "Scene/ECS/RenderFragments.h"
-#include "../../Terrain/Include/Terrain/ECS/TerrainEcsBridge.h"
-#include "../../Water/Include/Water/ECS/WaterEcsBridge.h"
+#include "../../Source/Runtime/Terrain/Include/Terrain/ECS/TerrainEcsBridge.h"
+#include "../../Source/Runtime/Water/Include/Water/ECS/WaterEcsBridge.h"
 
 #include <gtest/gtest.h>
 
