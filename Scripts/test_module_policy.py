@@ -275,6 +275,27 @@ class ModulePolicyTests(unittest.TestCase):
             root = Path(temporary)
             manifest, inventory = write_fixture(root)
             data = json.loads(manifest.read_text(encoding="utf-8"))
+            data["modules"][1]["domain"] = "programs"
+            data["modules"][1]["layer"] = "product"
+            data["modules"][1]["shippingAllowed"] = False
+            data["modules"][1]["publicIncludePrefixes"] = []
+            manifest.write_text(json.dumps(data), encoding="utf-8")
+            program_module = load(root, manifest, inventory).modules["Render"]
+            self.assertEqual(program_module.domain, "programs")
+            self.assertEqual(program_module.public_include_prefixes, ())
+            data["modules"][1]["shippingAllowed"] = True
+            manifest.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaises(GateInputError):
+                load(root, manifest, inventory)
+            data["modules"][1]["domain"] = "runtime"
+            data["modules"][1]["shippingAllowed"] = False
+            manifest.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaises(GateInputError):
+                load(root, manifest, inventory)
+            data["modules"][1]["domain"] = "runtime"
+            data["modules"][1]["layer"] = "validation"
+            data["modules"][1]["shippingAllowed"] = True
+            data["modules"][1]["publicIncludePrefixes"] = ["Render"]
             data["modules"][1]["path"] = "Source/Runtime/Core/NestedRender"
             (root / "Source/Runtime/Core/NestedRender").mkdir()
             manifest.write_text(json.dumps(data), encoding="utf-8")

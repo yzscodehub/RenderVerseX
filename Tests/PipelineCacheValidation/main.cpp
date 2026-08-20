@@ -2312,7 +2312,7 @@ TEST_F(PipelineCacheValidationFixture, RVXCookWorkflowDocumentationCoversCurrent
 
     const std::string doc = ReadTextFile(docPath);
     const std::string cookMain =
-        ReadTextFile(repoRoot / "Source" / "Developer" / "AssetPipeline" / "Private" /
+        ReadTextFile(repoRoot / "Source" / "Programs" / "RVXCook" / "Private" /
                      "CookMain.cpp");
     const std::string testsCMake =
         ReadTextFile(repoRoot / "Tests" / "CMake" / "UnitTests.cmake");

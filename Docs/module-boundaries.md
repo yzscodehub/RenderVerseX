@@ -34,6 +34,12 @@ extent, scale, and generation). RHI owns format, present-mode, and vsync policy
 through `RHISwapChainConfig`; those policy fields must not be added to the HAL
 surface contract.
 
+Developer command-line entry points use the `programs` domain and live under
+`Source/Programs`. `RVXCook` and `RVXAnimationDerive` contain only their
+executable entry points and depend on the `AssetPipeline` developer library.
+They are disabled whenever `RVX_BUILD_PROGRAMS` is off and are never shipping
+dependencies.
+
 `RVX::UI` is a CPU-only producer. It records layout results into
 `RenderContracts/UIRenderPacket.h` using backend-neutral vertices, indices,
 draw commands, generational texture handles, and an owned font-atlas payload.

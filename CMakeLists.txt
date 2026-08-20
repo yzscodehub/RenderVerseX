@@ -365,6 +365,16 @@ else()
         MODULE AssetPipeline
         REASON "Developer components are disabled for this configuration")
 endif()
+if(RVX_BUILD_PROGRAMS)
+    add_subdirectory(Source/Programs)
+else()
+    rvx_register_disabled_module(
+        MODULE RVXCook
+        REASON "Developer command-line programs are disabled for this configuration")
+    rvx_register_disabled_module(
+        MODULE RVXAnimationDerive
+        REASON "Developer command-line programs are disabled for this configuration")
+endif()
 add_subdirectory(Source/Runtime/UI) # UI framework
 add_subdirectory(Source/Runtime/Terrain) # Terrain module (heightmap terrain rendering)
 add_subdirectory(Source/Runtime/Water) # Water module (water surface and effects)

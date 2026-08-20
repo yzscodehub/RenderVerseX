@@ -371,7 +371,7 @@
         "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
         "RVX_BUILD_SHIPPING_TESTS": "ON",
         "RVX_SHIPPING_HOST_COOK_EXECUTABLE": {
-          "value": "${sourceDir}/build/win_x64_shipping_host_release/Source/Developer/AssetPipeline/Release/RVXCook.exe",
+          "value": "${sourceDir}/build/win_x64_shipping_host_release/Source/Programs/RVXCook/Release/RVXCook.exe",
           "type": "FILEPATH"
         },
         "RVX_BUILD_EDITOR": "OFF",
@@ -397,7 +397,7 @@
         "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
         "RVX_BUILD_SHIPPING_TESTS": "ON",
         "RVX_SHIPPING_HOST_COOK_EXECUTABLE": {
-          "value": "${sourceDir}/build/linux_x64_shipping_host_release/Source/Developer/AssetPipeline/RVXCook",
+          "value": "${sourceDir}/build/linux_x64_shipping_host_release/Source/Programs/RVXCook/RVXCook",
           "type": "FILEPATH"
         },
         "RVX_BUILD_EDITOR": "OFF",
@@ -423,7 +423,7 @@
         "RVX_BUILD_SHIPPING_PRODUCTS": "ON",
         "RVX_BUILD_SHIPPING_TESTS": "ON",
         "RVX_SHIPPING_HOST_COOK_EXECUTABLE": {
-          "value": "${sourceDir}/build/mac_arm64_shipping_host_release/Source/Developer/AssetPipeline/RVXCook",
+          "value": "${sourceDir}/build/mac_arm64_shipping_host_release/Source/Programs/RVXCook/RVXCook",
           "type": "FILEPATH"
         },
         "RVX_BUILD_EDITOR": "OFF",

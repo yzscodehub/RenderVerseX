@@ -43,7 +43,7 @@ SIMPLE_INCLUDE_GENEX = re.compile(
     r"^\$<(?:BUILD_INTERFACE|INSTALL_INTERFACE):[^$<>]*>$"
 )
 INCLUDE_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-VALID_DOMAINS = frozenset({"runtime", "developer", "editor", "samples", "tests"})
+VALID_DOMAINS = frozenset({"runtime", "developer", "programs", "editor", "samples", "tests"})
 VALID_LAYERS = frozenset({
     "adapter", "backend", "composition", "contract", "feature", "foundation",
     "platform", "product", "render", "tooling", "validation",
@@ -266,7 +266,11 @@ def load_manifest(root: Path, raw_path: str) -> tuple[dict[str, Module], dict[st
         if layer not in VALID_LAYERS:
             raise GateInputError(f"{context}.layer is not a supported layer: {layer}")
         owner = _nonempty_string(entry["owner"], f"{context}.owner")
-        include_prefixes = _string_array(entry["publicIncludePrefixes"], f"{context}.publicIncludePrefixes")
+        include_prefixes = _string_array(
+            entry["publicIncludePrefixes"],
+            f"{context}.publicIncludePrefixes",
+            allow_empty=True,
+        )
         allowed = _string_array(entry["allowedModules"], f"{context}.allowedModules")
         if any("*" in item for item in (*include_prefixes, *allowed)):
             raise GateInputError(f"{context} forbids wildcard prefixes and allowed modules")
@@ -274,6 +278,12 @@ def load_manifest(root: Path, raw_path: str) -> tuple[dict[str, Module], dict[st
             raise GateInputError(f"{context}.publicIncludePrefixes must contain single include tokens")
         if not isinstance(entry["shippingAllowed"], bool) or not isinstance(entry["deferred"], bool):
             raise GateInputError(f"{context}.shippingAllowed and .deferred must be booleans")
+        if not include_prefixes and domain != "programs":
+            raise GateInputError(
+                f"{context}.publicIncludePrefixes may be empty only for programs"
+            )
+        if domain == "programs" and entry["shippingAllowed"]:
+            raise GateInputError(f"{context}.programs modules cannot be shippingAllowed")
         for prefix in include_prefixes:
             key = prefix.casefold()
             if key in prefixes:

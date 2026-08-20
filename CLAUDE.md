@@ -321,6 +321,8 @@ RenderVerseX/
 ├── Source/Developer/ResourceSource/ # Source loading and change observation
 ├── Source/Developer/AssetPipeline/ # Asset pipeline and importers
 ├── Source/Developer/EngineDevelopmentComposition/ # Development wiring
+├── Source/Programs/RVXCook/ # Asset cooking command-line program
+├── Source/Programs/RVXAnimationDerive/ # Animation derivation command-line program
 ├── UI/                # UI framework with widgets
 ├── Physics/           # Physics subsystem (Jolt Physics)
 ├── Terrain/           # Heightmap terrain rendering

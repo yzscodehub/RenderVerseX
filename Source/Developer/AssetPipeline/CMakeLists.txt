@@ -37,40 +37,8 @@ target_link_libraries(RVX_AssetPipeline PRIVATE
 
 add_library(RVX::AssetPipeline ALIAS RVX_AssetPipeline)
 
-if(RVX_BUILD_PROGRAMS)
-    add_executable(RVXCook
-        Private/CookMain.cpp
-    )
-
-    target_link_libraries(RVXCook PRIVATE
-        RVX::AssetPipeline
-    )
-
-    target_compile_features(RVXCook PRIVATE cxx_std_20)
-
-    add_executable(RVXAnimationDerive
-        Private/AnimationRootMotionDeriveMain.cpp
-    )
-
-    target_link_libraries(RVXAnimationDerive PRIVATE
-        RVX::AssetPipeline
-    )
-
-    target_compile_features(RVXAnimationDerive PRIVATE cxx_std_20)
-endif()
-
 rvx_register_module_target(
     TARGET RVX_AssetPipeline
     MODULE AssetPipeline
     ALIASES RVX::AssetPipeline
 )
-if(RVX_BUILD_PROGRAMS)
-    rvx_register_module_target(
-        TARGET RVXCook
-        MODULE AssetPipeline
-    )
-    rvx_register_module_target(
-        TARGET RVXAnimationDerive
-        MODULE AssetPipeline
-    )
-endif()
